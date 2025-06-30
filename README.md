@@ -9,7 +9,7 @@ Your personal AI that builds memory through screen observation and natural conve
 
 ---
 
-### Key Features 🔥
+### Public Evaluations
 
 - **Multi-Agent Memory System:** Six specialized memory components (Core, Episodic, Semantic, Procedural, Resource, Knowledge Vault) managed by dedicated agents
 - **Screen Activity Tracking:** Continuous visual data capture and intelligent consolidation into structured memories  

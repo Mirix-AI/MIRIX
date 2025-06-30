@@ -66,8 +66,8 @@ class AgentWrapper():
 
         self.client = create_client()
         self.client.set_default_llm_config(LLMConfig.default_config("gpt-4o-mini")) 
-        # self.client.set_default_embedding_config(EmbeddingConfig.default_config("text-embedding-3-small"))
-        self.client.set_default_embedding_config(EmbeddingConfig.default_config("text-embedding-004"))
+        self.client.set_default_embedding_config(EmbeddingConfig.default_config("text-embedding-3-small")) # FOR LOCOMO evaluation
+        # self.client.set_default_embedding_config(EmbeddingConfig.default_config("text-embedding-004"))
 
         # Initialize agent states container
         self.agent_states = AgentStates()
@@ -520,7 +520,7 @@ class AgentWrapper():
         # Validate the model
         if new_model not in ALLOWED_MEMORY_MODELS:
             # warnings.warn(f'Invalid memory model. Only {", ".join(ALLOWED_MEMORY_MODELS)} are supported.')
-            self.logger.warning(f'Invalid memory model. Only {", ".join(ALLOWED_MEMORY_MODELS)} are supported.')
+            # self.logger.warning(f'Invalid memory model. Only {", ".join(ALLOWED_MEMORY_MODELS)} are supported.')
 
             if new_model in OPENAI_MODELS:
                 llm_config = LLMConfig(

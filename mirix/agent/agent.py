@@ -1142,7 +1142,8 @@ class Agent(BaseAgent):
         else:
             retrieved_memories["key_words"] = key_words
 
-        search_method = 'bm25'
+        # search_method = 'bm25'
+        search_method = 'embedding' # Specifically for LOCOMO evaluation
 
         # Prepare embedding for semantic search
         if key_words != '' and search_method == 'embedding':
