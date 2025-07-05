@@ -234,6 +234,14 @@ class ExportMemoriesResponse(BaseModel):
     total_exported: int
     file_path: str
 
+class ReflexionRequest(BaseModel):
+    pass  # No parameters needed for now
+
+class ReflexionResponse(BaseModel):
+    success: bool
+    message: str
+    processing_time: Optional[float] = None
+
 @app.on_event("startup")
 async def startup_event():
     """Initialize the agent when the server starts"""
@@ -1041,6 +1049,62 @@ async def export_memories(request: ExportMemoriesRequest):
         print(f"Error exporting memories: {str(e)}")
         print(f"Traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"Failed to export memories: {str(e)}")
+
+@app.post("/reflexion", response_model=ReflexionResponse)
+async def trigger_reflexion(request: ReflexionRequest):
+    """Trigger reflexion agent to reorganize memory - runs in separate thread to not block other requests"""
+    if agent is None:
+        raise HTTPException(status_code=500, detail="Agent not initialized")
+    
+    try:
+        print("Starting reflexion process...")
+        start_time = datetime.now()
+        
+        # Run reflexion in a separate thread to avoid blocking other requests
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None,  # Use default ThreadPoolExecutor
+            _run_reflexion_process,
+            agent
+        )
+        
+        end_time = datetime.now()
+        processing_time = (end_time - start_time).total_seconds()
+        
+        print(f"Reflexion process completed in {processing_time:.2f} seconds")
+        
+        return ReflexionResponse(
+            success=result['success'],
+            message=result['message'],
+            processing_time=processing_time
+        )
+        
+    except Exception as e:
+        print(f"Error in reflexion endpoint: {str(e)}")
+        print(f"Traceback: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"Reflexion process failed: {str(e)}")
+
+def _run_reflexion_process(agent):
+    """
+    Run the reflexion process - this is the blocking function that runs in a separate thread.
+    This function can be replaced with the actual reflexion agent logic.
+    """
+    try:
+        # TODO: Replace this with actual reflexion agent logic
+        # For now, this is a placeholder that simulates reflexion work
+        
+        agent.reflexion_on_memory()
+        return {
+            'success': True,
+            'message': 'Memory reorganization completed successfully. Reflexion agent has optimized memory structure and connections.'
+        }
+        
+    except Exception as e:
+        print(f"Error in reflexion process: {str(e)}")
+        return {
+            'success': False,
+            'message': f'Reflexion process failed: {str(e)}'
+        }
 
 if __name__ == "__main__":
     import uvicorn

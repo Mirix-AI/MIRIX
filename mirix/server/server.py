@@ -21,7 +21,7 @@ from mirix.agent import Agent, save_agent
 from mirix.interface import AgentInterface  # abstract
 from mirix.interface import CLIInterface  # for printing to terminal
 from mirix.log import get_logger
-from mirix.agent import EpisodicMemoryAgent, ProceduralMemoryAgent, ResourceMemoryAgent, KnowledgeVaultAgent, MetaMemoryAgent, SemanticMemoryAgent, CoreMemoryAgent
+from mirix.agent import EpisodicMemoryAgent, ProceduralMemoryAgent, ResourceMemoryAgent, KnowledgeVaultAgent, MetaMemoryAgent, SemanticMemoryAgent, CoreMemoryAgent, ReflexionAgent, BackgroundAgent
 from mirix.orm import Base
 from mirix.orm.errors import NoResultFound
 from mirix.schemas.agent import AgentState, AgentType, CreateAgent
@@ -431,6 +431,10 @@ class SyncServer(Server):
                 agent = SemanticMemoryAgent(agent_state=agent_state, interface=interface, user=actor)
             elif agent_state.agent_type == AgentType.core_memory_agent:
                 agent = CoreMemoryAgent(agent_state=agent_state, interface=interface, user=actor)
+            elif agent_state.agent_type == AgentType.reflexion_agent:
+                agent = ReflexionAgent(agent_state=agent_state, interface=interface, user=actor)
+            elif agent_state.agent_type == AgentType.background_agent:
+                agent = BackgroundAgent(agent_state=agent_state, interface=interface, user=actor)
             else:
                 raise ValueError(f"Invalid agent type {agent_state.agent_type}")
 

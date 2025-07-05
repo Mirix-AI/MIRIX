@@ -28,6 +28,11 @@ const ExistingMemory = ({ settings }) => {
   // State for Upload & Export modal
   const [showUploadExportModal, setShowUploadExportModal] = useState(false);
   
+  // State for Reflexion processing
+  const [isReflexionProcessing, setIsReflexionProcessing] = useState(false);
+  const [reflexionMessage, setReflexionMessage] = useState('');
+  const [reflexionSuccess, setReflexionSuccess] = useState(null);
+  
   // State for tracking edits to core memories
   const [editingCoreMemories, setEditingCoreMemories] = useState(new Set());
   const [editedCoreMemories, setEditedCoreMemories] = useState({});
@@ -691,28 +696,99 @@ const ExistingMemory = ({ settings }) => {
     }
   };
 
+  // Handle reflexion request
+  const handleReflexion = async () => {
+    if (isReflexionProcessing) return; // Prevent multiple simultaneous requests
+    
+    try {
+      setIsReflexionProcessing(true);
+      setReflexionMessage('');
+      setReflexionSuccess(null);
+      
+      console.log('Starting reflexion process...');
+      
+      const response = await queuedFetch(`${settings.serverUrl}/reflexion`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({})
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to trigger reflexion: ${response.statusText}`);
+      }
+
+      const result = await response.json();
+      
+      if (result.success) {
+        setReflexionSuccess(true);
+        setReflexionMessage(result.message);
+        console.log('Reflexion completed successfully:', result.message);
+        
+        // Optionally refresh memory data after reflexion
+        // You can uncomment this if you want to refresh the current tab's data
+        // await fetchMemoryData(activeSubTab);
+      } else {
+        setReflexionSuccess(false);
+        setReflexionMessage(result.message || 'Reflexion failed');
+        console.error('Reflexion failed:', result.message);
+      }
+      
+    } catch (err) {
+      console.error('Error triggering reflexion:', err);
+      setReflexionSuccess(false);
+      setReflexionMessage(err.message || 'Failed to trigger reflexion');
+    } finally {
+      setIsReflexionProcessing(false);
+      
+      // Clear the message after 5 seconds
+      setTimeout(() => {
+        setReflexionMessage('');
+        setReflexionSuccess(null);
+      }, 5000);
+    }
+  };
+
   return (
     <div className="existing-memory">
       <div className="memory-header">
         <div className="memory-subtabs">
-          {['past-events', 'semantic', 'procedural', 'docs-files', 'core-understanding', 'credentials'].map(subTab => (
+          <div className="memory-subtabs-left">
+            {['past-events', 'semantic', 'procedural', 'docs-files', 'core-understanding', 'credentials'].map(subTab => (
+              <button
+                key={subTab}
+                className={`memory-subtab ${activeSubTab === subTab ? 'active' : ''}`}
+                onClick={() => setActiveSubTab(subTab)}
+              >
+                <span className="subtab-icon">{getMemoryTypeIcon(subTab)}</span>
+                <span className="subtab-label">{getMemoryTypeLabel(subTab)}</span>
+              </button>
+            ))}
+          </div>
+          <div className="memory-subtabs-right">
             <button
-              key={subTab}
-              className={`memory-subtab ${activeSubTab === subTab ? 'active' : ''}`}
-              onClick={() => setActiveSubTab(subTab)}
+              className="memory-subtab upload-export-btn"
+              onClick={() => setShowUploadExportModal(true)}
+              title="Upload & Export Memory Data"
             >
-              <span className="subtab-icon">{getMemoryTypeIcon(subTab)}</span>
-              <span className="subtab-label">{getMemoryTypeLabel(subTab)}</span>
+              <span className="subtab-icon">📤</span>
+              <span className="subtab-label">Upload & Export</span>
             </button>
-          ))}
-          <button
-            className="memory-subtab upload-export-btn"
-            onClick={() => setShowUploadExportModal(true)}
-            title="Upload & Export Memory Data"
-          >
-            <span className="subtab-icon">📤</span>
-            <span className="subtab-label">Upload & Export</span>
-          </button>
+            <button
+              className="memory-subtab reflexion-btn"
+              onClick={handleReflexion}
+              disabled={isReflexionProcessing}
+              title="Reorganize memory with Reflexion Agent"
+            >
+              <span className="subtab-icon">
+                {isReflexionProcessing ? '⏳' : '🧠'}
+              </span>
+              <span className="subtab-label">
+                {isReflexionProcessing ? 'Processing...' : 'Reflexion'}
+              </span>
+            </button>
+          </div>
         </div>
       </div>
       
@@ -770,6 +846,15 @@ const ExistingMemory = ({ settings }) => {
           </button>
         </div>
         
+        {/* Reflexion Status Message */}
+        {reflexionMessage && (
+          <div className={`reflexion-status ${reflexionSuccess ? 'success' : 'error'}`}>
+            <span className="status-icon">
+              {reflexionSuccess ? '✅' : '❌'}
+            </span>
+            <span className="status-message">{reflexionMessage}</span>
+          </div>
+        )}
 
         
         {renderMemoryContent()}

@@ -366,6 +366,7 @@ def knowledge_vault_update(self: "Agent", old_ids: List[str], new_items: List[Kn
             source=item['source'],
             sensitivity=item['sensitivity'],
             secret_value=item['secret_value'],
+            caption=item['caption'],
             organization_id=self.user.organization_id
         )
 

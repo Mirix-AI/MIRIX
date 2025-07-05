@@ -59,6 +59,7 @@ KNOWLEDGE_VAULT_TOOLS = ['knowledge_vault_insert', 'knowledge_vault_update']
 SEMANTIC_MEMORY_TOOLS = ['semantic_memory_insert', 'semantic_memory_update', 'check_semantic_memory']
 CHAT_AGENT_TOOLS = ['trigger_memory_update_with_instruction']
 META_MEMORY_TOOLS = ['trigger_memory_update']
+SEARCH_MEMORY_TOOLS = ['search_in_memory', 'list_memory_within_timerange']
 UNIVERSAL_MEMORY_TOOLS = ['search_in_memory', "finish_memory_update", 'list_memory_within_timerange']
 ALL_TOOLS = list(set(BASE_TOOLS + CORE_MEMORY_TOOLS + EPISODIC_MEMORY_TOOLS + PROCEDURAL_MEMORY_TOOLS + RESOURCE_MEMORY_TOOLS + KNOWLEDGE_VAULT_TOOLS + SEMANTIC_MEMORY_TOOLS + META_MEMORY_TOOLS + UNIVERSAL_MEMORY_TOOLS + CHAT_AGENT_TOOLS))
 

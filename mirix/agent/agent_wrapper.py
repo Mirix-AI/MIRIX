@@ -142,11 +142,10 @@ class AgentWrapper():
                     self.agent_states.resource_memory_agent_state = agent_state
                 elif agent_state.name == 'reflexion_agent':
                     self.agent_states.reflexion_agent_state = agent_state
+                elif agent_state.name == 'background_agent':
+                    self.agent_states.background_agent_state = agent_state
 
-                if agent_state.name == 'chat_agent':
-                    system_prompt = gpt_system.get_system_text(agent_state.name) if not self.is_screen_monitor else gpt_system.get_system_text(agent_state.name + '_screen_monitor')
-                else:
-                    system_prompt = gpt_system.get_system_text(agent_state.name) if not self.is_screen_monitor else gpt_system.get_system_text(agent_state.name + '_screen_monitor')
+                system_prompt = gpt_system.get_system_text(agent_state.name) if not self.is_screen_monitor else gpt_system.get_system_text(agent_state.name + '_screen_monitor')
 
                 self.client.server.agent_manager.update_agent_tools_and_system_prompts(
                     agent_id=agent_state.id,
@@ -155,19 +154,23 @@ class AgentWrapper():
                 )
             
             if self.agent_states.reflexion_agent_state is None:
-                self.client.create_agent(
+                reflexion_agent_state = self.client.create_agent(
                     name='reflexion_agent',
                     memory=self.agent_states.agent_state.memory,
+                    agent_type=AgentType.reflexion_agent,
                     system=gpt_system.get_system_text('reflexion_agent'),
                 )
+                setattr(self.agent_states, 'reflexion_agent_state', reflexion_agent_state)
             
             if self.agent_states.background_agent_state is None:
-                self.client.create_agent(
+                background_agent_state = self.client.create_agent(
                     name='background_agent',
+                    agent_type=AgentType.background_agent,
                     memory=self.agent_states.agent_state.memory,
                     system=gpt_system.get_system_text('background_agent'),
                 )
-                
+                setattr(self.agent_states, 'background_agent_state', background_agent_state)
+            
         else:
 
             core_memory = ChatMemory(
@@ -754,6 +757,24 @@ class AgentWrapper():
                 threading.Thread(target=self.delete_files, args=([x for x in file_names_to_delete], self.google_client)).start()
             else:
                 self.logger.warning("Warning: Cannot delete files from Google Cloud - Gemini client not initialized")
+
+    def reflexion_on_memory(self):
+        """
+        Run the reflexion process.
+        """
+
+        message = f"Please reflex on the existing memories that you can see. Perform necessary changes to reduce redundancy, transfer memories between different components, and infer new memories."
+
+        response, _ = self.message_queue.send_message_in_queue(
+            self.client,
+            self.agent_states.reflexion_agent_state.id,
+            {
+                'message': message,
+            }, 
+            agent_type='reflexion',
+        )
+
+        return response
 
     def send_message(self, 
                       message=None, 

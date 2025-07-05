@@ -766,7 +766,11 @@ class Agent(BaseAgent):
                 should_clear_history = False
                 for func_name in executed_function_names:
                     if CLEAR_HISTORY_AFTER_MEMORY_UPDATE:
-                        if self.agent_state.name == 'meta_memory_agent' and (func_name == 'finish_memory_update' or not CHAINING_FOR_MEMORY_UPDATE):
+                        if self.agent_state.name == 'reflexion_agent':
+                            if func_name == 'finish_memory_update':
+                                should_clear_history = True
+                                break
+                        elif self.agent_state.name == 'meta_memory_agent' and (func_name == 'finish_memory_update' or not CHAINING_FOR_MEMORY_UPDATE):
                             should_clear_history = True
                             break
                         elif self.agent_state.name not in ['meta_memory_agent', 'chat_agent'] and (func_name == 'finish_memory_update' or not CHAINING_FOR_MEMORY_UPDATE):
@@ -894,7 +898,10 @@ class Agent(BaseAgent):
 
                     if self.agent_state.name == 'meta_memory_agent':
                         self.agent_manager.set_in_context_messages(agent_id=self.agent_state.id, message_ids=message_ids, actor=self.user)
+                        deleted_count = self.message_manager.delete_detached_messages_for_agent(agent_id=self.agent_state.id, actor=self.user)
 
+                    if self.agent_state.name == 'reflexion_agent':
+                        self.agent_manager.set_in_context_messages(agent_id=self.agent_state.id, message_ids=message_ids, actor=self.user)
                         deleted_count = self.message_manager.delete_detached_messages_for_agent(agent_id=self.agent_state.id, actor=self.user)
 
                     # Clear all messages since they were manually added to the conversation history
@@ -950,6 +957,12 @@ class Agent(BaseAgent):
         step_count = 0
 
         initial_message_count = len(self.agent_manager.get_in_context_messages(agent_id=self.agent_state.id, actor=self.user))
+
+        if self.agent_state.name == 'reflexion_agent':
+            # clear previous messages
+            in_context_messages = self.agent_manager.get_in_context_messages(agent_id=self.agent_state.id, actor=self.user)
+            in_context_messages = in_context_messages[:1]
+            self.agent_manager.set_in_context_messages(agent_id=self.agent_state.id, message_ids=[message.id for message in in_context_messages], actor=self.user)
 
         while True:
 
@@ -1161,7 +1174,7 @@ class Agent(BaseAgent):
             retrieved_memories['core'] = core_memory
         
         if self.agent_state.name == 'knowledge_vault' or 'knowledge_vault' not in retrieved_memories:
-            if self.agent_state.name == 'knowledge_vault':
+            if self.agent_state.name == 'knowledge_vault' or self.agent_state.name == 'reflexion_agent':
                 current_knowledge_vault = self.knowledge_vault_manager.list_knowledge(agent_state=self.agent_state, embedded_text=embedded_text, query=key_words, search_field='caption', search_method=search_method, limit=MAX_RETRIEVAL_LIMIT_IN_SYSTEM, timezone_str=timezone_str)
             else:
                 current_knowledge_vault = self.knowledge_vault_manager.list_knowledge(agent_state=self.agent_state, embedded_text=embedded_text, query=key_words, search_field='caption', search_method=search_method, limit=MAX_RETRIEVAL_LIMIT_IN_SYSTEM, timezone_str=timezone_str, sensitivity=['low', 'medium'])
@@ -1178,8 +1191,8 @@ class Agent(BaseAgent):
             episodic_memory = ''
             if len(current_episodic_memory) > 0:
                 for idx, event in enumerate(current_episodic_memory):
-                    tree_path_str = f" Path: {' > '.join(event.tree_path)}" if event.tree_path else ""
-                    if self.agent_state.name == 'episodic_memory_agent':
+                    tree_path_str = f" - Path: {' > '.join(event.tree_path)}" if event.tree_path else ""
+                    if self.agent_state.name == 'episodic_memory_agent' or self.agent_state.name == 'reflexion_agent':
                         episodic_memory += f"[Event ID: {event.id}] Timestamp: {event.occurred_at.strftime('%Y-%m-%d %H:%M:%S')} - {event.summary}{tree_path_str} (Details: {len(event.details)} Characters)\n"
                     else:
                         episodic_memory += f"[{idx}] Timestamp: {event.occurred_at.strftime('%Y-%m-%d %H:%M:%S')} - {event.summary}{tree_path_str} (Details: {len(event.details)} Characters)\n"
@@ -1190,8 +1203,8 @@ class Agent(BaseAgent):
             most_relevant_episodic_memory_str = ''
             if len(most_relevant_episodic_memory) > 0:
                 for idx, event in enumerate(most_relevant_episodic_memory):
-                    tree_path_str = f" Path: {' > '.join(event.tree_path)}" if event.tree_path else ""
-                    if self.agent_state.name == 'episodic_memory_agent':
+                    tree_path_str = f" - Path: {' > '.join(event.tree_path)}" if event.tree_path else ""
+                    if self.agent_state.name == 'episodic_memory_agent' or self.agent_state.name == 'reflexion_agent':
                         most_relevant_episodic_memory_str += f"[Event ID: {event.id}] Timestamp: {event.occurred_at.strftime('%Y-%m-%d %H:%M:%S')} - {event.summary}{tree_path_str}  (Details: {len(event.details)} Characters)\n"
                     else:
                         most_relevant_episodic_memory_str += f"[{idx}] Timestamp: {event.occurred_at.strftime('%Y-%m-%d %H:%M:%S')} - {event.summary}{tree_path_str}  (Details: {len(event.details)} Characters)\n"
@@ -1204,8 +1217,8 @@ class Agent(BaseAgent):
             resource_memory = ''
             if len(current_resource_memory) > 0:
                 for idx, resource in enumerate(current_resource_memory):
-                    tree_path_str = f" Path: {' > '.join(resource.tree_path)}" if resource.tree_path else ""
-                    if self.agent_state.name == 'resource_memory_agent':
+                    tree_path_str = f"; Path: {' > '.join(resource.tree_path)}" if resource.tree_path else ""
+                    if self.agent_state.name == 'resource_memory_agent' or self.agent_state.name == 'reflexion_agent':
                         resource_memory += f"[Resource ID: {resource.id}] Resource Title: {resource.title}; Resource Summary: {resource.summary} Resource Type: {resource.resource_type}{tree_path_str}\n"
                     else:
                         resource_memory += f"[{idx}] Resource Title: {resource.title}; Resource Summary: {resource.summary} Resource Type: {resource.resource_type}{tree_path_str}\n"
@@ -1218,8 +1231,8 @@ class Agent(BaseAgent):
             procedural_memory = ''
             if len(current_procedural_memory) > 0:
                 for idx, procedure in enumerate(current_procedural_memory):
-                    tree_path_str = f" Path: {' > '.join(procedure.tree_path)}" if procedure.tree_path else ""
-                    if self.agent_state.name == 'procedural_memory_agent':
+                    tree_path_str = f"; Path: {' > '.join(procedure.tree_path)}" if procedure.tree_path else ""
+                    if self.agent_state.name == 'procedural_memory_agent' or self.agent_state.name == 'reflexion_agent':
                         procedural_memory += f"[Procedure ID: {procedure.id}] Entry Type: {procedure.entry_type}; Summary: {procedure.summary}{tree_path_str}\n"
                     else:
                         procedural_memory += f"[{idx}] Entry Type: {procedure.entry_type}; Summary: {procedure.summary}{tree_path_str}\n"
@@ -1232,8 +1245,8 @@ class Agent(BaseAgent):
             semantic_memory = ''
             if len(current_semantic_memory) > 0:
                 for idx, semantic_memory_item in enumerate(current_semantic_memory):
-                    tree_path_str = f" Path: {' > '.join(semantic_memory_item.tree_path)}" if semantic_memory_item.tree_path else ""
-                    if self.agent_state.name == 'semantic_memory_agent':
+                    tree_path_str = f"; Path: {' > '.join(semantic_memory_item.tree_path)}" if semantic_memory_item.tree_path else ""
+                    if self.agent_state.name == 'semantic_memory_agent' or self.agent_state.name == 'reflexion_agent':
                         semantic_memory += f"[Semantic Memory ID: {semantic_memory_item.id}] Name: {semantic_memory_item.name}; Summary: {semantic_memory_item.summary}{tree_path_str}\n"
                     else:
                         semantic_memory += f"[{idx}] Name: {semantic_memory_item.name}; Summary: {semantic_memory_item.summary}{tree_path_str}\n"
@@ -1329,7 +1342,6 @@ These keywords have been used to retrieve relevant memories from the database.
 
             # Step 0: get in-context messages and get the raw system prompt
             in_context_messages = self.agent_manager.get_in_context_messages(agent_id=self.agent_state.id, actor=self.user)
-
             assert in_context_messages[0].role == MessageRole.system
             raw_system = in_context_messages[0].content[0].text
 

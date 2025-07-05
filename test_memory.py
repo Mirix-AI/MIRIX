@@ -949,6 +949,8 @@ def test_all_memories():
     try:
         # Phase 1: Direct memory operations (manager method calls)
         test_all_direct_memory_operations(agent)
+
+        agent.reflexion_on_memory()
         
         # Phase 2: Indirect memory operations (message-based)
         test_all_indirect_memory_operations(agent)
