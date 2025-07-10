@@ -28,3 +28,4 @@ coverage/
 local_test
 results/
 data/
+mirix_env/
