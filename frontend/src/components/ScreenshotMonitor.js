@@ -3,8 +3,10 @@ import React, { useState, useRef, useCallback } from 'react';
 import './ScreenshotMonitor.css';
 import queuedFetch from '../utils/requestQueue';
 import AppSelector from './AppSelector';
+import { useTranslation } from 'react-i18next';
 
 const ScreenshotMonitor = ({ settings, onMonitoringStatusChange }) => {
+  const { t } = useTranslation();
   
   const [isMonitoring, setIsMonitoring] = useState(false);
   const [screenshotCount, setScreenshotCount] = useState(0);
@@ -46,7 +48,7 @@ const ScreenshotMonitor = ({ settings, onMonitoringStatusChange }) => {
     
     if (!window.electronAPI || !window.electronAPI.takeScreenshot) {
       setHasScreenPermission(false);
-      setError('Screenshot functionality is only available in the desktop app');
+      setError(t('screenshot.errors.desktopOnly'));
       return false;
     }
 
@@ -75,7 +77,7 @@ const ScreenshotMonitor = ({ settings, onMonitoringStatusChange }) => {
         console.error('[ScreenshotMonitor] Permission check failed:', result);
         setHasScreenPermission(false);
         if (result.error && result.error.includes('permission')) {
-          setError('Screen recording permission not granted. Please grant screen recording permissions in System Preferences > Security & Privacy > Screen Recording and restart the application.');
+          setError(t('screenshot.errors.permissionDenied'));
         } else {
           setError(result.error || 'Failed to access screenshot functionality');
         }
@@ -85,9 +87,9 @@ const ScreenshotMonitor = ({ settings, onMonitoringStatusChange }) => {
       console.error('[ScreenshotMonitor] Permission check exception:', err);
       setHasScreenPermission(false);
       if (err.message && err.message.includes('permission')) {
-        setError('Screen recording permission not granted. Please grant screen recording permissions in System Preferences > Security & Privacy > Screen Recording and restart the application.');
+        setError(t('screenshot.errors.permissionDenied'));
       } else {
-        setError(`Permission check failed: ${err.message}`);
+        setError(t('screenshot.errors.permissionCheckFailed', { error: err.message }));
       }
       return false;
     } finally {
@@ -100,7 +102,7 @@ const ScreenshotMonitor = ({ settings, onMonitoringStatusChange }) => {
   // Open System Preferences to Screen Recording section
   const openSystemPreferences = useCallback(async () => {
     if (!window.electronAPI || !window.electronAPI.openScreenRecordingPrefs) {
-      setError('System Preferences functionality is only available in the desktop app');
+      setError(t('screenshot.errors.systemPrefsOnly'));
       return;
     }
 
@@ -113,10 +115,10 @@ const ScreenshotMonitor = ({ settings, onMonitoringStatusChange }) => {
           checkScreenPermissions();
         }, 2000);
       } else {
-        setError(result.message || 'Failed to open System Preferences');
+        setError(result.message || t('screenshot.errors.systemPrefsFailed'));
       }
     } catch (err) {
-      setError(`Failed to open System Preferences: ${err.message}`);
+      setError(t('screenshot.errors.systemPrefsError', { error: err.message }));
     }
   }, [checkScreenPermissions]);
 
@@ -238,7 +240,7 @@ const ScreenshotMonitor = ({ settings, onMonitoringStatusChange }) => {
 
     } catch (err) {
       if (err.name !== 'AbortError') {
-        setError(`Failed to send screenshots: ${err.message}`);
+        setError(t('screenshot.errors.screenshotsFailed', { error: err.message }));
       }
       return { success: false, shouldDelete: false };
     } finally {
@@ -353,7 +355,7 @@ const ScreenshotMonitor = ({ settings, onMonitoringStatusChange }) => {
 
     } catch (err) {
       if (err.name !== 'AbortError') {
-        setError(`Failed to send screenshot: ${err.message}`);
+        setError(t('screenshot.errors.screenshotFailed', { error: err.message }));
       }
       return { success: false, shouldDelete: false };
     } finally {
@@ -419,7 +421,7 @@ const ScreenshotMonitor = ({ settings, onMonitoringStatusChange }) => {
   const processScreenshot = useCallback(async () => {
     
     if (!window.electronAPI) {
-      const errorMsg = 'Screenshot functionality requires desktop app';
+      const errorMsg = t('screenshot.errors.desktopRequired');
       console.error('[ScreenshotMonitor] Error:', errorMsg);
       setError(errorMsg);
       return;
@@ -462,7 +464,7 @@ const ScreenshotMonitor = ({ settings, onMonitoringStatusChange }) => {
         if (visibleSources.length === 0) {
           console.log('[ScreenshotMonitor] No selected apps are currently visible, skipping capture');
           setStatus('monitoring');
-          setCurrentAppName('No apps visible');
+          setCurrentAppName(t('screenshot.monitoring.noAppsVisible'));
           setIsProcessingScreenshot(false); // CRITICAL: Reset the processing flag!
           return;
         }
@@ -661,7 +663,7 @@ const ScreenshotMonitor = ({ settings, onMonitoringStatusChange }) => {
         
         const statusMessage = visibleSources.length === 1 
           ? visibleSources[0].name 
-          : `${visibleSources.length}/${selectedSources.length} apps visible (${validImages.length} sent)`;
+          : t('screenshot.monitoring.appsVisible', { visible: visibleSources.length, total: selectedSources.length, sent: validImages.length });
         setCurrentAppName(statusMessage);
         setStatus('monitoring');
         return;
@@ -670,7 +672,7 @@ const ScreenshotMonitor = ({ settings, onMonitoringStatusChange }) => {
         
         // Take full screen screenshot
         result = await window.electronAPI.takeScreenshot();
-        setCurrentAppName('Full Screen');
+        setCurrentAppName(t('screenshot.monitoring.fullScreen'));
         
         if (result.success) {
           // Validate fullscreen file before sending
@@ -685,7 +687,7 @@ const ScreenshotMonitor = ({ settings, onMonitoringStatusChange }) => {
             console.log(`📸 Screenshot saved: ${result.filepath} (Full Screen)`);
             // For fullscreen, send as single image with "Full Screen" source
             console.log('📤 Sending fullscreen image to backend:', [result.filepath]);
-            const sendResult = await sendScreenshotsToBackend([result.filepath], ['Full Screen']);
+            const sendResult = await sendScreenshotsToBackend([result.filepath], [t('screenshot.monitoring.fullScreen')]);
             
             if (!sendResult || sendResult.shouldDelete) {
               console.log(`🗑️ Deleting fullscreen screenshot: ${result.filepath}`);
@@ -711,7 +713,7 @@ const ScreenshotMonitor = ({ settings, onMonitoringStatusChange }) => {
         isProcessingScreenshot,
         isRequestInProgress
       });
-      setError(`Error processing screenshot: ${err.message}`);
+      setError(t('screenshot.errors.screenshotProcessing', { error: err.message }));
       
       // Reset processing state to allow retry
       setIsProcessingScreenshot(false);
@@ -894,21 +896,21 @@ const ScreenshotMonitor = ({ settings, onMonitoringStatusChange }) => {
   return (
     <div className="screenshot-monitor">
       <div className="monitor-header">
-        <h3>🎯 Screen Monitor</h3>
+        <h3>🎯 {t('screenshot.title')}</h3>
         <div className="monitor-controls">
           {monitorMode === 'selected' && selectedSources.length > 0 && (
             <div className="selected-sources-info">
               {selectedSources.length > 1 ? (
                 <div>
-                  <div>Monitoring {selectedSources.length} apps</div>
+                  <div>{t('screenshot.monitoring.multipleApps', { count: selectedSources.length })}</div>
                   {isMonitoring && currentAppName && (
                     <div style={{ fontSize: '12px', color: '#666', marginTop: '2px' }}>
-                      Status: {currentAppName}
+                      {t('screenshot.monitoring.statusInfo', { status: currentAppName })}
                     </div>
                   )}
                 </div>
               ) : (
-                <div>Monitoring {selectedSources[0]?.name}</div>
+                <div>{t('screenshot.monitoring.singleApp', { appName: selectedSources[0]?.name })}</div>
               )}
             </div>
           )}
@@ -927,7 +929,7 @@ const ScreenshotMonitor = ({ settings, onMonitoringStatusChange }) => {
                 marginRight: '8px'
               }}
             >
-              ⚙️ Open System Preferences
+              ⚙️ {t('screenshot.controls.openSystemPrefs')}
             </button>
           )}
           <button
@@ -944,9 +946,9 @@ const ScreenshotMonitor = ({ settings, onMonitoringStatusChange }) => {
               marginRight: '8px',
               opacity: isMonitoring ? 0.5 : 1
             }}
-          >
-            📱 Select Apps
-          </button>
+                      >
+              📱 {t('screenshot.controls.selectApps')}
+            </button>
           <button
             className={`monitor-toggle ${isMonitoring ? 'active' : ''}`}
             onClick={() => {
@@ -963,9 +965,9 @@ const ScreenshotMonitor = ({ settings, onMonitoringStatusChange }) => {
               cursor: hasScreenPermission === false || (monitorMode === 'selected' && selectedSources.length === 0) ? 'not-allowed' : 'pointer'
             }}
           >
-            {hasScreenPermission === false ? '🔒 Permission Required' :
-             monitorMode === 'selected' && selectedSources.length === 0 ? '📱 Select Apps First' :
-             isMonitoring ? '⏹️ Stop Monitor' : '▶️ Start Monitor'}
+            {hasScreenPermission === false ? `🔒 ${t('screenshot.controls.permissionRequired')}` :
+             monitorMode === 'selected' && selectedSources.length === 0 ? `📱 ${t('screenshot.controls.selectAppsFirst')}` :
+             isMonitoring ? `⏹️ ${t('screenshot.controls.stopMonitor')}` : `▶️ ${t('screenshot.controls.startMonitor')}`}
           </button>
         </div>
       </div>
@@ -976,30 +978,30 @@ const ScreenshotMonitor = ({ settings, onMonitoringStatusChange }) => {
             {getStatusIcon()}
           </span>
           <span className="status-text">
-            Status: <strong style={{ color: getStatusColor() }}>{status}</strong>
+            {t('screenshot.status.status')}: <strong style={{ color: getStatusColor() }}>{t(`screenshot.status.${status}`)}</strong>
           </span>
         </div>
         
         <div className="status-item">
           <span className="permission-status">
-            📋 Permissions: <strong style={{ 
+            📋 {t('screenshot.status.permissions')}: <strong style={{ 
               color: hasScreenPermission === true ? '#28a745' : 
                      hasScreenPermission === false ? '#dc3545' : '#ffc107' 
             }}>
-              {isCheckingPermission ? '⏳ Checking...' :
-               hasScreenPermission === true ? '✅ Granted' : 
-               hasScreenPermission === false ? '❌ Denied' : '⏳ Checking...'}
+              {isCheckingPermission ? `⏳ ${t('screenshot.status.checking')}` :
+               hasScreenPermission === true ? `✅ ${t('screenshot.status.granted')}` : 
+               hasScreenPermission === false ? `❌ ${t('screenshot.status.denied')}` : `⏳ ${t('screenshot.status.checking')}`}
             </strong>
           </span>
         </div>
         
         <div className="status-item">
-          <span>📊 Screenshots sent: <strong>{screenshotCount}</strong></span>
+          <span>📊 {t('screenshot.status.screenshotsSent')}: <strong>{screenshotCount}</strong></span>
         </div>
         
         {lastProcessedTime && (
           <div className="status-item">
-            <span>🕒 Last sent: <strong>{new Date(lastProcessedTime).toLocaleTimeString()}</strong></span>
+            <span>🕒 {t('screenshot.status.lastSent')}: <strong>{new Date(lastProcessedTime).toLocaleTimeString()}</strong></span>
           </div>
         )}
       </div>
@@ -1009,10 +1011,10 @@ const ScreenshotMonitor = ({ settings, onMonitoringStatusChange }) => {
           ⚠️ {error}
           {error.includes('permission') && (
             <div className="permission-help" style={{ marginTop: '8px', fontSize: '14px', color: '#6c757d' }}>
-              <strong>How to grant permission:</strong> 
-              <br />1. Click "⚙️ Open System Preferences" button above
-              <br />2. Find "MIRIX" in the list and check the box next to it
-              <br />3. No restart required - permissions take effect immediately
+              <strong>{t('screenshot.permissions.helpTitle')}</strong> 
+              <br />{t('screenshot.permissions.helpStep1')}
+              <br />{t('screenshot.permissions.helpStep2')}
+              <br />{t('screenshot.permissions.helpStep3')}
             </div>
           )}
         </div>
@@ -1027,9 +1029,9 @@ const ScreenshotMonitor = ({ settings, onMonitoringStatusChange }) => {
           border: '1px solid #ffeaa7',
           marginTop: '12px'
         }}>
-          🔒 Screen recording permission is required to use the screen monitor feature. 
+          🔒 {t('screenshot.permissions.warningTitle')}
           <br />
-          <strong>Click "⚙️ Open System Preferences" to grant permission directly!</strong>
+          <strong>{t('screenshot.permissions.warningAction')}</strong>
         </div>
       )}
 

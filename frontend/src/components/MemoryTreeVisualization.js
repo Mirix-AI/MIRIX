@@ -11,6 +11,7 @@ import ReactFlow, {
 import 'reactflow/dist/style.css';
 import './MemoryTreeVisualization.css';
 import queuedFetch from '../utils/requestQueue';
+import { useTranslation } from 'react-i18next';
 
 const MemoryTreeVisualization = ({ 
   memoryType, 
@@ -18,6 +19,7 @@ const MemoryTreeVisualization = ({
   getItemTitle = (item) => item.title || item.name || item.filename || item.summary,
   getItemDetails = (item) => ({ summary: item.summary, details: item.details })
 }) => {
+  const { t } = useTranslation();
   const [memoryItems, setMemoryItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -46,7 +48,7 @@ const MemoryTreeVisualization = ({
       
       const endpoint = endpointMap[memoryType];
       if (!endpoint) {
-        throw new Error(`Unknown memory type: ${memoryType}`);
+        throw new Error(t('memory.states.treeError', { error: `Unknown memory type: ${memoryType}` }));
       }
 
       const response = await queuedFetch(`${serverUrl}${endpoint}`);
@@ -69,7 +71,7 @@ const MemoryTreeVisualization = ({
       
       setLoading(false);
     } catch (err) {
-      setError(`Failed to load ${memoryType} memory: ${err.message}`);
+      setError(t('memory.states.treeError', { error: err.message }));
       setLoading(false);
     }
   };
@@ -470,7 +472,7 @@ const MemoryTreeVisualization = ({
             onClick={() => setSelectedNode(null)}
             title="Close sidebar"
           >
-            Close
+            {t('uploadExport.form.close')}
           </button>
 
           </div>
@@ -482,11 +484,11 @@ const MemoryTreeVisualization = ({
   };
 
   if (loading) {
-    return <div className="memory-tree-loading">Loading {memoryType} memory tree...</div>;
+    return <div className="memory-tree-loading">{t('memory.states.loadingTree', { type: memoryType })}</div>;
   }
 
   if (error) {
-    return <div className="memory-tree-error">Error: {error}</div>;
+    return <div className="memory-tree-error">{t('memory.states.treeError', { error })}</div>;
   }
 
   return (

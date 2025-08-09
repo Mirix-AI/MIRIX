@@ -1,8 +1,10 @@
 import React, { useState } from 'react';
 import queuedFetch from '../utils/requestQueue';
 import './UploadExportModal.css';
+import { useTranslation } from 'react-i18next';
 
 function UploadExportModal({ isOpen, onClose, settings }) {
+  const { t } = useTranslation();
   const [selectedMemoryTypes, setSelectedMemoryTypes] = useState({
     episodic: true,
     semantic: true,
@@ -14,10 +16,10 @@ function UploadExportModal({ isOpen, onClose, settings }) {
   const [exportStatus, setExportStatus] = useState(null);
 
   const memoryTypes = [
-    { key: 'episodic', label: 'Episodic', icon: '📚', description: 'Personal experiences and events' },
-    { key: 'semantic', label: 'Semantic', icon: '🧠', description: 'Facts and general knowledge' },
-    { key: 'procedural', label: 'Procedural', icon: '🔧', description: 'Skills and procedures' },
-    { key: 'resource', label: 'Resource', icon: '📁', description: 'Files and documents' }
+    { key: 'episodic', label: t('uploadExport.memoryTypes.episodic'), icon: '📚', description: t('uploadExport.memoryTypeDescriptions.episodic') },
+    { key: 'semantic', label: t('uploadExport.memoryTypes.semantic'), icon: '🧠', description: t('uploadExport.memoryTypeDescriptions.semantic') },
+    { key: 'procedural', label: t('uploadExport.memoryTypes.procedural'), icon: '🔧', description: t('uploadExport.memoryTypeDescriptions.procedural') },
+    { key: 'resource', label: t('uploadExport.memoryTypes.resource'), icon: '📁', description: t('uploadExport.memoryTypeDescriptions.resource') }
   ];
 
   const handleMemoryTypeToggle = (type) => {
@@ -31,8 +33,8 @@ function UploadExportModal({ isOpen, onClose, settings }) {
     if (window.electronAPI && window.electronAPI.selectSavePath) {
       try {
         const result = await window.electronAPI.selectSavePath({
-          title: 'Save Memory Export',
-          defaultName: 'memories_export.xlsx'
+          title: t('uploadExport.descriptions.saveDialogTitle'),
+          defaultName: t('uploadExport.descriptions.defaultFileName')
         });
         
         if (!result.canceled && result.filePath) {
@@ -40,20 +42,20 @@ function UploadExportModal({ isOpen, onClose, settings }) {
         }
       } catch (error) {
         console.error('Error opening file dialog:', error);
-        alert('Failed to open file browser. Please enter the path manually.');
+        alert(t('uploadExport.alerts.browserFailed'));
       }
     } else {
-      alert('File browser not available. Please enter the path manually.');
+      alert(t('uploadExport.alerts.browserUnavailable'));
     }
   };
 
   const handleUpload = () => {
-    alert('Upload functionality is not implemented yet (mock feature)');
+    alert(t('uploadExport.alerts.uploadNotImplemented'));
   };
 
   const handleExport = async () => {
     if (!exportPath.trim()) {
-      alert('Please enter or browse for a file path for export');
+      alert(t('uploadExport.alerts.pathRequired'));
       return;
     }
 
@@ -62,7 +64,7 @@ function UploadExportModal({ isOpen, onClose, settings }) {
     );
 
     if (selectedTypes.length === 0) {
-      alert('Please select at least one memory type to export');
+      alert(t('uploadExport.alerts.selectTypes'));
       return;
     }
 
@@ -92,16 +94,20 @@ function UploadExportModal({ isOpen, onClose, settings }) {
         });
       } else {
         const errorData = await response.json();
-        setExportStatus({
-          success: false,
-          message: errorData.detail || 'Export failed'
-        });
+        const detail = String(errorData?.detail || '');
+        const localized =
+          detail.includes('At least one sheet must be visible') ? t('uploadExport.errors.atLeastOneSheetVisible') :
+          detail.includes('No data') ? t('uploadExport.errors.noData') :
+          detail.toLowerCase().includes('permission') ? t('uploadExport.errors.permissionDenied') :
+          t('uploadExport.errors.unknown');
+
+        setExportStatus({ success: false, message: localized });
       }
     } catch (error) {
       console.error('Export error:', error);
       setExportStatus({
         success: false,
-        message: `Export failed: ${error.message}`
+        message: `${t('uploadExport.status.failed')}: ${error.message}`
       });
     } finally {
       setIsLoading(false);
@@ -114,11 +120,11 @@ function UploadExportModal({ isOpen, onClose, settings }) {
     <div className="upload-export-modal-overlay" onClick={onClose}>
       <div className="upload-export-modal" onClick={(e) => e.stopPropagation()}>
         <div className="upload-export-modal-header">
-          <h2>📤 Upload & Export</h2>
+          <h2>📤 {t('uploadExport.title')}</h2>
           <button 
             className="upload-export-modal-close"
             onClick={onClose}
-            title="Close"
+            title={t('uploadExport.form.close')}
           >
             ✕
           </button>
@@ -126,11 +132,11 @@ function UploadExportModal({ isOpen, onClose, settings }) {
         
         <div className="upload-export-modal-content">
           <div className="upload-export-modal-description">
-            <p>Manage your memory data - upload new data or export existing memories</p>
+            <p>{t('uploadExport.descriptions.modalDescription')}</p>
           </div>
 
           <div className="memory-types-section">
-            <h3>Memory Types</h3>
+            <h3>{t('uploadExport.form.selectTypes')}</h3>
             <div className="memory-types-grid">
               {memoryTypes.map(type => (
                 <div 
@@ -158,38 +164,38 @@ function UploadExportModal({ isOpen, onClose, settings }) {
 
           <div className="actions-section">
             <div className="upload-section">
-              <h3>Upload</h3>
-              <p>Import memory data from external sources</p>
+              <h3>{t('uploadExport.sections.upload')}</h3>
+              <p>{t('uploadExport.descriptions.uploadSection')}</p>
               <button 
                 className="upload-btn"
                 onClick={handleUpload}
               >
-                📤 Upload Data (Mock)
+                📤 {t('uploadExport.form.upload')}
               </button>
             </div>
 
             <div className="export-section">
-              <h3>Export</h3>
-              <p>Export selected memory types to Excel with separate sheets</p>
+              <h3>{t('uploadExport.sections.export')}</h3>
+              <p>{t('uploadExport.descriptions.exportSection')}</p>
               
               <div className="export-path-input">
-                <label htmlFor="exportPath">Export File Path:</label>
+                <label htmlFor="exportPath">{t('uploadExport.form.exportPath')}</label>
                 <div className="path-input-group">
                   <input
                     id="exportPath"
                     type="text"
                     value={exportPath}
                     onChange={(e) => setExportPath(e.target.value)}
-                    placeholder="e.g., /Users/username/Desktop/memories_export.xlsx"
+                    placeholder={t('uploadExport.form.pathPlaceholder')}
                     className="path-input"
                   />
                   <button 
                     type="button"
                     className="browse-btn"
                     onClick={handleBrowse}
-                    title="Browse for save location"
+                    title={t('uploadExport.form.browse')}
                   >
-                    📁 Browse
+                    📁 {t('uploadExport.form.browse')}
                   </button>
                 </div>
               </div>
@@ -199,7 +205,7 @@ function UploadExportModal({ isOpen, onClose, settings }) {
                 onClick={handleExport}
                 disabled={isLoading}
               >
-                {isLoading ? '⏳ Exporting...' : '📥 Export Memories'}
+                {isLoading ? `⏳ ${t('uploadExport.form.exporting')}` : `📥 ${t('uploadExport.form.export')}`}
               </button>
 
               {exportStatus && (
@@ -207,11 +213,15 @@ function UploadExportModal({ isOpen, onClose, settings }) {
                   <div className="status-message">{exportStatus.message}</div>
                   {exportStatus.success && exportStatus.counts && (
                     <div className="export-details">
-                      <div className="total-exported">Total: {exportStatus.total} memories</div>
+                      <div className="total-exported">{t('uploadExport.status.exported', { total: exportStatus.total })}</div>
                       <div className="counts-breakdown">
                         {Object.entries(exportStatus.counts).map(([type, count]) => (
                           <span key={type} className="count-item">
-                            {type}: {count}
+                            {type === 'episodic' ? t('uploadExport.memoryTypes.episodic')
+                              : type === 'semantic' ? t('uploadExport.memoryTypes.semantic')
+                              : type === 'procedural' ? t('uploadExport.memoryTypes.procedural')
+                              : type === 'resource' ? t('uploadExport.memoryTypes.resource')
+                              : type}: {count}
                           </span>
                         ))}
                       </div>  

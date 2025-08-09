@@ -1,7 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import './AppSelector.css';
+import { useTranslation } from 'react-i18next';
 
 const AppSelector = ({ onSourcesSelected, onClose }) => {
+  const { t } = useTranslation();
   const [sources, setSources] = useState([]);
   const [selectedSources, setSelectedSources] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -14,7 +16,7 @@ const AppSelector = ({ onSourcesSelected, onClose }) => {
 
   const loadSources = async () => {
     if (!window.electronAPI || !window.electronAPI.getCaptureSources) {
-      setError('App selection is only available in the desktop app');
+      setError(t('appSelector.errors.desktopOnly'));
       setLoading(false);
       return;
     }
@@ -28,10 +30,10 @@ const AppSelector = ({ onSourcesSelected, onClose }) => {
       if (result.success) {
         setSources(result.sources);
       } else {
-        setError(result.error || 'Failed to get capture sources');
+        setError(result.error || t('appSelector.errors.failedToLoad'));
       }
     } catch (err) {
-      setError(`Failed to load sources: ${err.message}`);
+      setError(t('appSelector.errors.loadError', { error: err.message }));
     } finally {
       setLoading(false);
     }
@@ -192,7 +194,7 @@ const AppSelector = ({ onSourcesSelected, onClose }) => {
     <div className="app-selector-overlay" onClick={onClose}>
       <div className="app-selector-modal" onClick={(e) => e.stopPropagation()}>
         <div className="app-selector-header">
-          <h2>Select Apps to Monitor</h2>
+          <h2>{t('appSelector.title')}</h2>
           <button className="close-button" onClick={onClose}>×</button>
         </div>
 
@@ -205,7 +207,7 @@ const AppSelector = ({ onSourcesSelected, onClose }) => {
         {loading ? (
           <div className="app-selector-loading">
             <div className="spinner"></div>
-            <p>Scanning available apps and windows...</p>
+            <p>{t('appSelector.loading')}</p>
           </div>
         ) : (
           <>
@@ -214,19 +216,19 @@ const AppSelector = ({ onSourcesSelected, onClose }) => {
                 className={`filter-button ${filter === 'all' ? 'active' : ''}`}
                 onClick={() => setFilter('all')}
               >
-                All
+                {t('appSelector.filters.all')}
               </button>
               <button 
                 className={`filter-button ${filter === 'windows' ? 'active' : ''}`}
                 onClick={() => setFilter('windows')}
               >
-                Windows
+                {t('appSelector.filters.windows')}
               </button>
               <button 
                 className={`filter-button ${filter === 'screens' ? 'active' : ''}`}
                 onClick={() => setFilter('screens')}
               >
-                Screens
+                {t('appSelector.filters.screens')}
               </button>
             </div>
 
@@ -251,10 +253,10 @@ const AppSelector = ({ onSourcesSelected, onClose }) => {
                     )}
                     <span className="app-name" title={source.name}>{source.name}</span>
                     <div className="app-badges">
-                      <span className="app-type">{source.type}</span>
+                      <span className="app-type">{t(`appSelector.types.${source.type}`)}</span>
                       {source.isVirtual && !source.isVisible && (
-                        <span className="app-status" title="This window is minimized or on another desktop">
-                          Hidden
+                        <span className="app-status" title={t('appSelector.status.hiddenTooltip')}>
+                          {t('appSelector.status.hidden')}
                         </span>
                       )}
                     </div>
@@ -265,18 +267,18 @@ const AppSelector = ({ onSourcesSelected, onClose }) => {
 
             <div className="app-selector-footer">
               <div className="selection-info">
-                {selectedSources.length} source{selectedSources.length !== 1 ? 's' : ''} selected
+                {t('appSelector.footer.sourcesSelected', { count: selectedSources.length })}
               </div>
               <div className="action-buttons">
                 <button className="cancel-button" onClick={onClose}>
-                  Cancel
+                  {t('appSelector.footer.cancel')}
                 </button>
                 <button 
                   className="confirm-button" 
                   onClick={handleConfirm}
                   disabled={selectedSources.length === 0}
                 >
-                  Start Monitoring
+                  {t('appSelector.footer.startMonitoring')}
                 </button>
               </div>
             </div>

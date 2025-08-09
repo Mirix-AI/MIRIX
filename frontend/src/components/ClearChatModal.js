@@ -1,61 +1,60 @@
 import React from 'react';
 import './ClearChatModal.css';
+import { useTranslation } from 'react-i18next';
 
 const ClearChatModal = ({ isOpen, onClose, onClearLocal, onClearPermanent, isClearing }) => {
+  const { t } = useTranslation();
   if (!isOpen) return null;
 
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal-content" onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
-          <h3>Clear Chat</h3>
+          <h3>{t('clearChat.title')}</h3>
           <button className="modal-close" onClick={onClose} disabled={isClearing}>
             ×
           </button>
         </div>
         
         <div className="modal-body">
-          <p>Choose how you want to clear the chat:</p>
+          <p>{t('clearChat.choose')}</p>
           
           <div className="clear-options">
             <div className="clear-option">
               <div className="clear-option-header">
-                <h4>🗑️ Clear Current View</h4>
-                <span className="option-type">Local Only</span>
+                <h4>{t('clearChat.local.title')}</h4>
+                <span className="option-type">{t('clearChat.local.type')}</span>
               </div>
               <p>
-                Clear the conversation display in this window. This only affects what you see here - 
-                your conversation history with the agent remains intact and memories are preserved.
+                {t('clearChat.local.desc')}
               </p>
               <button 
                 className="clear-local-btn"
                 onClick={onClearLocal}
                 disabled={isClearing}
               >
-                Clear View Only
+                {t('clearChat.local.button')}
               </button>
             </div>
             
             <div className="clear-option permanent">
               <div className="clear-option-header">
-                <h4>⚠️ Clear All Conversation History</h4>
-                <span className="option-type permanent">Permanent</span>
+                <h4>{t('clearChat.permanent.title')}</h4>
+                <span className="option-type permanent">{t('clearChat.permanent.type')}</span>
               </div>
               <p>
-                <strong>Permanently delete</strong> all conversation history between you and the chat agent. 
-                This cannot be undone. Your memories (episodic, semantic, etc.) will be preserved, 
-                but the chat history will be lost forever.
+                {t('clearChat.permanent.desc')}
               </p>
               <div className="warning-note">
                 <span className="warning-icon">⚠️</span>
-                This action is permanent and cannot be undone!
+                {t('clearChat.permanent.note')}
               </div>
               <button 
                 className="clear-permanent-btn"
                 onClick={onClearPermanent}
                 disabled={isClearing}
               >
-                {isClearing ? 'Clearing...' : 'Permanently Clear All'}
+                {isClearing ? t('clearChat.permanent.clearing') : t('clearChat.permanent.button')}
               </button>
             </div>
           </div>
@@ -63,7 +62,7 @@ const ClearChatModal = ({ isOpen, onClose, onClearLocal, onClearPermanent, isCle
         
         <div className="modal-footer">
           <button className="cancel-btn" onClick={onClose} disabled={isClearing}>
-            Cancel
+            {t('clearChat.cancel')}
           </button>
         </div>
       </div>

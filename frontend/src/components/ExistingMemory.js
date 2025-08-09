@@ -3,8 +3,10 @@ import './ExistingMemory.css';
 import MemoryTreeVisualization from './MemoryTreeVisualization';
 import UploadExportModal from './UploadExportModal';
 import queuedFetch from '../utils/requestQueue';
+import { useTranslation } from 'react-i18next';
 
 const ExistingMemory = ({ settings }) => {
+  const { t } = useTranslation();
   const [activeSubTab, setActiveSubTab] = useState('past-events');
   const [memoryData, setMemoryData] = useState({
     'past-events': [],
@@ -296,7 +298,7 @@ const ExistingMemory = ({ settings }) => {
       return (
         <div className="memory-loading">
           <div className="loading-spinner"></div>
-          <p>Loading memory data...</p>
+          <p>{t('memory.states.loading')}</p>
         </div>
       );
     }
@@ -304,9 +306,9 @@ const ExistingMemory = ({ settings }) => {
     if (error) {
       return (
         <div className="memory-error">
-          <p>Error loading memory: {error}</p>
+          <p>{t('memory.states.error', { error })}</p>
           <button onClick={() => fetchMemoryData(activeSubTab)} className="retry-button">
-            Retry
+            {t('memory.actions.retry')}
           </button>
         </div>
       );
@@ -315,7 +317,7 @@ const ExistingMemory = ({ settings }) => {
     if (currentData.length === 0) {
       return (
         <div className="memory-empty">
-          <p>No {getMemoryTypeLabel(activeSubTab).toLowerCase()} found.</p>
+          <p>{t('memory.states.empty', { type: getMemoryTypeLabel(activeSubTab).toLowerCase() })}</p>
         </div>
       );
     }
@@ -323,8 +325,8 @@ const ExistingMemory = ({ settings }) => {
     if (filteredData.length === 0 && searchQuery.trim()) {
       return (
         <div className="memory-empty">
-          <p>No {getMemoryTypeLabel(activeSubTab).toLowerCase()} found matching "{searchQuery}".</p>
-          <p>Try a different search term or clear the search to see all memories.</p>
+          <p>{t('memory.search.noResults', { type: getMemoryTypeLabel(activeSubTab).toLowerCase(), query: searchQuery })}</p>
+          <p>{t('memory.search.tryDifferent')}</p>
         </div>
       );
     }
@@ -356,7 +358,7 @@ const ExistingMemory = ({ settings }) => {
         return (
           <div className="episodic-memory">
             <div className="memory-timestamp">
-              {item.timestamp ? new Date(item.timestamp).toLocaleString() : 'Unknown time'}
+              {item.timestamp ? new Date(item.timestamp).toLocaleString() : t('memory.details.unknownTime')}
             </div>
             <div className="memory-content">{highlightText(item.summary, searchQuery)}</div>
             {item.details && (
@@ -364,9 +366,9 @@ const ExistingMemory = ({ settings }) => {
                 <button 
                   className="expand-toggle-button"
                   onClick={() => toggleExpanded(episodicItemId)}
-                  title={isEpisodicExpanded ? "Collapse details" : "Expand details"}
+                  title={isEpisodicExpanded ? t('memory.actions.expandDetails') : t('memory.actions.collapseDetails')}
                 >
-                  {isEpisodicExpanded ? "▼ Hide Details" : "▶ Show Details"}
+                  {isEpisodicExpanded ? `▼ ${t('memory.actions.hideDetails')}` : `▶ ${t('memory.actions.showDetails')}`}
                 </button>
                 {isEpisodicExpanded && (
                   <div className="memory-details">{highlightText(item.details, searchQuery)}</div>
@@ -388,16 +390,16 @@ const ExistingMemory = ({ settings }) => {
                 <button 
                   className="expand-toggle-button"
                   onClick={() => toggleExpanded(itemId)}
-                  title={isExpanded ? "Collapse details" : "Expand details"}
+                  title={isExpanded ? t('memory.actions.expandDetails') : t('memory.actions.collapseDetails')}
                 >
-                  {isExpanded ? "▼ Hide Details" : "▶ Show Details"}
+                  {isExpanded ? `▼ ${t('memory.actions.hideDetails')}` : `▶ ${t('memory.actions.showDetails')}`}
                 </button>
                 {isExpanded && (
                   <div className="memory-details">{highlightText(item.details, searchQuery)}</div>
                 )}
               </div>
             )}
-            {item.last_updated && <div className="memory-updated">Updated: {new Date(item.last_updated).toLocaleString()}</div>}
+            {item.last_updated && <div className="memory-updated">{t('memory.details.updated', { date: new Date(item.last_updated).toLocaleString() })}</div>}
             {item.tags && (
               <div className="memory-tags">
                 {item.tags.map((tag, i) => (
@@ -415,7 +417,7 @@ const ExistingMemory = ({ settings }) => {
             <div className="memory-content">
               {item.steps && item.steps.length > 0 ? (
                 <div className="memory-steps">
-                  <strong>🎯 Step-by-Step Guide:</strong>
+                  <strong>🎯 {t('memory.details.stepByStepGuide')}</strong>
                   <ol>
                     {item.steps.map((step, i) => (
                       <li key={i}>{highlightText(step, searchQuery)}</li>
@@ -423,20 +425,20 @@ const ExistingMemory = ({ settings }) => {
                   </ol>
                 </div>
               ) : (
-                <div>{highlightText(item.content || item.description || 'No steps available', searchQuery)}</div>
+                <div>{highlightText(item.content || item.description || t('memory.details.noStepsAvailable'), searchQuery)}</div>
               )}
             </div>
-            {item.proficiency && <div className="memory-proficiency">Proficiency: {highlightText(item.proficiency, searchQuery)}</div>}
-            {item.difficulty && <div className="memory-difficulty">Difficulty: {highlightText(item.difficulty, searchQuery)}</div>}
-            {item.success_rate && <div className="memory-success-rate">Success Rate: {highlightText(item.success_rate, searchQuery)}</div>}
-            {item.time_to_complete && <div className="memory-time">Time to Complete: {highlightText(item.time_to_complete, searchQuery)}</div>}
-            {item.last_practiced && <div className="memory-practiced">Last Practiced: {new Date(item.last_practiced).toLocaleString()}</div>}
+            {item.proficiency && <div className="memory-proficiency">{t('memory.details.proficiency', { value: highlightText(item.proficiency, searchQuery) })}</div>}
+            {item.difficulty && <div className="memory-difficulty">{t('memory.details.difficulty', { value: highlightText(item.difficulty, searchQuery) })}</div>}
+            {item.success_rate && <div className="memory-success-rate">{t('memory.details.successRate', { value: highlightText(item.success_rate, searchQuery) })}</div>}
+            {item.time_to_complete && <div className="memory-time">{t('memory.details.timeToComplete', { value: highlightText(item.time_to_complete, searchQuery) })}</div>}
+            {item.last_practiced && <div className="memory-practiced">{t('memory.details.lastPracticed', { date: new Date(item.last_practiced).toLocaleString() })}</div>}
             {item.prerequisites && item.prerequisites.length > 0 && (
               <div className="memory-prerequisites">
-                <strong>Prerequisites:</strong> {item.prerequisites.map(prereq => highlightText(prereq, searchQuery)).join(', ')}
+                {t('memory.details.prerequisites', { list: item.prerequisites.map(prereq => highlightText(prereq, searchQuery)).join(', ') })}
               </div>
             )}
-            {item.last_updated && <div className="memory-updated">Updated: {new Date(item.last_updated).toLocaleString()}</div>}
+            {item.last_updated && <div className="memory-updated">{t('memory.details.updated', { date: new Date(item.last_updated).toLocaleString() })}</div>}
             {item.tags && (
               <div className="memory-tags">
                 {item.tags.map((tag, i) => (
@@ -451,12 +453,12 @@ const ExistingMemory = ({ settings }) => {
         return (
           <div className="resource-memory">
             <div className="memory-filename">{highlightText(item.filename || item.name, searchQuery)}</div>
-            <div className="memory-file-type">{highlightText(item.type || 'Unknown', searchQuery)}</div>
+            <div className="memory-file-type">{highlightText(item.type || t('memory.details.unknownType'), searchQuery)}</div>
             <div className="memory-summary">{highlightText(item.summary || item.content, searchQuery)}</div>
             {item.last_accessed && (
-              <div className="memory-accessed">Last accessed: {new Date(item.last_accessed).toLocaleString()}</div>
+              <div className="memory-accessed">{t('memory.details.lastAccessed', { date: new Date(item.last_accessed).toLocaleString() })}</div>
             )}
-            {item.size && <div className="memory-size">Size: {item.size}</div>}
+            {item.size && <div className="memory-size">{t('memory.details.size', { size: item.size })}</div>}
           </div>
         );
 
@@ -473,16 +475,16 @@ const ExistingMemory = ({ settings }) => {
               <div className="memory-aspect">
                 {highlightText(item.aspect || item.category, searchQuery)}
                 {item.total_characters && item.max_characters && (
-                  <span className="character-count-inline"> ({currentContent.length}/{item.max_characters} characters)</span>
+                  <span className="character-count-inline"> ({t('memory.details.characterCount', { current: currentContent.length, max: item.max_characters })})</span>
                 )}
-                {isEditing && <span className="edited-indicator"> • (editing)</span>}
+                {isEditing && <span className="edited-indicator"> • {t('memory.details.editing')}</span>}
               </div>
               {!isEditing && (
                 <button
                   onClick={() => startEditingCoreMemory(index)}
                   className="edit-memory-button"
                 >
-                  ✏️ Edit
+                  ✏️ {t('memory.actions.edit')}
                 </button>
               )}
             </div>
@@ -494,7 +496,7 @@ const ExistingMemory = ({ settings }) => {
                   onChange={(e) => handleCoreMemoryEdit(index, e.target.value)}
                   className="core-memory-textarea"
                   rows={Math.max(3, Math.ceil(currentContent.length / 80))}
-                  placeholder="Enter core understanding..."
+                  placeholder={t('memory.details.enterCoreUnderstanding')}
                 />
                 <div className="core-memory-actions">
                   <button
@@ -502,14 +504,14 @@ const ExistingMemory = ({ settings }) => {
                     className="save-memory-button"
                     disabled={isSaving}
                   >
-                    {isSaving ? '💾 Saving...' : '💾 Save'}
+                    {isSaving ? `💾 ${t('memory.actions.saving')}` : `💾 ${t('memory.actions.save')}`}
                   </button>
                   <button
                     onClick={() => cancelEditingCoreMemory(index)}
                     className="cancel-memory-button"
                     disabled={isSaving}
                   >
-                    ❌ Cancel
+                    ❌ {t('memory.actions.cancel')}
                   </button>
                 </div>
               </div>
@@ -524,17 +526,17 @@ const ExistingMemory = ({ settings }) => {
             {/* Status messages for individual blocks */}
             {saveSuccess && (
               <div className="block-save-status success">
-                ✅ Saved successfully!
+                ✅ {t('memory.reflexion.success')}
               </div>
             )}
             {saveError && (
               <div className="block-save-status error">
-                ❌ Error: {saveError}
+                ❌ {t('memory.states.error', { error: saveError })}
               </div>
             )}
             
             {item.last_updated && (
-              <div className="memory-updated">Updated: {new Date(item.last_updated).toLocaleString()}</div>
+              <div className="memory-updated">{t('memory.details.updated', { date: new Date(item.last_updated).toLocaleString() })}</div>
             )}
           </div>
         );
@@ -543,17 +545,17 @@ const ExistingMemory = ({ settings }) => {
         return (
           <div className="credential-memory">
             <div className="memory-credential-name">{highlightText(item.caption, searchQuery)}</div>
-            <div className="memory-credential-type">{highlightText(item.entry_type || 'Credential', searchQuery)}</div>
+            <div className="memory-credential-type">{highlightText(item.entry_type || t('memory.details.credentialType'), searchQuery)}</div>
             <div className="memory-credential-content">
-              {item.content || 'Content masked for security'}
+              {item.content || t('memory.details.credentialMasked')}
             </div>
             {item.source && (
-              <div className="memory-credential-source">Source: {highlightText(item.source, searchQuery)}</div>
+              <div className="memory-credential-source">{t('memory.details.source', { source: highlightText(item.source, searchQuery) })}</div>
             )}
             {item.sensitivity && (
               <div className="memory-credential-sensitivity">
                 <span className={`sensitivity-badge sensitivity-${item.sensitivity}`}>
-                  {item.sensitivity.charAt(0).toUpperCase() + item.sensitivity.slice(1)} Sensitivity
+                  {t('memory.details.sensitivity', { level: item.sensitivity.charAt(0).toUpperCase() + item.sensitivity.slice(1) })}
                 </span>
               </div>
             )}
@@ -567,12 +569,12 @@ const ExistingMemory = ({ settings }) => {
 
   const getMemoryTypeLabel = (type) => {
     switch (type) {
-      case 'past-events': return 'Episodic';
-      case 'semantic': return 'Semantic';
-      case 'procedural': return 'Procedural';
-      case 'docs-files': return 'Resource';
-      case 'core-understanding': return 'Core';
-      case 'credentials': return 'Credentials';
+      case 'past-events': return t('memory.types.episodic');
+      case 'semantic': return t('memory.types.semantic');
+      case 'procedural': return t('memory.types.procedural');
+      case 'docs-files': return t('memory.types.resource');
+      case 'core-understanding': return t('memory.types.core');
+      case 'credentials': return t('memory.types.credentials');
       default: return 'Memory';
     }
   };
@@ -793,22 +795,22 @@ const ExistingMemory = ({ settings }) => {
             <button
               className="memory-subtab upload-export-btn"
               onClick={() => setShowUploadExportModal(true)}
-              title="Upload & Export Memory Data"
+              title={t('memory.tooltips.uploadExport')}
             >
               <span className="subtab-icon">📤</span>
-              <span className="subtab-label">Upload & Export</span>
+                              <span className="subtab-label">{t('memory.actions.uploadExport')}</span>
             </button>
             <button
               className="memory-subtab reflexion-btn"
               onClick={handleReflexion}
               disabled={isReflexionProcessing}
-              title="Reorganize memory with Reflexion Agent"
+              title={t('memory.tooltips.reflexion')}
             >
               <span className="subtab-icon">
                 {isReflexionProcessing ? '⏳' : '🧠'}
               </span>
               <span className="subtab-label">
-                {isReflexionProcessing ? 'Processing...' : 'Reflexion'}
+                {isReflexionProcessing ? t('memory.actions.processing') : t('memory.actions.reflexion')}
               </span>
             </button>
           </div>
@@ -821,7 +823,7 @@ const ExistingMemory = ({ settings }) => {
             <span className="search-icon">🔍</span>
             <input
               type="text"
-              placeholder={`Search ${getMemoryTypeLabel(activeSubTab).toLowerCase()}...`}
+              placeholder={t('memory.search.placeholder', { type: getMemoryTypeLabel(activeSubTab).toLowerCase() })}
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="search-input"
@@ -831,7 +833,7 @@ const ExistingMemory = ({ settings }) => {
               <button
                 onClick={() => setSearchQuery('')}
                 className="clear-search-button"
-                title="Clear search"
+                title={t('memory.actions.clearSearch')}
               >
                 ✕
               </button>
@@ -844,16 +846,16 @@ const ExistingMemory = ({ settings }) => {
               <button
                 onClick={() => setCurrentViewMode('list')}
                 className={`view-mode-button ${getCurrentViewMode() === 'list' ? 'active' : ''}`}
-                title="List view"
+                title={t('memory.tooltips.listView')}
               >
-                📋 List
+                📋 {t('memory.view.listView')}
               </button>
               <button
                 onClick={() => setCurrentViewMode('tree')}
                 className={`view-mode-button ${getCurrentViewMode() === 'tree' ? 'active' : ''}`}
-                title="Tree view"
+                title={t('memory.tooltips.treeView')}
               >
-                🌳 Tree
+                🌳 {t('memory.view.treeView')}
               </button>
             </div>
           )}
@@ -865,7 +867,7 @@ const ExistingMemory = ({ settings }) => {
             className="refresh-button"
             disabled={loading}
           >
-            🔄 Refresh
+            🔄 {t('memory.actions.refresh')}
           </button>
         </div>
         

@@ -3,9 +3,11 @@ import ReactMarkdown from 'react-markdown';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { tomorrow } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import './ChatBubble.css';
+import { useTranslation } from 'react-i18next';
 
 const ChatBubble = ({ message }) => {
   const { type, content, timestamp, images, isStreaming, thinkingSteps } = message;
+  const { t } = useTranslation();
 
   const formatTime = (date) => {
     // Handle both Date objects and ISO string timestamps
@@ -24,8 +26,8 @@ const ChatBubble = ({ message }) => {
       <div className="thinking-section">
         <div className="thinking-header">
           <span className="thinking-icon">🧠</span>
-          <span className="thinking-title">Thinking ...</span>
-          <span className="thinking-count">({thinkingSteps.length} step{thinkingSteps.length !== 1 ? 's' : ''})</span>
+          <span className="thinking-title">{t('chat.thinkingTitle')}</span>
+          <span className="thinking-count">{t('chat.steps', { count: thinkingSteps.length })}</span>
         </div>
         <div className="thinking-steps">
           {thinkingSteps.map((step, index) => (
@@ -105,7 +107,7 @@ const ChatBubble = ({ message }) => {
     <div className={`chat-bubble ${type}`}>
       <div className="bubble-header">
         <span className="sender">
-          {type === 'user' ? '👤 You' : type === 'assistant' ? '🤖 MIRIX' : '❌ Error'}
+          {type === 'user' ? `👤 ${t('chat.sender.you')}` : type === 'assistant' ? `🤖 ${t('chat.sender.assistant')}` : `❌ ${t('chat.sender.error')}`}
         </span>
         <span className="timestamp">{formatTime(timestamp)}</span>
         {isStreaming && <span className="streaming-indicator">●</span>}
@@ -139,7 +141,7 @@ const ChatBubble = ({ message }) => {
               <div key={index} className="image-preview">
                 <img 
                   src={imageSrc}
-                  alt={`Attachment ${index + 1}`}
+                  alt={t('chat.attachmentAlt', { index: index + 1 })}
                   onError={(e) => {
                     // If file:// URL doesn't work, try without protocol for electron
                     if (image.path && e.target.src.startsWith('file://') && !image.path.startsWith('data:')) {

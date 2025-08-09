@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import './MessageInput.css';
+import { useTranslation } from 'react-i18next';
 
 const MessageInput = ({ onSendMessage, disabled, onScreenshotTaken }) => {
   const [message, setMessage] = useState('');
@@ -7,6 +8,7 @@ const MessageInput = ({ onSendMessage, disabled, onScreenshotTaken }) => {
   const textareaRef = useRef(null);
   const fileInputRef = useRef(null);
   const containerRef = useRef(null);
+  const { t } = useTranslation();
 
   useEffect(() => {
     // Listen for custom addScreenshot events
@@ -151,7 +153,7 @@ const MessageInput = ({ onSendMessage, disabled, onScreenshotTaken }) => {
                 type="button"
                 className="remove-file"
                 onClick={() => removeFile(index)}
-                title="Remove file"
+                title={t('messageInput.removeFileTitle')}
               >
                 ×
               </button>
@@ -167,7 +169,7 @@ const MessageInput = ({ onSendMessage, disabled, onScreenshotTaken }) => {
             className="attach-button"
             onClick={handleFileSelect}
             disabled={disabled}
-            title="Attach files"
+            title={t('messageInput.attachFilesTitle')}
           >
             📎
           </button>
@@ -177,7 +179,7 @@ const MessageInput = ({ onSendMessage, disabled, onScreenshotTaken }) => {
             value={message}
             onChange={handleTextareaChange}
             onKeyDown={handleKeyDown}
-            placeholder="Type your message... (Shift+Enter for new line)"
+            placeholder={t('messageInput.placeholder')}
             disabled={disabled}
             className="message-textarea"
             rows={1}
@@ -190,7 +192,7 @@ const MessageInput = ({ onSendMessage, disabled, onScreenshotTaken }) => {
             type="submit"
             disabled={disabled || (!message.trim() && selectedFiles.length === 0)}
             className="send-button"
-            title="Send message"
+            title={t('messageInput.sendTitle')}
           >
             {disabled ? '⏳' : '➤'}
           </button>

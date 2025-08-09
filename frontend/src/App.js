@@ -8,8 +8,10 @@ import BackendLoadingModal from './components/BackendLoadingModal';
 import Logo from './components/Logo';
 import queuedFetch from './utils/requestQueue';
 import './App.css';
+import { useTranslation } from 'react-i18next';
 
 function App() {
+  const { t } = useTranslation();
   const [activeTab, setActiveTab] = useState('chat');
   const [settings, setSettings] = useState({
     model: 'gpt-4o-mini',
@@ -353,25 +355,25 @@ function App() {
             className={`tab ${activeTab === 'chat' ? 'active' : ''}`}
             onClick={() => setActiveTab('chat')}
           >
-            💬 Chat
+            {t('tabs.chat')}
           </button>
           <button 
             className={`tab ${activeTab === 'screenshots' ? 'active' : ''}`}
             onClick={() => setActiveTab('screenshots')}
           >
-            📸 Screenshots
+            {t('tabs.screenshots')}
           </button>
           <button 
             className={`tab ${activeTab === 'memory' ? 'active' : ''}`}
             onClick={() => setActiveTab('memory')}
           >
-            🧠 Existing Memory
+            {t('tabs.memory')}
           </button>
           <button 
             className={`tab ${activeTab === 'settings' ? 'active' : ''}`}
             onClick={() => setActiveTab('settings')}
           >
-            ⚙️ Settings
+            {t('tabs.settings')}
           </button>
         </div>
       </div>
