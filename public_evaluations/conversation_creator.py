@@ -45,7 +45,21 @@ class ConversationCreator():
                     }
                     
                     self.data.append(student_data)
-
+        elif dataset == 'MemoryAgentBench':
+            # Load all 4 splits
+            self.data = []
+            # Login using e.g. `huggingface-cli login` to access this dataset
+            ds = load_dataset("ai-hyz/MemoryAgentBench")
+            splits = ['Accurate_Retrieval', 'Test_Time_Learning', 'Long_Range_Understanding', 'Conflict_Resolution']
+            sources = ["longmemeval_s*"]
+            for split in splits:
+                df = ds[split]
+                for row_dict in df:
+                    if not row_dict['metadata']['source'] in sources:
+                        continue
+                    row_dict['split'] = split # Append a key to record split the row belongs to
+                    self.data.append(row_dict)
+            # Context / Questions / Answers / Metadata
         else:
             raise NotImplementedError("Only LOCOMO and ScreenshotVQA datasets are supported")
 
@@ -163,6 +177,31 @@ The conversation is shown below (the conversation is timestamped at {date_time})
                     chunks.append([(image, timestamp)])
 
                 all_chunks.append(chunks)
+                
+        elif self.dataset_name == 'MemoryAgentBench':
+            all_chunks = []
+            for item in tqdm(self.data, desc=f"Processing {self.dataset_name} chunks", unit="item"):
+                context = item['context']
+                source = item['metadata']['source']
+                chunks = []
+                
+                # Use a uniform chunk size
+                text_chunks = self.chunk_text_into_sentences(context, chunk_size=self.chunk_size)
+                
+                for chunk_text in text_chunks:
+                    # Determine prompt based on source key
+                    if source.startswith("longmemeval_s"):
+                        message = f"Memorize the following conversation between the user and the assistant: \n {chunk_text} \n"
+                    elif source == "recsys_redial_full":
+                        message = f"Memorize the following dialogues between a user and recommender system: \n {chunk_text} \n"
+                    elif source.startswith("factconsolidation"):
+                        message = f"Memorize the following facts \n {chunk_text} \n"
+                    else:
+                        message = f"Memorize the following content: \n {chunk_text} \n"
+                    
+                    chunks.append(message)
+                
+                all_chunks.append(chunks)
 
         return all_chunks
     
@@ -205,5 +244,21 @@ Question: {question}"""
                     answer = qa['answer']
                     queries_and_answers.append([idx, question, answer, qa])
                 all_queries_and_answers.append(queries_and_answers)
-
+                
+        elif self.dataset_name == "MemoryAgentBench":
+            from bench_template import get_template
+            all_queries_and_answers = []
+            for item in self.data:
+                queries_and_answers = []
+                
+                if len(item['questions']) != len(item['answers']):
+                    raise ValueError("Number of questions and answers are not the same")
+                
+                ### you need to set the query with the memory_agent_template
+                for idx in range(len(item['questions'])):
+                    question = get_template(item['metadata']['source'], 'query', 'Agentic_memory')
+                    answer = item['answers'][idx]
+                    queries_and_answers.append([idx, question, answer, item['metadata']['source']])
+                all_queries_and_answers.append(queries_and_answers)
+        
         return all_queries_and_answers
