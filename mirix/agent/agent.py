@@ -21,6 +21,7 @@ from mirix.constants import (
     FUNC_FAILED_HEARTBEAT_MESSAGE,
     MIRIX_CORE_TOOL_MODULE_NAME,
     MIRIX_MEMORY_TOOL_MODULE_NAME,
+    MIRIX_EXTRA_TOOL_MODULE_NAME,
     LLM_MAX_TOKENS,
     REQ_HEARTBEAT_MESSAGE,
     CLEAR_HISTORY_AFTER_MEMORY_UPDATE,
@@ -302,6 +303,11 @@ class Agent(BaseAgent):
                 function_response = callable_func(**function_args)
                 if function_name in ['core_memory_append', 'core_memory_rewrite']:
                     self.update_memory_if_changed(agent_state_copy.memory)
+
+            elif target_mirix_tool.tool_type == ToolType.MIRIX_EXTRA:
+                callable_func = get_function_from_module(MIRIX_EXTRA_TOOL_MODULE_NAME, function_name)
+                function_args["self"] = self  # need to attach self to arg since it's dynamically linked
+                function_response = callable_func(**function_args)
 
             else:
                 raise ValueError(f"Tool type {target_mirix_tool.tool_type} not supported")

@@ -13,6 +13,7 @@ COMPOSIO_TOOL_TAG_NAME = "composio"
 
 MIRIX_CORE_TOOL_MODULE_NAME = "mirix.functions.function_sets.base"
 MIRIX_MEMORY_TOOL_MODULE_NAME = "mirix.functions.function_sets.memory_tools"
+MIRIX_EXTRA_TOOL_MODULE_NAME = "mirix.functions.function_sets.extras"
 
 # String in the error message for when the context window is too large
 # Example full message:
@@ -58,10 +59,11 @@ RESOURCE_MEMORY_TOOLS = ['resource_memory_insert', 'resource_memory_update']
 KNOWLEDGE_VAULT_TOOLS = ['knowledge_vault_insert', 'knowledge_vault_update']
 SEMANTIC_MEMORY_TOOLS = ['semantic_memory_insert', 'semantic_memory_update', 'check_semantic_memory']
 CHAT_AGENT_TOOLS = ['trigger_memory_update_with_instruction']
+EXTRAS_TOOLS = ['web_search', 'fetch_and_read_pdf']
 META_MEMORY_TOOLS = ['trigger_memory_update']
 SEARCH_MEMORY_TOOLS = ['search_in_memory', 'list_memory_within_timerange']
 UNIVERSAL_MEMORY_TOOLS = ['search_in_memory', "finish_memory_update", 'list_memory_within_timerange']
-ALL_TOOLS = list(set(BASE_TOOLS + CORE_MEMORY_TOOLS + EPISODIC_MEMORY_TOOLS + PROCEDURAL_MEMORY_TOOLS + RESOURCE_MEMORY_TOOLS + KNOWLEDGE_VAULT_TOOLS + SEMANTIC_MEMORY_TOOLS + META_MEMORY_TOOLS + UNIVERSAL_MEMORY_TOOLS + CHAT_AGENT_TOOLS))
+ALL_TOOLS = list(set(BASE_TOOLS + CORE_MEMORY_TOOLS + EPISODIC_MEMORY_TOOLS + PROCEDURAL_MEMORY_TOOLS + RESOURCE_MEMORY_TOOLS + KNOWLEDGE_VAULT_TOOLS + SEMANTIC_MEMORY_TOOLS + META_MEMORY_TOOLS + UNIVERSAL_MEMORY_TOOLS + CHAT_AGENT_TOOLS + EXTRAS_TOOLS))
 
 # The name of the tool used to send message to the user
 # May not be relevant in cases where the agent has multiple ways to message to user (send_imessage, send_discord_mesasge, ...)

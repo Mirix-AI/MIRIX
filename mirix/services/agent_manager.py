@@ -7,7 +7,7 @@ from sqlalchemy import Select, func, literal, select, union_all
 from mirix.constants import (
     CORE_MEMORY_TOOLS, BASE_TOOLS, MAX_EMBEDDING_DIM,
     EPISODIC_MEMORY_TOOLS, PROCEDURAL_MEMORY_TOOLS, SEMANTIC_MEMORY_TOOLS,
-    RESOURCE_MEMORY_TOOLS, KNOWLEDGE_VAULT_TOOLS, META_MEMORY_TOOLS, UNIVERSAL_MEMORY_TOOLS, CHAT_AGENT_TOOLS, SEARCH_MEMORY_TOOLS
+    RESOURCE_MEMORY_TOOLS, KNOWLEDGE_VAULT_TOOLS, META_MEMORY_TOOLS, UNIVERSAL_MEMORY_TOOLS, CHAT_AGENT_TOOLS, SEARCH_MEMORY_TOOLS, EXTRAS_TOOLS
 )
 from mirix.embeddings import embedding_model
 from mirix.log import get_logger
@@ -89,7 +89,7 @@ class AgentManager:
         if agent_create.tools:
             tool_names.extend(agent_create.tools)
         if agent_create.agent_type == AgentType.chat_agent:
-            tool_names.extend(CHAT_AGENT_TOOLS)
+            tool_names.extend(CHAT_AGENT_TOOLS + EXTRAS_TOOLS)
         if agent_create.agent_type == AgentType.episodic_memory_agent:
             tool_names.extend(EPISODIC_MEMORY_TOOLS + UNIVERSAL_MEMORY_TOOLS)
         if agent_create.agent_type == AgentType.procedural_memory_agent:
@@ -105,7 +105,7 @@ class AgentManager:
         if agent_create.agent_type == AgentType.meta_memory_agent:
             tool_names.extend(META_MEMORY_TOOLS + UNIVERSAL_MEMORY_TOOLS)
         if agent_create.agent_type == AgentType.reflexion_agent:
-            tool_names.extend(SEARCH_MEMORY_TOOLS + CHAT_AGENT_TOOLS + UNIVERSAL_MEMORY_TOOLS)
+            tool_names.extend(SEARCH_MEMORY_TOOLS + CHAT_AGENT_TOOLS + UNIVERSAL_MEMORY_TOOLS + EXTRAS_TOOLS)
 
         # Remove duplicates
         tool_names = list(set(tool_names))
@@ -178,9 +178,9 @@ class AgentManager:
         if agent_state.agent_type == AgentType.meta_memory_agent:
             tool_names.extend(META_MEMORY_TOOLS + UNIVERSAL_MEMORY_TOOLS)
         if agent_state.agent_type == AgentType.chat_agent:
-            tool_names.extend(BASE_TOOLS + CHAT_AGENT_TOOLS)
+            tool_names.extend(BASE_TOOLS + CHAT_AGENT_TOOLS + EXTRAS_TOOLS)
         if agent_state.agent_type == AgentType.reflexion_agent:
-            tool_names.extend(SEARCH_MEMORY_TOOLS + CHAT_AGENT_TOOLS + UNIVERSAL_MEMORY_TOOLS)
+            tool_names.extend(SEARCH_MEMORY_TOOLS + CHAT_AGENT_TOOLS + UNIVERSAL_MEMORY_TOOLS + EXTRAS_TOOLS)
 
         ## extract the existing tool names for the agent
         existing_tools = agent_state.tools
