@@ -290,6 +290,9 @@ class AgentWrapper():
                 
                 if text_context:
                     context_text = "\n\n".join(text_context)
+                    
+                    print(f"\n\nlen of context_text: {len(context_text)}\n\n")
+                    
                     if selected_image_uris:
                         message_content.append({
                             'type': 'text',
@@ -529,13 +532,12 @@ class AgentWrapper():
                 json.dump(self.image_paths, f, indent=2)
         
     def load_agent(self, folder, config_path=None):
-        if self.agent_name == 'gpt-long-context':
-            with open(f"{folder}/context.json", "r") as f:
-                self.context = json.load(f)
-
-        elif self.agent_name == 'gemini-long-context':
-            with open(f"{folder}/context.json", "r") as f:
-                self.context = json.load(f)
+        if self.agent_name == 'gpt-long-context' or self.agent_name == 'gemini-long-context':
+            if self.context == []:
+                with open(f"{folder}/context.json", "r") as f:
+                    self.context = json.load(f)
+            else:
+                pass # already loaded
 
         elif self.agent_name == 'mirix':
 

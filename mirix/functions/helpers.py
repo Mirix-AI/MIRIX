@@ -2,7 +2,7 @@ import json
 from typing import Any, Optional, Union
 
 import humps
-from composio.constants import DEFAULT_ENTITY_ID
+# from composio.constants import DEFAULT_ENTITY_ID
 from pydantic import BaseModel
 
 from mirix.constants import COMPOSIO_ENTITY_ENV_VAR_KEY, DEFAULT_MESSAGE_TOOL, DEFAULT_MESSAGE_TOOL_KWARG

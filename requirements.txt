@@ -42,3 +42,13 @@ ffmpeg
 pg8000
 pgvector
 json_repair
+
+datasets
+torch
+torchvision
+transformers
+accelerate
+
+
+composio
+rich

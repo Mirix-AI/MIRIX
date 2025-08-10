@@ -73,6 +73,7 @@ class ConversationCreator():
         :param chunk_size: Maximum number of tokens allowed per chunk.
         :return: A list of text chunks, each within the specified token limit.
         """
+        # nltk.download('punkt_tab')
         
         # Initialize the tokenizer/encoding for the model
         try:
@@ -186,7 +187,7 @@ The conversation is shown below (the conversation is timestamped at {date_time})
                 chunks = []
                 
                 # Use a uniform chunk size
-                text_chunks = self.chunk_text_into_sentences(context, chunk_size=self.chunk_size)
+                text_chunks = self.chunk_text_into_sentences(context, chunk_size=4096)
                 
                 for chunk_text in text_chunks:
                     # Determine prompt based on source key
@@ -254,11 +255,13 @@ Question: {question}"""
                 if len(item['questions']) != len(item['answers']):
                     raise ValueError("Number of questions and answers are not the same")
                 
-                ### you need to set the query with the memory_agent_template
                 for idx in range(len(item['questions'])):
-                    question = get_template(item['metadata']['source'], 'query', 'Agentic_memory')
+                    q_template = get_template(item['metadata']['source'], 'query', 'Long_context_agent')
+                    
+                    query = q_template.format(question=item['questions'][idx])
                     answer = item['answers'][idx]
-                    queries_and_answers.append([idx, question, answer, item['metadata']['source']])
+                    # import pdb; pdb.set_trace()
+                    queries_and_answers.append([idx, query, answer, item['metadata']['source']])
                 all_queries_and_answers.append(queries_and_answers)
         
         return all_queries_and_answers

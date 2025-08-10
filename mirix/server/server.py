@@ -7,8 +7,8 @@ from abc import abstractmethod
 from datetime import datetime, timezone
 from typing import Callable, Dict, List, Optional, Tuple, Union
 
-from composio.client import Composio
-from composio.client.collections import ActionModel, AppModel
+# from composio.client import Composio
+# from composio.client.collections import ActionModel, AppModel
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
