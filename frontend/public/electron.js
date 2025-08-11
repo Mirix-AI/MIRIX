@@ -747,6 +747,14 @@ ipcMain.handle('get-capture-sources', async () => {
       fetchWindowIcons: true
     });
     
+    // Log all sources to debug Zoom detection
+    console.log('[getCaptureSources] All available windows:');
+    sources.forEach(source => {
+      if (!source.display_id) {
+        console.log(`  - ${source.name} (ID: ${source.id})`);
+      }
+    });
+    
     // Format sources for the frontend
     const formattedSources = sources.map(source => {
       let displayName = source.name;
@@ -1017,6 +1025,55 @@ ipcMain.handle('get-capture-sources', async () => {
       }
     }
     
+    // Add virtual browser-based app entries for popular web services
+    // This allows users to select "Zoom in Browser", "Teams in Browser", etc.
+    const browserBasedApps = [
+      { name: 'Zoom (Browser)', service: 'zoom', icon: '📹', color: '#2D8CFF' },
+      { name: 'Microsoft Teams (Browser)', service: 'teams', icon: '👥', color: '#6264A7' },
+      { name: 'Slack (Browser)', service: 'slack', icon: '💬', color: '#4A154B' },
+      { name: 'Notion (Browser)', service: 'notion', icon: '📝', color: '#000000' },
+      { name: 'Discord (Browser)', service: 'discord', icon: '🎮', color: '#5865F2' },
+      { name: 'Figma (Browser)', service: 'figma', icon: '🎨', color: '#F24E1E' },
+      { name: 'Miro (Browser)', service: 'miro', icon: '📋', color: '#FFD02F' },
+      { name: 'GitHub (Browser)', service: 'github', icon: '🐙', color: '#24292e' },
+      { name: 'Gmail (Browser)', service: 'gmail', icon: '📧', color: '#EA4335' },
+      { name: 'Google Calendar (Browser)', service: 'calendar', icon: '📅', color: '#4285F4' },
+      { name: 'Google Docs (Browser)', service: 'docs', icon: '📄', color: '#4285F4' }
+    ];
+    
+    // Check if browsers are available before adding browser-based apps
+    const hasBrowsers = formattedSources.some(source => {
+      const name = source.name.toLowerCase();
+      return name.includes('chrome') || name.includes('safari') || name.includes('firefox');
+    });
+    
+    if (hasBrowsers) {
+      for (const app of browserBasedApps) {
+        const virtualId = `virtual-browser-app:${app.service}`;
+        
+        // Create SVG placeholder for browser-based app
+        const svg = `
+          <svg width="256" height="144" xmlns="http://www.w3.org/2000/svg">
+            <rect width="256" height="144" fill="${app.color}"/>
+            <text x="128" y="60" font-family="Arial, sans-serif" font-size="32" text-anchor="middle" fill="white">${app.icon}</text>
+            <text x="128" y="85" font-family="Arial, sans-serif" font-size="12" text-anchor="middle" fill="white">${app.name}</text>
+            <text x="128" y="100" font-family="Arial, sans-serif" font-size="10" text-anchor="middle" fill="#cccccc">Web App</text>
+          </svg>
+        `;
+        
+        formattedSources.push({
+          id: virtualId,
+          name: app.name,
+          type: 'window',
+          thumbnail: `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`,
+          appIcon: null,
+          isVisible: true // These are always selectable
+        });
+      }
+      
+      safeLog.log(`Added ${browserBasedApps.length} browser-based app entries`);
+    }
+    
     return {
       success: true,
       sources: formattedSources
@@ -1031,28 +1088,1239 @@ ipcMain.handle('get-capture-sources', async () => {
   }
 });
 
+// IPC handler for requesting accessibility permissions for enhanced screen sharing detection
+ipcMain.handle('request-screen-sharing-detection-permissions', async () => {
+  try {
+    safeLog.log('[Enhanced Permissions] Requesting accessibility permissions for screen sharing detection...');
+    
+    const { exec } = require('child_process');
+    const { promisify } = require('util');
+    const execAsync = promisify(exec);
+    
+    try {
+      // Test accessibility permissions by trying to get window information
+      // This will trigger the accessibility permission dialog if not granted
+      const testScript = `
+        tell application "System Events"
+          try
+            set zoomApps to (every process whose name contains "zoom")
+            if (count of zoomApps) > 0 then
+              set zoomApp to item 1 of zoomApps
+              set windowList to (name of every window of zoomApp)
+              return "SUCCESS: " & (count of windowList) as string
+            else
+              return "SUCCESS: No Zoom found"
+            end if
+          on error errMsg
+            return "ERROR: " & errMsg
+          end try
+        end tell
+      `;
+      
+      safeLog.log('[Enhanced Permissions] Testing accessibility access with AppleScript...');
+      const { stdout } = await execAsync(`osascript -e '${testScript}'`, { timeout: 10000 });
+      
+      safeLog.log('[Enhanced Permissions] AppleScript result:', stdout.trim());
+      
+      if (stdout.includes('SUCCESS:')) {
+        safeLog.log('[Enhanced Permissions] Accessibility permissions verified');
+        return {
+          success: true,
+          permissions_requested: true,
+          can_capture: true,
+          message: 'Accessibility permissions granted - enhanced detection available'
+        };
+      } else if (stdout.includes('ERROR:') && stdout.includes('not allowed assistive access')) {
+        safeLog.log('[Enhanced Permissions] Accessibility permission denied - opening System Preferences');
+        
+        // Open System Preferences to Accessibility settings
+        try {
+          await execAsync('open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"');
+        } catch (openError) {
+          safeLog.warn('[Enhanced Permissions] Failed to open System Preferences:', openError.message);
+        }
+        
+        return {
+          success: true,
+          permissions_requested: true,
+          can_capture: false,
+          message: 'Accessibility permission required. Please enable MIRIX in System Preferences > Privacy & Security > Accessibility'
+        };
+      } else {
+        return {
+          success: false,
+          permissions_requested: false,
+          error: 'Unexpected AppleScript result',
+          message: 'Failed to test accessibility permissions'
+        };
+      }
+      
+    } catch (error) {
+      safeLog.error('[Enhanced Permissions] Accessibility test failed:', error.message);
+      
+      // If the error suggests permission issue, try to open System Preferences
+      if (error.message.includes('not allowed assistive access') || 
+          error.message.includes('accessibility')) {
+        try {
+          await execAsync('open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"');
+        } catch (openError) {
+          safeLog.warn('[Enhanced Permissions] Failed to open System Preferences:', openError.message);
+        }
+        
+        return {
+          success: true,
+          permissions_requested: true,
+          can_capture: false,
+          message: 'Accessibility permission required. Please enable MIRIX in System Preferences > Privacy & Security > Accessibility'
+        };
+      }
+      
+      return {
+        success: false,
+        permissions_requested: false,
+        error: error.message,
+        message: 'Failed to request accessibility permissions'
+      };
+    }
+    
+  } catch (error) {
+    safeLog.error('[Enhanced Permissions] Error requesting permissions:', error);
+    return {
+      success: false,
+      permissions_requested: false,
+      error: error.message,
+      message: 'Enhanced permissions unavailable'
+    };
+  }
+});
+
+// Helper function to detect Google Meet screen sharing regardless of focused app
+async function detectGoogleMeetScreenSharing() {
+  try {
+    const { exec } = require('child_process');
+    const { promisify } = require('util');
+    const execAsync = promisify(exec);
+    
+    console.log(`\n[Google Meet Independent Detection] ========================================`);
+    console.log(`[Google Meet Independent] Checking for screen sharing regardless of focused app...`);
+    
+    // Method 0: Precise screen sharing detection to avoid false positives
+    let systemScreenRecordingActive = false;
+    try {
+      // Check for ACTIVE screen sharing processes more precisely
+      // Focus on processes that indicate actual active screen recording/sharing
+      const activeRecordingCheck = await execAsync('ps aux | grep -E "(ScreenCaptureKit.*Chrome|screencapturingagent.*--enable-screen-capture)" | grep -v grep | wc -l');
+      const activeRecordingCount = parseInt(activeRecordingCheck.stdout.trim()) || 0;
+      
+      // Check Chrome Video Capture CPU usage - only consider significant activity
+      const chromeVidCheck = await execAsync('ps aux | grep "video_capture.mojom.VideoCaptureService" | grep -v grep | awk \'{print $3}\' | head -1');
+      const chromeVidCpu = parseFloat(chromeVidCheck.stdout.trim()) || 0;
+      
+      // More restrictive: require significant Chrome video CPU OR multiple active recording processes
+      if (activeRecordingCount >= 2 || chromeVidCpu > 3.0) {
+        systemScreenRecordingActive = true;
+        console.log(`[Google Meet Independent] Active screen recording detected (active processes: ${activeRecordingCount}, Chrome video CPU: ${chromeVidCpu}%)`);
+      } else {
+        console.log(`[Google Meet Independent] No significant screen recording activity (active processes: ${activeRecordingCount}, Chrome video CPU: ${chromeVidCpu}%)`);
+      }
+    } catch (e) {
+      console.log(`[Google Meet Independent] Screen sharing check failed: ${e.message}`);
+    }
+    
+    // Method 1: Check for ControlCenter menu bar icon via process activity
+    let controlCenterActive = false;
+    try {
+      // Simple check for ControlCenter activity without complex AppleScript
+      const ccCheck = await execAsync('ps aux | grep "ControlCenter" | grep -v grep | wc -l');
+      const ccCount = parseInt(ccCheck.stdout.trim()) || 0;
+      
+      if (ccCount > 0) {
+        controlCenterActive = true;
+        console.log(`[Google Meet Independent] ControlCenter process active (likely showing screen sharing indicator)`);
+      }
+    } catch (e) {
+      console.log(`[Google Meet Independent] ControlCenter check failed: ${e.message}`);
+    }
+
+    // Method 2: Check for Chrome Video Capture Service (restrictive to avoid false positives)
+    let videoCaptureServiceDetected = false;
+    try {
+      const videoCaptureCheck = await execAsync('ps aux | grep -i chrome | grep -i "video.*capture\\|screen.*capture\\|media.*stream"');
+      if (videoCaptureCheck.stdout.includes('video_capture.mojom.VideoCaptureService')) {
+        // Extract CPU usage from the video capture process
+        const videoCaptureProcess = videoCaptureCheck.stdout.split('\n').find(line => 
+          line.includes('video_capture.mojom.VideoCaptureService')
+        );
+        
+        if (videoCaptureProcess) {
+          const cpuMatch = videoCaptureProcess.match(/\s+(\d+\.\d+)\s+/);
+          const cpuUsage = cpuMatch ? parseFloat(cpuMatch[1]) : 0;
+          
+          // Much more restrictive: only consider active if significant CPU usage is detected
+          // This avoids false positives from idle video capture services
+          if (cpuUsage > 2.0) {
+            videoCaptureServiceDetected = true;
+            console.log(`[Google Meet Independent] Chrome Video Capture Service actively processing (CPU: ${cpuUsage}%)`);
+          } else {
+            console.log(`[Google Meet Independent] Chrome Video Capture Service idle (CPU: ${cpuUsage}% - too low for active sharing)`);
+          }
+        }
+      } else {
+        console.log(`[Google Meet Independent] Chrome Video Capture Service not found`);
+      }
+    } catch (e) {
+      console.log(`[Google Meet Independent] Video capture service check failed: ${e.message}`);
+    }
+    
+    // Method 3: Very precise Google Meet detection - require multiple strong indicators
+    let googleMeetDetected = false;
+    let meetingTitle = '';
+    try {
+      // Only detect Google Meet if we have STRONG evidence: active video capture AND system-level indicators
+      if (videoCaptureServiceDetected && systemScreenRecordingActive && controlCenterActive) {
+        const chromeProcesses = await execAsync('ps aux | grep -i "Google Chrome" | grep -v grep | wc -l');
+        const chromeCount = parseInt(chromeProcesses.stdout.trim()) || 0;
+        
+        if (chromeCount > 0) {
+          googleMeetDetected = true;
+          meetingTitle = 'Google Meet (Active screen sharing confirmed)';
+          console.log(`[Google Meet Independent] Google Meet confirmed with multiple strong indicators`);
+        }
+      } else {
+        console.log(`[Google Meet Independent] Insufficient evidence for active Google Meet screen sharing`);
+        console.log(`  - Video Capture Active: ${videoCaptureServiceDetected}`);
+        console.log(`  - System Recording Active: ${systemScreenRecordingActive}`);
+        console.log(`  - ControlCenter Active: ${controlCenterActive}`);
+      }
+    } catch (e) {
+      console.log(`[Google Meet Independent] Google Meet detection failed: ${e.message}`);
+    }
+    
+    // Determine screen sharing status - very restrictive approach to eliminate false positives
+    const hasScreenSharingIndicators = videoCaptureServiceDetected && systemScreenRecordingActive && controlCenterActive;
+    
+    // Method 4: Detect which display is being shared (for multi-monitor setups)
+    let detectedSharedDisplay = null;
+    if (hasScreenSharingIndicators) {
+      try {
+        // Get all displays
+        const displayScript = `
+          tell application "System Events"
+            try
+              set displayCount to (do shell script "system_profiler SPDisplaysDataType | grep 'Display Type' | wc -l")
+              return "DISPLAYS:" & displayCount
+            on error
+              return "DISPLAYS:1"
+            end try
+          end tell
+        `;
+        
+        const displayResult = await execAsync(`osascript -e '${displayScript}'`);
+        let displayCount = 1;
+        if (displayResult.stdout.includes('DISPLAYS:')) {
+          displayCount = parseInt(displayResult.stdout.split(':')[1]) || 1;
+        }
+        
+        console.log(`[Google Meet Independent] System has ${displayCount} display(s)`);
+        
+        if (displayCount > 1) {
+          // Try to detect which display is being shared by checking Chrome window positions
+          const chromeDisplayScript = `
+            tell application "System Events"
+              try
+                set chromeProcesses to (every process whose name contains "Chrome")
+                set displayResults to {}
+                
+                repeat with chromeProcess in chromeProcesses
+                  try
+                    set chromeWindows to (every window of chromeProcess)
+                    repeat with chromeWindow in chromeWindows
+                      try
+                        set windowName to (name of chromeWindow) as string
+                        if windowName contains "Google Meet" or windowName contains "meet.google.com" then
+                          set windowPosition to (position of chromeWindow)
+                          set windowX to (item 1 of windowPosition)
+                          -- Determine which display based on X position
+                          if windowX > 1440 then
+                            set end of displayResults to "Display 2"
+                          else
+                            set end of displayResults to "Display 1"  
+                          end if
+                        end if
+                      end try
+                    end repeat
+                  end try
+                end repeat
+                
+                return "WINDOW_DISPLAYS:" & (displayResults as string)
+              on error errMsg
+                return "ERROR:" & errMsg
+              end try
+            end tell
+          `;
+          
+          const chromeDisplayResult = await execAsync(`osascript -e '${chromeDisplayScript}'`);
+          
+          if (chromeDisplayResult.stdout.includes('WINDOW_DISPLAYS:')) {
+            const displayInfo = chromeDisplayResult.stdout.split(':')[1];
+            if (displayInfo.includes('Display 2')) {
+              detectedSharedDisplay = {
+                id: '1', // Secondary display typically has ID 1 in Electron
+                name: 'Display 2'
+              };
+            } else {
+              detectedSharedDisplay = {
+                id: '0', // Primary display typically has ID 0 in Electron
+                name: 'Display 1'
+              };
+            }
+            console.log(`[Google Meet Independent] Detected shared display from window position: ${detectedSharedDisplay.name}`);
+          }
+        } else {
+          // Single display setup
+          detectedSharedDisplay = {
+            id: '0',
+            name: 'Display 1'
+          };
+          console.log(`[Google Meet Independent] Single display setup, using primary display`);
+        }
+      } catch (e) {
+        console.log(`[Google Meet Independent] Display detection failed: ${e.message}`);
+        // Fallback to primary display
+        detectedSharedDisplay = {
+          id: '0',
+          name: 'Primary Display'
+        };
+      }
+    }
+    
+    console.log(`[Google Meet Independent] Detection results:`);
+    console.log(`  - System Screen Recording Processes: ${systemScreenRecordingActive}`);
+    console.log(`  - ControlCenter Active: ${controlCenterActive}`);
+    console.log(`  - Chrome Video Capture Service: ${videoCaptureServiceDetected}`);
+    console.log(`  - Google Meet Detected: ${googleMeetDetected}`);
+    console.log(`  - Screen sharing detected: ${hasScreenSharingIndicators}`);
+    console.log(`  - Shared display detected: ${detectedSharedDisplay ? detectedSharedDisplay.name : 'None'}`);
+    
+    // Return results
+    if (googleMeetDetected && hasScreenSharingIndicators) {
+      console.log(`[Google Meet Independent] ✅ GOOGLE MEET WITH SCREEN SHARING DETECTED`);
+      return {
+        detected: true,
+        isScreenSharing: true,
+        meetingStatus: 'In Meeting - Screen Sharing',
+        screenSharingStatus: 'active',
+        displayInfo: 'Google Meet - Screen Sharing',
+        windowTitle: meetingTitle || 'Google Meet',
+        sharedDisplay: detectedSharedDisplay
+      };
+    } else if (googleMeetDetected) {
+      console.log(`[Google Meet Independent] ✅ GOOGLE MEET DETECTED (no screen sharing)`);
+      return {
+        detected: true,
+        isScreenSharing: false,
+        meetingStatus: 'In Meeting',
+        screenSharingStatus: 'inactive',
+        displayInfo: 'Google Meet',
+        windowTitle: meetingTitle || 'Google Meet',
+        sharedDisplay: null
+      };
+    } else if (hasScreenSharingIndicators) {
+      console.log(`[Google Meet Independent] ⚠️ SCREEN SHARING DETECTED (no Google Meet confirmation)`);
+      return {
+        detected: false,
+        isScreenSharing: true,
+        meetingStatus: 'Unknown',
+        screenSharingStatus: 'active',
+        displayInfo: 'Screen Sharing Active',
+        windowTitle: 'Unknown',
+        sharedDisplay: detectedSharedDisplay
+      };
+    }
+    
+    console.log(`[Google Meet Independent] ❌ No Google Meet screen sharing detected`);
+    return {
+      detected: false,
+      isScreenSharing: false,
+      meetingStatus: null,
+      screenSharingStatus: 'inactive',
+      displayInfo: null,
+      windowTitle: null
+    };
+    
+  } catch (error) {
+    console.log(`[Google Meet Independent] Error in detection: ${error.message}`);
+    return {
+      detected: false,
+      isScreenSharing: false,
+      meetingStatus: null,
+      screenSharingStatus: 'unknown',
+      displayInfo: null,
+      windowTitle: null,
+      error: error.message
+    };
+  }
+}
+
+// IPC handler for getting the currently focused app
+ipcMain.handle('get-focused-app', async () => {
+  try {
+    if (process.platform === 'darwin') {
+      const { exec } = require('child_process');
+      const { promisify } = require('util');
+      const execAsync = promisify(exec);
+      const { desktopCapturer } = require('electron');
+      
+      // Get the frontmost application and its window title
+      const appScript = `osascript -e 'tell application "System Events" to get name of first application process whose frontmost is true'`;
+      const windowScript = `osascript -e '
+        tell application "System Events"
+          set frontApp to first application process whose frontmost is true
+          try
+            set windowTitle to title of first window of frontApp
+            return windowTitle
+          on error
+            return ""
+          end try
+        end tell'`;
+      
+      const [appResult, windowResult] = await Promise.allSettled([
+        execAsync(appScript),
+        execAsync(windowScript)
+      ]);
+      
+      let activeAppName = null;
+      let activeWindowTitle = null;
+      
+      if (appResult.status === 'fulfilled') {
+        activeAppName = appResult.value.stdout.trim();
+      }
+      if (windowResult.status === 'fulfilled') {
+        activeWindowTitle = windowResult.value.stdout.trim();
+      }
+      
+      // Enhanced information for different apps
+      let displayInfo = activeWindowTitle || '';
+      let tabInfo = null;
+      let meetingStatus = null;
+      let screenSharingStatus = null;
+      
+      // For Zoom, determine if in a meeting using medium-permission approach
+      if (activeAppName && activeAppName.toLowerCase().includes('zoom')) {
+        console.log(`\n[Zoom Detection - Medium Permission] ========================================`);
+        console.log(`[Zoom Detection] Focused App: ${activeAppName}`);
+        
+        try {
+          // Process analysis (no permissions needed)
+          const psOutput = await execAsync('ps aux | grep -i zoom | grep -v grep');
+          const zoomProcesses = psOutput.stdout.trim().split('\n').filter(line => line.trim());
+          
+          const meetingProcesses = zoomProcesses.filter(proc => {
+            const lower = proc.toLowerCase();
+            return lower.includes('cpthost') || 
+                   lower.includes('caphost') || 
+                   lower.includes('aomhost') ||
+                   lower.includes('meeting');
+          });
+          
+          console.log(`[Zoom Detection] Total processes: ${zoomProcesses.length}`);
+          console.log(`[Zoom Detection] Meeting processes: ${meetingProcesses.length}`);
+          
+          // Resource usage
+          const cpuOutput = await execAsync('ps -p $(pgrep zoom.us) -o %cpu= 2>/dev/null || echo "0"');
+          const cpuUsage = parseFloat(cpuOutput.stdout.trim()) || 0;
+          console.log(`[Zoom Detection] CPU usage: ${cpuUsage}%`);
+          
+          // Network activity
+          const netOutput = await execAsync('lsof -c zoom | grep -E "TCP|UDP" | wc -l 2>/dev/null || echo "0"');
+          const networkConnections = parseInt(netOutput.stdout.trim()) || 0;
+          console.log(`[Zoom Detection] Network connections: ${networkConnections}`);
+          
+          // ENHANCED SCREEN SHARING DETECTION
+          // Use multiple detection methods with elevated permissions for reliable detection
+          const isScreenSharing = await (async () => {
+            try {
+              console.log('[Zoom Screen Share Detection] Starting enhanced detection...');
+              let detectionScores = [];
+              
+              // Method 1: Check for Zoom screen sharing processes (more specific patterns)
+              try {
+                const { stdout: zoomProcesses } = await execAsync(
+                  `ps aux | grep -E "zoom.us|ZoomOpener" | grep -v grep`
+                );
+                const hasShareProcess = zoomProcesses.toLowerCase().includes('screenshare') ||
+                                       zoomProcesses.toLowerCase().includes('share') ||
+                                       zoomProcesses.toLowerCase().includes('capture');
+                if (hasShareProcess) detectionScores.push('zoom_share_process');
+                console.log(`[Detection Method 1] Zoom share processes: ${hasShareProcess}`);
+              } catch (e) {}
+              
+              // Method 2: Check for system screen capture services (more specific)
+              try {
+                const { stdout: screenServices } = await execAsync(
+                  `ps aux | grep -E "screencapturingagent.*zoom|ScreenSearch.*zoom" | grep -v grep | wc -l`
+                );
+                const screenServiceCount = parseInt(screenServices.trim()) || 0;
+                // Only count if there are Zoom-related screen capture services
+                if (screenServiceCount > 0) detectionScores.push('system_screen_services');
+                console.log(`[Detection Method 2] Zoom-related screen services count: ${screenServiceCount}`);
+              } catch (e) {}
+              
+              // Method 3: Enhanced Zoom window analysis with accessibility APIs
+              try {
+                const zoomWindowScript = `
+                  tell application "System Events"
+                    try
+                      set zoomProcesses to (every process whose name contains "zoom")
+                      set shareIndicators to {}
+                      
+                      repeat with zoomProcess in zoomProcesses
+                        try
+                          set windowNames to (name of every window of zoomProcess)
+                          set processName to (name of zoomProcess)
+                          
+                          repeat with windowName in windowNames
+                            set windowNameStr to windowName as string
+                            -- Be extremely specific about sharing indicators
+                            if windowNameStr is equal to "You are sharing your screen" or windowNameStr is equal to "Stop Share" or windowNameStr contains "Stop sharing" then
+                              set end of shareIndicators to ("SHARING:" & processName & ":" & windowNameStr)
+                            end if
+                            
+                            -- Check for specific Zoom sharing UI elements
+                            if windowNameStr contains "Zoom Meeting" then
+                              try
+                                set windowElements to (UI elements of window windowName of zoomProcess)
+                                repeat with element in windowElements
+                                  set elementDescription to (description of element) as string
+                                  if elementDescription contains "sharing" or elementDescription contains "Stop Share" then
+                                    set end of shareIndicators to ("UI_SHARING:" & processName & ":" & elementDescription)
+                                  end if
+                                end repeat
+                              end try
+                            end if
+                          end repeat
+                        end try
+                      end repeat
+                      
+                      return "RESULT:" & (count of shareIndicators) & ":" & (shareIndicators as string)
+                    on error errMsg
+                      return "ERROR:" & errMsg
+                    end try
+                  end tell
+                `;
+                
+                const { stdout: windowResult } = await execAsync(`osascript -e '${zoomWindowScript}'`);
+                
+                let hasShareIndicator = false;
+                if (windowResult.includes('RESULT:')) {
+                  const parts = windowResult.split(':');
+                  const shareCount = parseInt(parts[1]) || 0;
+                  hasShareIndicator = shareCount > 0;
+                  
+                  console.log(`[Detection Method 3] Advanced window analysis: ${shareCount} sharing indicators found`);
+                  if (shareCount > 0) {
+                    console.log(`[Detection Method 3] Sharing details: ${parts.slice(2).join(':')}`);
+                  }
+                } else {
+                  console.log(`[Detection Method 3] Accessibility check failed, falling back to basic detection`);
+                  // Fallback to very specific basic window name checking
+                  const hasBasicIndicator = windowResult.includes('You are sharing your screen') ||
+                                           windowResult.includes('Stop Share') ||
+                                           windowResult.includes('Stop sharing');
+                  hasShareIndicator = hasBasicIndicator;
+                  console.log(`[Detection Method 3] Fallback basic detection result: ${hasBasicIndicator}`);
+                }
+                
+                if (hasShareIndicator) detectionScores.push('zoom_window_indicator');
+                console.log(`[Detection Method 3] Enhanced window sharing indicator: ${hasShareIndicator}`);
+              } catch (e) {
+                console.log(`[Detection Method 3] Enhanced window detection failed: ${e.message}`);
+              }
+              
+              // Method 4: Advanced system monitoring (requires elevated permissions)
+              try {
+                // Check for CoreGraphics display stream creation (indicates screen capture)
+                const { stdout: displayStreams } = await execAsync(
+                  `lsof -c zoom | grep -i display | wc -l 2>/dev/null || echo "0"`
+                );
+                const streamCount = parseInt(displayStreams.trim()) || 0;
+                if (streamCount > 0) detectionScores.push('display_streams');
+                console.log(`[Detection Method 4] Display streams: ${streamCount}`);
+              } catch (e) {}
+              
+              // Method 5: Check for IOSurface usage (screen sharing uses IOSurface)
+              try {
+                const { stdout: ioSurface } = await execAsync(
+                  `lsof -c zoom | grep -i iosurface | wc -l 2>/dev/null || echo "0"`
+                );
+                const surfaceCount = parseInt(ioSurface.trim()) || 0;
+                if (surfaceCount > 2) detectionScores.push('iosurface_usage');
+                console.log(`[Detection Method 5] IOSurface usage: ${surfaceCount}`);
+              } catch (e) {}
+              
+              // Method 6: Monitor WindowServer connections (screen sharing creates specific connections)
+              try {
+                const { stdout: windowServer } = await execAsync(
+                  `lsof -p $(pgrep zoom.us) | grep -i windowserver | wc -l 2>/dev/null || echo "0"`
+                );
+                const wsConnections = parseInt(windowServer.trim()) || 0;
+                if (wsConnections > 1) detectionScores.push('windowserver_connections');
+                console.log(`[Detection Method 6] WindowServer connections: ${wsConnections}`);
+              } catch (e) {}
+              
+              // Method 7: CPU and memory pattern analysis for screen sharing (more conservative)
+              const highCpuForSharing = cpuUsage > 45; // Raised threshold to be more conservative
+              try {
+                const { stdout: zoomMemory } = await execAsync(
+                  `ps -o pid,rss,comm -p $(pgrep zoom.us) | awk 'NR>1 {sum+=$2} END {print sum}'`
+                );
+                const memoryUsage = parseInt(zoomMemory.trim()) || 0;
+                // Screen sharing typically uses significantly more memory AND high network connections
+                if (highCpuForSharing && memoryUsage > 200000 && networkConnections > 15) { // Stricter criteria
+                  detectionScores.push('resource_pattern');
+                }
+                console.log(`[Detection Method 7] CPU: ${cpuUsage}%, Memory: ${memoryUsage}KB, Network: ${networkConnections}, High resource pattern: ${highCpuForSharing && memoryUsage > 200000 && networkConnections > 15}`);
+              } catch (e) {}
+              
+              // Method 8: Advanced accessibility-based screen sharing detection with display identification
+              try {
+                const accessibilityScript = `
+                  tell application "System Events"
+                    try
+                      set shareDetected to false
+                      set detectionDetails to ""
+                      set sharedDisplayInfo to ""
+                      
+                      -- Look for Zoom processes
+                      set zoomProcesses to (every process whose name contains "zoom")
+                      
+                      repeat with zoomProcess in zoomProcesses
+                        try
+                          set processName to (name of zoomProcess)
+                          
+                          -- Method 8a: Check for green sharing indicator in menu bar
+                          try
+                            set menuBarItems to (UI elements of menu bar 1 of zoomProcess)
+                            repeat with menuItem in menuBarItems
+                              set menuDesc to (description of menuItem) as string
+                              if menuDesc contains "sharing" or menuDesc contains "Share Screen" then
+                                set shareDetected to true
+                                set detectionDetails to detectionDetails & "MENUBAR_SHARE;"
+                              end if
+                            end repeat
+                          end try
+                          
+                          -- Method 8b: Check window controls for sharing buttons and display info
+                          set windows to (every window of zoomProcess)
+                          repeat with zoomWindow in windows
+                            try
+                              set windowName to (name of zoomWindow) as string
+                              if windowName contains "Zoom Meeting" or windowName contains "zoom.us" then
+                                
+                                -- Look for sharing control buttons
+                                set buttons to (every button of zoomWindow)
+                                repeat with btn in buttons
+                                  try
+                                    set buttonTitle to (title of btn) as string
+                                    set buttonDesc to (description of btn) as string
+                                    
+                                    if buttonTitle contains "Stop Share" or buttonTitle contains "sharing" or buttonDesc contains "Stop sharing" then
+                                      set shareDetected to true
+                                      set detectionDetails to detectionDetails & "STOP_SHARE_BUTTON;"
+                                    end if
+                                    
+                                    if buttonTitle contains "Share Screen" and (buttonDesc contains "selected" or buttonDesc contains "active") then
+                                      set shareDetected to true
+                                      set detectionDetails to detectionDetails & "ACTIVE_SHARE_BUTTON;"
+                                    end if
+                                  end try
+                                end repeat
+                                
+                                -- Look for sharing status indicators and display information
+                                set staticTexts to (every static text of zoomWindow)
+                                repeat with textElement in staticTexts
+                                  try
+                                    set textValue to (value of textElement) as string
+                                    if textValue contains "You are sharing" or textValue contains "sharing your screen" then
+                                      set shareDetected to true
+                                      set detectionDetails to detectionDetails & "SHARING_STATUS_TEXT;"
+                                      
+                                      -- Try to extract display information from sharing status
+                                      if textValue contains "Display" or textValue contains "Screen" then
+                                        set sharedDisplayInfo to textValue
+                                      end if
+                                    end if
+                                    
+                                    -- Look for specific display sharing indicators
+                                    if textValue contains "Sharing Screen" and (textValue contains "1" or textValue contains "2" or textValue contains "3") then
+                                      set shareDetected to true
+                                      set sharedDisplayInfo to textValue
+                                      set detectionDetails to detectionDetails & "DISPLAY_INFO;"
+                                    end if
+                                  end try
+                                end repeat
+                                
+                              end if
+                            end try
+                          end repeat
+                        end try
+                      end repeat
+                      
+                      if shareDetected then
+                        return "SHARING_DETECTED:" & detectionDetails & "|DISPLAY:" & sharedDisplayInfo
+                      else
+                        return "NO_SHARING_DETECTED"
+                      end if
+                      
+                    on error errMsg
+                      return "ERROR:" & errMsg
+                    end try
+                  end tell
+                `;
+                
+                const { stdout: accessibilityResult } = await execAsync(`osascript -e '${accessibilityScript}'`);
+                
+                let isAccessibilitySharing = false;
+                let sharedDisplayInfo = '';
+                
+                if (accessibilityResult.includes('SHARING_DETECTED:')) {
+                  isAccessibilitySharing = true;
+                  
+                  // Parse the result to extract details and display info
+                  const parts = accessibilityResult.split('|');
+                  const details = parts[0].split(':')[1] || '';
+                  
+                  if (parts.length > 1 && parts[1].startsWith('DISPLAY:')) {
+                    sharedDisplayInfo = parts[1].substring(8); // Remove 'DISPLAY:' prefix
+                  }
+                  
+                  console.log(`[Detection Method 8] Accessibility-based sharing detected: ${details}`);
+                  if (sharedDisplayInfo) {
+                    console.log(`[Detection Method 8] Shared display info: ${sharedDisplayInfo}`);
+                  }
+                  
+                  detectionScores.push('accessibility_detection');
+                } else if (accessibilityResult.includes('ERROR:')) {
+                  console.log(`[Detection Method 8] Accessibility API error (permissions may be needed): ${accessibilityResult}`);
+                } else {
+                  console.log(`[Detection Method 8] No accessibility-based sharing detected`);
+                }
+                
+                console.log(`[Detection Method 8] Accessibility sharing detection: ${isAccessibilitySharing}`);
+              } catch (e) {
+                console.log(`[Detection Method 8] Accessibility detection failed: ${e.message}`);
+              }
+              
+              // Method 9: Display-specific screen sharing detection
+              let detectedSharedDisplay = null;
+              try {
+                // Get all available displays
+                const displaysResult = await window.electronAPI.listDisplays();
+                
+                if (displaysResult.success && displaysResult.displays.length > 1) {
+                  console.log(`[Detection Method 9] Multiple displays detected: ${displaysResult.displays.length}`);
+                  
+                  // Check for display capture activity using lsof
+                  const { stdout: displayCapture } = await execAsync(
+                    `lsof -c zoom | grep -E "CGDisplay|IOSurface" | head -5`
+                  );
+                  
+                  if (displayCapture.trim()) {
+                    console.log(`[Detection Method 9] Display capture activity detected`);
+                    
+                    // Try to identify which display is being captured
+                    for (const display of displaysResult.displays) {
+                      try {
+                        // Check if this specific display is being captured
+                        const { stdout: displaySpecific } = await execAsync(
+                          `lsof -c zoom | grep "${display.id}" | wc -l`
+                        );
+                        const captureCount = parseInt(displaySpecific.trim()) || 0;
+                        
+                        if (captureCount > 0) {
+                          detectedSharedDisplay = {
+                            id: display.id,
+                            name: display.name || `Display ${display.id}`,
+                            bounds: display.bounds,
+                            primary: display.primary
+                          };
+                          console.log(`[Detection Method 9] Detected shared display: ${detectedSharedDisplay.name} (${detectedSharedDisplay.id})`);
+                          break;
+                        }
+                      } catch (e) {}
+                    }
+                    
+                    // If no specific display detected, try to infer from Zoom UI
+                    if (!detectedSharedDisplay && sharedDisplayInfo) {
+                      // Parse display info from Zoom UI text
+                      const displayMatch = sharedDisplayInfo.match(/(?:Screen|Display)\s*(\d+)/i);
+                      if (displayMatch) {
+                        const displayNumber = parseInt(displayMatch[1]);
+                        const targetDisplay = displaysResult.displays.find(d => d.id === displayNumber.toString()) ||
+                                            displaysResult.displays[displayNumber - 1]; // 1-based indexing
+                        
+                        if (targetDisplay) {
+                          detectedSharedDisplay = {
+                            id: targetDisplay.id,
+                            name: targetDisplay.name || `Display ${displayNumber}`,
+                            bounds: targetDisplay.bounds,
+                            primary: targetDisplay.primary
+                          };
+                          console.log(`[Detection Method 9] Inferred shared display from UI: ${detectedSharedDisplay.name}`);
+                        }
+                      }
+                    }
+                  }
+                }
+                
+                console.log(`[Detection Method 9] Shared display detection: ${detectedSharedDisplay ? detectedSharedDisplay.name : 'None detected'}`);
+              } catch (e) {
+                console.log(`[Detection Method 9] Display detection failed: ${e.message}`);
+              }
+              
+              // ULTRA CONSERVATIVE DETECTION: Only trust the most reliable methods
+              // Only accessibility detection is truly reliable
+              const ultraHighConfidenceMethods = ['accessibility_detection'];
+              const hasUltraHighConfidence = detectionScores.some(method => ultraHighConfidenceMethods.includes(method));
+              
+              // Window indicator must be very specific
+              const hasSpecificWindowIndicator = detectionScores.includes('zoom_window_indicator');
+              
+              // Even if multiple methods trigger, be very conservative
+              const multipleStrongIndicators = detectionScores.length >= 5 && 
+                                               detectionScores.includes('display_streams') && 
+                                               detectionScores.includes('iosurface_usage');
+              
+              // Final decision logic - EXTREMELY conservative to avoid false positives
+              let isSharing = false;
+              let confidenceReason = '';
+              
+              if (hasUltraHighConfidence) {
+                isSharing = true;
+                confidenceReason = 'Ultra high confidence: Accessibility API detected sharing UI elements';
+              } else if (hasSpecificWindowIndicator && multipleStrongIndicators) {
+                isSharing = true;
+                confidenceReason = 'High confidence: Window indicators + multiple strong technical signals';
+              } else {
+                isSharing = false;
+                if (detectionScores.length > 0) {
+                  confidenceReason = `False positive protection: Only detected [${detectionScores.join(', ')}] but none are ultra-reliable`;
+                } else {
+                  confidenceReason = 'No screen sharing indicators detected';
+                }
+              }
+              
+              console.log(`[Zoom Screen Share Detection] Detection methods triggered: [${detectionScores.join(', ')}] (${detectionScores.length}/9)`);
+              console.log(`[Zoom Screen Share Detection] Ultra high confidence: ${hasUltraHighConfidence}, Specific window: ${hasSpecificWindowIndicator}, Multiple strong: ${multipleStrongIndicators}`);
+              console.log(`[Zoom Screen Share Detection] Final result: ${isSharing ? 'SCREEN SHARING DETECTED' : 'NO SCREEN SHARING'} (${confidenceReason})`);
+              if (isSharing && detectedSharedDisplay) {
+                console.log(`[Zoom Screen Share Detection] Shared display: ${detectedSharedDisplay.name} (${detectedSharedDisplay.id})`);
+              }
+              
+              return {
+                isSharing: isSharing,
+                sharedDisplay: detectedSharedDisplay,
+                confidenceReason: confidenceReason,
+                detectionMethods: detectionScores
+              };
+            } catch (e) {
+              console.log('[Zoom Screen Share Detection] Error in enhanced detection:', e.message);
+              return false;
+            }
+          })();
+          
+          // Handle the enhanced sharing detection result
+          const sharingResult = typeof isScreenSharing === 'object' ? isScreenSharing : { isSharing: isScreenSharing };
+          const actuallySharing = sharingResult.isSharing;
+          const sharedDisplay = sharingResult.sharedDisplay;
+          
+          // Decision logic - prioritize network connections as most reliable indicator
+          if (networkConnections >= 10) {
+            // High confidence: definitely in meeting
+            if (actuallySharing) {
+              let displaySuffix = '';
+              if (sharedDisplay) {
+                displaySuffix = ` (${sharedDisplay.name})`;
+              }
+              displayInfo = `Zoom Meeting - Screen Sharing${displaySuffix} (${networkConnections} connections, ${cpuUsage}% CPU)`;
+              meetingStatus = 'In Meeting - Screen Sharing';
+              screenSharingStatus = 'active';
+              console.log(`[Zoom Detection] 🖥️ IN MEETING WITH SCREEN SHARING${displaySuffix}`);
+            } else {
+              displayInfo = `Zoom Meeting (${networkConnections} connections, ${cpuUsage}% CPU)`;
+              meetingStatus = 'In Meeting';
+              screenSharingStatus = 'inactive';
+              console.log(`[Zoom Detection] ✅ IN MEETING (high network activity)`);
+            }
+          } else if (meetingProcesses.length >= 2 && cpuUsage > 20) {
+            // Medium confidence: meeting processes + high CPU
+            if (actuallySharing) {
+              let displaySuffix = '';
+              if (sharedDisplay) {
+                displaySuffix = ` (${sharedDisplay.name})`;
+              }
+              displayInfo = `Zoom Meeting - Screen Sharing${displaySuffix} (${meetingProcesses.length} meeting processes, ${cpuUsage}% CPU)`;
+              meetingStatus = 'In Meeting - Screen Sharing';
+              screenSharingStatus = 'active';
+              console.log(`[Zoom Detection] 🖥️ IN MEETING WITH SCREEN SHARING${displaySuffix}`);
+            } else {
+              displayInfo = `Zoom Meeting (${meetingProcesses.length} meeting processes, ${cpuUsage}% CPU)`;
+              meetingStatus = 'In Meeting';
+              screenSharingStatus = 'inactive';
+              console.log(`[Zoom Detection] ✅ IN MEETING (meeting processes + high CPU)`);
+            }
+          } else {
+            // Low network activity = homepage
+            displayInfo = 'Zoom Workplace';
+            meetingStatus = 'Not in meeting';
+            screenSharingStatus = 'inactive';
+            console.log(`[Zoom Detection] 🏠 ON HOMEPAGE (low network activity: ${networkConnections} connections)`);
+          }
+          
+          console.log(`[Zoom Detection - Medium Permission] ========================================\n`);
+          
+        } catch (e) {
+          console.error('[Zoom Detection] Error with enhanced detection:', e);
+          // Fallback
+          displayInfo = 'Zoom';
+          meetingStatus = 'Status unknown';
+          screenSharingStatus = 'unknown';
+        }
+      }
+      
+      // For browsers, extract tab information and detect Google Meet
+      else if (activeAppName && (activeAppName.includes('Chrome') || activeAppName.includes('Safari') || activeAppName.includes('Firefox') || activeAppName.includes('Edge'))) {
+        if (activeWindowTitle) {
+          // Most browsers show: "Page Title - Site Name" or "Page Title — Site Name"
+          const parts = activeWindowTitle.split(/\s[-—]\s/);
+          if (parts.length >= 2) {
+            tabInfo = {
+              title: parts[0].trim(),
+              site: parts[parts.length - 1].trim()
+            };
+            displayInfo = `${parts[0].trim()} (${parts[parts.length - 1].trim()})`;
+            
+            // Check for Google Meet
+            const site = parts[parts.length - 1].trim().toLowerCase();
+            const title = parts[0].trim().toLowerCase();
+            
+            if (site.includes('meet.google.com') || title.includes('meet') || 
+                activeWindowTitle.toLowerCase().includes('google meet')) {
+              console.log(`\n[Google Meet Detection] ========================================`);
+              console.log(`[Google Meet] Window title: ${activeWindowTitle}`);
+              console.log(`[Google Meet] Tab title: ${tabInfo.title}`);
+              console.log(`[Google Meet] Site: ${tabInfo.site}`);
+              
+              // Detect Google Meet screen sharing using direct macOS system methods
+              try {
+                console.log(`[Google Meet] Checking for screen sharing using system-level detection...`);
+                
+                // Method 1: Check for Chrome Video Capture Service (most reliable indicator)
+                let videoCaptureServiceDetected = false;
+                try {
+                  // Check for Chrome's video capture service which is used for screen sharing
+                  const videoCaptureCheck = await execAsync('ps aux | grep -i chrome | grep -i "video.*capture\\|screen.*capture\\|media.*stream"');
+                  if (videoCaptureCheck.stdout.includes('video_capture.mojom.VideoCaptureService')) {
+                    videoCaptureServiceDetected = true;
+                    console.log(`[Google Meet] Chrome Video Capture Service detected - strong screen sharing indicator`);
+                  }
+                } catch (e) {
+                  console.log(`[Google Meet] Video capture service check failed: ${e.message}`);
+                }
+                
+                // Method 2: Check active screen capture sessions using Core Graphics
+                let activeCaptureSession = false;
+                try {
+                  // Use osascript to check for active screen capture via Core Graphics
+                  const cgScript = `
+                    tell application "System Events"
+                      try
+                        -- Check if there are active display capture sessions
+                        set captureResult to (do shell script "ioreg -l | grep -i 'screencapture\\|displaycapture\\|CGDisplay' | head -5")
+                        return captureResult
+                      on error
+                        return "no capture sessions"
+                      end try
+                    end tell
+                  `;
+                  
+                  const cgResult = await execAsync(`osascript -e '${cgScript}'`);
+                  if (cgResult.stdout && cgResult.stdout.includes('capture')) {
+                    activeCaptureSession = true;
+                    console.log(`[Google Meet] Active capture session detected via ioreg`);
+                  }
+                } catch (e) {
+                  console.log(`[Google Meet] Core Graphics capture check failed: ${e.message}`);
+                }
+                
+                // Method 3: Check for Screen Recording permission actively being used
+                let activeScreenPermission = false;
+                try {
+                  // Check TCC database for recent screen recording grants to Chrome
+                  const tccCheck = await execAsync('sqlite3 "/Library/Application Support/com.apple.TCC/TCC.db" "SELECT client, auth_value, last_modified FROM access WHERE service=\'kTCCServiceScreenCapture\' AND client LIKE \'%chrome%\' AND auth_value=2;" 2>/dev/null || echo "no access"');
+                  if (tccCheck.stdout.includes('chrome') && !tccCheck.stdout.includes('no access')) {
+                    activeScreenPermission = true;
+                    console.log(`[Google Meet] Chrome has active screen recording permission`);
+                  }
+                } catch (e) {
+                  console.log(`[Google Meet] TCC database check failed (expected on some systems): ${e.message}`);
+                }
+                
+                // Method 4: Check WindowServer for active display connections
+                let windowServerActivity = false;
+                try {
+                  // More specific WindowServer check for display connections
+                  const wsConnections = await execAsync('lsof | grep "WindowServer.*Chrome" | grep -v grep');
+                  if (wsConnections.stdout.trim()) {
+                    windowServerActivity = true;
+                    console.log(`[Google Meet] Chrome-WindowServer display connections detected`);
+                  }
+                } catch (e) {
+                  console.log(`[Google Meet] WindowServer connection check failed: ${e.message}`);
+                }
+                
+                // Method 5: Check for display stream usage via ioreg
+                let displayStreamUsage = false;
+                try {
+                  // Check IORegistry for active display streams
+                  const ioregResult = await execAsync('ioreg -l | grep -i -A 3 -B 3 "display.*stream\\|screen.*capture" | head -10');
+                  if (ioregResult.stdout.trim() && ioregResult.stdout.length > 50) {
+                    displayStreamUsage = true;
+                    console.log(`[Google Meet] Display stream usage detected in IORegistry`);
+                  }
+                } catch (e) {
+                  console.log(`[Google Meet] IORegistry display stream check failed: ${e.message}`);
+                }
+                
+                // Combine all system-level detection methods
+                const systemDetectionScores = [];
+                
+                if (videoCaptureServiceDetected) {
+                  systemDetectionScores.push('video_capture_service'); // Strongest indicator
+                }
+                
+                if (activeCaptureSession) {
+                  systemDetectionScores.push('core_graphics');
+                }
+                
+                if (activeScreenPermission) {
+                  systemDetectionScores.push('tcc_permission');
+                }
+                
+                if (windowServerActivity) {
+                  systemDetectionScores.push('windowserver_connection');
+                }
+                
+                if (displayStreamUsage) {
+                  systemDetectionScores.push('display_stream');
+                }
+                
+                // Final detection logic based on system-level indicators
+                const hasScreenSharingIndicators = systemDetectionScores.length > 0;
+                
+                console.log(`[Google Meet] System-level detection analysis:`);
+                console.log(`  - Video Capture Service: ${videoCaptureServiceDetected}`);
+                console.log(`  - Active capture session: ${activeCaptureSession}`);
+                console.log(`  - Screen permission active: ${activeScreenPermission}`);
+                console.log(`  - WindowServer activity: ${windowServerActivity}`);
+                console.log(`  - Display stream usage: ${displayStreamUsage}`);
+                console.log(`  - Detection methods triggered: ${systemDetectionScores.join(', ')}`);
+                console.log(`  - Screen sharing detected: ${hasScreenSharingIndicators}`);
+                
+                // Detect if in a meeting vs just on the landing page
+                if (title.includes('meet') && !title.includes('meeting') && !title.includes('join')) {
+                  // Likely in an active meeting (meeting titles don't usually contain "meet")
+                  if (hasScreenSharingIndicators) {
+                    meetingStatus = 'In Meeting - Screen Sharing';
+                    screenSharingStatus = 'active';
+                    displayInfo = `Google Meet - Screen Sharing (${tabInfo.title})`;
+                    console.log(`[Google Meet] ✅ IN MEETING WITH SCREEN SHARING - Active meeting with sharing detected`);
+                  } else {
+                    meetingStatus = 'In Meeting';
+                    screenSharingStatus = 'inactive';
+                    displayInfo = `Google Meet (${tabInfo.title})`;
+                    console.log(`[Google Meet] ✅ IN MEETING - Active meeting detected`);
+                  }
+                } else if (title.includes('join') || title.includes('meeting')) {
+                  // On join page or meeting lobby
+                  meetingStatus = 'Joining Meeting';
+                  screenSharingStatus = 'inactive';
+                  displayInfo = `Google Meet - Joining (${tabInfo.title})`;
+                  console.log(`[Google Meet] 🚪 JOINING - On join/lobby page`);
+                } else if (site.includes('meet.google.com')) {
+                  // On Google Meet site but status unclear
+                  meetingStatus = 'Google Meet Open';
+                  screenSharingStatus = 'inactive';
+                  displayInfo = `Google Meet (${tabInfo.title})`;
+                  console.log(`[Google Meet] 📱 GOOGLE MEET OPEN - General Meet page`);
+                }
+              } catch (error) {
+                console.log(`[Google Meet] Error detecting screen sharing: ${error.message}`);
+                // Fallback to basic meeting detection
+                if (title.includes('meet') && !title.includes('meeting') && !title.includes('join')) {
+                  meetingStatus = 'In Meeting';
+                  displayInfo = `Google Meet (${tabInfo.title})`;
+                  console.log(`[Google Meet] ✅ IN MEETING - Active meeting detected (fallback)`);
+                } else if (title.includes('join') || title.includes('meeting')) {
+                  meetingStatus = 'Joining Meeting';
+                  displayInfo = `Google Meet - Joining (${tabInfo.title})`;
+                  console.log(`[Google Meet] 🚪 JOINING - On join/lobby page (fallback)`);
+                } else if (site.includes('meet.google.com')) {
+                  meetingStatus = 'Google Meet Open';
+                  displayInfo = `Google Meet (${tabInfo.title})`;
+                  console.log(`[Google Meet] 📱 GOOGLE MEET OPEN - General Meet page (fallback)`);
+                }
+                screenSharingStatus = 'unknown';
+              }
+            }
+          } else {
+            displayInfo = activeWindowTitle;
+            
+            // Check for Google Meet in single-part titles
+            if (activeWindowTitle.toLowerCase().includes('google meet') || 
+                activeWindowTitle.toLowerCase().includes('meet.google.com')) {
+              meetingStatus = 'Google Meet Open';
+              displayInfo = 'Google Meet';
+              console.log(`[Google Meet] 📱 GOOGLE MEET OPEN - Basic detection`);
+            }
+          }
+        }
+      }
+      
+      // For other apps, use window title if available
+      else if (activeWindowTitle && activeWindowTitle !== activeAppName) {
+        displayInfo = activeWindowTitle;
+      }
+      
+      // Always run independent Google Meet detection regardless of focused app
+      let googleMeetResult = null;
+      try {
+        googleMeetResult = await detectGoogleMeetScreenSharing();
+        console.log(`[get-focused-app] Independent Google Meet detection result:`, googleMeetResult);
+      } catch (error) {
+        console.log(`[get-focused-app] Independent Google Meet detection failed:`, error.message);
+      }
+      
+      // Track shared display info (can come from Zoom or Google Meet detection)
+      let sharedDisplay = null;
+      
+      // If independent Google Meet detection found screen sharing, prioritize it
+      if (googleMeetResult && googleMeetResult.detected && googleMeetResult.isScreenSharing) {
+        console.log(`[get-focused-app] ✅ Using independent Google Meet screen sharing result`);
+        meetingStatus = googleMeetResult.meetingStatus;
+        screenSharingStatus = googleMeetResult.screenSharingStatus;
+        displayInfo = googleMeetResult.displayInfo;
+        sharedDisplay = googleMeetResult.sharedDisplay;
+        // Add additional info to indicate this was detected independently
+        if (!tabInfo) {
+          tabInfo = {
+            title: googleMeetResult.windowTitle || 'Google Meet',
+            site: 'meet.google.com'
+          };
+        }
+      } else if (googleMeetResult && googleMeetResult.detected && !meetingStatus) {
+        // Use Google Meet meeting status if no meeting was detected from focused app
+        console.log(`[get-focused-app] ✅ Using independent Google Meet meeting result (no screen sharing)`);
+        meetingStatus = googleMeetResult.meetingStatus;
+        screenSharingStatus = googleMeetResult.screenSharingStatus;
+        displayInfo = googleMeetResult.displayInfo;
+        sharedDisplay = googleMeetResult.sharedDisplay;
+        if (!tabInfo) {
+          tabInfo = {
+            title: googleMeetResult.windowTitle || 'Google Meet',
+            site: 'meet.google.com'
+          };
+        }
+      }
+      
+      return {
+        success: true,
+        appName: activeAppName,
+        windowTitle: activeWindowTitle,
+        displayInfo: displayInfo,
+        tabInfo: tabInfo,
+        meetingStatus: meetingStatus,
+        screenSharingStatus: screenSharingStatus,
+        sharedDisplay: sharedDisplay, // Include shared display info
+        independentDetection: googleMeetResult // Include independent detection results
+      };
+    }
+    
+    return {
+      success: false,
+      error: 'Not implemented for this platform'
+    };
+  } catch (error) {
+    safeLog.error('Failed to get focused app:', error);
+    return {
+      success: false,
+      error: error.message
+    };
+  }
+});
+
 // IPC handler for getting currently active/focused sources
 ipcMain.handle('get-visible-sources', async (event, sourceIds) => {
   try {
     const { desktopCapturer } = require('electron');
     
+    // Get the currently focused app first
+    let focusedApp = null;
+    if (process.platform === 'darwin') {
+      try {
+        const { exec } = require('child_process');
+        const { promisify } = require('util');
+        const execAsync = promisify(exec);
+        
+        const appScript = `osascript -e 'tell application "System Events" to get name of first application process whose frontmost is true'`;
+        const appResult = await execAsync(appScript);
+        
+        if (appResult && appResult.stdout) {
+          focusedApp = {
+            appName: appResult.stdout.trim()
+          };
+        }
+      } catch (error) {
+        safeLog.warn('Could not get focused app:', error);
+      }
+    }
+    
     if (sourceIds && sourceIds.length > 0) {
       safeLog.log('Checking active/focused apps for source IDs:', sourceIds);
       
-      // Get currently active app on macOS
+      // Get currently active app and window title on macOS
       let activeAppName = null;
+      let activeWindowTitle = null;
       if (process.platform === 'darwin') {
         try {
           const { exec } = require('child_process');
           const { promisify } = require('util');
           const execAsync = promisify(exec);
           
-          // Get the frontmost (active) application
-          const { stdout } = await execAsync(`osascript -e 'tell application "System Events" to get name of first application process whose frontmost is true'`);
-          activeAppName = stdout.trim().toLowerCase();
-          safeLog.log(`Active app: "${activeAppName}"`);
+          // Get the frontmost application and its window title
+          const appScript = `osascript -e 'tell application "System Events" to get name of first application process whose frontmost is true'`;
+          const windowScript = `osascript -e '
+            tell application "System Events"
+              set frontApp to first application process whose frontmost is true
+              try
+                set windowTitle to title of first window of frontApp
+                return windowTitle
+              on error
+                return ""
+              end try
+            end tell'`;
+          
+          const [appResult, windowResult] = await Promise.allSettled([
+            execAsync(appScript),
+            execAsync(windowScript)
+          ]);
+          
+          activeAppName = appResult.status === 'fulfilled' ? appResult.value.stdout.trim().toLowerCase() : null;
+          activeWindowTitle = windowResult.status === 'fulfilled' ? windowResult.value.stdout.trim() : null;
+          
+          safeLog.log(`Active app: "${activeAppName}", Window title: "${activeWindowTitle}"`);
         } catch (error) {
-          safeLog.log('Could not get active app:', error.message);
+          safeLog.log('Could not get active app/window info:', error.message);
         }
       }
       
@@ -1067,25 +2335,116 @@ ipcMain.handle('get-visible-sources', async (event, sourceIds) => {
         let isVisible = false;
         let name = 'Unknown';
         
-        if (id.startsWith('virtual-window:')) {
-          const appNameMatch = id.match(/virtual-window:\d+-(.+)$/);
+        if (id.startsWith('virtual-window:') || id.startsWith('virtual-browser-app:')) {
+          let appNameMatch;
+          if (id.startsWith('virtual-window:')) {
+            appNameMatch = id.match(/virtual-window:\d+-(.+)$/);
+            name = appNameMatch ? decodeURIComponent(appNameMatch[1]) : 'Unknown';
+          } else if (id.startsWith('virtual-browser-app:')) {
+            appNameMatch = id.match(/virtual-browser-app:(.+)$/);
+            name = appNameMatch ? appNameMatch[1] : 'Unknown';
+          }
+          
           if (appNameMatch) {
-            name = decodeURIComponent(appNameMatch[1]);
             
             // Check if this app matches the active app
             if (activeAppName) {
               const appNameLower = name.toLowerCase();
-              const isActive = activeAppName.includes(appNameLower) || 
-                             appNameLower.includes(activeAppName) ||
-                             (appNameLower === 'msteams' && activeAppName.includes('teams')) ||
-                             (appNameLower === 'wechat' && (activeAppName.includes('wechat') || activeAppName.includes('weixin'))) ||
-                             (appNameLower === 'chrome' && activeAppName.includes('chrome'));
+              let isActive = false;
+              
+              // For virtual browser apps, we only check if browser is active and tab content matches
+              if (id.startsWith('virtual-browser-app:')) {
+                const service = name; // The service name from the ID
+                
+                // Check if a browser is currently active
+                const isBrowserActive = activeAppName.includes('chrome') || 
+                                       activeAppName.includes('safari') || 
+                                       activeAppName.includes('firefox');
+                
+                if (isBrowserActive && activeWindowTitle) {
+                  const windowTitleLower = activeWindowTitle.toLowerCase();
+                  const servicePatterns = {
+                    'zoom': ['zoom', 'meeting', 'webinar'],
+                    'teams': ['teams', 'microsoft teams'],
+                    'slack': ['slack'],
+                    'notion': ['notion'],
+                    'discord': ['discord'],
+                    'figma': ['figma'],
+                    'miro': ['miro'],
+                    'github': ['github'],
+                    'gmail': ['gmail', 'mail'],
+                    'calendar': ['calendar', 'cal.com'],
+                    'docs': ['docs', 'sheets', 'slides']
+                  };
+                  
+                  // Check if the window title contains keywords for this service
+                  const patterns = servicePatterns[service] || [service];
+                  isActive = patterns.some(pattern => windowTitleLower.includes(pattern));
+                  
+                  if (isActive) {
+                    safeLog.log(`Browser-based app is ACTIVE: ${service} found in "${activeWindowTitle}" (browser: ${activeAppName})`);
+                  } else {
+                    safeLog.log(`Browser-based app not active: ${service} not found in "${activeWindowTitle}" (browser: ${activeAppName})`);
+                  }
+                } else {
+                  safeLog.log(`Browser-based app not active: no browser active or no window title (app: ${activeAppName})`);
+                }
+              } else {
+                // For regular virtual windows, use the original logic
+                const basicAppMatch = activeAppName.includes(appNameLower) || 
+                                     appNameLower.includes(activeAppName) ||
+                                     (appNameLower === 'msteams' && activeAppName.includes('teams')) ||
+                                     (appNameLower === 'wechat' && (activeAppName.includes('wechat') || activeAppName.includes('weixin')));
+                
+                // For browsers or apps that support tabs/multiple windows, also check window title
+                if (basicAppMatch) {
+                  // If it's a browser, check if the tab content matches the selected app
+                  if ((activeAppName.includes('chrome') || activeAppName.includes('safari') || activeAppName.includes('firefox')) && activeWindowTitle) {
+                    // Check if the window title contains keywords that match our selected app
+                    const windowTitleLower = activeWindowTitle.toLowerCase();
+                    
+                    // Define patterns for different services that might run in browser tabs
+                    const servicePatterns = {
+                      'zoom': ['zoom', 'meeting', 'webinar'],
+                      'teams': ['teams', 'microsoft teams'],
+                      'slack': ['slack'],
+                      'notion': ['notion'],
+                      'discord': ['discord'],
+                      'figma': ['figma'],
+                      'miro': ['miro'],
+                      'github': ['github'],
+                      'gmail': ['gmail', 'mail'],
+                      'calendar': ['calendar', 'cal.com'],
+                      'docs': ['docs', 'sheets', 'slides']
+                    };
+                    
+                    // If the selected app name matches any service pattern, check the window title
+                    let tabMatches = false;
+                    for (const [service, patterns] of Object.entries(servicePatterns)) {
+                      if (appNameLower.includes(service)) {
+                        tabMatches = patterns.some(pattern => windowTitleLower.includes(pattern));
+                        if (tabMatches) {
+                          safeLog.log(`Tab content matches selected app: ${service} found in "${activeWindowTitle}"`);
+                          break;
+                        }
+                      }
+                    }
+                    
+                    // If we found a specific service match in the tab, that takes precedence
+                    // If no specific match, fall back to general browser matching
+                    isActive = tabMatches || (appNameLower.includes('chrome') && activeAppName.includes('chrome'));
+                  } else {
+                    // For non-browser apps, use the basic app matching
+                    isActive = basicAppMatch;
+                  }
+                }
+              } // end else block for regular virtual windows
               
               if (isActive) {
                 isVisible = true;
-                safeLog.log(`Virtual window is ACTIVE: ${id} -> ${name} (active app: ${activeAppName})`);
+                safeLog.log(`Virtual window is ACTIVE: ${id} -> ${name} (active app: ${activeAppName}, window: ${activeWindowTitle || 'N/A'})`);
               } else {
-                safeLog.log(`Virtual window not active: ${id} -> ${name} (active app: ${activeAppName})`);
+                safeLog.log(`Virtual window not active: ${id} -> ${name} (active app: ${activeAppName}, window: ${activeWindowTitle || 'N/A'})`);
               }
             } else {
               // Fallback: if we can't detect active app, assume visible (like before)
@@ -1154,11 +2513,17 @@ ipcMain.handle('take-source-screenshot', async (event, sourceId) => {
     
     const { desktopCapturer } = require('electron');
     
-    // Handle virtual windows (minimized or on other spaces)
-    if (sourceId.startsWith('virtual-window:')) {
+    // Handle virtual windows (minimized or on other spaces) and virtual browser apps
+    if (sourceId.startsWith('virtual-window:') || sourceId.startsWith('virtual-browser-app:')) {
       // Extract app name from the source ID
-      const appNameMatch = sourceId.match(/virtual-window:\d+-(.+)$/);
-      const appName = appNameMatch ? decodeURIComponent(appNameMatch[1]) : null;
+      let appName = null;
+      if (sourceId.startsWith('virtual-window:')) {
+        const appNameMatch = sourceId.match(/virtual-window:\d+-(.+)$/);
+        appName = appNameMatch ? decodeURIComponent(appNameMatch[1]) : null;
+      } else if (sourceId.startsWith('virtual-browser-app:')) {
+        const serviceMatch = sourceId.match(/virtual-browser-app:(.+)$/);
+        appName = serviceMatch ? serviceMatch[1] : null;
+      }
       
       // Declare matchingSource in the correct scope
       let matchingSource = null;
@@ -1170,15 +2535,167 @@ ipcMain.handle('take-source-screenshot', async (event, sourceId) => {
         fetchWindowIcons: false
       });
       
-      // Quick check if app is likely on current desktop
-      const quickMatch = quickSources.find(source => {
-        const name = source.name.toLowerCase();
-        const appLower = appName.toLowerCase();
-        return name.includes(appLower) || 
-               (appLower.includes('powerpoint') && (name.includes('powerpoint') || name.includes('ppt'))) ||
-               (appLower.includes('wechat') && name.includes('weixin')) ||
-               (appLower.includes('chrome') && name.includes('chrome'));
+      // Debug: List ALL available windows when dealing with Zoom
+      if (appName && appName.toLowerCase().includes('zoom')) {
+        console.log(`\n[ZOOM DEBUG] ============ ALL AVAILABLE WINDOWS ============`);
+        quickSources.forEach((source, index) => {
+          console.log(`[ZOOM DEBUG] ${index + 1}. "${source.name}" (ID: ${source.id})`);
+        });
+        console.log(`[ZOOM DEBUG] ================================================\n`);
+      }
+      
+      // Find all windows belonging to this app
+      let appWindows = [];
+      
+      if (sourceId.startsWith('virtual-browser-app:')) {
+        // For browser apps, find any active browser window
+        appWindows = quickSources.filter(source => {
+          const name = source.name.toLowerCase();
+          return name.includes('chrome') || name.includes('safari') || name.includes('firefox');
+        });
+      } else {
+        // For regular virtual windows, match by app name
+        appWindows = quickSources.filter(source => {
+          const name = source.name.toLowerCase();
+          const appLower = appName.toLowerCase();
+          
+          // Special matching for different apps
+          if (appLower.includes('zoom')) {
+            // For Zoom, include ALL Zoom-related windows
+            // Check both lowercase and original name for better matching
+            const sourceName = source.name;
+            const sourceNameLower = sourceName.toLowerCase();
+            
+            const isZoomWindow = sourceNameLower.includes('zoom') || 
+                                 sourceName.includes('zoom.us') ||
+                                 sourceName.includes('Zoom') ||
+                                 sourceName.includes('Meeting') ||
+                                 sourceName.includes('Workplace') ||
+                                 // Additional patterns for meeting rooms
+                                 sourceNameLower.includes('meeting') ||
+                                 sourceNameLower.includes('webinar') ||
+                                 sourceNameLower.includes('breakout') ||
+                                 sourceNameLower.includes('share') ||
+                                 sourceNameLower.includes('participants') ||
+                                 sourceNameLower.includes('gallery') ||
+                                 sourceNameLower.includes('speaker');
+            
+            if (isZoomWindow) {
+              console.log(`[Dynamic Zoom] Found potential Zoom window: "${source.name}"`);
+            }
+            return isZoomWindow;
+          } else if (appLower.includes('teams')) {
+            return name.includes('teams') || name.includes('microsoft teams');
+          } else if (appLower.includes('slack')) {
+            return name.includes('slack');
+          } else if (appLower.includes('powerpoint')) {
+            return name.includes('powerpoint') || name.includes('ppt');
+          } else if (appLower.includes('wechat')) {
+            return name.includes('wechat') || name.includes('weixin');
+          } else {
+            return name.includes(appLower);
+          }
+        });
+      }
+      
+      // Sort windows to prioritize the most relevant one (meetings, active windows)
+      // IMPORTANT: This ensures we capture the meeting room instead of the homepage when both are available
+      appWindows.sort((a, b) => {
+        const aName = a.name.toLowerCase();
+        const bName = b.name.toLowerCase();
+        const appLower = appName ? appName.toLowerCase() : '';
+        
+        // For Zoom, prioritize meeting/webinar windows over the main window
+        if (appLower.includes('zoom')) {
+          // PRIORITY ORDER for Zoom:
+          // 1. "Zoom Meeting" or any window with "meeting" in the name (highest priority - CAPTURES THE MEETING ROOM)
+          // 2. "Zoom Webinar" or windows with "webinar"
+          // 3. Windows with other meeting-related keywords (share, participants, gallery, speaker)
+          // 4. "Zoom Workplace" (main app - CAPTURES THE HOMEPAGE)
+          // 5. Other zoom windows
+          
+          // Check for exact matches and keywords
+          const aExactMeeting = a.name === 'Zoom Meeting' || aName.includes('zoom meeting');
+          const bExactMeeting = b.name === 'Zoom Meeting' || bName.includes('zoom meeting');
+          const aExactWebinar = a.name === 'Zoom Webinar' || aName.includes('zoom webinar');
+          const bExactWebinar = b.name === 'Zoom Webinar' || bName.includes('zoom webinar');
+          
+          // Broader meeting detection
+          const aMeetingKeyword = aName.includes('meeting') || 
+                                  aName.includes('webinar') ||
+                                  aName.includes('share') ||
+                                  aName.includes('participants') ||
+                                  aName.includes('gallery') ||
+                                  aName.includes('speaker') ||
+                                  aName.includes('breakout');
+          const bMeetingKeyword = bName.includes('meeting') || 
+                                  bName.includes('webinar') ||
+                                  bName.includes('share') ||
+                                  bName.includes('participants') ||
+                                  bName.includes('gallery') ||
+                                  bName.includes('speaker') ||
+                                  bName.includes('breakout');
+          
+          const aWorkplace = a.name === 'Zoom Workplace' || aName.includes('zoom workplace');
+          const bWorkplace = b.name === 'Zoom Workplace' || bName.includes('zoom workplace');
+          
+          if (aExactMeeting && !bExactMeeting) return -1;
+          if (!aExactMeeting && bExactMeeting) return 1;
+          if (aExactWebinar && !bExactWebinar) return -1;
+          if (!aExactWebinar && bExactWebinar) return 1;
+          if (aMeetingKeyword && !bMeetingKeyword) return -1;
+          if (!aMeetingKeyword && bMeetingKeyword) return 1;
+          if (!aWorkplace && bWorkplace) return -1;
+          if (aWorkplace && !bWorkplace) return 1;
+          
+          console.log(`[Dynamic Zoom] Priority check: "${a.name}" vs "${b.name}"`);
+        }
+        
+        // For Teams, prioritize meeting windows
+        if (appLower.includes('teams')) {
+          if (aName.includes('meeting') && !bName.includes('meeting')) return -1;
+          if (!aName.includes('meeting') && bName.includes('meeting')) return 1;
+        }
+        
+        return 0;
       });
+      
+      // Use the top/most relevant window
+      let quickMatch = appWindows.length > 0 ? appWindows[0] : null;
+      
+      if (appWindows.length > 0) {
+        safeLog.log(`[Dynamic Zoom Selection] Found ${appWindows.length} window(s) for ${appName}:`);
+        appWindows.forEach((w, i) => {
+          safeLog.log(`  ${i === 0 ? '🎯 SELECTED' : '  -'} "${w.name}" (ID: ${w.id})`);
+        });
+        if (quickMatch) {
+          const qName = quickMatch.name;
+          const qNameLower = qName.toLowerCase();
+          
+          if (qName === 'Zoom Meeting' || qNameLower.includes('zoom meeting')) {
+            safeLog.log(`[Dynamic Zoom Selection] 🎥 ✅ CAPTURING ZOOM MEETING ROOM - User is actively in a meeting!`);
+            safeLog.log(`[Dynamic Zoom Selection]    Window: "${qName}"`);
+            safeLog.log(`[Dynamic Zoom Selection]    This will capture the video conference window with participants`);
+          } else if (qNameLower.includes('meeting') || qNameLower.includes('share') || 
+                     qNameLower.includes('participants') || qNameLower.includes('gallery')) {
+            safeLog.log(`[Dynamic Zoom Selection] 🎥 ✅ CAPTURING MEETING-RELATED WINDOW`);
+            safeLog.log(`[Dynamic Zoom Selection]    Window: "${qName}"`);
+            safeLog.log(`[Dynamic Zoom Selection]    This appears to be a meeting window based on its name`);
+          } else if (qName === 'Zoom Workplace' || qNameLower.includes('zoom workplace')) {
+            safeLog.log(`[Dynamic Zoom Selection] 🏠 CAPTURING ZOOM WORKPLACE - User is on the Zoom homepage`);
+            safeLog.log(`[Dynamic Zoom Selection]    Window: "${qName}"`);
+            safeLog.log(`[Dynamic Zoom Selection]    This will capture the main Zoom interface (not a meeting)`);
+          } else if (qNameLower.includes('webinar')) {
+            safeLog.log(`[Dynamic Zoom Selection] 🎤 CAPTURING ZOOM WEBINAR - User is in a webinar`);
+            safeLog.log(`[Dynamic Zoom Selection]    Window: "${qName}"`);
+          } else {
+            safeLog.log(`[Dynamic Zoom Selection] 📷 Capturing Zoom window: "${qName}"`);
+            safeLog.log(`[Dynamic Zoom Selection]    Note: Could not determine if this is a meeting or homepage`);
+          }
+        }
+      } else {
+        safeLog.log(`[Dynamic Zoom Selection] No windows found for ${appName}`);
+      }
       
       if (quickMatch) {
         // Disabled to reduce log spam during frequent captures
@@ -1623,7 +3140,64 @@ except Exception as e:
         fetchWindowIcons: true
       });
       
-      const source = sources.find(s => s.id === sourceId);
+      let source = sources.find(s => s.id === sourceId);
+      
+      // If exact source not found, try to find the top window for the app
+      if (!source) {
+        // Extract app name from the sourceId if available
+        const appNameMatch = sourceId.match(/window:\d+:(.+)/);
+        if (appNameMatch) {
+          const targetAppName = appNameMatch[1].toLowerCase();
+          
+          // Find all windows for this app
+          const appWindows = sources.filter(s => {
+            if (!s.name) return false;
+            const sourceName = s.name.toLowerCase();
+            
+            // Special matching for different apps
+            if (targetAppName.includes('zoom')) {
+              // For Zoom, prioritize meeting/webinar windows
+              return sourceName.includes('zoom meeting') || 
+                     sourceName.includes('zoom webinar') ||
+                     sourceName.includes('zoom');
+            } else if (targetAppName.includes('teams')) {
+              return sourceName.includes('teams') || sourceName.includes('microsoft teams');
+            } else if (targetAppName.includes('slack')) {
+              return sourceName.includes('slack');
+            } else {
+              return sourceName.includes(targetAppName);
+            }
+          });
+          
+          // Sort to prioritize the most relevant window
+          appWindows.sort((a, b) => {
+            const aName = a.name.toLowerCase();
+            const bName = b.name.toLowerCase();
+            
+            // For Zoom, prioritize meeting/webinar windows
+            if (targetAppName.includes('zoom')) {
+              if (aName.includes('meeting') && !bName.includes('meeting')) return -1;
+              if (!aName.includes('meeting') && bName.includes('meeting')) return 1;
+              if (aName.includes('webinar') && !bName.includes('webinar')) return -1;
+              if (!aName.includes('webinar') && bName.includes('webinar')) return 1;
+            }
+            
+            // For Teams, prioritize meeting windows
+            if (targetAppName.includes('teams')) {
+              if (aName.includes('meeting') && !bName.includes('meeting')) return -1;
+              if (!aName.includes('meeting') && bName.includes('meeting')) return 1;
+            }
+            
+            return 0;
+          });
+          
+          if (appWindows.length > 0) {
+            source = appWindows[0];
+            safeLog.log(`[Screenshot] Using top window for ${targetAppName}: ${source.name}`);
+          }
+        }
+      }
+      
       if (!source) {
         throw new Error(`Window with ID ${sourceId} not found`);
       }
@@ -2029,6 +3603,59 @@ ipcMain.handle('cleanup-tmp-images', async (event, maxAge = 7 * 24 * 60 * 60 * 1
     };
   } catch (error) {
     safeLog.error('Failed to cleanup tmp images:', error);
+    return {
+      success: false,
+      error: error.message
+    };
+  }
+});
+
+// IPC handler for getting the currently focused window with detailed tab information
+ipcMain.handle('get-focused-window-info', async () => {
+  try {
+    if (process.platform === 'darwin') {
+      const { exec } = require('child_process');
+      const { promisify } = require('util');
+      const execAsync = promisify(exec);
+      
+      // Get the frontmost application and its window title
+      const appScript = `osascript -e 'tell application "System Events" to get name of first application process whose frontmost is true'`;
+      const windowScript = `osascript -e '
+        tell application "System Events"
+          set frontApp to first application process whose frontmost is true
+          try
+            set windowTitle to title of first window of frontApp
+            return windowTitle
+          on error
+            return ""
+          end try
+        end tell'`;
+      
+      const [appResult, windowResult] = await Promise.allSettled([
+        execAsync(appScript),
+        execAsync(windowScript)
+      ]);
+      
+      const activeApp = appResult.status === 'fulfilled' ? appResult.value.stdout.trim() : '';
+      const activeWindowTitle = windowResult.status === 'fulfilled' ? windowResult.value.stdout.trim() : '';
+      
+      safeLog.log(`Focused window: App="${activeApp}", Title="${activeWindowTitle}"`);
+      
+      return {
+        success: true,
+        activeApp: activeApp,
+        activeWindowTitle: activeWindowTitle
+      };
+    } else {
+      // For non-macOS platforms, return basic info
+      return {
+        success: true,
+        activeApp: '',
+        activeWindowTitle: ''
+      };
+    }
+  } catch (error) {
+    safeLog.error('Error getting focused window info:', error);
     return {
       success: false,
       error: error.message

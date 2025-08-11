@@ -19,6 +19,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getCaptureSources: () => ipcRenderer.invoke('get-capture-sources'),
   getVisibleSources: (sourceIds) => ipcRenderer.invoke('get-visible-sources', sourceIds),
   takeSourceScreenshot: (sourceId) => ipcRenderer.invoke('take-source-screenshot', sourceId),
+  getFocusedWindowInfo: () => ipcRenderer.invoke('get-focused-window-info'),
+  getFocusedApp: () => ipcRenderer.invoke('get-focused-app'),
+  requestScreenSharingDetectionPermissions: () => ipcRenderer.invoke('request-screen-sharing-detection-permissions'),
   
   // Image reading function for similarity comparison
   readImageAsBase64: (filepath) => ipcRenderer.invoke('read-image-base64', filepath),

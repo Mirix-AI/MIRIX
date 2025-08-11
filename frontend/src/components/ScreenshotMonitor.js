@@ -24,6 +24,11 @@ const ScreenshotMonitor = ({ settings, onMonitoringStatusChange }) => {
   const [selectedSources, setSelectedSources] = useState([]);
   const [monitorMode, setMonitorMode] = useState('fullscreen'); // 'fullscreen' or 'selected'
   const [currentAppName, setCurrentAppName] = useState('');
+  const [focusedApp, setFocusedApp] = useState(null);
+  const [manualMeetingStatus, setManualMeetingStatus] = useState(false);
+  const [isScreenSharing, setIsScreenSharing] = useState(false);
+  const [screenSharingApp, setScreenSharingApp] = useState(null);
+  const [enhancedPermissionsStatus, setEnhancedPermissionsStatus] = useState(null); // 'granted', 'denied', 'unknown'
   
   // Voice recording state - COMMENTED OUT
   // const [voiceData, setVoiceData] = useState([]);
@@ -121,6 +126,34 @@ const ScreenshotMonitor = ({ settings, onMonitoringStatusChange }) => {
       setError(t('screenshot.errors.systemPrefsError', { error: err.message }));
     }
   }, [checkScreenPermissions]);
+
+  // Request enhanced permissions for better screen sharing detection
+  const requestEnhancedPermissions = useCallback(async () => {
+    if (!window.electronAPI || !window.electronAPI.requestScreenSharingDetectionPermissions) {
+      setError(t('screenshot.errors.enhancedPermissionsNotAvailable'));
+      return;
+    }
+
+    try {
+      setError(null);
+      const result = await window.electronAPI.requestScreenSharingDetectionPermissions();
+      
+      if (result.success && result.can_capture) {
+        setEnhancedPermissionsStatus('granted');
+        setError(null);
+        console.log('[Enhanced Permissions] Screen recording permissions granted - enhanced detection available');
+      } else if (result.success && !result.can_capture) {
+        setEnhancedPermissionsStatus('denied');
+        setError(t('screenshot.errors.enhancedPermissionsDenied'));
+      } else {
+        setEnhancedPermissionsStatus('unknown');
+        setError(result.message || t('screenshot.errors.enhancedPermissionsFailed'));
+      }
+    } catch (err) {
+      setEnhancedPermissionsStatus('unknown');
+      setError(t('screenshot.errors.enhancedPermissionsError', { error: err.message }));
+    }
+  }, []);
 
   // Handle voice data from the recorder - COMMENTED OUT
   // const handleVoiceData = useCallback((data) => {
@@ -457,8 +490,12 @@ const ScreenshotMonitor = ({ settings, onMonitoringStatusChange }) => {
       let sourceInfo = null;
       
       if (monitorMode === 'selected' && selectedSources.length > 0) {
-        // Check which sources are visible before capturing
-        const visibilityMap = await checkVisibleSources(selectedSources);
+        // Check which sources are visible and get focused app
+        const [visibilityMap, focusedAppResult] = await Promise.all([
+          checkVisibleSources(selectedSources),
+          window.electronAPI.getFocusedApp ? window.electronAPI.getFocusedApp() : Promise.resolve(null)
+        ]);
+        
         const visibleSources = selectedSources.filter(s => visibilityMap[s.id]);
         
         if (visibleSources.length === 0) {
@@ -469,10 +506,154 @@ const ScreenshotMonitor = ({ settings, onMonitoringStatusChange }) => {
           return;
         }
         
-        console.log(`[ScreenshotMonitor] ${visibleSources.length}/${selectedSources.length} selected sources are visible:`, visibleSources.map(s => s.name));
+        // Log focused app info
+        if (focusedAppResult && focusedAppResult.success) {
+          console.log(`[ScreenshotMonitor] Focused app: ${focusedAppResult.appName}, Window: ${focusedAppResult.windowTitle}`);
+        }
         
-        // Step 1: Capture only visible sources
-        const capturePromises = visibleSources.map(async (source) => {
+        // DYNAMIC ZOOM SOURCE SWITCHING
+        // Check if Zoom is screen sharing - if so, capture full screen instead
+        const isScreenSharing = focusedAppResult && focusedAppResult.success && 
+                              focusedAppResult.screenSharingStatus === 'active';
+        
+        // Check if screen sharing is detected and we're monitoring either Zoom or a browser (for Google Meet)
+        const isZoomSharing = isScreenSharing && visibleSources.some(s => s.name.toLowerCase().includes('zoom'));
+        
+        // Check for Google Meet screen sharing using independent detection
+        const isGoogleMeetSharing = isScreenSharing && (
+          // Check if independent detection found Google Meet screen sharing
+          (focusedAppResult.independentDetection && 
+           focusedAppResult.independentDetection.detected && 
+           focusedAppResult.independentDetection.isScreenSharing) ||
+          // Fallback to original browser-focused detection
+          (focusedAppResult.appName && 
+           (focusedAppResult.appName.includes('Chrome') || focusedAppResult.appName.includes('Safari') || 
+            focusedAppResult.appName.includes('Firefox') || focusedAppResult.appName.includes('Edge')) &&
+           focusedAppResult.meetingStatus && 
+           focusedAppResult.meetingStatus.includes('Google Meet'))
+        );
+        
+        // Keep the old variable name for compatibility
+        const isBrowserSharing = isGoogleMeetSharing;
+        
+        if (isZoomSharing || isBrowserSharing) {
+          const meetingType = isZoomSharing ? 'Zoom' : 'Google Meet';
+          
+          if (isGoogleMeetSharing && focusedAppResult.independentDetection && focusedAppResult.independentDetection.detected) {
+            console.log(`[ScreenshotMonitor] 🖥️ Google Meet screen sharing detected via independent detection - switching to display capture`);
+            console.log(`[ScreenshotMonitor] Independent detection details:`, focusedAppResult.independentDetection);
+          } else {
+            console.log(`[ScreenshotMonitor] 🖥️ ${meetingType} screen sharing detected - switching to display capture`);
+          }
+          
+          // Take screenshot of the specific shared display if available, otherwise full screen
+          let fullScreenResult;
+          if (focusedAppResult.sharedDisplay && focusedAppResult.sharedDisplay.id) {
+            console.log(`[ScreenshotMonitor] Capturing specific shared display: ${focusedAppResult.sharedDisplay.name} (ID: ${focusedAppResult.sharedDisplay.id})`);
+            fullScreenResult = await window.electronAPI.takeScreenshotDisplay(focusedAppResult.sharedDisplay.id);
+            
+            // If specific display capture fails, fall back to primary display
+            if (!fullScreenResult.success) {
+              console.warn(`[ScreenshotMonitor] Failed to capture specific display ${focusedAppResult.sharedDisplay.name}, falling back to primary display`);
+              fullScreenResult = await window.electronAPI.takeScreenshot();
+            }
+          } else {
+            console.log('[ScreenshotMonitor] No specific display detected, capturing primary display');
+            fullScreenResult = await window.electronAPI.takeScreenshot();
+          }
+          
+          if (fullScreenResult.success) {
+            let logMessage = `📸 Screenshot saved: ${fullScreenResult.filepath} (Full Screen - ${meetingType} Screen Sharing`;
+            if (focusedAppResult.sharedDisplay && focusedAppResult.sharedDisplay.name) {
+              logMessage += ` - ${focusedAppResult.sharedDisplay.name}`;
+            }
+            logMessage += ')';
+            console.log(logMessage);
+            
+            // Send the display capture with specific source indicator
+            let sourceDescription;
+            if (focusedAppResult.sharedDisplay && focusedAppResult.sharedDisplay.name) {
+              sourceDescription = `${focusedAppResult.sharedDisplay.name} - ${meetingType} Screen Sharing`;
+            } else {
+              sourceDescription = `Full Screen - ${meetingType} Screen Sharing`;
+            }
+            const sendResult = await sendScreenshotsToBackend(
+              [fullScreenResult.filepath], 
+              [sourceDescription]
+            );
+            
+            if (!sendResult || sendResult.shouldDelete) {
+              await deleteSimilarScreenshot(fullScreenResult.filepath);
+            }
+          }
+          
+          // Show specific display being shared if available
+          let screenSharingDisplay;
+          if (focusedAppResult.sharedDisplay && focusedAppResult.sharedDisplay.name) {
+            screenSharingDisplay = `${focusedAppResult.sharedDisplay.name} - ${meetingType} Screen Sharing`;
+          } else if (meetingType === 'Zoom') {
+            screenSharingDisplay = t('screenshot.monitoring.zoomScreenSharing');
+          } else if (meetingType === 'Google Meet') {
+            screenSharingDisplay = t('screenshot.monitoring.googleMeetScreenSharing');
+          } else {
+            screenSharingDisplay = `Full Screen - ${meetingType} Screen Sharing`;
+          }
+          setCurrentAppName(screenSharingDisplay);
+          setStatus('monitoring');
+          return; // Exit early, we've handled the screen sharing case
+        }
+        
+        // If user selected Zoom Workplace but is in a meeting (not screen sharing), switch to Zoom Meeting window
+        let dynamicVisibleSources = [...visibleSources];
+        
+        if (focusedAppResult && focusedAppResult.success && 
+            focusedAppResult.meetingStatus && focusedAppResult.meetingStatus.includes('In Meeting') &&
+            !isScreenSharing &&
+            focusedAppResult.appName && focusedAppResult.appName.toLowerCase().includes('zoom')) {
+          
+          console.log('[ScreenshotMonitor] 🎥 User is in a Zoom meeting, checking for meeting window...');
+          
+          // Check if Zoom Workplace is in the selected sources
+          const hasZoomWorkplace = visibleSources.some(s => 
+            s.name === 'Zoom Workplace' || s.name.toLowerCase().includes('zoom workplace')
+          );
+          
+          if (hasZoomWorkplace) {
+            // Get all available sources to find the meeting window
+            const allSourcesResult = await window.electronAPI.getCaptureSources();
+            
+            if (allSourcesResult.success) {
+              // Find Zoom Meeting window
+              const zoomMeetingWindow = allSourcesResult.sources.find(s => 
+                s.type === 'window' && (
+                  s.name === 'Zoom Meeting' || 
+                  s.name.toLowerCase().includes('zoom meeting') ||
+                  (s.name.toLowerCase().includes('meeting') && s.name.toLowerCase().includes('zoom'))
+                )
+              );
+              
+              if (zoomMeetingWindow) {
+                console.log(`[ScreenshotMonitor] 🎯 Found Zoom Meeting window: "${zoomMeetingWindow.name}" (${zoomMeetingWindow.id})`);
+                
+                // Replace Zoom Workplace with Zoom Meeting in the capture list
+                dynamicVisibleSources = visibleSources.map(s => {
+                  if (s.name === 'Zoom Workplace' || s.name.toLowerCase().includes('zoom workplace')) {
+                    console.log(`[ScreenshotMonitor] ✅ Replacing "${s.name}" with "${zoomMeetingWindow.name}" for capture`);
+                    return zoomMeetingWindow;
+                  }
+                  return s;
+                });
+              } else {
+                console.log('[ScreenshotMonitor] ⚠️ Could not find Zoom Meeting window, will capture Workplace');
+              }
+            }
+          }
+        }
+        
+        console.log(`[ScreenshotMonitor] ${dynamicVisibleSources.length}/${selectedSources.length} selected sources are visible:`, dynamicVisibleSources.map(s => s.name));
+        
+        // Step 1: Capture only visible sources (now using dynamic sources)
+        const capturePromises = dynamicVisibleSources.map(async (source) => {
           try {
             const captureTime = new Date().toISOString();
             console.log(`[ScreenshotMonitor] ${captureTime} - Capturing visible source: ${source.name} (${source.id})`);
@@ -827,6 +1008,65 @@ const ScreenshotMonitor = ({ settings, onMonitoringStatusChange }) => {
     checkScreenPermissions();
   }, [checkScreenPermissions]);
 
+  // Update focused app periodically
+  React.useEffect(() => {
+    const updateFocusedApp = async () => {
+      if (window.electronAPI && window.electronAPI.getFocusedApp) {
+        try {
+          const result = await window.electronAPI.getFocusedApp();
+          if (result && result.success) {
+            setFocusedApp(result);
+            
+            // Log meeting app status for debugging
+            const isZoomApp = result.appName && result.appName.toLowerCase().includes('zoom');
+            const isGoogleMeetFromFocus = result.meetingStatus && result.meetingStatus.includes('Google Meet');
+            const isGoogleMeetFromIndependent = result.independentDetection && result.independentDetection.detected;
+            
+            if (isZoomApp || isGoogleMeetFromFocus || isGoogleMeetFromIndependent) {
+              let appType;
+              if (isZoomApp) {
+                appType = 'Zoom';
+              } else if (isGoogleMeetFromIndependent) {
+                appType = 'Google Meet (Independent Detection)';
+              } else {
+                appType = 'Google Meet';
+              }
+              
+              console.log(`[Focused App] ${appType} Status:`, {
+                appName: result.appName,
+                windowTitle: result.windowTitle,
+                displayInfo: result.displayInfo,
+                meetingStatus: result.meetingStatus,
+                screenSharingStatus: result.screenSharingStatus,
+                independentDetection: result.independentDetection
+              });
+              
+              // Update screen sharing state
+              setIsScreenSharing(result.screenSharingStatus === 'active');
+              setScreenSharingApp(appType);
+            } else {
+              // Reset screen sharing state if not in a meeting app
+              setIsScreenSharing(false);
+              setScreenSharingApp(null);
+            }
+          }
+        } catch (error) {
+          console.error('Failed to get focused app:', error);
+        }
+      }
+    };
+
+    // Update immediately
+    updateFocusedApp();
+
+    // Update every 500ms regardless of monitoring status
+    const intervalId = setInterval(updateFocusedApp, 500);
+
+    return () => {
+      clearInterval(intervalId);
+    };
+  }, []); // Empty dependency array - runs once on mount and cleanup on unmount
+
   // Restart monitoring when selectedSources changes (if currently monitoring)
   // DISABLED: This effect was causing constant re-runs and clearing stored image data
   // React.useEffect(() => {
@@ -925,11 +1165,30 @@ const ScreenshotMonitor = ({ settings, onMonitoringStatusChange }) => {
                 border: 'none',
                 padding: '8px 16px',
                 borderRadius: '4px',
-                                  cursor: 'pointer',
+                cursor: 'pointer',
                 marginRight: '8px'
               }}
             >
               ⚙️ {t('screenshot.controls.openSystemPrefs')}
+            </button>
+          )}
+          {hasScreenPermission === true && (enhancedPermissionsStatus === null || enhancedPermissionsStatus !== 'granted') && (
+            <button
+              className="enhanced-perms-button"
+              onClick={requestEnhancedPermissions}
+              disabled={false}
+              style={{
+                backgroundColor: '#ff9800',
+                color: 'white',
+                border: 'none',
+                padding: '8px 16px',
+                borderRadius: '4px',
+                cursor: 'pointer',
+                marginRight: '8px',
+                fontSize: '12px'
+              }}
+            >
+              🚀 {t('screenshot.controls.enhancedDetection')}
             </button>
           )}
           <button
@@ -973,6 +1232,81 @@ const ScreenshotMonitor = ({ settings, onMonitoringStatusChange }) => {
       </div>
 
       <div className="monitor-status">
+        {(focusedApp && focusedApp.appName) || (monitorMode === 'selected' && selectedSources.length > 0) ? (
+          <div style={{ marginBottom: '8px' }}>
+            {focusedApp && focusedApp.appName && (
+              <div className="status-item" style={{ 
+                backgroundColor: '#e3f2fd', 
+                padding: '8px', 
+                borderRadius: '4px', 
+                marginBottom: '4px',
+                border: '1px solid #2196f3'
+              }}>
+                <div>
+                  <span>🎯 <strong>Currently Focused:</strong> {focusedApp.appName}</span>
+                  {focusedApp.meetingStatus && (
+                    <span style={{ 
+                      marginLeft: '8px', 
+                      padding: '2px 6px', 
+                      borderRadius: '3px',
+                      backgroundColor: focusedApp.meetingStatus.includes('In Meeting') || focusedApp.meetingStatus.includes('In Webinar') ? '#4caf50' : '#ff9800',
+                      color: 'white',
+                      fontSize: '0.85em'
+                    }}>
+                      {focusedApp.meetingStatus}
+                    </span>
+                  )}
+                  {isScreenSharing && screenSharingApp && (
+                    <span style={{ 
+                      marginLeft: '8px',
+                      padding: '2px 6px',
+                      borderRadius: '3px',
+                      backgroundColor: '#ff5722',
+                      color: 'white',
+                      fontSize: '0.85em'
+                    }}>
+                      🖥️ {screenSharingApp} Screen Sharing - Capturing Full Screen{focusedApp.sharedDisplay ? ` (${focusedApp.sharedDisplay.name})` : ''}
+                    </span>
+                  )}
+                  {!isScreenSharing && monitorMode === 'selected' && selectedSources.some(s => s.name === 'Zoom Meeting') && (
+                    <span style={{ 
+                      marginLeft: '8px',
+                      fontSize: '0.8em',
+                      color: '#666'
+                    }}>
+                      (Capturing meeting window ✓)
+                    </span>
+                  )}
+                </div>
+                {focusedApp.displayInfo && focusedApp.displayInfo !== focusedApp.appName && (
+                  <div style={{ marginTop: '4px', fontSize: '0.9em', color: '#555' }}>
+                    📄 {focusedApp.displayInfo}
+                  </div>
+                )}
+                {focusedApp.tabInfo && (
+                  <div style={{ marginTop: '4px', fontSize: '0.85em', color: '#666' }}>
+                    🌐 Tab: {focusedApp.tabInfo.title} • {focusedApp.tabInfo.site}
+                  </div>
+                )}
+              </div>
+            )}
+            
+            {monitorMode === 'selected' && selectedSources.length > 0 && (
+              <div className="status-item" style={{ 
+                backgroundColor: '#f3e5f5', 
+                padding: '8px', 
+                borderRadius: '4px', 
+                border: '1px solid #9c27b0'
+              }}>
+                <span>📸 <strong>Monitoring Apps:</strong> </span>
+                <span style={{ color: '#6a1b9a' }}>
+                  {selectedSources.map(s => s.name).join(', ')}
+                </span>
+              </div>
+            )}
+          </div>
+        ) : null}
+        
         <div className="status-item">
           <span className="status-icon" style={{ color: getStatusColor() }}>
             {getStatusIcon()}
@@ -1002,6 +1336,48 @@ const ScreenshotMonitor = ({ settings, onMonitoringStatusChange }) => {
         {lastProcessedTime && (
           <div className="status-item">
             <span>🕒 {t('screenshot.status.lastSent')}: <strong>{new Date(lastProcessedTime).toLocaleTimeString()}</strong></span>
+          </div>
+        )}
+
+        {/* Google Meet Screen Sharing Indicator */}
+        {isScreenSharing && screenSharingApp && screenSharingApp.includes('Google Meet') && (
+          <div className="status-item" style={{
+            backgroundColor: '#e8f5e8',
+            border: '2px solid #4caf50',
+            borderRadius: '8px',
+            padding: '12px',
+            margin: '8px 0',
+            animation: 'pulse 2s infinite'
+          }}>
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              fontSize: '14px',
+              fontWeight: 'bold',
+              color: '#2e7d32'
+            }}>
+              <span style={{ fontSize: '18px', marginRight: '8px' }}>🖥️</span>
+              <span>Google Meet Screen Sharing Detected!</span>
+              {focusedApp.independentDetection && (
+                <span style={{
+                  marginLeft: '8px',
+                  padding: '2px 6px',
+                  backgroundColor: '#4caf50',
+                  color: 'white',
+                  borderRadius: '4px',
+                  fontSize: '11px'
+                }}>
+                  Independent Detection
+                </span>
+              )}
+            </div>
+            <div style={{
+              fontSize: '12px',
+              color: '#666',
+              marginTop: '4px'
+            }}>
+              System is automatically capturing your shared screen regardless of focused app
+            </div>
           </div>
         )}
       </div>
