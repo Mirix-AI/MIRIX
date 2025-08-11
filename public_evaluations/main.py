@@ -9,7 +9,9 @@ import subprocess
 import tempfile
 from tqdm import tqdm
 from conversation_creator import ConversationCreator
+from constants import CHUNK_SIZE_MEMORY_AGENT_BENCH
 
+## CONSTANTS for chunk size moved to constants.py to avoid circular imports
 
 ## python main.py --agent_name mirix --dataset MemoryAgentBench
 def parse_args():
@@ -24,14 +26,21 @@ def parse_args():
     parser.add_argument("--config_path", type=str, default=None, help="Config file path for mirix agent")
     parser.add_argument("--force_answer_question", action="store_true", default=False)
     # for MemoryAgentBench
-    parser.add_argument("--chunk_size", type=int, default=4096)
-
+    parser.add_argument("--sub_datasets", nargs='+', type=str, default=["longmemeval_s*", "eventqa_full"], help="Sub-datasets to run")
+    
     return parser.parse_args()
 
 def run_with_chunks_and_questions_subprocess(args, global_idx, chunks, queries_and_answers):
     """
     Run the extracted function using subprocess to isolate memory and processes.
-    """
+    """  
+    # Use a specific chunk size for each source
+    if args.dataset == 'MemoryAgentBench':
+        source = queries_and_answers[0][3]
+        chunk_size = CHUNK_SIZE_MEMORY_AGENT_BENCH[source]
+    else:
+        chunk_size = "None"
+                    
     # Create temporary files for chunks and queries
     with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as chunks_file:
         json.dump(chunks, chunks_file, indent=2)
@@ -50,7 +59,7 @@ def run_with_chunks_and_questions_subprocess(args, global_idx, chunks, queries_a
             '--global_idx', str(global_idx),
             '--chunks_file', chunks_filepath,
             '--queries_file', queries_filepath,
-            '--chunk_size', str(args.chunk_size)
+            '--chunk_size', str(chunk_size)
         ]
         
         # Add optional arguments
@@ -88,8 +97,11 @@ def run_with_chunks_and_questions_subprocess(args, global_idx, chunks, queries_a
 
 def main():
     
+    # parse arguments
     args = parse_args()
-    conversation_creator = ConversationCreator(args.dataset, args.num_exp, args.chunk_size)
+    
+    # create chunks and queries
+    conversation_creator = ConversationCreator(args.dataset, args.num_exp, args.sub_datasets)
 
     if args.agent_name == 'gpt-long-context':
         with_instructions = False

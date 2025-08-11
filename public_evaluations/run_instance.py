@@ -21,7 +21,7 @@ def parse_args():
     parser.add_argument("--chunks_file", type=str, required=True, help="Path to chunks JSON file")
     parser.add_argument("--queries_file", type=str, required=True, help="Path to queries and answers JSON file")
     # for MemoryAgentBench
-    parser.add_argument("--chunk_size", type=int, default=4096)
+    parser.add_argument("--chunk_size", type=int, default=512)
     
     return parser.parse_args()
 
@@ -40,7 +40,7 @@ def run_with_chunks_and_questions(
         subset_name = "None"
         chunk_size = "None"
     
-    # make out_dir with the model name
+    # make out_dir with the model name / save all the parameters
     if args.agent_name == 'gpt-long-context' or args.agent_name == 'gemini-long-context':
         out_dir = f"./results/{args.agent_name}_{args.dataset}-{args.model_name}/"
     else:
@@ -48,10 +48,10 @@ def run_with_chunks_and_questions(
 
     if not os.path.exists(out_dir):
         os.makedirs(out_dir)
-
+    
     out_dir = out_dir + f"{global_idx}_subset{subset_name}_cksize{chunk_size}"
 
-
+    
     # if out_dir exists, load the agent from it
     if os.path.exists(out_dir):
         agent = AgentWrapper(args.agent_name, load_agent_from=out_dir, model_name=args.model_name, config_path=args.config_path)
@@ -118,6 +118,11 @@ def run_with_chunks_and_questions(
     agent.prepare_before_asking_questions()
 
 
+    # save the parameters
+    with open(f"{out_dir}/parameters.json", "w") as f:
+        json.dump(args.__dict__, f, indent=2)
+        
+        
     # load the results to continue from last breakpoint
     if os.path.exists(f"{out_dir}/results.json"):
         existing_results = json.load(open(f"{out_dir}/results.json", "r"))

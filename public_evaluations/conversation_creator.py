@@ -6,14 +6,14 @@ from datasets import load_dataset
 import nltk
 import tiktoken
 from tqdm import tqdm
-
+from constants import CHUNK_SIZE_MEMORY_AGENT_BENCH
 
 class ConversationCreator():
 
-    def __init__(self, dataset, num_exp, chunk_size):
+    def __init__(self, dataset, num_exp, sub_datasets):
         
         self.dataset_name = dataset
-        self.chunk_size = chunk_size
+        self.sub_datasets = sub_datasets
         
         if dataset == "LOCOMO":
             with open("./data/locomo10.json", "r") as f:
@@ -52,11 +52,11 @@ class ConversationCreator():
             # Login using e.g. `huggingface-cli login` to access this dataset
             ds = load_dataset("ai-hyz/MemoryAgentBench")
             splits = ['Accurate_Retrieval', 'Test_Time_Learning', 'Long_Range_Understanding', 'Conflict_Resolution']
-            sources = ["longmemeval_s*", "eventqa_full"]  ##
+            
             for split in splits:
                 df = ds[split]
                 for row_dict in df:
-                    if not row_dict['metadata']['source'] in sources:
+                    if not row_dict['metadata']['source'] in self.sub_datasets:
                         continue
                     row_dict['split'] = split # Append a key to record split the row belongs to
                     self.data.append(row_dict)
@@ -187,8 +187,10 @@ The conversation is shown below (the conversation is timestamped at {date_time})
                 source = item['metadata']['source']
                 chunks = []
                 
-                # Use a uniform chunk size
-                text_chunks = self.chunk_text_into_sentences(context, chunk_size=self.chunk_size)
+                # Use a specific chunk size for each source
+                chunk_size = CHUNK_SIZE_MEMORY_AGENT_BENCH[source]
+        
+                text_chunks = self.chunk_text_into_sentences(context, chunk_size=chunk_size)
                 
                 for chunk_text in text_chunks:
                     # Determine prompt based on source key
