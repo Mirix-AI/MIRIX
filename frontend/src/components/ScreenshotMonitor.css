@@ -9,6 +9,19 @@
   color: #212529; /* Explicit dark text color */
 }
 
+/* Pulse animation for Google Meet indicator */
+@keyframes pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(76, 175, 80, 0.7);
+  }
+  70% {
+    box-shadow: 0 0 0 10px rgba(76, 175, 80, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(76, 175, 80, 0);
+  }
+}
+
 .monitor-header {
   display: flex;
   justify-content: space-between;

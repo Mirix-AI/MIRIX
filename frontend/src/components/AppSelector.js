@@ -29,6 +29,51 @@ const AppSelector = ({ onSourcesSelected, onClose }) => {
       
       if (result.success) {
         setSources(result.sources);
+        
+        // Debug: Log all available sources
+        console.log('[AppSelector] Available sources:');
+        result.sources.forEach(source => {
+          if (source.type === 'window') {
+            console.log(`  Window: "${source.name}" (ID: ${source.id})`);
+          }
+        });
+        
+        // Check for Zoom windows specifically
+        const zoomWindows = result.sources.filter(s => 
+          s.type === 'window' && 
+          (s.name.toLowerCase().includes('zoom') || s.name.includes('zoom.us') || s.name.includes('Meeting') || s.name.includes('Workplace'))
+        );
+        if (zoomWindows.length > 0) {
+          console.log('[AppSelector] ==========================================');
+          console.log('[AppSelector] Found Zoom-related windows:');
+          zoomWindows.forEach(w => {
+            console.log(`[AppSelector]   - "${w.name}" (ID: ${w.id})`);
+          });
+          console.log('[AppSelector] ==========================================');
+        } else {
+          console.log('[AppSelector] No Zoom windows found');
+        }
+        
+        // Check for Chrome/browser windows specifically  
+        const chromeWindows = result.sources.filter(s => 
+          s.type === 'window' && 
+          (s.name.toLowerCase().includes('chrome') || 
+           s.name.toLowerCase().includes('google') ||
+           s.name.toLowerCase().includes('meet') ||
+           s.name.toLowerCase().includes('safari') ||
+           s.name.toLowerCase().includes('firefox') ||
+           s.name.toLowerCase().includes('edge'))
+        );
+        if (chromeWindows.length > 0) {
+          console.log('[AppSelector] ==========================================');
+          console.log('[AppSelector] Found browser-related windows:');
+          chromeWindows.forEach(w => {
+            console.log(`[AppSelector]   - "${w.name}" (ID: ${w.id})`);
+          });
+          console.log('[AppSelector] ==========================================');
+        } else {
+          console.log('[AppSelector] No browser windows found');
+        }
       } else {
         setError(result.error || t('appSelector.errors.failedToLoad'));
       }
