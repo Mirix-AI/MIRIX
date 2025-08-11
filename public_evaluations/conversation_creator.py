@@ -10,10 +10,11 @@ from tqdm import tqdm
 
 class ConversationCreator():
 
-    def __init__(self, dataset, num_exp):
+    def __init__(self, dataset, num_exp, chunk_size):
         
         self.dataset_name = dataset
-
+        self.chunk_size = chunk_size
+        
         if dataset == "LOCOMO":
             with open("./data/locomo10.json", "r") as f:
                 self.data = json.load(f)
@@ -51,7 +52,7 @@ class ConversationCreator():
             # Login using e.g. `huggingface-cli login` to access this dataset
             ds = load_dataset("ai-hyz/MemoryAgentBench")
             splits = ['Accurate_Retrieval', 'Test_Time_Learning', 'Long_Range_Understanding', 'Conflict_Resolution']
-            sources = ["longmemeval_s*"]
+            sources = ["longmemeval_s*", "eventqa_full"]  ##
             for split in splits:
                 df = ds[split]
                 for row_dict in df:
@@ -187,7 +188,7 @@ The conversation is shown below (the conversation is timestamped at {date_time})
                 chunks = []
                 
                 # Use a uniform chunk size
-                text_chunks = self.chunk_text_into_sentences(context, chunk_size=4096)
+                text_chunks = self.chunk_text_into_sentences(context, chunk_size=self.chunk_size)
                 
                 for chunk_text in text_chunks:
                     # Determine prompt based on source key

@@ -9,7 +9,8 @@ from mirix.constants import (
     MIRIX_MEMORY_TOOL_MODULE_NAME,
 )
 from mirix.functions.functions import derive_openai_json_schema, get_json_schema_from_module
-from mirix.functions.helpers import generate_composio_tool_wrapper, generate_langchain_tool_wrapper
+# from mirix.functions.helpers import generate_composio_tool_wrapper, generate_langchain_tool_wrapper
+from mirix.functions.helpers import generate_langchain_tool_wrapper
 from mirix.functions.schema_generator import generate_schema_from_args_schema_v2
 from mirix.orm.enums import ToolType
 from mirix.schemas.mirix_base import MirixBase
@@ -102,49 +103,49 @@ class ToolCreate(MirixBase):
     )
     return_char_limit: int = Field(FUNCTION_RETURN_CHAR_LIMIT, description="The maximum number of characters in the response.")
 
-    @classmethod
-    def from_composio(cls, action_name: str, api_key: Optional[str] = None) -> "ToolCreate":
-        """
-        Class method to create an instance of Mirix-compatible Composio Tool.
-        Check https://docs.composio.dev/introduction/intro/overview to look at options for from_composio
+    # @classmethod
+    # def from_composio(cls, action_name: str, api_key: Optional[str] = None) -> "ToolCreate":
+    #     """
+    #     Class method to create an instance of Mirix-compatible Composio Tool.
+    #     Check https://docs.composio.dev/introduction/intro/overview to look at options for from_composio
 
-        This function will error if we find more than one tool, or 0 tools.
+    #     This function will error if we find more than one tool, or 0 tools.
 
-        Args:
-            action_name str: A action name to filter tools by.
-        Returns:
-            Tool: A Mirix Tool initialized with attributes derived from the Composio tool.
-        """
-        from composio import LogLevel
-        from composio_langchain import ComposioToolSet
+    #     Args:
+    #         action_name str: A action name to filter tools by.
+    #     Returns:
+    #         Tool: A Mirix Tool initialized with attributes derived from the Composio tool.
+    #     """
+    #     from composio import LogLevel
+    #     from composio_langchain import ComposioToolSet
 
-        if api_key:
-            # Pass in an external API key
-            composio_toolset = ComposioToolSet(logging_level=LogLevel.ERROR, api_key=api_key)
-        else:
-            # Use environmental variable
-            composio_toolset = ComposioToolSet(logging_level=LogLevel.ERROR)
-        composio_tools = composio_toolset.get_tools(actions=[action_name])
+    #     if api_key:
+    #         # Pass in an external API key
+    #         composio_toolset = ComposioToolSet(logging_level=LogLevel.ERROR, api_key=api_key)
+    #     else:
+    #         # Use environmental variable
+    #         composio_toolset = ComposioToolSet(logging_level=LogLevel.ERROR)
+    #     composio_tools = composio_toolset.get_tools(actions=[action_name])
 
-        assert len(composio_tools) > 0, "User supplied parameters do not match any Composio tools"
-        assert len(composio_tools) == 1, f"User supplied parameters match too many Composio tools; {len(composio_tools)} > 1"
+    #     assert len(composio_tools) > 0, "User supplied parameters do not match any Composio tools"
+    #     assert len(composio_tools) == 1, f"User supplied parameters match too many Composio tools; {len(composio_tools)} > 1"
 
-        composio_tool = composio_tools[0]
+    #     composio_tool = composio_tools[0]
 
-        description = composio_tool.description
-        source_type = "python"
-        tags = [COMPOSIO_TOOL_TAG_NAME]
-        wrapper_func_name, wrapper_function_str = generate_composio_tool_wrapper(action_name)
-        json_schema = generate_schema_from_args_schema_v2(composio_tool.args_schema, name=wrapper_func_name, description=description)
+    #     description = composio_tool.description
+    #     source_type = "python"
+    #     tags = [COMPOSIO_TOOL_TAG_NAME]
+    #     wrapper_func_name, wrapper_function_str = generate_composio_tool_wrapper(action_name)
+    #     json_schema = generate_schema_from_args_schema_v2(composio_tool.args_schema, name=wrapper_func_name, description=description)
 
-        return cls(
-            name=wrapper_func_name,
-            description=description,
-            source_type=source_type,
-            tags=tags,
-            source_code=wrapper_function_str,
-            json_schema=json_schema,
-        )
+    #     return cls(
+    #         name=wrapper_func_name,
+    #         description=description,
+    #         source_type=source_type,
+    #         tags=tags,
+    #         source_code=wrapper_function_str,
+    #         json_schema=json_schema,
+    #     )
 
     @classmethod
     def from_langchain(
