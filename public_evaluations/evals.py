@@ -38,8 +38,7 @@ def process_item(item):
 
     # Clean up question if it contains the approach instructions
     if "Question:" in question:
-        #question = question.split("\n\n")[-1].strip().split("Question:")[1].strip()
-        question = question ##TODO: temp fix
+        question = question.split("\n\n")[-1].strip().split("Question:")[1].strip()
     else:
         question = question
 

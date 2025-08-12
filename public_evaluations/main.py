@@ -25,8 +25,8 @@ def parse_args():
     parser.add_argument("--model_name", type=str, default="gpt-4.1-mini", help="Model name to use for gpt-long-context agent")
     parser.add_argument("--config_path", type=str, default=None, help="Config file path for mirix agent")
     parser.add_argument("--force_answer_question", action="store_true", default=False)
-    # for MemoryAgentBench
-    parser.add_argument("--sub_datasets", nargs='+', type=str, default=["longmemeval_s*", "eventqa_full"], help="Sub-datasets to run")
+    # for MemoryAgentBench / , "eventqa_full"
+    parser.add_argument("--sub_datasets", nargs='+', type=str, default=["longmemeval_s*"], help="Sub-datasets to run")
     
     return parser.parse_args()
 
