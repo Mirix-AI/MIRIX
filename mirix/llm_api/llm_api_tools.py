@@ -135,7 +135,12 @@ def create(
     # openai
     if llm_config.model_endpoint_type == "openai":
 
-        if model_settings.openai_api_key is None and llm_config.model_endpoint == "https://api.openai.com/v1":
+        # Check for database-stored API key first, fall back to model_settings
+        from mirix.services.provider_manager import ProviderManager
+        openai_override_key = ProviderManager().get_openai_override_key()
+        has_openai_key = openai_override_key or model_settings.openai_api_key
+        
+        if has_openai_key is None and llm_config.model_endpoint == "https://api.openai.com/v1":
             # only is a problem if we are *not* using an openai proxy
             raise MirixConfigurationError(message="OpenAI key is missing from mirix config file", missing_fields=["openai_api_key"])
 
@@ -162,7 +167,7 @@ def create(
         # else:  # Client did not request token streaming (expect a blocking backend response)
         response = openai_chat_completions_request(
             url=llm_config.model_endpoint,  # https://api.openai.com/v1 -> https://api.openai.com/v1/chat/completions
-            api_key=model_settings.openai_api_key,
+            api_key=has_openai_key,
             chat_completion_request=data,
             get_input_data_for_debugging=get_input_data_for_debugging,
         )
@@ -277,10 +282,15 @@ def create(
 
         message_contents = [m.to_google_ai_dict() for m in messages]
 
+        # Check for database-stored API key first, fall back to model_settings
+        from mirix.services.provider_manager import ProviderManager
+        override_key = ProviderManager().get_gemini_override_key()
+        api_key = override_key if override_key else model_settings.gemini_api_key
+
         return google_ai_chat_completions_request(
             base_url=llm_config.model_endpoint,
             model=llm_config.model,
-            api_key=model_settings.gemini_api_key,
+            api_key=api_key,
             # see structure of payload here: https://ai.google.dev/docs/function_calling
             data=dict(
                 contents=message_contents,

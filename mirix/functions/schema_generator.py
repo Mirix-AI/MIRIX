@@ -428,7 +428,7 @@ def generate_schema(function, name: Optional[str] = None, description: Optional[
 
 
 def generate_schema_from_args_schema_v2(
-    args_schema: Type[BaseModel], name: Optional[str] = None, description: Optional[str] = None, append_heartbeat: bool = True
+    args_schema: Type[BaseModel], name: Optional[str] = None, description: Optional[str] = None, append_contine_chaining: bool = True
 ) -> Dict[str, Any]:
     properties = {}
     required = []
@@ -445,10 +445,10 @@ def generate_schema_from_args_schema_v2(
         "parameters": {"type": "object", "properties": properties, "required": required},
     }
 
-    if append_heartbeat:
+    if append_contine_chaining:
         function_call_json["parameters"]["properties"]["continue_chaining"] = {
             "type": "boolean",
-            "description": "Request an immediate heartbeat after function execution. Set to `True` if you want to send a follow-up message or run a follow-up function.",
+            "description": "Request an immediate contine_chaining after function execution. Set to `True` if you want to send a follow-up message or run a follow-up function.",
         }
         function_call_json["parameters"]["required"].append("continue_chaining")
 

@@ -44,25 +44,41 @@ def core_memory_rewrite(self: "Agent", agent_state: "AgentState", label: str, co
         agent_state.memory.update_block_value(label=label, value=new_value)
     return None
 
-def core_memory_replace(self: "Agent", agent_state: "AgentState", label: str, old_line_number: str, new_content: str) -> Optional[str]:  # type: ignore
+def core_memory_replace(self: "Agent", agent_state: "AgentState", label: str, old_line_numbers: str, new_content: str) -> Optional[str]:  # type: ignore
     """
-    Replace the contents of core memory. `old_line_number` is the line number of the content to be updated. For instance, it should be "Line 5" if you want to update line 5 in the memory. To delete memories, use an empty string for `new_content`. Otherwise, the content will be replaced with the new content. You are only allowed to delete or update one line at a time. If you want to delete multiple lines, please call this function multiple times.
+    Replace the contents of core memory. `old_line_numbers` can be a single line number or a range. For instance, it should be "Line 5" to update line 5, or "Line 5-8" to update/delete lines 5 through 8 in the memory. To delete memories, use an empty string for `new_content`. Otherwise, the content will be replaced with the new content. When replacing a range of lines, the new_content will replace all the specified lines.
      
     Args:
         label (str): Section of the memory to be edited (persona or human).
-        old_line_number (str): The line number of the content to be updated. 
-        new_content (str): Content to write to the memory. All unicode (including emojis) are supported.
+        old_line_numbers (str): The line number(s) of the content to be updated. Can be "Line 5" for single line or "Line 5-8" for a range.
+        new_content (str): Content to write to the memory. All unicode (including emojis) are supported. Can contain newlines to create multiple lines.
 
     Returns:
         Optional[str]: None is always returned as this function does not produce a response.
     """
     current_value = str(agent_state.memory.get_block(label).value)
     current_value = current_value.split("\n")
-    old_line_number = int(old_line_number.split(" ")[-1]) - 1
-    if new_content != "":
-        current_value[old_line_number] = str(new_content)
+    
+    # Parse line numbers
+    line_part = old_line_numbers.split(" ")[-1]  # Extract the number part after "Line "
+    
+    if "-" in line_part:
+        # Range of lines
+        start_line, end_line = line_part.split("-")
+        start_idx = int(start_line) - 1  # Convert to 0-based index
+        end_idx = int(end_line) - 1      # Convert to 0-based index
     else:
-        current_value = current_value[:old_line_number] + current_value[old_line_number + 1:]
+        # Single line
+        start_idx = end_idx = int(line_part) - 1
+    
+    if new_content != "":
+        # Replace the range with new content
+        new_lines = new_content.split("\n")
+        current_value = current_value[:start_idx] + new_lines + current_value[end_idx + 1:]
+    else:
+        # Delete the lines
+        current_value = current_value[:start_idx] + current_value[end_idx + 1:]
+    
     agent_state.memory.update_block_value(label=label, value="\n".join(current_value))
     return None
 
@@ -366,6 +382,7 @@ def knowledge_vault_update(self: "Agent", old_ids: List[str], new_items: List[Kn
             source=item['source'],
             sensitivity=item['sensitivity'],
             secret_value=item['secret_value'],
+            caption=item['caption'],
             organization_id=self.user.organization_id
         )
 
@@ -386,6 +403,10 @@ def trigger_memory_update_with_instruction(self: "Agent", user_message: object, 
     client = create_client()
     agents = client.list_agents()
 
+    # Validate that user_message is a dictionary
+    if not isinstance(user_message, dict):
+        raise TypeError(f"user_message must be a dictionary, got {type(user_message).__name__}: {user_message}")
+
     # Fallback to sequential processing for backward compatibility
     response = ''
 
@@ -404,15 +425,22 @@ def trigger_memory_update_with_instruction(self: "Agent", user_message: object, 
     else:
         raise ValueError(f"Memory type '{memory_type}' is not supported. Please choose from 'core', 'episodic', 'resource', 'procedural', 'knowledge_vault', 'semantic'.")
 
+    matching_agent = None
     for agent in agents:
         if agent.agent_type == agent_type:
-            client.send_message(agent_id=agent.id, 
-                role='user', 
-                message=instruction, 
-                existing_file_uris=user_message['existing_file_uris'],
-                retrieved_memories=user_message.get('retrieved_memories', None)
-            )
-            response += '[System Message] Agent ' + agent.name + ' has been triggered to update the memory.\n'
+            matching_agent = agent
+            break
+    
+    if matching_agent is None:
+        raise ValueError(f"No agent found with type '{agent_type}'")
+    
+    client.send_message(agent_id=matching_agent.id, 
+        role='user', 
+        message="[Message from Chat Agent (Now you are allowed to make multiple function calls sequentially)] " +instruction, 
+        existing_file_uris=user_message['existing_file_uris'],
+        retrieved_memories=user_message.get('retrieved_memories', None)
+    )
+    response += '[System Message] Agent ' + matching_agent.name + ' has been triggered to update the memory.\n'
 
     return response.strip()
 
@@ -431,6 +459,10 @@ def trigger_memory_update(self: "Agent", user_message: object, memory_types: Lis
 
     client = create_client()
     agents = client.list_agents()
+
+    # Validate that user_message is a dictionary
+    if not isinstance(user_message, dict):
+        raise TypeError(f"user_message must be a dictionary, got {type(user_message).__name__}: {user_message}")
 
     if 'message_queue' in user_message:
         
@@ -473,11 +505,15 @@ def trigger_memory_update(self: "Agent", user_message: object, memory_types: Lis
 
         # Use ThreadPoolExecutor for parallel processing
         with ThreadPoolExecutor(max_workers=len(valid_agent_types)) as pool:
-            futures = [
-                pool.submit(message_queue.send_message_in_queue, 
-                           client, [agent for agent in agents if agent.agent_type == agent_type][0].id, payloads, agent_type) 
-                for agent_type in valid_agent_types
-            ]
+            futures = []
+            for agent_type in valid_agent_types:
+                matching_agents = [agent for agent in agents if agent.agent_type == agent_type]
+                if not matching_agents:
+                    raise ValueError(f"No agent found with type '{agent_type}'")
+                futures.append(
+                    pool.submit(message_queue.send_message_in_queue, 
+                               client, matching_agents[0].id, payloads, agent_type)
+                )
             
             for future in tqdm(as_completed(futures), total=len(futures)):
                 response, agent_type = future.result()
@@ -509,15 +545,22 @@ def trigger_memory_update(self: "Agent", user_message: object, memory_types: Lis
             else:
                 raise ValueError(f"Memory type '{memory_type}' is not supported. Please choose from 'core', 'episodic', 'resource', 'procedural', 'knowledge_vault', 'semantic'.")
 
+            matching_agent = None
             for agent in agents:
                 if agent.agent_type == agent_type:
-                    client.send_message(agent_id=agent.id, 
-                        role='user', 
-                        message=user_message['message'], 
-                        existing_file_uris=user_message['existing_file_uris'],
-                        retrieved_memories=user_message.get('retrieved_memories', None)
-                    )
-                    response += '[System Message] Agent ' + agent.name + ' has been triggered to update the memory.\n'
+                    matching_agent = agent
+                    break
+            
+            if matching_agent is None:
+                raise ValueError(f"No agent found with type '{agent_type}'")
+            
+            client.send_message(agent_id=matching_agent.id, 
+                role='user', 
+                message=user_message['message'], 
+                existing_file_uris=user_message['existing_file_uris'],
+                retrieved_memories=user_message.get('retrieved_memories', None)
+            )
+            response += '[System Message] Agent ' + matching_agent.name + ' has been triggered to update the memory.\n'
         
         return response.strip()
 

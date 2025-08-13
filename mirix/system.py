@@ -86,11 +86,11 @@ def get_initial_boot_messages(version="startup"):
     return messages
 
 
-def get_heartbeat(reason="Automated timer", include_location=False, location_name="San Francisco, CA, USA"):
+def get_contine_chaining(reason="Automated timer", include_location=False, location_name="San Francisco, CA, USA"):
     # Package the message with time and location
     formatted_time = get_local_time()
     packaged_message = {
-        "type": "heartbeat",
+        "type": "contine_chaining",
         "reason": reason,
         "time": formatted_time,
     }
@@ -218,7 +218,7 @@ def unpack_message(packed_message) -> str:
         return packed_message
 
     if "message" not in message_json:
-        if "type" in message_json and message_json["type"] in ["login", "heartbeat"]:
+        if "type" in message_json and message_json["type"] in ["login", "contine_chaining"]:
             # This is a valid user message that the ADE expects, so don't print warning
             return packed_message
         warnings.warn(f"Was unable to find 'message' field in packed message object: '{packed_message}'")

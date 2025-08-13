@@ -388,6 +388,13 @@ class ResourceMemoryManager:
         """Create multiple resource memory items."""
         return [self.create_item(i, actor) for i in items]
 
+    def get_total_number_of_items(self) -> int:
+        """Get the total number of items in the resource memory."""
+        with self.session_maker() as session:
+            query = select(func.count(ResourceMemoryItem.id))
+            result = session.execute(query)
+            return result.scalar_one()
+
     @update_timezone
     @enforce_types
     def list_resources(self,

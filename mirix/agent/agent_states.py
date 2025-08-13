@@ -13,7 +13,9 @@ class AgentStates:
         self.semantic_memory_agent_state = None
         self.core_memory_agent_state = None
         self.resource_memory_agent_state = None
-    
+        self.reflexion_agent_state = None
+        self.background_agent_state = None
+        
     def set_agent_state(self, name, state):
         """Set an agent state by name."""
         if hasattr(self, name):

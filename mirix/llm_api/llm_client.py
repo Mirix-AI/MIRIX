@@ -33,6 +33,13 @@ class LLMClient:
                     llm_config=llm_config,
                     put_inner_thoughts_first=put_inner_thoughts_first,
                 )
+            case "azure_openai":
+                from mirix.llm_api.azure_openai_client import AzureOpenAIClient
+
+                return AzureOpenAIClient(
+                    llm_config=llm_config,
+                    put_inner_thoughts_first=put_inner_thoughts_first,
+                )
             case "anthropic":
                 from mirix.llm_api.anthropic_client import AnthropicClient
 

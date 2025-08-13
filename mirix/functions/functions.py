@@ -1,5 +1,7 @@
 import importlib
 import inspect
+import os
+import sys
 from textwrap import dedent  # remove indentation
 from types import ModuleType
 from typing import Dict, List, Optional
@@ -129,6 +131,35 @@ def get_json_schema_from_module(module_name: str, function_name: str) -> dict:
         raise AttributeError(f"Function '{function_name}' not found in module '{module_name}'.")
 
 
+def _get_module_source(module: ModuleType) -> str:
+    """Get the source code of a module, handling PyInstaller bundles"""
+    
+    # Check if we're running in a PyInstaller bundle
+    if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+        # We're in a PyInstaller bundle
+        # Map the module name to a file path
+        module_name = module.__name__
+        
+        # For function_sets modules, extract the file name
+        if module_name.startswith('mirix.functions.function_sets.'):
+            file_name = module_name.split('.')[-1] + '.py'
+            bundled_path = os.path.join(sys._MEIPASS, 'mirix', 'functions', 'function_sets', file_name)
+            
+            try:
+                with open(bundled_path, 'r', encoding='utf-8') as f:
+                    return f.read()
+            except FileNotFoundError:
+                return f"# Module source file not found: {bundled_path}"
+        else:
+            return f"# Module source not available for {module_name}"
+    else:
+        # Normal execution - use inspect.getsource
+        try:
+            return inspect.getsource(module)
+        except OSError:
+            return f"# Module source not available for {module.__name__}"
+
+
 def load_function_set(module: ModuleType) -> dict:
     """Load the functions and generate schema for them, given a module object"""
     function_dict = {}
@@ -149,7 +180,7 @@ def load_function_set(module: ModuleType) -> dict:
                 raise e
 
             function_dict[attr_name] = {
-                "module": inspect.getsource(module),
+                "module": _get_module_source(module),
                 "python_function": attr,
                 "json_schema": generated_schema,
             }

@@ -185,11 +185,17 @@ def embedding_model(config: EmbeddingConfig, user_id: Optional[uuid.UUID] = None
 
     if endpoint_type == "openai":
         from llama_index.embeddings.openai import OpenAIEmbedding
+        from mirix.services.provider_manager import ProviderManager
+
+        # Check for database-stored API key first, fall back to model_settings
+        override_key = ProviderManager().get_openai_override_key()
+        api_key = override_key if override_key else model_settings.openai_api_key
 
         additional_kwargs = {"user_id": user_id} if user_id else {}
         model = OpenAIEmbedding(
+            model=config.embedding_model,
             api_base=config.embedding_endpoint,
-            api_key=model_settings.openai_api_key,
+            api_key=api_key,
             additional_kwargs=additional_kwargs,
         )
         return model
@@ -197,10 +203,16 @@ def embedding_model(config: EmbeddingConfig, user_id: Optional[uuid.UUID] = None
     elif endpoint_type == "google_ai":
         # Use Google AI (Gemini) for embeddings
         from llama_index.embeddings.google_genai import GoogleGenAIEmbedding
+        from mirix.services.provider_manager import ProviderManager
+        
+        # Check for database-stored API key first, fall back to model_settings
+        override_key = ProviderManager().get_gemini_override_key()
+        api_key = override_key if override_key else model_settings.gemini_api_key
         
         model = GoogleGenAIEmbedding(
+            # model=config.embedding_model,
             model_name=config.embedding_model,
-            api_key=model_settings.gemini_api_key,
+            api_key=api_key,
             api_base=config.embedding_endpoint,
         )
         return model

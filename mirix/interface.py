@@ -123,7 +123,7 @@ class CLIInterface(AgentInterface):
                 return
             msg_json.pop("type")
             printd_user_message("🧑", msg_json)
-        elif msg_json["type"] == "heartbeat":
+        elif msg_json["type"] == "contine_chaining":
             if debug:
                 msg_json.pop("type")
                 printd_user_message("💓", msg_json)
@@ -167,8 +167,8 @@ class CLIInterface(AgentInterface):
                 if match:
                     function_name = match.group(1)
                     function_args = match.group(2)
-                    if function_name in ["archival_memory_insert", "archival_memory_search", "core_memory_replace", "core_memory_append"]:
-                        if function_name in ["archival_memory_insert", "core_memory_append", "core_memory_replace"]:
+                    if function_name in ["archival_memory_insert", "archival_memory_search", "core_memory_append"]:
+                        if function_name in ["archival_memory_insert", "core_memory_append"]:
                             print_function_message("🧠", f"updating memory with {function_name}")
                         elif function_name == "archival_memory_search":
                             print_function_message("🧠", f"searching memory with {function_name}")

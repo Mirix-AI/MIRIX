@@ -1,4 +1,4 @@
-__version__ = "0.1.0"
+__version__ = "0.1.2"
 
 
 # import clients
@@ -18,3 +18,6 @@ from mirix.schemas.organization import Organization
 from mirix.schemas.tool import Tool
 from mirix.schemas.usage import MirixUsageStatistics
 from mirix.schemas.user import User
+
+# Import the new SDK interface
+from mirix.sdk import Mirix

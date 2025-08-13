@@ -277,6 +277,13 @@ class EpisodicMemoryManager:
 
             return [event.to_pydantic() for event in episodic_memory]
 
+    def get_total_number_of_items(self) -> int:
+        """Get the total number of items in the episodic memory."""
+        with self.session_maker() as session:
+            query = select(func.count(EpisodicEvent.id))
+            result = session.execute(query)
+            return result.scalar_one()
+
     @update_timezone
     @enforce_types
     def list_episodic_memory(self, 

@@ -86,17 +86,27 @@ def _process_tags(agent: AgentModel, tags: List[str], replace=True):
 
 def derive_system_message(agent_type: AgentType, system: Optional[str] = None):
     if system is None:
-        # TODO: don't hardcode
+        # Map agent types to their corresponding system prompt paths
         if agent_type == AgentType.chat_agent:
-            system = gpt_system.get_system_text("memgpt_chat")
-        elif agent_type == AgentType.offline_memory_agent:
-            system = gpt_system.get_system_text("memgpt_offline_memory")
-        elif agent_type == AgentType.chat_only_agent:
-            system = gpt_system.get_system_text("memgpt_convo_only")
-        elif agent_type == AgentType.coder_agent:
-            system = gpt_system.get_system_text("memgpt_coder_simple")
-        elif agent_type == AgentType.memory_update_agent:
-            system = gpt_system.get_system_text("memory_update_agent")
+            system = gpt_system.get_system_text("base/chat_agent")
+        elif agent_type == AgentType.episodic_memory_agent:
+            system = gpt_system.get_system_text("base/episodic_memory_agent")
+        elif agent_type == AgentType.procedural_memory_agent:
+            system = gpt_system.get_system_text("base/procedural_memory_agent")
+        elif agent_type == AgentType.knowledge_vault_agent:
+            system = gpt_system.get_system_text("base/knowledge_vault_agent")
+        elif agent_type == AgentType.meta_memory_agent:
+            system = gpt_system.get_system_text("base/meta_memory_agent")
+        elif agent_type == AgentType.semantic_memory_agent:
+            system = gpt_system.get_system_text("base/semantic_memory_agent")
+        elif agent_type == AgentType.core_memory_agent:
+            system = gpt_system.get_system_text("base/core_memory_agent")
+        elif agent_type == AgentType.resource_memory_agent:
+            system = gpt_system.get_system_text("base/resource_memory_agent")
+        elif agent_type == AgentType.reflexion_agent:
+            system = gpt_system.get_system_text("base/reflexion_agent")
+        elif agent_type == AgentType.background_agent:
+            system = gpt_system.get_system_text("base/background_agent")
         else:
             raise ValueError(f"Invalid agent type: {agent_type}")
 

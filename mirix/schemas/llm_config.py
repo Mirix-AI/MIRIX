@@ -20,6 +20,10 @@ class LLMConfig(BaseModel):
         put_inner_thoughts_in_kwargs (bool): Puts `inner_thoughts` as a kwarg in the function call if this is set to True. This helps with function calling performance and also the generation of inner thoughts.
         temperature (float): The temperature to use when generating text with the model. A higher temperature will result in more random text.
         max_tokens (int): The maximum number of tokens to generate.
+        api_key (str, optional): Custom API key for this specific model configuration.
+        api_version (str, optional): The API version for Azure OpenAI (e.g., '2024-10-01-preview').
+        azure_endpoint (str, optional): The Azure endpoint for the model (e.g., 'https://your-resource.openai.azure.com/').
+        azure_deployment (str, optional): The Azure deployment name for the model.
     """
 
     # TODO: 🤮 don't default to a vendor! bug city!
@@ -30,7 +34,7 @@ class LLMConfig(BaseModel):
         "cohere",
         "google_ai",
         "google_vertex",
-        "azure",
+        "azure_openai",
         "groq",
         "ollama",
         "webui",
@@ -74,6 +78,14 @@ class LLMConfig(BaseModel):
     max_reasoning_tokens: int = Field(
         0, description="Configurable thinking budget for extended thinking, only used if enable_reasoner is True. Minimum value is 1024."
     )
+    api_key: Optional[str] = Field(
+        None, description="Custom API key for this specific model configuration (used for custom models)"
+    )
+
+    # Azure-specific fields (Azure OpenAI only)
+    api_version: Optional[str] = Field(None, description="The API version for Azure OpenAI (e.g., '2024-10-01-preview')")
+    azure_endpoint: Optional[str] = Field(None, description="The Azure endpoint for the model (e.g., 'https://your-resource.openai.azure.com/')")
+    azure_deployment: Optional[str] = Field(None, description="The Azure deployment name for the model")
 
     # FIXME hack to silence pydantic protected namespace warning
     model_config = ConfigDict(protected_namespaces=())

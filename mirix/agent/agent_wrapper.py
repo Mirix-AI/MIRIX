@@ -36,7 +36,8 @@ from mirix.agent.temporary_message_accumulator import TemporaryMessageAccumulato
 from mirix.agent.upload_manager import UploadManager
 from mirix.agent.agent_states import AgentStates
 from mirix.agent.agent_configs import AGENT_CONFIGS
-from mirix.agent.app_constants import TEMPORARY_MESSAGE_LIMIT, MAXIMUM_NUM_IMAGES_IN_CLOUD, GEMINI_MODELS, OPENAI_MODELS
+from mirix.agent.app_constants import TEMPORARY_MESSAGE_LIMIT, MAXIMUM_NUM_IMAGES_IN_CLOUD, GEMINI_MODELS, OPENAI_MODELS, WITH_REFLEXION_AGENT, WITH_BACKGROUND_AGENT
+from mirix.schemas.mirix_message import MessageType
 
 from mirix import create_client
 from mirix import LLMConfig, EmbeddingConfig
@@ -44,6 +45,53 @@ from mirix.schemas.agent import AgentType
 from mirix.prompts import gpt_system
 from mirix.schemas.memory import ChatMemory
 from mirix.settings import model_settings
+
+logging.basicConfig(level=logging.INFO, format='[%(name)s] %(levelname)s: %(message)s')
+
+def encode_image(image_path):
+    with open(image_path, "rb") as img_file:
+        return base64.b64encode(img_file.read()).decode("utf-8")
+
+def get_image_mime_type(image_path):
+    """
+    Detect the MIME type of an image file.
+    
+    Args:
+        image_path: Path to the image file
+        
+    Returns:
+        str: MIME type (e.g., 'image/jpeg', 'image/png', etc.)
+    """
+    try:
+        # Use PIL to detect the image format
+        with Image.open(image_path) as img:
+            format_lower = img.format.lower() if img.format else None
+            
+            # Map PIL formats to MIME types
+            format_to_mime = {
+                'jpeg': 'image/jpeg',
+                'jpg': 'image/jpeg', 
+                'png': 'image/png',
+                'gif': 'image/gif',
+                'bmp': 'image/bmp',
+                'webp': 'image/webp',
+                'tiff': 'image/tiff',
+                'tif': 'image/tiff',
+                'ico': 'image/x-icon',
+                'svg': 'image/svg+xml'
+            }
+            
+            return format_to_mime.get(format_lower, 'image/jpeg')  # Default to jpeg if unknown
+            
+    except Exception as e:
+        # If PIL fails, try using mimetypes module as fallback
+        import mimetypes
+        mime_type, _ = mimetypes.guess_type(image_path)
+        if mime_type and mime_type.startswith('image/'):
+            return mime_type
+        
+        # Final fallback to jpeg
+        return 'image/jpeg'
 
 class AgentWrapper():
     
@@ -56,9 +104,12 @@ class AgentWrapper():
         with open(agent_config_file, "r") as f:
             agent_config = yaml.safe_load(f)
 
+        self.agent_config = agent_config
         self.agent_name = agent_config['agent_name']
         self.model_name = agent_config['model_name']
+        self.model_provider = agent_config.get('model_provider', None)
         self.is_screen_monitor = agent_config.get('is_screen_monitor', False)
+        self.chat_agent_standalone = True
 
         # Initialize logger early
         self.logger = logging.getLogger(f"Mirix.AgentWrapper.{self.agent_name}")
@@ -66,8 +117,8 @@ class AgentWrapper():
 
         self.client = create_client()
         self.client.set_default_llm_config(LLMConfig.default_config("gpt-4o-mini")) 
-        self.client.set_default_embedding_config(EmbeddingConfig.default_config("text-embedding-3-small")) # FOR LOCOMO evaluation
-        # self.client.set_default_embedding_config(EmbeddingConfig.default_config("text-embedding-004"))
+        # self.client.set_default_embedding_config(EmbeddingConfig.default_config("text-embedding-3-small"))
+        self.client.set_default_embedding_config(EmbeddingConfig.default_config("text-embedding-004"))
 
         # Initialize agent states container
         self.agent_states = AgentStates()
@@ -95,18 +146,37 @@ class AgentWrapper():
                     self.agent_states.core_memory_agent_state = agent_state
                 elif agent_state.name == 'resource_memory_agent':
                     self.agent_states.resource_memory_agent_state = agent_state
+                elif agent_state.name == 'reflexion_agent':
+                    self.agent_states.reflexion_agent_state = agent_state
+                elif agent_state.name == 'background_agent':
+                    self.agent_states.background_agent_state = agent_state
 
-                if agent_state.name == 'chat_agent':
-                    system_prompt = gpt_system.get_system_text(agent_state.name) if not self.is_screen_monitor else gpt_system.get_system_text(agent_state.name + '_screen_monitor')
-                else:
-                    system_prompt = gpt_system.get_system_text(agent_state.name) if not self.is_screen_monitor else gpt_system.get_system_text(agent_state.name + '_screen_monitor')
+                system_prompt = gpt_system.get_system_text('base/' + agent_state.name) if not self.is_screen_monitor else gpt_system.get_system_text('screen_monitor/' + agent_state.name)
 
                 self.client.server.agent_manager.update_agent_tools_and_system_prompts(
                     agent_id=agent_state.id,
                     actor=self.client.user,
                     system_prompt=system_prompt
                 )
-                
+            
+            if self.agent_states.reflexion_agent_state is None:
+                reflexion_agent_state = self.client.create_agent(
+                    name='reflexion_agent',
+                    memory=self.agent_states.agent_state.memory,
+                    agent_type=AgentType.reflexion_agent,
+                    system=gpt_system.get_system_text('base/reflexion_agent'),
+                )
+                setattr(self.agent_states, 'reflexion_agent_state', reflexion_agent_state)
+            
+            if self.agent_states.background_agent_state is None:
+                background_agent_state = self.client.create_agent(
+                    name='background_agent',
+                    agent_type=AgentType.background_agent,
+                    memory=self.agent_states.agent_state.memory,
+                    system=gpt_system.get_system_text('base/background_agent'),
+                )
+                setattr(self.agent_states, 'background_agent_state', background_agent_state)
+            
         else:
 
             core_memory = ChatMemory(
@@ -121,7 +191,7 @@ class AgentWrapper():
                     agent_state = self.client.create_agent(
                         name=config['name'],
                         memory=core_memory,
-                        system=gpt_system.get_system_text(config['name']),
+                        system = gpt_system.get_system_text('screen_monitor/' + config['name']) if self.is_screen_monitor else gpt_system.get_system_text('base/' + config['name'])
                     )
                 else:
                     # All other agents follow the same pattern
@@ -129,7 +199,7 @@ class AgentWrapper():
                         name=config['name'],
                         agent_type=config['agent_type'],
                         memory=core_memory,
-                        system=gpt_system.get_system_text(config['name']) if not self.is_screen_monitor else gpt_system.get_system_text(config['name']) + gpt_system.get_system_text(config['name'] + '_screen_monitor'),
+                        system = gpt_system.get_system_text('screen_monitor/' + config['name']) if self.is_screen_monitor else gpt_system.get_system_text('base/' + config['name']),
                         include_base_tools=config['include_base_tools'],
                     )
                 
@@ -164,6 +234,8 @@ class AgentWrapper():
             self.uri_to_create_time = {}
             self.upload_manager = None
 
+        print(f"🔄 Initializing model: {self.model_name}")
+
         self.set_model(self.model_name)
         self.set_memory_model(self.model_name)
         
@@ -184,6 +256,29 @@ class AgentWrapper():
         # For GEMINI models, extract all unprocessed images and fill temporary_messages
         if self.model_name in GEMINI_MODELS and self.google_client is not None:
             self._process_existing_uploaded_files()
+
+    def update_chat_agent_system_prompt(self, is_screen_monitoring: bool):
+        '''
+        Update chat agent system prompt based on screen monitoring status
+        '''
+
+        if self.chat_agent_standalone == is_screen_monitoring:
+
+            if self.is_screen_monitor:
+                file_name = 'screen_monitor/chat_agent'
+            else:
+                file_name = 'base/chat_agent'
+            
+            if is_screen_monitoring:
+                file_name = file_name + '_monitor_on'
+                self.chat_agent_standalone = False
+            else:
+                self.chat_agent_standalone = True
+                
+            self.client.server.agent_manager.update_system_prompt(
+                agent_id=self.agent_states.agent_state.id, 
+                system_prompt=gpt_system.get_system_text(file_name), 
+                actor=self.client.user)
 
     def _restore_database_before_init(self, folder_path: str):
         """
@@ -318,6 +413,8 @@ class AgentWrapper():
         """
         load_dotenv()
         gemini_api_key = os.getenv("GEMINI_API_KEY")
+        gemini_override_key = self.client.server.provider_manager.get_gemini_override_key()
+        gemini_api_key = gemini_override_key or gemini_api_key
         
         if not gemini_api_key:
             self.logger.info("Info: GEMINI_API_KEY not found. Gemini features will be available after API key is provided.")
@@ -329,16 +426,20 @@ class AgentWrapper():
             
         try:
             self.google_client = genai.Client(api_key=gemini_api_key)
-            self.logger.info("Retrieving existing files from Google Clouds...")
             
-            try:
-                existing_files = [x for x in self.google_client.files.list()]
-            except Exception as e:
-                self.logger.error(f"Error retrieving existing files from Google Clouds: {e}")
-                existing_files = []
+            # self.logger.info("Retrieving existing files from Google Clouds...")
+            
+            # try:
+            #     existing_files = [x for x in self.google_client.files.list()]
+            # except Exception as e:
+            #     self.logger.error(f"Error retrieving existing files from Google Clouds: {e}")
+            #     existing_files = []
+            # existing_image_names = set([file.name for file in existing_files])
+            
+            # self.logger.info(f"# of Existing files in Google Clouds: {len(existing_image_names)}")
+
+            existing_files = []
             existing_image_names = set([file.name for file in existing_files])
-            
-            self.logger.info(f"# of Existing files in Google Clouds: {len(existing_image_names)}")
 
             # update the database, delete the files that are in the database but got deleted somehow (potentially due to the calls unrelated to Mirix) in the cloud
             for file_name in self.client.server.cloud_file_mapping_manager.list_all_cloud_file_ids():
@@ -439,35 +540,81 @@ class AgentWrapper():
         
         self.active_persona_name = persona_name
 
-    def set_model(self, model_name: str) -> dict:
+    def _determine_model_provider(self, model_name: str, custom_agent_config: dict = None) -> str:
         """
-        Set the model for the agent.
-        Returns a dictionary with success status and any missing API keys.
+        Determine the effective model provider based on configuration override or model defaults.
+        Returns the provider type (e.g., 'openai', 'azure_openai', 'google_ai', 'anthropic').
         """
-        try:
-            self.model_name = model_name
+        # Check for provider override in custom_agent_config first
+        if custom_agent_config and custom_agent_config.get('model_provider'):
+            return custom_agent_config['model_provider']
+        
+        # Check for provider override in instance config
+        if self.model_provider:
+            return self.model_provider
+        
+        # Fall back to default provider based on model
+        if model_name in GEMINI_MODELS:
+            return "google_ai"
+        elif 'claude' in model_name.lower():
+            return "anthropic"
+        elif model_name in OPENAI_MODELS:
+            return "openai"
+        else:
+            raise ValueError(f"Invalid model provider: {model_name}")
+    
+    def _create_llm_config_for_provider(self, model_name: str, provider: str, custom_agent_config: dict = None) -> 'LLMConfig':
+        """
+        Create LLMConfig based on the specified provider.
+        """
+        if provider == "azure_openai":
+            # Azure OpenAI configuration
+            endpoint = (custom_agent_config.get('model_endpoint') if custom_agent_config 
+                       else self.agent_config.get('model_endpoint', 'https://your-resource.openai.azure.com/'))
+            api_version = (custom_agent_config.get('api_version') if custom_agent_config 
+                          else self.agent_config.get('api_version', '2024-10-01-preview'))
+            azure_deployment = (custom_agent_config.get('azure_deployment') if custom_agent_config 
+                               else self.agent_config.get('azure_deployment', model_name))
             
-            # Create LLM config manually to ensure it picks up updated API keys from model_settings
+            # Get custom API key if provided
+            api_key = None
+            if custom_agent_config and custom_agent_config.get('api_key'):
+                api_key = custom_agent_config['api_key']
+            elif self.agent_config.get('api_key'):
+                api_key = self.agent_config['api_key']
+            
+            llm_config = LLMConfig(
+                model=model_name,
+                model_endpoint_type="azure_openai",
+                model_endpoint=endpoint,
+                context_window=128000,
+                # Use the new schema fields instead of dynamic assignment
+                api_version=api_version,
+                azure_endpoint=endpoint,
+                azure_deployment=azure_deployment,
+                api_key=api_key
+            )
+                
+        elif provider == "google_ai":
+            llm_config = LLMConfig(
+                model_endpoint_type="google_ai",
+                model_endpoint="https://generativelanguage.googleapis.com",
+                model=model_name,
+                context_window=1000000
+            )
+            
+        elif provider == "anthropic":
+            llm_config = LLMConfig(
+                model_endpoint_type="anthropic",
+                model_endpoint="https://api.anthropic.com/v1",
+                model=model_name,
+                context_window=200000
+            )
+            
+        elif provider == "openai":
             if model_name == 'gpt-4o-mini' or model_name == 'gpt-4o':
                 llm_config = LLMConfig.default_config(model_name)
-
-            elif model_name in GEMINI_MODELS:
-                llm_config = LLMConfig(
-                    model_endpoint_type="google_ai",
-                    model_endpoint="https://generativelanguage.googleapis.com",
-                    model=model_name,
-                    context_window=1000000
-                )
-
-            elif 'claude' in model_name.lower():
-                llm_config = LLMConfig(
-                    model_endpoint_type="anthropic",
-                    model_endpoint="https://api.anthropic.com/v1",
-                    model=model_name,
-                    context_window=200000
-                )
-
-            elif model_name in OPENAI_MODELS:
+            else:
                 llm_config = LLMConfig(
                     model=model_name,
                     model_endpoint_type="openai",
@@ -475,14 +622,55 @@ class AgentWrapper():
                     model_wrapper=None,
                     context_window=128000,
                 )
+        else:
+            # Custom provider - use custom config or fallback to OpenAI-compatible
+            if custom_agent_config is not None:
+                assert 'model_endpoint' in custom_agent_config, "model_endpoint is required for custom models"
+                llm_config = LLMConfig(
+                    model=model_name,
+                    model_endpoint_type="openai",
+                    model_endpoint=custom_agent_config['model_endpoint'],
+                    model_wrapper=None,
+                    api_key=custom_agent_config.get('api_key'),
+                    **custom_agent_config.get('generation_config', {})
+                )
             else:
-                # Fallback to default_config for unsupported models
-                llm_config = LLMConfig.default_config(model_name)
+                assert 'model_endpoint' in self.agent_config, "model_endpoint is required for custom models"
+                llm_config = LLMConfig(
+                    model=model_name,
+                    model_endpoint_type="openai",
+                    model_endpoint=self.agent_config['model_endpoint'],
+                    model_wrapper=None,
+                    api_key=self.agent_config.get('api_key'),
+                    **self.agent_config.get('generation_config', {})
+                )
+        
+        return llm_config
+
+    def set_model(self, model_name: str, custom_agent_config: dict = None) -> dict:
+        """
+        Set the model for the agent.
+        Returns a dictionary with success status and any missing API keys.
+        """
+        try:
+            self.model_name = model_name
+            
+            # Determine the effective provider
+            provider = self._determine_model_provider(model_name, custom_agent_config)
+            
+            # Create LLM config based on provider
+            llm_config = self._create_llm_config_for_provider(model_name, provider, custom_agent_config)
             
             # Update LLM config for the client
             self.client.set_default_llm_config(llm_config)
             self.client.server.agent_manager.update_llm_config(
                 agent_id=self.agent_states.agent_state.id,
+                llm_config=llm_config,
+                actor=self.client.user
+            )
+            # set the model for reflexion agent
+            self.client.server.agent_manager.update_llm_config(
+                agent_id=self.agent_states.reflexion_agent_state.id,
                 llm_config=llm_config,
                 actor=self.client.user
             )
@@ -511,50 +699,22 @@ class AgentWrapper():
                 'model_requirements': {}
             }
 
-    def set_memory_model(self, new_model):
+    def set_memory_model(self, new_model, custom_agent_config: dict = None):
         """Set the model specifically for memory management operations"""
         
         # Define allowed memory models
-        ALLOWED_MEMORY_MODELS = ['gemini-2.0-flash', 'gemini-2.5-flash-preview-04-17', 'gemini-2.5-flash']
+        ALLOWED_MEMORY_MODELS = GEMINI_MODELS + OPENAI_MODELS
 
-        # Validate the model
-        if new_model not in ALLOWED_MEMORY_MODELS:
-            # warnings.warn(f'Invalid memory model. Only {", ".join(ALLOWED_MEMORY_MODELS)} are supported.')
-            # self.logger.warning(f'Invalid memory model. Only {", ".join(ALLOWED_MEMORY_MODELS)} are supported.')
+        # Determine the effective provider
+        provider = self._determine_model_provider(new_model, custom_agent_config)
 
-            if new_model in OPENAI_MODELS:
-                llm_config = LLMConfig(
-                    model=new_model,
-                    model_endpoint_type="openai",
-                    model_endpoint="https://api.openai.com/v1",
-                    model_wrapper=None,
-                    context_window=128000,
-                )
-            else:
-                raise ValueError(f"Invalid memory model: {new_model}")
-        
-        else:
-            
-            # All allowed memory models are Gemini models
-            llm_config = LLMConfig(
-                model_endpoint_type="google_ai",
-                model_endpoint="https://generativelanguage.googleapis.com",
-                model=new_model,
-                context_window=100000
-            )
-            
-            # Check for API key availability
-            if not self.is_gemini_client_initialized():
-                return {
-                    'success': False,
-                    'message': f'Memory model set to {new_model}, but Gemini API key is required.',
-                    'missing_keys': ['GEMINI_API_KEY'],
-                    'model_requirements': {
-                        'current_model': new_model,
-                        'required_keys': ['GEMINI_API_KEY']
-                    }
-                }
-        
+        # Validate the model - allow custom models to proceed with validation
+        if new_model not in ALLOWED_MEMORY_MODELS and not custom_agent_config and not hasattr(self, 'agent_config'):
+            # Invalid model and no custom config
+            self.logger.warning(f'Invalid memory model. Only {", ".join(ALLOWED_MEMORY_MODELS)} are supported.')
+
+        llm_config = self._create_llm_config_for_provider(new_model, provider, custom_agent_config)
+
         # Update only the memory-related agents (all agents except chat_agent)
         memory_agent_names = [
             'episodic_memory_agent',
@@ -563,7 +723,9 @@ class AgentWrapper():
             'meta_memory_agent',
             'semantic_memory_agent',
             'core_memory_agent',
-            'resource_memory_agent'
+            'resource_memory_agent',
+            'reflexion_agent',
+            'background_agent'
         ]
         
         for agent_state in self.client.list_agents():
@@ -574,7 +736,19 @@ class AgentWrapper():
                     actor=self.client.user
                 )
 
+        # Update the memory model name
         self.memory_model_name = new_model
+        
+        # Update temp_message_accumulator needs_upload based on the new model
+        if hasattr(self, 'temp_message_accumulator'):
+            self.temp_message_accumulator.update_model(new_model)
+        
+        # Determine required keys based on model type
+        required_keys = []
+        if new_model in GEMINI_MODELS:
+            required_keys = ['GEMINI_API_KEY']
+        elif new_model in OPENAI_MODELS:
+            required_keys = ['OPENAI_API_KEY']
         
         return {
             'success': True,
@@ -582,7 +756,7 @@ class AgentWrapper():
             'missing_keys': [],
             'model_requirements': {
                 'current_model': new_model,
-                'required_keys': ['GEMINI_API_KEY']
+                'required_keys': required_keys
             }
         }
     
@@ -692,10 +866,609 @@ class AgentWrapper():
             else:
                 self.logger.warning("Warning: Cannot delete files from Google Cloud - Gemini client not initialized")
 
+    def reflextion_on_memory(self):
+        """
+        Run the reflexion process with comprehensive memory analysis:
+        1. Call specific agents to remove redundancy in each memory type (episodic, semantic, core, resource, procedural, knowledge vault)
+        2. Call reflexion agent to identify and resolve potential conflicts between memories
+        3. Call agents to identify patterns and analyze new memories
+        """
+        
+        self.logger.info("Starting comprehensive reflexion on memory...")
+        
+        # Step 1: Call specific memory agents to remove redundancy
+        self.logger.info("Step 1: Calling memory agents to remove redundancy...")
+        redundancy_results = self._call_agents_to_remove_redundancy()
+        
+        # Step 2: Call reflexion agent to identify and resolve conflicts
+        self.logger.info("Step 2: Calling reflexion agent to resolve conflicts...")
+        conflict_results = self._call_reflexion_agent_for_conflicts()
+        
+        # Step 3: Call agents to connect memories. 
+        # connect("epi_id", "sem_id")
+        
+
+        # Step 4: Call agents to identify patterns and create new memories
+        self.logger.info("Step 3: Calling agents to analyze patterns and create insights...")
+        pattern_results = self._call_agents_for_pattern_analysis()
+        
+        # Final summary
+        final_summary = {
+            'redundancy_actions': redundancy_results,
+            'conflict_resolutions': conflict_results,
+            'pattern_insights': pattern_results
+        }
+        
+        self.logger.info("Reflexion process completed with actual agent actions.")
+        return final_summary
+
+    def _call_agents_to_remove_redundancy(self):
+        """Call specific memory agents to actually remove redundancy in their respective memory types"""
+        redundancy_results = {}
+        
+        # Call episodic memory agent to remove redundancy
+        self.logger.info("Calling episodic memory agent to remove redundancy...")
+        try:
+            message = "Please review your episodic memories and remove any redundant or duplicate entries. Look for similar events, overlapping timeframes, or repeated information. Merge similar memories where appropriate and delete exact duplicates. Focus on maintaining the most informative and comprehensive version of each memory."
+            
+            response, _ = self.message_queue.send_message_in_queue(
+                self.client,
+                self.agent_states.episodic_memory_agent_state.id,
+                {'message': message},
+                agent_type='episodic_memory',
+            )
+            redundancy_results['episodic'] = response
+        except Exception as e:
+            self.logger.error(f"Error calling episodic memory agent: {e}")
+            redundancy_results['episodic'] = f"Error: {e}"
+        
+        # Call semantic memory agent to remove redundancy
+        self.logger.info("Calling semantic memory agent to remove redundancy...")
+        try:
+            message = "Please review your semantic memories and eliminate redundancy. Look for duplicate concepts, overlapping knowledge entries, or repetitive information. Consolidate similar semantic items and remove exact duplicates while preserving the most complete and accurate information."
+            
+            response, _ = self.message_queue.send_message_in_queue(
+                self.client,
+                self.agent_states.semantic_memory_agent_state.id,
+                {'message': message},
+                agent_type='semantic_memory',
+            )
+            redundancy_results['semantic'] = response
+        except Exception as e:
+            self.logger.error(f"Error calling semantic memory agent: {e}")
+            redundancy_results['semantic'] = f"Error: {e}"
+        
+        # Call core memory agent to remove redundancy
+        self.logger.info("Calling core memory agent to remove redundancy...")
+        try:
+            message = "Please review the core memory blocks and remove any redundant or overlapping content. Look for duplicate information across different blocks, consolidate related content, and ensure each block contains unique and essential information without unnecessary repetition."
+            
+            response, _ = self.message_queue.send_message_in_queue(
+                self.client,
+                self.agent_states.core_memory_agent_state.id,
+                {'message': message},
+                agent_type='core_memory',
+            )
+            redundancy_results['core'] = response
+        except Exception as e:
+            self.logger.error(f"Error calling core memory agent: {e}")
+            redundancy_results['core'] = f"Error: {e}"
+        
+        # Call resource memory agent to remove redundancy
+        self.logger.info("Calling resource memory agent to remove redundancy...")
+        try:
+            message = "Please review your resource memories and remove redundant entries. Look for duplicate files, similar documents, or repeated resource information. Consolidate similar resources and remove exact duplicates while maintaining the most useful and comprehensive versions."
+            
+            response, _ = self.message_queue.send_message_in_queue(
+                self.client,
+                self.agent_states.resource_memory_agent_state.id,
+                {'message': message},
+                agent_type='resource_memory',
+            )
+            redundancy_results['resource'] = response
+        except Exception as e:
+            self.logger.error(f"Error calling resource memory agent: {e}")
+            redundancy_results['resource'] = f"Error: {e}"
+        
+        # Call procedural memory agent to remove redundancy
+        self.logger.info("Calling procedural memory agent to remove redundancy...")
+        try:
+            message = "Please review your procedural memories and eliminate redundancy. Look for duplicate procedures, overlapping step sequences, or repetitive process information. Merge similar procedures and remove exact duplicates while preserving the most accurate and complete procedural knowledge."
+            
+            response, _ = self.message_queue.send_message_in_queue(
+                self.client,
+                self.agent_states.procedural_memory_agent_state.id,
+                {'message': message},
+                agent_type='procedural_memory',
+            )
+            redundancy_results['procedural'] = response
+        except Exception as e:
+            self.logger.error(f"Error calling procedural memory agent: {e}")
+            redundancy_results['procedural'] = f"Error: {e}"
+        
+        # Call knowledge vault agent to remove redundancy
+        self.logger.info("Calling knowledge vault agent to remove redundancy...")
+        try:
+            message = "Please review your knowledge vault entries and remove redundant information. Look for duplicate credentials, repeated sensitive information, or overlapping security-related data. Consolidate similar entries and remove exact duplicates while maintaining security and completeness."
+            
+            response, _ = self.message_queue.send_message_in_queue(
+                self.client,
+                self.agent_states.knowledge_vault_agent_state.id,
+                {'message': message},
+                agent_type='knowledge_vault',
+            )
+            redundancy_results['knowledge_vault'] = response
+        except Exception as e:
+            self.logger.error(f"Error calling knowledge vault agent: {e}")
+            redundancy_results['knowledge_vault'] = f"Error: {e}"
+        
+        return redundancy_results
+
+    def _call_reflexion_agent_for_conflicts(self):
+        """Call reflexion agent to identify and resolve conflicts between memories"""
+        self.logger.info("Calling reflexion agent to resolve memory conflicts...")
+        
+        try:
+            message = """Please analyze all memories across different memory types (episodic, semantic, core, resource, procedural, knowledge vault) and identify potential conflicts:
+
+1. IDENTIFY CONFLICTS:
+   - Look for contradictory information between different memory types
+   - Find temporal inconsistencies in episodic memories
+   - Detect conflicting facts or procedures
+   - Identify outdated information that conflicts with newer data
+
+2. RESOLVE CONFLICTS:
+   - Update outdated information with more recent, accurate data
+   - Flag unresolvable conflicts for human review
+   - Merge conflicting memories where appropriate
+   - Create clarifying notes for ambiguous situations
+
+3. REPORT ACTIONS:
+   - Provide a detailed summary of conflicts found
+   - List all resolutions and updates made
+   - Highlight any conflicts requiring human intervention
+
+Please perform these actions and provide a comprehensive report of all conflict resolutions made."""
+            
+            response, _ = self.message_queue.send_message_in_queue(
+                self.client,
+                self.agent_states.reflexion_agent_state.id,
+                {'message': message},
+                agent_type='reflexion',
+            )
+            return response
+            
+        except Exception as e:
+            self.logger.error(f"Error calling reflexion agent for conflicts: {e}")
+            return f"Error: {e}"
+
+    def _call_agents_for_pattern_analysis(self):
+        """Call agents to identify patterns and create new insights"""
+        pattern_results = {}
+        
+        # Call reflexion agent for overall pattern analysis
+        self.logger.info("Calling reflexion agent for pattern analysis...")
+        try:
+            message = """Please analyze patterns across all memory types and generate new insights:
+
+1. IDENTIFY PATTERNS:
+   - Find recurring themes across episodic and semantic memories
+   - Detect temporal patterns in memory formation
+   - Identify relationship patterns between different memories
+   - Discover usage patterns in procedural and resource memories
+
+2. GENERATE INSIGHTS:
+   - Create new semantic connections based on identified patterns
+   - Generate meta-knowledge about user preferences and behaviors
+   - Identify gaps in knowledge that should be filled
+   - Suggest optimizations for memory organization
+
+3. CREATE NEW MEMORIES:
+   - Add new semantic memories based on discovered patterns
+   - Update core memory with new insights about the user
+   - Create procedural memories for frequently repeated patterns
+   - Generate summary memories for related episodic events
+
+Please perform this analysis and create new memories as appropriate. Provide a detailed report of patterns found and new memories created."""
+            
+            response, _ = self.message_queue.send_message_in_queue(
+                self.client,
+                self.agent_states.reflexion_agent_state.id,
+                {'message': message},
+                agent_type='reflexion',
+            )
+            pattern_results['reflexion_patterns'] = response
+            
+        except Exception as e:
+            self.logger.error(f"Error calling reflexion agent for patterns: {e}")
+            pattern_results['reflexion_patterns'] = f"Error: {e}"
+        
+        # Call semantic memory agent for new connections
+        self.logger.info("Calling semantic memory agent for new connections...")
+        try:
+            message = "Based on recent episodic memories and existing semantic knowledge, please identify new semantic connections and create new semantic memories that capture emerging patterns, relationships, or insights. Look for connections between concepts that weren't previously linked."
+            
+            response, _ = self.message_queue.send_message_in_queue(
+                self.client,
+                self.agent_states.semantic_memory_agent_state.id,
+                {'message': message},
+                agent_type='semantic_memory',
+            )
+            pattern_results['semantic_connections'] = response
+            
+        except Exception as e:
+            self.logger.error(f"Error calling semantic memory agent for patterns: {e}")
+            pattern_results['semantic_connections'] = f"Error: {e}"
+        
+        # Call meta memory agent for high-level insights
+        self.logger.info("Calling meta memory agent for high-level insights...")
+        try:
+            message = "Please analyze the overall memory system and generate meta-insights about memory usage patterns, knowledge gaps, and opportunities for memory optimization. Create new meta-memories that capture these high-level observations about the memory system itself."
+            
+            response, _ = self.message_queue.send_message_in_queue(
+                self.client,
+                self.agent_states.meta_memory_agent_state.id,
+                {'message': message},
+                agent_type='meta_memory',
+            )
+            pattern_results['meta_insights'] = response
+            
+        except Exception as e:
+            self.logger.error(f"Error calling meta memory agent: {e}")
+            pattern_results['meta_insights'] = f"Error: {e}"
+        
+        return pattern_results
+
+    def _remove_memory_redundancy(self):
+        """Remove redundancy in each memory type"""
+        redundancy_results = {}
+        
+        try:
+            # Analyze episodic memory redundancy
+            episodic_memories = self.client.server.episodic_memory_manager.list_episodic_memory(
+                self.agent_states.episodic_memory_agent_state, limit=None
+            )
+            redundancy_results['episodic'] = self._analyze_redundancy(episodic_memories, 'episodic')
+            
+            # Analyze semantic memory redundancy
+            semantic_memories = self.client.server.semantic_memory_manager.list_semantic_items(
+                self.agent_states.semantic_memory_agent_state, limit=None
+            )
+            redundancy_results['semantic'] = self._analyze_redundancy(semantic_memories, 'semantic')
+            
+            # Analyze core memory redundancy
+            core_blocks = self.client.server.block_manager.get_blocks(self.client.user)
+            redundancy_results['core'] = self._analyze_core_redundancy(core_blocks)
+            
+            # Analyze resource memory redundancy
+            resource_memories = self.client.server.resource_memory_manager.list_resources(
+                self.agent_states.resource_memory_agent_state, limit=None
+            )
+            redundancy_results['resource'] = self._analyze_redundancy(resource_memories, 'resource')
+            
+            # Analyze procedural memory redundancy
+            procedural_memories = self.client.server.procedural_memory_manager.list_procedures(
+                self.agent_states.procedural_memory_agent_state, limit=None
+            )
+            redundancy_results['procedural'] = self._analyze_redundancy(procedural_memories, 'procedural')
+            
+            # Analyze knowledge vault redundancy
+            knowledge_vault_items = self.client.server.knowledge_vault_manager.list_knowledge(
+                self.agent_states.knowledge_vault_agent_state, limit=None
+            )
+            redundancy_results['knowledge_vault'] = self._analyze_redundancy(knowledge_vault_items, 'knowledge_vault')
+            
+        except Exception as e:
+            self.logger.error(f"Error analyzing redundancy: {e}")
+            redundancy_results['error'] = str(e)
+        
+        return redundancy_results
+
+    def _analyze_redundancy(self, memories, memory_type):
+        """Analyze redundancy within a specific memory type"""
+        if not memories:
+            return f"No {memory_type} memories found."
+        
+        redundancy_info = {
+            'total_count': len(memories),
+            'potential_duplicates': [],
+            'similar_items': [],
+            'recommendations': []
+        }
+        
+        # Compare memories for similarity
+        for i, memory1 in enumerate(memories):
+            for j, memory2 in enumerate(memories[i+1:], i+1):
+                similarity_score = self._calculate_similarity(memory1, memory2, memory_type)
+                
+                if similarity_score > 0.9:  # Very high similarity - potential duplicate
+                    redundancy_info['potential_duplicates'].append({
+                        'memory1_id': getattr(memory1, 'id', i),
+                        'memory2_id': getattr(memory2, 'id', j),
+                        'similarity': similarity_score,
+                        'content1': self._get_memory_content(memory1, memory_type),
+                        'content2': self._get_memory_content(memory2, memory_type)
+                    })
+                elif similarity_score > 0.7:  # High similarity - could be merged
+                    redundancy_info['similar_items'].append({
+                        'memory1_id': getattr(memory1, 'id', i),
+                        'memory2_id': getattr(memory2, 'id', j),
+                        'similarity': similarity_score,
+                        'content1': self._get_memory_content(memory1, memory_type),
+                        'content2': self._get_memory_content(memory2, memory_type)
+                    })
+        
+        # Generate recommendations
+        if redundancy_info['potential_duplicates']:
+            redundancy_info['recommendations'].append(f"Found {len(redundancy_info['potential_duplicates'])} potential duplicates that should be reviewed for removal.")
+        
+        if redundancy_info['similar_items']:
+            redundancy_info['recommendations'].append(f"Found {len(redundancy_info['similar_items'])} similar items that could be merged or consolidated.")
+        
+        return redundancy_info
+
+    def _analyze_core_redundancy(self, core_blocks):
+        """Analyze redundancy in core memory blocks"""
+        if not core_blocks:
+            return "No core memory blocks found."
+        
+        redundancy_info = {
+            'total_blocks': len(core_blocks),
+            'overlapping_content': [],
+            'recommendations': []
+        }
+        
+        # Check for overlapping content between core blocks
+        for i, block1 in enumerate(core_blocks):
+            for j, block2 in enumerate(core_blocks[i+1:], i+1):
+                if self._check_core_overlap(block1, block2):
+                    redundancy_info['overlapping_content'].append({
+                        'block1_label': block1.label,
+                        'block2_label': block2.label,
+                        'overlap_description': f"Potential content overlap between {block1.label} and {block2.label}"
+                    })
+        
+        if redundancy_info['overlapping_content']:
+            redundancy_info['recommendations'].append("Review overlapping core memory blocks for consolidation.")
+        
+        return redundancy_info
+
+    def _identify_memory_conflicts(self):
+        """Identify potential conflicts between memories across all types"""
+        conflict_results = {
+            'cross_type_conflicts': [],
+            'temporal_conflicts': [],
+            'content_conflicts': [],
+            'recommendations': []
+        }
+        
+        try:
+            # Get all memory types
+            all_memories = {
+                'episodic': self.client.server.episodic_memory_manager.list_episodic_memory(
+                    self.agent_states.episodic_memory_agent_state, limit=None
+                ) or [],
+                'semantic': self.client.server.semantic_memory_manager.list_semantic_items(
+                    self.agent_states.semantic_memory_agent_state, limit=None
+                ) or [],
+                'procedural': self.client.server.procedural_memory_manager.list_procedures(
+                    self.agent_states.procedural_memory_agent_state, limit=None
+                ) or [],
+                'resource': self.client.server.resource_memory_manager.list_resources(
+                    self.agent_states.resource_memory_agent_state, limit=None
+                ) or [],
+                'knowledge_vault': self.client.server.knowledge_vault_manager.list_knowledge(
+                    self.agent_states.knowledge_vault_agent_state, limit=None
+                ) or []
+            }
+            
+            # Check for conflicts between different memory types
+            conflict_results['cross_type_conflicts'] = self._find_cross_type_conflicts(all_memories)
+            
+            # Check for temporal conflicts in episodic memories
+            conflict_results['temporal_conflicts'] = self._find_temporal_conflicts(all_memories['episodic'])
+            
+            # Check for content conflicts across all memories
+            conflict_results['content_conflicts'] = self._find_content_conflicts(all_memories)
+            
+            # Generate recommendations
+            total_conflicts = (len(conflict_results['cross_type_conflicts']) + 
+                             len(conflict_results['temporal_conflicts']) + 
+                             len(conflict_results['content_conflicts']))
+            
+            if total_conflicts > 0:
+                conflict_results['recommendations'].append(f"Found {total_conflicts} potential conflicts that need resolution.")
+            else:
+                conflict_results['recommendations'].append("No significant conflicts detected between memories.")
+                
+        except Exception as e:
+            self.logger.error(f"Error identifying conflicts: {e}")
+            conflict_results['error'] = str(e)
+        
+        return conflict_results
+
+    def _analyze_memory_patterns(self):
+        """Identify patterns and analyze new memories"""
+        pattern_results = {
+            'recurring_themes': [],
+            'temporal_patterns': [],
+            'relationship_patterns': [],
+            'new_insights': [],
+            'recommendations': []
+        }
+        
+        try:
+            # Get all memories for pattern analysis
+            all_memories = self._get_all_memories_for_analysis()
+            
+            # Identify recurring themes
+            pattern_results['recurring_themes'] = self._identify_recurring_themes(all_memories)
+            
+            # Identify temporal patterns
+            pattern_results['temporal_patterns'] = self._identify_temporal_patterns(all_memories)
+            
+            # Identify relationship patterns
+            pattern_results['relationship_patterns'] = self._identify_relationship_patterns(all_memories)
+            
+            # Generate new insights based on patterns
+            pattern_results['new_insights'] = self._generate_insights_from_patterns(pattern_results)
+            
+            # Generate recommendations
+            pattern_results['recommendations'] = self._generate_pattern_recommendations(pattern_results)
+            
+        except Exception as e:
+            self.logger.error(f"Error analyzing patterns: {e}")
+            pattern_results['error'] = str(e)
+        
+        return pattern_results
+
+    def _calculate_similarity(self, memory1, memory2, memory_type):
+        """Calculate similarity between two memories (simplified implementation)"""
+        try:
+            content1 = self._get_memory_content(memory1, memory_type).lower()
+            content2 = self._get_memory_content(memory2, memory_type).lower()
+            
+            # Simple similarity based on common words (in real implementation, would use embeddings)
+            words1 = set(content1.split())
+            words2 = set(content2.split())
+            
+            if not words1 and not words2:
+                return 0.0
+            
+            intersection = len(words1.intersection(words2))
+            union = len(words1.union(words2))
+            
+            return intersection / union if union > 0 else 0.0
+            
+        except Exception:
+            return 0.0
+
+    def _get_memory_content(self, memory, memory_type):
+        """Extract relevant content from memory based on type"""
+        try:
+            if memory_type == 'episodic':
+                return f"{getattr(memory, 'summary', '')} {getattr(memory, 'details', '')}"
+            elif memory_type == 'semantic':
+                return f"{getattr(memory, 'name', '')} {getattr(memory, 'summary', '')} {getattr(memory, 'details', '')}"
+            elif memory_type == 'procedural':
+                return f"{getattr(memory, 'summary', '')} {' '.join(getattr(memory, 'steps', []))}"
+            elif memory_type == 'resource':
+                return f"{getattr(memory, 'title', '')} {getattr(memory, 'summary', '')} {getattr(memory, 'content', '')}"
+            elif memory_type == 'knowledge_vault':
+                return f"{getattr(memory, 'caption', '')} {getattr(memory, 'secret_value', '')}"
+            else:
+                return str(memory)
+        except Exception:
+            return ""
+
+    def _check_core_overlap(self, block1, block2):
+        """Check if two core memory blocks have overlapping content"""
+        try:
+            content1 = getattr(block1, 'value', '').lower()
+            content2 = getattr(block2, 'value', '').lower()
+            
+            if not content1 or not content2:
+                return False
+            
+            # Simple overlap check (could be enhanced with more sophisticated analysis)
+            words1 = set(content1.split())
+            words2 = set(content2.split())
+            
+            overlap_ratio = len(words1.intersection(words2)) / min(len(words1), len(words2))
+            return overlap_ratio > 0.3  # 30% overlap threshold
+            
+        except Exception:
+            return False
+
+    def _find_cross_type_conflicts(self, all_memories):
+        """Find conflicts between different memory types"""
+        conflicts = []
+        # Implementation would compare memories across types for conflicting information
+        # This is a placeholder for the complex logic
+        return conflicts
+
+    def _find_temporal_conflicts(self, episodic_memories):
+        """Find temporal conflicts in episodic memories"""
+        conflicts = []
+        # Implementation would check for chronologically impossible events
+        return conflicts
+
+    def _find_content_conflicts(self, all_memories):
+        """Find content conflicts across all memories"""
+        conflicts = []
+        # Implementation would identify contradictory information
+        return conflicts
+
+    def _get_all_memories_for_analysis(self):
+        """Get all memories organized for pattern analysis"""
+        return {
+            'episodic': self.client.server.episodic_memory_manager.list_episodic_memory(
+                self.agent_states.episodic_memory_agent_state, limit=None
+            ) or [],
+            'semantic': self.client.server.semantic_memory_manager.list_semantic_items(
+                self.agent_states.semantic_memory_agent_state, limit=None
+            ) or [],
+            'procedural': self.client.server.procedural_memory_manager.list_procedures(
+                self.agent_states.procedural_memory_agent_state, limit=None
+            ) or [],
+            'resource': self.client.server.resource_memory_manager.list_resources(
+                self.agent_states.resource_memory_agent_state, limit=None
+            ) or [],
+            'knowledge_vault': self.client.server.knowledge_vault_manager.list_knowledge(
+                self.agent_states.knowledge_vault_agent_state, limit=None
+            ) or []
+        }
+
+    def _identify_recurring_themes(self, all_memories):
+        """Identify recurring themes across memories"""
+        themes = []
+        # Implementation would analyze content for recurring topics
+        return themes
+
+    def _identify_temporal_patterns(self, all_memories):
+        """Identify temporal patterns in memories"""
+        patterns = []
+        # Implementation would analyze time-based patterns
+        return patterns
+
+    def _identify_relationship_patterns(self, all_memories):
+        """Identify relationship patterns between memories"""
+        patterns = []
+        # Implementation would find connections between memories
+        return patterns
+
+    def _generate_insights_from_patterns(self, pattern_results):
+        """Generate new insights based on identified patterns"""
+        insights = []
+        # Implementation would create new knowledge from patterns
+        return insights
+
+    def _generate_pattern_recommendations(self, pattern_results):
+        """Generate recommendations based on pattern analysis"""
+        recommendations = []
+        # Implementation would suggest actions based on patterns
+        return recommendations
+
+    def _compile_reflexion_summary(self, redundancy_results, conflict_results, pattern_results):
+        """Compile a comprehensive summary of the reflexion analysis"""
+        summary = {
+            'redundancy_summary': redundancy_results,
+            'conflict_summary': conflict_results,
+            'pattern_summary': pattern_results,
+            'overall_recommendations': []
+        }
+        
+        # Add overall recommendations
+        if any('error' not in results for results in [redundancy_results, conflict_results, pattern_results]):
+            summary['overall_recommendations'].append("Complete comprehensive memory optimization based on analysis.")
+        
+        return summary
+
     def send_message(self, 
                       message=None, 
                       images=None, 
                       image_uris=None, 
+                      sources=None,
                       voice_files=None,
                       memorizing=False, 
                       delete_after_upload=True, 
@@ -703,7 +1476,7 @@ class AgentWrapper():
                       display_intermediate_message=None,
                       force_absorb_content=False,
                       async_upload=True):
-        
+
         # Check if Gemini features are required but not available
         if self.model_name in GEMINI_MODELS and not self.is_gemini_client_initialized():
             if images is not None or image_uris is not None or voice_files is not None:
@@ -738,6 +1511,7 @@ class AgentWrapper():
                 {
                     'message': message,
                     'image_uris': image_uris,
+                    'sources': sources,
                     'voice_files': voice_files,
                 },
                 timestamp,
@@ -761,6 +1535,13 @@ class AgentWrapper():
 
         else:
 
+            if image_uris is not None:
+                if isinstance(message, str):
+                    message = [{'type': 'text', 'text': message}]
+                for image_uri in image_uris:
+                    mime_type = get_image_mime_type(image_uri)
+                    message.append({'type': 'image_data', 'image_data': {'data': f"data:{mime_type};base64,{encode_image(image_uri)}", 'detail': 'auto'}})
+
             # Only get recent images for chat context if user has enabled this feature
             if self.include_recent_screenshots:
 
@@ -769,7 +1550,7 @@ class AgentWrapper():
 
                 extra_messages = []
 
-                most_recent_images = self.temp_message_accumulator.get_recent_images_for_chat()
+                most_recent_images = self.temp_message_accumulator.get_recent_images_for_chat(current_timestamp=datetime.now(self.timezone))
 
                 if len(most_recent_images) > 0:
 
@@ -778,19 +1559,39 @@ class AgentWrapper():
                         'text': f"Additional images (screenshots) from the system start here:"
                     })
 
-                    for idx, (timestamp, file_ref) in enumerate(most_recent_images):
+                    for idx, (timestamp, file_ref, source) in enumerate(most_recent_images):
                         
                         if hasattr(file_ref, 'uri'):
+                            source_text = f"; Screenshot from App: {source}" if source else ""
                             extra_messages.append({
                                 'type': 'text',
-                                'text': f"Timestamp: {timestamp} Image Index {idx}:"
+                                'text': f"Timestamp: {timestamp}; Image Index {idx}" + source_text
                             })
                             extra_messages.append({
                                 'type': 'google_cloud_file_uri',
                                 'google_cloud_file_uri': file_ref.uri
                             })
                         else:
-                            raise NotImplementedError("Local file paths are not supported for chat context")
+                            # For non-GEMINI models, convert local file paths to base64
+                            try:
+                                source_text = f"; Screenshot from App: {source_text}" if source else ""
+                                extra_messages.append({
+                                    'type': 'text',
+                                    'text': f"Timestamp: {timestamp}; Image Index {idx}" + source_text
+                                })
+                                mime_type = get_image_mime_type(file_ref)
+                                base64_data = encode_image(file_ref)
+                                extra_messages.append({
+                                    'type': 'image_data',
+                                    'image_data': {
+                                        'data': f"data:{mime_type};base64,{base64_data}",
+                                        'detail': 'auto'
+                                    }
+                                })
+                            except Exception as e:
+                                self.logger.error(f"Failed to encode image for chat context: {file_ref}, error: {e}")
+                                # Skip this image if encoding fails
+                                continue
                     
                     extra_messages.append({
                         'type': 'text',
@@ -818,29 +1619,38 @@ class AgentWrapper():
 
             # Check if response is an error string
             if response == "ERROR":
-                return "ERROR"
+                return "ERROR_RESPONSE_FAILED"
             
             # Check if response has the expected structure
             if not hasattr(response, 'messages') or len(response.messages) < 2:
-                return "ERROR"
+                return "ERROR_INVALID_RESPONSE_STRUCTURE"
             
             try:
 
+                # find how many tools are called
+                num_tools_called = 0
+                for message in response.messages[::-1]:
+                    if message.message_type == MessageType.tool_return_message:
+                        num_tools_called += 1
+                    else:
+                        break
+
                 # Check if the message has tool_call attribute
-                if not hasattr(response.messages[-3], 'tool_call'):
-                    return "ERROR"
+                # 1->3; 2->5
+                if not hasattr(response.messages[-(num_tools_called * 2 + 1)], 'tool_call'):
+                    return "ERROR_NO_TOOL_CALL"
                 
-                tool_call = response.messages[-3].tool_call
+                tool_call = response.messages[-(num_tools_called * 2 + 1)].tool_call
                 
                 parsed_args = parse_json(tool_call.arguments)
                 
                 if 'message' not in parsed_args:
-                    return "ERROR"
+                    return "ERROR_NO_MESSAGE_IN_ARGS"
                     
                 response_text = parsed_args['message']
                 
             except (AttributeError, KeyError, IndexError, json.JSONDecodeError) as e:
-                return "ERROR"
+                return "ERROR_PARSING_EXCEPTION"
             
             # Add conversation to accumulator
             self.temp_message_accumulator.add_user_conversation(message, response_text)
@@ -872,7 +1682,11 @@ class AgentWrapper():
             status['model_requirements']['current_model'] = self.model_name
             status['model_requirements']['required_keys'] = ['GEMINI_API_KEY']
             
-            if not self.is_gemini_client_initialized() or not model_settings.gemini_api_key:
+            # Check database first for API key, then model_settings
+            gemini_override_key = self.client.server.provider_manager.get_gemini_override_key()
+            has_gemini_key = gemini_override_key or model_settings.gemini_api_key
+            
+            if not self.is_gemini_client_initialized() or not has_gemini_key:
                 if 'GEMINI_API_KEY' not in status['missing_keys']:
                     status['missing_keys'].append('GEMINI_API_KEY')
             else:
@@ -882,7 +1696,11 @@ class AgentWrapper():
             status['model_requirements']['current_model'] = self.model_name
             status['model_requirements']['required_keys'] = ['OPENAI_API_KEY']
             
-            if not model_settings.openai_api_key:
+            # Check database first for API key, then model_settings
+            openai_override_key = self.client.server.provider_manager.get_openai_override_key()
+            has_openai_key = openai_override_key or model_settings.openai_api_key
+            
+            if not has_openai_key:
                 if 'OPENAI_API_KEY' not in status['missing_keys']:
                     status['missing_keys'].append('OPENAI_API_KEY')
             else:
@@ -892,7 +1710,10 @@ class AgentWrapper():
             status['model_requirements']['current_model'] = self.model_name
             status['model_requirements']['required_keys'] = ['ANTHROPIC_API_KEY']
             
-            if not model_settings.anthropic_api_key:
+            claude_override_key = self.client.server.provider_manager.get_anthropic_override_key()
+            has_claude_key = claude_override_key or model_settings.anthropic_api_key
+
+            if not has_claude_key:
                 if 'ANTHROPIC_API_KEY' not in status['missing_keys']:
                     status['missing_keys'].append('ANTHROPIC_API_KEY')
             else:
@@ -906,30 +1727,29 @@ class AgentWrapper():
     def provide_api_key(self, key_name: str, api_key: str) -> dict:
         """
         Provide an API key for a specific service.
-        Saves the key to .env file for persistence across sessions.
+        Saves the key to database for persistence across sessions.
         Returns a dictionary with success status and any error messages.
         """
+
         result = {'success': False, 'message': ''}
-        
-        # Save to .env file first for all key types
-        try:
-            self._save_api_key_to_env_file(key_name, api_key)
-            
-            # Reload the global model_settings to pick up the new API key
-            model_settings.__init__()
-            
-            # Update the environment variable for this session
-            os.environ[key_name] = api_key
-            
-            result['success'] = True
-            result['message'] = f'{key_name} successfully configured and saved to .env file!'
-            
-        except Exception as e:
-            result['message'] = f'Failed to save {key_name}: {str(e)}'
-            return result
         
         # Handle specific initialization for different services
         if key_name == 'GEMINI_API_KEY':
+            # Save to database using provider_manager
+            try:
+                # Create or update the Google AI provider in the database
+                self.client.server.provider_manager.upsert_provider(
+                    name="google_ai",
+                    api_key=api_key,
+                    organization_id=self.client.user.organization_id,
+                    actor=self.client.user
+                )
+                result['success'] = True
+                result['message'] = 'Gemini API key successfully saved to database!'
+            except Exception as e:
+                result['message'] = f'Failed to save Gemini API key to database: {str(e)}'
+                return result
+                
             if self.model_name not in GEMINI_MODELS:
                 result['message'] = f"Gemini API key saved but not needed for current model: {self.model_name}"
                 return result
@@ -945,75 +1765,62 @@ class AgentWrapper():
                     if 'GEMINI_API_KEY' in self.missing_api_keys:
                         self.missing_api_keys.remove('GEMINI_API_KEY')
                     
-                    result['message'] = 'Gemini API key successfully configured and Gemini client initialized!'
+                    result['message'] = 'Gemini API key successfully saved to database and Gemini client initialized!'
                 else:
-                    result['message'] = 'Gemini API key saved but failed to complete initialization'
+                    result['message'] = 'Gemini API key saved to database but failed to complete initialization'
                     
             except Exception as e:
-                result['message'] = f'Gemini API key saved but validation failed: {str(e)}'
+                result['message'] = f'Gemini API key saved to database but validation failed: {str(e)}'
                 self.google_client = None
                 
         elif key_name == 'OPENAI_API_KEY':
-            # For OpenAI, the key will be picked up automatically by the client
-            # when model_settings is reloaded and used in the next request
+            # Save to database using provider_manager
+            try:
+                # Create or update the OpenAI provider in the database
+                self.client.server.provider_manager.upsert_provider(
+                    name="openai",
+                    api_key=api_key,
+                    organization_id=self.client.user.organization_id,
+                    actor=self.client.user
+                )
+                result['success'] = True
+                result['message'] = 'OpenAI API key successfully saved to database!'
+            except Exception as e:
+                result['message'] = f'Failed to save OpenAI API key to database: {str(e)}'
+                return result
+
+            # Remove from missing keys list
             if 'OPENAI_API_KEY' in self.missing_api_keys:
                 self.missing_api_keys.remove('OPENAI_API_KEY')
-            result['message'] = 'OpenAI API key successfully configured!'
             
         elif key_name == 'ANTHROPIC_API_KEY':
-            # For Anthropic, the key will be picked up automatically by the client
-            # when model_settings is reloaded and used in the next request
+            # Save to database using provider_manager
+            try:
+                # Create or update the Anthropic provider in the database
+                self.client.server.provider_manager.upsert_provider(
+                    name="anthropic",
+                    api_key=api_key,
+                    organization_id=self.client.user.organization_id,
+                    actor=self.client.user
+                )
+                result['success'] = True
+                result['message'] = 'Anthropic API key successfully saved to database!'
+            except Exception as e:
+                result['message'] = f'Failed to save Anthropic API key to database: {str(e)}'
+                return result
+            
+            # Remove from missing keys list
             if 'ANTHROPIC_API_KEY' in self.missing_api_keys:
                 self.missing_api_keys.remove('ANTHROPIC_API_KEY')
-            result['message'] = 'Anthropic API key successfully configured!'
             
         else:
-            # For any other API key, just confirm it was saved
+            # For any other API key, just confirm it was provided
+            result['success'] = True
             result['message'] = f'{key_name} successfully configured!'
             
         return result
     
-    def _save_api_key_to_env_file(self, key_name: str, api_key: str):
-        """
-        Save an API key to the .env file for persistence across sessions.
-        """
-        from pathlib import Path
-        
-        # Find the .env file (look in current directory and parent directories)
-        env_file_path = None
-        current_path = Path.cwd()
-        
-        # Check current directory and up to 3 parent directories
-        for _ in range(4):
-            potential_env_path = current_path / '.env'
-            if potential_env_path.exists():
-                env_file_path = potential_env_path
-                break
-            current_path = current_path.parent
-        
-        # If no .env file found, create one in the current working directory
-        if env_file_path is None:
-            env_file_path = Path.cwd() / '.env'
-        
-        # Read existing .env file content
-        env_content = {}
-        if env_file_path.exists():
-            with open(env_file_path, 'r') as f:
-                for line in f:
-                    line = line.strip()
-                    if line and not line.startswith('#') and '=' in line:
-                        key, value = line.split('=', 1)
-                        env_content[key.strip()] = value.strip()
-        
-        # Update the API key
-        env_content[key_name] = api_key
-        
-        # Write back to .env file
-        with open(env_file_path, 'w') as f:
-            for key, value in env_content.items():
-                f.write(f"{key}={value}\n")
-        
-        self.logger.info(f"API key {key_name} saved to {env_file_path}")
+
 
     def _complete_gemini_initialization(self) -> bool:
         """Complete Gemini initialization after API key is provided."""
@@ -1158,6 +1965,12 @@ class AgentWrapper():
                     with open(Path(folder_path) / "agent_config.json", "w") as f:
                         json.dump(agent_config, f, indent=2)
                     
+                    # Save the agent configuration as YAML
+                    config_dest = Path(folder_path) / "mirix_config.yaml"
+                    with open(config_dest, "w") as f:
+                        yaml.dump(self.agent_config, f, default_flow_style=False, indent=2)
+                    self.logger.info(f"✅ Agent configuration saved: {config_dest}")
+                    
                     result['success'] = True
                     result['message'] = f'Agent state saved successfully to {folder_path}'
                     
@@ -1193,6 +2006,12 @@ class AgentWrapper():
                     with open(Path(folder_path) / "agent_config.json", "w") as f:
                         json.dump(agent_config, f, indent=2)
                     
+                    # Save the agent configuration as YAML
+                    config_dest = Path(folder_path) / "mirix_config.yaml"
+                    with open(config_dest, "w") as f:
+                        yaml.dump(self.agent_config, f, default_flow_style=False, indent=2)
+                    self.logger.info(f"✅ Agent configuration saved: {config_dest}")
+                    
                     result['success'] = True
                     result['message'] = f'Agent state saved successfully to {folder_path}'
                 else:
@@ -1213,6 +2032,7 @@ class AgentWrapper():
         Returns:
             Dictionary with database information
         """
+        from pathlib import Path
         from mirix.settings import settings
         
         info = {

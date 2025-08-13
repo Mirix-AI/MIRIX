@@ -21,7 +21,7 @@ from mirix.agent import Agent, save_agent
 from mirix.interface import AgentInterface  # abstract
 from mirix.interface import CLIInterface  # for printing to terminal
 from mirix.log import get_logger
-from mirix.agent import EpisodicMemoryAgent, ProceduralMemoryAgent, ResourceMemoryAgent, KnowledgeVaultAgent, MetaMemoryAgent, SemanticMemoryAgent, CoreMemoryAgent
+from mirix.agent import EpisodicMemoryAgent, ProceduralMemoryAgent, ResourceMemoryAgent, KnowledgeVaultAgent, MetaMemoryAgent, SemanticMemoryAgent, CoreMemoryAgent, ReflexionAgent, BackgroundAgent
 from mirix.orm import Base
 from mirix.orm.errors import NoResultFound
 from mirix.schemas.agent import AgentState, AgentType, CreateAgent
@@ -68,6 +68,7 @@ from mirix.services.semantic_memory_manager import SemanticMemoryManager
 from mirix.services.per_agent_lock_manager import PerAgentLockManager
 from mirix.services.cloud_file_mapping_manager import CloudFileMappingManager
 from mirix.services.sandbox_config_manager import SandboxConfigManager
+from mirix.services.provider_manager import ProviderManager
 from mirix.services.step_manager import StepManager
 from mirix.services.tool_execution_sandbox import ToolExecutionSandbox
 from mirix.services.tool_manager import ToolManager
@@ -180,7 +181,96 @@ def db_error_handler():
         # raise ValueError(f"SQLite DB error: {str(e)}")
         exit(1)
 
-if settings.mirix_pg_uri_no_default:
+# Check for PGlite mode
+USE_PGLITE = os.environ.get('MIRIX_USE_PGLITE', 'false').lower() == 'true'
+
+if USE_PGLITE:
+    print("PGlite mode detected - setting up PGlite adapter")
+    
+    # Import PGlite connector
+    try:
+        from mirix.database.pglite_connector import pglite_connector
+        
+        # Create a simple adapter to make PGlite work with existing code
+        class PGliteSession:
+            """Adapter to make PGlite work with SQLAlchemy-style code"""
+            
+            def __init__(self, connector):
+                self.connector = connector
+                
+            def execute(self, query, params=None):
+                """Execute a query using PGlite bridge"""
+                if hasattr(query, 'compile'):
+                    # Handle SQLAlchemy query objects
+                    compiled = query.compile(compile_kwargs={"literal_binds": True})
+                    query_str = str(compiled)
+                else:
+                    query_str = str(query)
+                
+                result = self.connector.execute_query(query_str, params)
+                
+                # Create a simple result wrapper
+                class ResultWrapper:
+                    def __init__(self, data):
+                        self.rows = data.get('rows', [])
+                        self.rowcount = data.get('rowCount', 0)
+                        
+                    def scalars(self):
+                        return self.rows
+                        
+                    def all(self):
+                        return self.rows
+                        
+                    def first(self):
+                        return self.rows[0] if self.rows else None
+                        
+                return ResultWrapper(result)
+                
+            def commit(self):
+                pass  # PGlite handles commits automatically
+                
+            def rollback(self):
+                pass  # Basic implementation
+                
+            def close(self):
+                pass  # No need to close PGlite sessions
+        
+        class PGliteEngine:
+            """Engine adapter for PGlite"""
+            
+            def __init__(self, connector):
+                self.connector = connector
+                
+            def connect(self):
+                return PGliteSession(self.connector)
+                
+        # Create the engine
+        engine = PGliteEngine(pglite_connector)
+        
+        # Create sessionmaker
+        class PGliteSessionMaker:
+            def __init__(self, engine):
+                self.engine = engine
+                
+            def __call__(self):
+                return self.engine.connect()
+                
+        SessionLocal = PGliteSessionMaker(engine)
+        
+        # Set config for PGlite mode
+        config.recall_storage_type = "pglite"
+        config.recall_storage_uri = "pglite://local"
+        config.archival_storage_type = "pglite" 
+        config.archival_storage_uri = "pglite://local"
+        
+        print("PGlite adapter initialized successfully")
+        
+    except ImportError as e:
+        print(f"Failed to import PGlite connector: {e}")
+        print("Falling back to SQLite mode")
+        USE_PGLITE = False
+
+if not USE_PGLITE and settings.mirix_pg_uri_no_default:
     print("Creating engine", settings.mirix_pg_uri)
     config.recall_storage_type = "postgres"
     config.recall_storage_uri = settings.mirix_pg_uri_no_default
@@ -199,9 +289,26 @@ if settings.mirix_pg_uri_no_default:
     
     # Create all tables for PostgreSQL
     Base.metadata.create_all(bind=engine)
-else:
+elif not USE_PGLITE:
     # TODO: don't rely on config storage
-    engine = create_engine("sqlite:///" + os.path.join(config.recall_storage_path, "sqlite.db"))
+    sqlite_db_path = os.path.join(config.recall_storage_path, "sqlite.db")
+    
+    # Configure SQLite engine with proper concurrency settings
+    engine = create_engine(
+        f"sqlite:///{sqlite_db_path}",
+        # Connection pooling configuration for better concurrency
+        pool_size=20,
+        max_overflow=30,
+        pool_timeout=30,
+        pool_recycle=3600,
+        pool_pre_ping=True,
+        # Enable SQLite-specific options
+        connect_args={
+            "check_same_thread": False,  # Allow sharing connections between threads
+            "timeout": 30,  # 30 second timeout for database locks
+        },
+        echo=False,
+    )
 
     # Store the original connect method
     original_connect = engine.connect
@@ -228,8 +335,9 @@ else:
     engine.connect = wrapped_connect
 
     Base.metadata.create_all(bind=engine)
-    
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+if not USE_PGLITE:
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
 # Dependency
@@ -297,6 +405,9 @@ class SyncServer(Server):
         self.resource_memory_manager = ResourceMemoryManager()
         self.semantic_memory_manager = SemanticMemoryManager()
 
+        # API Key Manager
+        self.provider_manager = ProviderManager()
+
         # CloudFileManager
         self.cloud_file_mapping_manager = CloudFileMappingManager()
 
@@ -310,23 +421,28 @@ class SyncServer(Server):
             # self.block_manager.add_default_blocks(actor=self.default_user)
             self.tool_manager.upsert_base_tools(actor=self.default_user)
 
-            # Add composio keys to the tool sandbox env vars of the org
-            if tool_settings.composio_api_key:
-                manager = SandboxConfigManager(tool_settings)
-                sandbox_config = manager.get_or_create_default_sandbox_config(sandbox_type=SandboxType.LOCAL, actor=self.default_user)
+            # # Add composio keys to the tool sandbox env vars of the org
+            # if tool_settings.composio_api_key:
+            #     manager = SandboxConfigManager(tool_settings)
+            #     sandbox_config = manager.get_or_create_default_sandbox_config(sandbox_type=SandboxType.LOCAL, actor=self.default_user)
 
-                manager.create_sandbox_env_var(
-                    SandboxEnvironmentVariableCreate(key="COMPOSIO_API_KEY", value=tool_settings.composio_api_key),
-                    sandbox_config_id=sandbox_config.id,
-                    actor=self.default_user,
-                )
+            #     manager.create_sandbox_env_var(
+            #         SandboxEnvironmentVariableCreate(key="COMPOSIO_API_KEY", value=tool_settings.composio_api_key),
+            #         sandbox_config_id=sandbox_config.id,
+            #         actor=self.default_user,
+            #     )
 
         # collect providers (always has Mirix as a default)
         self._enabled_providers: List[Provider] = [MirixProvider()]
-        if model_settings.openai_api_key:
+        
+        # Check for database-stored API key first, fall back to model_settings
+        openai_override_key = ProviderManager().get_openai_override_key()
+        openai_api_key = openai_override_key if openai_override_key else model_settings.openai_api_key
+        
+        if openai_api_key:
             self._enabled_providers.append(
                 OpenAIProvider(
-                    api_key=model_settings.openai_api_key,
+                    api_key=openai_api_key,
                     base_url=model_settings.openai_api_base,
                 )
             )
@@ -344,17 +460,21 @@ class SyncServer(Server):
                     default_prompt_formatter=model_settings.default_prompt_formatter,
                 )
             )
-        if model_settings.gemini_api_key:
+        # Check for database-stored API key first, fall back to model_settings
+        gemini_override_key = ProviderManager().get_gemini_override_key()
+        gemini_api_key = gemini_override_key if gemini_override_key else model_settings.gemini_api_key
+        
+        if gemini_api_key:
             self._enabled_providers.append(
                 GoogleAIProvider(
-                    api_key=model_settings.gemini_api_key,
+                    api_key=gemini_api_key,
                 )
             )
-        if model_settings.azure_api_key and model_settings.azure_base_url:
+        if model_settings.azure_openai_api_key and model_settings.azure_base_url:
             assert model_settings.azure_api_version, "AZURE_API_VERSION is required"
             self._enabled_providers.append(
                 AzureProvider(
-                    api_key=model_settings.azure_api_key,
+                    api_key=model_settings.azure_oapi_key,
                     base_url=model_settings.azure_base_url,
                     api_version=model_settings.azure_api_version,
                 )
@@ -418,6 +538,10 @@ class SyncServer(Server):
                 agent = SemanticMemoryAgent(agent_state=agent_state, interface=interface, user=actor)
             elif agent_state.agent_type == AgentType.core_memory_agent:
                 agent = CoreMemoryAgent(agent_state=agent_state, interface=interface, user=actor)
+            elif agent_state.agent_type == AgentType.reflexion_agent:
+                agent = ReflexionAgent(agent_state=agent_state, interface=interface, user=actor)
+            elif agent_state.agent_type == AgentType.background_agent:
+                agent = BackgroundAgent(agent_state=agent_state, interface=interface, user=actor)
             else:
                 raise ValueError(f"Invalid agent type {agent_state.agent_type}")
 
@@ -573,8 +697,8 @@ class SyncServer(Server):
             # exit not supported on server.py
             raise ValueError(command)
 
-        elif command.lower() == "heartbeat":
-            input_message = system.get_heartbeat()
+        elif command.lower() == "contine_chaining":
+            input_message = system.get_contine_chaining()
             usage = self._step(actor=actor, agent_id=agent_id, input_message=input_message)
 
         elif command.lower() == "memorywarning":
@@ -1015,28 +1139,28 @@ class SyncServer(Server):
             )
 
     # Composio wrappers
-    def get_composio_client(self, api_key: Optional[str] = None):
-        if api_key:
-            return Composio(api_key=api_key)
-        elif tool_settings.composio_api_key:
-            return Composio(api_key=tool_settings.composio_api_key)
-        else:
-            return Composio()
+    # def get_composio_client(self, api_key: Optional[str] = None):
+    #     if api_key:
+    #         return Composio(api_key=api_key)
+    #     elif tool_settings.composio_api_key:
+    #         return Composio(api_key=tool_settings.composio_api_key)
+    #     else:
+    #         return Composio()
 
-    def get_composio_apps(self, api_key: Optional[str] = None) -> List["AppModel"]:
-        """Get a list of all Composio apps with actions"""
-        apps = self.get_composio_client(api_key=api_key).apps.get()
-        apps_with_actions = []
-        for app in apps:
-            # A bit of hacky logic until composio patches this
-            if app.meta["actionsCount"] > 0 and not app.name.lower().endswith("_beta"):
-                apps_with_actions.append(app)
+    # def get_composio_apps(self, api_key: Optional[str] = None) -> List["AppModel"]:
+    #     """Get a list of all Composio apps with actions"""
+    #     apps = self.get_composio_client(api_key=api_key).apps.get()
+    #     apps_with_actions = []
+    #     for app in apps:
+    #         # A bit of hacky logic until composio patches this
+    #         if app.meta["actionsCount"] > 0 and not app.name.lower().endswith("_beta"):
+    #             apps_with_actions.append(app)
 
-        return apps_with_actions
+    #     return apps_with_actions
 
-    def get_composio_actions_from_app_name(self, composio_app_name: str, api_key: Optional[str] = None) -> List["ActionModel"]:
-        actions = self.get_composio_client(api_key=api_key).actions.get(apps=[composio_app_name])
-        return actions
+    # def get_composio_actions_from_app_name(self, composio_app_name: str, api_key: Optional[str] = None) -> List["ActionModel"]:
+    #     actions = self.get_composio_client(api_key=api_key).actions.get(apps=[composio_app_name])
+    #     return actions
 
     async def send_message_to_agent(
         self,

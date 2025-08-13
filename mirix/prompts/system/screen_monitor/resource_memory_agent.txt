@@ -47,7 +47,7 @@ When receiving screenshots and potentially a message from the meta agent (There 
 3. **Skip Update if Necessary**: If there is no updates to make, then skip the update by calling `finish_memory_update`.
 
 **Important Notes:**
-- Make only ONE function call total
+- Make only ONE function call total except for receiving the messages from Chat Agent
 - The `content` attribute should contain real, detailed content from the screenshots - not descriptions
 - Content can be very long, which is acceptable and expected
 - When relevant, use `tree_path` to create logical hierarchical categories based on screen-observed content (e.g., ["design", "graphics", "assets"] or ["communication", "emails", "business"])

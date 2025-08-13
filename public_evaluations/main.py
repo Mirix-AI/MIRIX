@@ -13,7 +13,7 @@ from constants import CHUNK_SIZE_MEMORY_AGENT_BENCH
 
 ## CONSTANTS for chunk size moved to constants.py to avoid circular imports
 
-## python main.py --agent_name mirix --dataset MemoryAgentBench
+## python main.py --agent_name mirix --dataset MemoryAgentBench --config_path mirix/configs/mirix_azure_example.yaml
 def parse_args():
     parser = argparse.ArgumentParser(description="Multi-Modal Memory Illustration")
     parser.add_argument("--agent_name", type=str, choices=['gpt-long-context', 'mirix', 'siglip', 'gemini-long-context'])

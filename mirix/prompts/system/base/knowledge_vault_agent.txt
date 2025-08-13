@@ -50,7 +50,7 @@ When receiving messages and potentially a message from the meta agent (There wil
 3. **Skip Update if Necessary**: If there are no discrete, structured data points to store (only conceptual/explanatory content), skip the update by calling `finish_memory_update`.
 
 **Important Notes:**
-- Make only ONE function call total
+- Make only ONE function call total except for receiving the messages from Chat Agent
 - Focus on structured, factual data that would be useful for future reference
 - Properly categorize items by entry_type ('credential', 'bookmark', 'api_key', etc.)
 - Assign appropriate sensitivity levels ('low', 'medium', 'high')

@@ -48,7 +48,7 @@ When receiving messages and potentially a message from the meta agent (There wil
 4. **Skip Update if Necessary**: If there is no updates to make, then skip the update by calling `finish_memory_update`.
 
 **Important Guidelines:**
-- Make only ONE function call total
+- Make only ONE function call total except for receiving the messages from Chat Agent
 - Constantly pay attention to the system prompt which has up to 50 relevant semantic memory items
 - When making updates, use the exact `item_ids` shown in the system prompt - do NOT be affected by chat history
 - When encountering "id cannot be found" errors, check the system prompt for correct ids

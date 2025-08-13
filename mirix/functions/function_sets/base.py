@@ -101,6 +101,10 @@ def search_in_memory(self: "Agent", memory_type: str, query: str, search_field: 
     if memory_type == 'all':
         search_field = 'null'
 
+    if memory_type == 'core':
+        # It means the model is an idiot, but we still return the results:
+        return self.agent_state.memory.compile(), len(self.agent_state.memory.list_block_labels())
+
     if memory_type == 'episodic' or memory_type == 'all':
         episodic_memory = self.episodic_memory_manager.list_episodic_memory(
             agent_state=self.agent_state,

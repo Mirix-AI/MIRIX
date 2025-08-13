@@ -29,3 +29,5 @@ from mirix.agent.knowledge_vault_agent import KnowledgeVaultAgent
 from mirix.agent.meta_memory_agent import MetaMemoryAgent
 from mirix.agent.semantic_memory_agent import SemanticMemoryAgent
 from mirix.agent.core_memory_agent import CoreMemoryAgent
+from mirix.agent.reflexion_agent import ReflexionAgent
+from mirix.agent.background_agent import BackgroundAgent

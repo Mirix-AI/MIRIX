@@ -3,6 +3,7 @@ import traceback
 import base64
 import tempfile
 import json
+import yaml
 from pathlib import Path
 from datetime import datetime
 from typing import List, Optional, Dict, Any
@@ -53,7 +54,7 @@ To fix it, install FFmpeg:
 The warning doesn't affect functionality as pydub falls back gracefully.
 """
 
-app = FastAPI(title="Mirix Agent API", version="1.0.0")
+app = FastAPI(title="Mirix Agent API", version="0.1.2")
 
 # Add CORS middleware
 app.add_middleware(
@@ -70,8 +71,10 @@ agent = None
 class MessageRequest(BaseModel):
     message: Optional[str] = None
     image_uris: Optional[List[str]] = None
+    sources: Optional[List[str]] = None  # Source names corresponding to image_uris
     voice_files: Optional[List[str]] = None  # Base64 encoded voice files
     memorizing: bool = False
+    is_screen_monitoring: Optional[bool] = False
 
 class MessageResponse(BaseModel):
     response: str
@@ -104,6 +107,21 @@ class CoreMemoryPersonaResponse(BaseModel):
 class SetModelRequest(BaseModel):
     model: str
 
+class AddCustomModelRequest(BaseModel):
+    model_name: str
+    model_endpoint: str
+    api_key: str
+    temperature: float = 0.7
+    max_tokens: int = 4096
+    maximum_length: int = 32768
+
+class AddCustomModelResponse(BaseModel):
+    success: bool
+    message: str
+
+class ListCustomModelsResponse(BaseModel):
+    models: List[str]
+
 class SetModelResponse(BaseModel):
     success: bool
     message: str
@@ -119,6 +137,9 @@ class SetTimezoneRequest(BaseModel):
 class SetTimezoneResponse(BaseModel):
     success: bool
     message: str
+
+class GetTimezoneResponse(BaseModel):
+    timezone: str
 
 class ScreenshotSettingRequest(BaseModel):
     include_recent_screenshots: bool
@@ -231,6 +252,16 @@ class ExportMemoriesResponse(BaseModel):
     total_exported: int
     file_path: str
 
+class ReflexionRequest(BaseModel):
+    pass  # No parameters needed for now
+
+class ReflexionResponse(BaseModel):
+    success: bool
+    message: str
+    processing_time: Optional[float] = None
+
+
+
 @app.on_event("startup")
 async def startup_event():
     """Initialize the agent when the server starts"""
@@ -275,6 +306,7 @@ async def send_message_endpoint(request: MessageRequest):
             lambda: agent.send_message(
                 message=request.message,
                 image_uris=request.image_uris,
+                sources=request.sources,  # Pass sources to agent
                 voice_files=request.voice_files,  # Pass voice files to agent
                 memorizing=request.memorizing
             )
@@ -327,7 +359,9 @@ async def send_streaming_message_endpoint(request: MessageRequest):
             }
         )
     
-    # Create a queue to collect intermediate messages
+    agent.update_chat_agent_system_prompt(request.is_screen_monitoring)
+
+    # Create a queue to collect intermediate messagess
     message_queue = queue.Queue()
     
     def display_intermediate_message(message_type: str, message: str):
@@ -354,6 +388,7 @@ async def send_streaming_message_endpoint(request: MessageRequest):
                         lambda: agent.send_message(
                             message=request.message,
                             image_uris=request.image_uris,
+                            sources=request.sources,  # Pass sources to agent
                             voice_files=request.voice_files,  # Pass raw voice files
                             memorizing=request.memorizing,
                             display_intermediate_message=display_intermediate_message
@@ -364,18 +399,41 @@ async def send_streaming_message_endpoint(request: MessageRequest):
                         if request.memorizing:
                             result_queue.put({"type": "final", "response": ""})
                         else:
+                            print("[DEBUG] Agent returned None response")
                             result_queue.put({"type": "error", "error": "Agent returned no response"})
+                    elif isinstance(response, str) and response.startswith("ERROR_"):
+                        # Handle specific error types from agent wrapper
+                        print(f"[DEBUG] Agent returned specific error: {response}")
+                        if response == "ERROR_RESPONSE_FAILED":
+                            print("[DEBUG] - Message queue response failed")
+                            result_queue.put({"type": "error", "error": "Message processing failed in agent queue"})
+                        elif response == "ERROR_INVALID_RESPONSE_STRUCTURE":
+                            print("[DEBUG] - Response structure invalid (missing messages or insufficient count)")
+                            result_queue.put({"type": "error", "error": "Invalid response structure from agent"})
+                        elif response == "ERROR_NO_TOOL_CALL":
+                            print("[DEBUG] - Expected message missing tool_call attribute")
+                            result_queue.put({"type": "error", "error": "Agent response missing required tool call"})
+                        elif response == "ERROR_NO_MESSAGE_IN_ARGS":
+                            print("[DEBUG] - Tool call arguments missing 'message' key")
+                            result_queue.put({"type": "error", "error": "Agent tool call missing message content"})
+                        elif response == "ERROR_PARSING_EXCEPTION":
+                            print("[DEBUG] - Exception occurred during response parsing")
+                            result_queue.put({"type": "error", "error": "Failed to parse agent response"})
+                        else:
+                            print(f"[DEBUG] - Unknown error type: {response}")
+                            result_queue.put({"type": "error", "error": f"Unknown agent error: {response}"})
                     elif response == "ERROR":
-                        print("[DEBUG] Agent returned ERROR string")
+                        print("[DEBUG] Agent returned generic ERROR string")
                         result_queue.put({"type": "error", "error": "Agent processing failed"})
                     elif not response or (isinstance(response, str) and response.strip() == ""):
                         if request.memorizing:
                             print("[DEBUG] Agent returned empty response - expected for memorizing=True")
                             result_queue.put({"type": "final", "response": ""})
                         else:
-                            print("[DEBUG] Agent returned empty response")
+                            print("[DEBUG] Agent returned empty response unexpectedly")
                             result_queue.put({"type": "error", "error": "Agent returned empty response"})
                     else:
+                        print(f"[DEBUG] Agent returned successful response (length: {len(str(response))})")
                         result_queue.put({"type": "final", "response": response})
                         
                 except Exception as e:
@@ -535,7 +593,30 @@ async def set_model(request: SetModelRequest):
         raise HTTPException(status_code=500, detail="Agent not initialized")
     
     try:
-        result = agent.set_model(request.model)
+        # Check if this is a custom model
+        custom_models_dir = Path.home() / ".mirix" / "custom_models"
+        custom_config = None
+        
+        if custom_models_dir.exists():
+            # Look for a config file that matches this model name
+            for config_file in custom_models_dir.glob("*.yaml"):
+                try:
+                    with open(config_file, 'r') as f:
+                        config = yaml.safe_load(f)
+                        if config and config.get('model_name') == request.model:
+                            custom_config = config
+                            print(f"Found custom model config for '{request.model}' at {config_file}")
+                            break
+                except Exception as e:
+                    print(f"Error reading custom model config {config_file}: {e}")
+                    continue
+        
+        # Set the model with custom config if found, otherwise use standard method
+        if custom_config:
+            result = agent.set_model(request.model, custom_agent_config=custom_config)
+        else:
+            result = agent.set_model(request.model)
+            
         return SetModelResponse(
             success=result['success'], 
             message=result['message'],
@@ -570,7 +651,30 @@ async def set_memory_model(request: SetModelRequest):
         raise HTTPException(status_code=500, detail="Agent not initialized")
     
     try:
-        result = agent.set_memory_model(request.model)
+        # Check if this is a custom model
+        custom_models_dir = Path.home() / ".mirix" / "custom_models"
+        custom_config = None
+        
+        if custom_models_dir.exists():
+            # Look for a config file that matches this model name
+            for config_file in custom_models_dir.glob("*.yaml"):
+                try:
+                    with open(config_file, 'r') as f:
+                        config = yaml.safe_load(f)
+                        if config and config.get('model_name') == request.model:
+                            custom_config = config
+                            print(f"Found custom model config for memory model '{request.model}' at {config_file}")
+                            break
+                except Exception as e:
+                    print(f"Error reading custom model config {config_file}: {e}")
+                    continue
+        
+        # Set the memory model with custom config if found, otherwise use standard method
+        if custom_config:
+            result = agent.set_memory_model(request.model, custom_agent_config=custom_config)
+        else:
+            result = agent.set_memory_model(request.model)
+            
         return SetModelResponse(
             success=result['success'], 
             message=result['message'],
@@ -584,6 +688,93 @@ async def set_memory_model(request: SetModelRequest):
             missing_keys=[],
             model_requirements={}
         )
+
+@app.post("/models/custom/add", response_model=AddCustomModelResponse)
+async def add_custom_model(request: AddCustomModelRequest):
+    """Add a custom model configuration"""
+    if agent is None:
+        raise HTTPException(status_code=500, detail="Agent not initialized")
+    
+    try:
+        # Create config file for the custom model
+        config = {
+            'agent_name': 'mirix',
+            'model_name': request.model_name,
+            'model_endpoint': request.model_endpoint,
+            'api_key': request.api_key,
+            'generation_config': {
+                'temperature': request.temperature,
+                'max_tokens': request.max_tokens,
+                'context_window': request.maximum_length
+            }
+        }
+
+        # Create custom models directory if it doesn't exist
+        custom_models_dir = Path.home() / ".mirix" / "custom_models"
+        custom_models_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Generate filename from model name (sanitize for filesystem)
+        safe_model_name = "".join(c for c in request.model_name if c.isalnum() or c in ('-', '_', '.')).rstrip()
+        config_filename = f"{safe_model_name}.yaml"
+        config_file_path = custom_models_dir / config_filename
+        
+        # Save config to YAML file
+        with open(config_file_path, 'w') as f:
+            yaml.dump(config, f, default_flow_style=False, indent=2)
+        
+        # Also set the model in the agent
+        agent.set_model(request.model_name, custom_agent_config=config)
+
+        return AddCustomModelResponse(
+            success=True,
+            message=f"Custom model '{request.model_name}' added successfully and saved to {config_file_path}"
+        )
+        
+    except Exception as e:
+        print(f"Error adding custom model: {str(e)}")
+        print(f"Traceback: {traceback.format_exc()}")
+        return AddCustomModelResponse(
+            success=False,
+            message=f"Error adding custom model: {str(e)}"
+        )
+    
+
+@app.get("/models/custom/list", response_model=ListCustomModelsResponse)
+async def list_custom_models():
+    """List all available custom models"""
+    try:
+        custom_models_dir = Path.home() / ".mirix" / "custom_models"
+        models = []
+        
+        if custom_models_dir.exists():
+            for config_file in custom_models_dir.glob("*.yaml"):
+                try:
+                    with open(config_file, 'r') as f:
+                        config = yaml.safe_load(f)
+                        if config and 'model_name' in config:
+                            models.append(config['model_name'])
+                except Exception as e:
+                    print(f"Error reading custom model config {config_file}: {e}")
+                    continue
+        
+        return ListCustomModelsResponse(models=models)
+        
+    except Exception as e:
+        print(f"Error listing custom models: {e}")
+        return ListCustomModelsResponse(models=[])
+
+@app.get("/timezone/current", response_model=GetTimezoneResponse)
+async def get_current_timezone():
+    """Get the current timezone of the agent"""
+    
+    if agent is None:
+        raise HTTPException(status_code=500, detail="Agent not initialized")
+    
+    try:
+        current_timezone = agent.client.server.user_manager.get_user_by_id(agent.client.user.id).timezone
+        return GetTimezoneResponse(timezone=current_timezone)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error getting current timezone: {str(e)}")
 
 @app.post("/timezone/set", response_model=SetTimezoneResponse)
 async def set_timezone(request: SetTimezoneRequest):
@@ -1026,6 +1217,62 @@ async def export_memories(request: ExportMemoriesRequest):
         print(f"Traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"Failed to export memories: {str(e)}")
 
+@app.post("/reflexion", response_model=ReflexionResponse)
+async def trigger_reflexion(request: ReflexionRequest):
+    """Trigger reflexion agent to reorganize memory - runs in separate thread to not block other requests"""
+    if agent is None:
+        raise HTTPException(status_code=500, detail="Agent not initialized")
+    
+    try:
+        print("Starting reflexion process...")
+        start_time = datetime.now()
+        
+        # Run reflexion in a separate thread to avoid blocking other requests
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None,  # Use default ThreadPoolExecutor
+            _run_reflexion_process,
+            agent
+        )
+        
+        end_time = datetime.now()
+        processing_time = (end_time - start_time).total_seconds()
+        
+        print(f"Reflexion process completed in {processing_time:.2f} seconds")
+        
+        return ReflexionResponse(
+            success=result['success'],
+            message=result['message'],
+            processing_time=processing_time
+        )
+        
+    except Exception as e:
+        print(f"Error in reflexion endpoint: {str(e)}")
+        print(f"Traceback: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"Reflexion process failed: {str(e)}")
+
+def _run_reflexion_process(agent):
+    """
+    Run the reflexion process - this is the blocking function that runs in a separate thread.
+    This function can be replaced with the actual reflexion agent logic.
+    """
+    try:
+        # TODO: Replace this with actual reflexion agent logic
+        # For now, this is a placeholder that simulates reflexion work
+        
+        agent.reflexion_on_memory()
+        return {
+            'success': True,
+            'message': 'Memory reorganization completed successfully. Reflexion agent has optimized memory structure and connections.'
+        }
+        
+    except Exception as e:
+        print(f"Error in reflexion process: {str(e)}")
+        return {
+            'success': False,
+            'message': f'Reflexion process failed: {str(e)}'
+        }
+
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=47283)

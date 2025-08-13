@@ -4,12 +4,26 @@ import uuid
 import threading
 import copy
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
 from mirix.agent.app_constants import TEMPORARY_MESSAGE_LIMIT, GEMINI_MODELS, SKIP_META_MEMORY_MANAGER
 from mirix.constants import CHAINING_FOR_MEMORY_UPDATE
 from mirix.voice_utils import process_voice_files, convert_base64_to_audio_segment
+from mirix.agent.app_utils import encode_image
+
+def get_image_mime_type(image_path):
+    """Get MIME type for image files."""
+    if image_path.lower().endswith(('.png', '.PNG')):
+        return 'image/png'
+    elif image_path.lower().endswith(('.jpg', '.jpeg', '.JPG', '.JPEG')):
+        return 'image/jpeg'
+    elif image_path.lower().endswith(('.gif', '.GIF')):
+        return 'image/gif'
+    elif image_path.lower().endswith(('.webp', '.WEBP')):
+        return 'image/webp'
+    else:
+        return 'image/png'  # Default fallback
 
 class TemporaryMessageAccumulator:
     """
@@ -51,6 +65,7 @@ class TemporaryMessageAccumulator:
         """Add a message to temporary storage."""
         if self.needs_upload and self.upload_manager is not None:
             if 'image_uris' in full_message and full_message['image_uris']:
+                # Handle image uploads with optional sources information
                 if async_upload:
                     image_file_ref_placeholders = [self.upload_manager.upload_file_async(image_uri, timestamp) for image_uri in full_message['image_uris']]
                 else:
@@ -82,8 +97,10 @@ class TemporaryMessageAccumulator:
                 audio_segment = None
 
             with self._temporary_messages_lock:
+                sources = full_message.get('sources')
                 self.temporary_messages.append(
                     (timestamp, {'image_uris': image_file_ref_placeholders,
+                                 'sources': sources,
                                  'audio_segments': audio_segment,
                                  'message': full_message['message']})
                 )
@@ -112,11 +129,15 @@ class TemporaryMessageAccumulator:
             voice_count = len(voice_files)
             
             with self._temporary_messages_lock:
+                sources = full_message.get('sources')
+                image_uris = full_message.get('image_uris', [])
                 self.temporary_messages.append(
                     (timestamp, {
-                        'image_uris': full_message.get('image_uris', []),
+                        'image_uris': image_uris,
+                        'sources': sources,
                         'audio_segments': full_message.get('voice_files', []),
-                        'message': full_message['message']
+                        'message': full_message['message'],
+                        'delete_after_upload': delete_after_upload  # Store delete flag for OpenAI models
                     })
                 )
                 
@@ -165,14 +186,10 @@ class TemporaryMessageAccumulator:
                                     completed_count += 1
                                     # Note: Don't clean up here, this is just a check
                                 elif upload_status['status'] == 'failed':
-                                    # Upload failed, skip this image but continue processing other images
-                                    print(f"Skipping failed upload for image {j} in message {i}")
                                     # Note: Don't clean up here, this is just a check
                                     continue
                                 elif upload_status['status'] == 'unknown':
                                     # Upload was cleaned up, treat as failed
-                                    print(f"Skipping unknown/cleaned upload for image {j} in message {i}")
-                                    # Note: Don't clean up here, this is just a check
                                     continue
                                 else:
                                     # Still pending
@@ -215,16 +232,46 @@ class TemporaryMessageAccumulator:
                 else:
                     return []
     
-    def get_recent_images_for_chat(self):
-        """Get the most recent images for chat context (non-blocking)."""
+    def get_recent_images_for_chat(self, current_timestamp):
+        """Get the most recent images for chat context (non-blocking).
+        
+        Returns:
+            List of tuples: (timestamp, file_ref, sources) where sources may be None
+        """
         with self._temporary_messages_lock:
             # Get the most recent content
             recent_limit = min(self.temporary_message_limit, len(self.temporary_messages))
             most_recent_content = self.temporary_messages[-recent_limit:] if recent_limit > 0 else []
             
+            # Calculate timestamp cutoff (1 minute ago)
+            cutoff_time = current_timestamp - timedelta(minutes=1)
+            
             # Extract only images for the current message context
             most_recent_images = []
             for timestamp, item in most_recent_content:
+                # Handle different timestamp formats that might be used
+                if isinstance(timestamp, str):
+                    # Try to parse timestamp string and make it timezone-aware
+                    timestamp_dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+                    # If timezone-naive, localize it to match the cutoff_time timezone awareness
+                    if timestamp_dt.tzinfo is None:
+                        timestamp_dt = self.timezone.localize(timestamp_dt)
+                elif isinstance(timestamp, datetime):
+                    timestamp_dt = timestamp
+                    # If timezone-naive, localize it to match the cutoff_time timezone awareness
+                    if timestamp_dt.tzinfo is None:
+                        timestamp_dt = self.timezone.localize(timestamp_dt)
+                elif isinstance(timestamp, (int, float)):
+                    # Unix timestamp - make it timezone-aware
+                    timestamp_dt = datetime.fromtimestamp(timestamp, tz=self.timezone)
+                else:
+                    # Skip if we can't parse the timestamp
+                    continue
+                
+                # Check if timestamp is within the past 1 minute
+                if timestamp_dt < cutoff_time:
+                    continue
+                
                 # Check if this item has images
                 if 'image_uris' in item and item['image_uris']:
                     for j, file_ref in enumerate(item['image_uris']):
@@ -250,9 +297,11 @@ class TemporaryMessageAccumulator:
                                     continue
                                 else:
                                     continue  # Still pending, skip
-                                
+                                    
                         # For non-GEMINI models: file_ref is already the image URI, use as-is
-                        most_recent_images.append((timestamp, file_ref))
+                        # Include sources information if available
+                        sources = item.get('sources')
+                        most_recent_images.append((timestamp, file_ref, sources[j] if sources else None))
             
             return most_recent_images
     
@@ -329,7 +378,8 @@ class TemporaryMessageAccumulator:
                                     # Already uploaded file reference
                                     processed_image_uris.append(file_ref)
                             else:
-                                raise NotImplementedError("Non-GEMINI models do not support file uploads")
+                                # For non-GEMINI models: store the image URI directly for base64 conversion later
+                                processed_image_uris.append(file_ref)
                         
                         if has_pending_uploads:
                             # Keep for next cycle if any uploads are still pending
@@ -444,15 +494,31 @@ class TemporaryMessageAccumulator:
     
     def _build_memory_message(self, ready_to_process, voice_content):
         """Build the message content for memory agents."""
-        # Collect all content from ready items
-        images_content = []
+
+        # Collect content organized by source
+        images_by_source = {}  # source_name -> [(timestamp, file_refs)]
         text_content = []
         audio_content = []
-        
+
         for timestamp, item in ready_to_process:
-            # Handle images
+            # Handle images with sources
             if 'image_uris' in item and item['image_uris']:
-                images_content.append((timestamp, item['image_uris']))
+                sources = item.get('sources', [])
+                image_uris = item['image_uris']
+                
+                # If we have sources, group images by source
+                if sources and len(sources) == len(image_uris):
+                    for source, file_ref in zip(sources, image_uris):
+                        if source not in images_by_source:
+                            images_by_source[source] = []
+                        images_by_source[source].append((timestamp, file_ref))
+                else:
+                    # Fallback: if no sources or mismatch, group under generic name
+                    generic_source = "Screenshots"
+                    if generic_source not in images_by_source:
+                        images_by_source[generic_source] = []
+                    for file_ref in image_uris:
+                        images_by_source[generic_source].append((timestamp, file_ref))
             
             # Handle text messages
             if 'message' in item and item['message']:
@@ -475,27 +541,55 @@ class TemporaryMessageAccumulator:
         # Build the structured message for memory agents
         message_parts = []
         
-        # Add screenshots if any
-        if images_content:
-            # Add introductory text
+        # Add screenshots grouped by source
+        if images_by_source:
+            # Add general introductory text
             message_parts.append({
                 'type': 'text',
                 'text': 'The following are the screenshots taken from the computer of the user:'
             })
             
-            for idx, (timestamp, file_refs) in enumerate(images_content):
-                # Add timestamp info
+            # Group by source application
+            for source_name, source_images in images_by_source.items():
+                # Add source-specific header
                 message_parts.append({
                     'type': 'text',
-                    'text': f"Timestamp: {timestamp} Image Index {idx}:"
+                    'text': f"These are the screenshots from {source_name}:"
                 })
                 
-                # Add each image
-                for file_ref in file_refs:
+                # Add each image with its timestamp
+                for timestamp, file_ref in source_images:
                     message_parts.append({
-                        'type': 'google_cloud_file_uri',
-                        'google_cloud_file_uri': file_ref.uri
+                        'type': 'text',
+                        'text': f"Timestamp: {timestamp}"
                     })
+                    
+                    # Handle different types of file references
+                    if hasattr(file_ref, 'uri'):
+                        # GEMINI models: use Google Cloud file URI
+                        message_parts.append({
+                            'type': 'google_cloud_file_uri',
+                            'google_cloud_file_uri': file_ref.uri
+                        })
+                    else:
+                        # OpenAI models: convert to base64
+                        try:
+                            mime_type = get_image_mime_type(file_ref)
+                            base64_data = encode_image(file_ref)
+                            message_parts.append({
+                                'type': 'image_data',
+                                'image_data': {
+                                    'data': f"data:{mime_type};base64,{base64_data}",
+                                    'detail': 'auto'
+                                }
+                            })
+                        except Exception as e:
+                            self.logger.error(f"Failed to encode image {file_ref}: {e}")
+                            # Add a text message indicating the image couldn't be processed
+                            message_parts.append({
+                                'type': 'text',
+                                'text': f"[Image at {file_ref} could not be processed]"
+                            })
         
         # Add voice transcription if any
         if voice_transcription:
@@ -516,7 +610,7 @@ class TemporaryMessageAccumulator:
                     'type': 'text',
                     'text': f"Timestamp: {timestamp} Text:\n{text}"
                 })
-        
+
         return message_parts
     
     def _add_user_conversation_to_message(self, message):
@@ -581,36 +675,7 @@ class TemporaryMessageAccumulator:
                 responses.append(response)
         
         overall_end = time.time()
-    
-    def _send_direct_to_agent(self, agent_states, kwargs, agent_type):
-        """Send message directly to agent without using message queue ordering."""
-        import time
-        import threading
-        
-        start_time = time.time()
-        thread_id = threading.current_thread().ident
-        
-        # Get the appropriate agent ID
-        agent_id = self.message_queue._get_agent_id_for_type(agent_states, agent_type)
-        
-        # Time the actual API call separately
-        api_start = time.time()
-        try:
-            response = self.client.send_message(
-                agent_id=agent_id,
-                role='user',
-                **kwargs
-            )
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            response = "ERROR"
-        
-        api_end = time.time()
-        end_time = time.time()
-        
-        return response, agent_type
-    
+  
     def _cleanup_processed_content(self, ready_to_process, user_message_added):
         """Clean up processed content and mark files as processed."""
         # Mark processed files as processed in database and cleanup upload results (only for GEMINI models)
@@ -629,12 +694,46 @@ class TemporaryMessageAccumulator:
             # Since we don't have direct access to the original placeholders, we'll rely on
             # the cleanup happening in the upload manager's periodic cleanup or
             # when the same placeholder is accessed again
+        else:
+            # For OpenAI models: Clean up image files if delete_after_upload is True
+            for timestamp, item in ready_to_process:
+                # Check if this item should have its files deleted
+                should_delete = item.get('delete_after_upload', True)  # Default to True for backward compatibility
+                
+                if should_delete and 'image_uris' in item and item['image_uris']:
+                    for image_uri in item['image_uris']:
+                        # Only delete if it's a local file path (string)
+                        if isinstance(image_uri, str):
+                            self._delete_local_image_file(image_uri)
         
         # Clean up user messages if added
         if user_message_added:
             if len(self.temporary_user_messages) > 1:
                 self.temporary_user_messages.pop(0)
     
+    def _delete_local_image_file(self, image_path):
+        """Delete a local image file with retry logic."""
+        try:
+            max_retries = 10
+            retry_count = 0
+            while retry_count < max_retries:
+                try:
+                    if os.path.exists(image_path):
+                        os.remove(image_path)
+                        self.logger.debug(f"Deleted processed image file: {image_path}")
+                        if not os.path.exists(image_path):
+                            break
+                    else:
+                        break  # File doesn't exist, nothing to do
+                except Exception as e:
+                    retry_count += 1
+                    if retry_count < max_retries:
+                        time.sleep(0.1)
+                    else:
+                        self.logger.warning(f"Failed to delete image file {image_path} after {max_retries} attempts: {e}")
+        except Exception as e:
+            self.logger.error(f"Error while trying to delete image file {image_path}: {e}")
+
     def _cleanup_file_after_upload(self, filenames, placeholders):
         """Clean up local file after upload completes."""
 
@@ -663,7 +762,7 @@ class TemporaryMessageAccumulator:
                     try:
                         if os.path.exists(filename):
                             os.remove(filename)
-                            self.logger.info(f"Removed file: {filename}")
+                            # self.logger.info(f"Removed file: {filename}")
                             if not os.path.exists(filename):
                                 break
                             else:
@@ -700,4 +799,11 @@ class TemporaryMessageAccumulator:
         if self.upload_manager and hasattr(self.upload_manager, 'get_upload_status_summary'):
             summary['upload_manager_status'] = self.upload_manager.get_upload_status_summary()
         
-        return summary 
+        return summary
+    
+    def update_model(self, new_model_name):
+        """Update the model name and related settings."""
+        self.model_name = new_model_name
+        self.needs_upload = new_model_name in GEMINI_MODELS
+        self.logger = logging.getLogger(f"Mirix.TemporaryMessageAccumulator.{new_model_name}")
+        self.logger.setLevel(logging.INFO) 

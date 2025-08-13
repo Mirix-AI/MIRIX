@@ -11,34 +11,6 @@ from mirix.schemas.mirix_message import AssistantMessage, ReasoningMessage, Tool
 from mirix.schemas.mirix_response import MirixResponse
 from mirix.schemas.message import MessageCreate
 
-
-# def generate_composio_tool_wrapper(action_name: str) -> tuple[str, str]:
-#     # Instantiate the object
-#     tool_instantiation_str = f"composio_toolset.get_tools(actions=['{action_name}'])[0]"
-
-#     # Generate func name
-#     func_name = action_name.lower()
-
-#     wrapper_function_str = f"""
-# def {func_name}(**kwargs):
-#     from composio_langchain import ComposioToolSet
-#     import os
-
-#     entity_id = os.getenv('{COMPOSIO_ENTITY_ENV_VAR_KEY}', '{DEFAULT_ENTITY_ID}')
-#     composio_toolset = ComposioToolSet(entity_id=entity_id)
-#     response = composio_toolset.execute_action(action='{action_name}', params=kwargs)
-
-#     if response["error"]:
-#         raise RuntimeError(response["error"])
-#     return response["data"]
-#     """
-
-#     # Compile safety check
-#     assert_code_gen_compilable(wrapper_function_str)
-
-#     return func_name, wrapper_function_str
-
-
 def generate_langchain_tool_wrapper(
     tool: "LangChainBaseTool", additional_imports_module_attr_map: dict[str, str] = None
 ) -> tuple[str, str]:

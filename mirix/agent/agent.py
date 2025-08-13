@@ -71,7 +71,7 @@ from mirix.services.user_manager import UserManager
 from mirix.services.tool_execution_sandbox import ToolExecutionSandbox
 from mirix.settings import summarizer_settings
 from mirix.embeddings import embedding_model
-from mirix.system import get_heartbeat, get_token_limit_warning, package_function_response, package_summarize_message, package_user_message
+from mirix.system import get_contine_chaining, get_token_limit_warning, package_function_response, package_summarize_message, package_user_message
 from mirix.tracing import log_event, trace_method
 from mirix.llm_api.llm_client import LLMClient
 from mirix.utils import (
@@ -169,7 +169,7 @@ class Agent(BaseAgent):
         self.resource_memory_manager = ResourceMemoryManager()
         self.semantic_memory_manager = SemanticMemoryManager()
 
-        # State needed for heartbeat pausing
+        # State needed for contine_chaining pausing
 
         self.first_message_verify_mono = first_message_verify_mono
 
@@ -253,7 +253,6 @@ class Agent(BaseAgent):
         return False
 
     def execute_tool_and_persist_state(self, function_name: str, function_args: dict, target_mirix_tool: Tool, 
-                                       terminal_tools: Optional[List[any]] = None,
                                        display_intermediate_message: Optional[Callable] = None) -> str:
         """
         Execute tool modifications and persist the state of the agent.
@@ -294,14 +293,14 @@ class Agent(BaseAgent):
             
             elif target_mirix_tool.tool_type == ToolType.MIRIX_MEMORY_CORE:
                 callable_func = get_function_from_module(MIRIX_MEMORY_TOOL_MODULE_NAME, function_name)
-                if function_name in ['core_memory_append', 'core_memory_replace', 'core_memory_rewrite']:
+                if function_name in ['core_memory_append', 'core_memory_rewrite']:
                     agent_state_copy = self.agent_state.__deepcopy__()
                     function_args["agent_state"] = agent_state_copy  # need to attach self to arg since it's dynamically linked
                 if function_name in ['check_episodic_memory', 'check_semantic_memory']:
                     function_args['timezone_str'] = self.user_manager.get_user_by_id(self.user.id).timezone
                 function_args["self"] = self
                 function_response = callable_func(**function_args)
-                if function_name in ['core_memory_append', 'core_memory_replace', 'core_memory_rewrite']:
+                if function_name in ['core_memory_append', 'core_memory_rewrite']:
                     self.update_memory_if_changed(agent_state_copy.memory)
 
             else:
@@ -369,6 +368,7 @@ class Agent(BaseAgent):
         for attempt in range(1, empty_response_retry_limit + 1):
             try:
                 log_telemetry(self.logger, "_get_ai_reply create start")
+
                 # New LLM client flow
                 llm_client = LLMClient.create(
                     llm_config=self.agent_state.llm_config,
@@ -409,6 +409,10 @@ class Agent(BaseAgent):
                 # These bottom two are retryable
                 if len(response.choices) == 0 or response.choices[0] is None:
                     raise ValueError(f"API call returned an empty message: {response}")
+
+                for choice in response.choices:
+                    if choice.message.content == '' and len(choice.message.tool_calls) == 0:
+                        raise ValueError(f"API call returned an empty message: {response}")
 
                 if response.choices[0].finish_reason not in ["stop", "function_call", "tool_calls"]:
                     if response.choices[0].finish_reason == "length":
@@ -511,10 +515,10 @@ class Agent(BaseAgent):
         response_message_id: Optional[str] = None,
         force_response: bool = False,
         retrieved_memories: str = None,
-        terminal_tools: Optional[List[any]] = None,
         display_intermediate_message: Optional[Callable] = None,
         return_memory_types_without_update: bool = False,
         message_queue: Optional[any] = None,
+        chaining: bool = True,
     ) -> Tuple[List[Message], bool, bool]:
         """Handles parsing and function execution"""
 
@@ -627,7 +631,8 @@ class Agent(BaseAgent):
                 if function_name == 'trigger_memory_update':
                     function_args["user_message"] = {'message': convert_message_to_input_message(input_message), 
                                                      'existing_file_uris': existing_file_uris,
-                                                     'retrieved_memories': retrieved_memories}
+                                                     'retrieved_memories': retrieved_memories,
+                                                     'chaining': CHAINING_FOR_MEMORY_UPDATE}
                     if message_queue is not None:
                         function_args["user_message"]['message_queue'] = message_queue
                 
@@ -656,9 +661,8 @@ class Agent(BaseAgent):
 
                     function_response = self.execute_tool_and_persist_state(function_name, function_args, 
                                                                             target_mirix_tool, 
-                                                                            terminal_tools=terminal_tools,
                                                                             display_intermediate_message=display_intermediate_message)
-
+                    
                     if function_name == 'send_message' or function_name == 'finish_memory_update':
                         assert tool_call_idx == len(response_message.tool_calls) - 1, f"{function_name} must be the last tool call"
 
@@ -766,10 +770,14 @@ class Agent(BaseAgent):
                 should_clear_history = False
                 for func_name in executed_function_names:
                     if CLEAR_HISTORY_AFTER_MEMORY_UPDATE:
-                        if self.agent_state.name == 'meta_memory_agent' and (func_name == 'finish_memory_update' or not CHAINING_FOR_MEMORY_UPDATE):
+                        if self.agent_state.name == 'reflexion_agent':
+                            if func_name == 'finish_memory_update':
+                                should_clear_history = True
+                                break
+                        elif self.agent_state.name == 'meta_memory_agent' and (func_name == 'finish_memory_update' or not chaining):
                             should_clear_history = True
                             break
-                        elif self.agent_state.name not in ['meta_memory_agent', 'chat_agent'] and (func_name == 'finish_memory_update' or not CHAINING_FOR_MEMORY_UPDATE):
+                        elif self.agent_state.name not in ['meta_memory_agent', 'chat_agent'] and (func_name == 'finish_memory_update' or not chaining):
                             should_clear_history = True
                             break
                 
@@ -894,7 +902,10 @@ class Agent(BaseAgent):
 
                     if self.agent_state.name == 'meta_memory_agent':
                         self.agent_manager.set_in_context_messages(agent_id=self.agent_state.id, message_ids=message_ids, actor=self.user)
+                        deleted_count = self.message_manager.delete_detached_messages_for_agent(agent_id=self.agent_state.id, actor=self.user)
 
+                    if self.agent_state.name == 'reflexion_agent':
+                        self.agent_manager.set_in_context_messages(agent_id=self.agent_state.id, message_ids=message_ids, actor=self.user)
                         deleted_count = self.message_manager.delete_detached_messages_for_agent(agent_id=self.agent_state.id, actor=self.user)
 
                     # Clear all messages since they were manually added to the conversation history
@@ -918,7 +929,7 @@ class Agent(BaseAgent):
 
         # Update ToolRulesSolver state with last called function
         self.tool_rules_solver.update_tool_usage(function_name)
-        # Update heartbeat request according to provided tool rules
+        # Update contine_chaining request according to provided tool rules
         if self.tool_rules_solver.has_children_tools(function_name):
             continue_chaining = True
         elif self.tool_rules_solver.is_terminal_tool(function_name):
@@ -934,7 +945,7 @@ class Agent(BaseAgent):
         extra_messages: Optional[List[dict]] = None,
         **kwargs,
     ) -> MirixUsageStatistics:
-        """Run Agent.step in a loop, handling chaining via heartbeat requests and function failures"""
+        """Run Agent.step in a loop, handling chaining via contine_chaining requests and function failures"""
 
         max_chaining_steps = max_chaining_steps or MAX_CHAINING_STEPS
 
@@ -950,6 +961,12 @@ class Agent(BaseAgent):
         step_count = 0
 
         initial_message_count = len(self.agent_manager.get_in_context_messages(agent_id=self.agent_state.id, actor=self.user))
+
+        if self.agent_state.name == 'reflexion_agent':
+            # clear previous messages
+            in_context_messages = self.agent_manager.get_in_context_messages(agent_id=self.agent_state.id, actor=self.user)
+            in_context_messages = in_context_messages[:1]
+            self.agent_manager.set_in_context_messages(agent_id=self.agent_state.id, message_ids=[message.id for message in in_context_messages], actor=self.user)
 
         while True:
 
@@ -990,7 +1007,7 @@ class Agent(BaseAgent):
                             'required': ['topic']
                         },
                     }]
-                    
+
                     # Use LLMClient to extract topics
                     llm_client = LLMClient.create(
                         llm_config=self.agent_state.llm_config,
@@ -1023,7 +1040,7 @@ class Agent(BaseAgent):
                             except (json.JSONDecodeError, KeyError) as parse_error:
                                 self.logger.warning(f"Failed to parse topic extraction response: {parse_error}")
                                 continue
-        
+
                     if topics is not None:
                         kwargs['topics'] = topics
                         self.update_topic_if_changed(topics)
@@ -1039,6 +1056,7 @@ class Agent(BaseAgent):
                 messages=next_input_message,
                 extra_messages=extra_message_objects,
                 initial_message_count=initial_message_count,
+                chaining=chaining,
                 **kwargs,
             )
 
@@ -1097,7 +1115,7 @@ class Agent(BaseAgent):
                     model=self.model,
                     openai_message_dict={
                         "role": "user",  # TODO: change to system?
-                        "content": get_heartbeat(FUNC_FAILED_HEARTBEAT_MESSAGE),
+                        "content": get_contine_chaining(FUNC_FAILED_HEARTBEAT_MESSAGE),
                     },
                 )
                 continue  # always chain
@@ -1108,7 +1126,7 @@ class Agent(BaseAgent):
                     model=self.model,
                     openai_message_dict={
                         "role": "user",  # TODO: change to system?
-                        "content": get_heartbeat(REQ_HEARTBEAT_MESSAGE),
+                        "content": get_contine_chaining(REQ_HEARTBEAT_MESSAGE),
                     },
                 )
                 continue  # always chain
@@ -1142,8 +1160,7 @@ class Agent(BaseAgent):
         else:
             retrieved_memories["key_words"] = key_words
 
-        # search_method = 'bm25'
-        search_method = 'embedding' # Specifically for LOCOMO evaluation
+        search_method = 'embedding'
 
         # Prepare embedding for semantic search
         if key_words != '' and search_method == 'embedding':
@@ -1162,7 +1179,7 @@ class Agent(BaseAgent):
             retrieved_memories['core'] = core_memory
         
         if self.agent_state.name == 'knowledge_vault' or 'knowledge_vault' not in retrieved_memories:
-            if self.agent_state.name == 'knowledge_vault':
+            if self.agent_state.name == 'knowledge_vault' or self.agent_state.name == 'reflexion_agent':
                 current_knowledge_vault = self.knowledge_vault_manager.list_knowledge(agent_state=self.agent_state, embedded_text=embedded_text, query=key_words, search_field='caption', search_method=search_method, limit=MAX_RETRIEVAL_LIMIT_IN_SYSTEM, timezone_str=timezone_str)
             else:
                 current_knowledge_vault = self.knowledge_vault_manager.list_knowledge(agent_state=self.agent_state, embedded_text=embedded_text, query=key_words, search_field='caption', search_method=search_method, limit=MAX_RETRIEVAL_LIMIT_IN_SYSTEM, timezone_str=timezone_str, sensitivity=['low', 'medium'])
@@ -1171,7 +1188,11 @@ class Agent(BaseAgent):
             if len(current_knowledge_vault) > 0:
                 for idx, knowledge_vault_item in enumerate(current_knowledge_vault):
                     knowledge_vault_memory += f"[{idx}] Knowledge Vault Item ID: {knowledge_vault_item.id}; Caption: {knowledge_vault_item.caption}\n"
-            retrieved_memories['knowledge_vault'] = knowledge_vault_memory
+            retrieved_memories['knowledge_vault'] = {
+                'total_number_of_items': self.knowledge_vault_manager.get_total_number_of_items(),
+                'current_count': len(current_knowledge_vault),
+                'text': knowledge_vault_memory
+            }
 
         # Retrieve episodic memory
         if self.agent_state.name == 'episodic_memory_agent' or 'episodic' not in retrieved_memories:
@@ -1179,8 +1200,8 @@ class Agent(BaseAgent):
             episodic_memory = ''
             if len(current_episodic_memory) > 0:
                 for idx, event in enumerate(current_episodic_memory):
-                    tree_path_str = f" Path: {' > '.join(event.tree_path)}" if event.tree_path else ""
-                    if self.agent_state.name == 'episodic_memory_agent':
+                    tree_path_str = f" - Path: {' > '.join(event.tree_path)}" if event.tree_path else ""
+                    if self.agent_state.name == 'episodic_memory_agent' or self.agent_state.name == 'reflexion_agent':
                         episodic_memory += f"[Event ID: {event.id}] Timestamp: {event.occurred_at.strftime('%Y-%m-%d %H:%M:%S')} - {event.summary}{tree_path_str} (Details: {len(event.details)} Characters)\n"
                     else:
                         episodic_memory += f"[{idx}] Timestamp: {event.occurred_at.strftime('%Y-%m-%d %H:%M:%S')} - {event.summary}{tree_path_str} (Details: {len(event.details)} Characters)\n"
@@ -1191,13 +1212,19 @@ class Agent(BaseAgent):
             most_relevant_episodic_memory_str = ''
             if len(most_relevant_episodic_memory) > 0:
                 for idx, event in enumerate(most_relevant_episodic_memory):
-                    tree_path_str = f" Path: {' > '.join(event.tree_path)}" if event.tree_path else ""
-                    if self.agent_state.name == 'episodic_memory_agent':
+                    tree_path_str = f" - Path: {' > '.join(event.tree_path)}" if event.tree_path else ""
+                    if self.agent_state.name == 'episodic_memory_agent' or self.agent_state.name == 'reflexion_agent':
                         most_relevant_episodic_memory_str += f"[Event ID: {event.id}] Timestamp: {event.occurred_at.strftime('%Y-%m-%d %H:%M:%S')} - {event.summary}{tree_path_str}  (Details: {len(event.details)} Characters)\n"
                     else:
                         most_relevant_episodic_memory_str += f"[{idx}] Timestamp: {event.occurred_at.strftime('%Y-%m-%d %H:%M:%S')} - {event.summary}{tree_path_str}  (Details: {len(event.details)} Characters)\n"
             relevant_episodic_memory = most_relevant_episodic_memory_str.strip()
-            retrieved_memories['episodic'] = [recent_episodic_memory, relevant_episodic_memory]
+            retrieved_memories['episodic'] = {
+                'total_number_of_items': self.episodic_memory_manager.get_total_number_of_items(),
+                'recent_count': len(current_episodic_memory),
+                'relevant_count': len(most_relevant_episodic_memory),
+                'recent_episodic_memory': recent_episodic_memory,
+                'relevant_episodic_memory': relevant_episodic_memory
+            }
 
         # Retrieve resource memory
         if self.agent_state.name == 'resource_memory_agent' or 'resource' not in retrieved_memories:
@@ -1205,13 +1232,17 @@ class Agent(BaseAgent):
             resource_memory = ''
             if len(current_resource_memory) > 0:
                 for idx, resource in enumerate(current_resource_memory):
-                    tree_path_str = f" Path: {' > '.join(resource.tree_path)}" if resource.tree_path else ""
-                    if self.agent_state.name == 'resource_memory_agent':
+                    tree_path_str = f"; Path: {' > '.join(resource.tree_path)}" if resource.tree_path else ""
+                    if self.agent_state.name == 'resource_memory_agent' or self.agent_state.name == 'reflexion_agent':
                         resource_memory += f"[Resource ID: {resource.id}] Resource Title: {resource.title}; Resource Summary: {resource.summary} Resource Type: {resource.resource_type}{tree_path_str}\n"
                     else:
                         resource_memory += f"[{idx}] Resource Title: {resource.title}; Resource Summary: {resource.summary} Resource Type: {resource.resource_type}{tree_path_str}\n"
             resource_memory = resource_memory.strip()
-            retrieved_memories['resource'] = resource_memory
+            retrieved_memories['resource'] = {
+                'total_number_of_items': self.resource_memory_manager.get_total_number_of_items(),
+                'current_count': len(current_resource_memory),
+                'text': resource_memory
+            }
 
         # Retrieve procedural memory
         if self.agent_state.name == 'procedural_memory_agent' or 'procedural' not in retrieved_memories:
@@ -1219,13 +1250,17 @@ class Agent(BaseAgent):
             procedural_memory = ''
             if len(current_procedural_memory) > 0:
                 for idx, procedure in enumerate(current_procedural_memory):
-                    tree_path_str = f" Path: {' > '.join(procedure.tree_path)}" if procedure.tree_path else ""
-                    if self.agent_state.name == 'procedural_memory_agent':
+                    tree_path_str = f"; Path: {' > '.join(procedure.tree_path)}" if procedure.tree_path else ""
+                    if self.agent_state.name == 'procedural_memory_agent' or self.agent_state.name == 'reflexion_agent':
                         procedural_memory += f"[Procedure ID: {procedure.id}] Entry Type: {procedure.entry_type}; Summary: {procedure.summary}{tree_path_str}\n"
                     else:
                         procedural_memory += f"[{idx}] Entry Type: {procedure.entry_type}; Summary: {procedure.summary}{tree_path_str}\n"
             procedural_memory = procedural_memory.strip()
-            retrieved_memories['procedural'] = procedural_memory
+            retrieved_memories['procedural'] = {
+                'total_number_of_items': self.procedural_memory_manager.get_total_number_of_items(),
+                'current_count': len(current_procedural_memory),
+                'text': procedural_memory
+            }
         
         # Retrieve semantic memory
         if self.agent_state.name == 'semantic_memory_agent' or 'semantic' not in retrieved_memories:
@@ -1233,25 +1268,21 @@ class Agent(BaseAgent):
             semantic_memory = ''
             if len(current_semantic_memory) > 0:
                 for idx, semantic_memory_item in enumerate(current_semantic_memory):
-                    tree_path_str = f" Path: {' > '.join(semantic_memory_item.tree_path)}" if semantic_memory_item.tree_path else ""
-                    if self.agent_state.name == 'semantic_memory_agent':
+                    tree_path_str = f"; Path: {' > '.join(semantic_memory_item.tree_path)}" if semantic_memory_item.tree_path else ""
+                    if self.agent_state.name == 'semantic_memory_agent' or self.agent_state.name == 'reflexion_agent':
                         semantic_memory += f"[Semantic Memory ID: {semantic_memory_item.id}] Name: {semantic_memory_item.name}; Summary: {semantic_memory_item.summary}{tree_path_str}\n"
                     else:
                         semantic_memory += f"[{idx}] Name: {semantic_memory_item.name}; Summary: {semantic_memory_item.summary}{tree_path_str}\n"
                         
             semantic_memory = semantic_memory.strip()
-            retrieved_memories['semantic'] = semantic_memory
+            retrieved_memories['semantic'] = {
+                'total_number_of_items': self.semantic_memory_manager.get_total_number_of_items(),
+                'current_count': len(current_semantic_memory),
+                'text': semantic_memory
+            }
 
         # Build the complete system prompt
-        memory_system_prompt = self.build_system_prompt(
-            retrieved_memories['key_words'],
-            retrieved_memories['core'],
-            retrieved_memories['episodic'][0],
-            retrieved_memories['episodic'][1],
-            retrieved_memories['resource'],
-            retrieved_memories['semantic'],
-            retrieved_memories['procedural']
-        )
+        memory_system_prompt = self.build_system_prompt(retrieved_memories)
         
         complete_system_prompt = raw_system + "\n\n" + memory_system_prompt
 
@@ -1260,7 +1291,7 @@ class Agent(BaseAgent):
         
         return complete_system_prompt, retrieved_memories
 
-    def build_system_prompt(self, keywords: str, core_memory: str, recent_episodic_memory: str, relevant_episodic_memory: str, resource_memory: str, semantic_memory: str, procedural_memory: str) -> str:
+    def build_system_prompt(self, retrieved_memories: dict) -> str:
         
         """Build the system prompt for the LLM API"""
         template = """Current Time: {current_time}
@@ -1284,19 +1315,51 @@ These keywords have been used to retrieve relevant memories from the database.
         # current_time = datetime.now(user_tz).strftime('%Y-%m-%d %H:%M:%S')
         current_time = "Not Specified"
         
+        keywords = retrieved_memories['key_words']
+        core_memory = retrieved_memories['core']
+        episodic_memory = retrieved_memories['episodic']
+        resource_memory = retrieved_memories['resource']
+        semantic_memory = retrieved_memories['semantic']
+        procedural_memory = retrieved_memories['procedural']
+        knowledge_vault = retrieved_memories['knowledge_vault']
+        
         system_prompt = template.format(
             current_time=current_time,
             keywords=keywords,
             core_memory=core_memory if core_memory else "Empty",
-            episodic_memory=recent_episodic_memory if recent_episodic_memory else "Empty",
+            episodic_memory=episodic_memory['recent_episodic_memory'] if episodic_memory else "Empty",
         )
 
         if keywords is not None:
-            system_prompt += "\n<episodic_memory> Most Relevant Events (Orderred by Relevance to Keywords):\n" + (relevant_episodic_memory if relevant_episodic_memory else "Empty") + "\n</episodic_memory>\n"
+            episodic_total = episodic_memory['total_number_of_items'] if episodic_memory else 0
+            relevant_episodic_text = episodic_memory['relevant_episodic_memory'] if episodic_memory else ""
+            relevant_count = episodic_memory['relevant_count'] if episodic_memory else 0
+            
+            system_prompt += f"\n<episodic_memory> Most Relevant Events ({relevant_count} out of {episodic_total} Events Orderred by Relevance to Keywords):\n" + (relevant_episodic_text if relevant_episodic_text else "Empty") + "\n</episodic_memory>\n"
         
-        system_prompt += "\n<semantic_memory>\n" + (semantic_memory.strip() if semantic_memory else "Empty") + "\n</semantic_memory>\n"
-        system_prompt += "\n<resource_memory>\n" + (resource_memory if resource_memory else "Empty") + "\n</resource_memory>\n"
-        system_prompt += "\n<procedural_memory>\n" + (procedural_memory if procedural_memory else "Empty") + "\n</procedural_memory>"
+        # Add knowledge vault with counts
+        knowledge_vault_total = knowledge_vault['total_number_of_items'] if knowledge_vault else 0
+        knowledge_vault_text = knowledge_vault['text'] if knowledge_vault else ""
+        knowledge_vault_count = knowledge_vault['current_count'] if knowledge_vault else 0
+        system_prompt += f"\n<knowledge_vault> ({knowledge_vault_count} out of {knowledge_vault_total} Items):\n" + (knowledge_vault_text if knowledge_vault_text else "Empty") + "\n</knowledge_vault>\n"
+        
+        # Add semantic memory with counts
+        semantic_total = semantic_memory['total_number_of_items'] if semantic_memory else 0
+        semantic_text = semantic_memory['text'] if semantic_memory else ""
+        semantic_count = semantic_memory['current_count'] if semantic_memory else 0
+        system_prompt += f"\n<semantic_memory> ({semantic_count} out of {semantic_total} Items):\n" + (semantic_text if semantic_text else "Empty") + "\n</semantic_memory>\n"
+        
+        # Add resource memory with counts
+        resource_total = resource_memory['total_number_of_items'] if resource_memory else 0
+        resource_text = resource_memory['text'] if resource_memory else ""
+        resource_count = resource_memory['current_count'] if resource_memory else 0
+        system_prompt += f"\n<resource_memory> ({resource_count} out of {resource_total} Items):\n" + (resource_text if resource_text else "Empty") + "\n</resource_memory>\n"
+        
+        # Add procedural memory with counts
+        procedural_total = procedural_memory['total_number_of_items'] if procedural_memory else 0
+        procedural_text = procedural_memory['text'] if procedural_memory else ""
+        procedural_count = procedural_memory['current_count'] if procedural_memory else 0
+        system_prompt += f"\n<procedural_memory> ({procedural_count} out of {procedural_total} Items):\n" + (procedural_text if procedural_text else "Empty") + "\n</procedural_memory>"
 
         return system_prompt
 
@@ -1314,7 +1377,6 @@ These keywords have been used to retrieve relevant memories from the database.
         force_response: bool = False,
         topics: Optional[str] = None,
         retrieved_memories: Optional[dict] = None,
-        terminal_tools: Optional[List[any]] = None,
         display_intermediate_message: any = None,
         put_inner_thoughts_first: bool = True,
         existing_file_uris: Optional[List[str]] = None,
@@ -1322,6 +1384,7 @@ These keywords have been used to retrieve relevant memories from the database.
         initial_message_count: Optional[int] = None,
         return_memory_types_without_update: bool = False,
         message_queue: Optional[any] = None,
+        chaining: bool = True,
         **kwargs,
     ) -> AgentStepResponse:
         """Runs a single step in the agent loop (generates at most one LLM call)"""
@@ -1330,7 +1393,6 @@ These keywords have been used to retrieve relevant memories from the database.
 
             # Step 0: get in-context messages and get the raw system prompt
             in_context_messages = self.agent_manager.get_in_context_messages(agent_id=self.agent_state.id, actor=self.user)
-
             assert in_context_messages[0].role == MessageRole.system
             raw_system = in_context_messages[0].content[0].text
 
@@ -1383,12 +1445,15 @@ These keywords have been used to retrieve relevant memories from the database.
                     response_message_id=response.id if stream else None,
                     force_response=force_response,
                     retrieved_memories=retrieved_memories,
-                    terminal_tools=terminal_tools,
                     display_intermediate_message=display_intermediate_message,
                     return_memory_types_without_update=return_memory_types_without_update,
-                    message_queue=message_queue
+                    message_queue=message_queue,
+                    chaining=chaining
                 )
                 all_response_messages.extend(tmp_response_messages)
+
+            if function_failed:
+                self.logger.info(f"Function failed with error: {all_response_messages[-1].content[0].text if all_response_messages else 'Unknown error'}")
 
             # if function_failed:
 
@@ -1511,7 +1576,7 @@ These keywords have been used to retrieve relevant memories from the database.
                         extra_messages=extra_messages,
                         topics=topics,
                         retrieved_memories=retrieved_memories,
-                        terminal_tools=terminal_tools,
+                        chaining=chaining
                     )
                 else:
                     err_msg = f"Ran summarizer {summarize_attempt_count - 1} times for agent id={self.agent_state.id}, but messages are still overflowing the context window."

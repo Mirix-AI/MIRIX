@@ -12,7 +12,6 @@ Features:
    - bm25: Full-text search using database capabilities
    - embedding: Vector similarity search using embeddings
    - string_match: Simple string containment search
-   - fuzzy_match: Fuzzy string matching using RapidFuzz
 4. Lists all content currently stored in each memory type
 5. Tests different search fields for each memory type
 6. Tests text-only memorization using both normal and immediate save methods:
@@ -914,6 +913,7 @@ def test_all_indirect_memory_operations(agent):
 
         test_core_memory_update_using_chat_agent(agent)
         # test_core_memory_update_using_meta_memory_manager(agent)
+        # test_core_memory_replace(agent)
         
         test_tracker.pass_test("All indirect memory operations completed successfully")
     
@@ -943,13 +943,15 @@ def test_all_memories():
     print("Starting comprehensive memory system tests...\n")
     
     # Initialize the agent with config file
-    agent = AgentWrapper("configs/mirix.yaml")
+    agent = AgentWrapper("mirix/configs/mirix_monitor.yaml")
     
     # agent.save_agent("./tmp/temp_agent")
 
     try:
         # Phase 1: Direct memory operations (manager method calls)
         test_all_direct_memory_operations(agent)
+
+        agent.reflexion_on_memory()
         
         # Phase 2: Indirect memory operations (message-based)
         test_all_indirect_memory_operations(agent)
@@ -960,7 +962,7 @@ def test_all_memories():
         print("All memory tests completed successfully!")
 
         # print("Loading agent from saved state...")
-        # agent = AgentWrapper("configs/mirix.yaml", load_from="./tmp/temp_agent")
+        # agent = AgentWrapper("mirix/configs/mirix.yaml", load_from="./tmp/temp_agent")
         
     except Exception as e:
         print(f"Error during testing: {e}")
@@ -971,7 +973,7 @@ def test_all_memories():
         test_tracker.print_summary()
 
 def test_greeting():
-    agent = AgentWrapper("configs/mirix.yaml")
+    agent = AgentWrapper("mirix/configs/mirix.yaml")
     response = agent.send_message(
         message="Hello, how are you?",
         memorizing=False
@@ -994,7 +996,7 @@ def test_greeting_with_images():
         with open(image_path, "rb") as img_file:
             return base64.b64encode(img_file.read()).decode("utf-8")
 
-    agent = AgentWrapper("configs/mirix.yaml")
+    agent = AgentWrapper("mirix/configs/mirix.yaml")
 
     # # case 1: image_url
 
@@ -1102,7 +1104,7 @@ def test_greeting_with_files(file_path):
     """Test file handling functionality with OpenAI, Claude, and Google AI"""
     print("=== Testing File Handling with Multiple AI Providers ===")
     
-    agent = AgentWrapper("configs/mirix.yaml")
+    agent = AgentWrapper("mirix/configs/mirix.yaml")
     
     # Test 1: OpenAI-style file format
     print("\n--- Test 1: OpenAI-style file format ---")
@@ -1217,7 +1219,7 @@ def test_file_types():
     """Test different file types handling"""
     print("=== Testing Different File Types ===")
     
-    agent = AgentWrapper("configs/mirix.yaml")
+    agent = AgentWrapper("mirix/configs/mirix.yaml")
     agent.set_model("gpt-4.1")
     
     # Create test files of different types (for demonstration)
@@ -1260,7 +1262,7 @@ def test_file_with_memory():
     """Test file handling with memory enabled"""
     print("=== Testing File Handling with Memory ===")
     
-    agent = AgentWrapper("configs/mirix.yaml")
+    agent = AgentWrapper("mirix/configs/mirix.yaml")
     agent.set_model("gpt-4.1")
     
     file_path = "exp1.pdf"
@@ -1771,6 +1773,73 @@ def test_core_memory_update_using_meta_memory_manager(agent):
     print(f"Agent type: {agent_type}")
     
     print("Episodic memory update using meta memory manager tests completed.\n")
+
+# def test_core_memory_replace(agent):
+#     """Test core memory replace functionality by adding and deleting items"""
+#     print("=== Core Memory Replace Tests ===")
+    
+#     # Test 1: Add something to core memory
+#     print("\n--- Test 1: Add to Core Memory ---")
+#     add_message = "Please add to core memory that the user's favorite programming language is Python"
+    
+#     response, agent_type = agent.message_queue.send_message_in_queue(
+#         agent.client,
+#         agent.agent_states.core_memory_agent_state.id,
+#         kwargs={
+#             'message': add_message,
+#         },
+#         agent_type='core_memory'
+#     )
+#     print(f"Response from core memory agent (add): {response}")
+#     print(f"Agent type: {agent_type}")
+    
+#     # Test 2: Add another item to core memory
+#     print("\n--- Test 2: Add another item to Core Memory ---")
+#     add_message2 = "Please add to core memory that the user's favorite IDE is VSCode"
+    
+#     response2, agent_type2 = agent.message_queue.send_message_in_queue(
+#         agent.client,
+#         agent.agent_states.core_memory_agent_state.id,
+#         kwargs={
+#             'message': add_message2,
+#         },
+#         agent_type='core_memory'
+#     )
+#     print(f"Response from core memory agent (add 2): {response2}")
+#     print(f"Agent type: {agent_type2}")
+    
+#     # Test 3: Delete something from core memory
+#     print("\n--- Test 3: Delete from Core Memory ---")
+#     delete_message = "Please remove from core memory any information about the user's favorite programming language"
+    
+#     response3, agent_type3 = agent.message_queue.send_message_in_queue(
+#         agent.client,
+#         agent.agent_states.core_memory_agent_state.id,
+#         kwargs={
+#             'message': delete_message,
+#         },
+#         agent_type='core_memory'
+#     )
+#     print(f"Response from core memory agent (delete): {response3}")
+#     print(f"Agent type: {agent_type3}")
+    
+#     # Test 4: Replace core memory item
+#     print("\n--- Test 4: Replace Core Memory Item ---")
+#     replace_message = "Please replace the user's favorite IDE in core memory from VSCode to IntelliJ IDEA"
+    
+#     response4, agent_type4 = agent.message_queue.send_message_in_queue(
+#         agent.client,
+#         agent.agent_states.core_memory_agent_state.id,
+#         kwargs={
+#             'message': replace_message,
+#         },
+#         agent_type='core_memory'
+#     )
+#     print(f"Response from core memory agent (replace): {response4}")
+#     print(f"Agent type: {agent_type4}")
+    
+#     print("Core memory replace tests completed.\n")
+#     import ipdb; ipdb.set_trace()
 
 def test_episodic_memory_indirect(agent):
     """Test episodic memory through message-based interactions"""

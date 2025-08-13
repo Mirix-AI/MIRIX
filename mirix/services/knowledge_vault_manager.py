@@ -478,6 +478,13 @@ class KnowledgeVaultManager:
         except Exception as e:
             raise e
 
+    def get_total_number_of_items(self) -> int:
+        """Get the total number of items in the knowledge vault."""
+        with self.session_maker() as session:
+            query = select(func.count(KnowledgeVaultItem.id))
+            result = session.execute(query)
+            return result.scalar_one()
+
     @update_timezone
     @enforce_types
     def list_knowledge(self,

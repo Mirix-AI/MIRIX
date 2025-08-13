@@ -88,7 +88,7 @@ class UploadManager:
             if compressed_file and compressed_file != filename and upload_file == compressed_file:
                 try:
                     os.remove(compressed_file)
-                    self.logger.info(f"Removed compressed file: {compressed_file}")
+                    # self.logger.info(f"Removed compressed file: {compressed_file}")
                 except:
                     pass  # Ignore cleanup errors
             

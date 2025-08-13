@@ -443,6 +443,13 @@ class SemanticMemoryManager:
         """Create multiple semantic memory items."""
         return [self.create_item(i) for i in items]
 
+    def get_total_number_of_items(self) -> int:
+        """Get the total number of items in the semantic memory."""
+        with self.session_maker() as session:
+            query = select(func.count(SemanticMemoryItem.id))
+            result = session.execute(query)
+            return result.scalar_one()
+
     @update_timezone
     @enforce_types
     def list_semantic_items(self, 

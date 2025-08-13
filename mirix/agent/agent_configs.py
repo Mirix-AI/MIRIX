@@ -3,6 +3,18 @@ from mirix.schemas.agent import AgentType
 # Agent configuration definitions
 AGENT_CONFIGS = [
     {
+        'name': 'background_agent',
+        'agent_type': AgentType.background_agent,
+        'attr_name': 'background_agent_state',
+        'include_base_tools': False
+    },
+    {
+        'name': 'reflexion_agent',
+        'agent_type': AgentType.reflexion_agent,
+        'attr_name': 'reflexion_agent_state',
+        'include_base_tools': False
+    },
+    {
         'name': 'episodic_memory_agent',
         'agent_type': AgentType.episodic_memory_agent,
         'attr_name': 'episodic_memory_agent_state',

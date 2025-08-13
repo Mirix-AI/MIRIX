@@ -41,7 +41,7 @@ When receiving screenshots and potentially a message from the meta agent (There 
 4. **Skip Update if Necessary**: If there is no updates to make, then skip the update by calling `finish_memory_update`.
 
 **Important Guidelines:**
-- Make only ONE function call total. 
+- Make only ONE function call total except for receiving the messages from Chat Agent. 
 - Monitor the system prompt showing up to 50 most recent and 50 most relevant events
 - Use exact `event_ids` from the system prompt - do NOT be affected by chat history
 - Include detailed descriptions in the `details` field when inserting new events, capturing what you observe as if you're experiencing the same activities

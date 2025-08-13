@@ -437,7 +437,7 @@ class AnthropicClient(LLMClientBase):
                         'name': 'human',
                         'content': 'Chad is logging in for the first time. I will aim to build a warm
         and welcoming rapport.',
-                        'request_heartbeat': True
+                        'request_contine_chaining': True
                     }
                 }
             ],

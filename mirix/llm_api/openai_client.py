@@ -33,6 +33,7 @@ from mirix.schemas.openai.chat_completion_request import Tool as OpenAITool
 from mirix.schemas.openai.chat_completion_request import ToolFunctionChoice, cast_message_to_subtype
 from mirix.schemas.openai.chat_completion_request import UserMessage
 from mirix.schemas.openai.chat_completion_response import ChatCompletionResponse
+from mirix.services.provider_manager import ProviderManager
 from mirix.settings import model_settings
 
 logger = get_logger(__name__)
@@ -63,11 +64,17 @@ def encode_image(image_path: str) -> str:
 
 class OpenAIClient(LLMClientBase):
     def _prepare_client_kwargs(self) -> dict:
-        api_key = model_settings.openai_api_key or os.environ.get("OPENAI_API_KEY")
-        # supposedly the openai python client requires a dummy API key
-        api_key = api_key or "DUMMY_API_KEY"
+        # Check for custom API key in LLMConfig first (for custom models)
+        custom_api_key = getattr(self.llm_config, 'api_key', None)
+        if custom_api_key:
+            api_key = custom_api_key
+        else:
+            # Check for database-stored API key first, fall back to model_settings and environment
+            override_key = ProviderManager().get_openai_override_key()
+            api_key = override_key or model_settings.openai_api_key or os.environ.get("OPENAI_API_KEY")
+            # supposedly the openai python client requires a dummy API key
+            api_key = api_key or "DUMMY_API_KEY"
         kwargs = {"api_key": api_key, "base_url": self.llm_config.model_endpoint}
-
         return kwargs
 
     def build_request_data(
@@ -247,7 +254,6 @@ class OpenAIClient(LLMClientBase):
         Performs underlying synchronous request to OpenAI API and returns raw response dict.
         """
         client = OpenAI(**self._prepare_client_kwargs())
-
         response: ChatCompletion = client.chat.completions.create(**request_data)
         return response.model_dump()
 

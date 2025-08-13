@@ -1,8 +1,6 @@
 from typing import List, Optional
 
-# TODO
-# from openai.types.chat.chat_completion_message_tool_call import ChatCompletionMessageToolCall as OpenAIToolCall
-from mirix.schemas.openai.openai import ToolCall as OpenAIToolCall
+from openai.types.chat.chat_completion_message_tool_call import ChatCompletionMessageToolCall as OpenAIToolCall
 from sqlalchemy import BigInteger, FetchedValue, ForeignKey, Index, event, text
 from sqlalchemy.orm import Mapped, Session, mapped_column, relationship
 

@@ -1,3 +1,4 @@
+import os
 import json
 import uuid
 from typing import List, Optional, Tuple
@@ -17,6 +18,7 @@ from mirix.schemas.message import Message as PydanticMessage
 from mirix.schemas.openai.chat_completion_request import Tool
 from mirix.schemas.openai.chat_completion_response import ChatCompletionResponse, Choice, FunctionCall, Message, ToolCall, UsageStatistics
 from mirix.settings import model_settings
+from mirix.services.provider_manager import ProviderManager
 from mirix.utils import get_tool_call_id
 
 logger = get_logger(__name__)
@@ -30,10 +32,14 @@ class GoogleAIClient(LLMClientBase):
         """
         # print("[google_ai request]", json.dumps(request_data, indent=2))
 
+        # Check for database-stored API key first, fall back to model_settings
+        override_key = ProviderManager().get_gemini_override_key()
+        api_key = str(override_key) if override_key else str(model_settings.gemini_api_key)
+
         url, headers = get_gemini_endpoint_and_headers(
             base_url=str(self.llm_config.model_endpoint),
             model=self.llm_config.model,
-            api_key=str(model_settings.gemini_api_key),
+            api_key=api_key,
             key_in_header=True,
             generate_content=True,
         )
@@ -63,14 +69,22 @@ class GoogleAIClient(LLMClientBase):
             [m.to_google_ai_dict() for m in messages],
         )
 
+        generation_config = {
+            "temperature": llm_config.temperature,
+            "max_output_tokens": llm_config.max_tokens,
+        }
+        
+        # Only add thinkingConfig for models that support it
+        # gemini-2.0-flash and gemini-1.5-pro don't support thinking
+        if not ("2.0" in llm_config.model or "1.5" in llm_config.model):
+            generation_config['thinkingConfig'] = {'thinkingBudget': 1024}  # TODO: put into llm_config
+        
+        contents = self.combine_tool_responses(contents)
+
         request_data = {
             "contents": self.fill_image_content_in_messages(contents, existing_file_uris=existing_file_uris),
             "tools": tools,
-            "generation_config": {
-                "temperature": llm_config.temperature,
-                "max_output_tokens": llm_config.max_tokens,
-                'thinkingConfig': {'thinkingBudget': 1024} # TODO: put into llm_config
-            },
+            "generation_config": generation_config,
         }
 
         # write tool config
@@ -84,6 +98,38 @@ class GoogleAIClient(LLMClientBase):
         )
         request_data["tool_config"] = tool_config.model_dump()
         return request_data
+
+    def combine_tool_responses(self, contents: List[dict]) -> List[dict]:
+        idx = 0
+        new_contents = []
+        while idx < len(contents):
+            message = contents[idx]
+            new_contents.append(message)
+
+            if message['role'] == 'model':
+                is_multiple_tool_call = False
+                if len(message['parts']) > 1:
+                    is_multiple_tool_call = True
+                    for part in message['parts']:
+                        if not 'functionCall' in part:
+                            is_multiple_tool_call = False
+
+                if is_multiple_tool_call:
+                    # need to combine the next len(message['parts]) into one:
+                    messages_for_function_responses = contents[idx+1:idx+len(message['parts'])+1]
+                    new_contents.append(
+                        {
+                            'role': 'function',
+                            'parts': []
+                        }
+                    )
+                    for msg_for_func_res in messages_for_function_responses:
+                        assert msg_for_func_res['role'] == 'function' and "functionResponse" in msg_for_func_res['parts'][0]
+                        new_contents[-1]['parts'].extend(msg_for_func_res['parts'])
+                    
+                    idx += len(message['parts'])
+            idx += 1
+        return new_contents
 
     def fill_image_content_in_messages(self, google_ai_message_list, existing_file_uris: Optional[List[str]] = None):
         """
@@ -225,13 +271,13 @@ class GoogleAIClient(LLMClientBase):
                 #       so let's disable it for now
 
                 # NOTE(Apr 9, 2025): there's a very strange bug on 2.5 where the response has a part with broken text
-                # {'candidates': [{'content': {'parts': [{'functionCall': {'name': 'send_message', 'args': {'request_heartbeat': False, 'message': 'Hello! How can I make your day better?', 'inner_thoughts': 'User has initiated contact. Sending a greeting.'}}}], 'role': 'model'}, 'finishReason': 'STOP', 'avgLogprobs': -0.25891534213362066}], 'usageMetadata': {'promptTokenCount': 2493, 'candidatesTokenCount': 29, 'totalTokenCount': 2522, 'promptTokensDetails': [{'modality': 'TEXT', 'tokenCount': 2493}], 'candidatesTokensDetails': [{'modality': 'TEXT', 'tokenCount': 29}]}, 'modelVersion': 'gemini-1.5-pro-002'}
+                # {'candidates': [{'content': {'parts': [{'functionCall': {'name': 'send_message', 'args': {'request_contine_chaining': False, 'message': 'Hello! How can I make your day better?', 'inner_thoughts': 'User has initiated contact. Sending a greeting.'}}}], 'role': 'model'}, 'finishReason': 'STOP', 'avgLogprobs': -0.25891534213362066}], 'usageMetadata': {'promptTokenCount': 2493, 'candidatesTokenCount': 29, 'totalTokenCount': 2522, 'promptTokensDetails': [{'modality': 'TEXT', 'tokenCount': 2493}], 'candidatesTokensDetails': [{'modality': 'TEXT', 'tokenCount': 29}]}, 'modelVersion': 'gemini-1.5-pro-002'}
                 # To patch this, if we have multiple parts we can take the last one
 
                 # NOTE(May 9, 2025 from Yu) I found that sometimes when the respones have multiple parts, they are actually multiple function calls. In my experiments, gemini-2.5-flash can call two `archival_memory_insert` in one output.
-                if len(parts) > 1:
-                    logger.warning(f"Unexpected multiple parts in response from Google AI: {parts}")
-                    parts = [parts[-1]]
+                # if len(parts) > 1:
+                #     logger.warning(f"Unexpected multiple parts in response from Google AI: {parts}")
+                #     parts = [parts[-1]]
 
                 # TODO support parts / multimodal
                 # TODO support parallel tool calling natively

@@ -7,7 +7,7 @@ from sqlalchemy import Select, func, literal, select, union_all
 from mirix.constants import (
     CORE_MEMORY_TOOLS, BASE_TOOLS, MAX_EMBEDDING_DIM,
     EPISODIC_MEMORY_TOOLS, PROCEDURAL_MEMORY_TOOLS, SEMANTIC_MEMORY_TOOLS,
-    RESOURCE_MEMORY_TOOLS, KNOWLEDGE_VAULT_TOOLS, META_MEMORY_TOOLS, UNIVERSAL_MEMORY_TOOLS, CHAT_AGENT_TOOLS
+    RESOURCE_MEMORY_TOOLS, KNOWLEDGE_VAULT_TOOLS, META_MEMORY_TOOLS, UNIVERSAL_MEMORY_TOOLS, CHAT_AGENT_TOOLS, SEARCH_MEMORY_TOOLS
 )
 from mirix.embeddings import embedding_model
 from mirix.log import get_logger
@@ -104,6 +104,8 @@ class AgentManager:
             tool_names.extend(SEMANTIC_MEMORY_TOOLS + UNIVERSAL_MEMORY_TOOLS)
         if agent_create.agent_type == AgentType.meta_memory_agent:
             tool_names.extend(META_MEMORY_TOOLS + UNIVERSAL_MEMORY_TOOLS)
+        if agent_create.agent_type == AgentType.reflexion_agent:
+            tool_names.extend(SEARCH_MEMORY_TOOLS + CHAT_AGENT_TOOLS + UNIVERSAL_MEMORY_TOOLS)
 
         # Remove duplicates
         tool_names = list(set(tool_names))
@@ -177,6 +179,8 @@ class AgentManager:
             tool_names.extend(META_MEMORY_TOOLS + UNIVERSAL_MEMORY_TOOLS)
         if agent_state.agent_type == AgentType.chat_agent:
             tool_names.extend(BASE_TOOLS + CHAT_AGENT_TOOLS)
+        if agent_state.agent_type == AgentType.reflexion_agent:
+            tool_names.extend(SEARCH_MEMORY_TOOLS + CHAT_AGENT_TOOLS + UNIVERSAL_MEMORY_TOOLS)
 
         ## extract the existing tool names for the agent
         existing_tools = agent_state.tools

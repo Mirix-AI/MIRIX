@@ -44,17 +44,22 @@ class MessageQueue:
         with self._message_queue_lock:
             self.message_queue[message_uuid]['started'] = True
 
-        try:
-            response = client.send_message(
-                agent_id=agent_id,
-                role='user',
-                **self.message_queue[message_uuid]['kwargs']
-            )
-        except Exception as e:
-            print(f"Error sending message: {e}")
-            print(traceback.format_exc())
-            print("agent_type: ", agent_type, "gets error. agent_id: ", agent_id, "ERROR")
-            response = "ERROR"
+        # try:
+        #     response = client.send_message(
+        #         agent_id=agent_id,
+        #         role='user',
+        #         **self.message_queue[message_uuid]['kwargs']
+        #     )
+        # except Exception as e:
+        #     print(f"Error sending message: {e}")
+        #     print(traceback.format_exc())
+        #     print("agent_type: ", agent_type, "gets error. agent_id: ", agent_id, "ERROR")
+        #     response = "ERROR"
+        response = client.send_message(
+            agent_id=agent_id,
+            role='user',
+            **self.message_queue[message_uuid]['kwargs']
+        )
 
         with self._message_queue_lock:
             self.message_queue[message_uuid]['finished'] = True

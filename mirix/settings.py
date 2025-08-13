@@ -70,7 +70,7 @@ class ModelSettings(BaseSettings):
     ollama_base_url: Optional[str] = None
 
     # azure
-    azure_api_key: Optional[str] = None
+    azure_openai_api_key: Optional[str] = None
     azure_base_url: Optional[str] = None
     # We provide a default here, since usually people will want to be on the latest API version.
     azure_api_version: Optional[str] = (

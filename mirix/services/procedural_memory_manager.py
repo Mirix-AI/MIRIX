@@ -435,6 +435,13 @@ class ProceduralMemoryManager:
         """Create multiple procedural memory items."""
         return [self.create_item(i, actor) for i in items]
 
+    def get_total_number_of_items(self) -> int:
+        """Get the total number of items in the procedural memory."""
+        with self.session_maker() as session:
+            query = select(func.count(ProceduralMemoryItem.id))
+            result = session.execute(query)
+            return result.scalar_one()
+
     @update_timezone
     @enforce_types
     def list_procedures(self, 

@@ -36,7 +36,7 @@ When receiving messages and potentially a message from the meta agent (There wil
 3. **Skip Update if Necessary**: If there is no updates to make, then skip the update by calling `finish_memory_update`.
 
 **Important Notes:**
-- Make only ONE function call total
+- Make only ONE function call total except for receiving the messages from Chat Agent
 - Look for any structured processes, workflows, or instructional content in the messages
 - Save procedures with appropriate entry_type ('workflow', 'guide', 'script'), description, and detailed steps
 - When relevant, use `tree_path` to create logical hierarchical categories for better organization (e.g., ["technology", "software", "installation"] or ["home", "maintenance", "repair"])
