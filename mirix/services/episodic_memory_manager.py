@@ -262,7 +262,8 @@ class EpisodicMemoryManager:
                                               agent_state: AgentState,
                                               start_time: datetime,
                                               end_time: datetime,
-                                              timezone_str: str = None) -> List[PydanticEpisodicEvent]:
+                                              timezone_str: str = None,
+                                              actor: Optional[PydanticUser] = None) -> List[PydanticEpisodicEvent]:
 
         """
         list all episodic events around a timestamp
@@ -274,6 +275,11 @@ class EpisodicMemoryManager:
             query = select(EpisodicEvent).where(
                 EpisodicEvent.occurred_at.between(start_time, end_time)
             )
+            
+            # Filter by user_id when actor is provided for multi-user support
+            if actor:
+                query = query.where(EpisodicEvent.organization_id == actor.organization_id)
+                query = query.where(EpisodicEvent.user_id == actor.id)
 
             result = session.execute(query)
             episodic_memory = result.scalars().all()
