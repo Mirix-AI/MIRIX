@@ -6,7 +6,7 @@ from sqlalchemy import Column, JSON, String
 from sqlalchemy.orm import Mapped, mapped_column, declared_attr, relationship
 
 from mirix.orm.sqlalchemy_base import SqlalchemyBase
-from mirix.orm.mixins import OrganizationMixin
+from mirix.orm.mixins import OrganizationMixin, UserMixin
 
 from mirix.schemas.resource_memory import ResourceMemoryItem as PydanticResourceMemoryItem
 from mirix.orm.custom_columns import CommonVector, EmbeddingConfigColumn
@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from mirix.orm.organization import Organization
 
 
-class ResourceMemoryItem(SqlalchemyBase, OrganizationMixin):
+class ResourceMemoryItem(SqlalchemyBase, OrganizationMixin, UserMixin):
     """
     Stores references to user's documents, files, or resources for easy retrieval & linking to tasks.
     

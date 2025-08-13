@@ -394,7 +394,7 @@ class ProceduralMemoryManager:
             return [item.to_pydantic()] if item else None
 
     @enforce_types
-    def create_item(self, item_data: PydanticProceduralMemoryItem) -> PydanticProceduralMemoryItem:
+    def create_item(self, item_data: PydanticProceduralMemoryItem, actor: Optional[PydanticUser] = None) -> PydanticProceduralMemoryItem:
         """Create a new procedural memory item."""
         
         # Ensure ID is set before model_dump
@@ -411,10 +411,14 @@ class ProceduralMemoryManager:
                 raise ValueError(f"Required field '{field}' missing from procedural memory data")
 
         data_dict.setdefault("metadata_", {})
+        
+        # Set user_id if actor is provided
+        if actor:
+            data_dict.setdefault("user_id", actor.id)
 
         with self.session_maker() as session:
             item = ProceduralMemoryItem(**data_dict)
-            item.create(session)
+            item.create(session, actor=actor)
             return item.to_pydantic()
 
     @enforce_types
@@ -433,7 +437,7 @@ class ProceduralMemoryManager:
     @enforce_types
     def create_many_items(self, items: List[PydanticProceduralMemoryItem], actor: PydanticUser) -> List[PydanticProceduralMemoryItem]:
         """Create multiple procedural memory items."""
-        return [self.create_item(i, actor) for i in items]
+        return [self.create_item(i, actor=actor) for i in items]
 
     def get_total_number_of_items(self) -> int:
         """Get the total number of items in the procedural memory."""
@@ -451,7 +455,8 @@ class ProceduralMemoryManager:
                         search_field: str = '',
                         search_method: str = 'embedding',
                         limit: Optional[int] = 50,
-                        timezone_str: str = None) -> List[PydanticProceduralMemoryItem]:
+                        timezone_str: str = None,
+                        actor: Optional[PydanticUser] = None) -> List[PydanticProceduralMemoryItem]:
         """
         List procedural memory items with various search methods.
         
@@ -488,6 +493,9 @@ class ProceduralMemoryManager:
             
             if query == '':
                 query_stmt = select(ProceduralMemoryItem).order_by(ProceduralMemoryItem.created_at.desc())
+                if actor:
+                    query_stmt = query_stmt.where(ProceduralMemoryItem.organization_id == actor.organization_id)
+                    query_stmt = query_stmt.where(ProceduralMemoryItem.user_id == actor.id)
                 if limit:
                     query_stmt = query_stmt.limit(limit)
                 result = session.execute(query_stmt)
@@ -510,6 +518,11 @@ class ProceduralMemoryManager:
                     ProceduralMemoryItem.last_modify.label("last_modify"),
                     ProceduralMemoryItem.tree_path.label("tree_path"),
                 )
+                
+                # Add user context filtering if actor is provided
+                if actor:
+                    base_query = base_query.where(ProceduralMemoryItem.organization_id == actor.organization_id)
+                    base_query = base_query.where(ProceduralMemoryItem.user_id == actor.id)
 
                 if search_method == 'embedding':
 
@@ -688,7 +701,7 @@ class ProceduralMemoryManager:
                     summary_embedding=summary_embedding,
                     steps_embedding=steps_embedding,
                     embedding_config=embedding_config,
-                ),
+                )
             )
             return procedure
         
