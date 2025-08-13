@@ -12,8 +12,8 @@ from conversation_creator import ConversationCreator
 from constants import CHUNK_SIZE_MEMORY_AGENT_BENCH
 
 ## CONSTANTS for chunk size moved to constants.py to avoid circular imports
-
-## python main.py --agent_name mirix --dataset MemoryAgentBench --config_path mirix/configs/mirix_azure_example.yaml
+## python main.py --agent_name mirix --dataset LOCOMO --config_path ../mirix/configs/mirix_azure_example.yaml
+## python main.py --agent_name mirix --dataset MemoryAgentBench --config_path ../mirix/configs/mirix_azure_example.yaml
 def parse_args():
     parser = argparse.ArgumentParser(description="Multi-Modal Memory Illustration")
     parser.add_argument("--agent_name", type=str, choices=['gpt-long-context', 'mirix', 'siglip', 'gemini-long-context'])
@@ -39,7 +39,7 @@ def run_with_chunks_and_questions_subprocess(args, global_idx, chunks, queries_a
         source = queries_and_answers[0][3]
         chunk_size = CHUNK_SIZE_MEMORY_AGENT_BENCH[source]
     else:
-        chunk_size = "None"
+        chunk_size = 512 ## default one
                     
     # Create temporary files for chunks and queries
     with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as chunks_file:
