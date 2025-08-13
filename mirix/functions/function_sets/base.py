@@ -114,6 +114,7 @@ def search_in_memory(self: "Agent", memory_type: str, query: str, search_field: 
             search_method=search_method,
             limit=10,
             timezone_str=timezone_str,
+            actor=self.user,
         )
         formatted_results_from_episodic = [{'memory_type': 'episodic', 'id': x.id, 'timestamp': x.occurred_at, 'event_type': x.event_type, 'actor': x.actor, 'summary': x.summary, 'details': x.details} for x in episodic_memory]
         if memory_type == 'episodic':
@@ -126,6 +127,7 @@ def search_in_memory(self: "Agent", memory_type: str, query: str, search_field: 
             search_method=search_method,
             limit=10,
             timezone_str=timezone_str,
+            actor=self.user,
         )
         formatted_results_resource = [{'memory_type': 'resource', 'id': x.id, 'resource_type': x.resource_type, 'summary': x.summary, 'content': x.content} for x in resource_memories]
         if memory_type == 'resource':
@@ -138,6 +140,7 @@ def search_in_memory(self: "Agent", memory_type: str, query: str, search_field: 
             search_method=search_method,
             limit=10,
             timezone_str=timezone_str,
+            actor=self.user,
         )
         formatted_results_procedural = [{'memory_type': 'procedural', 'id': x.id, 'entry_type': x.entry_type, 'summary': x.summary, 'steps': x.steps} for x in procedural_memories]
         if memory_type == 'procedural':
@@ -150,6 +153,7 @@ def search_in_memory(self: "Agent", memory_type: str, query: str, search_field: 
             search_method=search_method,
             limit=10,
             timezone_str=timezone_str,
+            actor=self.user,
         )
         formatted_results_knowledge_vault = [{'memory_type': 'knowledge_vault', 'id': x.id, 'entry_type': x.entry_type, 'source': x.source, 'sensitivity': x.sensitivity, 'secret_value': x.secret_value, 'caption': x.caption} for x in knowledge_vault_memories]
         if memory_type == 'knowledge_vault':
@@ -162,6 +166,7 @@ def search_in_memory(self: "Agent", memory_type: str, query: str, search_field: 
             search_method=search_method,
             limit=10,
             timezone_str=timezone_str,
+            actor=self.user,
         )
         # title, summary, details, source
         formatted_results_semantic = [{"memory_type": 'semantic', 'id': x.id, 'name': x.name, 'summary': x.summary, 'details': x.details, 'source': x.source} for x in semantic_memories]
@@ -190,6 +195,7 @@ def list_memory_within_timerange(self: "Agent", memory_type: str, start_time: st
             start_time=start_time,
             end_time=end_time,
             timezone_str=timezone_str,
+            actor=self.user,
         )
         formatted_results_from_episodic = [{'memory_type': 'episodic', 'id': x.id, 'timestamp': x.occurred_at, 'event_type': x.event_type, 'actor': x.actor, 'summary': x.summary} for x in episodic_memory]
         if memory_type == 'episodic':
