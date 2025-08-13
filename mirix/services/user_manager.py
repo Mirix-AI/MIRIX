@@ -114,8 +114,95 @@ class UserManager:
             return self.get_default_user()
 
     @enforce_types
-    def list_users(self, cursor: Optional[str] = None, limit: Optional[int] = 50) -> Tuple[Optional[str], List[PydanticUser]]:
+    def list_users(self, cursor: Optional[str] = None, limit: Optional[int] = 50) -> List[PydanticUser]:
         """List users with pagination using cursor (id) and limit."""
         with self.session_maker() as session:
             results = UserModel.list(db_session=session, cursor=cursor, limit=limit)
+            return [user.to_pydantic() for user in results]
+
+    @enforce_types
+    def create_user_if_not_exists(self, user_id: str, name: Optional[str] = None, organization_id: Optional[str] = None) -> PydanticUser:
+        """
+        Create a user if it doesn't exist, or return existing user.
+        
+        Args:
+            user_id: The user ID to create/get
+            name: The user name (defaults to user ID)
+            organization_id: The organization ID (defaults to default organization)
+            
+        Returns:
+            PydanticUser: The created or existing user
+        """
+        try:
+            return self.get_user_by_id(user_id)
+        except NoResultFound:
+            # Create new user
+            if not name:
+                name = f"User {user_id}"
+            
+            if not organization_id:
+                # Use default organization
+                org_id = self.server.organization_manager.get_default_organization().id
+            else:
+                org_id = organization_id
+            
+            user = UserModel(
+                id=user_id, 
+                name=name, 
+                timezone=self.DEFAULT_TIME_ZONE, 
+                organization_id=org_id
+            )
+            
+            with self.session_maker() as session:
+                user.create(session)
+                return user.to_pydantic()
+
+    @enforce_types  
+    def is_default_user(self, user_id: str) -> bool:
+        """
+        Check if a user ID is the default user.
+        
+        Args:
+            user_id: The user ID to check
+            
+        Returns:
+            bool: True if this is the default user ID
+        """
+        return user_id == self.DEFAULT_USER_ID
+
+    @enforce_types
+    def validate_user_exists(self, user_id: str) -> bool:
+        """
+        Validate that a user exists in the system.
+        
+        Args:
+            user_id: The user ID to validate
+            
+        Returns:
+            bool: True if the user exists, False otherwise
+        """
+        try:
+            self.get_user_by_id(user_id)
+            return True
+        except NoResultFound:
+            return False
+
+    @enforce_types
+    def get_users_in_organization(self, organization_id: str, limit: Optional[int] = 50) -> List[PydanticUser]:
+        """
+        Get all users in a specific organization.
+        
+        Args:
+            organization_id: The organization ID to filter by
+            limit: Maximum number of users to return
+            
+        Returns:
+            List[PydanticUser]: Users in the organization
+        """
+        with self.session_maker() as session:
+            results = UserModel.list(
+                db_session=session, 
+                organization_id=organization_id,
+                limit=limit
+            )
             return [user.to_pydantic() for user in results]
