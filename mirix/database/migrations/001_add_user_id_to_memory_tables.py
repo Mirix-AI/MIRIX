@@ -70,7 +70,7 @@ def upgrade_postgresql(connection):
             )
         )
 
-        # Add foreign key constraint
+        # Add foreign key constrain
         connection.execute(
             text(
                 f"""
@@ -119,7 +119,7 @@ def upgrade_sqlite(connection):
             connection.execute(
                 text(
                     f"""
-                ALTER TABLE {table} 
+                ALTER TABLE {table}
                 ADD COLUMN user_id VARCHAR(255);
             """
                 )
@@ -129,8 +129,8 @@ def upgrade_sqlite(connection):
             connection.execute(
                 text(
                     f"""
-                UPDATE {table} 
-                SET user_id = '{DEFAULT_USER_ID}' 
+                UPDATE {table}
+                SET user_id = '{DEFAULT_USER_ID}'
                 WHERE user_id IS NULL OR user_id = '';
             """
                 )
@@ -157,8 +157,8 @@ def upgrade_sqlite(connection):
                     connection.execute(
                         text(
                             f"""
-                        UPDATE {table} 
-                        SET user_id = '{DEFAULT_USER_ID}' 
+                        UPDATE {table}
+                        SET user_id = '{DEFAULT_USER_ID}'
                         WHERE user_id IS NULL OR user_id = '';
                     """
                         )
