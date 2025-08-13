@@ -5,7 +5,7 @@ from sqlalchemy import BigInteger, FetchedValue, ForeignKey, Index, event, text
 from sqlalchemy.orm import Mapped, Session, mapped_column, relationship
 
 from mirix.orm.custom_columns import MessageContentColumn, ToolCallColumn, ToolReturnColumn
-from mirix.orm.mixins import AgentMixin, OrganizationMixin
+from mirix.orm.mixins import AgentMixin, OrganizationMixin, UserMixin
 from mirix.orm.sqlalchemy_base import SqlalchemyBase
 from mirix.schemas.mirix_message_content import MessageContent
 from mirix.schemas.mirix_message_content import TextContent as PydanticTextContent
@@ -14,7 +14,7 @@ from mirix.schemas.message import ToolReturn
 from mirix.settings import settings
 
 
-class Message(SqlalchemyBase, OrganizationMixin, AgentMixin):
+class Message(SqlalchemyBase, OrganizationMixin, AgentMixin, UserMixin):
     """Defines data model for storing Message objects"""
 
     __tablename__ = "messages"

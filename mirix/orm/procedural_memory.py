@@ -6,7 +6,7 @@ from sqlalchemy import Column, JSON, String
 from sqlalchemy.orm import Mapped, mapped_column, declared_attr, relationship
 
 from mirix.orm.sqlalchemy_base import SqlalchemyBase
-from mirix.orm.mixins import OrganizationMixin
+from mirix.orm.mixins import OrganizationMixin, UserMixin
 
 from mirix.schemas.procedural_memory import ProceduralMemoryItem as PydanticProceduralMemoryItem
 from mirix.orm.custom_columns import CommonVector, EmbeddingConfigColumn
@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from mirix.orm.organization import Organization
 
 
-class ProceduralMemoryItem(SqlalchemyBase, OrganizationMixin):
+class ProceduralMemoryItem(SqlalchemyBase, OrganizationMixin, UserMixin):
     """
     Stores procedural memory entries, such as workflows, step-by-step guides, or how-to knowledge.
     
