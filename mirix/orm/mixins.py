@@ -1,4 +1,3 @@
-from typing import Optional
 from uuid import UUID
 
 from sqlalchemy import ForeignKey, String
@@ -29,7 +28,7 @@ class UserMixin(Base):
 
     __abstract__ = True
 
-    user_id: Mapped[Optional[str]] = mapped_column(String, ForeignKey("users.id"), nullable=True)
+    user_id: Mapped[str] = mapped_column(String, ForeignKey("users.id"))
 
 
 class AgentMixin(Base):

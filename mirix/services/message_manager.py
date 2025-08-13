@@ -52,9 +52,7 @@ class MessageManager:
         with self.session_maker() as session:
             # Set the organization id and user id of the Pydantic message
             pydantic_msg.organization_id = actor.organization_id
-            # Set user_id from actor if available
-            if hasattr(pydantic_msg, 'user_id'):
-                pydantic_msg.user_id = actor.id
+            pydantic_msg.user_id = actor.id
             msg_data = pydantic_msg.model_dump()
             msg = MessageModel(**msg_data)
             msg.create(session, actor=actor)  # Persist to database
