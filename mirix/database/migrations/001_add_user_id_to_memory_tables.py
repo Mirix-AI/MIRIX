@@ -24,6 +24,9 @@ from mirix.settings import settings
 def upgrade_postgresql(connection):
     """Apply migration for PostgreSQL database."""
 
+    # Default user ID for existing data
+    DEFAULT_USER_ID = "user-00000000-0000-4000-8000-000000000000"
+
     # Add user_id columns to all memory tables
     tables_to_modify = [
         "messages",
@@ -36,7 +39,7 @@ def upgrade_postgresql(connection):
     ]
 
     for table in tables_to_modify:
-        # Add user_id column
+        # Add user_id column (nullable initially)
         connection.execute(
             text(
                 f"""
@@ -46,7 +49,28 @@ def upgrade_postgresql(connection):
             )
         )
 
-        # Add foreign key constrain
+        # Backfill existing data with default user
+        connection.execute(
+            text(
+                f"""
+            UPDATE {table}
+            SET user_id = '{DEFAULT_USER_ID}'
+            WHERE user_id IS NULL;
+        """
+            )
+        )
+
+        # Make column NOT NULL after backfill
+        connection.execute(
+            text(
+                f"""
+            ALTER TABLE {table}
+            ALTER COLUMN user_id SET NOT NULL;
+        """
+            )
+        )
+
+        # Add foreign key constraint
         connection.execute(
             text(
                 f"""
@@ -67,11 +91,14 @@ def upgrade_postgresql(connection):
             )
         )
 
-    print("PostgreSQL migration completed: Added user_id columns with foreign keys and indexes")
+    print("PostgreSQL migration completed: Added user_id columns, backfilled with default user, added constraints")
 
 
 def upgrade_sqlite(connection):
     """Apply migration for SQLite database."""
+
+    # Default user ID for existing data
+    DEFAULT_USER_ID = "user-00000000-0000-4000-8000-000000000000"
 
     # SQLite doesn't support ADD CONSTRAINT for foreign keys on existing tables
     # We'll add the columns without foreign key constraints for SQLite
@@ -92,8 +119,19 @@ def upgrade_sqlite(connection):
             connection.execute(
                 text(
                     f"""
-                ALTER TABLE {table}
+                ALTER TABLE {table} 
                 ADD COLUMN user_id VARCHAR(255);
+            """
+                )
+            )
+
+            # Backfill existing data with default user
+            connection.execute(
+                text(
+                    f"""
+                UPDATE {table} 
+                SET user_id = '{DEFAULT_USER_ID}' 
+                WHERE user_id IS NULL OR user_id = '';
             """
                 )
             )
@@ -108,16 +146,30 @@ def upgrade_sqlite(connection):
                 )
             )
 
-            print(f"Added user_id column and index to {table}")
+            print(f"Added user_id column, backfilled, and indexed {table}")
 
         except Exception as e:
             # Column might already exist, which is fine
             if "duplicate column name" in str(e).lower():
                 print(f"Column user_id already exists in {table}")
+                # Still try to backfill in case it was added but not populated
+                try:
+                    connection.execute(
+                        text(
+                            f"""
+                        UPDATE {table} 
+                        SET user_id = '{DEFAULT_USER_ID}' 
+                        WHERE user_id IS NULL OR user_id = '';
+                    """
+                        )
+                    )
+                    print(f"Backfilled existing data in {table}")
+                except Exception as backfill_error:
+                    print(f"Warning: Could not backfill {table}: {backfill_error}")
             else:
                 raise e
 
-    print("SQLite migration completed: Added user_id columns with indexes")
+    print("SQLite migration completed: Added user_id columns, backfilled with default user, added indexes")
 
 
 def upgrade():
