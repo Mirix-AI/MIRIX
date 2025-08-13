@@ -16,7 +16,7 @@ from mirix.agent.agent_wrapper import AgentWrapper
 from mirix.schemas.user import User as PydanticUser
 from mirix.server.fastapi_server import MessageRequest
 from mirix.services.user_manager import UserManager
-from mirix.utils.user_context import (
+from mirix.helpers.user_context import (
     UserContext,
     create_user_scoped_filters,
     ensure_user_organization_consistency,
@@ -112,7 +112,7 @@ class TestUserContextUtilities:
 
     def test_is_multi_user_operation(self):
         """Test multi-user operation detection."""
-        from mirix.utils.user_context import set_current_user
+        from mirix.helpers.user_context import set_current_user
 
         # No user set
         set_current_user(None)
@@ -128,7 +128,7 @@ class TestUserContextUtilities:
 
     def test_create_user_scoped_filters(self):
         """Test creation of user-scoped database filters."""
-        from mirix.utils.user_context import set_current_user
+        from mirix.helpers.user_context import set_current_user
 
         # No user context
         set_current_user(None)
