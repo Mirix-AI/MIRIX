@@ -403,7 +403,7 @@ class SemanticMemoryManager:
             return [item.to_pydantic()] if item else None
 
     @enforce_types
-    def create_item(self, item_data: PydanticSemanticMemoryItem) -> PydanticSemanticMemoryItem:
+    def create_item(self, item_data: PydanticSemanticMemoryItem, actor: Optional[PydanticUser] = None) -> PydanticSemanticMemoryItem:
         """Create a new semantic memory item."""
         
         # Ensure ID is set before model_dump
@@ -419,10 +419,13 @@ class SemanticMemoryManager:
                 raise ValueError(f"Required field '{field}' missing from semantic memory data")
         
         data_dict.setdefault("metadata_", {})
+        # Set user_id from actor if available
+        if actor:
+            data_dict.setdefault("user_id", actor.id)
 
         with self.session_maker() as session:
             item = SemanticMemoryItem(**data_dict)
-            item.create(session)
+            item.create(session, actor=actor)
             return item.to_pydantic()
 
     @enforce_types

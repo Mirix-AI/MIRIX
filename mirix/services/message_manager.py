@@ -35,7 +35,7 @@ class MessageManager:
     def get_messages_by_ids(self, message_ids: List[str], actor: PydanticUser) -> List[PydanticMessage]:
         """Fetch messages by ID and return them in the requested order."""
         with self.session_maker() as session:
-            results = MessageModel.list(db_session=session, id=message_ids, organization_id=actor.organization_id, limit=len(message_ids))
+            results = MessageModel.list(db_session=session, id=message_ids, organization_id=actor.organization_id, user_id=actor.id, limit=len(message_ids))
 
             if len(results) != len(message_ids):
                 raise NoResultFound(
@@ -50,8 +50,11 @@ class MessageManager:
     def create_message(self, pydantic_msg: PydanticMessage, actor: PydanticUser) -> PydanticMessage:
         """Create a new message."""
         with self.session_maker() as session:
-            # Set the organization id of the Pydantic message
+            # Set the organization id and user id of the Pydantic message
             pydantic_msg.organization_id = actor.organization_id
+            # Set user_id from actor if available
+            if hasattr(pydantic_msg, 'user_id'):
+                pydantic_msg.user_id = actor.id
             msg_data = pydantic_msg.model_dump()
             msg = MessageModel(**msg_data)
             msg.create(session, actor=actor)  # Persist to database
@@ -201,6 +204,8 @@ class MessageManager:
             message_filters = {"agent_id": agent_id}
             if actor:
                 message_filters.update({"organization_id": actor.organization_id})
+                # Filter by user_id when available for multi-user support
+                message_filters.update({"user_id": actor.id})
             if filters:
                 message_filters.update(filters)
 
