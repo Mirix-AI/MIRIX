@@ -409,7 +409,7 @@ class KnowledgeVaultManager:
             return [item.to_pydantic()] if item else None
 
     @enforce_types
-    def create_item(self, knowledge_vault_item: PydanticKnowledgeVaultItem) -> PydanticKnowledgeVaultItem:
+    def create_item(self, knowledge_vault_item: PydanticKnowledgeVaultItem, actor: Optional[PydanticUser] = None) -> PydanticKnowledgeVaultItem:
         """Create a new knowledge vault item."""
         
         # Ensure ID is set before model_dump
@@ -427,10 +427,14 @@ class KnowledgeVaultManager:
         
         item_data.setdefault("metadata_", {})
         
+        # Set user_id if actor is provided
+        if actor:
+            item_data.setdefault("user_id", actor.id)
+        
         # Create the knowledge vault item
         with self.session_maker() as session:
             knowledge_item = KnowledgeVaultItem(**item_data)
-            knowledge_item.create(session)
+            knowledge_item.create(session, actor=actor)
             
             # Return the created item as a Pydantic model
             return knowledge_item.to_pydantic()
@@ -438,7 +442,7 @@ class KnowledgeVaultManager:
     @enforce_types
     def create_many_items(self, knowledge_vault: List[PydanticKnowledgeVaultItem], actor: PydanticUser) -> List[PydanticKnowledgeVaultItem]:
         """Create multiple knowledge vault items."""
-        return [self.create_item(k, actor) for k in knowledge_vault]
+        return [self.create_item(k, actor=actor) for k in knowledge_vault]
     
     @enforce_types
     def insert_knowledge(self, 
@@ -495,7 +499,8 @@ class KnowledgeVaultManager:
                        search_method: str = 'string_match',
                        timezone_str: str = None,
                        limit: Optional[int] = 50,
-                       sensitivity: Optional[List[str]] = None) -> List[PydanticKnowledgeVaultItem]:
+                       sensitivity: Optional[List[str]] = None,
+                       actor: Optional[PydanticUser] = None) -> List[PydanticKnowledgeVaultItem]:
         """
         Retrieve knowledge vault items according to the query.
         
@@ -537,6 +542,10 @@ class KnowledgeVaultManager:
                 query_stmt = select(KnowledgeVaultItem).order_by(
                     cast(text("knowledge_vault.last_modify ->> 'timestamp'"), DateTime).desc()
                 )
+                # Add user context filtering if actor is provided
+                if actor:
+                    query_stmt = query_stmt.where(KnowledgeVaultItem.organization_id == actor.organization_id)
+                    query_stmt = query_stmt.where(KnowledgeVaultItem.user_id == actor.id)
                 # Add sensitivity filter if provided
                 if sensitivity is not None:
                     query_stmt = query_stmt.where(KnowledgeVaultItem.sensitivity.in_(sensitivity))
@@ -561,6 +570,11 @@ class KnowledgeVaultManager:
                     KnowledgeVaultItem.last_modify.label("last_modify"),
                 )
 
+                # Add user context filtering if actor is provided
+                if actor:
+                    base_query = base_query.where(KnowledgeVaultItem.organization_id == actor.organization_id)
+                    base_query = base_query.where(KnowledgeVaultItem.user_id == actor.id)
+                
                 # Add sensitivity filter to base query if provided
                 if sensitivity is not None:
                     base_query = base_query.where(KnowledgeVaultItem.sensitivity.in_(sensitivity))

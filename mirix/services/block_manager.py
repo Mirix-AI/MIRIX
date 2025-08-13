@@ -29,6 +29,7 @@ class BlockManager:
         else:
             with self.session_maker() as session:
                 data = block.model_dump(exclude_none=True)
+                data.setdefault("user_id", actor.id)
                 block = BlockModel(**data, organization_id=actor.organization_id)
                 block.create(session, actor=actor)
             return block.to_pydantic()
@@ -70,7 +71,7 @@ class BlockManager:
         """Retrieve blocks based on various optional filters."""
         with self.session_maker() as session:
             # Prepare filters
-            filters = {"organization_id": actor.organization_id}
+            filters = {"organization_id": actor.organization_id, "user_id": actor.id}
             if label:
                 filters["label"] = label
             if is_template is not None:

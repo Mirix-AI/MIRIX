@@ -1633,7 +1633,18 @@ Please perform this analysis and create new memories as appropriate. Provide a d
                       request_user_confirmation=None,
                       force_absorb_content=False,
                       async_upload=True,
-                      is_screen_monitoring=False):
+                      is_screen_monitoring=False,
+                      user_id=None):
+
+        # Resolve user context for multi-user support (thread-safe approach)
+        if user_id is not None:
+            try:
+                actor = self.client.server.user_manager.get_user_or_default(user_id)
+            except Exception as e:
+                self.logger.warning(f"Failed to resolve user {user_id}, using default user: {e}")
+                actor = self.client.user
+        else:
+            actor = self.client.user
 
         # Check if Gemini features are required but not available
         if self.model_name in GEMINI_MODELS and not self.is_gemini_client_initialized():
@@ -1642,6 +1653,9 @@ Please perform this analysis and create new memories as appropriate. Provide a d
                 self.logger.warning("Please provide a Gemini API key through the frontend to enable these features.")
                 # For now, proceed with text-only message if available
                 if message is None:
+                    # Restore original user context if it was changed
+                    if original_user is not None:
+                        self.client.user = original_user
                     return "Error: Gemini API key required for image/voice features. Please configure it in the settings."
         
         if memorizing:
@@ -1649,6 +1663,9 @@ Please perform this analysis and create new memories as appropriate. Provide a d
             # Validate that at least some content is provided for memorization
             if message is None and images is None and image_uris is None and voice_files is None:
                 self.logger.warning("Warning: memorizing=True but no content (message, images, image_uris, or voice_files) provided. Skipping memorization.")
+                # Restore original user context if it was changed
+                if original_user is not None:
+                    self.client.user = original_user
                 return None
             
             # Get timestamp for this memorization event
@@ -1778,10 +1795,16 @@ Please perform this analysis and create new memories as appropriate. Provide a d
 
             # Check if response is an error string
             if response == "ERROR":
+                # Restore original user context if it was changed
+                if original_user is not None:
+                    self.client.user = original_user
                 return "ERROR_RESPONSE_FAILED"
             
             # Check if response has the expected structure
             if not hasattr(response, 'messages') or len(response.messages) < 2:
+                # Restore original user context if it was changed
+                if original_user is not None:
+                    self.client.user = original_user
                 return "ERROR_INVALID_RESPONSE_STRUCTURE"
             
             try:
@@ -1797,6 +1820,9 @@ Please perform this analysis and create new memories as appropriate. Provide a d
                 # Check if the message has tool_call attribute
                 # 1->3; 2->5
                 if not hasattr(response.messages[-(num_tools_called * 2 + 1)], 'tool_call'):
+                    # Restore original user context if it was changed
+                    if original_user is not None:
+                        self.client.user = original_user
                     return "ERROR_NO_TOOL_CALL"
                 
                 tool_call = response.messages[-(num_tools_called * 2 + 1)].tool_call
@@ -1804,11 +1830,17 @@ Please perform this analysis and create new memories as appropriate. Provide a d
                 parsed_args = parse_json(tool_call.arguments)
                 
                 if 'message' not in parsed_args:
+                    # Restore original user context if it was changed
+                    if original_user is not None:
+                        self.client.user = original_user
                     return "ERROR_NO_MESSAGE_IN_ARGS"
                     
                 response_text = parsed_args['message']
                 
             except (AttributeError, KeyError, IndexError, json.JSONDecodeError) as e:
+                # Restore original user context if it was changed
+                if original_user is not None:
+                    self.client.user = original_user
                 return "ERROR_PARSING_EXCEPTION"
             
             # Add conversation to accumulator
@@ -1818,7 +1850,13 @@ Please perform this analysis and create new memories as appropriate. Provide a d
                 # we need to call meta memory manager to update the memory
                 self.temp_message_accumulator.absorb_content_into_memory(self.agent_states)
             
-            return response_text
+            result = response_text
+        
+        # Restore original user context if it was changed
+        if original_user is not None:
+            self.client.user = original_user
+            
+        return result
 
     def cleanup_upload_workers(self):
         """Delegate to UploadManager for cleanup."""

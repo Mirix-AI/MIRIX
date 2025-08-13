@@ -347,7 +347,7 @@ class ResourceMemoryManager:
             return [item.to_pydantic()] if item else None
 
     @enforce_types
-    def create_item(self, item_data: PydanticResourceMemoryItem) -> PydanticResourceMemoryItem:
+    def create_item(self, item_data: PydanticResourceMemoryItem, actor: Optional[PydanticUser] = None) -> PydanticResourceMemoryItem:
         """Create a new resource memory item."""
         
         # Ensure ID is set before model_dump
@@ -364,10 +364,14 @@ class ResourceMemoryManager:
                 raise ValueError(f"Required field '{field}' missing from resource memory data")
 
         data_dict.setdefault("metadata_", {})
+        
+        # Set user_id if actor is provided
+        if actor:
+            data_dict.setdefault("user_id", actor.id)
 
         with self.session_maker() as session:
             item = ResourceMemoryItem(**data_dict)
-            item.create(session)
+            item.create(session, actor=actor)
             return item.to_pydantic()
 
     @enforce_types
@@ -386,7 +390,7 @@ class ResourceMemoryManager:
     @enforce_types
     def create_many_items(self, items: List[PydanticResourceMemoryItem], actor: PydanticUser, limit: Optional[int] = 50) -> List[PydanticResourceMemoryItem]:
         """Create multiple resource memory items."""
-        return [self.create_item(i, actor) for i in items]
+        return [self.create_item(i, actor=actor) for i in items]
 
     def get_total_number_of_items(self) -> int:
         """Get the total number of items in the resource memory."""
@@ -404,7 +408,8 @@ class ResourceMemoryManager:
                        search_field: str = 'content',
                        search_method: str = 'string_match',
                        limit: Optional[int] = 50,
-                       timezone_str: str = None) -> List[PydanticResourceMemoryItem]:
+                       timezone_str: str = None,
+                       actor: Optional[PydanticUser] = None) -> List[PydanticResourceMemoryItem]:
         """
         Retrieve resource memory items according to the query.
         
@@ -446,6 +451,9 @@ class ResourceMemoryManager:
                 query_stmt = select(ResourceMemoryItem).order_by(
                     cast(text("resource_memory.last_modify ->> 'timestamp'"), DateTime).desc()
                 )
+                if actor:
+                    query_stmt = query_stmt.where(ResourceMemoryItem.organization_id == actor.organization_id)
+                    query_stmt = query_stmt.where(ResourceMemoryItem.user_id == actor.id)
                 if limit:
                     query_stmt = query_stmt.limit(limit)
                 result = session.execute(query_stmt)
@@ -466,6 +474,11 @@ class ResourceMemoryManager:
                 ResourceMemoryItem.last_modify.label("last_modify"),
                 ResourceMemoryItem.tree_path.label("tree_path"),
             )
+            
+            # Add user context filtering if actor is provided
+            if actor:
+                base_query = base_query.where(ResourceMemoryItem.organization_id == actor.organization_id)
+                base_query = base_query.where(ResourceMemoryItem.user_id == actor.id)
 
             if search_method == 'string_match':
                 main_query = base_query.where(func.lower(getattr(ResourceMemoryItem, search_field)).contains(query.lower()))
