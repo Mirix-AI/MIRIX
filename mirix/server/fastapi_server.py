@@ -270,6 +270,7 @@ class MessageRequest(BaseModel):
     voice_files: Optional[List[str]] = None  # Base64 encoded voice files
     memorizing: bool = False
     is_screen_monitoring: Optional[bool] = False
+    user_id: Optional[str] = None  # Optional user ID for multi-user support
 
 class MessageResponse(BaseModel):
     response: str
@@ -513,7 +514,9 @@ async def send_message_endpoint(request: MessageRequest):
                 image_uris=request.image_uris,
                 sources=request.sources,  # Pass sources to agent
                 voice_files=request.voice_files,  # Pass voice files to agent
-                memorizing=request.memorizing
+                memorizing=request.memorizing,
+                is_screen_monitoring=request.is_screen_monitoring,
+                user_id=request.user_id  # Pass user_id for multi-user support
             )
         )
         
@@ -632,7 +635,8 @@ async def send_streaming_message_endpoint(request: MessageRequest):
                             memorizing=request.memorizing,
                             display_intermediate_message=display_intermediate_message,
                             request_user_confirmation=request_user_confirmation,
-                            is_screen_monitoring=request.is_screen_monitoring
+                            is_screen_monitoring=request.is_screen_monitoring,
+                            user_id=request.user_id  # Pass user_id for multi-user support
                         )
                     )
                     # Handle various response cases
