@@ -131,7 +131,8 @@ const resources = {
           permissionRequired: 'Permission Required',
           selectAppsFirst: 'Select Apps First',
           stopMonitor: 'Stop Monitor',
-          startMonitor: 'Start Monitor'
+          startMonitor: 'Start Monitor',
+          enhancedDetection: 'Accessibility Access'
         },
         status: {
           status: 'Status',
@@ -152,7 +153,9 @@ const resources = {
           noAppsVisible: 'No apps visible',
           statusInfo: 'Status: {{status}}',
           appsVisible: '{{visible}}/{{total}} apps visible ({{sent}} sent)',
-          fullScreen: 'Full Screen'
+          fullScreen: 'Full Screen',
+          zoomScreenSharing: 'Full Screen - Zoom Screen Sharing',
+          googleMeetScreenSharing: 'Full Screen - Google Meet Screen Sharing'
         },
         errors: {
           desktopOnly: 'Screenshot functionality is only available in the desktop app',
@@ -164,7 +167,11 @@ const resources = {
           screenshotProcessing: 'Error processing screenshot: {{error}}',
           screenshotFailed: 'Failed to send screenshot: {{error}}',
           screenshotsFailed: 'Failed to send screenshots: {{error}}',
-          desktopRequired: 'Screenshot functionality requires desktop app'
+          desktopRequired: 'Screenshot functionality requires desktop app',
+          enhancedPermissionsNotAvailable: 'Accessibility permissions functionality not available',
+          enhancedPermissionsDenied: 'Enhanced screen sharing detection requires Accessibility permissions. Please enable MIRIX in System Preferences > Privacy & Security > Accessibility.',
+          enhancedPermissionsFailed: 'Failed to request accessibility permissions',
+          enhancedPermissionsError: 'Error requesting accessibility permissions: {{error}}'
         },
         permissions: {
           warningTitle: 'Screen recording permission is required to use the screen monitor feature.',
@@ -501,7 +508,8 @@ const resources = {
           permissionRequired: '需要权限',
           selectAppsFirst: '请先选择应用',
           stopMonitor: '停止监控',
-          startMonitor: '开始监控'
+          startMonitor: '开始监控',
+          enhancedDetection: '辅助功能权限'
         },
         status: {
           status: '状态',
@@ -522,7 +530,9 @@ const resources = {
           noAppsVisible: '没有可见应用',
           statusInfo: '状态：{{status}}',
           appsVisible: '{{visible}}/{{total}} 个应用可见（已发送 {{sent}} 张）',
-          fullScreen: '全屏'
+          fullScreen: '全屏',
+          zoomScreenSharing: '全屏 - Zoom 屏幕共享',
+          googleMeetScreenSharing: '全屏 - Google Meet 屏幕共享'
         },
         errors: {
           desktopOnly: '截图功能仅在桌面端应用中可用',
@@ -534,7 +544,11 @@ const resources = {
           screenshotProcessing: '处理截图时出错：{{error}}',
           screenshotFailed: '发送截图失败：{{error}}',
           screenshotsFailed: '发送截图失败：{{error}}',
-          desktopRequired: '截图功能需要桌面端应用'
+          desktopRequired: '截图功能需要桌面端应用',
+          enhancedPermissionsNotAvailable: '增强权限功能不可用',
+          enhancedPermissionsDenied: '增强屏幕共享检测需要额外权限。请在系统偏好设置中授予访问权限。',
+          enhancedPermissionsFailed: '请求增强权限失败',
+          enhancedPermissionsError: '请求增强权限时出错：{{error}}'
         },
         permissions: {
           warningTitle: '需要屏幕录制权限才能使用屏幕监控功能。',

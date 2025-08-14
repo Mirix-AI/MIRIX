@@ -878,7 +878,7 @@ class AgentWrapper():
             else:
                 self.logger.warning("Warning: Cannot delete files from Google Cloud - Gemini client not initialized")
 
-    def reflextion_on_memory(self):
+    def reflexion_on_memory(self):
         """
         Run the reflexion process with comprehensive memory analysis:
         1. Call specific agents to remove redundancy in each memory type (episodic, semantic, core, resource, procedural, knowledge vault)
