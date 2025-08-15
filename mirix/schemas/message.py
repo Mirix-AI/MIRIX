@@ -8,8 +8,13 @@ from collections import OrderedDict
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Literal, Optional, Union
 
-from openai.types.chat.chat_completion_message_tool_call import ChatCompletionMessageToolCall as OpenAIToolCall
-from openai.types.chat.chat_completion_message_tool_call import Function as OpenAIFunction
+# TODO: I modified here
+# from openai.types.chat.chat_completion_message_tool_call import ChatCompletionMessageToolCall as OpenAIToolCall
+# from openai.types.chat.chat_completion_message_tool_call import Function as OpenAIFunction
+# from pydantic import BaseModel, Field, field_validator
+# Use Mirix-internal OpenAI-compatible models to avoid SDK Union instantiation issues
+from mirix.schemas.openai.openai import ToolCall as OpenAIToolCall
+from mirix.schemas.openai.openai import Function as OpenAIFunction
 from pydantic import BaseModel, Field, field_validator
 
 from mirix.constants import DEFAULT_MESSAGE_TOOL, DEFAULT_MESSAGE_TOOL_KWARG, TOOL_CALL_ID_MAX_LEN
