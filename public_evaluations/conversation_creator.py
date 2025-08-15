@@ -214,7 +214,7 @@ The conversation is shown below (the conversation is timestamped at {date_time})
         all_queries_and_answers = []
 
         if self.dataset_name == 'LOCOMO':
-            for global_idx, item in enumerate(self.data):
+            for global_idx, item in enumerate(tqdm(self.data, desc=f"Processing {self.dataset_name} queries and answers", unit="item")):
                 queries_and_answers = []
                 for idx, qa in enumerate(item['qa']):
                     question = qa['question']
@@ -241,7 +241,7 @@ Question: {question}"""
 
         elif self.dataset_name == 'ScreenshotVQA':
             all_queries_and_answers = []
-            for item in self.data:
+            for item in tqdm(self.data, desc=f"Processing {self.dataset_name} queries and answers", unit="item"):
                 queries_and_answers = []
                 for idx, qa in enumerate(item['qas']):
                     question = qa['question']
@@ -252,7 +252,7 @@ Question: {question}"""
         elif self.dataset_name == "MemoryAgentBench":
             from bench_template import get_template
             all_queries_and_answers = []
-            for item in self.data:
+            for item in tqdm(self.data, desc=f"Processing {self.dataset_name} queries and answers", unit="item"):
                 queries_and_answers = []
                 
                 if len(item['questions']) != len(item['answers']):
@@ -268,3 +268,6 @@ Question: {question}"""
                 all_queries_and_answers.append(queries_and_answers)
         
         return all_queries_and_answers
+
+    def get_dataset_length(self):
+        return len(self.data)
