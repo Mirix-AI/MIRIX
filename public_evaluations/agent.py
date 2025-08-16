@@ -549,6 +549,7 @@ class AgentWrapper():
             else:
                 import shutil
                 import time
+                import sqlite3
                 
                 # Close any existing agent connection first
                 if hasattr(self, 'agent') and self.agent is not None:
@@ -567,6 +568,18 @@ class AgentWrapper():
                 # Copy the database file with retry mechanism
                 target_db = os.path.expanduser("~/.mirix/sqlite.db")
                 source_db = f"{folder}/sqlite.db"
+
+                # TODO:If existing DB is malformed, remove it before copying
+                if os.path.exists(target_db):
+                    try:
+                        conn = sqlite3.connect(target_db)
+                        cur = conn.execute("PRAGMA integrity_check;")
+                        result = cur.fetchone()
+                        conn.close()
+                        if not result or result[0] != 'ok':
+                            os.remove(target_db)
+                    except sqlite3.DatabaseError:
+                        os.remove(target_db)
 
                 shutil.copyfile(source_db, target_db)
                 # set the database to writable
