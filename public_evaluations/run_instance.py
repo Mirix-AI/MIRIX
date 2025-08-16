@@ -8,20 +8,21 @@ import json
 import argparse
 from tqdm import tqdm
 from agent import AgentWrapper
-from conversation_creator import ConversationCreator
-from constants import CHUNK_SIZE_MEMORY_AGENT_BENCH
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Run instance with chunks and questions")
     parser.add_argument("--agent_name", type=str, required=True, choices=['gpt-long-context', 'mirix', 'siglip', 'gemini-long-context'])
     parser.add_argument("--dataset", type=str, default="LOCOMO", choices=['LOCOMO', 'ScreenshotVQA', 'MemoryAgentBench'])
     parser.add_argument("--global_idx", type=int, required=True)
-    parser.add_argument("--num_exp", type=int, default=-1)
     parser.add_argument("--model_name", type=str, default="gpt-4.1-mini", help="Model name to use for gpt-long-context agent")
     parser.add_argument("--config_path", type=str, default=None, help="Config file path for mirix agent")
     parser.add_argument("--force_answer_question", action="store_true", default=False)
-    parser.add_argument("--sub_datasets", nargs='+', type=str, default=["longmemeval_s*"], help="Sub-datasets to run")
-     
+    parser.add_argument("--chunks_file", type=str, required=True, help="Path to chunks JSON file")
+    parser.add_argument("--queries_file", type=str, required=True, help="Path to queries and answers JSON file")
+    # for MemoryAgentBench
+    parser.add_argument("--chunk_size", type=int, default=512)
+    
     return parser.parse_args()
 
 
@@ -34,7 +35,7 @@ def run_with_chunks_and_questions(
     # dataset metadata
     if args.dataset == 'MemoryAgentBench':
         subset_name = queries_and_answers[0][3]
-        chunk_size = CHUNK_SIZE_MEMORY_AGENT_BENCH[subset_name]
+        chunk_size = args.chunk_size
     else:
         subset_name = "None"
         chunk_size = "None"
@@ -166,25 +167,12 @@ def run_with_chunks_and_questions(
 def main():
     args = parse_args()
     
-    # Create ConversationCreator and load data for the specific global_idx
-    conversation_creator = ConversationCreator(args.dataset, args.num_exp, args.sub_datasets)
-
-    # Determine with_instructions based on agent_name
-    if args.agent_name == 'gpt-long-context':
-        with_instructions = False
-    else: 
-        with_instructions = True
+    # Load chunks and queries from files
+    with open(args.chunks_file, 'r') as f:
+        chunks = json.load(f)
     
-    # Get all chunks and queries
-    all_chunks = conversation_creator.chunks(with_instructions=with_instructions)
-    all_queries_and_answers = conversation_creator.get_query_and_answer()
-    
-    # Extract data for the specific global_idx
-    if args.global_idx >= len(all_chunks) or args.global_idx >= len(all_queries_and_answers):
-        raise ValueError(f"global_idx {args.global_idx} is out of range. Available indices: 0-{min(len(all_chunks), len(all_queries_and_answers))-1}")
-    
-    chunks = all_chunks[args.global_idx]
-    queries_and_answers = all_queries_and_answers[args.global_idx]
+    with open(args.queries_file, 'r') as f:
+        queries_and_answers = json.load(f)
     
     run_with_chunks_and_questions(args, args.global_idx, chunks, queries_and_answers)
 
