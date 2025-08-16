@@ -1574,7 +1574,9 @@ Please perform this analysis and create new memories as appropriate. Provide a d
                         else:
                             # For non-GEMINI models, convert local file paths to base64
                             try:
-                                source_text = f"; Screenshot from App: {source_text}" if source else ""
+                                #TODO: modified
+                                # source_text = f"; Screenshot from App: {source_text}" if source else ""
+                                source_text = f"; Screenshot from App: {source}" if source else ""
                                 extra_messages.append({
                                     'type': 'text',
                                     'text': f"Timestamp: {timestamp}; Image Index {idx}" + source_text

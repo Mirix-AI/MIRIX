@@ -5,3 +5,4 @@ model_endpoint: https://jplml-resource.cognitiveservices.azure.com/
 api_version: 2025-01-01-preview
 azure_deployment: gpt-4.1-mini
 # Optional: API key can be provided here or via environment variables/database
+# TODO: remember to remove this in open-sourced version

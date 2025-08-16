@@ -9,6 +9,7 @@ import argparse
 from tqdm import tqdm
 from agent import AgentWrapper
 from conversation_creator import ConversationCreator
+from constants import CHUNK_SIZE_MEMORY_AGENT_BENCH
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Run instance with chunks and questions")
@@ -33,7 +34,7 @@ def run_with_chunks_and_questions(
     # dataset metadata
     if args.dataset == 'MemoryAgentBench':
         subset_name = queries_and_answers[0][3]
-        chunk_size = args.chunk_size
+        chunk_size = CHUNK_SIZE_MEMORY_AGENT_BENCH[subset_name]
     else:
         subset_name = "None"
         chunk_size = "None"
