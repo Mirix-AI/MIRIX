@@ -266,7 +266,7 @@ class ReflexionResponse(BaseModel):
 async def startup_event():
     """Initialize the agent when the server starts"""
     global agent
-    agent = AgentWrapper('configs/mirix_monitor.yaml')
+    agent = AgentWrapper('mirix/configs/mirix_monitor.yaml')
     print("Agent initialized successfully")
 
 @app.get("/health")
