@@ -167,6 +167,7 @@ def main():
     args = parse_args()
     
     # Create ConversationCreator and load data for the specific global_idx
+    print(args)
     conversation_creator = ConversationCreator(args.dataset, args.num_exp, args.sub_datasets)
 
     # Determine with_instructions based on agent_name

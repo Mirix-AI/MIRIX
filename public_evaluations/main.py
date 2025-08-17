@@ -13,12 +13,12 @@ from constants import CHUNK_SIZE_MEMORY_AGENT_BENCH
 
 ## CONSTANTS for chunk size moved to constants.py to avoid circular imports
 ## python main.py --agent_name mirix --dataset LOCOMO --config_path ../mirix/configs/mirix_azure_example.yaml
-## python main.py --agent_name mirix --dataset MemoryAgentBench --config_path ../mirix/configs/mirix_azure_example.yaml
+## python main.py --agent_name mirix --dataset MemoryAgentBench --config_path ../mirix/configs/mirix_azure_example.yaml --num_exp 2
 def parse_args():
     parser = argparse.ArgumentParser(description="Multi-Modal Memory Illustration")
     parser.add_argument("--agent_name", type=str, choices=['gpt-long-context', 'mirix', 'siglip', 'gemini-long-context'])
     parser.add_argument("--dataset", type=str, default="LOCOMO", choices=['LOCOMO', 'ScreenshotVQA', 'MemoryAgentBench'])
-    parser.add_argument("--num_exp", type=int, default=-1)
+    parser.add_argument("--num_exp", type=int, default=5)
     parser.add_argument("--load_db_from", type=str, default=None)
     parser.add_argument("--num_images_to_accumulate", default=None, type=int)
     parser.add_argument("--global_idx", type=int, default=None)
@@ -26,7 +26,7 @@ def parse_args():
     parser.add_argument("--config_path", type=str, default=None, help="Config file path for mirix agent")
     parser.add_argument("--force_answer_question", action="store_true", default=False)
     # for MemoryAgentBench / , "eventqa_full"
-    parser.add_argument("--sub_datasets", nargs='+', type=str, default=["longmemeval_s*"], help="Sub-datasets to run")
+    parser.add_argument("--sub_datasets", nargs='+', type=str, default=["longmemeval_s*", "eventqa_full"], help="Sub-datasets to run")
     
     return parser.parse_args()
 
@@ -41,7 +41,7 @@ def run_subprocess_interactive(args, global_idx):
         '--dataset', args.dataset,
         '--global_idx', str(global_idx),
         '--num_exp', str(args.num_exp),
-        '--sub_datasets', ' '.join(args.sub_datasets)
+        '--sub_datasets', *args.sub_datasets
     ]
     
     # Add optional arguments
@@ -70,8 +70,7 @@ def main():
     args = parse_args()
     
     # initialize conversation creator
-    conversation_creator = ConversationCreator(args.dataset, args.num_exp, args.sub_datasets)
-    dataset_length = conversation_creator.get_dataset_length()
+    dataset_length = args.num_exp * len(args.sub_datasets)
 
     for global_idx in tqdm(range(dataset_length), desc="Running subprocesses", unit="item"):
         

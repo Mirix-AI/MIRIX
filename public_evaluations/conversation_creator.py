@@ -14,6 +14,7 @@ class ConversationCreator():
         
         self.dataset_name = dataset
         self.sub_datasets = sub_datasets
+        self.num_exp = num_exp
         
         if dataset == "LOCOMO":
             with open("./data/locomo10.json", "r") as f:
@@ -53,14 +54,24 @@ class ConversationCreator():
             ds = load_dataset("ai-hyz/MemoryAgentBench")
             splits = ['Accurate_Retrieval', 'Test_Time_Learning', 'Long_Range_Understanding', 'Conflict_Resolution']
             
+            # For each sub_dataset, only select up to num_exp items.
+            print(f"Loading {self.num_exp} items from each sub_dataset")
+            sub_dataset_counts = {sub: 0 for sub in self.sub_datasets}
             for split in splits:
                 df = ds[split]
                 for row_dict in df:
-                    if not row_dict['metadata']['source'] in self.sub_datasets:
+                    source = row_dict['metadata']['source']
+                    if source not in self.sub_datasets:
                         continue
-                    row_dict['split'] = split # Append a key to record split the row belongs to
+                    # If num_exp is set, limit the number of items per sub_dataset
+                    if self.num_exp is not None:
+                        if sub_dataset_counts[source] >= self.num_exp:
+                            continue
+                        sub_dataset_counts[source] += 1
+                    row_dict['split'] = split  # Append a key to record split the row belongs to
                     self.data.append(row_dict)
             # Context / Questions / Answers / Metadata
+            print(f"Loaded {len(self.data)} items from MemoryAgentBench")
         else:
             raise NotImplementedError("Only LOCOMO and ScreenshotVQA datasets are supported")
 

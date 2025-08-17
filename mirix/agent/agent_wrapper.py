@@ -583,11 +583,19 @@ class AgentWrapper():
             elif self.agent_config.get('api_key'):
                 api_key = self.agent_config['api_key']
             
+            # TODO: modified here, temporary usage
+            if model_name == "gpt-4o-mini" or model_name == "gpt-4o":
+                context_window = 128000
+            elif model_name == "gpt-4.1-mini":
+                context_window = 1000000
+            else:
+                raise ValueError(f"Invalid model name: {model_name}")
+            
             llm_config = LLMConfig(
                 model=model_name,
                 model_endpoint_type="azure_openai",
                 model_endpoint=endpoint,
-                context_window=128000,
+                context_window=context_window,
                 # Use the new schema fields instead of dynamic assignment
                 api_version=api_version,
                 azure_endpoint=endpoint,
