@@ -27,6 +27,7 @@ from typing import Optional
 import queue
 from PIL import Image
 import logging
+import sqlite3
 from ..voice_utils import process_voice_files, convert_base64_to_audio_segment
 from .app_utils import encode_image_from_pil, encode_image
 
@@ -391,7 +392,7 @@ class AgentWrapper():
                 
                 # Ensure destination directory exists
                 sqlite_dest.parent.mkdir(parents=True, exist_ok=True)
-                
+
                 # Copy the database file
                 shutil.copyfile(sqlite_backup, sqlite_dest)
                 import os
@@ -1574,7 +1575,8 @@ Please perform this analysis and create new memories as appropriate. Provide a d
                         else:
                             # For non-GEMINI models, convert local file paths to base64
                             try:
-                                source_text = f"; Screenshot from App: {source_text}" if source else ""
+                                #TODO: modified from     source_text = f"; Screenshot from App: {source_text}" if source else ""
+                                source_text = f"; Screenshot from App: {source}" if source else ""
                                 extra_messages.append({
                                     'type': 'text',
                                     'text': f"Timestamp: {timestamp}; Image Index {idx}" + source_text
