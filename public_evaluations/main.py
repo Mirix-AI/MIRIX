@@ -8,8 +8,7 @@ import numpy as np
 import subprocess
 import tempfile
 from tqdm import tqdm
-from conversation_creator import ConversationCreator
-from constants import CHUNK_SIZE_MEMORY_AGENT_BENCH
+from log_utils import tee_parent_logs, run_subprocess_with_logs, prepare_logs_paths
 
 ## CONSTANTS for chunk size moved to constants.py to avoid circular imports
 ## python main.py --agent_name mirix --dataset LOCOMO --config_path ../mirix/configs/mirix_azure_example.yaml
@@ -30,7 +29,7 @@ def parse_args():
     
     return parser.parse_args()
 
-def run_subprocess_interactive(args, global_idx):
+def run_subprocess_interactive(args, global_idx, logs=None):
     """
     Run the run_instance.py script using subprocess with interactive capability.
     """
@@ -53,15 +52,38 @@ def run_subprocess_interactive(args, global_idx):
         cmd.append('--force_answer_question')
     
     try:
-        # Run the subprocess without capturing output (allows interactive debugging)
         print(f"Running subprocess for global_idx {global_idx}")
-        result = subprocess.run(cmd, cwd=os.path.dirname(os.path.abspath(__file__)), 
-                              check=True)  # No capture_output=True
-        
+        parent_log_path = logs.parent if logs is not None else None
+        if parent_log_path:
+            try:
+                with open(parent_log_path, 'a', encoding='utf-8') as plog:
+                    plog.write(f"[main] Starting subprocess for global_idx {global_idx}: {' '.join(cmd)}\n")
+            except Exception:
+                pass
+
+        result = run_subprocess_with_logs(
+            cmd,
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+            stdout_log_path=(logs.child if logs is not None else None),
+            stderr_log_path=None,
+            combine_streams=True,
+        )
+
         print(f"Subprocess completed successfully for global_idx {global_idx}")
-            
+        if parent_log_path:
+            try:
+                with open(parent_log_path, 'a', encoding='utf-8') as plog:
+                    plog.write(f"[main] Subprocess completed for global_idx {global_idx} (rc=0)\n")
+            except Exception:
+                pass
     except subprocess.CalledProcessError as e:
         print(f"Subprocess failed for global_idx {global_idx} with return code {e.returncode}")
+        if parent_log_path:
+            try:
+                with open(parent_log_path, 'a', encoding='utf-8') as plog:
+                    plog.write(f"[main] Subprocess failed for global_idx {global_idx} (rc={e.returncode})\n")
+            except Exception:
+                pass
         raise
 
 def main():
@@ -69,7 +91,7 @@ def main():
     # parse arguments
     args = parse_args()
     
-    # initialize conversation creator
+    # initialize run count
     dataset_length = args.num_exp * len(args.sub_datasets)
 
     for global_idx in tqdm(range(dataset_length), desc="Running subprocesses", unit="item"):
@@ -77,7 +99,13 @@ def main():
         if args.global_idx is not None and global_idx != args.global_idx:
             continue
         
-        run_subprocess_interactive(args, global_idx)
+        logs = prepare_logs_paths(args, global_idx)
+        with tee_parent_logs(logs.parent):
+            run_subprocess_interactive(
+                args,
+                global_idx,
+                logs=logs,
+            )
 
 if __name__ == '__main__':
     main()
