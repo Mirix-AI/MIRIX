@@ -71,7 +71,7 @@ class AgentWrapper():
         elif self.agent_name == 'mirix':
             if load_agent_from is None:
                 # Use provided config_path or default to the original hardcoded path
-                config_file = config_path if config_path is not None else "../configs/mirix_gpt4.yaml"
+                config_file = config_path if config_path is not None else "../mirix/configs/mirix_gpt4.yaml"
                 self.agent = mirixAgent(config_file)
             else:
                 self.load_agent(load_agent_from, config_path)
@@ -290,9 +290,6 @@ class AgentWrapper():
                 
                 if text_context:
                     context_text = "\n\n".join(text_context)
-                    
-                    print(f"\n\nlen of context_text: {len(context_text)}\n\n")
-                    
                     if selected_image_uris:
                         message_content.append({
                             'type': 'text',
@@ -532,12 +529,13 @@ class AgentWrapper():
                 json.dump(self.image_paths, f, indent=2)
         
     def load_agent(self, folder, config_path=None):
-        if self.agent_name == 'gpt-long-context' or self.agent_name == 'gemini-long-context':
-            if self.context == []:
-                with open(f"{folder}/context.json", "r") as f:
-                    self.context = json.load(f)
-            else:
-                pass # already loaded
+        if self.agent_name == 'gpt-long-context':
+            with open(f"{folder}/context.json", "r") as f:
+                self.context = json.load(f)
+
+        elif self.agent_name == 'gemini-long-context':
+            with open(f"{folder}/context.json", "r") as f:
+                self.context = json.load(f)
 
         elif self.agent_name == 'mirix':
 
@@ -549,7 +547,6 @@ class AgentWrapper():
             else:
                 import shutil
                 import time
-                import sqlite3
                 
                 # Close any existing agent connection first
                 if hasattr(self, 'agent') and self.agent is not None:
@@ -568,18 +565,6 @@ class AgentWrapper():
                 # Copy the database file with retry mechanism
                 target_db = os.path.expanduser("~/.mirix/sqlite.db")
                 source_db = f"{folder}/sqlite.db"
-
-                # TODO:If existing DB is malformed, remove it before copying
-                if os.path.exists(target_db):
-                    try:
-                        conn = sqlite3.connect(target_db)
-                        cur = conn.execute("PRAGMA integrity_check;")
-                        result = cur.fetchone()
-                        conn.close()
-                        if not result or result[0] != 'ok':
-                            os.remove(target_db)
-                    except sqlite3.DatabaseError:
-                        os.remove(target_db)
 
                 shutil.copyfile(source_db, target_db)
                 # set the database to writable

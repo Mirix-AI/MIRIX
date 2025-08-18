@@ -59,8 +59,8 @@ def run_with_chunks_and_questions(
         if args.agent_name == 'mirix':
             if os.path.exists(os.path.expanduser(f"~/.mirix/sqlite.db")):
                 # need to delete the existing db
-                os.system(f"rm -rf ~/.mirix/sqlite.db")
-            
+                os.system(f"rm -rf ~/.mirix/sqlite.db*")
+
         agent = AgentWrapper(args.agent_name, model_name=args.model_name, config_path=args.config_path)
 
 
@@ -161,13 +161,18 @@ def run_with_chunks_and_questions(
         with open(f"{out_dir}/results.json", "w") as f:
             json.dump(existing_results, f, indent=2)
         
+        # need to delete the existing db
+        if args.agent_name == 'mirix':
+            if os.path.exists(os.path.expanduser(f"~/.mirix/sqlite.db")):
+                # need to delete the existing db
+                os.system(f"rm -rf ~/.mirix/sqlite.db*")
+
         agent = AgentWrapper(args.agent_name, load_agent_from=out_dir, model_name=args.model_name, config_path=args.config_path)
 
 def main():
     args = parse_args()
     
     # Create ConversationCreator and load data for the specific global_idx
-    print(args)
     conversation_creator = ConversationCreator(args.dataset, args.num_exp, args.sub_datasets)
 
     # Determine with_instructions based on agent_name
