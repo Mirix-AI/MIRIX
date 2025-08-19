@@ -25,7 +25,7 @@ def parse_args():
     parser.add_argument("--config_path", type=str, default=None, help="Config file path for mirix agent")
     parser.add_argument("--force_answer_question", action="store_true", default=False)
     # for MemoryAgentBench / , "eventqa_full"
-    parser.add_argument("--sub_datasets", nargs='+', type=str, default=["longmemeval_s*", "eventqa_full"], help="Sub-datasets to run")
+    parser.add_argument("--sub_datasets", nargs='+', type=str, default=["longmemeval_s*"], help="Sub-datasets to run")
     
     return parser.parse_args()
 
@@ -101,11 +101,21 @@ def main():
         
         logs = prepare_logs_paths(args, global_idx)
         with tee_parent_logs(logs.parent):
-            run_subprocess_interactive(
-                args,
-                global_idx,
-                logs=logs,
-            )
+            try:
+                run_subprocess_interactive(
+                    args,
+                    global_idx,
+                    logs=logs,
+                )
+            except Exception as e:
+                # Log the error and continue with the next item
+                try:
+                    with open(logs.parent, 'a', encoding='utf-8') as plog:
+                        plog.write(f"[main] Error during run for global_idx {global_idx}: {repr(e)}\n")
+                except Exception:
+                    pass
+                print(f"Encountered error for global_idx {global_idx}: {e}. Continuing to next.")
+                continue
 
 if __name__ == '__main__':
     main()

@@ -4,6 +4,7 @@ import contextlib
 import subprocess
 
 from conversation_creator import ConversationCreator
+from datetime import datetime
 from constants import CHUNK_SIZE_MEMORY_AGENT_BENCH
 
 
@@ -36,7 +37,7 @@ def compute_run_out_dir(args, global_idx):
     base_dir = os.path.dirname(os.path.abspath(__file__))
     abs_out_dir = os.path.join(
         base_dir,
-        "results",
+        "logs",
         parent_folder,
         f"{global_idx}_subset{subset_name}_cksize{chunk_size}"
     )
@@ -74,7 +75,10 @@ def prepare_logs_paths(args, global_idx):
     Returns LogsPaths with .parent and .child attributes.
     """
     _, _, parent_log_path, child_stdout_path, _ = setup_logs_for_run(args, global_idx)
-    child_log_path = os.path.join(os.path.dirname(child_stdout_path), "child.log")
+    logs_dir = os.path.dirname(child_stdout_path)
+    ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+    child_log_path = os.path.join(logs_dir, f"child_{ts}.log")
+    parent_log_path = os.path.join(os.path.dirname(parent_log_path), f"parent_{ts}.log")
     # Ensure parent and child files' directories exist
     os.makedirs(os.path.dirname(parent_log_path), exist_ok=True)
     os.makedirs(os.path.dirname(child_log_path), exist_ok=True)

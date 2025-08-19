@@ -587,7 +587,7 @@ class AgentWrapper():
             if model_name == "gpt-4o-mini" or model_name == "gpt-4o":
                 context_window = 128000
             elif model_name == "gpt-4.1-mini":
-                context_window = 1000000
+                context_window = 128000  ### set as the previous one 
             else:
                 raise ValueError(f"Invalid model name: {model_name}")
             
