@@ -6,14 +6,16 @@ from datasets import load_dataset
 import nltk
 import tiktoken
 from tqdm import tqdm
-
+from constants import CHUNK_SIZE_MEMORY_AGENT_BENCH
 
 class ConversationCreator():
 
-    def __init__(self, dataset, num_exp):
+    def __init__(self, dataset, num_exp, sub_datasets):
         
         self.dataset_name = dataset
-
+        self.sub_datasets = sub_datasets
+        self.num_exp = num_exp
+        
         if dataset == "LOCOMO":
             with open("./data/locomo10.json", "r") as f:
                 self.data = json.load(f)
@@ -45,7 +47,31 @@ class ConversationCreator():
                     }
                     
                     self.data.append(student_data)
-
+        elif dataset == 'MemoryAgentBench':
+            # Load all 4 splits
+            self.data = []
+            # Login using e.g. `huggingface-cli login` to access this dataset
+            ds = load_dataset("ai-hyz/MemoryAgentBench")
+            splits = ['Accurate_Retrieval', 'Test_Time_Learning', 'Long_Range_Understanding', 'Conflict_Resolution']
+            
+            # For each sub_dataset, only select up to num_exp items.
+            print(f"Loading {self.num_exp} items from each sub_dataset")
+            sub_dataset_counts = {sub: 0 for sub in self.sub_datasets}
+            for split in splits:
+                df = ds[split]
+                for row_dict in df:
+                    source = row_dict['metadata']['source']
+                    if source not in self.sub_datasets:
+                        continue
+                    # If num_exp is set, limit the number of items per sub_dataset
+                    if self.num_exp is not None:
+                        if sub_dataset_counts[source] >= self.num_exp:
+                            continue
+                        sub_dataset_counts[source] += 1
+                    row_dict['split'] = split  # Append a key to record split the row belongs to
+                    self.data.append(row_dict)
+            # Context / Questions / Answers / Metadata
+            print(f"Loaded {len(self.data)} items from MemoryAgentBench")
         else:
             raise NotImplementedError("Only LOCOMO and ScreenshotVQA datasets are supported")
 
@@ -59,6 +85,7 @@ class ConversationCreator():
         :param chunk_size: Maximum number of tokens allowed per chunk.
         :return: A list of text chunks, each within the specified token limit.
         """
+        # nltk.download('punkt_tab')
         
         # Initialize the tokenizer/encoding for the model
         try:
@@ -163,6 +190,33 @@ The conversation is shown below (the conversation is timestamped at {date_time})
                     chunks.append([(image, timestamp)])
 
                 all_chunks.append(chunks)
+                
+        elif self.dataset_name == 'MemoryAgentBench':
+            all_chunks = []
+            for item in tqdm(self.data, desc=f"Processing {self.dataset_name} chunks", unit="item"):
+                context = item['context']
+                source = item['metadata']['source']
+                chunks = []
+                
+                # Use a specific chunk size for each source
+                chunk_size = CHUNK_SIZE_MEMORY_AGENT_BENCH[source]
+        
+                text_chunks = self.chunk_text_into_sentences(context, chunk_size=chunk_size)
+                
+                for chunk_text in text_chunks:
+                    # Determine prompt based on source key
+                    if source.startswith("longmemeval_s"):
+                        message = f"Memorize the following conversation between the user and the assistant: \n {chunk_text} \n"
+                    elif source == "recsys_redial_full":
+                        message = f"Memorize the following dialogues between a user and recommender system: \n {chunk_text} \n"
+                    elif source.startswith("factconsolidation"):
+                        message = f"Memorize the following facts \n {chunk_text} \n"
+                    else:
+                        message = f"Memorize the following content: \n {chunk_text} \n"
+                    
+                    chunks.append(message)
+                
+                all_chunks.append(chunks)
 
         return all_chunks
     
@@ -171,7 +225,7 @@ The conversation is shown below (the conversation is timestamped at {date_time})
         all_queries_and_answers = []
 
         if self.dataset_name == 'LOCOMO':
-            for global_idx, item in enumerate(self.data):
+            for global_idx, item in enumerate(tqdm(self.data, desc=f"Processing {self.dataset_name} queries and answers", unit="item")):
                 queries_and_answers = []
                 for idx, qa in enumerate(item['qa']):
                     question = qa['question']
@@ -198,12 +252,33 @@ Question: {question}"""
 
         elif self.dataset_name == 'ScreenshotVQA':
             all_queries_and_answers = []
-            for item in self.data:
+            for item in tqdm(self.data, desc=f"Processing {self.dataset_name} queries and answers", unit="item"):
                 queries_and_answers = []
                 for idx, qa in enumerate(item['qas']):
                     question = qa['question']
                     answer = qa['answer']
                     queries_and_answers.append([idx, question, answer, qa])
                 all_queries_and_answers.append(queries_and_answers)
-
+                
+        elif self.dataset_name == "MemoryAgentBench":
+            from bench_template import get_template
+            all_queries_and_answers = []
+            for item in tqdm(self.data, desc=f"Processing {self.dataset_name} queries and answers", unit="item"):
+                queries_and_answers = []
+                
+                if len(item['questions']) != len(item['answers']):
+                    raise ValueError("Number of questions and answers are not the same")
+                
+                for idx in range(len(item['questions'])):
+                    q_template = get_template(item['metadata']['source'], 'query', 'Long_context_agent')
+                    
+                    query = q_template.format(question=item['questions'][idx])
+                    answer = item['answers'][idx]
+                    # import pdb; pdb.set_trace()
+                    queries_and_answers.append([idx, query, answer, item['metadata']['source']])
+                all_queries_and_answers.append(queries_and_answers)
+        
         return all_queries_and_answers
+
+    def get_dataset_length(self):
+        return len(self.data)

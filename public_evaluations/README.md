@@ -43,12 +43,6 @@ Generate evaluation scores using `evals.py`:
 python evals.py --input_file results/mirix_LOCOMO --output_file results/mirix_LOCOMO/evaluation_metrics.json
 ```
 
-If you want to use Azure, please run with
-```
-python main.py --dataset LOCOMO --agent_name mirix --config_path ../mirix/configs/mirix_azure_example.yaml
-```
-Remember to update the args in `../mirix/configs/mirix_azure_example.yaml`.
-
 > **Note**: This evaluation uses `gpt-4.1-mini` instead of `gemini-2.5-flash` (used in the main branch) to ensure fair comparison. The `search_method` is set to `embedding` with OpenAI's `text-embed-3-small` as the embedding model. For LOCOMO, `text-embed-3-small` demonstrates slightly better performance compared to `bm25` search. 
 
 

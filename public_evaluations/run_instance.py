@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 from dotenv import load_dotenv
-load_dotenv("../.env")
+load_dotenv()
 
 import os
 import json
@@ -9,17 +9,19 @@ import argparse
 from tqdm import tqdm
 from agent import AgentWrapper
 from conversation_creator import ConversationCreator
-
+from constants import CHUNK_SIZE_MEMORY_AGENT_BENCH
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Run instance with chunks and questions")
     parser.add_argument("--agent_name", type=str, required=True, choices=['gpt-long-context', 'mirix', 'siglip', 'gemini-long-context'])
-    parser.add_argument("--dataset", type=str, default="LOCOMO", choices=['LOCOMO', 'ScreenshotVQA'])
+    parser.add_argument("--dataset", type=str, default="LOCOMO", choices=['LOCOMO', 'ScreenshotVQA', 'MemoryAgentBench'])
     parser.add_argument("--global_idx", type=int, required=True)
     parser.add_argument("--num_exp", type=int, default=-1)
-    parser.add_argument("--model_name", type=str, default="gpt-4.1", help="Model name to use for gpt-long-context agent")
+    parser.add_argument("--model_name", type=str, default="gpt-4.1-mini", help="Model name to use for gpt-long-context agent")
     parser.add_argument("--config_path", type=str, default=None, help="Config file path for mirix agent")
     parser.add_argument("--force_answer_question", action="store_true", default=False)
+    parser.add_argument("--sub_datasets", nargs='+', type=str, default=["longmemeval_s*"], help="Sub-datasets to run")
+     
     return parser.parse_args()
 
 
@@ -28,22 +30,32 @@ def run_with_chunks_and_questions(
         global_idx,
         chunks, 
         queries_and_answers):
-
-    out_dir = f"./results/{args.agent_name}_{args.dataset}/"
+    
+    # dataset metadata
+    if args.dataset == 'MemoryAgentBench':
+        subset_name = queries_and_answers[0][3]
+        chunk_size = CHUNK_SIZE_MEMORY_AGENT_BENCH[subset_name]
+    else:
+        subset_name = "None"
+        chunk_size = "None"
+    
+    # make out_dir with the model name / save all the parameters
     if args.agent_name == 'gpt-long-context' or args.agent_name == 'gemini-long-context':
         out_dir = f"./results/{args.agent_name}_{args.dataset}-{args.model_name}/"
+    else:
+        out_dir = f"./results/{args.agent_name}_{args.dataset}-model{args.model_name}/"
 
     if not os.path.exists(out_dir):
         os.makedirs(out_dir)
-
-    out_dir = out_dir + f"{global_idx}"
-
-    if os.path.exists(out_dir):
-        
-        agent = AgentWrapper(args.agent_name, load_agent_from=out_dir, model_name=args.model_name, config_path=args.config_path)
     
-    else:
+    out_dir = out_dir + f"{global_idx}_subset{subset_name}_cksize{chunk_size}"
 
+    
+    # if out_dir exists, load the agent from it
+    if os.path.exists(out_dir):
+        agent = AgentWrapper(args.agent_name, load_agent_from=out_dir, model_name=args.model_name, config_path=args.config_path)
+    # create an agent
+    else:
         if args.agent_name == 'mirix':
             if os.path.exists(os.path.expanduser(f"~/.mirix/sqlite.db")):
                 # need to delete the existing db
@@ -51,6 +63,8 @@ def run_with_chunks_and_questions(
 
         agent = AgentWrapper(args.agent_name, model_name=args.model_name, config_path=args.config_path)
 
+
+    # load the current step & chunks for continuing memory accumulation
     if os.path.exists(f"{out_dir}/current_step.txt"):
         with open(f"{out_dir}/current_step.txt", "rb") as f:
             current_step = int(f.read().decode())
@@ -87,20 +101,28 @@ def run_with_chunks_and_questions(
                 'response': response
             })
 
-        if args.agent_name == 'mirix':
-            agent.save_agent(out_dir)
+        # save the chunks and current step in chunking
+        # TODO: if args.agent_name == 'mirix':
+        agent.save_agent(out_dir)
 
-            with open(f"{out_dir}/current_step.txt", "wb") as f:
-                f.write(str(idx).encode())
+        with open(f"{out_dir}/chunks.json", "w") as f:
+            json.dump(existing_chunks, f, indent=2)
 
-            with open(f"{out_dir}/chunks.json", "w") as f:
-                json.dump(existing_chunks, f, indent=2)
+        with open(f"{out_dir}/current_step.txt", "wb") as f:
+            f.write(str(idx).encode())
 
 
+    # save the agent
     agent.save_agent(out_dir)
-
     agent.prepare_before_asking_questions()
 
+
+    # save the parameters
+    with open(f"{out_dir}/parameters.json", "w") as f:
+        json.dump(args.__dict__, f, indent=2)
+        
+        
+    # load the results to continue from last breakpoint
     if os.path.exists(f"{out_dir}/results.json"):
         existing_results = json.load(open(f"{out_dir}/results.json", "r"))
     else:
@@ -110,22 +132,26 @@ def run_with_chunks_and_questions(
 
     all_questions = [x['question'] for x in existing_results]
 
+
+    # QA loop
     for item in queries_and_answers:
 
-        if (item[3]['question'] if len(item) > 3 else item[1]) in all_questions:
-            item_idx = all_questions.index(item[3]['question'] if len(item) > 3 else item[1])
+        question_text = item[1]
+
+        if question_text in all_questions:
+            item_idx = all_questions.index(question_text)
             if 'metadata' not in existing_results[item_idx]:
-                existing_results[item_idx]['metadata'] = item[3]
+                existing_results[item_idx]['metadata'] = item[3] if len(item) > 3 else None
                 with open(f"{out_dir}/results.json", "w") as f:
                     json.dump(existing_results, f, indent=2)
             continue
-        print("Question [{} / {}]: ".format(len(existing_results), len(queries_and_answers)), item[3]['question'] if len(item) > 3 else item[1])
+        print("Question [{} / {}]: ".format(len(existing_results), len(queries_and_answers)), question_text)
 
-        response = agent.send_message(item[1], memorizing=False)
+        response = agent.send_message(question_text, memorizing=False)
 
         existing_results.append(
             {
-                'question': item[3]['question'] if len(item) > 3 else item[1],
+                'question': question_text,
                 'response': response,
                 'answer': item[2],
                 'metadata': item[3] if len(item) > 3 else None
@@ -135,6 +161,7 @@ def run_with_chunks_and_questions(
         with open(f"{out_dir}/results.json", "w") as f:
             json.dump(existing_results, f, indent=2)
         
+        # need to delete the existing db
         if args.agent_name == 'mirix':
             if os.path.exists(os.path.expanduser(f"~/.mirix/sqlite.db")):
                 # need to delete the existing db
@@ -146,8 +173,8 @@ def main():
     args = parse_args()
     
     # Create ConversationCreator and load data for the specific global_idx
-    conversation_creator = ConversationCreator(args.dataset, args.num_exp)
-    
+    conversation_creator = ConversationCreator(args.dataset, args.num_exp, args.sub_datasets)
+
     # Determine with_instructions based on agent_name
     if args.agent_name == 'gpt-long-context':
         with_instructions = False
