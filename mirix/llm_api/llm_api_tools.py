@@ -24,7 +24,8 @@ from mirix.schemas.openai.chat_completion_request import ChatCompletionRequest, 
 from mirix.schemas.openai.chat_completion_response import ChatCompletionResponse
 from mirix.settings import ModelSettings
 
-LLM_API_PROVIDER_OPTIONS = ["openai", "azure", "anthropic", "google_ai", "cohere", "local", "groq"]
+# TODO: modified here
+LLM_API_PROVIDER_OPTIONS = ["openai", "azure", "azure_openai", "anthropic", "google_ai", "cohere", "local", "groq"]
 
 
 def retry_with_exponential_backoff(
@@ -180,8 +181,8 @@ def create(
 
         return response
 
-    # azure
-    elif llm_config.model_endpoint_type == "azure":
+    # azure # TODO: modified here
+    elif llm_config.model_endpoint_type in ["azure", "azure_openai"]:
         if stream:
             raise NotImplementedError(f"Streaming not yet implemented for {llm_config.model_endpoint_type}")
 
@@ -435,6 +436,10 @@ def create(
     else:
         if stream:
             raise NotImplementedError(f"Streaming not yet implemented for {llm_config.model_endpoint_type}")
+        
+        # TODO: temporary uasge
+        print(f"Using local model {llm_config.model_endpoint_type}, endpoint: {llm_config.model_endpoint}")
+        
         return get_chat_completion(
             model=llm_config.model,
             messages=messages,
