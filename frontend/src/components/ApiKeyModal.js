@@ -1,27 +1,31 @@
 import React, { useState, useEffect } from 'react';
 import './ApiKeyModal.css';
 import queuedFetch from '../utils/requestQueue';
+import { useTranslation } from 'react-i18next';
 
 const ApiKeyModal = ({ isOpen, onClose, missingKeys, modelType, onSubmit, serverUrl }) => {
+  const { t } = useTranslation();
   const [selectedService, setSelectedService] = useState('');
   const [apiKeyValue, setApiKeyValue] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState('');
 
-  // Define all available API services
-  const apiServices = [
-    { value: 'OPENAI_API_KEY', label: 'OpenAI API Key', description: 'For GPT models (starts with sk-)' },
-    { value: 'ANTHROPIC_API_KEY', label: 'Anthropic API Key', description: 'For Claude models' },
-    { value: 'GEMINI_API_KEY', label: 'Gemini API Key', description: 'For Google Gemini models' },
-    { value: 'GROQ_API_KEY', label: 'Groq API Key', description: 'For Groq models' },
-    { value: 'TOGETHER_API_KEY', label: 'Together AI API Key', description: 'For Together AI models' },
-    { value: 'AZURE_API_KEY', label: 'Azure OpenAI API Key', description: 'For Azure OpenAI service' },
-    { value: 'AZURE_BASE_URL', label: 'Azure Base URL', description: 'Azure OpenAI endpoint URL' },
-    { value: 'AZURE_API_VERSION', label: 'Azure API Version', description: 'e.g., 2024-09-01-preview' },
-    { value: 'AWS_ACCESS_KEY_ID', label: 'AWS Access Key ID', description: 'For AWS Bedrock' },
-    { value: 'AWS_SECRET_ACCESS_KEY', label: 'AWS Secret Access Key', description: 'For AWS Bedrock' },
-    { value: 'AWS_REGION', label: 'AWS Region', description: 'e.g., us-east-1' },
+  // Define all available API services using translations
+  const getApiServices = () => [
+    { value: 'OPENAI_API_KEY', label: t('settings.modals.apiKey.services.OPENAI_API_KEY.label'), description: t('settings.modals.apiKey.services.OPENAI_API_KEY.description') },
+    { value: 'ANTHROPIC_API_KEY', label: t('settings.modals.apiKey.services.ANTHROPIC_API_KEY.label'), description: t('settings.modals.apiKey.services.ANTHROPIC_API_KEY.description') },
+    { value: 'GEMINI_API_KEY', label: t('settings.modals.apiKey.services.GEMINI_API_KEY.label'), description: t('settings.modals.apiKey.services.GEMINI_API_KEY.description') },
+    { value: 'GROQ_API_KEY', label: t('settings.modals.apiKey.services.GROQ_API_KEY.label'), description: t('settings.modals.apiKey.services.GROQ_API_KEY.description') },
+    { value: 'TOGETHER_API_KEY', label: t('settings.modals.apiKey.services.TOGETHER_API_KEY.label'), description: t('settings.modals.apiKey.services.TOGETHER_API_KEY.description') },
+    { value: 'AZURE_API_KEY', label: t('settings.modals.apiKey.services.AZURE_API_KEY.label'), description: t('settings.modals.apiKey.services.AZURE_API_KEY.description') },
+    { value: 'AZURE_BASE_URL', label: t('settings.modals.apiKey.services.AZURE_BASE_URL.label'), description: t('settings.modals.apiKey.services.AZURE_BASE_URL.description') },
+    { value: 'AZURE_API_VERSION', label: t('settings.modals.apiKey.services.AZURE_API_VERSION.label'), description: t('settings.modals.apiKey.services.AZURE_API_VERSION.description') },
+    { value: 'AWS_ACCESS_KEY_ID', label: t('settings.modals.apiKey.services.AWS_ACCESS_KEY_ID.label'), description: t('settings.modals.apiKey.services.AWS_ACCESS_KEY_ID.description') },
+    { value: 'AWS_SECRET_ACCESS_KEY', label: t('settings.modals.apiKey.services.AWS_SECRET_ACCESS_KEY.label'), description: t('settings.modals.apiKey.services.AWS_SECRET_ACCESS_KEY.description') },
+    { value: 'AWS_REGION', label: t('settings.modals.apiKey.services.AWS_REGION.label'), description: t('settings.modals.apiKey.services.AWS_REGION.description') },
   ];
+
+  const apiServices = getApiServices();
 
   const getKeyPlaceholder = (keyName) => {
     const placeholders = {
@@ -32,7 +36,7 @@ const ApiKeyModal = ({ isOpen, onClose, missingKeys, modelType, onSubmit, server
       'AZURE_API_VERSION': '2024-09-01-preview',
       'AWS_REGION': 'us-east-1',
     };
-    return placeholders[keyName] || 'Enter your API key...';
+    return placeholders[keyName] || t('settings.modals.apiKey.enterKeyPlaceholder');
   };
 
   const isMissingKeysMode = missingKeys && missingKeys.length > 0;
@@ -50,7 +54,7 @@ const ApiKeyModal = ({ isOpen, onClose, missingKeys, modelType, onSubmit, server
   const handleSubmit = async (e) => {
     e.preventDefault();
     setIsSubmitting(true);
-    setError('⏳ Saving API keys...');
+    setError(`⏳ ${t('settings.modals.apiKey.savingKeys')}`);
 
     try {
       if (isMissingKeysMode) {
@@ -85,7 +89,7 @@ const ApiKeyModal = ({ isOpen, onClose, missingKeys, modelType, onSubmit, server
       } else {
         // Handle manual update mode - submit selected service
         if (!selectedService || !apiKeyValue) {
-          setError('Please select a service and enter an API key');
+          setError(t('settings.modals.apiKey.pleaseSelectService'));
           setIsSubmitting(false);
           return;
         }
@@ -108,7 +112,7 @@ const ApiKeyModal = ({ isOpen, onClose, missingKeys, modelType, onSubmit, server
       }
 
       // Show success message
-      setError('✅ API keys saved successfully!');
+      setError(`✅ ${t('settings.modals.apiKey.keysSuccessfullySaved')}`);
       
       // Small delay to show the message before closing
       await new Promise(resolve => setTimeout(resolve, 1000));
@@ -117,7 +121,7 @@ const ApiKeyModal = ({ isOpen, onClose, missingKeys, modelType, onSubmit, server
       onSubmit();
       onClose();
     } catch (err) {
-      setError(err.message || 'Failed to update API keys');
+      setError(err.message || t('settings.modals.apiKey.failedToUpdate'));
     } finally {
       setIsSubmitting(false);
     }
@@ -139,14 +143,14 @@ const ApiKeyModal = ({ isOpen, onClose, missingKeys, modelType, onSubmit, server
     <div className="api-key-modal-overlay">
       <div className="api-key-modal">
         <div className="api-key-modal-header">
-          <h2>🔑 {isMissingKeysMode ? 'API Keys Required' : 'Update API Keys'}</h2>
+          <h2>🔑 {isMissingKeysMode ? t('settings.modals.apiKey.titleRequired') : t('settings.modals.apiKey.title')}</h2>
           {isMissingKeysMode ? (
             <p>
-              The <strong>{modelType}</strong> model requires the following API keys to function properly:
+              {t('settings.modals.apiKey.requiredDescription', { modelType })}
             </p>
           ) : (
             <p>
-              Select the API service you want to update and enter your new API key:
+              {t('settings.modals.apiKey.manualDescription')}
             </p>
           )}
         </div>
@@ -177,8 +181,8 @@ const ApiKeyModal = ({ isOpen, onClose, missingKeys, modelType, onSubmit, server
             <>
               <div className="api-key-field">
                 <label htmlFor="service-select">
-                  <strong>Select API Service</strong>
-                  <span className="key-description">Choose which API service you want to update</span>
+                  <strong>{t('settings.modals.apiKey.selectService')}</strong>
+                  <span className="key-description">{t('settings.modals.apiKey.selectServiceDescription')}</span>
                 </label>
                 <select
                   id="service-select"
@@ -187,7 +191,7 @@ const ApiKeyModal = ({ isOpen, onClose, missingKeys, modelType, onSubmit, server
                   required
                   className="api-key-select"
                 >
-                  <option value="">-- Select a service --</option>
+                  <option value="">{t('settings.modals.apiKey.selectServicePlaceholder')}</option>
                   {apiServices.map((service) => (
                     <option key={service.value} value={service.value}>
                       {service.label}
@@ -217,8 +221,8 @@ const ApiKeyModal = ({ isOpen, onClose, missingKeys, modelType, onSubmit, server
           )}
 
           {error && (
-            <div className={`api-key-error ${error.includes('successfully') || error.includes('Saving') ? 'api-key-info' : ''}`}>
-              {error.includes('successfully') || error.includes('Saving') ? error : `❌ ${error}`}
+            <div className={`api-key-error ${error.includes(t('settings.modals.apiKey.keysSuccessfullySaved')) || error.includes(t('settings.modals.apiKey.savingKeys')) ? 'api-key-info' : ''}`}>
+              {error.includes(t('settings.modals.apiKey.keysSuccessfullySaved')) || error.includes(t('settings.modals.apiKey.savingKeys')) ? error : `❌ ${error}`}
             </div>
           )}
 
@@ -229,21 +233,21 @@ const ApiKeyModal = ({ isOpen, onClose, missingKeys, modelType, onSubmit, server
               className="api-key-cancel-btn"
               disabled={isSubmitting}
             >
-              Cancel
+              {t('settings.modals.apiKey.cancel')}
             </button>
             <button
               type="submit"
               className="api-key-submit-btn"
               disabled={isSubmitting || (isMissingKeysMode ? false : (!selectedService || !apiKeyValue))}
             >
-              {isSubmitting ? (error.includes('successfully') ? '✅ Saved!' : '⏳ Saving...') : '✅ Save API Keys'}
+              {isSubmitting ? (error.includes(t('settings.modals.apiKey.keysSuccessfullySaved')) ? `✅ ${t('settings.modals.apiKey.saved')}` : `⏳ ${t('settings.modals.apiKey.saving')}`) : `✅ ${t('settings.modals.apiKey.save')}`}
             </button>
           </div>
         </form>
 
         <div className="api-key-note">
           <p>
-            <strong>Note:</strong> Your API keys will be saved securely to your local database for permanent storage and will persist across sessions.
+            <strong>{t('settings.modals.apiKey.noteLabel')}</strong> {t('settings.modals.apiKey.note')}
           </p>
         </div>
       </div>

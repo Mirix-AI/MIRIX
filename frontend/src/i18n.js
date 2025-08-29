@@ -65,6 +65,163 @@ const resources = {
           applying: 'Applying...',
           changing: 'Changing...',
           checking: 'Checking...'
+        },
+        mcp: {
+          title: 'MCP Tools Marketplace',
+          description: 'Discover and connect to Model Context Protocol (MCP) tools to extend your agent\'s capabilities.',
+          refresh: 'Refresh',
+          refreshTooltip: 'Refresh MCP connection status',
+          searchPlaceholder: 'Search MCP tools...',
+          filterAll: 'All',
+          connect: 'Connect',
+          disconnect: 'Disconnect',
+          connected: 'Connected',
+          loading: 'Loading MCP tools...',
+          noResults: 'No MCP tools found matching your search.',
+          noResultsDefault: 'No MCP tools available.',
+          connectingTo: 'Connecting to {{serverId}}...',
+          disconnectingFrom: 'Disconnecting from {{serverId}}...',
+          connectedSuccess: 'Connected to {{serverName}}! Found {{toolsCount}} tools.',
+          disconnectedSuccess: 'Disconnected from {{serverId}}',
+          connectionError: 'Connection error',
+          disconnectionError: 'Disconnection error',
+          gmailOAuth: 'Connecting to Gmail... This will open a browser window for OAuth authorization.',
+          connectingToGmail: 'Connecting to Gmail...',
+          gmailConnectionError: 'Gmail connection error',
+          author: 'By {{author}}',
+          requirements: 'Requirements:',
+          documentation: 'Documentation'
+        },
+        userSelection: {
+          title: 'User Selection',
+          currentUser: 'Current User',
+          noUserSelected: 'No user selected',
+          loadingUsers: 'Loading users...',
+          noUsersAvailable: 'No users available',
+          addUser: 'Add User',
+          addUserTooltip: 'Add New User',
+          description: 'Select the current user context for the application.'
+        },
+        modals: {
+          gmail: {
+            title: 'Gmail OAuth2 Setup',
+            description: 'To connect Gmail, you need OAuth2 credentials from Google Cloud Console.',
+            step1: 'Go to Google Cloud Console',
+            step2: 'Create OAuth2 credentials if you don\'t have them',
+            step3: 'Add http://localhost:8080, http://localhost:8081, and http://localhost:8082 as redirect URIs',
+            step4: 'Enter your credentials below',
+            clientId: 'Client ID:',
+            clientSecret: 'Client Secret:',
+            clientIdPlaceholder: 'Enter your Gmail OAuth2 Client ID',
+            clientSecretPlaceholder: 'Enter your Gmail OAuth2 Client Secret',
+            connectButton: 'Connect to Gmail',
+            cancel: 'Cancel'
+          },
+          addUser: {
+            title: 'Add New User',
+            description: 'Create a new user account in the system.',
+            userName: 'User Name:',
+            userNamePlaceholder: 'Enter user name',
+            createButton: 'Create User',
+            cancel: 'Cancel'
+          },
+          apiKey: {
+            title: 'Update API Keys',
+            titleRequired: 'API Keys Required',
+            selectService: 'Select API Service',
+            selectServiceDescription: 'Choose which API service you want to update',
+            selectServicePlaceholder: '-- Select a service --',
+            enterKeyPlaceholder: 'Enter your API key...',
+            save: 'Save API Keys',
+            saving: 'Saving...',
+            saved: 'Saved!',
+            cancel: 'Cancel',
+            note: 'Your API keys will be saved securely to your local database for permanent storage and will persist across sessions.',
+            noteLabel: 'Note:',
+            requiredDescription: 'The {{modelType}} model requires the following API keys to function properly:',
+            manualDescription: 'Select the API service you want to update and enter your new API key:',
+            savingKeys: 'Saving API keys...',
+            keysSuccessfullySaved: 'API keys saved successfully!',
+            pleaseSelectService: 'Please select a service and enter an API key',
+            failedToUpdate: 'Failed to update API keys',
+            services: {
+              'OPENAI_API_KEY': {
+                label: 'OpenAI API Key',
+                description: 'For GPT models (starts with sk-)'
+              },
+              'ANTHROPIC_API_KEY': {
+                label: 'Anthropic API Key', 
+                description: 'For Claude models'
+              },
+              'GEMINI_API_KEY': {
+                label: 'Gemini API Key',
+                description: 'For Google Gemini models'
+              },
+              'GROQ_API_KEY': {
+                label: 'Groq API Key',
+                description: 'For Groq models'
+              },
+              'TOGETHER_API_KEY': {
+                label: 'Together AI API Key',
+                description: 'For Together AI models'
+              },
+              'AZURE_API_KEY': {
+                label: 'Azure OpenAI API Key',
+                description: 'For Azure OpenAI service'
+              },
+              'AZURE_BASE_URL': {
+                label: 'Azure Base URL',
+                description: 'Azure OpenAI endpoint URL'
+              },
+              'AZURE_API_VERSION': {
+                label: 'Azure API Version',
+                description: 'e.g., 2024-09-01-preview'
+              },
+              'AWS_ACCESS_KEY_ID': {
+                label: 'AWS Access Key ID',
+                description: 'For AWS Bedrock'
+              },
+              'AWS_SECRET_ACCESS_KEY': {
+                label: 'AWS Secret Access Key',
+                description: 'For AWS Bedrock'
+              },
+              'AWS_REGION': {
+                label: 'AWS Region',
+                description: 'e.g., us-east-1'
+              }
+            }
+          }
+        },
+        messages: {
+          serverNotAvailable: 'Server not available',
+          applyingPersonaTemplate: 'Applying persona template...',
+          personaTemplateAppliedSuccess: 'Persona template applied successfully!',
+          personaTemplateApplyFailed: 'Failed to apply persona template',
+          personaTemplateApplyError: 'Error applying persona template',
+          loadingTemplate: 'Loading template...',
+          templateLoaded: 'Template loaded - click Save to apply',
+          templateNotFound: 'Template not found',
+          loadTemplatesFailed: 'Failed to load templates',
+          loadTemplateError: 'Error loading template',
+          serverError: 'Server error',
+          failedToLoadMcpMarketplace: 'Failed to load MCP marketplace',
+          errorLoadingMcpMarketplace: 'Error loading MCP marketplace',
+          gmailClientIdRequired: 'Gmail Client ID is required',
+          gmailClientSecretRequired: 'Gmail Client Secret is required',
+          changingChatModel: 'Changing chat agent model...',
+          chatModelSetSuccess: 'Chat agent model set successfully!',
+          initializingChatAgent: 'Initializing chat agent with new model...',
+          failedToSetChatModel: 'Failed to set chat agent model',
+          errorSettingChatModel: 'Error setting chat agent model',
+          changingMemoryModel: 'Changing memory manager model...',
+          memoryModelSetSuccess: 'Memory manager model set successfully!',
+          initializingMemoryManager: 'Initializing memory manager with new model...',
+          failedToSetMemoryModel: 'Failed to set memory manager model',
+          errorSettingMemoryModel: 'Error setting memory manager model',
+          changingTimezone: 'Changing timezone...',
+          timezoneSetSuccess: 'Timezone set successfully!',
+          failedToSetTimezone: 'Failed to set timezone',
+          errorSettingTimezone: 'Error setting timezone'
         }
       },
       chat: {
@@ -442,6 +599,163 @@ const resources = {
           applying: '应用中...',
           changing: '更改中...',
           checking: '检查中...'
+        },
+        mcp: {
+          title: 'MCP 工具市场',
+          description: '发现并连接模型上下文协议（MCP）工具来扩展你的代理功能。',
+          refresh: '刷新',
+          refreshTooltip: '刷新 MCP 连接状态',
+          searchPlaceholder: '搜索 MCP 工具...',
+          filterAll: '全部',
+          connect: '连接',
+          disconnect: '断开连接',
+          connected: '已连接',
+          loading: '正在加载 MCP 工具...',
+          noResults: '未找到匹配搜索的 MCP 工具。',
+          noResultsDefault: '没有可用的 MCP 工具。',
+          connectingTo: '正在连接到 {{serverId}}...',
+          disconnectingFrom: '正在从 {{serverId}} 断开连接...',
+          connectedSuccess: '已连接到 {{serverName}}！找到 {{toolsCount}} 个工具。',
+          disconnectedSuccess: '已从 {{serverId}} 断开连接',
+          connectionError: '连接错误',
+          disconnectionError: '断开连接错误',
+          gmailOAuth: '正在连接到 Gmail... 这将打开浏览器窗口进行 OAuth 授权。',
+          connectingToGmail: '正在连接到 Gmail...',
+          gmailConnectionError: 'Gmail 连接错误',
+          author: '作者：{{author}}',
+          requirements: '要求：',
+          documentation: '文档'
+        },
+        userSelection: {
+          title: '用户选择',
+          currentUser: '当前用户',
+          noUserSelected: '未选择用户',
+          loadingUsers: '正在加载用户...',
+          noUsersAvailable: '没有可用用户',
+          addUser: '添加用户',
+          addUserTooltip: '添加新用户',
+          description: '为应用程序选择当前用户上下文。'
+        },
+        modals: {
+          gmail: {
+            title: 'Gmail OAuth2 设置',
+            description: '要连接 Gmail，你需要从 Google Cloud Console 获取 OAuth2 凭证。',
+            step1: '前往 Google Cloud Console',
+            step2: '如果没有 OAuth2 凭证，请创建一个',
+            step3: '添加 http://localhost:8080、http://localhost:8081 和 http://localhost:8082 作为重定向 URI',
+            step4: '在下方输入你的凭证',
+            clientId: '客户端 ID：',
+            clientSecret: '客户端密钥：',
+            clientIdPlaceholder: '输入你的 Gmail OAuth2 客户端 ID',
+            clientSecretPlaceholder: '输入你的 Gmail OAuth2 客户端密钥',
+            connectButton: '连接到 Gmail',
+            cancel: '取消'
+          },
+          addUser: {
+            title: '添加新用户',
+            description: '在系统中创建新的用户帐户。',
+            userName: '用户名：',
+            userNamePlaceholder: '输入用户名',
+            createButton: '创建用户',
+            cancel: '取消'
+          },
+          apiKey: {
+            title: '更新 API 密钥',
+            titleRequired: '需要 API 密钥',
+            selectService: '选择 API 服务',
+            selectServiceDescription: '选择要更新的 API 服务',
+            selectServicePlaceholder: '-- 选择一个服务 --',
+            enterKeyPlaceholder: '输入你的 API 密钥...',
+            save: '保存 API 密钥',
+            saving: '保存中...',
+            saved: '已保存！',
+            cancel: '取消',
+            note: '你的 API 密钥将安全地保存到本地数据库中进行永久存储，并在会话之间保持不变。',
+            noteLabel: '注意：',
+            requiredDescription: '{{modelType}} 模型需要以下 API 密钥才能正常运行：',
+            manualDescription: '选择要更新的 API 服务并输入新的 API 密钥：',
+            savingKeys: '正在保存 API 密钥...',
+            keysSuccessfullySaved: 'API 密钥保存成功！',
+            pleaseSelectService: '请选择一个服务并输入 API 密钥',
+            failedToUpdate: '更新 API 密钥失败',
+            services: {
+              'OPENAI_API_KEY': {
+                label: 'OpenAI API Key',
+                description: '用于 GPT 模型（以 sk- 开头）'
+              },
+              'ANTHROPIC_API_KEY': {
+                label: 'Anthropic API Key', 
+                description: '用于 Claude 模型'
+              },
+              'GEMINI_API_KEY': {
+                label: 'Gemini API Key',
+                description: '用于 Google Gemini 模型'
+              },
+              'GROQ_API_KEY': {
+                label: 'Groq API Key',
+                description: '用于 Groq 模型'
+              },
+              'TOGETHER_API_KEY': {
+                label: 'Together AI API Key',
+                description: '用于 Together AI 模型'
+              },
+              'AZURE_API_KEY': {
+                label: 'Azure OpenAI API Key',
+                description: '用于 Azure OpenAI 服务'
+              },
+              'AZURE_BASE_URL': {
+                label: 'Azure Base URL',
+                description: 'Azure OpenAI 端点 URL'
+              },
+              'AZURE_API_VERSION': {
+                label: 'Azure API Version',
+                description: '例如：2024-09-01-preview'
+              },
+              'AWS_ACCESS_KEY_ID': {
+                label: 'AWS Access Key ID',
+                description: '用于 AWS Bedrock'
+              },
+              'AWS_SECRET_ACCESS_KEY': {
+                label: 'AWS Secret Access Key',
+                description: '用于 AWS Bedrock'
+              },
+              'AWS_REGION': {
+                label: 'AWS Region',
+                description: '例如：us-east-1'
+              }
+            }
+          }
+        },
+        messages: {
+          serverNotAvailable: '服务器不可用',
+          applyingPersonaTemplate: '正在应用人设模板...',
+          personaTemplateAppliedSuccess: '人设模板应用成功！',
+          personaTemplateApplyFailed: '应用人设模板失败',
+          personaTemplateApplyError: '应用人设模板时出错',
+          loadingTemplate: '正在加载模板...',
+          templateLoaded: '模板已加载 - 点击保存应用',
+          templateNotFound: '未找到模板',
+          loadTemplatesFailed: '加载模板失败',
+          loadTemplateError: '加载模板时出错',
+          serverError: '服务器错误',
+          failedToLoadMcpMarketplace: '加载 MCP 市场失败',
+          errorLoadingMcpMarketplace: '加载 MCP 市场时出错',
+          gmailClientIdRequired: '需要 Gmail 客户端 ID',
+          gmailClientSecretRequired: '需要 Gmail 客户端密钥',
+          changingChatModel: '正在更改聊天代理模型...',
+          chatModelSetSuccess: '聊天代理模型设置成功！',
+          initializingChatAgent: '正在使用新模型初始化聊天代理...',
+          failedToSetChatModel: '设置聊天代理模型失败',
+          errorSettingChatModel: '设置聊天代理模型时出错',
+          changingMemoryModel: '正在更改记忆管理模型...',
+          memoryModelSetSuccess: '记忆管理模型设置成功！',
+          initializingMemoryManager: '正在使用新模型初始化记忆管理器...',
+          failedToSetMemoryModel: '设置记忆管理模型失败',
+          errorSettingMemoryModel: '设置记忆管理模型时出错',
+          changingTimezone: '正在更改时区...',
+          timezoneSetSuccess: '时区设置成功！',
+          failedToSetTimezone: '设置时区失败',
+          errorSettingTimezone: '设置时区时出错'
         }
       },
       chat: {
