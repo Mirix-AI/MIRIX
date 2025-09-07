@@ -374,8 +374,12 @@ class EpisodicMemoryManager:
                     EpisodicEvent.user_id == actor.id
                 )
 
-                if search_method == 'embedding':
+                # 根据环境变量调整搜索方法
+                if search_method == 'embedding' and not BUILD_EMBEDDINGS_FOR_MEMORY:
+                    print(f"⚠️  警告: 请求嵌入搜索但环境变量 BUILD_EMBEDDINGS_FOR_MEMORY=false，改用BM25搜索")
+                    search_method = 'bm25'
 
+                if search_method == 'embedding':
                     embed_query = True
                     embedding_config = agent_state.embedding_config
 

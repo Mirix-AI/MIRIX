@@ -1417,6 +1417,19 @@ def test_episodic_memory_direct(agent):
             test_tracker.fail_subtest(e, subtest_idx)
             # Don't raise here as this might be expected behavior
         
+        # Test 4: Cleanup - Delete the test event
+        subtest_idx = test_tracker.start_subtest("Direct Event Cleanup")
+        try:
+            agent.client.server.episodic_memory_manager.delete_event_by_id(
+                id=event.id,
+                actor=agent.client.user
+            )
+            print(f"Cleaned up test event with ID: {event.id}")
+            test_tracker.pass_subtest(subtest_idx, "Test event cleaned up successfully")
+        except Exception as e:
+            test_tracker.fail_subtest(e, subtest_idx)
+            print(f"Warning: Failed to cleanup test event: {e}")
+        
         test_tracker.pass_test("All direct episodic memory operations completed successfully")
         
     except Exception as e:
@@ -2050,10 +2063,283 @@ def test_resource_memory_update_indirect(agent):
     
     print("Indirect resource memory update tests completed.\n")
 
+def cleanup_test_data(agent, test_name):
+    """
+    清理测试数据
+    
+    Args:
+        agent: AgentWrapper实例
+        test_name: 测试名称
+    """
+    if not agent:
+        return
+    
+    try:
+        # 根据测试类型进行不同的清理
+        if 'indirect' in test_name:
+            # 间接操作测试通常不清理，因为数据是通过消息传递创建的
+            # 但我们可以尝试清理一些明显的测试数据
+            print(f"   间接操作测试 '{test_name}' 通常保留数据以供后续测试使用")
+            return
+        
+        # 对于直接操作测试，数据已经在测试函数内部清理了
+        if 'direct' in test_name:
+            print(f"   直接操作测试 '{test_name}' 的数据已在测试函数内部清理")
+            return
+        
+        # 对于搜索和性能测试，通常不创建持久数据
+        if any(keyword in test_name for keyword in ['search', 'fts5', 'performance']):
+            print(f"   搜索/性能测试 '{test_name}' 不创建持久数据")
+            return
+        
+        # 对于其他测试，尝试清理可能的测试数据
+        print(f"   尝试清理测试 '{test_name}' 的数据...")
+        
+        # 这里可以添加更具体的清理逻辑
+        # 例如根据测试名称清理特定的测试数据
+        
+    except Exception as e:
+        print(f"   清理过程中出现错误: {e}")
+
+def run_specific_memory_test(test_name, agent=None, delete_after_test=True):
+    """
+    运行指定的内存测试函数
+    
+    Args:
+        test_name (str): 要运行的测试名称
+        agent (AgentWrapper, optional): AgentWrapper实例，如果为None则自动创建
+        delete_after_test (bool): 是否在测试后清理测试数据，默认为True
+    
+    Returns:
+        bool: 测试是否成功完成
+        
+    Available test names:
+        # Direct memory operations (manager methods)
+        - 'episodic_memory_direct': 测试情节记忆直接操作
+        - 'procedural_memory_direct': 测试程序记忆直接操作
+        - 'resource_memory_direct': 测试资源记忆直接操作
+        - 'knowledge_vault_direct': 测试知识库直接操作
+        - 'semantic_memory_direct': 测试语义记忆直接操作
+        - 'resource_memory_update_direct': 测试资源记忆更新直接操作
+        - 'tree_path_functionality_direct': 测试树形路径功能直接操作
+        
+        # Indirect memory operations (message-based)
+        - 'episodic_memory_indirect': 测试情节记忆间接操作
+        - 'procedural_memory_indirect': 测试程序记忆间接操作
+        - 'resource_memory_indirect': 测试资源记忆间接操作
+        - 'knowledge_vault_indirect': 测试知识库间接操作
+        - 'semantic_memory_indirect': 测试语义记忆间接操作
+        - 'resource_memory_update_indirect': 测试资源记忆更新间接操作
+        
+        # Search and performance tests
+        - 'search_methods': 测试不同搜索方法
+        - 'fts5_comprehensive': 测试FTS5综合功能
+        - 'fts5_performance_comparison': 测试FTS5性能对比
+        - 'fts5_advanced_features': 测试FTS5高级功能
+        - 'text_only_memorization': 测试纯文本记忆功能
+        
+        # Core memory tests
+        - 'core_memory_update_using_chat_agent': 测试使用聊天代理更新核心记忆
+        
+        # File handling tests
+        - 'greeting_with_files': 测试文件处理功能
+        - 'file_types': 测试不同文件类型
+        - 'file_with_memory': 测试带记忆的文件处理
+        
+        # All-in-one tests
+        - 'all_direct_memory_operations': 运行所有直接内存操作测试
+        - 'all_indirect_memory_operations': 运行所有间接内存操作测试
+        - 'all_search_and_performance_operations': 运行所有搜索和性能测试
+        - 'all_memories': 运行所有内存测试
+    """
+    
+    # 测试函数映射字典
+    test_functions = {
+        # Direct memory operations
+        'episodic_memory_direct': test_episodic_memory_direct,
+        'procedural_memory_direct': test_procedural_memory_direct,
+        'resource_memory_direct': test_resource_memory_direct,
+        'knowledge_vault_direct': test_knowledge_vault_direct,
+        'semantic_memory_direct': test_semantic_memory_direct,
+        'resource_memory_update_direct': test_resource_memory_update_direct,
+        'tree_path_functionality_direct': test_tree_path_functionality_direct,
+        
+        # Indirect memory operations
+        'episodic_memory_indirect': test_episodic_memory_indirect,
+        'procedural_memory_indirect': test_procedural_memory_indirect,
+        'resource_memory_indirect': test_resource_memory_indirect,
+        'knowledge_vault_indirect': test_knowledge_vault_indirect,
+        'semantic_memory_indirect': test_semantic_memory_indirect,
+        'resource_memory_update_indirect': test_resource_memory_update_indirect,
+        
+        # Search and performance tests
+        'search_methods': test_search_methods,
+        'fts5_comprehensive': test_fts5_comprehensive,
+        'fts5_performance_comparison': test_fts5_performance_comparison,
+        'fts5_advanced_features': test_fts5_advanced_features,
+        'text_only_memorization': test_text_only_memorization,
+        
+        # Core memory tests
+        'core_memory_update_using_chat_agent': test_core_memory_update_using_chat_agent,
+        
+        # File handling tests
+        'greeting_with_files': test_greeting_with_files,
+        'file_types': test_file_types,
+        'file_with_memory': test_file_with_memory,
+        
+        # All-in-one tests
+        'all_direct_memory_operations': test_all_direct_memory_operations,
+        'all_indirect_memory_operations': test_all_indirect_memory_operations,
+        'all_search_and_performance_operations': test_all_search_and_performance_operations,
+        'all_memories': test_all_memories,
+    }
+    
+    # 检查测试名称是否有效
+    if test_name not in test_functions:
+        available_tests = list(test_functions.keys())
+        print(f"❌ 无效的测试名称: '{test_name}'")
+        print(f"可用的测试名称: {', '.join(available_tests)}")
+        return False
+    
+    # 如果没有提供agent，则创建一个
+    if agent is None:
+        print(f"🚀 初始化AgentWrapper...")
+        import sys
+        from pathlib import Path
+        
+        if getattr(sys, 'frozen', False):
+            # Running in PyInstaller bundle
+            bundle_dir = Path(sys._MEIPASS)
+            config_path = bundle_dir / 'mirix' / 'configs' / 'mirix_monitor.yaml'
+        else:
+            # Running in development
+            config_path = Path('mirix/configs/mirix_monitor.yaml')
+        
+        agent = AgentWrapper(str(config_path))
+        print(f"✅ AgentWrapper初始化完成")
+    
+    # 获取测试函数
+    test_function = test_functions[test_name]
+    
+    print(f"\n🎯 开始运行测试: {test_name}")
+    print("="*60)
+    
+    try:
+        # 运行测试
+        if test_name in ['greeting_with_files']:
+            # 需要文件路径参数的测试
+            file_path = "exp1.pdf"  # 默认测试文件
+            if not os.path.exists(file_path):
+                print(f"⚠️  测试文件 {file_path} 不存在，跳过文件相关测试")
+                return False
+            result = test_function(file_path)
+        else:
+            # 标准测试函数
+            result = test_function(agent)
+        
+        print("="*60)
+        print(f"✅ 测试 '{test_name}' 完成")
+        
+        # 测试后清理（如果需要）
+        if delete_after_test:
+            print(f"\n🧹 清理测试数据...")
+            try:
+                cleanup_test_data(agent, test_name)
+                print(f"✅ 测试数据清理完成")
+            except Exception as e:
+                print(f"⚠️  测试数据清理失败: {e}")
+        
+        # 打印测试摘要
+        summary = test_tracker.get_summary()
+        if summary['total_tests'] > 0:
+            print(f"\n📊 测试摘要:")
+            print(f"   总测试数: {summary['total_tests']}")
+            print(f"   通过测试: {summary['passed_tests']}")
+            print(f"   失败测试: {summary['failed_tests']}")
+            if summary['total_subtests'] > 0:
+                print(f"   总子测试数: {summary['total_subtests']}")
+                print(f"   通过子测试: {summary['passed_subtests']}")
+                print(f"   失败子测试: {summary['failed_subtests']}")
+        
+        return summary['failed_tests'] == 0
+        
+    except Exception as e:
+        print("="*60)
+        print(f"❌ 测试 '{test_name}' 失败: {e}")
+        traceback.print_exc()
+        return False
+
+def run_multiple_memory_tests(test_names, agent=None, delete_after_test=True):
+    """
+    运行多个指定的内存测试函数
+    
+    Args:
+        test_names (list): 要运行的测试名称列表
+        agent (AgentWrapper, optional): AgentWrapper实例，如果为None则自动创建
+        delete_after_test (bool): 是否在测试后清理测试数据，默认为True
+    
+    Returns:
+        dict: 每个测试的结果 {'test_name': success_bool}
+    """
+    results = {}
+    
+    for test_name in test_names:
+        print(f"\n{'='*80}")
+        print(f"🔄 运行测试 {test_names.index(test_name) + 1}/{len(test_names)}: {test_name}")
+        print(f"{'='*80}")
+        
+        success = run_specific_memory_test(test_name, agent, delete_after_test)
+        results[test_name] = success
+        
+        if success:
+            print(f"✅ {test_name} 测试通过")
+        else:
+            print(f"❌ {test_name} 测试失败")
+    
+    # 打印总体结果
+    print(f"\n{'='*80}")
+    print("🏁 所有测试完成")
+    print(f"{'='*80}")
+    
+    passed_tests = [name for name, success in results.items() if success]
+    failed_tests = [name for name, success in results.items() if not success]
+    
+    print(f"✅ 通过的测试 ({len(passed_tests)}): {', '.join(passed_tests)}")
+    if failed_tests:
+        print(f"❌ 失败的测试 ({len(failed_tests)}): {', '.join(failed_tests)}")
+    
+    return results
+
 if __name__ == "__main__":
 
     delete_after_test = True
 
-    test_all_memories() 
+    # 运行所有测试（原始方式）
+    # test_all_memories() 
+    
+    # 使用新的指定测试功能
+    # 示例1: 运行单个测试
+    # run_specific_memory_test('episodic_memory_direct')
+    
+    # 示例2: 运行多个测试
+    # run_multiple_memory_tests([
+    #     'episodic_memory_direct',
+    #     'procedural_memory_direct', 
+    #     'resource_memory_direct'
+    # ])
+    
+    # 示例3: 运行所有直接内存操作测试
+    # run_specific_memory_test('all_direct_memory_operations')
+    
+    # 示例4: 运行搜索相关测试
+    # run_multiple_memory_tests([
+    #     'search_methods',
+    #     'fts5_comprehensive',
+    #     'fts5_performance_comparison'
+    # ])
+    
+    # 默认运行所有测试
+    test_all_memories()
+    
     # test_greeting_with_images()
     # run_file_tests()
