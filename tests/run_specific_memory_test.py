@@ -16,8 +16,11 @@ MIRIX 内存系统指定测试运行器
     python tests/run_specific_memory_test.py <test_name1> <test_name2> ...
 
 示例:
-    # 运行情节记忆直接操作测试
+    # 运行情节记忆直接操作测试（使用默认配置）
     python tests/run_specific_memory_test.py episodic_memory_direct
+    
+    # 使用自定义配置文件运行测试
+    python tests/run_specific_memory_test.py episodic_memory_direct --config mirix/configs/mirix_gpt4.yaml
     
     # 运行多个直接操作测试
     python tests/run_specific_memory_test.py episodic_memory_direct procedural_memory_direct resource_memory_direct
@@ -30,6 +33,9 @@ MIRIX 内存系统指定测试运行器
     
     # 保留测试数据（不清理）
     python tests/run_specific_memory_test.py episodic_memory_direct --keep-data
+    
+    # 使用自定义配置并保留数据
+    python tests/run_specific_memory_test.py episodic_memory_direct --config mirix/configs/mirix_azure_example.yaml --keep-data
 
 可用的测试名称:
     # 直接内存操作 (manager methods)
@@ -73,6 +79,8 @@ MIRIX 内存系统指定测试运行器
 
 import sys
 import os
+import argparse
+from pathlib import Path
 
 # 添加项目根目录到Python路径
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -85,37 +93,68 @@ def print_usage():
     """打印使用说明"""
     print(__doc__)
 
-def main():
-    """主函数"""
-    if len(sys.argv) < 2:
-        print("❌ 请提供至少一个测试名称")
-        print_usage()
+def parse_arguments():
+    """解析命令行参数"""
+    parser = argparse.ArgumentParser(
+        description="MIRIX 内存系统指定测试运行器",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__
+    )
+    
+    parser.add_argument(
+        'test_names',
+        nargs='+',
+        help='要运行的测试名称列表'
+    )
+    
+    parser.add_argument(
+        '--config', '-c',
+        type=str,
+        default='mirix/configs/mirix.yaml',
+        help='指定配置文件路径 (默认: mirix/configs/mirix.yaml)'
+    )
+    
+    parser.add_argument(
+        '--keep-data',
+        action='store_true',
+        help='保留测试数据（不进行清理）'
+    )
+    
+    return parser.parse_args()
+
+def validate_config_file(config_path):
+    """验证配置文件是否存在"""
+    if not os.path.exists(config_path):
+        print(f"❌ 配置文件不存在: {config_path}")
+        print("请检查配置文件路径是否正确")
         sys.exit(1)
     
-    # 获取测试名称列表
-    test_names = sys.argv[1:]
+    print(f"📁 使用配置文件: {config_path}")
+
+def main():
+    """主函数"""
+    # 解析命令行参数
+    args = parse_arguments()
     
-    # 检查是否是帮助请求
-    if any(arg in ['-h', '--help', 'help'] for arg in test_names):
-        print_usage()
-        sys.exit(0)
+    # 验证配置文件
+    validate_config_file(args.config)
     
-    print(f"🎯 准备运行 {len(test_names)} 个测试")
-    print(f"测试列表: {', '.join(test_names)}")
+    print(f"🎯 准备运行 {len(args.test_names)} 个测试")
+    print(f"测试列表: {', '.join(args.test_names)}")
     print("="*80)
     
-    # 检查是否要保留测试数据
-    delete_after_test = True
-    if '--keep-data' in test_names:
-        delete_after_test = False
-        test_names.remove('--keep-data')
+    if args.keep_data:
         print("⚠️  将保留测试数据（不进行清理）")
     
     # 运行测试
-    if len(test_names) == 1:
+    if len(args.test_names) == 1:
         # 单个测试
-        test_name = test_names[0]
-        success = run_specific_memory_test(test_name, delete_after_test=delete_after_test)
+        test_name = args.test_names[0]
+        success = run_specific_memory_test(
+            test_name, 
+            config_path=args.config,
+            delete_after_test=not args.keep_data
+        )
         
         if success:
             print(f"\n🎉 测试 '{test_name}' 成功完成!")
@@ -125,13 +164,17 @@ def main():
             sys.exit(1)
     else:
         # 多个测试
-        results = run_multiple_memory_tests(test_names, delete_after_test=delete_after_test)
+        results = run_multiple_memory_tests(
+            args.test_names, 
+            config_path=args.config,
+            delete_after_test=not args.keep_data
+        )
         
         # 检查是否有失败的测试
         failed_tests = [name for name, success in results.items() if not success]
         
         if not failed_tests:
-            print(f"\n🎉 所有 {len(test_names)} 个测试都成功完成!")
+            print(f"\n🎉 所有 {len(args.test_names)} 个测试都成功完成!")
             sys.exit(0)
         else:
             print(f"\n💥 {len(failed_tests)} 个测试失败: {', '.join(failed_tests)}")

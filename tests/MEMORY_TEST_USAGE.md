@@ -6,25 +6,27 @@
 
 ## 新增功能
 
-### 1. `run_specific_memory_test(test_name, agent=None, delete_after_test=True)`
+### 1. `run_specific_memory_test(test_name, agent=None, config_path=None, delete_after_test=True)`
 
 运行指定的单个内存测试函数。
 
 **参数:**
 - `test_name` (str): 要运行的测试名称
 - `agent` (AgentWrapper, optional): AgentWrapper实例，如果为None则自动创建
+- `config_path` (str, optional): 配置文件路径，如果为None则使用默认配置
 - `delete_after_test` (bool): 是否在测试后清理测试数据，默认为True
 
 **返回值:**
 - `bool`: 测试是否成功完成
 
-### 2. `run_multiple_memory_tests(test_names, agent=None, delete_after_test=True)`
+### 2. `run_multiple_memory_tests(test_names, agent=None, config_path=None, delete_after_test=True)`
 
 运行多个指定的内存测试函数。
 
 **参数:**
 - `test_names` (list): 要运行的测试名称列表
 - `agent` (AgentWrapper, optional): AgentWrapper实例，如果为None则自动创建
+- `config_path` (str, optional): 配置文件路径，如果为None则使用默认配置
 - `delete_after_test` (bool): 是否在测试后清理测试数据，默认为True
 
 **返回值:**
@@ -37,17 +39,25 @@
 ```python
 from tests.test_memory import run_specific_memory_test, run_multiple_memory_tests
 
-# 运行单个测试（默认清理测试数据）
+# 运行单个测试（使用默认配置，默认清理测试数据）
 success = run_specific_memory_test('episodic_memory_direct')
 if success:
     print("测试通过!")
 else:
     print("测试失败!")
 
+# 运行单个测试（使用自定义配置文件）
+success = run_specific_memory_test('episodic_memory_direct', config_path='mirix/configs/mirix_gpt4.yaml')
+
 # 运行单个测试（保留测试数据）
 success = run_specific_memory_test('episodic_memory_direct', delete_after_test=False)
 
-# 运行多个测试（默认清理测试数据）
+# 运行单个测试（使用自定义配置并保留数据）
+success = run_specific_memory_test('episodic_memory_direct', 
+                                  config_path='mirix/configs/mirix_azure_example.yaml', 
+                                  delete_after_test=False)
+
+# 运行多个测试（使用默认配置，默认清理测试数据）
 results = run_multiple_memory_tests([
     'episodic_memory_direct',
     'procedural_memory_direct', 
@@ -68,11 +78,20 @@ for test_name, success in results.items():
 ### 方法2: 使用独立的测试脚本
 
 ```bash
-# 从项目根目录运行
+# 基本用法 - 使用默认配置
 python tests/run_specific_memory_test.py episodic_memory_direct
 
-# 运行多个测试
+# 使用自定义配置文件
+python tests/run_specific_memory_test.py episodic_memory_direct --config mirix/configs/mirix_gpt4.yaml
+
+# 使用短参数名指定配置
+python tests/run_specific_memory_test.py episodic_memory_direct -c mirix/configs/mirix_azure_example.yaml
+
+# 运行多个测试（使用默认配置）
 python tests/run_specific_memory_test.py episodic_memory_direct procedural_memory_direct resource_memory_direct
+
+# 运行多个测试（使用自定义配置）
+python tests/run_specific_memory_test.py episodic_memory_direct procedural_memory_direct --config mirix/configs/mirix_gpt4.yaml
 
 # 运行所有直接内存操作测试
 python tests/run_specific_memory_test.py all_direct_memory_operations
@@ -83,12 +102,15 @@ python tests/run_specific_memory_test.py search_methods fts5_comprehensive
 # 保留测试数据（不清理）
 python tests/run_specific_memory_test.py episodic_memory_direct --keep-data
 
-# 查看帮助
-python -m tests.run_specific_memory_test --help
+# 使用自定义配置并保留数据
+python tests/run_specific_memory_test.py episodic_memory_direct --config mirix/configs/mirix_gpt4.yaml --keep-data
+
+# 查看帮助信息
+python tests/run_specific_memory_test.py --help
 
 # 或者进入tests目录运行
 cd tests
-python -m testsrun_specific_memory_test episodic_memory_direct
+python run_specific_memory_test.py episodic_memory_direct
 ```
 
 ### 方法3: 修改 test_memory.py 主函数
@@ -97,15 +119,24 @@ python -m testsrun_specific_memory_test episodic_memory_direct
 
 ```python
 if __name__ == "__main__":
-    # 运行单个测试
+    # 运行单个测试（使用默认配置）
     run_specific_memory_test('episodic_memory_direct')
     
-    # 或者运行多个测试
+    # 运行单个测试（使用自定义配置）
+    # run_specific_memory_test('episodic_memory_direct', config_path='mirix/configs/mirix_gpt4.yaml')
+    
+    # 运行多个测试（使用默认配置）
     # run_multiple_memory_tests([
     #     'episodic_memory_direct',
     #     'procedural_memory_direct', 
     #     'resource_memory_direct'
     # ])
+    
+    # 运行多个测试（使用自定义配置）
+    # run_multiple_memory_tests([
+    #     'episodic_memory_direct',
+    #     'procedural_memory_direct'
+    # ], config_path='mirix/configs/mirix_azure_example.yaml')
 ```
 
 ## 可用的测试名称
@@ -183,8 +214,72 @@ run_specific_memory_test('resource_memory_direct')
 1. **快速反馈**: 只运行需要的测试，节省时间
 2. **精确调试**: 可以针对特定功能进行测试
 3. **灵活组合**: 可以自由组合不同的测试
-4. **易于集成**: 可以轻松集成到CI/CD流程中
-5. **详细报告**: 提供详细的测试结果和摘要
+4. **配置灵活**: 支持多种配置文件，适应不同环境和需求
+5. **易于集成**: 可以轻松集成到CI/CD流程中
+6. **详细报告**: 提供详细的测试结果和摘要
+7. **环境隔离**: 不同配置文件可以用于不同的测试环境
+
+## 配置文件使用
+
+### 可用的配置文件
+
+MIRIX 提供了多个预配置的配置文件，您可以根据需要选择：
+
+```bash
+# 默认配置（推荐用于测试）
+mirix/configs/mirix.yaml
+
+# GPT-4 配置
+mirix/configs/mirix_gpt4.yaml
+
+# GPT-4o-mini 配置
+mirix/configs/mirix_gpt4o-mini.yaml
+
+# Azure OpenAI 配置
+mirix/configs/mirix_azure_example.yaml
+
+# 自定义模型配置
+mirix/configs/mirix_custom_model.yaml
+
+# 监控配置
+mirix/configs/mirix_monitor.yaml
+```
+
+### 配置文件选择建议
+
+#### **测试环境**
+```bash
+# 推荐：使用默认配置进行基本测试
+python tests/run_specific_memory_test.py episodic_memory_direct
+
+# 或者使用GPT-4o-mini（成本较低）
+python tests/run_specific_memory_test.py episodic_memory_direct --config mirix/configs/mirix_gpt4o-mini.yaml
+```
+
+#### **生产环境**
+```bash
+# 使用GPT-4配置
+python tests/run_specific_memory_test.py episodic_memory_direct --config mirix/configs/mirix_gpt4.yaml
+
+# 使用Azure OpenAI配置
+python tests/run_specific_memory_test.py episodic_memory_direct --config mirix/configs/mirix_azure_example.yaml
+```
+
+#### **自定义配置**
+```bash
+# 使用自定义模型配置
+python tests/run_specific_memory_test.py episodic_memory_direct --config mirix/configs/mirix_custom_model.yaml
+```
+
+### 配置文件验证
+
+脚本会自动验证配置文件是否存在：
+
+```bash
+# 如果配置文件不存在，会显示错误信息
+python tests/run_specific_memory_test.py episodic_memory_direct --config nonexistent.yaml
+# 输出: ❌ 配置文件不存在: nonexistent.yaml
+```
 
 ## 测试数据清理机制
 
@@ -288,3 +383,6 @@ python -m tests.run_specific_memory_test episodic_memory_direct
 5. **测试数据清理**: 默认情况下会清理测试数据，使用 `--keep-data` 或 `delete_after_test=False` 可以保留数据
 6. **间接操作测试**: 通常保留数据以测试记忆累积效果，这是正常行为
 7. **嵌入模型配置**: 严格按照环境变量 `BUILD_EMBEDDINGS_FOR_MEMORY` 执行，不支持自动降级
+8. **配置文件路径**: 确保配置文件路径正确，脚本会自动验证配置文件是否存在
+9. **配置文件兼容性**: 不同的配置文件可能使用不同的AI模型，请确保相应的API密钥已正确配置
+10. **环境变量**: 某些配置可能需要特定的环境变量（如API密钥），请确保在运行测试前正确设置

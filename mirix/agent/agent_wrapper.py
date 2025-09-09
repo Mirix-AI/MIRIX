@@ -791,6 +791,7 @@ class AgentWrapper():
                     model_endpoint=custom_agent_config['model_endpoint'],
                     model_wrapper=None,
                     api_key=custom_agent_config.get('api_key'),
+                    put_inner_thoughts_in_kwargs=custom_agent_config.get('put_inner_thoughts_in_kwargs', True),
                     **custom_agent_config.get('generation_config', {})
                 )
             else:
@@ -801,6 +802,7 @@ class AgentWrapper():
                     model_endpoint=self.agent_config['model_endpoint'],
                     model_wrapper=None,
                     api_key=self.agent_config.get('api_key'),
+                    put_inner_thoughts_in_kwargs=self.agent_config.get('put_inner_thoughts_in_kwargs', True),
                     **self.agent_config.get('generation_config', {})
                 )
         

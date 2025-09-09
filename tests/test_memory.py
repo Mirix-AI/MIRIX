@@ -2101,13 +2101,14 @@ def cleanup_test_data(agent, test_name):
     except Exception as e:
         print(f"   清理过程中出现错误: {e}")
 
-def run_specific_memory_test(test_name, agent=None, delete_after_test=True):
+def run_specific_memory_test(test_name, agent=None, config_path=None, delete_after_test=True):
     """
     运行指定的内存测试函数
     
     Args:
         test_name (str): 要运行的测试名称
         agent (AgentWrapper, optional): AgentWrapper实例，如果为None则自动创建
+        config_path (str, optional): 配置文件路径，如果为None则使用默认配置
         delete_after_test (bool): 是否在测试后清理测试数据，默认为True
     
     Returns:
@@ -2207,15 +2208,21 @@ def run_specific_memory_test(test_name, agent=None, delete_after_test=True):
         import sys
         from pathlib import Path
         
-        if getattr(sys, 'frozen', False):
-            # Running in PyInstaller bundle
-            bundle_dir = Path(sys._MEIPASS)
-            config_path = bundle_dir / 'mirix' / 'configs' / 'mirix_monitor.yaml'
+        # 确定配置文件路径
+        if config_path:
+            # 使用指定的配置文件
+            final_config_path = config_path
         else:
-            # Running in development
-            config_path = Path('mirix/configs/mirix_monitor.yaml')
+            # 使用默认配置文件
+            if getattr(sys, 'frozen', False):
+                # Running in PyInstaller bundle
+                bundle_dir = Path(sys._MEIPASS)
+                final_config_path = str(bundle_dir / 'mirix' / 'configs' / 'mirix_monitor.yaml')
+            else:
+                # Running in development
+                final_config_path = 'mirix/configs/mirix_monitor.yaml'
         
-        agent = AgentWrapper(str(config_path))
+        agent = AgentWrapper(final_config_path)
         print(f"✅ AgentWrapper初始化完成")
     
     # 获取测试函数
@@ -2269,13 +2276,14 @@ def run_specific_memory_test(test_name, agent=None, delete_after_test=True):
         traceback.print_exc()
         return False
 
-def run_multiple_memory_tests(test_names, agent=None, delete_after_test=True):
+def run_multiple_memory_tests(test_names, agent=None, config_path=None, delete_after_test=True):
     """
     运行多个指定的内存测试函数
     
     Args:
         test_names (list): 要运行的测试名称列表
         agent (AgentWrapper, optional): AgentWrapper实例，如果为None则自动创建
+        config_path (str, optional): 配置文件路径，如果为None则使用默认配置
         delete_after_test (bool): 是否在测试后清理测试数据，默认为True
     
     Returns:
@@ -2288,7 +2296,7 @@ def run_multiple_memory_tests(test_names, agent=None, delete_after_test=True):
         print(f"🔄 运行测试 {test_names.index(test_name) + 1}/{len(test_names)}: {test_name}")
         print(f"{'='*80}")
         
-        success = run_specific_memory_test(test_name, agent, delete_after_test)
+        success = run_specific_memory_test(test_name, agent, config_path, delete_after_test)
         results[test_name] = success
         
         if success:
