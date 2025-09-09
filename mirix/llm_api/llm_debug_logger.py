@@ -29,7 +29,16 @@ class LLMDebugLogger:
             log_dir: 日志文件保存目录，默认为 ./logs/llm_debug
             enable_file_logging: 是否启用文件日志记录
         """
-        self.logger = get_logger("Mirix.LLMDebug")
+        # 创建独立的日志记录器，避免与主日志系统冲突
+        self.logger = logging.getLogger("Mirix.LLMDebug")
+        self.logger.setLevel(logging.INFO)
+        
+        # 清除所有现有的处理器，确保只输出到文件
+        self.logger.handlers.clear()
+        
+        # 防止日志传播到父日志记录器（避免控制台输出）
+        self.logger.propagate = False
+        
         self.enable_file_logging = enable_file_logging
         
         if enable_file_logging:
@@ -70,6 +79,11 @@ class LLMDebugLogger:
             '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
         )
         self.error_handler.setFormatter(error_formatter)
+        
+        # 将处理器添加到日志记录器
+        self.logger.addHandler(self.request_handler)
+        self.logger.addHandler(self.response_handler)
+        self.logger.addHandler(self.error_handler)
     
     def log_request(
         self,
@@ -101,29 +115,38 @@ class LLMDebugLogger:
             "additional_info": additional_info or {}
         }
         
-        # 控制台输出
-        self.logger.info(f"🚀 LLM Request [{request_id}]")
-        self.logger.info(f"   Model: {model_name}")
-        self.logger.info(f"   Endpoint: {endpoint}")
-        self.logger.info(f"   Messages Count: {len(request_data.get('messages', []))}")
-        
-        if 'messages' in request_data:
-            for i, msg in enumerate(request_data['messages']):
-                self.logger.info(f"   Message {i+1}: {msg.get('role', 'unknown')} - {str(msg.get('content', ''))[:100]}...")
-        
-        if 'tools' in request_data and request_data['tools']:
-            self.logger.info(f"   Tools: {len(request_data['tools'])} tools available")
-            for tool in request_data['tools']:
-                if isinstance(tool, dict) and 'function' in tool:
-                    self.logger.info(f"     - {tool['function'].get('name', 'unknown')}")
+        # 只输出到文件，不在控制台显示
+        # 注释掉控制台输出，避免混淆终端输出
         
         # 文件输出
         if self.enable_file_logging:
-            request_logger = logging.getLogger(f"Mirix.LLMDebug.Requests")
-            request_logger.addHandler(self.request_handler)
+            request_logger = logging.getLogger(f"Mirix.LLMDebug.Requests.{request_id}")
             request_logger.setLevel(logging.INFO)
+            request_logger.propagate = False
+            
+            # 清除现有处理器，只添加请求处理器
+            request_logger.handlers.clear()
+            request_logger.addHandler(self.request_handler)
+            
+            # 记录请求信息
+            request_logger.info(f"🚀 LLM Request [{request_id}]")
+            request_logger.info(f"   Model: {model_name}")
+            request_logger.info(f"   Endpoint: {endpoint}")
+            request_logger.info(f"   Messages Count: {len(request_data.get('messages', []))}")
+            
+            if 'messages' in request_data:
+                for i, msg in enumerate(request_data['messages']):
+                    request_logger.info(f"   Message {i+1}: {msg.get('role', 'unknown')} - {str(msg.get('content', ''))[:100]}...")
+            
+            if 'tools' in request_data and request_data['tools']:
+                request_logger.info(f"   Tools: {len(request_data['tools'])} tools available")
+                for tool in request_data['tools']:
+                    if isinstance(tool, dict) and 'function' in tool:
+                        request_logger.info(f"     - {tool['function'].get('name', 'unknown')}")
+            
+            # 记录完整的请求数据
+            request_logger.info("=== FULL REQUEST DATA ===")
             request_logger.info(json.dumps(log_data, ensure_ascii=False, indent=2))
-            request_logger.removeHandler(self.request_handler)
         
         return request_id
     
@@ -151,44 +174,53 @@ class LLMDebugLogger:
             "additional_info": additional_info or {}
         }
         
-        # 控制台输出
-        self.logger.info(f"📥 LLM Response [{request_id}]")
-        if response_time_ms:
-            self.logger.info(f"   Response Time: {response_time_ms:.2f}ms")
-        
-        if 'choices' in response_data:
-            choices = response_data['choices']
-            self.logger.info(f"   Choices Count: {len(choices)}")
-            
-            for i, choice in enumerate(choices):
-                if 'message' in choice:
-                    msg = choice['message']
-                    self.logger.info(f"   Choice {i+1}: {msg.get('role', 'unknown')}")
-                    
-                    if 'content' in msg and msg['content']:
-                        content = str(msg['content'])
-                        self.logger.info(f"     Content: {content[:200]}{'...' if len(content) > 200 else ''}")
-                    
-                    if 'tool_calls' in msg and msg['tool_calls']:
-                        self.logger.info(f"     Tool Calls: {len(msg['tool_calls'])}")
-                        for j, tool_call in enumerate(msg['tool_calls']):
-                            if isinstance(tool_call, dict):
-                                func_name = tool_call.get('function', {}).get('name', 'unknown')
-                                func_args = tool_call.get('function', {}).get('arguments', '')
-                                self.logger.info(f"       Tool {j+1}: {func_name}")
-                                self.logger.info(f"         Args: {func_args[:100]}{'...' if len(func_args) > 100 else ''}")
-        
-        if 'usage' in response_data:
-            usage = response_data['usage']
-            self.logger.info(f"   Usage: {usage.get('prompt_tokens', 0)} prompt + {usage.get('completion_tokens', 0)} completion = {usage.get('total_tokens', 0)} total")
+        # 只输出到文件，不在控制台显示
+        # 注释掉控制台输出，避免混淆终端输出
         
         # 文件输出
         if self.enable_file_logging:
-            response_logger = logging.getLogger(f"Mirix.LLMDebug.Responses")
-            response_logger.addHandler(self.response_handler)
+            response_logger = logging.getLogger(f"Mirix.LLMDebug.Responses.{request_id}")
             response_logger.setLevel(logging.INFO)
+            response_logger.propagate = False
+            
+            # 清除现有处理器，只添加响应处理器
+            response_logger.handlers.clear()
+            response_logger.addHandler(self.response_handler)
+            
+            # 记录响应信息
+            response_logger.info(f"📥 LLM Response [{request_id}]")
+            if response_time_ms:
+                response_logger.info(f"   Response Time: {response_time_ms:.2f}ms")
+            
+            if 'choices' in response_data:
+                choices = response_data['choices']
+                response_logger.info(f"   Choices Count: {len(choices)}")
+                
+                for i, choice in enumerate(choices):
+                    if 'message' in choice:
+                        msg = choice['message']
+                        response_logger.info(f"   Choice {i+1}: {msg.get('role', 'unknown')}")
+                        
+                        if 'content' in msg and msg['content']:
+                            content = str(msg['content'])
+                            response_logger.info(f"     Content: {content[:200]}{'...' if len(content) > 200 else ''}")
+                        
+                        if 'tool_calls' in msg and msg['tool_calls']:
+                            response_logger.info(f"     Tool Calls: {len(msg['tool_calls'])}")
+                            for j, tool_call in enumerate(msg['tool_calls']):
+                                if isinstance(tool_call, dict):
+                                    func_name = tool_call.get('function', {}).get('name', 'unknown')
+                                    func_args = tool_call.get('function', {}).get('arguments', '')
+                                    response_logger.info(f"       Tool {j+1}: {func_name}")
+                                    response_logger.info(f"         Args: {func_args[:100]}{'...' if len(func_args) > 100 else ''}")
+            
+            if 'usage' in response_data:
+                usage = response_data['usage']
+                response_logger.info(f"   Usage: {usage.get('prompt_tokens', 0)} prompt + {usage.get('completion_tokens', 0)} completion = {usage.get('total_tokens', 0)} total")
+            
+            # 记录完整的响应数据
+            response_logger.info("=== FULL RESPONSE DATA ===")
             response_logger.info(json.dumps(log_data, ensure_ascii=False, indent=2))
-            response_logger.removeHandler(self.response_handler)
     
     def log_error(
         self,
@@ -212,18 +244,30 @@ class LLMDebugLogger:
             "error_context": error_context or {}
         }
         
-        # 控制台输出
-        self.logger.error(f"❌ LLM Error [{request_id}]")
-        self.logger.error(f"   Error Type: {type(error).__name__}")
-        self.logger.error(f"   Error Message: {str(error)}")
+        # 只输出到文件，不在控制台显示
+        # 注释掉控制台输出，避免混淆终端输出
         
         # 文件输出
         if self.enable_file_logging:
-            error_logger = logging.getLogger(f"Mirix.LLMDebug.Errors")
-            error_logger.addHandler(self.error_handler)
+            error_logger = logging.getLogger(f"Mirix.LLMDebug.Errors.{request_id}")
             error_logger.setLevel(logging.ERROR)
+            error_logger.propagate = False
+            
+            # 清除现有处理器，只添加错误处理器
+            error_logger.handlers.clear()
+            error_logger.addHandler(self.error_handler)
+            
+            # 记录错误信息
+            error_logger.error(f"❌ LLM Error [{request_id}]")
+            error_logger.error(f"   Error Type: {type(error).__name__}")
+            error_logger.error(f"   Error Message: {str(error)}")
+            
+            if error_context:
+                error_logger.error(f"   Error Context: {error_context}")
+            
+            # 记录完整的错误数据
+            error_logger.error("=== FULL ERROR DATA ===")
             error_logger.error(json.dumps(log_data, ensure_ascii=False, indent=2))
-            error_logger.removeHandler(self.error_handler)
     
     def log_json_parse_error(
         self,
