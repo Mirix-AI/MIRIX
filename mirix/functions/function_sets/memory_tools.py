@@ -524,24 +524,29 @@ def trigger_memory_update(self: "Agent", user_message: object, memory_types: Lis
         responses = []
         overall_start = time.time()
 
-        # Use ThreadPoolExecutor for parallel processing
-        with ThreadPoolExecutor(max_workers=len(valid_agent_types)) as pool:
-            futures = []
-            for agent_type in valid_agent_types:
-                matching_agents = [agent for agent in agents if agent.agent_type == agent_type]
-                if not matching_agents:
-                    raise ValueError(f"No agent found with type '{agent_type}'")
-                futures.append(
-                    pool.submit(message_queue.send_message_in_queue, 
-                               client, matching_agents[0].id, payloads, agent_type)
-                )
-            
-            for future in tqdm(as_completed(futures), total=len(futures)):
-                response, agent_type = future.result()
-                responses.append(response)
+        if len(valid_agent_types) > 0: 
 
-        overall_end = time.time()
-        response_message = f'[System Message] {len(valid_agent_types)} memory agents have been triggered in parallel to update the memory. Total time: {overall_end - overall_start:.2f} seconds.'
+            # Use ThreadPoolExecutor for parallel processing
+            with ThreadPoolExecutor(max_workers=len(valid_agent_types)) as pool:
+                futures = []
+                for agent_type in valid_agent_types:
+                    matching_agents = [agent for agent in agents if agent.agent_type == agent_type]
+                    if not matching_agents:
+                        raise ValueError(f"No agent found with type '{agent_type}'")
+                    futures.append(
+                        pool.submit(message_queue.send_message_in_queue, 
+                                client, matching_agents[0].id, payloads, agent_type)
+                    )
+                
+                for future in tqdm(as_completed(futures), total=len(futures)):
+                    response, agent_type = future.result()
+                    responses.append(response)
+
+            overall_end = time.time()
+            response_message = f'[System Message] {len(valid_agent_types)} memory agents have been triggered in parallel to update the memory. Total time: {overall_end - overall_start:.2f} seconds.'
+        else:
+            response_message = '[System Message] Valid agent types are empty. No memory agents have been triggered to update the memory.'
+
         return response_message
 
     else:
