@@ -33,3 +33,5 @@ local_evaluations
 .claude/
 mirix.egg-info
 .local
+logs/
+mirix_qwen3.yaml

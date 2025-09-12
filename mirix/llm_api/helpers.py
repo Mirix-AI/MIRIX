@@ -1,5 +1,6 @@
 import copy
 import json
+import time
 import warnings
 from collections import OrderedDict
 from typing import Any, List, Union
@@ -293,6 +294,19 @@ def unpack_inner_thoughts_from_kwargs(choice: Choice, inner_thoughts_key: str) -
                 warnings.warn(f"Did not find inner thoughts in tool call: {str(tool_call)}")
 
         except json.JSONDecodeError as e:
+            # 记录详细的 JSON 解析错误信息
+            try:
+                from mirix.llm_api.llm_debug_logger import get_llm_debug_logger
+                debug_logger = get_llm_debug_logger()
+                debug_logger.log_json_parse_error(
+                    request_id=f"inner_thoughts_{int(time.time() * 1000)}",
+                    json_string=tool_call.function.arguments,
+                    error=e,
+                    context="inner_thoughts_parsing"
+                )
+            except ImportError:
+                pass  # 如果调试日志记录器不可用，继续使用原来的警告
+            
             warnings.warn(f"Failed to strip inner thoughts from kwargs: {e}")
             raise e
     else:
