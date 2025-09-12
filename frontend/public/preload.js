@@ -13,6 +13,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   takeScreenshotDisplay: (displayId) => ipcRenderer.invoke('take-screenshot-display', displayId),
   listDisplays: () => ipcRenderer.invoke('list-displays'),
   cleanupScreenshots: (maxAge) => ipcRenderer.invoke('cleanup-screenshots', maxAge),
+  checkScreenPermission: () => ipcRenderer.invoke('check-screen-permission'),
   openScreenRecordingPrefs: () => ipcRenderer.invoke('open-screen-recording-prefs'),
   
   // Window/App capture functions

@@ -702,6 +702,34 @@ ipcMain.handle('select-save-path', async (event, options = {}) => {
 
 
 
+// IPC handler for checking screen recording permissions
+ipcMain.handle('check-screen-permission', async () => {
+  try {
+    if (process.platform === 'darwin') {
+      const hasScreenPermission = systemPreferences.getMediaAccessStatus('screen');
+      return {
+        success: true,
+        hasPermission: hasScreenPermission === 'granted',
+        status: hasScreenPermission
+      };
+    } else {
+      // On non-macOS platforms, assume permissions are granted
+      return {
+        success: true,
+        hasPermission: true,
+        status: 'granted'
+      };
+    }
+  } catch (error) {
+    safeLog.error('Failed to check screen permission:', error);
+    return {
+      success: false,
+      hasPermission: false,
+      error: error.message
+    };
+  }
+});
+
 // IPC handler for opening System Preferences to Screen Recording
 ipcMain.handle('open-screen-recording-prefs', async () => {
   try {

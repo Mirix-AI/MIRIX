@@ -831,6 +831,17 @@ class SyncServer(Server):
         # Run the agent state forward
         return self._step(actor=actor, agent_id=agent_id, input_messages=message)
 
+    def construct_system_message(self, agent_id: str, message: str, actor: User) -> str:
+        """
+        Construct a system message from a message.
+        """
+        logger.debug(f"Got message: {message}")
+        mirix_agent = None
+        mirix_agent = self.load_agent(agent_id=agent_id, actor=actor)
+        if mirix_agent is None:
+            raise KeyError(f"Agent (user={actor.id}, agent={agent_id}) is not loaded")
+        return mirix_agent.construct_system_message(message=message)
+
     def send_messages(
         self,
         actor: User,

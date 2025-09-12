@@ -1,6 +1,6 @@
 from typing import TYPE_CHECKING
 from mirix.orm.sqlalchemy_base import SqlalchemyBase
-from mirix.orm.mixins import OrganizationMixin, UserMixin
+from mirix.orm.mixins import OrganizationMixin
 
 from sqlalchemy import Column, DateTime, String, JSON
 from sqlalchemy.orm import Mapped, mapped_column, declared_attr, relationship
@@ -9,9 +9,8 @@ from mirix.schemas.cloud_file_mapping import CloudFileMapping as PydanticCloudFi
 
 if TYPE_CHECKING:
     from mirix.orm.organization import Organization
-    from mirix.orm.user import User
 
-class CloudFileMapping(SqlalchemyBase, OrganizationMixin, UserMixin):
+class CloudFileMapping(SqlalchemyBase, OrganizationMixin):
     """
     Represents a mapping between a cloud file and its metadata.
     """
@@ -49,4 +48,3 @@ class CloudFileMapping(SqlalchemyBase, OrganizationMixin, UserMixin):
 
     # relationships
     organization: Mapped["Organization"] = relationship("Organization", back_populates="cloud_file_mappings", lazy="selectin")
-    user: Mapped["User"] = relationship("User", lazy="selectin")

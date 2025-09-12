@@ -262,7 +262,17 @@ class AgentWrapper():
 
         # For GEMINI models, extract all unprocessed images and fill temporary_messages
         if self.model_name in GEMINI_MODELS and self.google_client is not None:
-            self._process_existing_uploaded_files()
+            self._process_existing_uploaded_files(user_id=self.client.user.id)
+
+    def construct_system_message(self, 
+                                message: str,
+                                user_id: str) -> str:
+        """
+        Construct a system message from a message.
+        """
+        return self.client.construct_system_message(agent_id=self.agent_states.agent_state.id, 
+                                                    message=message,
+                                                    user_id=user_id)
 
     def update_chat_agent_system_prompt(self, is_screen_monitoring: bool):
         '''
@@ -641,7 +651,7 @@ class AgentWrapper():
             self.logger.warning(f"Error checking Gmail credentials: {e}")
             return False
 
-    def _process_existing_uploaded_files(self):
+    def _process_existing_uploaded_files(self, user_id: str):
         """Process any existing uploaded files for Gemini models."""
         uploaded_mappings = self.client.server.cloud_file_mapping_manager.list_files_with_status(status='uploaded')
 
@@ -2028,7 +2038,7 @@ Please perform this analysis and create new memories as appropriate. Provide a d
             self.temp_message_accumulator.uri_to_create_time = self.uri_to_create_time
             
             # Process existing uploaded files
-            self._process_existing_uploaded_files()
+            self._process_existing_uploaded_files(user_id=self.client.user.id)
             
             self.logger.info("Gemini initialization completed successfully!")
             return True
