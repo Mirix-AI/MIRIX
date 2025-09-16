@@ -1318,6 +1318,110 @@ def test_file_with_memory():
     
     print("\nFile memory test completed!")
 
+def test_memory_based_conversation(agent):
+    """
+    基于记忆的会话测试
+    
+    这个测试函数接受外部提供的agent参数，测试基于记忆的会话功能。
+    测试流程：
+    1. 先保存一些记忆内容
+    2. 然后基于这些记忆进行会话
+    3. 验证AI能够基于之前的记忆回答问题
+    
+    Args:
+        agent: 外部提供的AgentWrapper实例
+    """
+    print("=== 基于记忆的会话测试 ===")
+    
+    try:
+        # 步骤1: 保存一些记忆内容
+        print("\n--- 步骤1: 保存记忆内容 ---")
+        
+        # 保存个人信息到核心记忆
+        personal_info_message = "我的名字是张三，我是一名软件工程师，住在北京，喜欢编程和阅读。"
+        response1 = agent.send_message(
+            message=personal_info_message,
+            memorizing=True
+        )
+        print(f"个人信息保存响应: {response1}")
+        
+        # 保存工作相关信息到情节记忆
+        work_info_message = "我今天完成了一个重要的项目，使用Python开发了一个机器学习模型，准确率达到了95%。"
+        response2 = agent.send_message(
+            message=work_info_message,
+            memorizing=True
+        )
+        print(f"工作信息保存响应: {response2}")
+        
+        # 保存兴趣爱好到语义记忆
+        hobby_info_message = "我对人工智能和深度学习很感兴趣，经常阅读相关论文和参加技术会议。"
+        response3 = agent.send_message(
+            message=hobby_info_message,
+            memorizing=True
+        )
+        print(f"兴趣爱好保存响应: {response3}")
+        
+        # 步骤2: 基于记忆进行会话（不保存新记忆）
+        print("\n--- 步骤2: 基于记忆的会话测试 ---")
+        
+        # 测试1: 询问个人信息
+        print("\n测试1: 询问个人信息")
+        personal_question = "请告诉我的名字和职业是什么？"
+        personal_response = agent.send_message(
+            message=personal_question,
+            memorizing=False  # 不保存新记忆，只基于已有记忆回答
+        )
+        print(f"个人信息问题: {personal_question}")
+        print(f"基于记忆的回答: {personal_response}")
+        
+        # 测试2: 询问工作相关
+        print("\n测试2: 询问工作相关")
+        work_question = "我今天做了什么工作？有什么成果吗？"
+        work_response = agent.send_message(
+            message=work_question,
+            memorizing=False
+        )
+        print(f"工作问题: {work_question}")
+        print(f"基于记忆的回答: {work_response}")
+        
+        # 测试3: 询问兴趣爱好
+        print("\n测试3: 询问兴趣爱好")
+        hobby_question = "我对什么技术领域比较感兴趣？"
+        hobby_response = agent.send_message(
+            message=hobby_question,
+            memorizing=False
+        )
+        print(f"兴趣爱好问题: {hobby_question}")
+        print(f"基于记忆的回答: {hobby_response}")
+        
+        # 测试4: 综合记忆查询
+        print("\n测试4: 综合记忆查询")
+        comprehensive_question = "请总结一下你了解到的关于我的所有信息。"
+        comprehensive_response = agent.send_message(
+            message=comprehensive_question,
+            memorizing=False
+        )
+        print(f"综合问题: {comprehensive_question}")
+        print(f"基于记忆的综合回答: {comprehensive_response}")
+        
+        # 测试5: 记忆关联测试
+        print("\n测试5: 记忆关联测试")
+        connection_question = "我的职业和兴趣爱好之间有什么联系吗？"
+        connection_response = agent.send_message(
+            message=connection_question,
+            memorizing=False
+        )
+        print(f"关联问题: {connection_question}")
+        print(f"基于记忆的关联分析: {connection_response}")
+        
+        print("\n✅ 基于记忆的会话测试完成！")
+        return True
+        
+    except Exception as e:
+        print(f"❌ 基于记忆的会话测试失败: {e}")
+        traceback.print_exc()
+        return False
+
 def run_file_tests():
     """Run all file-related tests"""
     test_tracker.start_test("File Handling Tests", "Testing file uploading and processing with multiple AI providers")
@@ -2142,6 +2246,9 @@ def run_specific_memory_test(test_name, agent=None, config_path=None, delete_aft
         # Core memory tests
         - 'core_memory_update_using_chat_agent': 测试使用聊天代理更新核心记忆
         
+        # Memory-based conversation tests
+        - 'memory_based_conversation': 测试基于记忆的会话功能
+        
         # File handling tests
         - 'greeting_with_files': 测试文件处理功能
         - 'file_types': 测试不同文件类型
@@ -2182,6 +2289,9 @@ def run_specific_memory_test(test_name, agent=None, config_path=None, delete_aft
         
         # Core memory tests
         'core_memory_update_using_chat_agent': test_core_memory_update_using_chat_agent,
+        
+        # Memory-based conversation tests
+        'memory_based_conversation': test_memory_based_conversation,
         
         # File handling tests
         'greeting_with_files': test_greeting_with_files,
@@ -2345,6 +2455,9 @@ if __name__ == "__main__":
     #     'fts5_comprehensive',
     #     'fts5_performance_comparison'
     # ])
+    
+    # 示例5: 运行基于记忆的会话测试
+    # run_specific_memory_test('memory_based_conversation')
     
     # 默认运行所有测试
     test_all_memories()
