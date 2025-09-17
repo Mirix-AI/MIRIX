@@ -5,6 +5,7 @@ echo "🔧 设置较低的 TEMPORARY_MESSAGE_LIMIT 用于测试记忆功能..."
 
 # 设置环境变量
 export TEMPORARY_MESSAGE_LIMIT=1
+export LLM_DEBUG_ENABLE_FILE=true
 
 echo "✅ 环境变量已设置:"
 echo "   TEMPORARY_MESSAGE_LIMIT=$TEMPORARY_MESSAGE_LIMIT"
