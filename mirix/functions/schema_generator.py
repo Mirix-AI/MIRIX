@@ -361,7 +361,6 @@ def generate_schema(function, name: Optional[str] = None, description: Optional[
 
         # Assert that the parameter has a description
         if not param_doc or not param_doc.description:
-            import ipdb; ipdb.set_trace()
             raise ValueError(f"Parameter '{param.name}' in function '{function.__name__}' lacks a description in the docstring")
 
 
@@ -387,7 +386,6 @@ def generate_schema(function, name: Optional[str] = None, description: Optional[
             param_doc = next((d for d in docstring.params if d.arg_name == param.name), None)
                 
             if not param_doc:
-                import ipdb; ipdb.set_trace()
                 raise ValueError(f"Parameter '{param.name}' in function '{function.__name__}' lacks a description in the docstring")
             elif not isinstance(param_doc.description, str):
                 raise ValueError(

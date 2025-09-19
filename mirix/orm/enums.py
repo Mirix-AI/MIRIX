@@ -9,6 +9,7 @@ class ToolType(str, Enum):
     MIRIX_EXTRA = "mirix_extra"
     MIRIX_MCP = "mirix_mcp"
     MIRIX_MULTI_AGENT_CORE = "mirix_multi_agent_core"
+    USER_DEFINED = "user_defined"
 
 
 class JobType(str, Enum):

@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import UpdateModal from './UpdateModal';
 
-const UpdateChecker = ({ currentVersion = '0.1.3' }) => {
+const UpdateChecker = ({ currentVersion = '0.1.4' }) => {
   const [updateInfo, setUpdateInfo] = useState(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [checkingForUpdates, setCheckingForUpdates] = useState(false);

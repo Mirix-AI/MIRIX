@@ -207,7 +207,7 @@ To fix it, install FFmpeg:
 The warning doesn't affect functionality as pydub falls back gracefully.
 """
 
-app = FastAPI(title="Mirix Agent API", version="0.1.3")
+app = FastAPI(title="Mirix Agent API", version="0.1.4")
 
 # Add CORS middleware
 app.add_middleware(
@@ -1018,6 +1018,7 @@ async def add_custom_model(request: AddCustomModelRequest):
             'model_name': request.model_name,
             'model_endpoint': request.model_endpoint,
             'api_key': request.api_key,
+            'model_provider': 'local_server',
             'generation_config': {
                 'temperature': request.temperature,
                 'max_tokens': request.max_tokens,

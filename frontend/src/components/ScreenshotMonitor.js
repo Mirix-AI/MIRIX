@@ -46,7 +46,7 @@ const ScreenshotMonitor = ({ settings, onMonitoringStatusChange }) => {
   // Check screenshot permissions
   const checkScreenPermissions = useCallback(async () => {
     
-    if (!window.electronAPI || !window.electronAPI.takeScreenshot) {
+    if (!window.electronAPI || !window.electronAPI.checkScreenPermission) {
       setHasScreenPermission(false);
       setError(t('screenshot.errors.desktopOnly'));
       return false;
@@ -57,45 +57,35 @@ const ScreenshotMonitor = ({ settings, onMonitoringStatusChange }) => {
 
     try {
       console.log('[ScreenshotMonitor] Checking permissions...');
-      // Skip the unnecessary permission check screenshot
-      // We'll find out about permissions when we actually need to take a screenshot
-      const result = { success: true };
+      const result = await window.electronAPI.checkScreenPermission();
       
       if (result.success) {
-        console.log('[ScreenshotMonitor] Permission check passed');
-        setHasScreenPermission(true);
-        // Clean up the test screenshot
-        if (result.filepath) {
-          try {
-            await window.electronAPI.deleteScreenshot(result.filepath);
-          } catch (cleanupError) {
-            // Silent cleanup error
-          }
+        console.log('[ScreenshotMonitor] Permission check result:', result);
+        setHasScreenPermission(result.hasPermission);
+        
+        if (result.hasPermission) {
+          console.log('[ScreenshotMonitor] Screen recording permission granted');
+          return true;
+        } else {
+          console.log('[ScreenshotMonitor] Screen recording permission not granted, status:', result.status);
+          setError(t('screenshot.errors.permissionDenied'));
+          return false;
         }
-        return true;
       } else {
         console.error('[ScreenshotMonitor] Permission check failed:', result);
         setHasScreenPermission(false);
-        if (result.error && result.error.includes('permission')) {
-          setError(t('screenshot.errors.permissionDenied'));
-        } else {
-          setError(result.error || 'Failed to access screenshot functionality');
-        }
+        setError(result.error || 'Failed to check screen recording permissions');
         return false;
       }
     } catch (err) {
       console.error('[ScreenshotMonitor] Permission check exception:', err);
       setHasScreenPermission(false);
-      if (err.message && err.message.includes('permission')) {
-        setError(t('screenshot.errors.permissionDenied'));
-      } else {
-        setError(t('screenshot.errors.permissionCheckFailed', { error: err.message }));
-      }
+      setError(t('screenshot.errors.permissionCheckFailed', { error: err.message }));
       return false;
     } finally {
       setIsCheckingPermission(false);
     }
-  }, []);
+  }, [t]);
 
 
 

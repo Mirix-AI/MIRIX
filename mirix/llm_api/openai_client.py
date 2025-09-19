@@ -158,6 +158,10 @@ class OpenAIClient(LLMClientBase):
                 except ValueError as e:
                     logger.warning(f"Failed to convert tool function to structured output, tool={tool}, error={e}")
 
+        else:
+            # When there are no tools, delete tool_choice entirely from the request
+            delattr(data, 'tool_choice')
+
         return data.model_dump(exclude_unset=True)
 
     def fill_image_content_in_messages(self, openai_message_list):

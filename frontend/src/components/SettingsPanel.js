@@ -1498,7 +1498,7 @@ const SettingsPanel = ({ settings, onSettingsChange, onApiKeyCheck, onApiKeyRequ
           <h3>{t('settings.sections.about')}</h3>
           <div className="about-info">
             <p><strong>{t('settings.about.name')}</strong></p>
-            <p>{t('settings.about.version')} 0.1.3</p>
+            <p>{t('settings.about.version')} 0.1.4</p>
             <p>{t('settings.about.description')}</p>
             <div className="about-links">
               <button 

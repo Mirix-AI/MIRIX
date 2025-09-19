@@ -162,6 +162,20 @@ class Mirix:
         users = self._agent.client.server.user_manager.list_users()
         return users
 
+
+    def construct_system_message(self, message: str, user_id: str) -> str:
+        """
+        Construct a system message from a message.
+        """
+        return self._agent.construct_system_message(message, user_id)
+
+
+    def extract_memory_for_system_prompt(self, message: str, user_id: str) -> str:
+        """
+        Extract memory for system prompt from a message.
+        """
+        return self._agent.extract_memory_for_system_prompt(message, user_id)
+
     def get_user_by_name(self, user_name: str):
         """
         Get a user by their name.
@@ -438,3 +452,473 @@ class Mirix:
             response = memory_agent("What do you remember?")
         """
         return self.chat(message)
+
+    def insert_tool(self, name: str, source_code: str, description: str, args_info: Optional[Dict[str, str]] = None, returns_info: Optional[str] = None, tags: Optional[List[str]] = None, apply_to_agents: Union[List[str], str]='all') -> Dict[str, Any]:
+        """
+        Insert a custom tool into the system.
+        
+        Args:
+            name: The name of the tool function
+            source_code: The Python source code for the tool function (without docstring)
+            description: Description of what the tool does
+            args_info: Optional dict mapping argument names to their descriptions
+            returns_info: Optional description of what the function returns
+            tags: Optional list of tags for categorization (defaults to ["user_defined"])
+            apply_to_all_agents: Whether to add this tool to all existing agents (default: True)
+            
+        Returns:
+            Dict containing success status, tool data, and any error messages
+            
+        Example:
+            result = memory_agent.insert_tool(
+                name="calculate_sum",
+                source_code="def calculate_sum(a: int, b: int) -> int:\n    return a + b",
+                description="Calculate the sum of two numbers",
+                args_info={"a": "First number", "b": "Second number"},
+                returns_info="The sum of a and b",
+                tags=["math", "utility"]
+            )
+        """
+        from mirix.services.tool_manager import ToolManager
+        from mirix.schemas.tool import Tool as PydanticTool
+        from mirix.orm.enums import ToolType
+        
+        # Initialize tool manager
+        tool_manager = ToolManager()
+        
+        # Check if tool name already exists
+        existing_tool = tool_manager.get_tool_by_name(tool_name=name, actor=self._agent.client.user)
+
+        if existing_tool:
+            
+            created_tool = existing_tool
+
+        else:
+
+            # Set default tags if not provided
+            if tags is None:
+                tags = ["user_defined"]
+            
+            # Construct complete source code with docstring
+            complete_source_code = self._build_complete_source_code(
+                source_code, description, args_info, returns_info
+            )
+            
+            # Generate JSON schema from the complete source code
+            from mirix.functions.functions import derive_openai_json_schema
+            json_schema = derive_openai_json_schema(source_code=complete_source_code, name=name)
+            
+            # Create the tool object
+            pydantic_tool = PydanticTool(
+                name=name,
+                source_code=complete_source_code,
+                source_type="python",
+                tool_type=ToolType.USER_DEFINED,
+                tags=tags,
+                description=description,
+                json_schema=json_schema
+            )
+            
+            # Use the tool manager's create_or_update_tool method
+            created_tool = tool_manager.create_or_update_tool(
+                pydantic_tool=pydantic_tool,
+                actor=self._agent.client.user
+            )
+
+        # Apply tool to all existing agents if requested
+        if apply_to_agents:
+
+            # Get all existing agents
+            all_agents = self._agent.client.server.agent_manager.list_agents(
+                actor=self._agent.client.user,
+                limit=1000  # Get all agents
+            )
+
+            if apply_to_agents != 'all':
+                all_agents = [agent for agent in all_agents if agent.name in all_agents]
+
+            # Add the tool to each agent
+            for agent in all_agents:
+                # Get current agent tools
+                existing_tools = agent.tools
+                existing_tool_ids = [tool.id for tool in existing_tools]
+                
+                # Add the new tool if not already present
+                if created_tool.id not in existing_tool_ids:
+                    new_tool_ids = existing_tool_ids + [created_tool.id]
+                    
+                    # Update the agent with the new tool
+                    from mirix.schemas.agent import UpdateAgent
+                    self._agent.client.server.agent_manager.update_agent(
+                        agent_id=agent.id,
+                        agent_update=UpdateAgent(tool_ids=new_tool_ids),
+                        actor=self._agent.client.user
+                    )
+        
+        return {
+            'success': True,
+            'message': f"Tool '{name}' inserted successfully" + 
+                      (" and applied to all existing agents" if apply_to_agents else ""),
+            'tool': {
+                'id': created_tool.id,
+                'name': created_tool.name,
+                'description': created_tool.description,
+                'tags': created_tool.tags,
+                'tool_type': created_tool.tool_type.value if created_tool.tool_type else None
+            }
+        }
+    
+    def _build_complete_source_code(self, source_code: str, description: str, args_info: Optional[Dict[str, str]] = None, returns_info: Optional[str] = None) -> str:
+        """
+        Build complete source code with proper docstring from user-provided components.
+        
+        Args:
+            source_code: The bare function code without docstring
+            description: Function description
+            args_info: Optional dict mapping argument names to descriptions
+            returns_info: Optional return value description
+            
+        Returns:
+            Complete source code with properly formatted docstring
+        """
+        import re
+        
+        # Find the function definition line
+        func_match = re.search(r'(def\s+\w+\([^)]*\)\s*(?:->\s*[^:]+)?:)', source_code)
+        if not func_match:
+            raise ValueError("Invalid function definition in source_code")
+        
+        func_def = func_match.group(1)
+        func_body = source_code[func_match.end():].lstrip('\n')
+        
+        # Build docstring
+        docstring_lines = ['    """', f'    {description}']
+        
+        if args_info:
+            docstring_lines.extend(['', '    Args:'])
+            for arg_name, arg_desc in args_info.items():
+                docstring_lines.append(f'        {arg_name}: {arg_desc}')
+        
+        if returns_info:
+            docstring_lines.extend(['', '    Returns:', f'        {returns_info}'])
+        
+        docstring_lines.append('    """')
+        
+        # Combine everything
+        complete_code = func_def + '\n' + '\n'.join(docstring_lines) + '\n' + func_body
+        
+        return complete_code
+
+    def visualize_memories(self, user_id: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Visualize all memories for a specific user.
+        
+        Args:
+            user_id: User ID to get memories for. If None, uses current active user.
+            
+        Returns:
+            Dict containing all memory types organized by category
+            
+        Example:
+            memories = memory_agent.visualize_memories(user_id="user_123")
+            print(f"Episodic memories: {len(memories['episodic'])}")
+            print(f"Semantic memories: {len(memories['semantic'])}")
+        """
+        try:
+            # Find the target user
+            if user_id:
+                target_user = self._agent.client.server.user_manager.get_user_by_id(user_id)
+                if not target_user:
+                    return {
+                        'success': False,
+                        'error': f"User with ID '{user_id}' not found"
+                    }
+            else:
+                # Find the current active user
+                users = self._agent.client.server.user_manager.list_users()
+                active_user = next((user for user in users if user.status == 'active'), None)
+                target_user = active_user if active_user else (users[0] if users else None)
+                
+            if not target_user:
+                return {
+                    'success': False,
+                    'error': 'No user found'
+                }
+            
+            memories = {}
+            
+            # Get episodic memory
+            try:
+                episodic_manager = self._agent.client.server.episodic_memory_manager
+                events = episodic_manager.list_episodic_memory(
+                    agent_state=self._agent.agent_states.episodic_memory_agent_state,
+                    actor=target_user,
+                    limit=50,
+                    timezone_str=target_user.timezone
+                )
+                
+                memories['episodic'] = []
+                for event in events:
+                    memories['episodic'].append({
+                        "timestamp": event.occurred_at.isoformat() if event.occurred_at else None,
+                        "summary": event.summary,
+                        "details": event.details,
+                        "event_type": event.event_type,
+                        "tree_path": event.tree_path if hasattr(event, 'tree_path') else [],
+                    })
+            except Exception as e:
+                memories['episodic'] = []
+                
+            # Get semantic memory
+            try:
+                semantic_manager = self._agent.client.server.semantic_memory_manager
+                semantic_items = semantic_manager.list_semantic_items(
+                    agent_state=self._agent.agent_states.semantic_memory_agent_state,
+                    actor=target_user,
+                    limit=50,
+                    timezone_str=target_user.timezone
+                )
+                
+                memories['semantic'] = []
+                for item in semantic_items:
+                    memories['semantic'].append({
+                        "title": item.name,
+                        "type": "semantic",
+                        "summary": item.summary,
+                        "details": item.details,
+                        "tree_path": item.tree_path if hasattr(item, 'tree_path') else [],
+                    })
+            except Exception as e:
+                memories['semantic'] = []
+                
+            # Get procedural memory
+            try:
+                procedural_manager = self._agent.client.server.procedural_memory_manager
+                procedural_items = procedural_manager.list_procedures(
+                    agent_state=self._agent.agent_states.procedural_memory_agent_state,
+                    actor=target_user,
+                    limit=50,
+                    timezone_str=target_user.timezone
+                )
+                
+                memories['procedural'] = []
+                for item in procedural_items:
+                    import json
+                    # Parse steps if it's a JSON string
+                    steps = item.steps
+                    if isinstance(steps, str):
+                        try:
+                            steps = json.loads(steps)
+                            # Extract just the instruction text for simpler display
+                            if isinstance(steps, list) and steps and isinstance(steps[0], dict):
+                                steps = [step.get('instruction', str(step)) for step in steps]
+                        except (json.JSONDecodeError, KeyError, TypeError):
+                            # If parsing fails, keep as string and split by common delimiters
+                            if isinstance(steps, str):
+                                steps = [s.strip() for s in steps.replace('\n', '|').split('|') if s.strip()]
+                            else:
+                                steps = []
+                    
+                    memories['procedural'].append({
+                        "title": item.entry_type,
+                        "type": "procedural", 
+                        "summary": item.summary,
+                        "steps": steps if isinstance(steps, list) else [],
+                        "tree_path": item.tree_path if hasattr(item, 'tree_path') else [],
+                    })
+            except Exception as e:
+                memories['procedural'] = []
+                
+            # Get resource memory
+            try:
+                resource_manager = self._agent.client.server.resource_memory_manager
+                resources = resource_manager.list_resources(
+                    agent_state=self._agent.agent_states.resource_memory_agent_state,
+                    actor=target_user,
+                    limit=50,
+                    timezone_str=target_user.timezone
+                )
+                
+                memories['resources'] = []
+                for resource in resources:
+                    memories['resources'].append({
+                        "filename": resource.title,
+                        "type": resource.resource_type,
+                        "summary": resource.summary or (resource.content[:200] + "..." if len(resource.content) > 200 else resource.content),
+                        "last_accessed": resource.updated_at.isoformat() if resource.updated_at else None,
+                        "size": resource.metadata_.get("size") if resource.metadata_ else None,
+                        "tree_path": resource.tree_path if hasattr(resource, 'tree_path') else [],
+                    })
+            except Exception as e:
+                memories['resources'] = []
+                
+            # Get core memory
+            try:
+                core_memory = self._agent.client.get_in_context_memory(self._agent.agent_states.agent_state.id)
+                memories['core'] = []
+                total_characters = 0
+
+                for block in core_memory.blocks:
+                    if block.value and block.value.strip() and block.label.lower() != "persona":
+                        block_chars = len(block.value)
+                        total_characters += block_chars
+
+                        memories['core'].append({
+                            "aspect": block.label,
+                            "understanding": block.value,
+                            "character_count": block_chars,
+                            "total_characters": total_characters,
+                            "max_characters": block.limit,
+                            "last_updated": None
+                        })
+            except Exception as e:
+                memories['core'] = []
+                
+            # Get credentials memory
+            try:
+                knowledge_vault_manager = self._agent.client.server.knowledge_vault_manager
+                vault_items = knowledge_vault_manager.list_knowledge(
+                    actor=target_user,
+                    agent_state=self._agent.agent_states.knowledge_vault_agent_state,
+                    limit=50,
+                    timezone_str=target_user.timezone
+                )
+                
+                memories['credentials'] = []
+                for item in vault_items:
+                    memories['credentials'].append({
+                        "caption": item.caption,
+                        "entry_type": item.entry_type,
+                        "source": item.source,
+                        "sensitivity": item.sensitivity,
+                        "content": "••••••••••••" if item.sensitivity == 'high' else item.secret_value,
+                    })
+            except Exception as e:
+                memories['credentials'] = []
+            
+            return {
+                'success': True,
+                'user_id': target_user.id,
+                'user_name': target_user.name,
+                'memories': memories,
+                'summary': {
+                    'episodic_count': len(memories.get('episodic', [])),
+                    'semantic_count': len(memories.get('semantic', [])),
+                    'procedural_count': len(memories.get('procedural', [])),
+                    'resources_count': len(memories.get('resources', [])),
+                    'core_count': len(memories.get('core', [])),
+                    'credentials_count': len(memories.get('credentials', []))
+                }
+            }
+            
+        except Exception as e:
+            return {
+                'success': False,
+                'error': str(e)
+            }
+
+    def edit_memories(self, user_id: Optional[str] = None, memory_type: str = "all", action: str = "clear") -> Dict[str, Any]:
+        """
+        Edit memories for a specific user.
+        
+        Args:
+            user_id: User ID to edit memories for. If None, uses current active user.
+            memory_type: Type of memory to edit ("episodic", "semantic", "procedural", "resources", "core", "credentials", "conversation", "all")
+            action: Action to perform ("clear", "export")
+            
+        Returns:
+            Dict containing success status and results
+            
+        Example:
+            # Clear conversation history for specific user
+            result = memory_agent.edit_memories(user_id="user_123", memory_type="conversation", action="clear")
+            
+            # Export all memories for user
+            result = memory_agent.edit_memories(user_id="user_123", action="export")
+        """
+        try:
+            # Find the target user
+            if user_id:
+                target_user = self._agent.client.server.user_manager.get_user_by_id(user_id)
+                if not target_user:
+                    return {
+                        'success': False,
+                        'error': f"User with ID '{user_id}' not found"
+                    }
+            else:
+                # Find the current active user
+                users = self._agent.client.server.user_manager.list_users()
+                active_user = next((user for user in users if user.status == 'active'), None)
+                target_user = active_user if active_user else (users[0] if users else None)
+                
+            if not target_user:
+                return {
+                    'success': False,
+                    'error': 'No user found'
+                }
+            
+            if action == "clear":
+                if memory_type == "conversation":
+                    # Clear conversation history for the user
+                    current_messages = self._agent.client.server.agent_manager.get_in_context_messages(
+                        agent_id=self._agent.agent_states.agent_state.id,
+                        actor=target_user
+                    )
+                    # Count messages belonging to this user (excluding system messages)
+                    user_messages_count = len([msg for msg in current_messages if msg.role != 'system' and msg.user_id == target_user.id])
+                    
+                    # Clear conversation history
+                    self._agent.client.server.agent_manager.reset_messages(
+                        agent_id=self._agent.agent_states.agent_state.id,
+                        actor=target_user,
+                        add_default_initial_messages=True
+                    )
+                    
+                    return {
+                        'success': True,
+                        'message': f"Successfully cleared conversation history for {target_user.name}",
+                        'messages_deleted': user_messages_count
+                    }
+                else:
+                    return {
+                        'success': False,
+                        'error': 'Clear action currently only supports "conversation" memory type'
+                    }
+                    
+            elif action == "export":
+                # Export memories to Excel file
+                from datetime import datetime
+                from pathlib import Path
+                
+                # Generate filename with timestamp
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                filename = f"mirix_memories_{target_user.name}_{timestamp}.xlsx"
+                
+                # Use home directory for export
+                file_path = str(Path.home() / filename)
+                
+                # Determine memory types to export
+                if memory_type == "all":
+                    memory_types = ["episodic", "semantic", "procedural", "resources", "core", "credentials"]
+                else:
+                    memory_types = [memory_type]
+                
+                result = self._agent.export_memories_to_excel(
+                    actor=target_user,
+                    file_path=file_path,
+                    memory_types=memory_types,
+                    include_embeddings=False
+                )
+                
+                return result
+            else:
+                return {
+                    'success': False,
+                    'error': f'Unsupported action: {action}. Supported actions are "clear" and "export"'
+                }
+                
+        except Exception as e:
+            return {
+                'success': False,
+                'error': str(e)
+            }
