@@ -415,7 +415,10 @@ def trigger_memory_update_with_instruction(self: "Agent", user_message: object, 
 
     from mirix import create_client
 
-    client = create_client()
+    client = create_client(
+        user_id=self.user.id,
+        org_id=self.user.organization_id
+    )
     agents = client.list_agents()
 
     # Validate that user_message is a dictionary
@@ -474,7 +477,10 @@ def trigger_memory_update(self: "Agent", user_message: object, memory_types: Lis
 
     from mirix import create_client
 
-    client = create_client()
+    client = create_client(
+        user_id=self.user.id,
+        org_id=self.user.organization_id
+    )
     agents = client.list_agents()
 
     # Validate that user_message is a dictionary
