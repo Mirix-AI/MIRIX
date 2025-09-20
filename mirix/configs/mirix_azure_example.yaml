@@ -1,0 +1,7 @@
+agent_name: mirix
+model_name: gpt-4.1-mini
+model_provider: azure_openai
+model_endpoint: https://your-resource.openai.azure.com/
+api_version: 2025-01-01-preview
+azure_deployment: gpt-4.1-mini
+# Optional: API key can be provided here or via environment variables/database

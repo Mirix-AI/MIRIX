@@ -1,0 +1,255 @@
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.6);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 1000;
+}
+
+.modal-content {
+  background: white;
+  border-radius: 12px;
+  max-width: 580px;
+  width: 90%;
+  max-height: 80vh;
+  overflow-y: auto;
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.15);
+  animation: modalSlideIn 0.2s ease-out;
+}
+
+@keyframes modalSlideIn {
+  from {
+    transform: scale(0.95);
+    opacity: 0;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 20px 24px 16px;
+  border-bottom: 1px solid #e9ecef;
+}
+
+.modal-header h3 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+  color: #333;
+}
+
+.modal-close {
+  background: none;
+  border: none;
+  font-size: 24px;
+  cursor: pointer;
+  color: #666;
+  padding: 4px;
+  border-radius: 4px;
+  transition: background-color 0.2s;
+}
+
+.modal-close:hover:not(:disabled) {
+  background-color: #f5f5f5;
+  color: #333;
+}
+
+.modal-close:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.modal-body {
+  padding: 20px 24px;
+}
+
+.modal-body > p {
+  margin: 0 0 20px 0;
+  color: #666;
+  font-size: 14px;
+}
+
+.clear-options {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.clear-option {
+  border: 2px solid #e9ecef;
+  border-radius: 8px;
+  padding: 20px;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.clear-option:hover {
+  border-color: #d1d5db;
+}
+
+.clear-option.permanent {
+  border-color: #fecaca;
+  background-color: #fef2f2;
+}
+
+.clear-option.permanent:hover {
+  border-color: #f87171;
+}
+
+.clear-option-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.clear-option-header h4 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: #333;
+}
+
+.option-type {
+  padding: 4px 8px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.option-type:not(.permanent) {
+  background-color: #e1f5fe;
+  color: #0277bd;
+}
+
+.option-type.permanent {
+  background-color: #ffebee;
+  color: #c62828;
+}
+
+.clear-option p {
+  margin: 0 0 16px 0;
+  color: #555;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.warning-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background-color: #fff3cd;
+  border: 1px solid #ffeaa7;
+  border-radius: 6px;
+  padding: 12px;
+  margin: 12px 0 16px 0;
+  font-size: 13px;
+  color: #856404;
+  font-weight: 500;
+}
+
+.warning-icon {
+  font-size: 16px;
+}
+
+.clear-local-btn, .clear-permanent-btn {
+  padding: 10px 20px;
+  border: none;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+  width: 100%;
+}
+
+.clear-local-btn {
+  background-color: #6c757d;
+  color: white;
+}
+
+.clear-local-btn:hover:not(:disabled) {
+  background-color: #5a6268;
+}
+
+.clear-permanent-btn {
+  background-color: #dc3545;
+  color: white;
+}
+
+.clear-permanent-btn:hover:not(:disabled) {
+  background-color: #c82333;
+}
+
+.clear-local-btn:disabled, .clear-permanent-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.modal-footer {
+  padding: 16px 24px 20px;
+  border-top: 1px solid #e9ecef;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.cancel-btn {
+  padding: 10px 20px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  background-color: white;
+  color: #374151;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.cancel-btn:hover:not(:disabled) {
+  background-color: #f9fafb;
+  border-color: #9ca3af;
+}
+
+.cancel-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Responsive design */
+@media (max-width: 640px) {
+  .modal-content {
+    width: 95%;
+    margin: 20px;
+  }
+  
+  .modal-header {
+    padding: 16px 20px 12px;
+  }
+  
+  .modal-header h3 {
+    font-size: 18px;
+  }
+  
+  .modal-body {
+    padding: 16px 20px;
+  }
+  
+  .clear-option {
+    padding: 16px;
+  }
+  
+  .modal-footer {
+    padding: 12px 20px 16px;
+  }
+} 

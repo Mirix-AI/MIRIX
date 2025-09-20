@@ -1,0 +1,3 @@
+agent_name: mirix
+model_name: gemini-2.0-flash
+is_screen_monitor: true

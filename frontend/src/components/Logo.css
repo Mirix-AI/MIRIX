@@ -1,0 +1,60 @@
+.logo-container {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: nowrap;
+}
+
+.logo-image {
+  filter: brightness(1) contrast(1);
+  transition: filter 0.3s ease;
+}
+
+.logo-text {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+  font-weight: 700;
+  text-decoration: none;
+  user-select: none;
+  white-space: nowrap;
+}
+
+/* Styling for different themes */
+.logo-container.light-theme .logo-image {
+  filter: brightness(1) contrast(1);
+}
+
+.logo-container.dark-theme .logo-image {
+  filter: brightness(1.1) contrast(1.1);
+}
+
+/* Hover effects */
+.logo-container:hover .logo-image {
+  filter: brightness(1.1) contrast(1.1);
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+  .logo-container .logo-text {
+    margin-left: 6px !important;
+  }
+}
+
+/* Loading screen specific styling */
+.loading-logo .logo-container {
+  flex-direction: column;
+  margin-bottom: 1rem;
+}
+
+.loading-logo .logo-container .logo-text {
+  margin-left: 0 !important;
+  margin-top: 8px;
+}
+
+/* App header specific styling */
+.app-header .logo-container {
+  flex-direction: row;
+}
+
+.app-header .logo-container .logo-text {
+  margin-left: 12px;
+} 

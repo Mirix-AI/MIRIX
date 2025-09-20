@@ -1,0 +1,42 @@
+# Include the README and LICENSE
+include README.md
+include LICENSE
+
+# Include configuration files
+recursive-include configs *.yaml *.yml
+recursive-include mirix/configs *.yaml *.yml
+
+# Include prompt templates
+recursive-include mirix/prompts *.txt *.yaml *.yml
+
+# Include any schema files
+recursive-include mirix/schemas *.json *.yaml *.yml
+
+# Include assets for the package
+recursive-include assets *.png *.jpg *.jpeg *.gif *.ico
+
+# Exclude development and build files
+global-exclude *.pyc
+global-exclude *.pyo
+global-exclude *.pyd
+global-exclude __pycache__
+global-exclude .DS_Store
+global-exclude *.so
+global-exclude .git*
+
+# Exclude frontend and other non-Python directories
+prune frontend
+prune public_evaluations
+prune scripts
+prune mirix_env
+prune .git
+
+# Exclude test files
+prune tests
+global-exclude test_*.py
+global-exclude *_test.py
+
+# Exclude build artifacts
+prune build
+prune dist
+prune *.egg-info

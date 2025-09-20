@@ -1,0 +1,105 @@
+.App {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background-color: #ffffff;
+  overflow: hidden;
+  word-break: break-word;
+  overflow-wrap: break-word;
+}
+
+.app-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 24px;
+  background-color: #f8f9fa;
+  border-bottom: 1px solid #e9ecef;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  flex-shrink: 0;
+  min-width: 0; /* Allow flex item to shrink */
+}
+
+.app-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0; /* Allow flex item to shrink */
+  flex-shrink: 1;
+}
+
+.app-title h1 {
+  font-size: 24px;
+  font-weight: 600;
+  color: #2c3e50;
+  margin: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.app-title .logo-container {
+  flex-direction: row;
+  flex-shrink: 0;
+}
+
+.version {
+  font-size: 12px;
+  color: #6c757d;
+  background-color: #e9ecef;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-weight: 500;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.tabs {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.tab {
+  padding: 8px 16px;
+  border: none;
+  border-radius: 6px;
+  background-color: transparent;
+  color: #6c757d;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.tab:hover {
+  background-color: #e9ecef;
+  color: #495057;
+}
+
+.tab.active {
+  background-color: #007acc;
+  color: white;
+}
+
+.tab.active:hover {
+  background-color: #0056b3;
+}
+
+.app-content {
+  flex: 1;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background-color: #ffffff;
+  word-break: break-word;
+  overflow-wrap: break-word;
+}
+
+/* Remove old tab-content styles - we now use conditional rendering */ 

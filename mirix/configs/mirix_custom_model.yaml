@@ -1,0 +1,9 @@
+agent_name: mirix
+model_name: qwen3-32b
+model_endpoint: http://localhost:47283/v1
+model_provider: local_server
+api_key: EMPTY
+generation_config:
+  temperature: 0.6
+  max_tokens: 4096
+  context_window: 32768

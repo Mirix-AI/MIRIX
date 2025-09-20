@@ -1,0 +1,164 @@
+[build-system]
+requires = ["setuptools>=45", "wheel", "setuptools_scm[toml]>=6.2"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mirix"
+version = "0.1.3"
+description = "Multi-Agent Personal Assistant with an Advanced Memory System"
+readme = "README.md"
+license = {text = "Apache License 2.0"}
+authors = [
+    {name = "Mirix AI", email = "yuwang@mirix.io"}
+]
+maintainers = [
+    {name = "Mirix AI", email = "yuwang@mirix.io"}
+]
+keywords = ["ai", "memory", "agent", "llm", "assistant", "chatbot", "multimodal"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Communications :: Chat",
+]
+requires-python = ">=3.8"
+dependencies = [
+    "pytz",
+    "numpy",
+    "pandas",
+    "openpyxl",
+    "Markdown",
+    "Pillow>=10.2.0,<11.0.0",  # Compatible with composio-core
+    "scikit-image",
+    "openai==1.72.0",
+    "tiktoken",
+    "google-genai",
+    "python-dotenv",
+    "demjson3",
+    "pathvalidate",
+    "docstring_parser",
+    "sqlalchemy",
+    "pydantic-settings",
+    "jinja2",
+    "humps",
+    "composio",
+    "colorama",
+    "anthropic",
+    "httpx_sse",
+    "rapidfuzz",
+    "rank-bm25",
+    "psutil",
+    "llama_index",
+    "llama-index-embeddings-google-genai",
+    "fastapi>=0.104.1",
+    "uvicorn[standard]>=0.31.1",  # Compatible with mcp
+    "pydub",
+    "python-multipart",
+    "opentelemetry-api",
+    "opentelemetry-sdk",
+    "opentelemetry-exporter-otlp",
+    "opentelemetry-instrumentation-requests",
+    "SpeechRecognition",
+    "pg8000",
+    "pgvector",
+    "json_repair",
+    "rich>=13.7.1,<14.0.0",  # Compatible with composio-core
+    "psycopg2-binary",
+    "anyio>=4.7.0",  # Explicitly specify for mcp and sse-starlette compatibility
+    "mcp",  # MCP (Model Context Protocol) client
+    "google-auth",  # Google authentication library
+    "google-auth-oauthlib",  # Google OAuth library
+    "google-auth-httplib2",  # Google HTTP library
+    "google-api-python-client",  # Google API client library
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=6.0.0",
+    "pytest-asyncio",
+    "black",
+    "isort",
+    "flake8",
+]
+voice = [
+    "SpeechRecognition",
+    "pydub",
+]
+full = [
+    "SpeechRecognition",
+    "pydub",
+]
+
+[project.urls]
+Homepage = "https://mirix.io"
+Documentation = "https://docs.mirix.io"
+Repository = "https://github.com/Mirix-AI/MIRIX"
+Issues = "https://github.com/Mirix-AI/MIRIX/issues"
+
+[project.scripts]
+mirix = "mirix.__main__:main"
+
+[tool.setuptools.packages.find]
+exclude = ["tests*", "scripts*", "frontend*", "public_evaluations*", "mirix_env*"]
+
+[tool.setuptools.package-data]
+mirix = [
+    "*.yaml",
+    "*.yml", 
+    "*.txt",
+    "configs/*.yaml",
+    "configs/*.yml",
+    "prompts/**/*.txt",
+    "prompts/**/*.yaml",
+    "prompts/**/*.yml",
+]
+
+[tool.setuptools.exclude-package-data]
+"*" = ["tests*", "frontend*", "scripts*", "public_evaluations*"]
+
+[tool.black]
+line-length = 120
+target-version = ['py38']
+include = '\.pyi?$'
+extend-exclude = '''
+/(
+  # directories
+  \.eggs
+  | \.git
+  | \.hg
+  | \.mypy_cache
+  | \.tox
+  | \.venv
+  | _build
+  | buck-out
+  | build
+  | dist
+  | frontend
+)/
+'''
+
+[tool.isort]
+profile = "black"
+line_length = 120
+multi_line_output = 3
+include_trailing_comma = true
+force_grid_wrap = 0
+use_parentheses = true
+ensure_newline_before_comments = true
+skip_glob = ["frontend/**"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"

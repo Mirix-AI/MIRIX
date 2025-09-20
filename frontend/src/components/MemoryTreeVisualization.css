@@ -1,0 +1,335 @@
+.memory-tree-visualization {
+  height: 100vh;
+  width: 100%;
+  max-width: 100%;
+  background: #f8f9fa;
+  display: flex;
+  flex-direction: row;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+.graph-container {
+  flex: 1;
+  height: 100%;
+  min-width: 0; /* Allows flex item to shrink below its content size */
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+.graph-controls {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.refresh-button {
+  background: #3498db;
+  color: white;
+  border: none;
+  padding: 8px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 14px;
+  transition: background-color 0.2s;
+}
+
+.refresh-button:hover {
+  background: #2980b9;
+}
+
+.memory-tree-loading,
+.memory-tree-error {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  height: 400px;
+  font-size: 18px;
+  color: #7f8c8d;
+}
+
+.memory-tree-error {
+  color: #e74c3c;
+}
+
+/* React Flow node customizations */
+.react-flow__node.category-node {
+  background: #4ecdc4;
+  border: 2px solid #26d0ce;
+  border-radius: 20px;
+  color: white;
+  font-weight: 600;
+  transition: all 0.2s ease;
+}
+
+.react-flow__node.category-node[data-expandable="true"] {
+  cursor: pointer;
+  background: #52d0c8;
+  border-color: #1abc9c;
+}
+
+.react-flow__node.category-node[data-expandable="true"]:hover {
+  transform: scale(1.05);
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15);
+  background: #48c9af;
+}
+
+.react-flow__node.category-node[data-expanded="true"] {
+  background: #2ecc71;
+  border-color: #27ae60;
+}
+
+.react-flow__node.memory-item-node {
+  background: #45b7d1;
+  border: 2px solid #2980b9;
+  border-radius: 8px;
+  color: white;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.react-flow__node.memory-item-node:hover {
+  transform: scale(1.05);
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15);
+  transition: all 0.2s ease;
+}
+
+.react-flow__edge-path {
+  stroke: #95a5a6;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.react-flow__edge.selected .react-flow__edge-path {
+  stroke: #3498db;
+  stroke-width: 3;
+}
+
+.react-flow__edge-smoothstep {
+  stroke: #95a5a6;
+  stroke-width: 2;
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.react-flow__edge-smoothstep:hover {
+  stroke: #7f8c8d;
+  stroke-width: 3;
+}
+
+.react-flow__controls {
+  background: rgba(255, 255, 255, 0.9);
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.react-flow__minimap {
+  background: rgba(255, 255, 255, 0.9);
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+/* Details Sidebar Styles */
+.details-sidebar {
+  width: 350px;
+  max-width: 350px;
+  background: white;
+  border-left: 1px solid #e0e0e0;
+  box-shadow: -2px 0 8px rgba(0, 0, 0, 0.1);
+  flex-shrink: 0;
+  box-sizing: border-box;
+  overflow-y: scroll !important; /* Force scrollbar always visible */
+  /* height: 100vh; */
+  max-height: 100vh; /* Ensure it doesn't exceed viewport */
+  position: relative; /* For absolute positioned collapse button */
+}
+
+/* Webkit scrollbar styling */
+.memory-tree-visualization .details-sidebar::-webkit-scrollbar {
+  width: 8px;
+}
+
+.memory-tree-visualization .details-sidebar::-webkit-scrollbar-track {
+  background: #f1f1f1;
+  border-radius: 4px;
+}
+
+.memory-tree-visualization .details-sidebar::-webkit-scrollbar-thumb {
+  background: #c1c1c1;
+  border-radius: 4px;
+}
+
+.memory-tree-visualization .details-sidebar::-webkit-scrollbar-thumb:hover {
+  background: #a8a8a8;
+}
+
+/* Firefox scrollbar styling */
+.memory-tree-visualization .details-sidebar {
+  scrollbar-width: thin;
+  scrollbar-color: #c1c1c1 #f1f1f1;
+}
+
+.node-details-panel {
+  padding: 15px; /* Normal padding since button is now at bottom */
+  box-sizing: border-box;
+  min-height: 100%;
+}
+
+.node-details-panel h3 {
+  color: #2c3e50;
+  margin-bottom: 15px;
+  font-size: 18px;
+  font-weight: 600;
+  border-bottom: 2px solid #3498db;
+  padding-bottom: 8px;
+}
+
+.node-details-panel h4 {
+  color: #34495e;
+  margin: 15px 0 8px 0;
+  font-size: 14px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.node-details-panel p {
+  color: #555;
+  line-height: 1.5;
+  margin-bottom: 8px;
+}
+
+.memory-item-details {
+  margin-top: 20px;
+}
+
+.detail-section {
+  margin-bottom: 20px;
+  padding: 15px;
+  background: #f8f9fa;
+  border-radius: 8px;
+  border-left: 4px solid #3498db;
+}
+
+.detail-section h4 {
+  margin-top: 0;
+  color: #2980b9;
+}
+
+.detail-section p {
+  margin-bottom: 0;
+  word-wrap: break-word;
+}
+
+.detail-section ol {
+  margin: 8px 0 0 20px;
+  color: #555;
+}
+
+.detail-section li {
+  margin-bottom: 5px;
+  line-height: 1.4;
+}
+
+.graph-stats {
+  background: #ecf0f1;
+  padding: 15px;
+  border-radius: 8px;
+  margin-top: 15px;
+}
+
+.graph-stats p {
+  margin-bottom: 8px;
+  color: #2c3e50;
+}
+
+.graph-stats strong {
+  color: #2980b9;
+}
+
+/* Sidebar close button */
+.sidebar-close-button {
+  width: 100%;
+  background: #007acc;
+  color: white;
+  border: none;
+  padding: 10px 16px;
+  margin: 15px;
+  margin-top: 20px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  width: calc(100% - 30px);
+}
+
+.sidebar-close-button:hover {
+  background: #0056b3;
+  transform: translateY(-1px);
+  box-shadow: 0 2px 4px rgba(0, 122, 204, 0.3);
+}
+
+.sidebar-close-button:active {
+  transform: translateY(0);
+  box-shadow: 0 1px 2px rgba(0, 122, 204, 0.3);
+}
+
+.node-type-badge {
+  display: inline-block;
+  padding: 4px 8px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.node-type-badge.category {
+  background: #4ecdc4;
+  color: white;
+}
+
+.node-type-badge.memory-item {
+  background: #45b7d1;
+  color: white;
+}
+
+@media (max-width: 768px) {
+  .memory-tree-visualization {
+    height: 100vh;
+    flex-direction: column;
+  }
+  
+  .graph-container {
+    height: 60%;
+  }
+  
+  .details-sidebar {
+    width: 100%;
+    height: 40%;
+    border-left: none;
+    border-top: 1px solid #e0e0e0;
+    box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.1);
+  }
+  
+  .node-details-panel {
+    padding: 15px; /* Normal padding for mobile since button is now at bottom */
+  }
+  
+  .sidebar-close-button {
+    margin: 10px;
+    margin-top: 15px;
+    width: calc(100% - 20px);
+    padding: 8px 12px;
+    font-size: 13px;
+  }
+} 

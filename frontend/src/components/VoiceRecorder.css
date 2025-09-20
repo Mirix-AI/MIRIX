@@ -1,0 +1,245 @@
+.voice-recorder {
+  background: #f8f9fa;
+  border: 1px solid #e9ecef;
+  border-radius: 8px;
+  padding: 20px;
+  margin-bottom: 20px;
+}
+
+.recorder-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 15px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid #e9ecef;
+}
+
+.recorder-header h4 {
+  margin: 0;
+  color: #333;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.recorder-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.recording-indicator {
+  color: #dc3545;
+  font-weight: 600;
+  animation: pulse 1s infinite;
+}
+
+.idle-indicator {
+  color: #6c757d;
+  font-weight: 600;
+}
+
+@keyframes pulse {
+  0% { opacity: 1; }
+  50% { opacity: 0.5; }
+  100% { opacity: 1; }
+}
+
+.audio-visualizer {
+  background: #ffffff;
+  border: 1px solid #e9ecef;
+  border-radius: 6px;
+  padding: 15px;
+  margin-bottom: 15px;
+}
+
+.audio-level-container {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.audio-level-label {
+  font-weight: 600;
+  color: #333;
+  min-width: 80px;
+}
+
+.audio-level-bar {
+  flex: 1;
+  height: 20px;
+  background: #e9ecef;
+  border-radius: 10px;
+  overflow: hidden;
+  position: relative;
+}
+
+.audio-level-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #28a745 0%, #ffc107 50%, #dc3545 100%);
+  transition: width 0.1s ease-out;
+  border-radius: 10px;
+}
+
+.audio-level-text {
+  font-weight: 600;
+  color: #333;
+  min-width: 40px;
+  text-align: right;
+}
+
+.recorder-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 15px;
+  padding: 10px;
+  background: #ffffff;
+  border: 1px solid #e9ecef;
+  border-radius: 6px;
+}
+
+.stat-item {
+  display: flex;
+  align-items: center;
+  color: #333;
+  font-size: 14px;
+}
+
+.stat-item strong {
+  color: #007bff;
+}
+
+.recorder-error {
+  background: #f8d7da;
+  color: #721c24;
+  padding: 10px;
+  border-radius: 6px;
+  margin-bottom: 15px;
+  border: 1px solid #f5c6cb;
+}
+
+.recorder-info {
+  background: #d1ecf1;
+  border: 1px solid #b6d4db;
+  border-radius: 6px;
+  padding: 15px;
+}
+
+.info-item {
+  margin-bottom: 15px;
+}
+
+.info-item:last-child {
+  margin-bottom: 0;
+}
+
+.info-item strong {
+  color: #0c5460;
+  display: block;
+  margin-bottom: 8px;
+}
+
+.info-item ul {
+  margin: 0;
+  padding-left: 20px;
+  color: #0c5460;
+}
+
+.info-item li {
+  margin-bottom: 4px;
+  font-size: 14px;
+}
+
+.info-item code {
+  background: #ffffff;
+  padding: 2px 4px;
+  border-radius: 3px;
+  border: 1px solid #b6d4db;
+  font-size: 12px;
+}
+
+/* Responsive design */
+@media (max-width: 768px) {
+  .voice-recorder {
+    padding: 15px;
+  }
+  
+  .recorder-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+  }
+  
+  .audio-level-container {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 5px;
+  }
+  
+  .audio-level-label {
+    min-width: auto;
+  }
+  
+  .audio-level-bar {
+    width: 100%;
+  }
+  
+  .audio-level-text {
+    min-width: auto;
+    text-align: left;
+  }
+}
+
+/* Dark mode support */
+@media (prefers-color-scheme: dark) {
+  .voice-recorder {
+    background: #2d3748;
+    border-color: #4a5568;
+  }
+  
+  .recorder-header {
+    border-bottom-color: #4a5568;
+  }
+  
+  .recorder-header h4 {
+    color: #e2e8f0;
+  }
+  
+  .audio-visualizer,
+  .recorder-stats {
+    background: #4a5568;
+    border-color: #718096;
+  }
+  
+  .audio-level-label,
+  .audio-level-text,
+  .stat-item {
+    color: #e2e8f0;
+  }
+  
+  .stat-item strong {
+    color: #63b3ed;
+  }
+  
+  .audio-level-bar {
+    background: #718096;
+  }
+  
+  .recorder-info {
+    background: #2c5282;
+    border-color: #3182ce;
+  }
+  
+  .info-item strong,
+  .info-item,
+  .info-item li {
+    color: #bee3f8;
+  }
+  
+  .info-item code {
+    background: #4a5568;
+    border-color: #718096;
+    color: #e2e8f0;
+  }
+} 

@@ -1,0 +1,244 @@
+.chat-window {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background-color: #ffffff;
+}
+
+.chat-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 20px;
+  background-color: #f8f9fa;
+  border-bottom: 1px solid #e9ecef;
+}
+
+.chat-info {
+  display: flex;
+  gap: 16px;
+  font-size: 12px;
+  color: #6c757d;
+}
+
+.model-info, .persona-info {
+  padding: 4px 8px;
+  background-color: #e9ecef;
+  border-radius: 4px;
+}
+
+.chat-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.stop-button, .screenshot-button, .clear-button {
+  padding: 6px 12px;
+  border: none;
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.screenshot-toggle {
+  padding: 6px 12px;
+  border: none;
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-weight: 500;
+}
+
+.screenshot-toggle.enabled {
+  background-color: #28a745;
+  color: white;
+}
+
+.screenshot-toggle.enabled:hover {
+  background-color: #218838;
+}
+
+.screenshot-toggle.disabled {
+  background-color: #6c757d;
+  color: white;
+}
+
+.screenshot-toggle.disabled:hover {
+  background-color: #5a6268;
+}
+
+.stop-button {
+  background-color: #dc3545;
+  color: white;
+}
+
+.stop-button:hover {
+  background-color: #c82333;
+}
+
+.screenshot-button {
+  background-color: #28a745;
+  color: white;
+}
+
+.screenshot-button:hover:not(:disabled):not(.disabled) {
+  background-color: #218838;
+}
+
+.screenshot-button:disabled,
+.screenshot-button.disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  background-color: #6c757d;
+}
+
+.clear-button {
+  background-color: #6c757d;
+  color: white;
+}
+
+.clear-button:hover:not(:disabled) {
+  background-color: #5a6268;
+}
+
+.clear-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.messages-container {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.welcome-message {
+  text-align: center;
+  margin-top: 100px;
+  color: #6c757d;
+}
+
+.welcome-message h2 {
+  font-size: 24px;
+  margin-bottom: 8px;
+  color: #495057;
+}
+
+.welcome-message p {
+  font-size: 16px;
+  margin-bottom: 8px;
+}
+
+.welcome-message p:last-child {
+  margin-bottom: 0;
+}
+
+.welcome-message kbd {
+  background-color: #212529;
+  color: white;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-family: 'Courier New', monospace;
+  font-size: 12px;
+  box-shadow: 0 1px 1px rgba(0, 0, 0, 0.2);
+}
+
+/* Gmail Confirmation Modal Styles */
+.gmail-confirmation-modal {
+  max-width: 600px;
+  width: 90%;
+}
+
+.gmail-confirmation-modal .modal-header h3 {
+  color: #d73527;
+  margin: 0;
+  font-size: 20px;
+}
+
+.gmail-confirmation-modal .modal-body {
+  padding: 20px;
+}
+
+.email-details {
+  background-color: #f8f9fa;
+  padding: 16px;
+  border-radius: 8px;
+  border-left: 4px solid #d73527;
+  margin-top: 16px;
+}
+
+.email-field {
+  margin-bottom: 12px;
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.email-field:last-child {
+  margin-bottom: 0;
+}
+
+.email-field strong {
+  color: #495057;
+  min-width: 80px;
+  display: inline-block;
+}
+
+.email-body {
+  background-color: #ffffff;
+  padding: 12px;
+  border-radius: 4px;
+  border: 1px solid #dee2e6;
+  margin-top: 8px;
+  white-space: pre-wrap;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 13px;
+  line-height: 1.5;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.gmail-confirmation-modal .modal-actions {
+  padding: 16px 20px;
+  border-top: 1px solid #dee2e6;
+  display: flex;
+  gap: 12px;
+  justify-content: flex-end;
+}
+
+.gmail-confirmation-modal .action-button {
+  padding: 10px 20px;
+  border: none;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.cancel-button {
+  background-color: #6c757d;
+  color: white;
+}
+
+.cancel-button:hover {
+  background-color: #5a6268;
+}
+
+.confirm-button {
+  background-color: #d73527;
+  color: white;
+}
+
+.confirm-button:hover {
+  background-color: #b02a1b;
+}
+
+.confirm-button:active,
+.cancel-button:active {
+  transform: translateY(1px);
+}

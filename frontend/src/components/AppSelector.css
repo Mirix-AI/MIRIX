@@ -1,0 +1,333 @@
+.app-selector-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  animation: fadeIn 0.2s ease-out;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.app-selector-modal {
+  background-color: #2a2a2a;
+  border-radius: 12px;
+  width: 90%;
+  max-width: 900px;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+  animation: slideIn 0.3s ease-out;
+}
+
+@keyframes slideIn {
+  from {
+    transform: translateY(-20px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.app-selector-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 20px;
+  border-bottom: 1px solid #3a3a3a;
+}
+
+.app-selector-header h2 {
+  margin: 0;
+  color: #ffffff;
+  font-size: 20px;
+}
+
+.close-button {
+  background: none;
+  border: none;
+  color: #888;
+  font-size: 28px;
+  cursor: pointer;
+  padding: 0;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  transition: all 0.2s;
+}
+
+.close-button:hover {
+  background-color: #3a3a3a;
+  color: #fff;
+}
+
+.app-selector-error {
+  background-color: #4a1d1d;
+  color: #ff6b6b;
+  padding: 12px 20px;
+  margin: 0;
+  border-bottom: 1px solid #5a2d2d;
+}
+
+.app-selector-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 80px 20px;
+  color: #888;
+}
+
+.loading-note {
+  font-size: 12px;
+  color: #666;
+  margin-top: 8px;
+  font-style: italic;
+}
+
+.spinner {
+  width: 40px;
+  height: 40px;
+  border: 3px solid #3a3a3a;
+  border-top-color: #4CAF50;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+  margin-bottom: 16px;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.app-selector-filters {
+  display: flex;
+  gap: 8px;
+  padding: 16px 20px;
+  border-bottom: 1px solid #3a3a3a;
+}
+
+.filter-button {
+  background-color: #3a3a3a;
+  border: none;
+  color: #888;
+  padding: 8px 16px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  transition: all 0.2s;
+}
+
+.filter-button:hover {
+  background-color: #4a4a4a;
+  color: #fff;
+}
+
+.filter-button.active {
+  background-color: #4CAF50;
+  color: #fff;
+}
+
+.app-selector-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 20px;
+  padding: 24px;
+  overflow-y: auto;
+  flex: 1;
+  align-items: start;
+}
+
+.app-selector-item {
+  background-color: #3a3a3a;
+  border-radius: 12px;
+  overflow: hidden;
+  cursor: pointer;
+  transition: all 0.2s;
+  border: 2px solid transparent;
+  display: flex;
+  flex-direction: column;
+  height: 240px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+.app-selector-item:hover {
+  background-color: #4a4a4a;
+  transform: translateY(-3px);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.25);
+}
+
+.app-selector-item.selected {
+  border-color: #4CAF50;
+  background-color: #2d4a2d;
+  box-shadow: 0 8px 20px rgba(76, 175, 80, 0.3);
+}
+
+.app-thumbnail {
+  position: relative;
+  width: 100%;
+  height: 170px;
+  overflow: hidden;
+  background-color: #1a1a1a;
+  flex: 1;
+}
+
+.app-thumbnail img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.selected-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(76, 175, 80, 0.3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.checkmark {
+  width: 48px;
+  height: 48px;
+  background-color: #4CAF50;
+  color: white;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 24px;
+  font-weight: bold;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+.app-info {
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.app-icon {
+  width: 20px;
+  height: 20px;
+  object-fit: contain;
+  flex-shrink: 0; /* Don't shrink the icon */
+}
+
+.app-name {
+  color: #fff;
+  font-size: 14px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.app-type {
+  color: #888;
+  font-size: 12px;
+  text-transform: uppercase;
+  background-color: #2a2a2a;
+  padding: 2px 8px;
+  border-radius: 4px;
+  white-space: nowrap;
+  flex-shrink: 0; /* Don't shrink the type badge */
+}
+
+.app-badges {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.app-status {
+  color: #ffa500;
+  font-size: 12px;
+  text-transform: uppercase;
+  background-color: #3a2a1a;
+  padding: 2px 8px;
+  border-radius: 4px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.app-selector-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 20px;
+  border-top: 1px solid #3a3a3a;
+}
+
+.selection-info {
+  color: #888;
+  font-size: 14px;
+}
+
+.action-buttons {
+  display: flex;
+  gap: 12px;
+}
+
+.cancel-button,
+.confirm-button {
+  padding: 10px 24px;
+  border: none;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.cancel-button {
+  background-color: #3a3a3a;
+  color: #fff;
+}
+
+.cancel-button:hover {
+  background-color: #4a4a4a;
+}
+
+.confirm-button {
+  background-color: #4CAF50;
+  color: #fff;
+}
+
+.confirm-button:hover:not(:disabled) {
+  background-color: #45a049;
+}
+
+.confirm-button:disabled {
+  background-color: #3a3a3a;
+  color: #666;
+  cursor: not-allowed;
+}
