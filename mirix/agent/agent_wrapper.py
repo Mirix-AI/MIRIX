@@ -95,7 +95,17 @@ def get_image_mime_type(image_path):
 
 class AgentWrapper():
     
-    def __init__(self, agent_config_file, load_from=None):
+    def __init__(
+        self, 
+        agent_config_file, 
+        load_from=None,
+        user_id: Optional[str] = None,
+        org_id: Optional[str] = None,
+        debug: bool = False,
+        default_llm_config: Optional[LLMConfig] = None,
+        default_embedding_config: Optional[EmbeddingConfig] = None,
+    ):
+
 
         # If load_from is specified, restore the database first before any agent initialization
         if load_from is not None:
@@ -115,11 +125,13 @@ class AgentWrapper():
         self.logger = logging.getLogger(f"Mirix.AgentWrapper.{self.agent_name}")
         self.logger.setLevel(logging.INFO)
 
-        self.client = create_client()
-        self.client.set_default_llm_config(LLMConfig.default_config("gpt-4o-mini")) 
-        # self.client.set_default_embedding_config(EmbeddingConfig.default_config("text-embedding-3-small"))
-        self.client.set_default_embedding_config(EmbeddingConfig.default_config("text-embedding-004"))
-
+        self.client = create_client(
+            user_id=user_id,
+            org_id=org_id,
+            debug=debug,
+            default_llm_config=default_llm_config or LLMConfig.default_config("gpt-4o-mini"),
+            default_embedding_config=default_embedding_config or EmbeddingConfig.default_config("text-embedding-004"),
+        )
         # Initialize agent states container
         self.agent_states = AgentStates()
 

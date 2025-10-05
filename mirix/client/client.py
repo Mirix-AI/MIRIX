@@ -44,10 +44,20 @@ from mirix.interface import QueuingInterface
 from mirix.prompts import gpt_persona
 
 
-def create_client():
-    return LocalClient()
-
-
+def create_client(
+    user_id: Optional[str] = None,
+    org_id: Optional[str] = None,
+    debug: bool = False,
+    default_llm_config: Optional[LLMConfig] = None,
+    default_embedding_config: Optional[EmbeddingConfig] = None,
+):
+    return LocalClient(
+        user_id=user_id,
+        org_id=org_id,
+        debug=debug,
+        default_llm_config=default_llm_config,
+        default_embedding_config=default_embedding_config,
+    )
 class AbstractClient(object):
     def __init__(
         self,
