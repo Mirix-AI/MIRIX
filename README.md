@@ -226,6 +226,7 @@ We host weekly discussion sessions where you can:
 **🔗 Zoom Link:** [https://ucsd.zoom.us/j/96278791276](https://ucsd.zoom.us/j/96278791276)
 
 ### 📱 WeChat Group
+If the WeChat QR code expired, you can add the account `ari_asm` so that I can add you to the group chat.
 <div align="center">
 <img src="frontend/public/wechat-qr.jpg" alt="WeChat QR Code" width="200"/><br/>
 <strong>WeChat Group</strong>
