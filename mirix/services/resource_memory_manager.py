@@ -13,6 +13,7 @@ from mirix.log import get_logger
 from mirix.orm.errors import NoResultFound
 from mirix.orm.resource_memory import ResourceMemoryItem
 from mirix.schemas.agent import AgentState
+from mirix.schemas.client import Client as PydanticClient
 from mirix.schemas.resource_memory import (
     ResourceMemoryItem as PydanticResourceMemoryItem,
 )
@@ -245,7 +246,7 @@ class ResourceMemoryManager:
                     and_query_sql,
                     {
                         "tsquery": tsquery_string_and,
-                        "user_id": actor.id,
+                        "user_id": user.id,
                         "limit_val": limit or 50,
                     },
                 )
@@ -299,7 +300,7 @@ class ResourceMemoryManager:
                 or_query_sql,
                 {
                     "tsquery": tsquery_string_or,
-                    "user_id": actor.id,
+                    "user_id": user.id,
                     "limit_val": limit or 50,
                 },
             )
@@ -352,7 +353,7 @@ class ResourceMemoryManager:
     @update_timezone
     @enforce_types
     def get_item_by_id(
-        self, item_id: str, actor: PydanticUser, timezone_str: str
+        self, item_id: str, user: PydanticUser, timezone_str: str
     ) -> Optional[PydanticResourceMemoryItem]:
         """Fetch a resource memory item by ID (with Redis JSON caching)."""
         # Try Redis cache first
@@ -373,7 +374,7 @@ class ResourceMemoryManager:
         with self.session_maker() as session:
             try:
                 item = ResourceMemoryItem.read(
-                    db_session=session, identifier=item_id, actor=actor
+                    db_session=session, identifier=item_id, actor=user
                 )
                 pydantic_item = item.to_pydantic()
                 
@@ -396,7 +397,7 @@ class ResourceMemoryManager:
     @update_timezone
     @enforce_types
     def get_most_recently_updated_item(
-        self, actor: PydanticUser, timezone_str: str = None
+        self, user: PydanticUser, timezone_str: str = None
     ) -> Optional[PydanticResourceMemoryItem]:
         """
         Fetch the most recently updated resource memory item based on last_modify timestamp.
@@ -409,7 +410,7 @@ class ResourceMemoryManager:
 
             query = (
                 select(ResourceMemoryItem)
-                .where(ResourceMemoryItem.user_id == actor.id)
+                .where(ResourceMemoryItem.user_id == user.id)
                 .order_by(
                     cast(
                         text("resource_memory.last_modify ->> 'timestamp'"), DateTime
@@ -424,13 +425,20 @@ class ResourceMemoryManager:
 
     @enforce_types
     def create_item(
-        self, item_data: PydanticResourceMemoryItem, actor: PydanticUser, use_cache: bool = True
+        self, 
+        item_data: PydanticResourceMemoryItem, 
+        actor: PydanticClient,
+        client_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        use_cache: bool = True
     ) -> PydanticResourceMemoryItem:
         """Create a new resource memory item.
         
         Args:
             item_data: The resource memory data to create
-            actor: User performing the operation
+            actor: Client performing the operation (for audit trail)
+            client_id: Client application identifier (defaults to actor.id)
+            user_id: End-user identifier (optional)
             use_cache: If True, cache in Redis. If False, skip caching.
         """
 
@@ -452,9 +460,14 @@ class ResourceMemoryManager:
                     f"Required field '{field}' missing from resource memory data"
                 )
 
-
-        # Set user_id from actor for multi-user support
-        data_dict["user_id"] = actor.id
+        # Set client_id and user_id on the memory
+        data_dict["client_id"] = client_id
+        data_dict["user_id"] = user_id
+        
+        logger.debug(
+            "create_item: client_id=%s, user_id=%s", 
+            client_id, user_id
+        )
 
         with self.session_maker() as session:
             item = ResourceMemoryItem(**data_dict)
@@ -463,36 +476,36 @@ class ResourceMemoryManager:
 
     @enforce_types
     def update_item(
-        self, item_update: ResourceMemoryItemUpdate, actor: PydanticUser
+        self, item_update: ResourceMemoryItemUpdate, user: PydanticUser
     ) -> PydanticResourceMemoryItem:
         """Update an existing resource memory item."""
         with self.session_maker() as session:
             item = ResourceMemoryItem.read(
-                db_session=session, identifier=item_update.id, actor=actor
+                db_session=session, identifier=item_update.id, actor=user
             )
             update_data = item_update.model_dump(exclude_unset=True)
             for k, v in update_data.items():
                 if k not in ["id", "updated_at"]:  # Exclude updated_at - handled by update() method
                     setattr(item, k, v)
             # updated_at is automatically set to current UTC time by item.update()
-            item.update_with_redis(session, actor=actor)  # ⭐ Updates Redis JSON cache
+            item.update_with_redis(session, actor=user)  # ⭐ Updates Redis JSON cache
             return item.to_pydantic()
 
     @enforce_types
     def create_many_items(
         self,
         items: List[PydanticResourceMemoryItem],
-        actor: PydanticUser,
+        user: PydanticUser,
         limit: Optional[int] = 50,
     ) -> List[PydanticResourceMemoryItem]:
         """Create multiple resource memory items."""
-        return [self.create_item(i, actor) for i in items]
+        return [self.create_item(i, user) for i in items]
 
-    def get_total_number_of_items(self, actor: PydanticUser) -> int:
+    def get_total_number_of_items(self, user: PydanticUser) -> int:
         """Get the total number of items in the resource memory for the user."""
         with self.session_maker() as session:
             query = select(func.count(ResourceMemoryItem.id)).where(
-                ResourceMemoryItem.user_id == actor.id
+                ResourceMemoryItem.user_id == user.id
             )
             result = session.execute(query)
             return result.scalar_one()
@@ -502,7 +515,7 @@ class ResourceMemoryManager:
     def list_resources(
         self,
         agent_state: AgentState,
-        actor: PydanticUser,
+        user: PydanticUser,
         query: str = "",
         embedded_text: Optional[List[float]] = None,
         search_field: str = "content",
@@ -559,7 +572,7 @@ class ResourceMemoryManager:
                     results = redis_client.search_recent(
                         index_name=redis_client.RESOURCE_INDEX,
                         limit=limit or 50,
-                        user_id=actor.id,
+                        user_id=user.id,
                         filter_tags=filter_tags
                     )
                     if results:
@@ -582,7 +595,7 @@ class ResourceMemoryManager:
                         embedding=embedded_text,
                         vector_field="summary_embedding",
                         limit=limit or 50,
-                        user_id=actor.id,
+                        user_id=user.id,
                         filter_tags=filter_tags
                     )
                     if results:
@@ -599,7 +612,7 @@ class ResourceMemoryManager:
                         query=query,
                         search_fields=fields,
                         limit=limit or 50,
-                        user_id=actor.id,
+                        user_id=user.id,
                         filter_tags=filter_tags
                     )
                     if results:
@@ -624,7 +637,7 @@ class ResourceMemoryManager:
 
                 query_stmt = (
                     select(ResourceMemoryItem)
-                    .where(ResourceMemoryItem.user_id == actor.id)
+                    .where(ResourceMemoryItem.user_id == user.id)
                     .order_by(
                         cast(
                             text("resource_memory.last_modify ->> 'timestamp'"),
@@ -657,7 +670,7 @@ class ResourceMemoryManager:
                 ResourceMemoryItem.last_modify.label("last_modify"),
                 ResourceMemoryItem.user_id.label("user_id"),
                 ResourceMemoryItem.agent_id.label("agent_id"),
-            ).where(ResourceMemoryItem.user_id == actor.id)
+            ).where(ResourceMemoryItem.user_id == user.id)
             
             # Apply filter_tags if provided
             if filter_tags:
@@ -699,7 +712,7 @@ class ResourceMemoryManager:
                     # Load all candidate items (memory-intensive, kept for compatibility)
                     result = session.execute(
                         select(ResourceMemoryItem).where(
-                            ResourceMemoryItem.user_id == actor.id
+                            ResourceMemoryItem.user_id == user.id
                         )
                     )
                     all_items = result.scalars().all()
@@ -774,7 +787,7 @@ class ResourceMemoryManager:
     @enforce_types
     def insert_resource(
         self,
-        actor: PydanticUser,
+        actor: PydanticClient,
         agent_state: AgentState,
         agent_id: str,
         title: str,
@@ -784,6 +797,7 @@ class ResourceMemoryManager:
         organization_id: str,
         filter_tags: Optional[dict] = None,
         use_cache: bool = True,
+        user_id: Optional[str] = None,
     ) -> PydanticResourceMemoryItem:
         """Create a new resource memory item."""
         try:
@@ -796,9 +810,16 @@ class ResourceMemoryManager:
                 summary_embedding = None
                 embedding_config = None
 
+            # Set client_id from actor, user_id with fallback to DEFAULT_USER_ID
+            from mirix.services.user_manager import UserManager
+            
+            client_id = actor.id  # Always derive from actor
+            if user_id is None:
+                user_id = UserManager.DEFAULT_USER_ID
+
             resource = self.create_item(
                 item_data=PydanticResourceMemoryItem(
-                    user_id=actor.id,
+                    user_id=user_id,
                     agent_id=agent_id,
                     title=title,
                     summary=summary,
@@ -810,6 +831,8 @@ class ResourceMemoryManager:
                     filter_tags=filter_tags,
                 ),
                 actor=actor,
+                client_id=client_id,
+                user_id=user_id,
                 use_cache=use_cache,
             )
             return resource
@@ -818,7 +841,7 @@ class ResourceMemoryManager:
             raise e
 
     @enforce_types
-    def delete_resource_by_id(self, resource_id: str, actor: PydanticUser) -> None:
+    def delete_resource_by_id(self, resource_id: str, actor: PydanticClient) -> None:
         """Delete a resource memory item by ID (removes from Redis cache)."""
         with self.session_maker() as session:
             try:

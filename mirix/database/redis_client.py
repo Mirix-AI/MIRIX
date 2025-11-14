@@ -55,6 +55,7 @@ class RedisMemoryClient:
     KNOWLEDGE_PREFIX = "knowledge:"
     ORGANIZATION_PREFIX = "org:"
     USER_PREFIX = "user:"
+    CLIENT_PREFIX = "client:"
     AGENT_PREFIX = "agent:"
     TOOL_PREFIX = "tool:"
     

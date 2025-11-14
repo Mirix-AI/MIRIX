@@ -1,7 +1,7 @@
 import logging
 from typing import List, Optional
 
-from mirix.schemas.user import User
+from mirix.schemas.client import Client
 from mirix.schemas.message import MessageCreate
 from mirix.schemas.message import MessageCreate as PydanticMessageCreate
 from mirix.schemas.enums import MessageRole
@@ -15,7 +15,7 @@ import mirix.queue as queue
 logger = logging.getLogger(__name__)
 
 def put_messages(
-        actor: User,
+        actor: Client,
         agent_id: str,
         input_messages: List[MessageCreate],
         chaining: Optional[bool] = True,
@@ -28,24 +28,32 @@ def put_messages(
         Create QueueMessage protobuf and send to queue.
         
         Args:
-            actor: The user/actor sending the message
+            actor: The Client performing the action (for auth/write operations)
+                   Client ID is derived from actor.id
             agent_id: ID of the agent to send message to
             input_messages: List of messages to send
             chaining: Enable/disable chaining
-            user_id: Optional user ID
+            user_id: Optional user ID (end-user ID)
             verbose: Enable verbose logging
             filter_tags: Filter tags dictionary
             use_cache: Control Redis cache behavior
         """
-        logger.debug("Creating queue message for agent_id=%s, user=%s", agent_id, actor.id)
+        logger.debug("Creating queue message for agent_id=%s, actor=%s (client_id derived from actor)", agent_id, actor.id)
         
-        # Convert Pydantic User to protobuf User
+        if not actor or not actor.id:
+            raise ValueError(
+                f"Cannot queue message: actor is None or has no ID. "
+                f"actor={actor}, actor.id={actor.id if actor else 'N/A'}"
+            )
+        
+        # Convert Pydantic Client to protobuf User (protobuf schema still uses "User")
         proto_user = ProtoUser()
         proto_user.id = actor.id
         proto_user.organization_id = actor.organization_id or ""
         proto_user.name = actor.name
         proto_user.status = actor.status
-        proto_user.timezone = actor.timezone
+        # Client doesn't have timezone - use default "UTC"
+        proto_user.timezone = getattr(actor, 'timezone', 'UTC')
         if actor.created_at:
             proto_user.created_at.FromDatetime(actor.created_at)
         if actor.updated_at:
@@ -93,6 +101,7 @@ def put_messages(
         queue_msg = QueueMessage()
         
         queue_msg.actor.CopyFrom(proto_user)
+            
         queue_msg.agent_id = agent_id
         queue_msg.input_messages.extend(proto_input_messages)
         

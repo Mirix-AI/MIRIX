@@ -12,6 +12,7 @@ from mirix.embeddings import embedding_model
 from mirix.orm.errors import NoResultFound
 from mirix.orm.procedural_memory import ProceduralMemoryItem
 from mirix.schemas.agent import AgentState
+from mirix.schemas.client import Client as PydanticClient
 from mirix.schemas.procedural_memory import (
     ProceduralMemoryItem as PydanticProceduralMemoryItem,
 )
@@ -189,7 +190,7 @@ class ProceduralMemoryManager:
         return word_matches
 
     def _postgresql_fulltext_search(
-        self, session, base_query, query_text, search_field, limit, actor
+        self, session, base_query, query_text, search_field, limit, user
     ):
         """
         Efficient PostgreSQL-native full-text search using ts_rank_cd for BM25-like functionality.
@@ -289,7 +290,7 @@ class ProceduralMemoryManager:
                     and_query_sql,
                     {
                         "tsquery": tsquery_string_and,
-                        "user_id": actor.id,
+                        "user_id": user.id,
                         "limit_val": limit or 50,
                     },
                 )
@@ -344,7 +345,7 @@ class ProceduralMemoryManager:
                 or_query_sql,
                 {
                     "tsquery": tsquery_string_or,
-                    "user_id": actor.id,
+                    "user_id": user.id,
                     "limit_val": limit or 50,
                 },
             )
@@ -397,7 +398,7 @@ class ProceduralMemoryManager:
     @update_timezone
     @enforce_types
     def get_item_by_id(
-        self, item_id: str, actor: PydanticUser, timezone_str: str
+        self, item_id: str, user: PydanticUser, timezone_str: str
     ) -> Optional[PydanticProceduralMemoryItem]:
         """Fetch a procedural memory item by ID (with Redis JSON caching)."""
         # Try Redis cache first
@@ -418,7 +419,7 @@ class ProceduralMemoryManager:
         with self.session_maker() as session:
             try:
                 item = ProceduralMemoryItem.read(
-                    db_session=session, identifier=item_id, actor=actor
+                    db_session=session, identifier=item_id, actor=user
                 )
                 pydantic_item = item.to_pydantic()
                 
@@ -441,7 +442,7 @@ class ProceduralMemoryManager:
     @update_timezone
     @enforce_types
     def get_most_recently_updated_item(
-        self, actor: PydanticUser, timezone_str: str = None
+        self, user: PydanticUser, timezone_str: str = None
     ) -> Optional[PydanticProceduralMemoryItem]:
         """
         Fetch the most recently updated procedural memory item based on last_modify timestamp.
@@ -459,7 +460,7 @@ class ProceduralMemoryManager:
             )
 
             # Filter by user_id for multi-user support
-            query = query.where(ProceduralMemoryItem.user_id == actor.id)
+            query = query.where(ProceduralMemoryItem.user_id == user.id)
 
             result = session.execute(query.limit(1))
             item = result.scalar_one_or_none()
@@ -468,15 +469,26 @@ class ProceduralMemoryManager:
 
     @enforce_types
     def create_item(
-        self, item_data: PydanticProceduralMemoryItem, actor: PydanticUser, use_cache: bool = True
+        self, 
+        item_data: PydanticProceduralMemoryItem, 
+        actor: PydanticClient,
+        client_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        use_cache: bool = True
     ) -> PydanticProceduralMemoryItem:
         """Create a new procedural memory item.
         
         Args:
             item_data: The procedural memory data to create
-            actor: User performing the operation
+            actor: Client performing the operation (for audit trail)
+            client_id: Client application identifier (defaults to actor.id)
+            user_id: End-user identifier (optional)
             use_cache: If True, cache in Redis. If False, skip caching.
         """
+        
+        # Backward compatibility
+        if client_id is None:
+            client_id = actor.id
 
         # Ensure ID is set before model_dump
         if not item_data.id:
@@ -496,8 +508,14 @@ class ProceduralMemoryManager:
                     f"Required field '{field}' missing from procedural memory data"
                 )
 
-        # Set user_id from actor for multi-user support
-        data_dict["user_id"] = actor.id
+        # Set client_id and user_id on the memory
+        data_dict["client_id"] = client_id
+        data_dict["user_id"] = user_id
+        
+        logger.debug(
+            "create_item: client_id=%s, user_id=%s", 
+            client_id, user_id
+        )
 
         with self.session_maker() as session:
             item = ProceduralMemoryItem(**data_dict)
@@ -506,33 +524,35 @@ class ProceduralMemoryManager:
 
     @enforce_types
     def update_item(
-        self, item_update: ProceduralMemoryItemUpdate, actor: PydanticUser
+        self, item_update: ProceduralMemoryItemUpdate, user: PydanticUser
     ) -> PydanticProceduralMemoryItem:
         """Update an existing procedural memory item."""
         with self.session_maker() as session:
             item = ProceduralMemoryItem.read(
-                db_session=session, identifier=item_update.id, actor=actor
+                db_session=session, identifier=item_update.id, actor=user
             )
             update_data = item_update.model_dump(exclude_unset=True)
             for k, v in update_data.items():
                 if k not in ["id", "updated_at"]:  # Exclude updated_at - handled by update() method
                     setattr(item, k, v)
             # updated_at is automatically set to current UTC time by item.update()
-            item.update_with_redis(session, actor=actor)  # ⭐ Updates Redis JSON cache
+            item.update_with_redis(session, actor=user)  # ⭐ Updates Redis JSON cache
             return item.to_pydantic()
 
     @enforce_types
     def create_many_items(
-        self, items: List[PydanticProceduralMemoryItem], actor: PydanticUser
+        self, 
+        items: List[PydanticProceduralMemoryItem], 
+        user: PydanticUser,
     ) -> List[PydanticProceduralMemoryItem]:
         """Create multiple procedural memory items."""
-        return [self.create_item(i, actor) for i in items]
+        return [self.create_item(i, user) for i in items]
 
-    def get_total_number_of_items(self, actor: PydanticUser) -> int:
+    def get_total_number_of_items(self, user: PydanticUser) -> int:
         """Get the total number of items in the procedural memory for the user."""
         with self.session_maker() as session:
             query = select(func.count(ProceduralMemoryItem.id)).where(
-                ProceduralMemoryItem.user_id == actor.id
+                ProceduralMemoryItem.user_id == user.id
             )
             result = session.execute(query)
             return result.scalar_one()
@@ -542,7 +562,7 @@ class ProceduralMemoryManager:
     def list_procedures(
         self,
         agent_state: AgentState,
-        actor: PydanticUser,
+        user: PydanticUser,
         query: str = "",
         embedded_text: Optional[List[float]] = None,
         search_field: str = "",
@@ -600,7 +620,7 @@ class ProceduralMemoryManager:
                     results = redis_client.search_recent(
                         index_name=redis_client.PROCEDURAL_INDEX,
                         limit=limit or 50,
-                        user_id=actor.id,
+                        user_id=user.id,
                         filter_tags=filter_tags
                     )
                     logger.debug("🔍 Redis search_recent returned %d results", len(results) if results else 0)
@@ -626,7 +646,7 @@ class ProceduralMemoryManager:
                         embedding=embedded_text,
                         vector_field=vector_field,
                         limit=limit or 50,
-                        user_id=actor.id,
+                        user_id=user.id,
                         filter_tags=filter_tags
                     )
                     if results:
@@ -643,7 +663,7 @@ class ProceduralMemoryManager:
                         query=query,
                         search_fields=fields,
                         limit=limit or 50,
-                        user_id=actor.id,
+                        user_id=user.id,
                         filter_tags=filter_tags
                     )
                     if results:
@@ -665,7 +685,7 @@ class ProceduralMemoryManager:
             if query == "":
                 query_stmt = (
                     select(ProceduralMemoryItem)
-                    .where(ProceduralMemoryItem.user_id == actor.id)
+                    .where(ProceduralMemoryItem.user_id == user.id)
                     .order_by(ProceduralMemoryItem.created_at.desc())
                 )
                 
@@ -694,7 +714,7 @@ class ProceduralMemoryManager:
                     ProceduralMemoryItem.last_modify.label("last_modify"),
                     ProceduralMemoryItem.user_id.label("user_id"),
                     ProceduralMemoryItem.agent_id.label("agent_id"),
-                ).where(ProceduralMemoryItem.user_id == actor.id)
+                ).where(ProceduralMemoryItem.user_id == user.id)
                 
                 # Apply filter_tags if provided
                 if filter_tags:
@@ -741,14 +761,14 @@ class ProceduralMemoryManager:
                     if settings.mirix_pg_uri_no_default:
                         # Use PostgreSQL native full-text search
                         return self._postgresql_fulltext_search(
-                            session, base_query, query, search_field, limit, actor
+                            session, base_query, query, search_field, limit, user
                         )
                     else:
                         # Fallback to in-memory BM25 for SQLite (legacy method)
                         # Load all candidate items (memory-intensive, kept for compatibility)
                         result = session.execute(
                             select(ProceduralMemoryItem).where(
-                                ProceduralMemoryItem.user_id == actor.id
+                                ProceduralMemoryItem.user_id == user.id
                             )
                         )
                         all_items = result.scalars().all()
@@ -824,7 +844,7 @@ class ProceduralMemoryManager:
                     # For fuzzy matching, load all candidate items into memory.
                     result = session.execute(
                         select(ProceduralMemoryItem).where(
-                            ProceduralMemoryItem.user_id == actor.id
+                            ProceduralMemoryItem.user_id == user.id
                         )
                     )
                     all_items = result.scalars().all()
@@ -868,10 +888,11 @@ class ProceduralMemoryManager:
         entry_type: str,
         summary: Optional[str],
         steps: List[str],
-        actor: PydanticUser,
+        actor: PydanticClient,
         organization_id: str,
         filter_tags: Optional[dict] = None,
         use_cache: bool = True,
+        user_id: Optional[str] = None,
     ) -> PydanticProceduralMemoryItem:
         try:
             # Conditionally calculate embeddings based on BUILD_EMBEDDINGS_FOR_MEMORY flag
@@ -886,12 +907,19 @@ class ProceduralMemoryManager:
                 steps_embedding = None
                 embedding_config = None
 
+            # Set client_id from actor, user_id with fallback to DEFAULT_USER_ID
+            from mirix.services.user_manager import UserManager
+            
+            client_id = actor.id  # Always derive from actor
+            if user_id is None:
+                user_id = UserManager.DEFAULT_USER_ID  # Use DEFAULT_USER_ID instead of actor.id
+
             procedure = self.create_item(
                 item_data=PydanticProceduralMemoryItem(
                     entry_type=entry_type,
                     summary=summary,
                     steps=steps,
-                    user_id=actor.id,
+                    user_id=user_id,
                     agent_id=agent_id,
                     organization_id=organization_id,
                     summary_embedding=summary_embedding,
@@ -900,6 +928,8 @@ class ProceduralMemoryManager:
                     filter_tags=filter_tags,
                 ),
                 actor=actor,
+                client_id=client_id,
+                user_id=user_id,
                 use_cache=use_cache,
             )
             return procedure
@@ -907,7 +937,7 @@ class ProceduralMemoryManager:
         except Exception as e:
             raise e
 
-    def delete_procedure_by_id(self, procedure_id: str, actor: PydanticUser) -> None:
+    def delete_procedure_by_id(self, procedure_id: str, actor: PydanticClient) -> None:
         """Delete a procedural memory item by ID (removes from Redis cache)."""
         with self.session_maker() as session:
             try:

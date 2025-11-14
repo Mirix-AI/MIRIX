@@ -35,7 +35,7 @@ from mirix.services.block_manager import BlockManager
 from mirix.schemas.message import Message as PydanticMessage
 from mirix.schemas.message import MessageCreate
 from mirix.schemas.tool_rule import ToolRule as PydanticToolRule
-from mirix.schemas.user import User as PydanticUser
+from mirix.schemas.client import Client as PydanticClient
 from mirix.services.helpers.agent_manager_helper import (
     _process_relationship,
     check_supports_structured_output,
@@ -44,6 +44,7 @@ from mirix.services.helpers.agent_manager_helper import (
     package_initial_message_sequence,
 )
 from mirix.services.message_manager import MessageManager
+from mirix.services.user_manager import UserManager
 from mirix.services.tool_manager import ToolManager
 from mirix.utils import enforce_types, get_utc_time
 from mirix.schemas.block import Block
@@ -100,7 +101,7 @@ class AgentManager:
     def create_agent(
         self,
         agent_create: CreateAgent,
-        actor: PydanticUser,
+        actor: PydanticClient,
     ) -> PydanticAgentState:
         system = derive_system_message(
             agent_type=agent_create.agent_type, system=agent_create.system
@@ -181,7 +182,8 @@ class AgentManager:
     def create_meta_agent(
         self,
         meta_agent_create: CreateMetaAgent,
-        actor: PydanticUser,
+        actor: PydanticClient,
+        user_id: Optional[str] = None,  # NEW: user_id for block creation
     ) -> Dict[str, PydanticAgentState]:
         """
         Create a meta agent by first creating a meta_memory_agent as the parent,
@@ -190,7 +192,8 @@ class AgentManager:
 
         Args:
             meta_agent_create: CreateMetaAgent schema with configuration for all sub-agents
-            actor: User performing the action
+            actor: Client performing the action (for audit trail)
+            user_id: Optional user_id for block creation (uses default user if not provided)
 
         Returns:
             Dict[str, PydanticAgentState]: Dictionary mapping agent names to their agent states,
@@ -199,7 +202,27 @@ class AgentManager:
 
         if not meta_agent_create.llm_config or not meta_agent_create.embedding_config:
             raise ValueError("llm_config and embedding_config are required")
+        
+        # Use default user_id if not provided (for system blocks)
+        # Initialize user from user_id
+        user = None
 
+        if user_id:
+            user_manager = UserManager()
+            try:
+                user = user_manager.get_user_by_id(user_id)
+            except Exception as e:
+                logger.warning(
+                    "Failed to load user with id=%s, falling back to default user: %s",
+                    user_id,
+                     e
+                )
+                user = user_manager.get_default_user()
+        else:
+            # If no user_id provided, use default user
+            user_manager = UserManager()
+            user = user_manager.get_default_user()            
+  
         # Ensure base tools are available in the database for this organization
         self.tool_manager.upsert_base_tools(actor=actor)
 
@@ -334,7 +357,8 @@ class AgentManager:
                             label=block['label']
                         ),
                         actor=actor,
-                        agent_id=agent_state.id  # ✅ Use child agent's ID, not parent's
+                        agent_id=agent_state.id,  # ✅ Use child agent's ID, not parent's
+                        user=user  # ✅ Pass user for block creation
                     )
                 logger.debug(
                     f"Created {len(memory_block_configs)} memory blocks for {agent_name} (agent_id: {agent_state.id})"
@@ -351,7 +375,7 @@ class AgentManager:
         self,
         meta_agent_id: str,
         meta_agent_update: UpdateMetaAgent,
-        actor: PydanticUser,
+        actor: PydanticClient,
     ) -> PydanticAgentState:
         """
         Update an existing meta agent and its sub-agents.
@@ -558,7 +582,7 @@ class AgentManager:
     def update_agent_tools_and_system_prompts(
         self,
         agent_id: str,
-        actor: PydanticUser,
+        actor: PydanticClient,
         system_prompt: Optional[str] = None,
     ):
         agent_state = self.get_agent_by_id(agent_id=agent_id, actor=actor)
@@ -664,7 +688,7 @@ class AgentManager:
     @enforce_types
     def _generate_initial_message_sequence(
         self,
-        actor: PydanticUser,
+        actor: PydanticClient,
         agent_state: PydanticAgentState,
         supplied_initial_message_sequence: Optional[List[MessageCreate]] = None,
     ) -> List[PydanticMessage]:
@@ -705,7 +729,7 @@ class AgentManager:
     @enforce_types
     def append_initial_message_sequence_to_in_context_messages(
         self,
-        actor: PydanticUser,
+        actor: PydanticClient,
         agent_state: PydanticAgentState,
         initial_message_sequence: Optional[List[MessageCreate]] = None,
     ) -> PydanticAgentState:
@@ -719,7 +743,7 @@ class AgentManager:
     @enforce_types
     def _create_agent(
         self,
-        actor: PydanticUser,
+        actor: PydanticClient,
         name: str,
         system: str,
         agent_type: AgentType,
@@ -759,7 +783,7 @@ class AgentManager:
 
     @enforce_types
     def update_agent(
-        self, agent_id: str, agent_update: UpdateAgent, actor: PydanticUser
+        self, agent_id: str, agent_update: UpdateAgent, actor: PydanticClient
     ) -> PydanticAgentState:
         agent_state = self._update_agent(
             agent_id=agent_id, agent_update=agent_update, actor=actor
@@ -775,7 +799,7 @@ class AgentManager:
 
     @enforce_types
     def update_llm_config(
-        self, agent_id: str, llm_config: LLMConfig, actor: PydanticUser
+        self, agent_id: str, llm_config: LLMConfig, actor: PydanticClient
     ) -> PydanticAgentState:
         return self.update_agent(
             agent_id=agent_id,
@@ -785,7 +809,7 @@ class AgentManager:
 
     @enforce_types
     def update_system_prompt(
-        self, agent_id: str, system_prompt: str, actor: PydanticUser
+        self, agent_id: str, system_prompt: str, actor: PydanticClient
     ) -> PydanticAgentState:
         agent_state = self.update_agent(
             agent_id=agent_id,
@@ -806,7 +830,7 @@ class AgentManager:
         self,
         agent_id: str,
         mcp_tools: List[str],
-        actor: PydanticUser,
+        actor: PydanticClient,
         tool_ids: List[str],
     ) -> PydanticAgentState:
         """Update the MCP tools connected to an agent."""
@@ -822,7 +846,7 @@ class AgentManager:
         agent_id: str,
         mcp_tool_name: str,
         tool_ids: List[str],
-        actor: PydanticUser,
+        actor: PydanticClient,
     ) -> PydanticAgentState:
         """Add a single MCP tool to an agent."""
         # First get the current agent state
@@ -843,7 +867,7 @@ class AgentManager:
 
     @enforce_types
     def _update_agent(
-        self, agent_id: str, agent_update: UpdateAgent, actor: PydanticUser
+        self, agent_id: str, agent_update: UpdateAgent, actor: PydanticClient
     ) -> PydanticAgentState:
         """
         Update an existing agent.
@@ -944,7 +968,7 @@ class AgentManager:
         self, 
         agent_states: List[PydanticAgentState], 
         session: Session,
-        actor: PydanticUser
+        actor: PydanticClient
     ) -> dict:
         """
         Reconstruct children for parent agents from Redis cache.
@@ -1101,7 +1125,7 @@ class AgentManager:
         self, 
         parent_ids: List[str], 
         session: Session,
-        actor: PydanticUser
+        actor: PydanticClient
     ) -> dict:
         """
         Fallback method to get children from PostgreSQL.
@@ -1133,7 +1157,7 @@ class AgentManager:
     def _get_children_from_redis(
         self, 
         parent_id: str, 
-        actor: PydanticUser
+        actor: PydanticClient
     ) -> Optional[List[PydanticAgentState]]:
         """
         Fetch children from Redis cache using parent's children_ids.
@@ -1230,7 +1254,7 @@ class AgentManager:
     @enforce_types
     def list_agents(
         self,
-        actor: PydanticUser,
+        actor: PydanticClient,
         match_all_tags: bool = False,
         cursor: Optional[str] = None,
         limit: Optional[int] = 50,
@@ -1289,7 +1313,7 @@ class AgentManager:
             return agent_states
 
     @enforce_types
-    def get_agent_by_id(self, agent_id: str, actor: PydanticUser) -> PydanticAgentState:
+    def get_agent_by_id(self, agent_id: str, actor: PydanticClient) -> PydanticAgentState:
         """Fetch an agent by its ID (with Redis Hash caching and tool retrieval pipeline)."""
         # Try Redis cache first
         try:
@@ -1468,7 +1492,7 @@ class AgentManager:
 
     @enforce_types
     def get_agent_by_name(
-        self, agent_name: str, actor: PydanticUser
+        self, agent_name: str, actor: PydanticClient
     ) -> PydanticAgentState:
         """Fetch an agent by its ID."""
         with self.session_maker() as session:
@@ -1476,7 +1500,7 @@ class AgentManager:
             return agent.to_pydantic()
 
     @enforce_types
-    def delete_agent(self, agent_id: str, actor: PydanticUser) -> None:
+    def delete_agent(self, agent_id: str, actor: PydanticClient) -> None:
         """
         Deletes an agent and its associated relationships.
         Ensures proper permission checks and cascades where applicable.
@@ -1528,7 +1552,7 @@ class AgentManager:
     # TODO: This can also be made more efficient, instead of getting, setting, we can do it all in one db session for one query.
     # @enforce_types
     # def get_in_context_messages(
-    #     self, agent_id: str, actor: PydanticUser
+    #     self, agent_id: str, actor: PydanticClient
     # ) -> List[PydanticMessage]:
     #     message_ids = self.get_agent_by_id(agent_id=agent_id, actor=actor).message_ids
     #     messages = self.message_manager.get_messages_by_ids(
@@ -1540,7 +1564,7 @@ class AgentManager:
     #     return messages
     @enforce_types
     def get_in_context_messages(
-        self, agent_state: PydanticAgentState, actor: PydanticUser
+        self, agent_state: PydanticAgentState, actor: PydanticClient
     ) -> List[PydanticMessage]:
         message_ids = agent_state.message_ids
         messages = self.message_manager.get_messages_by_ids(
@@ -1552,7 +1576,7 @@ class AgentManager:
         return messages
 
     @enforce_types
-    def get_system_message(self, agent_id: str, actor: PydanticUser) -> PydanticMessage:
+    def get_system_message(self, agent_id: str, actor: PydanticClient) -> PydanticMessage:
         message_ids = self.get_agent_by_id(agent_id=agent_id, actor=actor).message_ids
         return self.message_manager.get_message_by_id(
             message_id=message_ids[0], actor=actor
@@ -1560,7 +1584,7 @@ class AgentManager:
 
     @enforce_types
     def rebuild_system_prompt(
-        self, agent_id: str, system_prompt: str, actor: PydanticUser, force=False
+        self, agent_id: str, system_prompt: str, actor: PydanticClient, force=False
     ) -> PydanticAgentState:
         """Rebuld the system prompt, put the system_prompt at the first position in the list of messages."""
 
@@ -1581,7 +1605,7 @@ class AgentManager:
 
     @enforce_types
     def set_in_context_messages(
-        self, agent_id: str, message_ids: List[str], actor: PydanticUser
+        self, agent_id: str, message_ids: List[str], actor: PydanticClient
     ) -> PydanticAgentState:
         return self.update_agent(
             agent_id=agent_id,
@@ -1591,7 +1615,7 @@ class AgentManager:
 
     @enforce_types
     def trim_older_in_context_messages(
-        self, num: int, agent_id: str, actor: PydanticUser
+        self, num: int, agent_id: str, actor: PydanticClient
     ) -> PydanticAgentState:
         message_ids = self.get_agent_by_id(agent_id=agent_id, actor=actor).message_ids
         system_message_id = message_ids[0]
@@ -1630,7 +1654,7 @@ class AgentManager:
 
     @enforce_types
     def trim_all_in_context_messages_except_system(
-        self, agent_id: str, actor: PydanticUser
+        self, agent_id: str, actor: PydanticClient
     ) -> PydanticAgentState:
         message_ids = self.get_agent_by_id(agent_id=agent_id, actor=actor).message_ids
         system_message_id = message_ids[0]  # 0 is system message
@@ -1650,7 +1674,7 @@ class AgentManager:
 
     @enforce_types
     def prepend_to_in_context_messages(
-        self, messages: List[PydanticMessage], agent_id: str, actor: PydanticUser
+        self, messages: List[PydanticMessage], agent_id: str, actor: PydanticClient
     ) -> PydanticAgentState:
         message_ids = self.get_agent_by_id(agent_id=agent_id, actor=actor).message_ids
         new_messages = self.message_manager.create_many_messages(messages, actor=actor)
@@ -1661,7 +1685,7 @@ class AgentManager:
 
     @enforce_types
     def append_to_in_context_messages(
-        self, messages: List[PydanticMessage], agent_id: str, actor: PydanticUser
+        self, messages: List[PydanticMessage], agent_id: str, actor: PydanticClient
     ) -> PydanticAgentState:
         messages = self.message_manager.create_many_messages(messages, actor=actor)
         message_ids = (
@@ -1676,7 +1700,7 @@ class AgentManager:
     def reset_messages(
         self,
         agent_id: str,
-        actor: PydanticUser,
+        actor: PydanticClient,
         add_default_initial_messages: bool = False,
     ) -> PydanticAgentState:
         """
@@ -1728,7 +1752,7 @@ class AgentManager:
 
         if add_default_initial_messages:
             return self.append_initial_message_sequence_to_in_context_messages(
-                actor, agent_state
+                user, agent_state
             )
         else:
             # We still want to always have a system message
@@ -1752,7 +1776,7 @@ class AgentManager:
     # ======================================================================================================================
     @enforce_types
     def attach_tool(
-        self, agent_id: str, tool_id: str, actor: PydanticUser
+        self, agent_id: str, tool_id: str, actor: PydanticClient
     ) -> PydanticAgentState:
         """
         Attaches a tool to an agent.
@@ -1791,7 +1815,7 @@ class AgentManager:
 
     @enforce_types
     def detach_tool(
-        self, agent_id: str, tool_id: str, actor: PydanticUser
+        self, agent_id: str, tool_id: str, actor: PydanticClient
     ) -> PydanticAgentState:
         """
         Detaches a tool from an agent.

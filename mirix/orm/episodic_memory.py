@@ -43,6 +43,14 @@ class EpisodicEvent(SqlalchemyBase, OrganizationMixin, UserMixin):
         doc="ID of the agent this episodic event belongs to",
     )
 
+    # Foreign key to client (for access control and filtering)
+    client_id: Mapped[Optional[str]] = mapped_column(
+        String,
+        ForeignKey("clients.id", ondelete="CASCADE"),
+        nullable=True,
+        doc="ID of the client application that created this event",
+    )
+
     # When did this event occur? (You can store creation time or an explicit event time.)
     occurred_at: Mapped[datetime] = mapped_column(
         DateTime, doc="Timestamp when the event occurred or was recorded"

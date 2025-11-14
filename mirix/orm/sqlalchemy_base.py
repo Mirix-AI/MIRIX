@@ -1,11 +1,12 @@
 import random
 import time
 from datetime import datetime
-from enum import Enum
 from functools import wraps
 from typing import TYPE_CHECKING, List, Literal, Optional, Tuple, Union
 
 from sqlalchemy import String, and_, desc, func, or_, select
+
+from mirix.orm.enums import AccessType
 from sqlalchemy.exc import DBAPIError, IntegrityError, OperationalError, TimeoutError
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
@@ -24,8 +25,8 @@ if TYPE_CHECKING:
     from sqlalchemy import Select
     from sqlalchemy.orm import Session
 
+    from mirix.orm.client import Client
     from mirix.orm.user import User
-
 
 logger = get_logger(__name__)
 
@@ -192,11 +193,6 @@ def transaction_retry(
     return decorator
 
 
-class AccessType(str, Enum):
-    ORGANIZATION = "organization"
-    USER = "user"
-
-
 class SqlalchemyBase(CommonSqlalchemyMetaMixins, Base):
     __abstract__ = True
 
@@ -220,7 +216,7 @@ class SqlalchemyBase(CommonSqlalchemyMetaMixins, Base):
         ascending: bool = True,
         tags: Optional[List[str]] = None,
         match_all_tags: bool = False,
-        actor: Optional["User"] = None,
+        actor: Optional["Client"] = None,
         access: Optional[List[Literal["read", "write", "admin"]]] = ["read"],
         access_type: AccessType = AccessType.ORGANIZATION,
         join_model: Optional[Base] = None,
@@ -389,7 +385,8 @@ class SqlalchemyBase(CommonSqlalchemyMetaMixins, Base):
         cls,
         db_session: "Session",
         identifier: Optional[str] = None,
-        actor: Optional["User"] = None,
+        actor: Optional["Client"] = None,
+        user: Optional["User"] = None,
         access: Optional[List[Literal["read", "write", "admin"]]] = ["read"],
         access_type: AccessType = AccessType.ORGANIZATION,
         **kwargs,
@@ -425,7 +422,7 @@ class SqlalchemyBase(CommonSqlalchemyMetaMixins, Base):
             )
 
         if actor:
-            query = cls.apply_access_predicate(query, actor, access, access_type)
+            query = cls.apply_access_predicate(query, actor, access, access_type, user)
             query_conditions.append(f"access level in {access} for actor='{actor}'")
 
         if hasattr(cls, "is_deleted"):
@@ -445,7 +442,7 @@ class SqlalchemyBase(CommonSqlalchemyMetaMixins, Base):
     @handle_db_timeout
     @transaction_retry(max_retries=5, base_delay=0.1, max_delay=3.0)
     def create(
-        self, db_session: "Session", actor: Optional["User"] = None
+        self, db_session: "Session", actor: Optional["Client"] = None
     ) -> "SqlalchemyBase":
         logger.debug(
             f"Creating {self.__class__.__name__} with ID: {self.id} with actor={actor}"
@@ -476,7 +473,7 @@ class SqlalchemyBase(CommonSqlalchemyMetaMixins, Base):
     @handle_db_timeout
     @retry_db_operation(max_retries=3, base_delay=0.1, max_delay=2.0)
     def delete(
-        self, db_session: "Session", actor: Optional["User"] = None
+        self, db_session: "Session", actor: Optional["Client"] = None
     ) -> "SqlalchemyBase":
         logger.debug(
             f"Soft deleting {self.__class__.__name__} with ID: {self.id} with actor={actor}"
@@ -491,7 +488,7 @@ class SqlalchemyBase(CommonSqlalchemyMetaMixins, Base):
     @handle_db_timeout
     @retry_db_operation(max_retries=3, base_delay=0.1, max_delay=2.0)
     def hard_delete(
-        self, db_session: "Session", actor: Optional["User"] = None
+        self, db_session: "Session", actor: Optional["Client"] = None
     ) -> None:
         """Permanently removes the record from the database."""
         logger.debug(
@@ -518,7 +515,7 @@ class SqlalchemyBase(CommonSqlalchemyMetaMixins, Base):
     @handle_db_timeout
     @transaction_retry(max_retries=5, base_delay=0.1, max_delay=3.0)
     def update(
-        self, db_session: "Session", actor: Optional["User"] = None
+        self, db_session: "Session", actor: Optional["Client"] = None
     ) -> "SqlalchemyBase":
         logger.debug(
             f"Updating {self.__class__.__name__} with ID: {self.id} with actor={actor}"
@@ -548,7 +545,7 @@ class SqlalchemyBase(CommonSqlalchemyMetaMixins, Base):
         cls,
         *,
         db_session: "Session",
-        actor: Optional["User"] = None,
+        actor: Optional["Client"] = None,
         access: Optional[List[Literal["read", "write", "admin"]]] = ["read"],
         access_type: AccessType = AccessType.ORGANIZATION,
         **kwargs,
@@ -600,18 +597,21 @@ class SqlalchemyBase(CommonSqlalchemyMetaMixins, Base):
     def apply_access_predicate(
         cls,
         query: "Select",
-        actor: "User",
+        actor: "Client",
         access: List[Literal["read", "write", "admin"]],
         access_type: AccessType = AccessType.ORGANIZATION,
+        user: Optional["User"] = None,
     ) -> "Select":
         """applies a WHERE clause restricting results to the given actor and access level
         Args:
             query: The initial sqlalchemy select statement
             actor: The user acting on the query. **Note**: this is called 'actor' to identify the
                    person or system acting. Users can act on users, making naming very sticky otherwise.
+            user_id: The user id to restrict the query to.
             access:
                 what mode of access should the query restrict to? This will be used with granular permissions,
                 but because of how it will impact every query we want to be explicitly calling access ahead of time.
+            access_type: The type of access to restrict the query to.
         Returns:
             the sqlalchemy select statement restricted to the given access.
         """
@@ -622,10 +622,9 @@ class SqlalchemyBase(CommonSqlalchemyMetaMixins, Base):
                 raise ValueError(f"object {actor} has no organization accessor")
             return query.where(cls.organization_id == org_id, ~cls.is_deleted)
         elif access_type == AccessType.USER:
-            user_id = getattr(actor, "id", None)
-            if not user_id:
+            if not user:
                 raise ValueError(f"object {actor} has no user accessor")
-            return query.where(cls.user_id == user_id, ~cls.is_deleted)
+            return query.where(cls.user_id == user.id, ~cls.is_deleted)
         else:
             raise ValueError(f"unknown access_type: {access_type}")
 
@@ -696,7 +695,7 @@ class SqlalchemyBase(CommonSqlalchemyMetaMixins, Base):
     @handle_db_timeout
     @transaction_retry(max_retries=5, base_delay=0.1, max_delay=3.0)
     def create_with_redis(
-        self, db_session: "Session", actor: Optional["User"] = None, use_cache: bool = True
+        self, db_session: "Session", actor: Optional["Client"] = None, use_cache: bool = True
     ) -> "SqlalchemyBase":
         """
         Create record in PostgreSQL and optionally cache in Redis.
@@ -746,7 +745,7 @@ class SqlalchemyBase(CommonSqlalchemyMetaMixins, Base):
     @handle_db_timeout
     @transaction_retry(max_retries=5, base_delay=0.1, max_delay=3.0)
     def update_with_redis(
-        self, db_session: "Session", actor: Optional["User"] = None, use_cache: bool = True
+        self, db_session: "Session", actor: Optional["Client"] = None, use_cache: bool = True
     ) -> "SqlalchemyBase":
         """
         Update record in PostgreSQL and optionally update Redis cache.
@@ -790,7 +789,7 @@ class SqlalchemyBase(CommonSqlalchemyMetaMixins, Base):
     @handle_db_timeout
     @retry_db_operation(max_retries=3, base_delay=0.1, max_delay=2.0)
     def delete_with_redis(
-        self, db_session: "Session", actor: Optional["User"] = None, use_cache: bool = True
+        self, db_session: "Session", actor: Optional["Client"] = None, use_cache: bool = True
     ) -> "SqlalchemyBase":
         """
         Soft delete record in PostgreSQL and optionally remove from Redis cache.
@@ -819,7 +818,7 @@ class SqlalchemyBase(CommonSqlalchemyMetaMixins, Base):
         return self.update(db_session)
     
     def _update_redis_cache(
-        self, operation: str = "update", actor: Optional["User"] = None
+        self, operation: str = "update", actor: Optional["Client"] = None
     ) -> None:
         """
         Update Redis cache based on table type.

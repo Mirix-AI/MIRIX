@@ -169,6 +169,7 @@ class Settings(BaseSettings):
     redis_ttl_messages: int = Field(7200, env="MIRIX_REDIS_TTL_MESSAGES")  # 2 hours for messages
     redis_ttl_organizations: int = Field(43200, env="MIRIX_REDIS_TTL_ORGANIZATIONS")  # 12 hours for organizations
     redis_ttl_users: int = Field(43200, env="MIRIX_REDIS_TTL_USERS")  # 12 hours for users
+    redis_ttl_clients: int = Field(43200, env="MIRIX_REDIS_TTL_CLIENTS")  # 12 hours for clients
     redis_ttl_agents: int = Field(43200, env="MIRIX_REDIS_TTL_AGENTS")  # 12 hours for agents
     redis_ttl_tools: int = Field(43200, env="MIRIX_REDIS_TTL_TOOLS")  # 12 hours for tools
 

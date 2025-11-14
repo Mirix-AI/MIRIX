@@ -43,6 +43,7 @@ from mirix.llm_api.llm_api_tools import create
 from mirix.llm_api.llm_client import LLMClient
 from mirix.memory import summarize_messages
 from mirix.schemas.user import User
+from mirix.schemas.client import Client
 from mirix.orm.enums import ToolType
 from mirix.schemas.agent import AgentState, AgentStepResponse, UpdateAgent
 from mirix.schemas.block import BlockUpdate
@@ -83,7 +84,6 @@ from mirix.services.resource_memory_manager import ResourceMemoryManager
 from mirix.services.semantic_memory_manager import SemanticMemoryManager
 from mirix.services.step_manager import StepManager
 from mirix.services.tool_execution_sandbox import ToolExecutionSandbox
-from mirix.services.user_manager import UserManager
 from mirix.settings import summarizer_settings
 from mirix.system import (
     get_contine_chaining,
@@ -135,11 +135,12 @@ class Agent(BaseAgent):
         self,
         interface: Optional[AgentInterface],
         agent_state: AgentState,  # in-memory representation of the agent state (read from multiple tables)
-        user: User,
+        actor: Client,
         # extras
         first_message_verify_mono: bool = True,  # TODO move to config?
         filter_tags: Optional[dict] = None,  # Filter tags for memory operations
         use_cache: bool = True,  # Control Redis cache behavior for this request
+        user: Optional[User] = None,  # End-user user
     ):
         assert isinstance(agent_state.memory, Memory), (
             f"Memory object is not of type Memory: {type(agent_state.memory)}"
@@ -150,16 +151,29 @@ class Agent(BaseAgent):
             f"Memory object is not of type Memory: {type(self.agent_state.memory)}"
         )
 
-        self.user = user
+        self.actor = actor
         # Store filter_tags as a COPY to prevent mutation across agent instances
         from copy import deepcopy
         # Keep None as None, don't convert to empty dict - they have different meanings
         self.filter_tags = deepcopy(filter_tags) if filter_tags is not None else None
         self.use_cache = use_cache  # Store use_cache for memory operations
+        self.user = user  # Store user for end-user tracking
 
         # Initialize logger early in constructor
-        self.logger = logging.getLogger(f"Mirix.Agent.{agent_state.name}")
+        self.logger = logging.getLogger(f"Mirix.Agent.{self.agent_state.name}")
         self.logger.setLevel(logging.INFO)
+
+        if user:
+            self.user_id = user.id 
+        else:
+            from mirix.services.user_manager import UserManager
+            self.user_id = UserManager().DEFAULT_USER_ID
+
+        if actor:
+            self.client_id = actor.id 
+        else:
+            from mirix.services.client_manager import ClientManager
+            self.client_id = ClientManager().DEFAULT_CLIENT_ID
 
         # initialize a tool rules solver
         if agent_state.tool_rules:
@@ -224,8 +238,12 @@ class Agent(BaseAgent):
 
     def load_last_function_response(self):
         """Load the last function response from message history"""
+        # Skip if actor not set yet (during __init__)
+        if self.actor is None:
+            return None
+        
         in_context_messages = self.agent_manager.get_in_context_messages(
-            agent_state=self.agent_state, actor=self.user
+            agent_state=self.agent_state, actor=self.actor
         )
         for i in range(len(in_context_messages) - 1, -1, -1):
             msg = in_context_messages[i]
@@ -260,7 +278,8 @@ class Agent(BaseAgent):
                     block = self.block_manager.update_block(
                         block_id=block_id,
                         block_update=BlockUpdate(value=updated_value),
-                        actor=self.user,
+                        actor=self.actor,
+                        user=self.user,
                     )
                     assert block.user_id == self.user.id
                     printv(
@@ -270,8 +289,8 @@ class Agent(BaseAgent):
             # refresh memory from DB (using block ids)
             self.agent_state.memory = Memory(
                 blocks=[
-                    self.block_manager.get_block_by_id(block.id, actor=self.user)
-                    for block in self.block_manager.get_blocks(actor=self.user)
+                    self.block_manager.get_block_by_id(block.id, user=self.user)
+                    for block in self.block_manager.get_blocks(user=self.user)
                 ]
             )
 
@@ -364,9 +383,9 @@ class Agent(BaseAgent):
 
         self.agent_state.memory = Memory(
             blocks=[
-                self.block_manager.get_block_by_id(block.id, actor=self.user)
+                self.block_manager.get_block_by_id(block.id, user=self.user)
                 for block in self.block_manager.get_blocks(
-                    actor=self.user, agent_id=self.agent_state.id
+                    user=self.user, agent_id=self.agent_state.id
                 )
             ]
         )
@@ -1110,7 +1129,7 @@ class Agent(BaseAgent):
                     continue_chaining = False
 
                     in_context_messages = self.agent_manager.get_in_context_messages(
-                        agent_state=self.agent_state, actor=self.user
+                        agent_state=self.agent_state, actor=self.actor
                     )
                     message_ids = [message.id for message in in_context_messages]
                     message_ids = [message_ids[0]]
@@ -1322,7 +1341,10 @@ class Agent(BaseAgent):
 
                         # persist the message to the database
                         persisted_message = self.message_manager.create_message(
-                            new_message, actor=self.user
+                            new_message, 
+                            actor=self.actor,  # Client for write operations (audit trail)
+                            client_id=self.client_id,  # From actor (Client)
+                            user_id=self.user_id if self.user_id else UserManager.DEFAULT_USER_ID,  # Fallback to default user
                         )
 
                         # append the persisted message ID to the message list
@@ -1330,22 +1352,22 @@ class Agent(BaseAgent):
                         self.agent_manager.set_in_context_messages(
                             agent_id=self.agent_state.id,
                             message_ids=message_ids,
-                            actor=self.user,
+                            actor=self.actor,
                         )
 
                         # delete the detached messages
                         self.message_manager.delete_detached_messages_for_agent(
-                            agent_id=self.agent_state.id, actor=self.user
+                            agent_id=self.agent_state.id, actor=self.actor
                         )
 
                     if self.agent_state.name == "meta_memory_agent":
                         self.agent_manager.set_in_context_messages(
                             agent_id=self.agent_state.id,
                             message_ids=message_ids,
-                            actor=self.user,
+                            actor=self.actor,
                         )
                         self.message_manager.delete_detached_messages_for_agent(
-                            agent_id=self.agent_state.id, actor=self.user
+                            agent_id=self.agent_state.id, actor=self.actor
                         )
 
                     if self.agent_state.name == "reflexion_agent":
@@ -1402,20 +1424,103 @@ class Agent(BaseAgent):
         chaining: bool = True,
         max_chaining_steps: Optional[int] = None,
         extra_messages: Optional[List[dict]] = None,
-        user: Optional[User] = None,
+        actor: Optional['Client'] = None,  # Client for write operations (audit trail)
+        user: Optional[User] = None,       # User for read operations (data scope)
         **kwargs,
     ) -> MirixUsageStatistics:
-        """Run Agent.step in a loop, handling chaining via contine_chaining requests and function failures"""
+        """Run Agent.step in a loop, handling chaining via continue_chaining requests and function failures
+        
+        Args:
+            actor: Client object for write operations (updating messages, agent state) - audit trail
+            user: User object for read operations (loading blocks, memory filtering) - data scope
+        """
 
+        # Store actor for write operations
+        if actor:
+            self.actor = actor
+        
+        # Store user and load user's memory blocks
         if user:
             self.user = user
+            
+            # Load existing blocks for this user
+            existing_blocks = self.block_manager.get_blocks(
+                user=self.user, agent_id=self.agent_state.id
+            )
+            
+            # Special handling for core_memory_agent: ensure required blocks exist
+            # This automatically creates blocks on first use for each user
+            from mirix.schemas.agent import AgentType
+            if self.agent_state.agent_type == AgentType.core_memory_agent:
+                if not existing_blocks:
+                    # No blocks exist for this user - auto-create from DEFAULT_USER_ID template
+                    logger.debug(
+                        "Core memory blocks missing for user '%s', auto-creating from template. Agent ID: %s",
+                        user.id, self.agent_state.id
+                    )
+                    
+                    # Query template blocks from DEFAULT_USER_ID
+                    # Get the default user from the database (has all required fields)
+                    from mirix.services.user_manager import UserManager
+                    user_manager = UserManager()
+                    try:
+                        default_user = user_manager.get_user_by_id(UserManager.DEFAULT_USER_ID)
+                        # Override organization_id to match the current user's organization
+                        # This ensures we query blocks from the correct organization
+                        default_user.organization_id = user.organization_id
+                    except Exception as e:
+                        logger.error(
+                            "Failed to get DEFAULT_USER (id: %s): %s. Cannot auto-create blocks.",
+                            UserManager.DEFAULT_USER_ID, e
+                        )
+                        default_user = None
+                    
+                    if default_user:
+                        template_blocks = self.block_manager.get_blocks(
+                            user=default_user, agent_id=self.agent_state.id
+                        )
+                        
+                        if template_blocks:
+                            # Create blocks for this user using template
+                            from mirix.schemas.block import Block
+                            for template_block in template_blocks:
+                                try:
+                                    self.block_manager.create_or_update_block(
+                                        block=Block(
+                                            label=template_block.label,
+                                            value=template_block.value,
+                                            limit=template_block.limit
+                                        ),
+                                        actor=self.actor,
+                                        user=self.user,
+                                        agent_id=self.agent_state.id
+                                    )
+                                    logger.info(
+                                        "✓ Auto-created '%s' block for user %s (template: %s)",
+                                        template_block.label, user.id, template_block.id
+                                    )
+                                except Exception as e:
+                                    logger.error(
+                                        "Failed to auto-create '%s' block: %s",
+                                        template_block.label, e
+                                    )
+                            
+                            # Reload blocks after creation
+                            existing_blocks = self.block_manager.get_blocks(
+                                user=self.user, agent_id=self.agent_state.id
+                            )
+                        else:
+                            logger.warning(
+                                "No template blocks found for DEFAULT_USER_ID (agent_id: %s). Cannot auto-create blocks.",
+                                self.agent_state.id
+                            )
+            
+            # Load blocks into memory
             self.agent_state.memory = Memory(
                 blocks=[
                     b
-                    for block in self.block_manager.get_blocks(
-                        actor=self.user, agent_id=self.agent_state.id
-                    )
-                    if (b := self.block_manager.get_block_by_id(block.id, actor=self.user)) is not None
+                    for block in existing_blocks
+                    if (b := self.block_manager.get_block_by_id(block.id, user=self.user)) is not None
                 ]
             )
 
@@ -1456,14 +1561,14 @@ class Agent(BaseAgent):
 
         initial_message_count = len(
             self.agent_manager.get_in_context_messages(
-                agent_state=self.agent_state, actor=self.user
+                agent_state=self.agent_state, actor=self.actor
             )
         )
 
         if self.agent_state.name == "reflexion_agent":
             # clear previous messages
             in_context_messages = self.agent_manager.get_in_context_messages(
-                agent_state=self.agent_state, actor=self.user
+                agent_state=self.agent_state, actor=self.actor
             )
             in_context_messages = in_context_messages[:1]
             self.agent_manager.set_in_context_messages(
@@ -1648,8 +1753,8 @@ class Agent(BaseAgent):
             current_persisted_memory = Memory(
                 blocks=[
                     b
-                    for block in self.block_manager.get_blocks(actor=self.user)
-                    if (b := self.block_manager.get_block_by_id(block.id, actor=self.user)) is not None
+                    for block in self.block_manager.get_blocks(user=self.user)
+                    if (b := self.block_manager.get_block_by_id(block.id, user=self.user)) is not None
                 ]
             )
             core_memory = current_persisted_memory.compile()
@@ -1665,7 +1770,7 @@ class Agent(BaseAgent):
             ):
                 current_knowledge_vault = self.knowledge_vault_manager.list_knowledge(
                     agent_state=self.agent_state,
-                    actor=self.user,
+                    user=self.user,
                     embedded_text=embedded_text,
                     query=key_words,
                     search_field="caption",
@@ -1676,7 +1781,7 @@ class Agent(BaseAgent):
             else:
                 current_knowledge_vault = self.knowledge_vault_manager.list_knowledge(
                     agent_state=self.agent_state,
-                    actor=self.user,
+                    user=self.user,
                     embedded_text=embedded_text,
                     query=key_words,
                     search_field="caption",
@@ -1692,7 +1797,7 @@ class Agent(BaseAgent):
                     knowledge_vault_memory += f"[{idx}] Knowledge Vault Item ID: {knowledge_vault_item.id}; Caption: {knowledge_vault_item.caption}\n"
             retrieved_memories["knowledge_vault"] = {
                 "total_number_of_items": self.knowledge_vault_manager.get_total_number_of_items(
-                    actor=self.user
+                    user=self.user
                 ),
                 "current_count": len(current_knowledge_vault),
                 "text": knowledge_vault_memory,
@@ -1705,7 +1810,7 @@ class Agent(BaseAgent):
         ):
             current_episodic_memory = self.episodic_memory_manager.list_episodic_memory(
                 agent_state=self.agent_state,
-                actor=self.user,
+                user=self.user,
                 limit=MAX_RETRIEVAL_LIMIT_IN_SYSTEM,
                 timezone_str=timezone_str,
             )
@@ -1727,7 +1832,7 @@ class Agent(BaseAgent):
             most_relevant_episodic_memory = (
                 self.episodic_memory_manager.list_episodic_memory(
                     agent_state=self.agent_state,
-                    actor=self.user,
+                    user=self.user,
                     embedded_text=embedded_text,
                     query=key_words,
                     search_field="details",
@@ -1751,7 +1856,7 @@ class Agent(BaseAgent):
             relevant_episodic_memory = most_relevant_episodic_memory_str.strip()
             retrieved_memories["episodic"] = {
                 "total_number_of_items": self.episodic_memory_manager.get_total_number_of_items(
-                    actor=self.user
+                    user=self.user
                 ),
                 "recent_count": len(current_episodic_memory),
                 "relevant_count": len(most_relevant_episodic_memory),
@@ -1766,7 +1871,7 @@ class Agent(BaseAgent):
         ):
             current_resource_memory = self.resource_memory_manager.list_resources(
                 agent_state=self.agent_state,
-                actor=self.user,
+                user=self.user,
                 query=key_words,
                 embedded_text=embedded_text,
                 search_field="summary",
@@ -1787,7 +1892,7 @@ class Agent(BaseAgent):
             resource_memory = resource_memory.strip()
             retrieved_memories["resource"] = {
                 "total_number_of_items": self.resource_memory_manager.get_total_number_of_items(
-                    actor=self.user
+                    user=self.user
                 ),
                 "current_count": len(current_resource_memory),
                 "text": resource_memory,
@@ -1800,7 +1905,7 @@ class Agent(BaseAgent):
         ):
             current_procedural_memory = self.procedural_memory_manager.list_procedures(
                 agent_state=self.agent_state,
-                actor=self.user,
+                user=self.user,
                 query=key_words,
                 embedded_text=embedded_text,
                 search_field="summary",
@@ -1821,7 +1926,7 @@ class Agent(BaseAgent):
             procedural_memory = procedural_memory.strip()
             retrieved_memories["procedural"] = {
                 "total_number_of_items": self.procedural_memory_manager.get_total_number_of_items(
-                    actor=self.user
+                    user=self.user
                 ),
                 "current_count": len(current_procedural_memory),
                 "text": procedural_memory,
@@ -1834,7 +1939,7 @@ class Agent(BaseAgent):
         ):
             current_semantic_memory = self.semantic_memory_manager.list_semantic_items(
                 agent_state=self.agent_state,
-                actor=self.user,
+                user=self.user,
                 query=key_words,
                 embedded_text=embedded_text,
                 search_field="details",
@@ -1856,7 +1961,7 @@ class Agent(BaseAgent):
             semantic_memory = semantic_memory.strip()
             retrieved_memories["semantic"] = {
                 "total_number_of_items": self.semantic_memory_manager.get_total_number_of_items(
-                    actor=self.user
+                    user=self.user
                 ),
                 "current_count": len(current_semantic_memory),
                 "text": semantic_memory,
@@ -2167,7 +2272,7 @@ These keywords have been used to retrieve relevant memories from the database.
         # Step 2: build system prompt with topic
         # Get the raw system prompt
         in_context_messages = self.agent_manager.get_in_context_messages(
-            agent_state=self.agent_state, actor=self.user
+            agent_state=self.agent_state, actor=self.actor
         )
         raw_system = (
             in_context_messages[0].content[0].text
@@ -2224,7 +2329,7 @@ These keywords have been used to retrieve relevant memories from the database.
 
             # Step 0: get in-context messages and get the raw system prompt
             in_context_messages = self.agent_manager.get_in_context_messages(
-                agent_state=self.agent_state, actor=self.user
+                agent_state=self.agent_state, actor=self.actor
             )
 
             assert in_context_messages[0].role == MessageRole.system
@@ -2427,7 +2532,7 @@ These keywords have been used to retrieve relevant memories from the database.
 
             # Log step - this must happen before messages are persisted
             step = self.step_manager.log_step(
-                actor=self.user,
+                actor=self.actor,
                 provider_name=self.agent_state.llm_config.model_endpoint_type,
                 model=self.agent_state.llm_config.model,
                 context_window_limit=self.agent_state.llm_config.context_window,
@@ -2438,7 +2543,7 @@ These keywords have been used to retrieve relevant memories from the database.
 
             # Persisting into Messages
             self.agent_state = self.agent_manager.append_to_in_context_messages(
-                all_new_messages, agent_id=self.agent_state.id, actor=self.user
+                all_new_messages, agent_id=self.agent_state.id, actor=self.actor
             )
 
             # Log step completion and results
@@ -2462,7 +2567,7 @@ These keywords have been used to retrieve relevant memories from the database.
             # If we got a context alert, try trimming the messages length, then try again
             if is_context_overflow_error(e):
                 in_context_messages = self.agent_manager.get_in_context_messages(
-                    agent_state=self.agent_state, actor=self.user
+                    agent_state=self.agent_state, actor=self.actor
                 )
 
                 if (
@@ -2572,7 +2677,7 @@ These keywords have been used to retrieve relevant memories from the database.
         self, existing_file_uris: Optional[List[str]] = None
     ):
         in_context_messages = self.agent_manager.get_in_context_messages(
-            agent_state=self.agent_state, actor=self.user
+            agent_state=self.agent_state, actor=self.actor
         )
         in_context_messages_openai = [m.to_openai_dict() for m in in_context_messages]
         in_context_messages_openai_no_system = in_context_messages_openai[1:]
@@ -2663,7 +2768,7 @@ These keywords have been used to retrieve relevant memories from the database.
         # reset alert
         self.agent_alerted_about_memory_pressure = False
         curr_in_context_messages = self.agent_manager.get_in_context_messages(
-            agent_state=self.agent_state, actor=self.user
+            agent_state=self.agent_state, actor=self.actor
         )
 
         self.logger.info(
@@ -2701,7 +2806,7 @@ These keywords have been used to retrieve relevant memories from the database.
         # Grab the in-context messages
         # conversion of messages to OpenAI dict format, which is passed to the token counter
         in_context_messages = self.agent_manager.get_in_context_messages(
-            agent_state=self.agent_state, actor=self.user
+            agent_state=self.agent_state, actor=self.actor
         )
         in_context_messages_openai = [m.to_openai_dict() for m in in_context_messages]
 
@@ -2820,7 +2925,7 @@ def save_agent(agent: Agent):
         # tool_exec_environment_variables=agent_state.get_agent_env_vars_as_dict(),
     )
     agent_manager.update_agent(
-        agent_id=agent_state.id, agent_update=update_agent, actor=agent.user
+        agent_id=agent_state.id, agent_update=update_agent, actor=agent.actor
     )
 
 

@@ -25,7 +25,7 @@ from mirix.orm.errors import NoResultFound
 from mirix.orm.tool import Tool as ToolModel
 from mirix.schemas.tool import Tool as PydanticTool
 from mirix.schemas.tool import ToolUpdate
-from mirix.schemas.user import User as PydanticUser
+from mirix.schemas.client import Client as PydanticClient
 from mirix.utils import enforce_types, printd
 
 
@@ -41,7 +41,7 @@ class ToolManager:
     # TODO: Refactor this across the codebase to use CreateTool instead of passing in a Tool object
     @enforce_types
     def create_or_update_tool(
-        self, pydantic_tool: PydanticTool, actor: PydanticUser
+        self, pydantic_tool: PydanticTool, actor: PydanticClient
     ) -> PydanticTool:
         """Create a new tool based on the ToolCreate schema."""
 
@@ -66,7 +66,7 @@ class ToolManager:
 
     @enforce_types
     def create_tool(
-        self, pydantic_tool: PydanticTool, actor: PydanticUser
+        self, pydantic_tool: PydanticTool, actor: PydanticClient
     ) -> PydanticTool:
         """Create a new tool based on the ToolCreate schema."""
         with self.session_maker() as session:
@@ -84,7 +84,7 @@ class ToolManager:
         return tool.to_pydantic()
 
     @enforce_types
-    def get_tool_by_id(self, tool_id: str, actor: PydanticUser) -> PydanticTool:
+    def get_tool_by_id(self, tool_id: str, actor: PydanticClient) -> PydanticTool:
         """Fetch a tool by its ID."""
         with self.session_maker() as session:
             # Retrieve tool by id using the Tool model's read method
@@ -94,7 +94,7 @@ class ToolManager:
 
     @enforce_types
     def get_tool_by_name(
-        self, tool_name: str, actor: PydanticUser
+        self, tool_name: str, actor: PydanticClient
     ) -> Optional[PydanticTool]:
         """Retrieve a tool by its name and a user. We derive the organization from the user, and retrieve that tool."""
         try:
@@ -107,7 +107,7 @@ class ToolManager:
     @enforce_types
     def list_tools(
         self,
-        actor: PydanticUser,
+        actor: PydanticClient,
         cursor: Optional[str] = None,
         limit: Optional[int] = 50,
     ) -> List[PydanticTool]:
@@ -123,7 +123,7 @@ class ToolManager:
 
     @enforce_types
     def update_tool_by_id(
-        self, tool_id: str, tool_update: ToolUpdate, actor: PydanticUser
+        self, tool_id: str, tool_update: ToolUpdate, actor: PydanticClient
     ) -> PydanticTool:
         """Update a tool by its ID with the given ToolUpdate object."""
         with self.session_maker() as session:
@@ -151,7 +151,7 @@ class ToolManager:
             return tool.update(db_session=session, actor=actor).to_pydantic()
 
     @enforce_types
-    def delete_tool_by_id(self, tool_id: str, actor: PydanticUser) -> None:
+    def delete_tool_by_id(self, tool_id: str, actor: PydanticClient) -> None:
         """Delete a tool by its ID."""
         with self.session_maker() as session:
             try:
@@ -163,7 +163,7 @@ class ToolManager:
                 raise ValueError(f"Tool with id {tool_id} not found.")
 
     @enforce_types
-    def upsert_base_tools(self, actor: PydanticUser) -> List[PydanticTool]:
+    def upsert_base_tools(self, actor: PydanticClient) -> List[PydanticTool]:
         """Add default tools in base.py"""
         functions_to_schema = {}
         module_names = ["base", "memory_tools", "extras"]

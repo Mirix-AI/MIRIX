@@ -1,12 +1,19 @@
 import os
 from typing import List, Optional
 
+from mirix.log import get_logger
 from mirix.orm.block import Block as BlockModel
 from mirix.orm.errors import NoResultFound
 from mirix.schemas.block import Block, BlockUpdate, Human, Persona
 from mirix.schemas.block import Block as PydanticBlock
+from mirix.schemas.client import Client as PydanticClient
 from mirix.schemas.user import User as PydanticUser
 from mirix.utils import enforce_types, list_human_files, list_persona_files
+
+from mirix.orm import user
+from mirix.orm.enums import AccessType
+
+logger = get_logger(__name__)
 
 
 class BlockManager:
@@ -20,17 +27,34 @@ class BlockManager:
 
     @enforce_types
     def create_or_update_block(
-        self, block: Block, actor: PydanticUser, agent_id: Optional[str] = None
+        self, 
+        block: Block, 
+        actor: PydanticClient, 
+        agent_id: Optional[str] = None,
+        user: Optional["PydanticUser"] = None  # NEW: Explicit user parameter for data scoping
     ) -> PydanticBlock:
-        """Create a new block based on the Block schema (with Redis Hash caching)."""
-        db_block = self.get_block_by_id(block.id, actor)
+        """
+        Create a new block based on the Block schema (with Redis Hash caching).
+        
+        Args:
+            block: Block data to create
+            actor: Client for audit trail (created_by_id, last_updated_by_id)
+            agent_id: Optional agent_id to associate with this block
+            user_id: Optional user_id for data scoping (if None, block is not user-scoped)
+        
+        Returns:
+            PydanticBlock: The created or updated block
+        """
+        # Check if block exists (user parameter not needed for existence check)
+        db_block = self.get_block_by_id(block.id, user=None)
         if db_block:
             update_data = BlockUpdate(**block.model_dump(exclude_none=True))
-            return self.update_block(block.id, update_data, actor)
+            return self.update_block(block.id, update_data, actor, user=user)
         else:
             with self.session_maker() as session:
                 data = block.model_dump(exclude_none=True)
-                block = BlockModel(**data, organization_id=actor.organization_id, user_id=actor.id, agent_id=agent_id)
+                # ✅ Use explicit user_id parameter (not actor.id which is client_id)
+                block = BlockModel(**data, organization_id=actor.organization_id, user_id=user.id if user else None, agent_id=agent_id)
                 block.create_with_redis(session, actor=actor)  # ⭐ Use Redis integration
             return block.to_pydantic()
 
@@ -66,17 +90,33 @@ class BlockManager:
             logger.warning("Failed to invalidate agent caches for block %s: %s", block_id, e)
     
     def update_block(
-        self, block_id: str, block_update: BlockUpdate, actor: PydanticUser
+        self, 
+        block_id: str, 
+        block_update: BlockUpdate, 
+        actor: PydanticClient,
+        user: Optional["PydanticUser"] = None  # NEW: Optional user parameter for consistency
     ) -> PydanticBlock:
-        """Update a block by its ID (with Redis Hash caching and agent cache invalidation)."""
+        """
+        Update a block by its ID (with Redis Hash caching and agent cache invalidation).
+        
+        Args:
+            block_id: ID of the block to update
+            block_update: BlockUpdate with fields to update
+            actor: Client for audit trail (last_updated_by_id)
+            user: Optional user if updating user field
+        """
         with self.session_maker() as session:
             block = BlockModel.read(
-                db_session=session, identifier=block_id, actor=actor
+                db_session=session, identifier=block_id, actor=actor, user=user, access_type=AccessType.USER
             )
             update_data = block_update.model_dump(exclude_unset=True, exclude_none=True)
 
             for key, value in update_data.items():
                 setattr(block, key, value)
+            
+            # Update user_id if provided (allows changing ownership)
+            if user is not None:
+                block.user_id = user.id
 
             block.update_with_redis(db_session=session, actor=actor)  # ⭐ Use Redis integration
             
@@ -86,7 +126,7 @@ class BlockManager:
             return block.to_pydantic()
 
     @enforce_types
-    def delete_block(self, block_id: str, actor: PydanticUser) -> PydanticBlock:
+    def delete_block(self, block_id: str, actor: PydanticClient) -> PydanticBlock:
         """Delete a block by its ID (removes from Redis cache and invalidates agent caches)."""
         with self.session_maker() as session:
             block = BlockModel.read(db_session=session, identifier=block_id)
@@ -106,7 +146,7 @@ class BlockManager:
     @enforce_types
     def get_blocks(
         self,
-        actor: PydanticUser,
+        user: PydanticUser,
         agent_id: Optional[str] = None,
         label: Optional[str] = None,
         id: Optional[str] = None,
@@ -117,8 +157,8 @@ class BlockManager:
         with self.session_maker() as session:
             # Build filters
             filters = {
-                "organization_id": actor.organization_id,
-                "user_id": actor.id,
+                "organization_id": user.organization_id,
+                "user_id": user.id,
             }
             if agent_id:
                 filters["agent_id"] = agent_id
@@ -135,7 +175,7 @@ class BlockManager:
 
     @enforce_types
     def get_block_by_id(
-        self, block_id: str, actor: Optional[PydanticUser] = None
+        self, block_id: str, user: Optional[PydanticUser] = None
     ) -> Optional[PydanticBlock]:
         """Retrieve a block by its ID (with Redis Hash caching - 40-60% faster!)."""
         # Try Redis cache first (Hash-based for blocks)
@@ -154,15 +194,13 @@ class BlockManager:
                     return PydanticBlock(**cached_data)
         except Exception as e:
             # Log but continue to PostgreSQL on Redis error
-            from mirix.log import get_logger
-            logger = get_logger(__name__)
             logger.warning("Redis cache read failed for block %s: %s", block_id, e)
         
         # Cache MISS or Redis unavailable - fetch from PostgreSQL
         with self.session_maker() as session:
             try:
                 block = BlockModel.read(
-                    db_session=session, identifier=block_id, actor=actor
+                    db_session=session, identifier=block_id, actor=user, user=user, access_type=AccessType.USER
                 )
                 pydantic_block = block.to_pydantic()
                 
@@ -175,8 +213,6 @@ class BlockManager:
                         redis_client.set_hash(redis_key, data, ttl=settings.redis_ttl_blocks)
                 except Exception as e:
                     # Log but don't fail on cache population error
-                    from mirix.log import get_logger
-                    logger = get_logger(__name__)
                     logger.warning("Failed to populate Redis cache for block %s: %s", block_id, e)
                 
                 return pydantic_block
@@ -185,27 +221,39 @@ class BlockManager:
 
     @enforce_types
     def get_all_blocks_by_ids(
-        self, block_ids: List[str], actor: Optional[PydanticUser] = None
+        self, block_ids: List[str], user: Optional[PydanticUser] = None
     ) -> List[PydanticBlock]:
         # TODO: We can do this much more efficiently by listing, instead of executing individual queries per block_id
         blocks = []
         for block_id in block_ids:
-            block = self.get_block_by_id(block_id, actor=actor)
+            block = self.get_block_by_id(block_id, user=user)
             blocks.append(block)
         return blocks
 
     @enforce_types
-    def add_default_blocks(self, actor: PydanticUser):
+    def add_default_blocks(self, actor: PydanticClient, user: Optional[PydanticUser] = None):
+        """
+        Add default persona and human blocks.
+        
+        Args:
+            actor: Client for audit trail
+            user_id: Optional user_id for block ownership (uses default if not provided)
+        """
+        # Use default user if not provided
+        if user is None:
+            from mirix.services.user_manager import UserManager
+            user = UserManager().get_default_user()
+        
         for persona_file in list_persona_files():
             text = open(persona_file, "r", encoding="utf-8").read()
             name = os.path.basename(persona_file).replace(".txt", "")
             self.create_or_update_block(
-                Persona(value=text), actor=actor
+                Persona(value=text), actor=actor, user=user
             )
 
         for human_file in list_human_files():
             text = open(human_file, "r", encoding="utf-8").read()
             name = os.path.basename(human_file).replace(".txt", "")
             self.create_or_update_block(
-                Human(value=text), actor=actor
+                Human(value=text), actor=actor, user=user
             )

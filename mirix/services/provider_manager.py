@@ -3,7 +3,7 @@ from typing import List, Optional
 from mirix.orm.provider import Provider as ProviderModel
 from mirix.schemas.providers import Provider as PydanticProvider
 from mirix.schemas.providers import ProviderUpdate
-from mirix.schemas.user import User as PydanticUser
+from mirix.schemas.client import Client as PydanticClient
 from mirix.utils import enforce_types
 
 
@@ -15,7 +15,7 @@ class ProviderManager:
 
     @enforce_types
     def insert_provider(
-        self, name: str, api_key: str, organization_id: str, actor: PydanticUser
+        self, name: str, api_key: str, organization_id: str, actor: PydanticClient
     ) -> PydanticProvider:
         """Insert a new provider into the database."""
         self.create_provider(
@@ -29,7 +29,7 @@ class ProviderManager:
 
     @enforce_types
     def upsert_provider(
-        self, name: str, api_key: str, organization_id: str, actor: PydanticUser
+        self, name: str, api_key: str, organization_id: str, actor: PydanticClient
     ) -> PydanticProvider:
         """Insert or update a provider in the database. Updates if exists, creates if not."""
         # Check if provider already exists for this organization
@@ -55,7 +55,7 @@ class ProviderManager:
 
     @enforce_types
     def create_provider(
-        self, provider: PydanticProvider, actor: PydanticUser
+        self, provider: PydanticProvider, actor: PydanticClient
     ) -> PydanticProvider:
         """Create a new provider if it doesn't already exist."""
         with self.session_maker() as session:
@@ -71,7 +71,7 @@ class ProviderManager:
 
     @enforce_types
     def update_provider(
-        self, provider_id: str, provider_update: ProviderUpdate, actor: PydanticUser
+        self, provider_id: str, provider_update: ProviderUpdate, actor: PydanticClient
     ) -> PydanticProvider:
         """Update provider details."""
         with self.session_maker() as session:
@@ -92,7 +92,7 @@ class ProviderManager:
             return existing_provider.to_pydantic()
 
     @enforce_types
-    def delete_provider_by_id(self, provider_id: str, actor: PydanticUser):
+    def delete_provider_by_id(self, provider_id: str, actor: PydanticClient):
         """Delete a provider."""
         with self.session_maker() as session:
             # Clear api key field
@@ -112,7 +112,7 @@ class ProviderManager:
         self,
         after: Optional[str] = None,
         limit: Optional[int] = 50,
-        actor: PydanticUser = None,
+        actor: PydanticClient = None,
     ) -> List[PydanticProvider]:
         """List all providers with optional pagination."""
         with self.session_maker() as session:

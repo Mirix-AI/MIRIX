@@ -33,6 +33,7 @@ def create_client(
     For MirixClient (mode="remote"):
         - base_url: API server URL (required)
         - api_key: API key for authentication
+        - client_id: Client ID (required)
         - org_id: Organization ID (required)
         - debug: Enable debug logging
         - timeout: Request timeout in seconds (default: 60)

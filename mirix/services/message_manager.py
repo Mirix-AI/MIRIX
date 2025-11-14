@@ -6,7 +6,7 @@ from mirix.orm.message import Message as MessageModel
 from mirix.schemas.enums import MessageRole
 from mirix.schemas.message import Message as PydanticMessage
 from mirix.schemas.message import MessageUpdate
-from mirix.schemas.user import User as PydanticUser
+from mirix.schemas.client import Client as PydanticClient
 from mirix.services.utils import update_timezone
 from mirix.utils import enforce_types
 
@@ -22,7 +22,7 @@ class MessageManager:
     @update_timezone
     @enforce_types
     def get_message_by_id(
-        self, message_id: str, actor: PydanticUser, use_cache: bool = True
+        self, message_id: str, actor: PydanticClient, use_cache: bool = True
     ) -> Optional[PydanticMessage]:
         """Fetch a message by ID (with Redis Hash caching - 40-60% faster!)."""
         # Try Redis cache first (if cache enabled and Redis is available)
@@ -70,7 +70,7 @@ class MessageManager:
     @update_timezone
     @enforce_types
     def get_messages_by_ids(
-        self, message_ids: List[str], actor: PydanticUser, use_cache: bool = True
+        self, message_ids: List[str], actor: PydanticClient, use_cache: bool = True
     ) -> List[PydanticMessage]:
         """Fetch messages by ID and return them in the requested order."""
         # TODO: Add Redis pipeline support for batch retrieval when use_cache=True
@@ -93,19 +93,40 @@ class MessageManager:
 
     @enforce_types
     def create_message(
-        self, pydantic_msg: PydanticMessage, actor: PydanticUser, use_cache: bool = True
+        self, 
+        pydantic_msg: PydanticMessage, 
+        actor: PydanticClient, 
+        use_cache: bool = True,
+        client_id: Optional[str] = None,
+        user_id: Optional[str] = None,
     ) -> PydanticMessage:
         """Create a new message (with Redis Hash caching).
         
         Args:
             pydantic_msg: The message data to create
-            actor: User performing the operation
+            actor: Client performing the operation (for audit trail)
             use_cache: If True, cache in Redis. If False, skip caching.
+            client_id: Optional client_id for data scoping (defaults to actor.id)
+            user_id: Optional user_id for data scoping (defaults to None)
         """
         with self.session_maker() as session:
-            # Set the organization id and user id of the Pydantic message
+            # Set the organization id of the Pydantic message
             pydantic_msg.organization_id = actor.organization_id
-            pydantic_msg.user_id = actor.id
+            
+            # Set client_id: use provided value, or from message, or from actor
+            if client_id:
+                pydantic_msg.client_id = client_id
+            elif not pydantic_msg.client_id:
+                pydantic_msg.client_id = actor.id
+            
+            # Set user_id: use provided value, or from message, or fallback to default user
+            if user_id is not None:
+                pydantic_msg.user_id = user_id
+            elif not pydantic_msg.user_id:
+                # Fallback: use default system user for client-level operations
+                from mirix.services.user_manager import UserManager
+                pydantic_msg.user_id = UserManager.DEFAULT_USER_ID
+            
             msg_data = pydantic_msg.model_dump()
             msg = MessageModel(**msg_data)
             msg.create_with_redis(session, actor=actor, use_cache=use_cache)
@@ -113,14 +134,18 @@ class MessageManager:
 
     @enforce_types
     def create_many_messages(
-        self, pydantic_msgs: List[PydanticMessage], actor: PydanticUser
+        self, 
+        pydantic_msgs: List[PydanticMessage], 
+        actor: PydanticClient,
+        client_id: Optional[str] = None,
+        user_id: Optional[str] = None,
     ) -> List[PydanticMessage]:
         """Create multiple messages."""
-        return [self.create_message(m, actor=actor) for m in pydantic_msgs]
+        return [self.create_message(m, actor=actor, client_id=client_id, user_id=user_id) for m in pydantic_msgs]
 
     @enforce_types
     def update_message_by_id(
-        self, message_id: str, message_update: MessageUpdate, actor: PydanticUser
+        self, message_id: str, message_update: MessageUpdate, actor: PydanticClient
     ) -> PydanticMessage:
         """
         Updates an existing record in the database with values from the provided record object.
@@ -161,7 +186,7 @@ class MessageManager:
             return message.to_pydantic()
 
     @enforce_types
-    def delete_message_by_id(self, message_id: str, actor: PydanticUser) -> bool:
+    def delete_message_by_id(self, message_id: str, actor: PydanticClient) -> bool:
         """Delete a message (removes from Redis cache)."""
         with self.session_maker() as session:
             try:
@@ -183,7 +208,7 @@ class MessageManager:
     @enforce_types
     def size(
         self,
-        actor: PydanticUser,
+        actor: PydanticClient,
         role: Optional[MessageRole] = None,
         agent_id: Optional[str] = None,
     ) -> int:
@@ -203,7 +228,7 @@ class MessageManager:
     def list_user_messages_for_agent(
         self,
         agent_id: str,
-        actor: Optional[PydanticUser] = None,
+        actor: Optional[PydanticClient] = None,
         cursor: Optional[str] = None,
         start_date: Optional[datetime] = None,
         end_date: Optional[datetime] = None,
@@ -246,7 +271,7 @@ class MessageManager:
     def list_messages_for_agent(
         self,
         agent_id: str,
-        actor: Optional[PydanticUser] = None,
+        actor: Optional[PydanticClient] = None,
         cursor: Optional[str] = None,
         start_date: Optional[datetime] = None,
         end_date: Optional[datetime] = None,
@@ -295,7 +320,7 @@ class MessageManager:
 
     @enforce_types
     def delete_detached_messages_for_agent(
-        self, agent_id: str, actor: PydanticUser
+        self, agent_id: str, actor: PydanticClient
     ) -> int:
         """
         Delete messages that belong to an agent but are not in the agent's current message_ids list.
@@ -354,7 +379,7 @@ class MessageManager:
             return deleted_count
 
     @enforce_types
-    def cleanup_all_detached_messages(self, actor: PydanticUser) -> Dict[str, int]:
+    def cleanup_all_detached_messages(self, actor: PydanticClient) -> Dict[str, int]:
         """
         Cleanup detached messages for all agents in the organization.
 

@@ -67,6 +67,9 @@ class MirixClient(AbstractClient):
         org_id: str,
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
+        client_id: Optional[str] = None,
+        client_name: Optional[str] = None,
+        client_scope: str = "",     
         org_name: Optional[str] = None,
         debug: bool = False,
         timeout: int = 60,
@@ -75,9 +78,16 @@ class MirixClient(AbstractClient):
         """
         Initialize MirixClient.
         
+        This client represents a CLIENT APPLICATION (tenant), not an end-user.
+        End-user IDs are passed per-request in the add() method.
+
         Args:
             org_id: Organization ID (required)
             base_url: Base URL of the Mirix API server (optional, can also be set via MIRIX_API_URL env var, default: "http://localhost:8000")
+            client_id: Client ID representing this application (optional, will be auto-generated if not provided)
+            client_name: Client name (optional, defaults to client_id if not provided)
+            client_scope: Client scope (read, write, read_write, admin), default: "read_write"
+            org_id: Organization ID (optional, will be auto-generated if not provided)
             org_name: Organization name (optional, defaults to org_id if not provided)
             debug: Whether to enable debug logging
             timeout: Request timeout in seconds
@@ -87,10 +97,19 @@ class MirixClient(AbstractClient):
         
         # Get base URL from parameter or environment variable
         self.base_url = (base_url or os.environ.get("MIRIX_API_URL", "http://localhost:8000")).rstrip("/")
+
+        # Generate IDs if not provided
+        if not client_id:
+            import uuid
+            client_id = f"client-{uuid.uuid4().hex[:8]}"
         
         if not org_id:
-            raise ValueError("org_id is required to initialize MirixClient")
+            import uuid
+            org_id = f"org-{uuid.uuid4().hex[:8]}"
         
+        self.client_id = client_id
+        self.client_name = client_name or client_id
+        self.client_scope = client_scope            
         self.org_id = org_id
         self.org_name = org_name or org_id
         self.timeout = timeout
@@ -114,24 +133,119 @@ class MirixClient(AbstractClient):
         self.session.mount("https://", adapter)
         
         # Set headers
+        if self.client_id:
+            self.session.headers.update({"X-Client-ID": self.client_id})
+        
+        if self.org_id:
+            self.session.headers.update({"X-Org-ID": self.org_id})
+                
         self.session.headers.update({"Content-Type": "application/json"})
 
-        # Create organization if it doesn't exist
-        self._ensure_org_exists()
+        # Create organization and client if they don't exist
+        self._ensure_org_and_client_exist()
 
-    def _ensure_org_exists(self):
-        """Ensure that the organization exists on the server."""
+    def _ensure_org_and_client_exist(self):
+        """
+        Ensure that the organization and client exist on the server.
+        Creates them if they don't exist.
+        
+        Note: This method does NOT create users. Users are created per-request
+        based on the user_id parameter in add() and other methods.
+        """
         try:
-            self._request(
+            # Create or get organization first
+            org_response = self._request(
                 "POST",
                 "/organizations/create_or_get",
-                json={"org_id": self.org_id, "name": self.org_name},
+                json={"org_id": self.org_id, "name": self.org_name}
             )
             if self.debug:
-                logger.debug("[MirixClient] Organization initialized: %s", self.org_id)
-        except Exception as e:
+                logger.debug("[MirixClient] Organization initialized: %s (name: %s)", self.org_id, self.org_name)
+            
+            # Create or get client
+            client_response = self._request(
+                "POST",
+                "/clients/create_or_get",
+                json={
+                    "client_id": self.client_id,
+                    "name": self.client_name,
+                    "org_id": self.org_id,
+                    "scope": self.client_scope,
+                    "status": "active"
+                }
+            )
             if self.debug:
-                logger.debug("[MirixClient] Note: Could not initialize organization %s: %s", self.org_id, e)
+                logger.debug("[MirixClient] Client initialized: %s (name: %s, scope: %s)", 
+                           self.client_id, self.client_name, self.client_scope)
+        except Exception as e:
+            # Don't fail initialization if this fails - the server might handle it
+            if self.debug:
+                logger.debug("[MirixClient] Note: Could not pre-create org/client: %s", e)
+                logger.debug("[MirixClient] Server will create them on first request if needed")
+
+    def create_or_get_user(
+        self,
+        user_id: Optional[str] = None,
+        user_name: Optional[str] = None,
+        org_id: Optional[str] = None,
+    ) -> str:
+        """
+        Create a user if it doesn't exist, or get existing user.
+        
+        This method ensures a user exists in the backend database before performing
+        operations that require a user_id. If the user already exists, it returns
+        the existing user_id. If not, it creates a new user.
+        
+        Args:
+            user_id: Optional user ID. If not provided, a random ID will be generated.
+            user_name: Optional user name. Defaults to user_id if not provided.
+            org_id: Optional organization ID. Defaults to client's org_id if not provided.
+            
+        Returns:
+            str: The user_id (either existing or newly created)
+            
+        Example:
+            >>> client = MirixClient(client_id="my-app", org_id="my-org")
+            >>> 
+            >>> # Create user with specific ID
+            >>> user_id = client.create_or_get_user(
+            ...     user_id="demo-user",
+            ...     user_name="Demo User"
+            ... )
+            >>> print(f"User ready: {user_id}")
+            >>> 
+            >>> # Create user with auto-generated ID
+            >>> user_id = client.create_or_get_user(user_name="Alice")
+            >>> print(f"User created with ID: {user_id}")
+            >>> 
+            >>> # Now use the user_id for memory operations
+            >>> result = client.add(
+            ...     user_id=user_id,
+            ...     messages=[...]
+            ... )
+        """
+        # Use client's org_id if not specified
+        if not org_id:
+            org_id = self.org_id
+        
+        # Prepare request data
+        request_data = {
+            "user_id": user_id,
+            "name": user_name,
+            "org_id": org_id,
+        }
+        
+        # Make API request
+        response = self._request("POST", "/users/create_or_get", json=request_data)
+        
+        # Extract and return user_id from response
+        if isinstance(response, dict) and "id" in response:
+            created_user_id = response["id"]
+            if self.debug:
+                logger.debug("User ready: %s", created_user_id)
+            return created_user_id
+        else:
+            raise ValueError(f"Unexpected response from /users/create_or_get: {response}")
 
     def _ensure_user_exists(self, user_id: str):
         """Ensure that the given user exists for this org."""
@@ -801,7 +915,6 @@ class MirixClient(AbstractClient):
     
     def initialize_meta_agent(
         self,
-        user_id: str,
         config: Optional[Dict[str, Any]] = None,
         config_path: Optional[str] = None,
         update_agents: Optional[bool] = False,
@@ -813,7 +926,6 @@ class MirixClient(AbstractClient):
         (episodic, semantic, procedural, etc.) for the current project.
         
         Args:
-            user_id: ID of the user who will own and interact with the meta agent
             config: Configuration dictionary with llm_config, embedding_config, etc.
             config_path: Path to YAML config file (alternative to config dict)
             
@@ -826,9 +938,9 @@ class MirixClient(AbstractClient):
             ...     "llm_config": {"model": "gemini-2.0-flash"},
             ...     "embedding_config": {"model": "text-embedding-004"}
             ... }
-            >>> meta_agent = client.initialize_meta_agent(user_id="user-123", config=config)
+            >>> meta_agent = client.initialize_meta_agent(config=config)
         """
-        self._ensure_user_exists(user_id)
+        #self._ensure_user_exists(user_id)
         
         # Load config from file if provided
         if config_path:
@@ -850,7 +962,7 @@ class MirixClient(AbstractClient):
 
         # Prepare request data
         request_data = {
-            "user_id": user_id,
+            #"user_id": user_id,
             "org_id": self.org_id,
             "config": config,
             "update_agents": update_agents,
@@ -1019,7 +1131,7 @@ class MirixClient(AbstractClient):
             user_id: User ID for the conversation
             topic: Topic or keyword to search for
             limit: Maximum number of items to retrieve per memory type (default: 10)
-            org_id: Optional organization scope override (defaults to client's org)
+            #org_id: Optional organization scope override (defaults to client's org)
         
         Returns:
             Dict containing retrieved memories organized by type

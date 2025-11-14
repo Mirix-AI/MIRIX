@@ -47,6 +47,14 @@ class ProceduralMemoryItem(SqlalchemyBase, OrganizationMixin, UserMixin):
         doc="ID of the agent this procedural memory item belongs to",
     )
 
+    # Foreign key to client (for access control and filtering)
+    client_id: Mapped[Optional[str]] = mapped_column(
+        String,
+        ForeignKey("clients.id", ondelete="CASCADE"),
+        nullable=True,
+        doc="ID of the client application that created this item",
+    )
+
     # Distinguish the type/category of the procedure
     entry_type: Mapped[str] = mapped_column(
         String, doc="Category or type (e.g. 'workflow', 'guide', 'script')"

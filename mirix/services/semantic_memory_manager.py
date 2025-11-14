@@ -13,6 +13,7 @@ from mirix.log import get_logger
 from mirix.orm.errors import NoResultFound
 from mirix.orm.semantic_memory import SemanticMemoryItem
 from mirix.schemas.agent import AgentState
+from mirix.schemas.client import Client as PydanticClient
 from mirix.schemas.semantic_memory import (
     SemanticMemoryItem as PydanticSemanticMemoryItem,
 )
@@ -295,7 +296,7 @@ class SemanticMemoryManager:
                     and_query_sql,
                     {
                         "tsquery": tsquery_string_and,
-                        "user_id": actor.id,
+                        "user_id": user.id,
                         "limit_val": limit or 50,
                     },
                 )
@@ -354,7 +355,7 @@ class SemanticMemoryManager:
                 or_query_sql,
                 {
                     "tsquery": tsquery_string_or,
-                    "user_id": actor.id,
+                    "user_id": user.id,
                     "limit_val": limit or 50,
                 },
             )
@@ -413,7 +414,7 @@ class SemanticMemoryManager:
     @update_timezone
     @enforce_types
     def get_semantic_item_by_id(
-        self, semantic_memory_id: str, actor: PydanticUser, timezone_str: str
+        self, semantic_memory_id: str, user: PydanticUser, timezone_str: str
     ) -> Optional[PydanticSemanticMemoryItem]:
         """Fetch a semantic memory item by ID (with Redis JSON caching)."""
         # Try Redis cache first (JSON-based for memory tables)
@@ -434,7 +435,7 @@ class SemanticMemoryManager:
         with self.session_maker() as session:
             try:
                 semantic_memory_item = SemanticMemoryItem.read(
-                    db_session=session, identifier=semantic_memory_id, actor=actor
+                    db_session=session, identifier=semantic_memory_id, actor=user
                 )
                 pydantic_item = semantic_memory_item.to_pydantic()
                 
@@ -457,7 +458,7 @@ class SemanticMemoryManager:
     @update_timezone
     @enforce_types
     def get_most_recently_updated_item(
-        self, actor: PydanticUser, timezone_str: str = None
+        self, user: PydanticUser, timezone_str: str = None
     ) -> Optional[PydanticSemanticMemoryItem]:
         """
         Fetch the most recently updated semantic memory item based on last_modify timestamp.
@@ -475,7 +476,7 @@ class SemanticMemoryManager:
             )
 
             # Filter by user_id for multi-user support
-            query = query.where(SemanticMemoryItem.user_id == actor.id)
+            query = query.where(SemanticMemoryItem.user_id == user.id)
 
             result = session.execute(query.limit(1))
             item = result.scalar_one_or_none()
@@ -484,15 +485,26 @@ class SemanticMemoryManager:
 
     @enforce_types
     def create_item(
-        self, item_data: PydanticSemanticMemoryItem, actor: PydanticUser, use_cache: bool = True
+        self, 
+        item_data: PydanticSemanticMemoryItem, 
+        actor: PydanticClient,
+        client_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        use_cache: bool = True
     ) -> PydanticSemanticMemoryItem:
         """Create a new semantic memory item.
         
         Args:
             item_data: The semantic memory data to create
-            actor: User performing the operation
+            actor: Client performing the operation (for audit trail)
+            client_id: Client application identifier (defaults to actor.id)
+            user_id: End-user identifier (optional)
             use_cache: If True, cache in Redis. If False, skip caching.
         """
+        
+        # Backward compatibility
+        if client_id is None:
+            client_id = actor.id
 
         # Ensure ID is set before model_dump
         if not item_data.id:
@@ -510,8 +522,14 @@ class SemanticMemoryManager:
                     f"Required field '{field}' missing from semantic memory data"
                 )
 
-        # Set user_id from actor for multi-user support
-        data_dict["user_id"] = actor.id
+        # Set client_id and user_id on the memory
+        data_dict["client_id"] = client_id
+        data_dict["user_id"] = user_id
+        
+        logger.debug(
+            "create_item: client_id=%s, user_id=%s", 
+            client_id, user_id
+        )
 
         with self.session_maker() as session:
             item = SemanticMemoryItem(**data_dict)
@@ -520,33 +538,35 @@ class SemanticMemoryManager:
 
     @enforce_types
     def update_item(
-        self, item_update: SemanticMemoryItemUpdate, actor: PydanticUser
+        self, item_update: SemanticMemoryItemUpdate, user: PydanticUser
     ) -> PydanticSemanticMemoryItem:
         """Update an existing semantic memory item."""
         with self.session_maker() as session:
             item = SemanticMemoryItem.read(
-                db_session=session, identifier=item_update.id, actor=actor
+                db_session=session, identifier=item_update.id, actor=user
             )
             update_data = item_update.model_dump(exclude_unset=True)
             for k, v in update_data.items():
                 if k not in ["id", "updated_at"]:  # Exclude updated_at - handled by update() method
                     setattr(item, k, v)
             # updated_at is automatically set to current UTC time by item.update()
-            item.update_with_redis(session, actor=actor)  # ⭐ Updates Redis JSON cache
+            item.update_with_redis(session, actor=user)  # ⭐ Updates Redis JSON cache
             return item.to_pydantic()
 
     @enforce_types
     def create_many_items(
-        self, items: List[PydanticSemanticMemoryItem], actor: PydanticUser
+        self, 
+        items: List[PydanticSemanticMemoryItem], 
+        user: PydanticUser,
     ) -> List[PydanticSemanticMemoryItem]:
         """Create multiple semantic memory items."""
-        return [self.create_item(i, actor) for i in items]
+        return [self.create_item(i, user) for i in items]
 
-    def get_total_number_of_items(self, actor: PydanticUser) -> int:
+    def get_total_number_of_items(self, user: PydanticUser) -> int:
         """Get the total number of items in the semantic memory for the user."""
         with self.session_maker() as session:
             query = select(func.count(SemanticMemoryItem.id)).where(
-                SemanticMemoryItem.user_id == actor.id
+                SemanticMemoryItem.user_id == user.id
             )
             result = session.execute(query)
             return result.scalar_one()
@@ -556,7 +576,7 @@ class SemanticMemoryManager:
     def list_semantic_items(
         self,
         agent_state: AgentState,
-        actor: PydanticUser,
+        user: PydanticUser,
         query: str = "",
         embedded_text: Optional[List[float]] = None,
         search_field: str = "",
@@ -614,7 +634,7 @@ class SemanticMemoryManager:
                     results = redis_client.search_recent(
                         index_name=redis_client.SEMANTIC_INDEX,
                         limit=limit or 50,
-                        user_id=actor.id,
+                        user_id=user.id,
                         sort_by="created_at_ts",
                         filter_tags=filter_tags
                     )
@@ -641,7 +661,7 @@ class SemanticMemoryManager:
                         embedding=embedded_text,
                         vector_field=vector_field,
                         limit=limit or 50,
-                        user_id=actor.id,
+                        user_id=user.id,
                         filter_tags=filter_tags
                     )
                     if results:
@@ -659,7 +679,7 @@ class SemanticMemoryManager:
                         query=query,
                         search_fields=fields,
                         limit=limit or 50,
-                        user_id=actor.id,
+                        user_id=user.id,
                         filter_tags=filter_tags
                     )
                     if results:
@@ -688,7 +708,7 @@ class SemanticMemoryManager:
 
                 query_stmt = (
                     select(SemanticMemoryItem)
-                    .where(SemanticMemoryItem.user_id == actor.id)
+                    .where(SemanticMemoryItem.user_id == user.id)
                     .order_by(
                         cast(
                             text("semantic_memory.last_modify ->> 'timestamp'"),
@@ -725,7 +745,7 @@ class SemanticMemoryManager:
                     SemanticMemoryItem.last_modify.label("last_modify"),
                     SemanticMemoryItem.user_id.label("user_id"),
                     SemanticMemoryItem.agent_id.label("agent_id"),
-                ).where(SemanticMemoryItem.user_id == actor.id)
+                ).where(SemanticMemoryItem.user_id == user.id)
                 
                 # Apply filter_tags if provided
                 if filter_tags:
@@ -766,7 +786,7 @@ class SemanticMemoryManager:
                         # Load all candidate items (memory-intensive, kept for compatibility)
                         result = session.execute(
                             select(SemanticMemoryItem).where(
-                                SemanticMemoryItem.user_id == actor.id
+                                SemanticMemoryItem.user_id == user.id
                             )
                         )
                         all_items = result.scalars().all()
@@ -826,7 +846,7 @@ class SemanticMemoryManager:
                     # Fuzzy matching: load all candidate items into memory and compute a fuzzy match score.
                     result = session.execute(
                         select(SemanticMemoryItem).where(
-                            SemanticMemoryItem.user_id == actor.id
+                            SemanticMemoryItem.user_id == user.id
                         )
                     )
                     all_items = result.scalars().all()
@@ -865,7 +885,7 @@ class SemanticMemoryManager:
     @enforce_types
     def insert_semantic_item(
         self,
-        actor: PydanticUser,
+        actor: PydanticClient,
         agent_state: AgentState,
         agent_id: str,
         name: str,
@@ -875,11 +895,21 @@ class SemanticMemoryManager:
         organization_id: str,
         filter_tags: Optional[dict] = None,
         use_cache: bool = True,
+        client_id: Optional[str] = None,
+        user_id: Optional[str] = None,
     ) -> PydanticSemanticMemoryItem:
         """
         Create a new semantic memory entry using provided parameters.
         """
         try:
+            # Set defaults for required fields
+            from mirix.services.user_manager import UserManager
+            if client_id is None:
+                client_id = actor.id
+            if user_id is None:
+                user_id = UserManager.DEFAULT_USER_ID
+                logger.debug("user_id not provided, using DEFAULT_USER_ID: %s", user_id)
+            
             # Conditionally calculate embeddings based on BUILD_EMBEDDINGS_FOR_MEMORY flag
             if BUILD_EMBEDDINGS_FOR_MEMORY:
                 # TODO: need to check if we need to chunk the text
@@ -896,7 +926,8 @@ class SemanticMemoryManager:
 
             semantic_item = self.create_item(
                 item_data=PydanticSemanticMemoryItem(
-                    user_id=actor.id,
+                    client_id=client_id,  # Required field: client app that created this memory
+                    user_id=user_id,  # Required field: end-user who owns this memory
                     agent_id=agent_id,
                     name=name,
                     summary=summary,
@@ -911,6 +942,8 @@ class SemanticMemoryManager:
                 ),
                 actor=actor,
                 use_cache=use_cache,
+                client_id=client_id,
+                user_id=user_id,
             )
 
             # Note: Item is already added to clustering tree in create_item()
@@ -919,7 +952,7 @@ class SemanticMemoryManager:
             raise e
 
     def delete_semantic_item_by_id(
-        self, semantic_memory_id: str, actor: PydanticUser
+        self, semantic_memory_id: str, actor: PydanticClient
     ) -> None:
         """Delete a semantic memory item by ID (removes from Redis cache)."""
         with self.session_maker() as session:

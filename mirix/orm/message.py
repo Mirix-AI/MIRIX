@@ -30,6 +30,8 @@ class Message(SqlalchemyBase, OrganizationMixin, UserMixin, AgentMixin):
     __table_args__ = (
         Index("ix_messages_agent_created_at", "agent_id", "created_at"),
         Index("ix_messages_created_at", "created_at", "id"),
+        Index("ix_messages_client_user", "client_id", "user_id"),
+        Index("ix_messages_agent_client_user", "agent_id", "client_id", "user_id"),
     )
     __pydantic_model__ = PydanticMessage
 
@@ -56,6 +58,13 @@ class Message(SqlalchemyBase, OrganizationMixin, UserMixin, AgentMixin):
         nullable=True,
         default=None,
         doc="Custom filter tags for filtering and categorization"
+    )
+    
+    # Foreign key to client (for access control and filtering)
+    client_id: Mapped[Optional[str]] = mapped_column(
+        ForeignKey("clients.id", ondelete="CASCADE"),
+        nullable=True,
+        doc="ID of the client application that created this message",
     )
     
     step_id: Mapped[Optional[str]] = mapped_column(

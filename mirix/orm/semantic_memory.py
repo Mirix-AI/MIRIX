@@ -51,6 +51,14 @@ class SemanticMemoryItem(SqlalchemyBase, OrganizationMixin, UserMixin):
         doc="ID of the agent this semantic memory item belongs to",
     )
 
+    # Foreign key to client (for access control and filtering)
+    client_id: Mapped[Optional[str]] = mapped_column(
+        String,
+        ForeignKey("clients.id", ondelete="CASCADE"),
+        nullable=True,
+        doc="ID of the client application that created this item",
+    )
+
     # The name of the concept or the object
     name: Mapped[str] = mapped_column(
         String, doc="The title or main concept for the knowledge entry"

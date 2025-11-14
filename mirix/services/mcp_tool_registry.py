@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional
 from mirix.functions.mcp_client import get_mcp_client_manager
 from mirix.orm.enums import ToolType
 from mirix.schemas.tool import Tool as PydanticTool
-from mirix.schemas.user import User as PydanticUser
+from mirix.schemas.client import Client as PydanticClient
 from mirix.services.tool_manager import ToolManager
 from mirix.utils import printd
 
@@ -59,7 +59,7 @@ class MCPToolRegistry:
             return {}
 
     def register_mcp_tools(
-        self, actor: PydanticUser, server_filter: Optional[List[str]] = None
+        self, actor: PydanticClient, server_filter: Optional[List[str]] = None
     ) -> List[PydanticTool]:
         """
         Register discovered MCP tools in the database
@@ -217,7 +217,7 @@ class MCPToolRegistry:
         return type_map.get(json_type, "str")
 
     def unregister_mcp_tools(
-        self, actor: PydanticUser, server_name: Optional[str] = None
+        self, actor: PydanticClient, server_name: Optional[str] = None
     ) -> int:
         """
         Unregister MCP tools from database
@@ -252,7 +252,7 @@ class MCPToolRegistry:
             logger.error("Error unregistering MCP tools: %s", str(e))
             return []
 
-    def sync_mcp_tools(self, actor: PydanticUser) -> Dict[str, int]:
+    def sync_mcp_tools(self, actor: PydanticClient) -> Dict[str, int]:
         """
         Synchronize database with currently available MCP tools
 

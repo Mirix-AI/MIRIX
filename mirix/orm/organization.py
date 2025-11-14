@@ -8,6 +8,7 @@ from mirix.schemas.organization import Organization as PydanticOrganization
 if TYPE_CHECKING:
     from mirix.orm.agent import Agent
     from mirix.orm.block import Block
+    from mirix.orm.client import Client
     from mirix.orm.cloud_file_mapping import CloudFileMapping
     from mirix.orm.episodic_memory import EpisodicEvent
     from mirix.orm.file import FileMetadata
@@ -32,6 +33,9 @@ class Organization(SqlalchemyBase):
     # relationships
     users: Mapped[List["User"]] = relationship(
         "User", back_populates="organization", cascade="all, delete-orphan"
+    )
+    clients: Mapped[List["Client"]] = relationship(
+        "Client", back_populates="organization", cascade="all, delete-orphan"
     )
     tools: Mapped[List["Tool"]] = relationship(
         "Tool", back_populates="organization", cascade="all, delete-orphan"

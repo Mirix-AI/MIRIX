@@ -143,6 +143,9 @@ class Message(BaseMessage):
     user_id: Optional[str] = Field(
         None, description="The unique identifier of the user."
     )
+    client_id: Optional[str] = Field(
+        None, description="The unique identifier of the client application."
+    )
     agent_id: Optional[str] = Field(
         None, description="The unique identifier of the agent."
     )

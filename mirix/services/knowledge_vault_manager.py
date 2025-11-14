@@ -13,6 +13,7 @@ from mirix.helpers.converters import deserialize_vector
 from mirix.orm.errors import NoResultFound
 from mirix.orm.knowledge_vault import KnowledgeVaultItem
 from mirix.schemas.agent import AgentState
+from mirix.schemas.client import Client as PydanticClient
 from mirix.schemas.knowledge_vault import (
     KnowledgeVaultItem as PydanticKnowledgeVaultItem,
 )
@@ -298,7 +299,7 @@ class KnowledgeVaultManager:
 
             query_params = {
                 "tsquery": tsquery_string_and,
-                "user_id": actor.id,
+                "user_id": user.id,
                 "limit_val": limit or 50,
             }
             if sensitivity is not None:
@@ -353,7 +354,7 @@ class KnowledgeVaultManager:
 
             query_params = {
                 "tsquery": tsquery_string_or,
-                "user_id": actor.id,
+                "user_id": user.id,
                 "limit_val": limit or 50,
             }
             if sensitivity is not None:
@@ -398,7 +399,7 @@ class KnowledgeVaultManager:
             fallback_query = (
                 select(KnowledgeVaultItem)
                 .where(func.lower(fallback_field).contains(query_text.lower()))
-                .where(KnowledgeVaultItem.user_id == actor.id)
+                .where(KnowledgeVaultItem.user_id == user.id)
             )
 
             # Add sensitivity filter to fallback query if provided
@@ -421,7 +422,7 @@ class KnowledgeVaultManager:
     @update_timezone
     @enforce_types
     def get_item_by_id(
-        self, knowledge_vault_item_id: str, actor: PydanticUser, timezone_str: str
+        self, knowledge_vault_item_id: str, user: PydanticUser, timezone_str: str
     ) -> Optional[PydanticKnowledgeVaultItem]:
         """Fetch a knowledge vault item by ID (with Redis JSON caching)."""
         # Try Redis cache first
@@ -465,7 +466,7 @@ class KnowledgeVaultManager:
     @update_timezone
     @enforce_types
     def get_most_recently_updated_item(
-        self, actor: PydanticUser, timezone_str: str = None
+        self, user: PydanticUser, timezone_str: str = None
     ) -> Optional[PydanticKnowledgeVaultItem]:
         """
         Fetch the most recently updated knowledge vault item based on last_modify timestamp.
@@ -483,7 +484,7 @@ class KnowledgeVaultManager:
             )
 
             # Filter by user_id for multi-user support
-            query = query.where(KnowledgeVaultItem.user_id == actor.id)
+            query = query.where(KnowledgeVaultItem.user_id == user.id)
 
             result = session.execute(query.limit(1))
             item = result.scalar_one_or_none()
@@ -492,13 +493,20 @@ class KnowledgeVaultManager:
 
     @enforce_types
     def create_item(
-        self, knowledge_vault_item: PydanticKnowledgeVaultItem, actor: PydanticUser, use_cache: bool = True
+        self, 
+        knowledge_vault_item: PydanticKnowledgeVaultItem, 
+        actor: PydanticClient,
+        client_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        use_cache: bool = True
     ) -> PydanticKnowledgeVaultItem:
         """Create a new knowledge vault item.
         
         Args:
             knowledge_vault_item: The knowledge vault data to create
-            actor: User performing the operation
+            actor: Client performing the operation (for audit trail)
+            client_id: Client application identifier (defaults to actor.id)
+            user_id: End-user identifier (optional)
             use_cache: If True, cache in Redis. If False, skip caching.
         """
 
@@ -520,8 +528,14 @@ class KnowledgeVaultManager:
                     f"Required field '{field}' missing from knowledge vault item data"
                 )
 
-        # Set user_id from actor for multi-user support
-        item_data["user_id"] = actor.id
+        # Set client_id and user_id on the memory
+        item_data["client_id"] = client_id
+        item_data["user_id"] = user_id
+        
+        logger.debug(
+            "create_item: client_id=%s, user_id=%s", 
+            client_id, user_id
+        )
 
         # Create the knowledge vault item
         with self.session_maker() as session:
@@ -533,15 +547,17 @@ class KnowledgeVaultManager:
 
     @enforce_types
     def create_many_items(
-        self, knowledge_vault: List[PydanticKnowledgeVaultItem], actor: PydanticUser
+        self, 
+        knowledge_vault: List[PydanticKnowledgeVaultItem], 
+        user: PydanticUser,
     ) -> List[PydanticKnowledgeVaultItem]:
         """Create multiple knowledge vault items."""
-        return [self.create_item(k, actor) for k in knowledge_vault]
+        return [self.create_item(k, user) for k in knowledge_vault]
 
     @enforce_types
     def insert_knowledge(
         self,
-        actor: PydanticUser,
+        actor: PydanticClient,
         agent_state: AgentState,
         agent_id: str,
         entry_type: str,
@@ -552,6 +568,7 @@ class KnowledgeVaultManager:
         organization_id: str,
         filter_tags: Optional[dict] = None,
         use_cache: bool = True,
+        user_id: Optional[str] = None,
     ):
         """Insert knowledge into the knowledge vault."""
         try:
@@ -564,9 +581,16 @@ class KnowledgeVaultManager:
                 caption_embedding = None
                 embedding_config = None
 
+            # Set client_id from actor, user_id with fallback to DEFAULT_USER_ID
+            from mirix.services.user_manager import UserManager
+            
+            client_id = actor.id  # Always derive from actor
+            if user_id is None:
+                user_id = UserManager.DEFAULT_USER_ID
+
             knowledge = self.create_item(
                 PydanticKnowledgeVaultItem(
-                    user_id=actor.id,
+                    user_id=user_id,
                     agent_id=agent_id,
                     entry_type=entry_type,
                     source=source,
@@ -579,6 +603,8 @@ class KnowledgeVaultManager:
                     filter_tags=filter_tags,
                 ),
                 actor=actor,
+                client_id=client_id,
+                user_id=user_id,
                 use_cache=use_cache,
             )
             return knowledge
@@ -586,11 +612,11 @@ class KnowledgeVaultManager:
         except Exception as e:
             raise e
 
-    def get_total_number_of_items(self, actor: PydanticUser) -> int:
+    def get_total_number_of_items(self, user: PydanticUser) -> int:
         """Get the total number of items in the knowledge vault for the user."""
         with self.session_maker() as session:
             query = select(func.count(KnowledgeVaultItem.id)).where(
-                KnowledgeVaultItem.user_id == actor.id
+                KnowledgeVaultItem.user_id == user.id
             )
             result = session.execute(query)
             return result.scalar_one()
@@ -600,7 +626,7 @@ class KnowledgeVaultManager:
     def list_knowledge(
         self,
         agent_state: AgentState,
-        actor: PydanticUser,
+        user: PydanticUser,
         query: str = "",
         embedded_text: Optional[List[float]] = None,
         search_field: str = "",
@@ -659,7 +685,7 @@ class KnowledgeVaultManager:
                     results = redis_client.search_recent(
                         index_name=redis_client.KNOWLEDGE_INDEX,
                         limit=limit or 50,
-                        user_id=actor.id,
+                        user_id=user.id,
                         filter_tags=filter_tags
                     )
                     if results:
@@ -682,7 +708,7 @@ class KnowledgeVaultManager:
                         embedding=embedded_text,
                         vector_field="caption_embedding",
                         limit=limit or 50,
-                        user_id=actor.id,
+                        user_id=user.id,
                         filter_tags=filter_tags
                     )
                     if results:
@@ -699,7 +725,7 @@ class KnowledgeVaultManager:
                         query=query,
                         search_fields=fields,
                         limit=limit or 50,
-                        user_id=actor.id,
+                        user_id=user.id,
                         filter_tags=filter_tags
                     )
                     if results:
@@ -724,7 +750,7 @@ class KnowledgeVaultManager:
 
                 query_stmt = (
                     select(KnowledgeVaultItem)
-                    .where(KnowledgeVaultItem.user_id == actor.id)
+                    .where(KnowledgeVaultItem.user_id == user.id)
                     .order_by(
                         cast(
                             text("knowledge_vault.last_modify ->> 'timestamp'"),
@@ -762,7 +788,7 @@ class KnowledgeVaultManager:
                     KnowledgeVaultItem.last_modify.label("last_modify"),
                     KnowledgeVaultItem.user_id.label("user_id"),
                     KnowledgeVaultItem.agent_id.label("agent_id"),
-                ).where(KnowledgeVaultItem.user_id == actor.id)
+                ).where(KnowledgeVaultItem.user_id == user.id)
 
                 # Add sensitivity filter to base query if provided
                 if sensitivity is not None:
@@ -814,7 +840,7 @@ class KnowledgeVaultManager:
                         # Fallback to in-memory BM25 for SQLite (legacy method)
                         # Load all candidate items (memory-intensive, kept for compatibility)
                         fuzzy_query = select(KnowledgeVaultItem).where(
-                            KnowledgeVaultItem.user_id == actor.id
+                            KnowledgeVaultItem.user_id == user.id
                         )
 
                         # Add sensitivity filter if provided
@@ -881,7 +907,7 @@ class KnowledgeVaultManager:
                     # Fuzzy matching: load all candidate items into memory,
                     # then compute fuzzy matching score using RapidFuzz.
                     fuzzy_query = select(KnowledgeVaultItem).where(
-                        KnowledgeVaultItem.user_id == actor.id
+                        KnowledgeVaultItem.user_id == user.id
                     )
 
                     # Add sensitivity filter if provided
@@ -927,7 +953,7 @@ class KnowledgeVaultManager:
 
     @enforce_types
     def delete_knowledge_by_id(
-        self, knowledge_vault_item_id: str, actor: PydanticUser
+        self, knowledge_vault_item_id: str, actor: PydanticClient
     ) -> None:
         """Delete a knowledge vault item by ID (removes from Redis cache)."""
         with self.session_maker() as session:

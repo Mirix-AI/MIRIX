@@ -1517,7 +1517,7 @@ class LocalClient(AbstractClient):
         Returns:
             persona (Persona): Updated persona block
         """
-        blocks = self.server.block_manager.get_blocks(self.user)
+        blocks = self.server.block_manager.get_blocks(user=self.user)
         persona_block = [block for block in blocks if block.label == "persona"][0]
         return self.server.block_manager.update_block(
             block_id=persona_block.id,

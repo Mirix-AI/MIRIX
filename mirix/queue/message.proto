@@ -20,7 +20,7 @@ message QueueMessage {
   // Optional chaining flag
   optional bool chaining = 4;
   
-  // Optional user identifier
+  // User ID - identifies the end user within the client application
   optional string user_id = 5;
   
   // Optional verbose flag

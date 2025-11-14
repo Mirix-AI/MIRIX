@@ -97,7 +97,8 @@ def update_timezone(func):
         if timezone_str is None:
             # try finding the actor:
             actor = kwargs.get("actor", None)
-            timezone_str = actor.timezone if actor else None
+            # Client model doesn't have timezone, User model does - use default UTC
+            timezone_str = getattr(actor, 'timezone', 'UTC') if actor else None
 
         # Call the original function to get its result
         results = func(*args, **kwargs)

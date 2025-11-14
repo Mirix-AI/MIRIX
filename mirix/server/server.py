@@ -82,8 +82,10 @@ from mirix.schemas.providers import (
 from mirix.schemas.tool import Tool
 from mirix.schemas.usage import MirixUsageStatistics
 from mirix.schemas.user import User
+from mirix.schemas.client import Client
 from mirix.services.agent_manager import AgentManager
 from mirix.services.block_manager import BlockManager
+from mirix.services.client_manager import ClientManager
 from mirix.services.cloud_file_mapping_manager import CloudFileMappingManager
 from mirix.services.episodic_memory_manager import EpisodicMemoryManager
 from mirix.services.knowledge_vault_manager import KnowledgeVaultManager
@@ -123,7 +125,7 @@ class Server(object):
 
     @abstractmethod
     def update_agent_core_memory(
-        self, user_id: str, agent_id: str, label: str, actor: User
+        self, user_id: str, agent_id: str, label: str, actor: Client
     ) -> Memory:
         """Update the agents core memory block, return the new state"""
         raise NotImplementedError
@@ -132,7 +134,7 @@ class Server(object):
     def create_agent(
         self,
         request: CreateAgent,
-        actor: User,
+        actor: Client,
         # interface
         interface: Union[AgentInterface, None] = None,
     ) -> AgentState:
@@ -475,6 +477,7 @@ class SyncServer(Server):
         # Managers that interface with data models
         self.organization_manager = OrganizationManager()
         self.user_manager = UserManager()
+        self.client_manager = ClientManager()
         self.tool_manager = ToolManager()
         self.block_manager = BlockManager()
         self.message_manager = MessageManager()
@@ -501,8 +504,9 @@ class SyncServer(Server):
         if init_with_default_org_and_user:
             self.default_org = self.organization_manager.create_default_organization()
             self.default_user = self.user_manager.create_default_user()
+            self.default_client = self.client_manager.create_default_client()
             # self.block_manager.add_default_blocks(actor=self.default_user)
-            self.tool_manager.upsert_base_tools(actor=self.default_user)
+            self.tool_manager.upsert_base_tools(actor=self.default_client)
 
         # collect providers (always has Mirix as a default)
         self._enabled_providers: List[Provider] = [MirixProvider()]
@@ -599,7 +603,7 @@ class SyncServer(Server):
             )
 
     def load_agent(
-        self, agent_id: str, actor: User, interface: Union[AgentInterface, None] = None, filter_tags: Optional[dict] = None, use_cache: bool = True
+        self, agent_id: str, actor: Client, interface: Union[AgentInterface, None] = None, filter_tags: Optional[dict] = None, use_cache: bool = True, user: Optional[User] = None
     ) -> Agent:
         """Updated method to load agents from persisted storage"""
         agent_lock = self.per_agent_lock_manager.get_lock(agent_id)
@@ -610,43 +614,50 @@ class SyncServer(Server):
 
             interface = interface or self.default_interface_factory()
             if agent_state.agent_type == AgentType.chat_agent:
-                agent = Agent(agent_state=agent_state, interface=interface, user=actor, filter_tags=filter_tags, use_cache=use_cache)
+                agent = Agent(
+                    agent_state=agent_state, interface=interface, actor=actor, filter_tags=filter_tags, use_cache=use_cache, user=user
+                    )
             elif agent_state.agent_type == AgentType.episodic_memory_agent:
                 agent = EpisodicMemoryAgent(
-                    agent_state=agent_state, interface=interface, user=actor, filter_tags=filter_tags, use_cache=use_cache
+                    agent_state=agent_state, interface=interface, actor=actor, filter_tags=filter_tags, use_cache=use_cache, user=user
                 )
             elif agent_state.agent_type == AgentType.knowledge_vault_memory_agent:
                 agent = KnowledgeVaultAgent(
-                    agent_state=agent_state, interface=interface, user=actor, filter_tags=filter_tags, use_cache=use_cache
+                    agent_state=agent_state, interface=interface, actor=actor, filter_tags=filter_tags, use_cache=use_cache, user=user
                 )
             elif agent_state.agent_type == AgentType.procedural_memory_agent:
                 agent = ProceduralMemoryAgent(
-                    agent_state=agent_state, interface=interface, user=actor, filter_tags=filter_tags, use_cache=use_cache
+                    agent_state=agent_state, interface=interface, actor=actor, filter_tags=filter_tags, use_cache=use_cache, user=user
                 )
             elif agent_state.agent_type == AgentType.resource_memory_agent:
                 agent = ResourceMemoryAgent(
-                    agent_state=agent_state, interface=interface, user=actor, filter_tags=filter_tags, use_cache=use_cache
+                    agent_state=agent_state, interface=interface, actor=actor, filter_tags=filter_tags, use_cache=use_cache, user=user
                 )
             elif agent_state.agent_type == AgentType.meta_memory_agent:
-                logger.info(f"🏷️  Loading MetaMemoryAgent with filter_tags={filter_tags}")
+                logger.info(
+                    "🏷️  Loading MetaMemoryAgent with filter_tags=%s, client_id=%s, user_id=%s",
+                    filter_tags,
+                    actor.id,
+                    user.id if user else None
+                )
                 agent = MetaMemoryAgent(
-                    agent_state=agent_state, interface=interface, user=actor, filter_tags=filter_tags, use_cache=use_cache
+                    agent_state=agent_state, interface=interface, actor=actor, filter_tags=filter_tags, use_cache=use_cache, user=user
                 )
             elif agent_state.agent_type == AgentType.semantic_memory_agent:
                 agent = SemanticMemoryAgent(
-                    agent_state=agent_state, interface=interface, user=actor, filter_tags=filter_tags, use_cache=use_cache
+                    agent_state=agent_state, interface=interface, actor=actor, filter_tags=filter_tags, use_cache=use_cache, user=user
                 )
             elif agent_state.agent_type == AgentType.core_memory_agent:
                 agent = CoreMemoryAgent(
-                    agent_state=agent_state, interface=interface, user=actor, filter_tags=filter_tags, use_cache=use_cache
+                    agent_state=agent_state, interface=interface, actor=actor, filter_tags=filter_tags, use_cache=use_cache, user=user
                 )
             elif agent_state.agent_type == AgentType.reflexion_agent:
                 agent = ReflexionAgent(
-                    agent_state=agent_state, interface=interface, user=actor, filter_tags=filter_tags, use_cache=use_cache
+                    agent_state=agent_state, interface=interface, actor=actor, filter_tags=filter_tags, use_cache=use_cache, user=user
                 )
             elif agent_state.agent_type == AgentType.background_agent:
                 agent = BackgroundAgent(
-                    agent_state=agent_state, interface=interface, user=actor, filter_tags=filter_tags, use_cache=use_cache
+                    agent_state=agent_state, interface=interface, actor=actor, filter_tags=filter_tags, use_cache=use_cache, user=user
                 )
             else:
                 raise ValueError(f"Invalid agent type {agent_state.agent_type}")
@@ -655,10 +666,11 @@ class SyncServer(Server):
 
     def _step(
         self,
-        actor: User,
+        actor: Client,
         agent_id: str,
         input_messages: Union[Message, List[Message]],
         chaining: Optional[bool] = None,
+        user: Optional[User] = None,
         filter_tags: Optional[dict] = None,
         use_cache: bool = True,
     ) -> MirixUsageStatistics:
@@ -667,7 +679,7 @@ class SyncServer(Server):
         mirix_agent = None
         try:
             mirix_agent = self.load_agent(
-                agent_id=agent_id, interface=None, actor=actor, filter_tags=filter_tags, use_cache=use_cache
+                agent_id=agent_id, interface=None, actor=actor, filter_tags=filter_tags, use_cache=use_cache, user=user
             )
 
             if mirix_agent is None:
@@ -697,13 +709,18 @@ class SyncServer(Server):
                 logger.debug("Created meta_message with filter_tags=%s", filter_tags)
                 input_messages.append(meta_message)
 
+            # Note: user object is already retrieved in load_agent() above
+            # actor (Client) for write operations (agent_manager, message persistence)
+            # user (User) for read operations (block_manager, memory filtering)
+
             usage_stats = mirix_agent.step(
                 input_messages=input_messages,
                 chaining=effective_chaining,
                 max_chaining_steps=self.max_chaining_steps,
                 stream=token_streaming,
                 skip_verify=True,
-                user=actor
+                actor=actor,  # Client for write operations (audit trail)
+                user=user     # User for read operations (data filtering)
             )
 
         except Exception as e:
@@ -961,7 +978,7 @@ class SyncServer(Server):
         # Run the agent state forward
         return self._step(actor=actor, agent_id=agent_id, input_messages=message)
 
-    def construct_system_message(self, agent_id: str, message: str, actor: User) -> str:
+    def construct_system_message(self, agent_id: str, message: str, actor: Client) -> str:
         """
         Construct a system message from a message.
         """
@@ -973,7 +990,7 @@ class SyncServer(Server):
         return mirix_agent.construct_system_message(message=message)
 
     def extract_memory_for_system_prompt(
-        self, agent_id: str, message: str, actor: User
+        self, agent_id: str, message: str, actor: Client
     ) -> str:
         """
         Construct a system message from a message.
@@ -987,10 +1004,11 @@ class SyncServer(Server):
 
     def send_messages(
         self,
-        actor: User,
+        actor: Client,
         agent_id: str,
         input_messages: List[MessageCreate],
         chaining: Optional[bool] = True,
+        user: Optional[User] = None,
         verbose: Optional[bool] = None,
         filter_tags: Optional[dict] = None,
         use_cache: bool = True,
@@ -1009,6 +1027,7 @@ class SyncServer(Server):
                 agent_id=agent_id,
                 input_messages=input_messages,
                 chaining=chaining,
+                user=user,
                 filter_tags=filter_tags,
                 use_cache=use_cache,
             )
@@ -1030,7 +1049,7 @@ class SyncServer(Server):
     def create_agent(
         self,
         request: CreateAgent,
-        actor: User,
+        actor: Client,
         # interface
         interface: Union[AgentInterface, None] = None,
     ) -> AgentState:
@@ -1060,12 +1079,12 @@ class SyncServer(Server):
         )
 
     # TODO: These can be moved to agent_manager
-    def get_agent_memory(self, agent_id: str, actor: User) -> Memory:
+    def get_agent_memory(self, agent_id: str, actor: Client) -> Memory:
         """Return the memory of an agent (core memory)"""
         return self.agent_manager.get_agent_by_id(agent_id=agent_id, actor=actor).memory
 
     def get_recall_memory_summary(
-        self, agent_id: str, actor: User
+        self, agent_id: str, actor: Client
     ) -> RecallMemorySummary:
         return RecallMemorySummary(
             size=self.message_manager.size(actor=actor, agent_id=agent_id)
@@ -1149,7 +1168,7 @@ class SyncServer(Server):
         return response
 
     def update_agent_core_memory(
-        self, agent_id: str, label: str, value: str, actor: User
+        self, agent_id: str, label: str, value: str, actor: Client
     ) -> Memory:
         """Update the value of a block in the agent's memory"""
 
@@ -1169,7 +1188,7 @@ class SyncServer(Server):
         ).memory
 
     def update_agent_message(
-        self, message_id: str, request: MessageUpdate, actor: User
+        self, message_id: str, request: MessageUpdate, actor: Client
     ) -> Message:
         """Update the details of a message associated with an agent"""
 
@@ -1303,14 +1322,14 @@ class SyncServer(Server):
         """Add a new embedding model"""
 
     def get_agent_context_window(
-        self, agent_id: str, actor: User
+        self, agent_id: str, actor: Client
     ) -> ContextWindowOverview:
         mirix_agent = self.load_agent(agent_id=agent_id, actor=actor)
         return mirix_agent.get_context_window()
 
     def run_tool_from_source(
         self,
-        actor: User,
+        actor: Client,
         tool_args: Dict[str, str],
         tool_source: str,
         tool_env_vars: Optional[Dict[str, str]] = None,
@@ -1389,7 +1408,7 @@ class SyncServer(Server):
     async def send_message_to_agent(
         self,
         agent_id: str,
-        actor: User,
+        actor: Client,
         # role: MessageRole,
         messages: Union[List[Message], List[MessageCreate]],
         stream_steps: bool,

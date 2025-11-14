@@ -11,8 +11,9 @@ from mirix.queue.queue_interface import QueueInterface
 from mirix.queue.memory_queue import MemoryQueue
 from mirix.queue.worker import QueueWorker
 from mirix.queue.message_pb2 import QueueMessage
+from mirix.log import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)  # Use Mirix logger for proper configuration
 
 
 class QueueManager:
@@ -40,7 +41,8 @@ class QueueManager:
             server: Optional server instance for worker to invoke APIs on
         """
         if self._initialized:
-            logger.debug("Queue manager already initialized - skipping duplicate initialization")
+            logger.warning("⚠️ Queue manager already initialized - skipping duplicate initialization")
+            logger.info(f"   Current state: worker={self._worker is not None}, running={self._worker._running if self._worker else False}")
             # Allow updating server if provided
             if server:
                 logger.info("Updating queue manager with server instance")
@@ -49,22 +51,44 @@ class QueueManager:
                     self._worker.set_server(server)
             return  # Already initialized
         
-        logger.info("Initializing queue manager with type: %s, server=%s", config.QUEUE_TYPE, 'provided' if server else 'None')
+        logger.info("🚀 Initializing queue manager with type: %s, server=%s", config.QUEUE_TYPE, 'provided' if server else 'None')
         
         self._server = server
         
         # Create appropriate queue based on configuration
+        logger.info("📝 Creating queue instance...")
         self._queue = self._create_queue()
+        logger.info(f"✅ Queue created: type={type(self._queue).__name__}")
         
         # Create and start the background worker
+        logger.info("👷 Creating background worker...")
         self._worker = QueueWorker(self._queue, server=self._server)
+        logger.info("✅ Worker created")
+        
+        logger.info("▶️  Starting background worker thread...")
         self._worker.start()
+        
+        # Give thread a moment to start and verify it's running
+        import time
+        time.sleep(0.1)
+        
+        worker_running = self._worker._running if self._worker else False
+        thread_alive = self._worker._thread.is_alive() if (self._worker and self._worker._thread) else False
+        
+        logger.info(f"🔍 Worker status: running={worker_running}, thread_alive={thread_alive}")
+        
+        if not worker_running or not thread_alive:
+            logger.error("❌ CRITICAL: Queue worker failed to start!")
+            logger.error(f"   Worker running: {worker_running}")
+            logger.error(f"   Thread alive: {thread_alive}")
+        else:
+            logger.info("✅ Queue worker started successfully!")
         
         # Register cleanup function to stop worker on exit
         atexit.register(self.cleanup)
         
         self._initialized = True
-        logger.debug("Queue manager initialized successfully")
+        logger.info("✅ Queue manager initialized successfully")
     
     def _create_queue(self) -> QueueInterface:
         """

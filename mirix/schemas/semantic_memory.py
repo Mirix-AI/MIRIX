@@ -41,6 +41,9 @@ class SemanticMemoryItem(SemanticMemoryItemBase):
     agent_id: Optional[str] = Field(
         None, description="The id of the agent this semantic memory item belongs to"
     )
+    client_id: Optional[str] = Field(
+        None, description="The id of the client application that created this item"
+    )
     user_id: str = Field(
         ..., description="The id of the user who generated the semantic memory"
     )

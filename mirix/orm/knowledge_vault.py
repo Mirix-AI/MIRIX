@@ -49,6 +49,14 @@ class KnowledgeVaultItem(SqlalchemyBase, OrganizationMixin, UserMixin):
         doc="ID of the agent this knowledge vault item belongs to",
     )
 
+    # Foreign key to client (for access control and filtering)
+    client_id: Mapped[Optional[str]] = mapped_column(
+        String,
+        ForeignKey("clients.id", ondelete="CASCADE"),
+        nullable=True,
+        doc="ID of the client application that created this item",
+    )
+
     # Distinguish the type/category of the entry
     entry_type: Mapped[str] = mapped_column(
         String,

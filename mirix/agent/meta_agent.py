@@ -174,6 +174,7 @@ class MetaAgent(BaseAgent):
         interface: Optional[AgentInterface] = None,
         filter_tags: Optional[dict] = None,  # Filter tags for memory operations
         use_cache: bool = True,  # Control Redis cache behavior
+        client_id: Optional[str] = None,  # Client application identifier
     ):
         """
         Initialize MetaAgent with memory sub-agents.
@@ -203,7 +204,8 @@ class MetaAgent(BaseAgent):
         from copy import deepcopy
         # Keep None as None, don't convert to empty dict - they have different meanings
         self.filter_tags = deepcopy(filter_tags) if filter_tags is not None else None
-        self.use_cache = use_cache
+        self.use_cache = use_cache  # Store use_cache for memory operations
+        self.client_id = client_id  # Store client_id for multi-tenant isolation
 
         # Set default configs if not provided
         if llm_config is None:
@@ -502,11 +504,16 @@ class MetaAgent(BaseAgent):
         """
         self.embedding_config = embedding_config
 
+        # Get Client object for actor parameter (needed for write operations)
+        actor = None
+        if self.client_id:
+            actor = self.server.client_manager.get_client_by_id(self.client_id)
+        
         for agent_state in self.memory_agent_states.get_all_agent_states_list():
             if agent_state is not None:
                 self.server.agent_manager.update_agent(
                     agent_id=agent_state.id,
-                    actor=self.user,
+                    actor=actor,  # Client for write operations (audit trail)
                     # Note: Would need UpdateAgent schema to include embedding_config
                     # For now, this is a placeholder
                 )
