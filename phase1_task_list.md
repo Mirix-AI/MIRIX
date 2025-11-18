@@ -32,10 +32,15 @@
   - resource_memory.py
   - knowledge_vault.py
 
-- [ ] **任务 3**: 创建 RawMemoryManager 服务类 (mirix/services/raw_memory_manager.py)
+- [x] **任务 3**: 创建 RawMemoryManager 服务类 (mirix/services/raw_memory_manager.py)
   - insert_raw_memory()
   - get_raw_memory_by_id()
   - mark_as_processed()
+  - get_unprocessed_raw_memories()
+  - get_raw_memories_by_source_app()
+  - get_raw_memories_by_ids()
+  - delete_raw_memory()
+  - update_raw_memory()
 
 ### OCR 和数据提取
 
@@ -119,4 +124,21 @@
   - ✅ 在 `resource_memory.py` 添加 raw_memory_references 字段 (line 87-92)
   - ✅ 在 `knowledge_vault.py` 添加 raw_memory_references 字段 (line 92-97)
   - ✅ 所有字段统一为 JSON 类型，default=list，nullable=False
+
+### 任务 3 完成记录 ✅
+- 开始时间: 2025-11-17
+- 完成时间: 2025-11-17
+- 备注:
+  - ✅ 创建 `mirix/services/raw_memory_manager.py` 文件
+  - ✅ 实现核心 CRUD 方法：
+    - `insert_raw_memory()` - 插入新的原始记忆，支持 OCR 文本嵌入
+    - `get_raw_memory_by_id()` - 根据 ID 获取原始记忆
+    - `mark_as_processed()` - 标记为已处理
+    - `get_unprocessed_raw_memories()` - 获取未处理的原始记忆
+    - `get_raw_memories_by_source_app()` - 按应用名称过滤
+    - `get_raw_memories_by_ids()` - 批量获取
+    - `delete_raw_memory()` - 删除原始记忆
+    - `update_raw_memory()` - 更新原始记忆（包括重新生成嵌入）
+  - ✅ 集成 embedding_model 支持向量搜索
+  - ✅ 使用 @enforce_types 装饰器确保类型安全
 
