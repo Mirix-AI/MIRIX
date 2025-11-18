@@ -63,6 +63,23 @@ class WriteToMemoryResponse(BaseModel):
     message: str
 
 
+class RawMemoryResponse(BaseModel):
+    id: str
+    screenshot_path: str
+    source_app: str
+    captured_at: str
+    ocr_text: Optional[str] = None
+    source_url: Optional[str] = None
+    google_cloud_url: Optional[str] = None
+    metadata_: Dict[str, Any] = {}
+    processed: bool
+    processing_count: int
+    user_id: str
+    organization_id: str
+    created_at: Optional[str] = None
+    has_embedding: bool = False
+
+
 def _extract_topic_from_history(messages: List[Message]) -> str:
     """Very simple topic extraction: use the last non-empty user message, otherwise last message."""
     if not messages:
@@ -293,6 +310,82 @@ async def write_to_memory(request: WriteToMemoryRequest):
     if agent is None:
         raise HTTPException(status_code=500, detail="Agent not initialized")
     return WriteToMemoryResponse(success=False, message="write_to_memory not implemented yet")
+
+
+@app.get("/memory/raw/{raw_memory_id}", response_model=RawMemoryResponse)
+async def get_raw_memory(raw_memory_id: str):
+    """
+    Get detailed information about a raw memory item by its ID.
+
+    This endpoint returns the complete raw memory data including:
+    - Screenshot metadata (path, source app, capture time)
+    - OCR extracted text and URLs
+    - Processing status
+    - Vector embedding availability
+
+    Args:
+        raw_memory_id: The unique ID of the raw memory item (format: rawmem-{uuid})
+
+    Returns:
+        RawMemoryResponse with complete raw memory details
+
+    Raises:
+        404: If raw memory item not found
+        500: If server error occurs
+    """
+    if agent is None:
+        raise HTTPException(status_code=500, detail="Agent not initialized")
+
+    try:
+        # Get current user
+        users = agent.client.server.user_manager.list_users()
+        active_user = next((u for u in users if u.status == "active"), None)
+        target_user = active_user if active_user else (users[0] if users else None)
+        if not target_user:
+            raise HTTPException(status_code=404, detail="No user found")
+
+        # Get raw memory manager
+        from mirix.services.raw_memory_manager import RawMemoryManager
+        raw_memory_manager = RawMemoryManager()
+
+        # Retrieve the raw memory item
+        raw_memory = raw_memory_manager.get_raw_memory_by_id(
+            raw_memory_id=raw_memory_id,
+            user_id=target_user.id
+        )
+
+        if not raw_memory:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Raw memory item '{raw_memory_id}' not found"
+            )
+
+        # Convert to response model
+        return RawMemoryResponse(
+            id=raw_memory.id,
+            screenshot_path=raw_memory.screenshot_path,
+            source_app=raw_memory.source_app,
+            captured_at=raw_memory.captured_at.isoformat() if raw_memory.captured_at else "",
+            ocr_text=raw_memory.ocr_text,
+            source_url=raw_memory.source_url,
+            google_cloud_url=raw_memory.google_cloud_url,
+            metadata_=raw_memory.metadata_ or {},
+            processed=raw_memory.processed,
+            processing_count=raw_memory.processing_count,
+            user_id=raw_memory.user_id,
+            organization_id=raw_memory.organization_id,
+            created_at=raw_memory.created_at.isoformat() if raw_memory.created_at else None,
+            has_embedding=raw_memory.ocr_text_embedding is not None
+        )
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Error retrieving raw memory: %s", exc)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error retrieving raw memory: {str(exc)}"
+        )
 
 
 if __name__ == "__main__":
