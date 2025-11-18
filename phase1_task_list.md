@@ -25,7 +25,7 @@
   - 包含向量嵌入字段: ocr_text_embedding
   - 包含状态字段: processed, processing_count
 
-- [ ] **任务 2**: 为现有记忆模型添加 raw_memory_references 字段
+- [x] **任务 2**: 为现有记忆模型添加 raw_memory_references 字段
   - episodic_memory.py
   - semantic_memory.py
   - procedural_memory.py
@@ -108,4 +108,15 @@
   - ✅ 在 `organization.py` 中添加了 TYPE_CHECKING 导入和 relationship
   - ✅ 在 `mirix/orm/__init__.py` 中导出 RawMemoryItem
   - ✅ 支持 PostgreSQL 和 SQLite 的向量嵌入字段
+
+### 任务 2 完成记录 ✅
+- 开始时间: 2025-11-17
+- 完成时间: 2025-11-17
+- 备注:
+  - ✅ 在 `episodic_memory.py` 添加 raw_memory_references 字段 (line 84-89)
+  - ✅ 在 `semantic_memory.py` 添加 raw_memory_references 字段 (line 103-108)
+  - ✅ 在 `procedural_memory.py` 添加 raw_memory_references 字段 (line 85-90)
+  - ✅ 在 `resource_memory.py` 添加 raw_memory_references 字段 (line 87-92)
+  - ✅ 在 `knowledge_vault.py` 添加 raw_memory_references 字段 (line 92-97)
+  - ✅ 所有字段统一为 JSON 类型，default=list，nullable=False
 

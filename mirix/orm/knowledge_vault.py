@@ -88,6 +88,14 @@ class KnowledgeVaultItem(SqlalchemyBase, OrganizationMixin, UserMixin):
         doc="Arbitrary additional metadata as a JSON object",
     )
 
+    # References to raw memory items that this knowledge vault entry is based on
+    raw_memory_references: Mapped[list] = mapped_column(
+        JSON,
+        default=list,
+        nullable=False,
+        doc="List of raw_memory IDs that this knowledge vault entry references",
+    )
+
     embedding_config: Mapped[Optional[dict]] = mapped_column(
         EmbeddingConfigColumn, nullable=True, doc="Embedding configuration"
     )
