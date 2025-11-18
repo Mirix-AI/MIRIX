@@ -1,6 +1,7 @@
 import datetime as dt
 from datetime import datetime
 from typing import List, Optional
+import uuid
 
 from sqlalchemy import select
 
@@ -67,8 +68,12 @@ class RawMemoryManager:
                     "embedding_dims": len(ocr_text_embedding) if ocr_text_embedding else 0,
                 }
 
+            # Generate ID with rawmem prefix
+            raw_memory_id = f"rawmem-{uuid.uuid4()}"
+
             # Create the raw memory item
             raw_memory = RawMemoryItem(
+                id=raw_memory_id,
                 screenshot_path=screenshot_path,
                 source_app=source_app,
                 captured_at=captured_at,

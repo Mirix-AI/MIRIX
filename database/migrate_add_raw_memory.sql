@@ -75,6 +75,13 @@ BEGIN
             user_id VARCHAR NOT NULL,
             organization_id VARCHAR NOT NULL,
 
+            -- Audit fields (from SqlalchemyBase)
+            created_at TIMESTAMP NOT NULL DEFAULT (now() AT TIME ZONE 'UTC'),
+            updated_at TIMESTAMP,
+            is_deleted BOOLEAN DEFAULT false NOT NULL,
+            _created_by_id VARCHAR,
+            _last_updated_by_id VARCHAR,
+
             -- Constraints
             FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
             FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE
