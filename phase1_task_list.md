@@ -16,7 +16,6 @@
 ---
 
 ## 📋 任务清单
-每个任务完成后 commit 修改的文件。
 
 ### 核心数据层（优先级最高）
 
@@ -50,10 +49,11 @@
   - 从截图中提取多个 URL
   - 过滤常见误报（e.g., i.e., etc.）
 
-- [ ] **任务 5**: 修改消息累积流程
+- [x] **任务 5**: 修改消息累积流程
   - 文件: mirix/agent/temporary_message_accumulator.py
   - 在发送给记忆 agent 前，先将数据存入 raw_memory 表
   - 传递 raw_memory_ids 给记忆 agents
+  - 为每个截图执行 OCR 提取 URL 和文本
 
 ### 记忆系统集成
 
@@ -166,4 +166,20 @@
     - 去重并保持顺序
   - ✅ 集成 pytesseract 和 PIL 进行 OCR 文本识别
   - ✅ 优雅的依赖检查和错误处理
+
+### 任务 5 完成记录 ✅
+- 开始时间: 2025-11-17
+- 完成时间: 2025-11-17
+- 备注:
+  - ✅ 修改 `mirix/agent/temporary_message_accumulator.py`
+  - ✅ 导入 RawMemoryManager 和 OCRUrlExtractor
+  - ✅ 在 `_build_memory_message()` 方法中添加 raw_memory 存储逻辑：
+    - 遍历所有截图，为每个截图执行 OCR
+    - 提取 OCR 文本和 URL（支持 google.com 等格式）
+    - 存储到 raw_memory 表，包含：screenshot_path, source_app, captured_at, ocr_text, source_url
+    - 收集所有 raw_memory IDs
+  - ✅ 修改返回值，从 `return message_parts` 改为 `return message_parts, raw_memory_ids`
+  - ✅ 更新调用处理新的返回值
+  - ✅ 在消息中添加 raw_memory references 信息供记忆 agents 使用
+  - ✅ 添加详细日志记录以追踪处理过程
 
