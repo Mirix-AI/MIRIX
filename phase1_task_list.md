@@ -44,10 +44,11 @@
 
 ### OCR 和数据提取
 
-- [ ] **任务 4**: 实现 OCR URL 提取功能
+- [x] **任务 4**: 实现 OCR URL 提取功能
   - 支持识别 google.com 等不带协议的 URL
   - URL 规范化处理（添加 https:// 等）
   - 从截图中提取多个 URL
+  - 过滤常见误报（e.g., i.e., etc.）
 
 - [ ] **任务 5**: 修改消息累积流程
   - 文件: mirix/agent/temporary_message_accumulator.py
@@ -141,4 +142,28 @@
     - `update_raw_memory()` - 更新原始记忆（包括重新生成嵌入）
   - ✅ 集成 embedding_model 支持向量搜索
   - ✅ 使用 @enforce_types 装饰器确保类型安全
+
+### 任务 4 完成记录 ✅
+- 开始时间: 2025-11-17
+- 完成时间: 2025-11-17
+- 备注:
+  - ✅ 创建 `mirix/helpers/ocr_url_extractor.py` 文件
+  - ✅ 实现 OCRUrlExtractor 类，支持多种 URL 格式：
+    - `https://example.com` - 完整 HTTPS URL
+    - `http://example.com` - 完整 HTTP URL
+    - `google.com` - 无协议域名（自动添加 https://）
+    - `github.com/user/repo` - 带路径的域名
+    - `docs.google.com` - 带子域名的 URL
+  - ✅ URL 提取方法：
+    - `extract_urls_from_image()` - 从图片提取并规范化 URL
+    - `extract_urls_and_text()` - 同时提取文本和 URL
+  - ✅ 正则表达式匹配：
+    - FULL_URL_PATTERN - 匹配完整 http/https URL
+    - DOMAIN_PATTERN - 匹配域名（不带协议）
+  - ✅ 智能过滤：
+    - `_is_likely_url()` - 过滤常见误报（e.g., i.e., etc., Dr., Mr.）
+    - 验证 TLD 长度（至少 2 个字符）
+    - 去重并保持顺序
+  - ✅ 集成 pytesseract 和 PIL 进行 OCR 文本识别
+  - ✅ 优雅的依赖检查和错误处理
 
