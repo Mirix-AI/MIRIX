@@ -27,6 +27,10 @@ class KnowledgeVaultItemBase(MirixBase):
         ...,
         description="Description of the knowledge vault item (e.g. 'API key for OpenAI Service')",
     )
+    raw_memory_references: Optional[List[str]] = Field(
+        default=None,
+        description="Optional list of raw_memory IDs that this knowledge vault item references. These IDs link to the original screenshots/sources.",
+    )
 
 
 class KnowledgeVaultItem(KnowledgeVaultItemBase):

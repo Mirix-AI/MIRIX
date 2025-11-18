@@ -57,7 +57,7 @@
 
 ### 记忆系统集成
 
-- [ ] **任务 6**: 修改记忆工具函数
+- [x] **任务 6**: 修改记忆工具函数
   - 文件: mirix/functions/function_sets/memory_tools.py
   - 所有记忆插入函数添加 raw_memory_references 参数
 
@@ -182,4 +182,56 @@
   - ✅ 更新调用处理新的返回值
   - ✅ 在消息中添加 raw_memory references 信息供记忆 agents 使用
   - ✅ 添加详细日志记录以追踪处理过程
+
+### 任务 10 完成记录 ✅
+- 开始时间: 2025-11-18
+- 完成时间: 2025-11-18
+- 备注:
+  - ✅ 创建 `database/migrate_add_raw_memory.sql` PostgreSQL 迁移脚本
+  - ✅ 修改 `database/run_sqlite_migration.py` SQLite 迁移脚本
+  - ✅ PostgreSQL 迁移功能：
+    - 创建 raw_memory 表，包含所有字段和 pgvector 支持
+    - 为 5 个记忆表添加 raw_memory_references JSONB 列
+    - 创建索引：user_id, organization_id, source_app, captured_at, processed
+    - 包含 column_exists() 和 table_exists() 辅助函数
+    - 全面的验证检查
+  - ✅ SQLite 迁移功能：
+    - 添加 check_table_exists() 辅助函数
+    - 创建 raw_memory 表（SQLite 兼容）
+    - 为 5 个记忆表添加 raw_memory_references JSON 列
+    - 更新验证函数以检查新表和列
+  - ✅ 迁移特性：
+    - 幂等性（可安全多次运行）
+    - 向后兼容（添加前检查）
+    - 支持 PostgreSQL 和 SQLite
+    - 遵循现有迁移模式
+
+### 任务 6 完成记录 ✅
+- 开始时间: 2025-11-18
+- 完成时间: 2025-11-18
+- 备注:
+  - ✅ 修改 5 个 memory manager 类的 insert 方法，添加 raw_memory_references 参数：
+    - `episodic_memory_manager.py:insert_event()` - 添加参数并传递给 PydanticEpisodicEvent
+    - `semantic_memory_manager.py:insert_semantic_item()` - 添加参数并传递给 PydanticSemanticMemoryItem
+    - `procedural_memory_manager.py:insert_procedure()` - 添加参数并传递给 PydanticProceduralMemoryItem
+    - `resource_memory_manager.py:insert_resource()` - 添加参数并传递给 PydanticResourceMemoryItem
+    - `knowledge_vault_manager.py:insert_knowledge()` - 添加参数并传递给 PydanticKnowledgeVaultItem
+  - ✅ 修改 5 个 schema 类，添加 raw_memory_references 字段：
+    - `schemas/episodic_memory.py:EpisodicEventForLLM` - 添加可选的 raw_memory_references 字段
+    - `schemas/semantic_memory.py:SemanticMemoryItemBase` - 添加可选的 raw_memory_references 字段
+    - `schemas/procedural_memory.py:ProceduralMemoryItemBase` - 添加可选的 raw_memory_references 字段
+    - `schemas/resource_memory.py:ResourceMemoryItemBase` - 添加可选的 raw_memory_references 字段
+    - `schemas/knowledge_vault.py:KnowledgeVaultItemBase` - 添加可选的 raw_memory_references 字段
+  - ✅ 修改 `functions/function_sets/memory_tools.py` 中的 10 个工具函数：
+    - `episodic_memory_insert()` - 从 item 中提取并传递 raw_memory_references
+    - `episodic_memory_replace()` - 从 new_item 中提取并传递 raw_memory_references
+    - `resource_memory_insert()` - 从 item 中提取并传递 raw_memory_references
+    - `resource_memory_update()` - 从 item 中提取并传递 raw_memory_references
+    - `procedural_memory_insert()` - 从 item 中提取并传递 raw_memory_references
+    - `procedural_memory_update()` - 从 item 中提取并传递 raw_memory_references
+    - `semantic_memory_insert()` - 从 item 中提取并传递 raw_memory_references
+    - `semantic_memory_update()` - 从 item 中提取并传递 raw_memory_references
+    - `knowledge_vault_insert()` - 从 item 中提取并传递 raw_memory_references
+    - `knowledge_vault_update()` - 从 item 中提取并传递 raw_memory_references
+  - ✅ 所有字段均为可选（Optional[List[str]]），LLM 可以选择性填写
 

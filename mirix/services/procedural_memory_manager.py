@@ -747,6 +747,7 @@ class ProceduralMemoryManager:
         actor: PydanticUser,
         organization_id: str,
         tree_path: Optional[List[str]] = None,
+        raw_memory_references: Optional[List[str]] = None,
     ) -> PydanticProceduralMemoryItem:
         try:
             # Conditionally calculate embeddings based on BUILD_EMBEDDINGS_FOR_MEMORY flag
@@ -772,6 +773,7 @@ class ProceduralMemoryManager:
                     summary_embedding=summary_embedding,
                     steps_embedding=steps_embedding,
                     embedding_config=embedding_config,
+                    raw_memory_references=raw_memory_references or [],
                 ),
                 actor=actor,
             )

@@ -253,6 +253,7 @@ class EpisodicMemoryManager:
         summary: str,
         organization_id: str,
         tree_path: Optional[List[str]] = None,
+        raw_memory_references: Optional[List[str]] = None,
     ) -> PydanticEpisodicEvent:
         try:
             # Conditionally calculate embeddings based on BUILD_EMBEDDINGS_FOR_MEMORY flag
@@ -280,6 +281,7 @@ class EpisodicMemoryManager:
                     summary_embedding=summary_embedding,
                     details_embedding=details_embedding,
                     embedding_config=embedding_config,
+                    raw_memory_references=raw_memory_references or [],
                     last_modify={
                         "timestamp": datetime.now(dt.timezone.utc).isoformat(),
                         "operation": "created",

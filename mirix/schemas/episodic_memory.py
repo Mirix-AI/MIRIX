@@ -40,6 +40,10 @@ class EpisodicEventForLLM(EpisodicEventBase):
         ...,
         description="When the event happened (it should be mentioned in the user's response and it should be in the format of 'YYYY-MM-DD HH:MM:SS')",
     )
+    raw_memory_references: Optional[List[str]] = Field(
+        default=None,
+        description="Optional list of raw_memory IDs that this episodic event references. These IDs link to the original screenshots/sources.",
+    )
 
 
 class EpisodicEvent(EpisodicEventBase):

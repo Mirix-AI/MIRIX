@@ -74,6 +74,7 @@ def episodic_memory_insert(self: "Agent", items: List[EpisodicEventForLLM]):
             details=item["details"],
             organization_id=self.user.organization_id,
             tree_path=item.get("tree_path"),
+            raw_memory_references=item.get("raw_memory_references"),
         )
     response = "Events inserted! Now you need to check if there are repeated events shown in the system prompt."
     return response
@@ -148,6 +149,7 @@ def episodic_memory_replace(
             details=new_item["details"],
             organization_id=self.user.organization_id,
             tree_path=new_item.get("tree_path"),
+            raw_memory_references=new_item.get("raw_memory_references"),
         )
 
 
@@ -207,6 +209,7 @@ def resource_memory_insert(self: "Agent", items: List[ResourceMemoryItemBase]):
             actor=self.user,
             organization_id=self.user.organization_id,
             tree_path=item.get("tree_path"),
+            raw_memory_references=item.get("raw_memory_references"),
         )
 
 
@@ -236,6 +239,7 @@ def resource_memory_update(
             actor=self.user,
             organization_id=self.user.organization_id,
             tree_path=item.get("tree_path"),
+            raw_memory_references=item.get("raw_memory_references"),
         )
 
 
@@ -258,6 +262,7 @@ def procedural_memory_insert(self: "Agent", items: List[ProceduralMemoryItemBase
             actor=self.user,
             organization_id=self.user.organization_id,
             tree_path=item.get("tree_path"),
+            raw_memory_references=item.get("raw_memory_references"),
         )
 
 
@@ -288,6 +293,7 @@ def procedural_memory_update(
             actor=self.user,
             organization_id=self.user.organization_id,
             tree_path=item.get("tree_path"),
+            raw_memory_references=item.get("raw_memory_references"),
         )
 
 
@@ -345,6 +351,7 @@ def semantic_memory_insert(self: "Agent", items: List[SemanticMemoryItemBase]):
             tree_path=item["tree_path"],
             organization_id=self.user.organization_id,
             actor=self.user,
+            raw_memory_references=item.get("raw_memory_references"),
         )
 
 
@@ -380,6 +387,7 @@ def semantic_memory_update(
             actor=self.user,
             tree_path=item["tree_path"],
             organization_id=self.user.organization_id,
+            raw_memory_references=item.get("raw_memory_references"),
         )
         new_ids.append(inserted_item.id)
 
@@ -411,6 +419,7 @@ def knowledge_vault_insert(self: "Agent", items: List[KnowledgeVaultItemBase]):
             caption=item["caption"],
             actor=self.user,
             organization_id=self.user.organization_id,
+            raw_memory_references=item.get("raw_memory_references"),
         )
 
 
@@ -442,6 +451,7 @@ def knowledge_vault_update(
             caption=item["caption"],
             actor=self.user,
             organization_id=self.user.organization_id,
+            raw_memory_references=item.get("raw_memory_references"),
         )
 
 

@@ -32,6 +32,10 @@ class SemanticMemoryItemBase(MirixBase):
         ...,
         description="Hierarchical categorization path as an array of strings (e.g., ['favorites', 'pets', 'dog'])",
     )
+    raw_memory_references: Optional[List[str]] = Field(
+        default=None,
+        description="Optional list of raw_memory IDs that this semantic item references. These IDs link to the original screenshots/sources.",
+    )
 
 
 class SemanticMemoryItem(SemanticMemoryItemBase):

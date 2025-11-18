@@ -747,6 +747,7 @@ class SemanticMemoryManager:
         source: Optional[str],
         tree_path: Optional[List[str]],
         organization_id: str,
+        raw_memory_references: Optional[List[str]] = None,
     ) -> PydanticSemanticMemoryItem:
         """
         Create a new semantic memory entry using provided parameters.
@@ -779,6 +780,7 @@ class SemanticMemoryManager:
                     summary_embedding=summary_embedding,
                     embedding_config=embedding_config,
                     tree_path=tree_path,
+                    raw_memory_references=raw_memory_references or [],
                 ),
                 actor=actor,
             )
