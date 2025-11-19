@@ -6,7 +6,7 @@ import './ChatBubble.css';
 import { useTranslation } from 'react-i18next';
 
 const ChatBubble = ({ message }) => {
-  const { type, content, timestamp, images, isStreaming, thinkingSteps } = message;
+  const { type, content, timestamp, images, isStreaming, thinkingSteps, memoryReferences } = message;
   const { t } = useTranslation();
 
   const formatTime = (date) => {
@@ -17,6 +17,58 @@ const ChatBubble = ({ message }) => {
       minute: '2-digit',
       hour12: true 
     });
+  };
+
+  const renderMemoryReferences = () => {
+    if (!memoryReferences || memoryReferences.length === 0) return null;
+
+    return (
+      <div className="memory-references-section">
+        <div className="memory-references-header">
+          <span className="memory-icon">📚</span>
+          <span className="memory-title">{t('chat.memoryReferences', { defaultValue: 'Memory Sources' })}</span>
+          <span className="memory-count">{memoryReferences.length}</span>
+        </div>
+        <div className="memory-badges">
+          {memoryReferences.map((ref, index) => {
+            // Extract domain from URL
+            const getDomain = (url) => {
+              if (!url) return null;
+              try {
+                const urlObj = new URL(url.startsWith('http') ? url : `https://${url}`);
+                return urlObj.hostname || urlObj.pathname.split('/')[0];
+              } catch {
+                return url;
+              }
+            };
+
+            const domain = getDomain(ref.source_url);
+            const capturedDate = ref.captured_at ? new Date(ref.captured_at).toLocaleDateString() : null;
+
+            return (
+              <div key={ref.id || index} className="memory-badge">
+                <div className="memory-badge-icon">
+                  {ref.source_app === 'Chrome' ? '🌐' :
+                   ref.source_app === 'Safari' ? '🧭' :
+                   ref.source_app === 'Firefox' ? '🦊' :
+                   ref.source_app === 'Notion' ? '📝' : '💻'}
+                </div>
+                <div className="memory-badge-content">
+                  <div className="memory-badge-app">{ref.source_app}</div>
+                  {domain && <div className="memory-badge-url">{domain}</div>}
+                  {capturedDate && <div className="memory-badge-date">{capturedDate}</div>}
+                </div>
+                {ref.ocr_text && (
+                  <div className="memory-badge-preview" title={ref.ocr_text}>
+                    {ref.ocr_text.substring(0, 100)}...
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
   };
 
   const renderThinkingSteps = () => {
@@ -139,7 +191,7 @@ const ChatBubble = ({ message }) => {
 
             return (
               <div key={index} className="image-preview">
-                <img 
+                <img
                   src={imageSrc}
                   alt={t('chat.attachmentAlt', { index: index + 1 })}
                   onError={(e) => {
@@ -161,7 +213,9 @@ const ChatBubble = ({ message }) => {
           })}
         </div>
       )}
-      
+
+      {renderMemoryReferences()}
+
       {renderThinkingSteps()}
       
       <div className="bubble-content">
