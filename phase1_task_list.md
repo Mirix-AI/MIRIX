@@ -61,19 +61,32 @@
   - 文件: mirix/functions/function_sets/memory_tools.py
   - 所有记忆插入函数添加 raw_memory_references 参数
 
-- [ ] **任务 7**: 修改系统提示词展示来源信息
+- [x] **任务 7**: 修改系统提示词展示来源信息
   - 文件: mirix/agent/agent.py 的 build_system_prompt() 方法
   - 在展示记忆时包含 [Source: App名称, URL: xxx] 信息
 
 ### API 和前端
 
-- [ ] **任务 8**: 添加 FastAPI 端点
+- [x] **任务 8**: 添加 FastAPI 端点
   - 路径: /memory/raw/{raw_memory_id}
   - 返回完整的 raw_memory 详细信息
 
-- [ ] **任务 9**: 前端展示记忆引用
+- [x] **任务 9**: 前端展示记忆引用
   - 修改: frontend/src/components/ChatBubble.js
   - 添加记忆引用卡片，显示来源 app 和 URL
+
+- [x] **任务 15**: 修复前端 memoryReferences 不显示问题
+  - 检查并修复前端接收和显示 memoryReferences 的逻辑
+  - 确保紫色 memory badges 正确显示
+
+- [x] **任务 16**: Raw Memory 在记忆库中展示
+  - 在记忆库 UI 中添加 raw_memory 的展示
+  - 支持查看 raw_memory 详细信息（截图、OCR 文本、URL）
+
+- [x] **任务 17**: Raw Memory 搜索功能
+  - 在记忆库搜索框中支持搜索 raw_memory
+  - 按 source_app、source_url、ocr_text 搜索
+  - 支持时间范围过滤
 
 ### 数据库
 
@@ -234,4 +247,53 @@
     - `knowledge_vault_insert()` - 从 item 中提取并传递 raw_memory_references
     - `knowledge_vault_update()` - 从 item 中提取并传递 raw_memory_references
   - ✅ 所有字段均为可选（Optional[List[str]]），LLM 可以选择性填写
+
+### 任务 15 完成记录 ✅
+- 开始时间: 2025-11-19
+- 完成时间: 2025-11-19
+- 备注:
+  - ✅ 修复 `frontend/src/components/ChatWindow.js` 中的 memoryReferences 传递问题 (line 446-454)
+  - ✅ 添加 `memoryReferences: data.memoryReferences || []` 到 assistantMessage 对象
+  - ✅ 修复 `mirix/agent/agent_wrapper.py` 中获取 raw_memory_refs 的逻辑 (line 2174-2183)
+  - ✅ 改为从 loaded Agent 实例获取 `current_raw_memory_refs` 而不是从 client 对象
+
+### 任务 16 完成记录 ✅
+- 开始时间: 2025-11-19
+- 完成时间: 2025-11-19
+- 备注:
+  - ✅ 在 `frontend/src/components/ExistingMemory.js` 中添加 'raw-memory' 支持
+  - ✅ 添加到 memoryData 状态 (line 18)
+  - ✅ 添加到 viewModes 状态 (line 31)
+  - ✅ 添加到 tabs 数组 (line 785)
+  - ✅ 添加 getMemoryTypeLabel() 返回 "Raw Memory" (line 578)
+  - ✅ 添加 getMemoryTypeIcon() 返回 📸 (line 587)
+  - ✅ 添加 fetchMemoryData() 端点 '/memory/raw' (line 110)
+  - ✅ 添加 renderMemoryItem() 中的 'raw-memory' 渲染逻辑 (line 570-624)
+    - 显示 source_app 和 app 图标
+    - 显示 source_url 和 captured_at
+    - 可展开/折叠的 OCR 文本
+    - 显示 screenshot_path 和 processed 状态
+  - ✅ 创建 `/memory/raw` 后端 API 端点 in `mirix/server/fastapi_server.py` (line 1824-1872)
+    - 查询 RawMemoryItem 表
+    - 按 captured_at 降序排列
+    - 返回最多 100 条记录
+
+### 任务 17 完成记录 ✅
+- 开始时间: 2025-11-19
+- 完成时间: 2025-11-19
+- 备注:
+  - ✅ 在 `frontend/src/components/ExistingMemory.js` 中添加 raw-memory 搜索支持
+  - ✅ 更新 filterMemoryData() 添加 raw-memory 特定字段 (line 171-173)
+    - item.source_app
+    - item.source_url
+    - item.ocr_text
+  - ✅ 更新 shouldAutoExpand() 支持 raw-memory OCR 文本自动展开 (line 201-217)
+  - ✅ 更新 useEffect 自动展开逻辑添加 raw-memory 支持 (line 220-242)
+  - ✅ 添加国际化翻译 in `frontend/src/i18n.js`
+    - English: memory.types.raw = "Raw Memory" (line 404)
+    - English: memory.actions.showOCR = "Show OCR Text" (line 431)
+    - English: memory.actions.hideOCR = "Hide OCR Text" (line 432)
+    - Chinese: memory.types.raw = "原始记忆" (line 941)
+    - Chinese: memory.actions.showOCR = "显示 OCR 文本" (line 968)
+    - Chinese: memory.actions.hideOCR = "隐藏 OCR 文本" (line 969)
 
