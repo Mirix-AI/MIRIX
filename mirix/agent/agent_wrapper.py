@@ -2171,7 +2171,22 @@ Please perform this analysis and create new memories as appropriate. Provide a d
                     self.agent_states, user_id=user_id
                 )
 
-            return response_text
+            # Get raw_memory_references from the loaded Agent instance
+            try:
+                loaded_agent = self.client.server.load_agent(
+                    agent_id=self.agent_states.agent_state.id,
+                    actor=self.client.user
+                )
+                raw_memory_refs = getattr(loaded_agent, 'current_raw_memory_refs', [])
+            except Exception as e:
+                print(f"[DEBUG] Failed to get raw_memory_refs: {e}")
+                raw_memory_refs = []
+
+            # Return response with memory references
+            return {
+                "response": response_text,
+                "memoryReferences": raw_memory_refs
+            }
 
     def cleanup_upload_workers(self):
         """Delegate to UploadManager for cleanup."""

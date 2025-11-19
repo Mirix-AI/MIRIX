@@ -447,7 +447,8 @@ const ChatWindow = ({ settings, messages, setMessages, isScreenMonitoring }) => 
                   id: Date.now() + 1,
                   type: 'assistant',
                   content: data.response,
-                  timestamp: new Date().toISOString()
+                  timestamp: new Date().toISOString(),
+                  memoryReferences: data.memoryReferences || []
                 };
                 setMessages(prev => [...prev, assistantMessage]);
                 break;
