@@ -195,6 +195,7 @@ class Agent(BaseAgent):
         self.procedural_memory_manager = ProceduralMemoryManager()
         self.resource_memory_manager = ResourceMemoryManager()
         self.semantic_memory_manager = SemanticMemoryManager()
+        self.raw_memory_manager = None  # Lazy loaded when needed
 
         # State needed for contine_chaining pausing
 
@@ -1630,6 +1631,49 @@ class Agent(BaseAgent):
 
         return MirixUsageStatistics(**total_usage.model_dump(), step_count=step_count)
 
+    def _format_source_info(self, raw_memory_references: Optional[List[str]]) -> str:
+        """
+        Format source information from raw_memory_references.
+
+        Args:
+            raw_memory_references: List of raw_memory IDs
+
+        Returns:
+            Formatted string with source information, e.g., " [Sources: Chrome: github.com, Safari: docs.python.org]"
+        """
+        if not raw_memory_references:
+            return ""
+
+        # Lazy load raw_memory_manager
+        if self.raw_memory_manager is None:
+            from mirix.services.raw_memory_manager import RawMemoryManager
+            self.raw_memory_manager = RawMemoryManager()
+
+        sources = []
+        for ref_id in raw_memory_references[:3]:  # Limit to first 3 sources to avoid clutter
+            try:
+                raw_mem = self.raw_memory_manager.get_raw_memory_by_id(
+                    raw_memory_id=ref_id,
+                    user_id=self.user.id
+                )
+                if raw_mem:
+                    # Format: "App: URL" or just "App" if no URL
+                    if raw_mem.source_url:
+                        # Extract domain from URL
+                        from urllib.parse import urlparse
+                        parsed = urlparse(raw_mem.source_url)
+                        domain = parsed.netloc or parsed.path.split('/')[0]
+                        sources.append(f"{raw_mem.source_app}: {domain}")
+                    else:
+                        sources.append(raw_mem.source_app)
+            except Exception:
+                # Silently skip if raw_memory retrieval fails
+                continue
+
+        if sources:
+            return f" [Sources: {', '.join(sources)}]"
+        return ""
+
     def build_system_prompt_with_memories(
         self,
         raw_system: str,
@@ -1751,13 +1795,17 @@ class Agent(BaseAgent):
                         if event.tree_path
                         else ""
                     )
+                    # Get source information
+                    source_info = self._format_source_info(
+                        getattr(event, 'raw_memory_references', None)
+                    )
                     if (
                         self.agent_state.name == "episodic_memory_agent"
                         or self.agent_state.name == "reflexion_agent"
                     ):
-                        episodic_memory += f"[Event ID: {event.id}] Timestamp: {event.occurred_at.strftime('%Y-%m-%d %H:%M:%S')} - {event.summary}{tree_path_str} (Details: {len(event.details)} Characters)\n"
+                        episodic_memory += f"[Event ID: {event.id}] Timestamp: {event.occurred_at.strftime('%Y-%m-%d %H:%M:%S')} - {event.summary}{tree_path_str}{source_info} (Details: {len(event.details)} Characters)\n"
                     else:
-                        episodic_memory += f"[{idx}] Timestamp: {event.occurred_at.strftime('%Y-%m-%d %H:%M:%S')} - {event.summary}{tree_path_str} (Details: {len(event.details)} Characters)\n"
+                        episodic_memory += f"[{idx}] Timestamp: {event.occurred_at.strftime('%Y-%m-%d %H:%M:%S')} - {event.summary}{tree_path_str}{source_info} (Details: {len(event.details)} Characters)\n"
 
             recent_episodic_memory = episodic_memory.strip()
 
@@ -1781,13 +1829,17 @@ class Agent(BaseAgent):
                         if event.tree_path
                         else ""
                     )
+                    # Get source information
+                    source_info = self._format_source_info(
+                        getattr(event, 'raw_memory_references', None)
+                    )
                     if (
                         self.agent_state.name == "episodic_memory_agent"
                         or self.agent_state.name == "reflexion_agent"
                     ):
-                        most_relevant_episodic_memory_str += f"[Event ID: {event.id}] Timestamp: {event.occurred_at.strftime('%Y-%m-%d %H:%M:%S')} - {event.summary}{tree_path_str}  (Details: {len(event.details)} Characters)\n"
+                        most_relevant_episodic_memory_str += f"[Event ID: {event.id}] Timestamp: {event.occurred_at.strftime('%Y-%m-%d %H:%M:%S')} - {event.summary}{tree_path_str}{source_info}  (Details: {len(event.details)} Characters)\n"
                     else:
-                        most_relevant_episodic_memory_str += f"[{idx}] Timestamp: {event.occurred_at.strftime('%Y-%m-%d %H:%M:%S')} - {event.summary}{tree_path_str}  (Details: {len(event.details)} Characters)\n"
+                        most_relevant_episodic_memory_str += f"[{idx}] Timestamp: {event.occurred_at.strftime('%Y-%m-%d %H:%M:%S')} - {event.summary}{tree_path_str}{source_info}  (Details: {len(event.details)} Characters)\n"
             relevant_episodic_memory = most_relevant_episodic_memory_str.strip()
             retrieved_memories["episodic"] = {
                 "total_number_of_items": self.episodic_memory_manager.get_total_number_of_items(
