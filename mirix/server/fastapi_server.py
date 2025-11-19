@@ -52,6 +52,36 @@ def get_user_or_default(agent_wrapper, user_id: Optional[str] = None):
         return agent_wrapper.client.server.user_manager.get_default_user()
 
 
+def fetch_raw_memory_details(raw_memory_references: List[str]) -> List[Dict]:
+    """
+    Fetch detailed information for raw_memory references.
+    Reusable across all memory type endpoints.
+
+    Args:
+        raw_memory_references: List of raw_memory IDs
+
+    Returns:
+        List of dicts containing raw_memory details
+    """
+    from mirix.orm.raw_memory import RawMemoryItem
+    from mirix.server.server import db_context
+
+    raw_memory_details = []
+    if raw_memory_references:
+        with db_context() as session:
+            for raw_id in raw_memory_references:
+                raw_mem = session.get(RawMemoryItem, raw_id)
+                if raw_mem:
+                    raw_memory_details.append({
+                        "id": raw_mem.id,
+                        "source_app": raw_mem.source_app,
+                        "source_url": raw_mem.source_url,
+                        "captured_at": raw_mem.captured_at.isoformat() if raw_mem.captured_at else None,
+                        "ocr_text": raw_mem.ocr_text[:200] if raw_mem.ocr_text else "",
+                    })
+    return raw_memory_details
+
+
 async def handle_gmail_connection(
     client_id: str, client_secret: str, server_name: str
 ) -> bool:
@@ -1545,6 +1575,11 @@ async def get_episodic_memory(user_id: Optional[str] = None):
         # Transform to frontend format
         episodic_items = []
         for event in events:
+            # Fetch raw_memory_references details if they exist
+            raw_memory_details = []
+            if hasattr(event, 'raw_memory_references') and event.raw_memory_references:
+                raw_memory_details = fetch_raw_memory_details(event.raw_memory_references)
+
             episodic_items.append(
                 {
                     "timestamp": event.occurred_at.isoformat()
@@ -1554,6 +1589,7 @@ async def get_episodic_memory(user_id: Optional[str] = None):
                     "details": event.details,
                     "event_type": event.event_type,
                     "tree_path": event.tree_path if hasattr(event, "tree_path") else [],
+                    "raw_memory_references": raw_memory_details,
                 }
             )
 
@@ -1591,6 +1627,11 @@ async def get_semantic_memory(user_id: Optional[str] = None):
             )
 
             for item in semantic_items:
+                # Fetch raw_memory details if references exist
+                raw_memory_details = []
+                if hasattr(item, 'raw_memory_references') and item.raw_memory_references:
+                    raw_memory_details = fetch_raw_memory_details(item.raw_memory_references)
+
                 semantic_items_list.append(
                     {
                         "title": item.name,
@@ -1600,6 +1641,7 @@ async def get_semantic_memory(user_id: Optional[str] = None):
                         "tree_path": item.tree_path
                         if hasattr(item, "tree_path")
                         else [],
+                        "raw_memory_references": raw_memory_details,
                     }
                 )
         except Exception as e:
@@ -1663,6 +1705,11 @@ async def get_procedural_memory(user_id: Optional[str] = None):
                         else:
                             steps = []
 
+                # Fetch raw_memory details if references exist
+                raw_memory_details = []
+                if hasattr(item, 'raw_memory_references') and item.raw_memory_references:
+                    raw_memory_details = fetch_raw_memory_details(item.raw_memory_references)
+
                 procedural_items_list.append(
                     {
                         "title": item.entry_type,
@@ -1672,6 +1719,7 @@ async def get_procedural_memory(user_id: Optional[str] = None):
                         "tree_path": item.tree_path
                         if hasattr(item, "tree_path")
                         else [],
+                        "raw_memory_references": raw_memory_details,
                     }
                 )
 
@@ -1711,6 +1759,11 @@ async def get_resource_memory(user_id: Optional[str] = None):
         # Transform to frontend format
         docs_files = []
         for resource in resources:
+            # Fetch raw_memory details if references exist
+            raw_memory_details = []
+            if hasattr(resource, 'raw_memory_references') and resource.raw_memory_references:
+                raw_memory_details = fetch_raw_memory_details(resource.raw_memory_references)
+
             docs_files.append(
                 {
                     "filename": resource.title,
@@ -1730,6 +1783,7 @@ async def get_resource_memory(user_id: Optional[str] = None):
                     "tree_path": resource.tree_path
                     if hasattr(resource, "tree_path")
                     else [],
+                    "raw_memory_references": raw_memory_details,
                 }
             )
 
@@ -1761,6 +1815,11 @@ async def get_core_memory():
                 block_chars = len(block.value)
                 total_characters += block_chars
 
+                # Fetch raw_memory details if references exist
+                raw_memory_details = []
+                if hasattr(block, 'raw_memory_references') and block.raw_memory_references:
+                    raw_memory_details = fetch_raw_memory_details(block.raw_memory_references)
+
                 core_item = {
                     "aspect": block.label,
                     "understanding": block.value,
@@ -1768,6 +1827,7 @@ async def get_core_memory():
                     "total_characters": total_characters,
                     "max_characters": block.limit,
                     "last_updated": None,  # Core memory doesn't track individual updates
+                    "raw_memory_references": raw_memory_details,
                 }
 
                 core_understanding.append(core_item)
@@ -1802,6 +1862,11 @@ async def get_credentials_memory():
         # Transform to frontend format with masked content
         credentials = []
         for item in vault_items:
+            # Fetch raw_memory details if references exist
+            raw_memory_details = []
+            if hasattr(item, 'raw_memory_references') and item.raw_memory_references:
+                raw_memory_details = fetch_raw_memory_details(item.raw_memory_references)
+
             credentials.append(
                 {
                     "caption": item.caption,
@@ -1811,6 +1876,7 @@ async def get_credentials_memory():
                     "content": "••••••••••••"
                     if item.sensitivity == "high"
                     else item.secret_value,  # Always mask the actual content
+                    "raw_memory_references": raw_memory_details,
                 }
             )
 

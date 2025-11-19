@@ -147,22 +147,28 @@ const ExistingMemory = ({ settings }) => {
   const getReferencedRawMemoryIds = () => {
     const referencedIds = new Set();
 
-    // Collect from semantic memories
-    (memoryData['semantic'] || []).forEach(item => {
-      if (item.raw_memory_references && Array.isArray(item.raw_memory_references)) {
-        item.raw_memory_references.forEach(ref => {
-          if (ref.id) referencedIds.add(ref.id);
-        });
+    // Helper to extract ID from ref (handles both string IDs and object refs)
+    const extractId = (ref) => {
+      if (typeof ref === 'string') {
+        return ref;
+      } else if (ref && ref.id) {
+        return ref.id;
       }
-    });
+      return null;
+    };
 
-    // Collect from episodic memories
-    (memoryData['past-events'] || []).forEach(item => {
-      if (item.raw_memory_references && Array.isArray(item.raw_memory_references)) {
-        item.raw_memory_references.forEach(ref => {
-          if (ref.id) referencedIds.add(ref.id);
-        });
-      }
+    // Collect from all memory types
+    const memoryTypes = ['semantic', 'past-events', 'skills-procedures', 'docs-files', 'core-understanding', 'credentials'];
+
+    memoryTypes.forEach(memType => {
+      (memoryData[memType] || []).forEach(item => {
+        if (item.raw_memory_references && Array.isArray(item.raw_memory_references)) {
+          item.raw_memory_references.forEach(ref => {
+            const id = extractId(ref);
+            if (id) referencedIds.add(id);
+          });
+        }
+      });
     });
 
     return referencedIds;
