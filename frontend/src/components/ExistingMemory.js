@@ -21,6 +21,11 @@ const ExistingMemory = ({ settings }) => {
   const [error, setError] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [expandedItems, setExpandedItems] = useState(new Set());
+  const [showOnlyReferenced, setShowOnlyReferenced] = useState(false);
+  const [expandedReferences, setExpandedReferences] = useState(new Set());
+  const [expandedAppGroups, setExpandedAppGroups] = useState({});
+  const [highlightedRawMemoryId, setHighlightedRawMemoryId] = useState(null);
+  const [showOnlyReferencedRaw, setShowOnlyReferencedRaw] = useState(false);
   // State for memory view modes (list or tree) for each memory type
   const [viewModes, setViewModes] = useState({
     'past-events': 'list',
@@ -138,15 +143,61 @@ const ExistingMemory = ({ settings }) => {
     }
   };
 
-  // Filter memories based on search query
+  // Get all raw_memory ids that are referenced by semantic/episodic memories
+  const getReferencedRawMemoryIds = () => {
+    const referencedIds = new Set();
+
+    // Collect from semantic memories
+    (memoryData['semantic'] || []).forEach(item => {
+      if (item.raw_memory_references && Array.isArray(item.raw_memory_references)) {
+        item.raw_memory_references.forEach(ref => {
+          if (ref.id) referencedIds.add(ref.id);
+        });
+      }
+    });
+
+    // Collect from episodic memories
+    (memoryData['past-events'] || []).forEach(item => {
+      if (item.raw_memory_references && Array.isArray(item.raw_memory_references)) {
+        item.raw_memory_references.forEach(ref => {
+          if (ref.id) referencedIds.add(ref.id);
+        });
+      }
+    });
+
+    return referencedIds;
+  };
+
+  // Filter memories based on search query and reference filter
   const filterMemories = (memories, query) => {
+    let filtered = memories;
+
+    // For raw-memory tab, apply special filter for referenced items
+    if (activeSubTab === 'raw-memory' && showOnlyReferencedRaw) {
+      const referencedIds = getReferencedRawMemoryIds();
+      filtered = filtered.filter(item => referencedIds.has(item.id));
+    }
+
+    // For semantic/episodic tabs, filter by references if toggle is enabled
+    if (['semantic', 'past-events'].includes(activeSubTab) && showOnlyReferenced) {
+      filtered = filtered.filter(item => {
+        return item.raw_memory_references && item.raw_memory_references.length > 0;
+      });
+    }
+
+    // Filter by search query
     if (!query.trim()) {
-      return memories;
+      return filtered;
     }
 
     const searchTerm = query.toLowerCase();
-    
-    return memories.filter(item => {
+
+    return filtered.filter(item => {
+      // For raw-memory, also search by id
+      if (activeSubTab === 'raw-memory' && item.id && item.id.toLowerCase().includes(searchTerm)) {
+        return true;
+      }
+
       // Search in different fields depending on memory type
       const searchableText = [
         item.content,
@@ -370,6 +421,183 @@ const ExistingMemory = ({ settings }) => {
     );
   };
 
+  // Helper function to render memory reference badges
+  const renderMemoryReferences = (references, itemId) => {
+    if (!references || references.length === 0) return null;
+
+    const getDomain = (url) => {
+      if (!url) return null;
+      try {
+        const urlObj = new URL(url.startsWith('http') ? url : `https://${url}`);
+        return urlObj.hostname || urlObj.pathname.split('/')[0];
+      } catch {
+        return url;
+      }
+    };
+
+    const getAppIcon = (app) => {
+      switch(app) {
+        case 'Chrome': return '🌐';
+        case 'Safari': return '🧭';
+        case 'Firefox': return '🦊';
+        case 'Notion': return '📝';
+        default: return '💻';
+      }
+    };
+
+    // Group references by source_app
+    const groupedRefs = references.reduce((acc, ref) => {
+      const app = ref.source_app || 'Unknown';
+      if (!acc[app]) {
+        acc[app] = [];
+      }
+      acc[app].push(ref);
+      return acc;
+    }, {});
+
+    // Get unique URLs (deduplicate by URL)
+    const getUniqueRefs = (refs) => {
+      const urlMap = new Map();
+      refs.forEach(ref => {
+        const key = ref.source_url || ref.id;
+        if (!urlMap.has(key)) {
+          urlMap.set(key, { ...ref, count: 1, timestamps: [ref.captured_at] });
+        } else {
+          const existing = urlMap.get(key);
+          existing.count += 1;
+          existing.timestamps.push(ref.captured_at);
+        }
+      });
+      return Array.from(urlMap.values());
+    };
+
+    // Create summary for collapsed state
+    const appSummary = Object.entries(groupedRefs)
+      .map(([app, refs]) => `${getAppIcon(app)} ${app} (${refs.length})`)
+      .join(' • ');
+
+    const isExpanded = expandedReferences.has(itemId);
+
+    const toggleExpanded = () => {
+      setExpandedReferences(prev => {
+        const newSet = new Set(prev);
+        if (newSet.has(itemId)) {
+          newSet.delete(itemId);
+        } else {
+          newSet.add(itemId);
+        }
+        return newSet;
+      });
+    };
+
+    const handleBadgeClick = (refId) => {
+      // Jump to Raw Memory tab and highlight the item
+      setHighlightedRawMemoryId(refId);
+      setActiveSubTab('raw-memory');
+      // Set search query to the id for easy filtering
+      setSearchQuery(refId);
+
+      // Scroll to the item after a short delay to allow tab switch
+      setTimeout(() => {
+        const element = document.getElementById(`raw-memory-${refId}`);
+        if (element) {
+          element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+      }, 300);
+    };
+
+    const toggleAppGroup = (app) => {
+      setExpandedAppGroups(prev => ({
+        ...prev,
+        [`${itemId}-${app}`]: !prev[`${itemId}-${app}`]
+      }));
+    };
+
+    return (
+      <div className="memory-references-section">
+        <div
+          className="memory-references-header clickable"
+          onClick={toggleExpanded}
+          style={{ cursor: 'pointer' }}
+        >
+          <span className="memory-icon">📚</span>
+          <span className="memory-title">{t('chat.memoryReferences', { defaultValue: 'Memory References' })}</span>
+          <span className="memory-count">{references.length}</span>
+          <span className="expand-icon">{isExpanded ? '▲' : '▼'}</span>
+        </div>
+
+        {!isExpanded && (
+          <div className="memory-references-summary">
+            {appSummary}
+          </div>
+        )}
+
+        {isExpanded && (
+          <div className="memory-badges-grouped">
+            {Object.entries(groupedRefs).map(([app, refs]) => {
+              const uniqueRefs = getUniqueRefs(refs);
+              const showAll = expandedAppGroups[`${itemId}-${app}`] || false;
+              const displayRefs = showAll ? uniqueRefs : uniqueRefs.slice(0, 3);
+
+              return (
+                <div key={app} className="memory-app-group">
+                  <div className="memory-app-group-header">
+                    <span className="app-icon">{getAppIcon(app)}</span>
+                    <span className="app-name">{app}</span>
+                    <span className="app-count">({refs.length} {t('memory.references.items', { defaultValue: 'references' })})</span>
+                  </div>
+                  <div className="memory-badges">
+                    {displayRefs.map((ref, index) => {
+                      const domain = getDomain(ref.source_url);
+                      const capturedDate = ref.captured_at ? new Date(ref.captured_at).toLocaleDateString() : null;
+
+                      return (
+                        <div
+                          key={ref.id || index}
+                          className="memory-badge"
+                          onClick={() => handleBadgeClick(ref.id)}
+                        >
+                          <div className="memory-badge-content">
+                            {domain && <div className="memory-badge-url">{domain}</div>}
+                            {!domain && ref.source_url && <div className="memory-badge-url">{ref.source_url}</div>}
+                            {!domain && !ref.source_url && <div className="memory-badge-no-url">{t('memory.references.noUrl', { defaultValue: 'No URL captured' })}</div>}
+                            <div className="memory-badge-meta">
+                              {capturedDate && <span className="memory-badge-date">{capturedDate}</span>}
+                              {ref.count > 1 && <span className="memory-badge-versions"> • {ref.count} {t('memory.references.versions', { defaultValue: 'versions' })}</span>}
+                            </div>
+                          </div>
+                          {ref.ocr_text && (
+                            <div className="memory-badge-preview" title={ref.ocr_text}>
+                              {ref.ocr_text.substring(0, 80)}...
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                  {uniqueRefs.length > 3 && (
+                    <button
+                      className="show-all-refs-button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        toggleAppGroup(app);
+                      }}
+                    >
+                      {showAll
+                        ? t('memory.references.showLess', { defaultValue: 'Show less' })
+                        : t('memory.references.showAll', { defaultValue: `Show all ${uniqueRefs.length} references` }, { count: uniqueRefs.length })
+                      }
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   const renderMemoryItem = (item, type, index) => {
     switch (type) {
       case 'past-events':
@@ -407,7 +635,7 @@ const ExistingMemory = ({ settings }) => {
             {item.summary && <div className="memory-summary">{highlightText(item.summary, searchQuery)}</div>}
             {item.details && (
               <div className="memory-details-section">
-                <button 
+                <button
                   className="expand-toggle-button"
                   onClick={() => toggleExpanded(itemId)}
                   title={isExpanded ? t('memory.actions.expandDetails') : t('memory.actions.collapseDetails')}
@@ -415,7 +643,10 @@ const ExistingMemory = ({ settings }) => {
                   {isExpanded ? `▼ ${t('memory.actions.hideDetails')}` : `▶ ${t('memory.actions.showDetails')}`}
                 </button>
                 {isExpanded && (
-                  <div className="memory-details">{highlightText(item.details, searchQuery)}</div>
+                  <>
+                    <div className="memory-details">{highlightText(item.details, searchQuery)}</div>
+                    {renderMemoryReferences(item.raw_memory_references, itemId)}
+                  </>
                 )}
               </div>
             )}
@@ -585,6 +816,7 @@ const ExistingMemory = ({ settings }) => {
       case 'raw-memory':
         const rawItemId = `raw-${index}`;
         const isRawExpanded = expandedItems.has(rawItemId);
+        const isHighlighted = highlightedRawMemoryId === item.id;
 
         // Helper to get app icon
         const getAppIcon = (app) => {
@@ -598,7 +830,10 @@ const ExistingMemory = ({ settings }) => {
         };
 
         return (
-          <div className="raw-memory">
+          <div
+            id={`raw-memory-${item.id}`}
+            className={`raw-memory ${isHighlighted ? 'highlighted' : ''}`}
+          >
             <div className="memory-app-header">
               <span className="memory-app-icon">{getAppIcon(item.source_app)}</span>
               <span className="memory-app-name">{highlightText(item.source_app, searchQuery)}</span>
@@ -917,8 +1152,31 @@ const ExistingMemory = ({ settings }) => {
               </button>
             )}
           </div>
-          
-          
+
+          {['past-events', 'semantic'].includes(activeSubTab) && (
+            <div className="reference-filter-toggle">
+              <button
+                onClick={() => setShowOnlyReferenced(!showOnlyReferenced)}
+                className={`filter-toggle-button ${showOnlyReferenced ? 'active' : ''}`}
+                title={t('memory.tooltips.filterReferenced', { defaultValue: 'Show only memories with references' })}
+              >
+                📚 {showOnlyReferenced ? t('memory.filter.showAll', { defaultValue: 'Show All' }) : t('memory.filter.onlyReferenced', { defaultValue: 'Only Referenced' })}
+              </button>
+            </div>
+          )}
+
+          {activeSubTab === 'raw-memory' && (
+            <div className="reference-filter-toggle">
+              <button
+                onClick={() => setShowOnlyReferencedRaw(!showOnlyReferencedRaw)}
+                className={`filter-toggle-button ${showOnlyReferencedRaw ? 'active' : ''}`}
+                title={t('memory.tooltips.filterReferencedRaw', { defaultValue: 'Show only referenced raw memories' })}
+              >
+                🔗 {showOnlyReferencedRaw ? t('memory.filter.showAll', { defaultValue: 'Show All' }) : t('memory.filter.onlyReferenced', { defaultValue: 'Only Referenced' })}
+              </button>
+            </div>
+          )}
+
           {['past-events', 'semantic', 'procedural', 'docs-files'].includes(activeSubTab) && (
             <div className="view-mode-toggle">
               <button
@@ -937,11 +1195,11 @@ const ExistingMemory = ({ settings }) => {
               </button>
             </div>
           )}
-          
 
-          
-          <button 
-            onClick={() => fetchMemoryData(activeSubTab)} 
+
+
+          <button
+            onClick={() => fetchMemoryData(activeSubTab)}
             className="refresh-button"
             disabled={loading}
           >

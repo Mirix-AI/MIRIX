@@ -739,6 +739,29 @@
   color: #6c757d;
 }
 
+/* Raw Memory */
+.raw-memory {
+  /* Base styles inherited from .memory-item */
+}
+
+.raw-memory.highlighted {
+  border: 2px solid #7c3aed;
+  background: linear-gradient(135deg, rgba(139, 92, 246, 0.08), rgba(139, 92, 246, 0.12));
+  box-shadow: 0 4px 12px rgba(124, 58, 237, 0.2);
+  animation: highlightPulse 2s ease-in-out;
+}
+
+@keyframes highlightPulse {
+  0%, 100% {
+    transform: scale(1);
+    box-shadow: 0 4px 12px rgba(124, 58, 237, 0.2);
+  }
+  50% {
+    transform: scale(1.02);
+    box-shadow: 0 6px 16px rgba(124, 58, 237, 0.3);
+  }
+}
+
 /* Responsive Design */
 @media (max-width: 768px) {
   .memory-header {
@@ -912,4 +935,296 @@
   }
 }
 
- 
+/* Memory References Section Styles */
+.memory-references-section {
+  background: linear-gradient(135deg, rgba(139, 92, 246, 0.08), rgba(139, 92, 246, 0.12));
+  border: 1px solid rgba(139, 92, 246, 0.2);
+  border-radius: 10px;
+  margin-top: 12px;
+  overflow: hidden;
+  animation: fadeIn 0.4s ease-out;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+  backdrop-filter: blur(10px);
+}
+
+.memory-references-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  background: linear-gradient(135deg, rgba(139, 92, 246, 0.12), rgba(139, 92, 246, 0.18));
+  border-bottom: 1px solid rgba(139, 92, 246, 0.25);
+  font-size: 13px;
+  font-weight: 600;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Inter", sans-serif;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+
+.memory-references-header:hover {
+  background: linear-gradient(135deg, rgba(139, 92, 246, 0.15), rgba(139, 92, 246, 0.22));
+}
+
+.memory-references-header .expand-icon {
+  margin-left: auto;
+  font-size: 11px;
+  color: #7c3aed;
+  opacity: 0.8;
+}
+
+.memory-icon {
+  font-size: 16px;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.1));
+}
+
+.memory-title {
+  color: #7c3aed;
+  flex-grow: 1;
+  font-weight: 600;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+}
+
+.memory-count {
+  color: #7c3aed;
+  font-size: 11px;
+  opacity: 0.85;
+  font-weight: 500;
+  background-color: rgba(139, 92, 246, 0.15);
+  padding: 2px 6px;
+  border-radius: 8px;
+}
+
+/* Collapsed summary */
+.memory-references-summary {
+  padding: 10px 14px;
+  font-size: 12px;
+  color: #7c3aed;
+  background: rgba(139, 92, 246, 0.05);
+  border-top: 1px solid rgba(139, 92, 246, 0.1);
+}
+
+/* Grouped badges container */
+.memory-badges-grouped {
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* App group */
+.memory-app-group {
+  background: rgba(255, 255, 255, 0.3);
+  border-radius: 8px;
+  padding: 10px;
+  border: 1px solid rgba(139, 92, 246, 0.15);
+}
+
+.memory-app-group-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid rgba(139, 92, 246, 0.1);
+}
+
+.memory-app-group-header .app-icon {
+  font-size: 18px;
+}
+
+.memory-app-group-header .app-name {
+  font-weight: 600;
+  font-size: 13px;
+  color: #6b21a8;
+}
+
+.memory-app-group-header .app-count {
+  font-size: 11px;
+  color: #9333ea;
+  opacity: 0.8;
+  margin-left: auto;
+}
+
+/* Show all button */
+.show-all-refs-button {
+  margin-top: 8px;
+  padding: 6px 12px;
+  background: linear-gradient(135deg, rgba(139, 92, 246, 0.1), rgba(139, 92, 246, 0.15));
+  border: 1px solid rgba(139, 92, 246, 0.25);
+  border-radius: 6px;
+  color: #7c3aed;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  width: 100%;
+}
+
+.show-all-refs-button:hover {
+  background: linear-gradient(135deg, rgba(139, 92, 246, 0.15), rgba(139, 92, 246, 0.22));
+  border-color: rgba(139, 92, 246, 0.4);
+}
+
+.memory-badges {
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.memory-badge {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.6), rgba(255, 255, 255, 0.8));
+  border: 1px solid rgba(139, 92, 246, 0.2);
+  border-radius: 6px;
+  transition: all 0.2s ease;
+  cursor: pointer;
+}
+
+.memory-badge:hover {
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.8), rgba(255, 255, 255, 0.95));
+  border-color: rgba(139, 92, 246, 0.4);
+  box-shadow: 0 2px 8px rgba(139, 92, 246, 0.15);
+  transform: translateY(-1px);
+}
+
+.memory-badge-content {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.memory-badge-url {
+  font-size: 13px;
+  font-weight: 500;
+  color: #6b21a8;
+  word-break: break-all;
+  font-family: "SF Mono", "Monaco", "Inconsolata", "Roboto Mono", "Consolas", "Liberation Mono", monospace;
+}
+
+.memory-badge-no-url {
+  font-size: 12px;
+  color: #9333ea;
+  opacity: 0.6;
+  font-style: italic;
+}
+
+.memory-badge-meta {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: #9333ea;
+  opacity: 0.8;
+}
+
+.memory-badge-date {
+  font-size: 11px;
+}
+
+.memory-badge-versions {
+  font-size: 11px;
+  font-weight: 500;
+  color: #7c3aed;
+}
+
+.memory-badge-preview {
+  padding: 6px 8px;
+  background: rgba(139, 92, 246, 0.08);
+  border-left: 3px solid rgba(139, 92, 246, 0.3);
+  border-radius: 4px;
+  font-size: 11px;
+  color: #64748b;
+  line-height: 1.4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+/* Reference Filter Toggle */
+.reference-filter-toggle {
+  display: flex;
+  align-items: center;
+}
+
+.filter-toggle-button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border: 1px solid #e9ecef;
+  border-radius: 6px;
+  background-color: #ffffff;
+  color: #6c757d;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  white-space: nowrap;
+}
+
+.filter-toggle-button:hover {
+  background-color: #e9ecef;
+  border-color: #dee2e6;
+  color: #495057;
+}
+
+.filter-toggle-button.active {
+  background: linear-gradient(135deg, #7c3aed, #9333ea);
+  border-color: #7c3aed;
+  color: white;
+}
+
+.filter-toggle-button.active:hover {
+  background: linear-gradient(135deg, #6b21a8, #7c3aed);
+  border-color: #6b21a8;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Responsive design for memory badges */
+@media (max-width: 768px) {
+  .memory-badges {
+    padding: 8px;
+  }
+
+  .memory-badge {
+    padding: 8px 10px;
+  }
+
+  .memory-badge-icon {
+    font-size: 20px;
+  }
+
+  .memory-badge-app {
+    font-size: 12px;
+  }
+
+  .memory-badge-url {
+    font-size: 11px;
+  }
+
+  .memory-badge-date {
+    font-size: 10px;
+  }
+
+  .memory-badge-preview {
+    font-size: 10px;
+  }
+}
+
