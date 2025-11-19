@@ -344,6 +344,7 @@ class MessageRequest(BaseModel):
 class MessageResponse(BaseModel):
     response: str
     status: str = "success"
+    memoryReferences: Optional[List[dict]] = None
 
 
 class ConfirmationRequest(BaseModel):
@@ -662,7 +663,15 @@ async def send_message_endpoint(request: MessageRequest):
                 # When memorizing=False, None response is an error
                 response = "I received your message but couldn't generate a response. Please try again."
 
-        return MessageResponse(response=response)
+        # Handle dict response with memoryReferences
+        if isinstance(response, dict) and "response" in response:
+            return MessageResponse(
+                response=response["response"],
+                memoryReferences=response.get("memoryReferences", None)
+            )
+        else:
+            # Backward compatibility: plain string response
+            return MessageResponse(response=response)
 
     except Exception as e:
         print(f"Error in send_message_endpoint: {str(e)}")
@@ -868,7 +877,50 @@ async def send_streaming_message_endpoint(request: MessageRequest):
                         print(
                             f"[DEBUG] Agent returned successful response (length: {len(str(response))})"
                         )
-                        result_queue.put({"type": "final", "response": response})
+
+                        # Handle dict response with memoryReferences
+                        if isinstance(response, dict) and "response" in response:
+                            response_text = response["response"]
+                            memory_refs = response.get("memoryReferences", [])
+
+                            # Fetch full raw_memory details for each reference
+                            memory_details = []
+                            if memory_refs:
+                                from mirix.services.raw_memory_manager import RawMemoryManager
+                                raw_memory_manager = RawMemoryManager()
+
+                                # Get current user for permission check
+                                users = agent.client.server.user_manager.list_users()
+                                active_user = next((u for u in users if u.status == "active"), None)
+                                current_user = active_user if active_user else (users[0] if users else None)
+
+                                if current_user:
+                                    for ref_id in memory_refs:
+                                        try:
+                                            raw_mem = raw_memory_manager.get_raw_memory_by_id(
+                                                raw_memory_id=ref_id,
+                                                user_id=current_user.id
+                                            )
+                                            if raw_mem:
+                                                memory_details.append({
+                                                    "id": raw_mem.id,
+                                                    "source_app": raw_mem.source_app,
+                                                    "source_url": raw_mem.source_url,
+                                                    "captured_at": raw_mem.captured_at.isoformat() if raw_mem.captured_at else None,
+                                                    "ocr_text": raw_mem.ocr_text,
+                                                })
+                                        except Exception as e:
+                                            print(f"[DEBUG] Failed to fetch raw_memory {ref_id}: {e}")
+                                            continue
+
+                            result_queue.put({
+                                "type": "final",
+                                "response": response_text,
+                                "memoryReferences": memory_details
+                            })
+                        else:
+                            # Backward compatibility: plain string response
+                            result_queue.put({"type": "final", "response": response})
 
                 except Exception as e:
                     print(f"[DEBUG] Exception in run_agent: {str(e)}")
@@ -898,7 +950,14 @@ async def send_streaming_message_endpoint(request: MessageRequest):
                     if final_result["type"] == "error":
                         yield f"data: {json.dumps({'type': 'error', 'error': final_result['error']})}\n\n"
                     else:
-                        yield f"data: {json.dumps({'type': 'final', 'response': final_result['response']})}\n\n"
+                        # Include memoryReferences if present
+                        response_data = {
+                            'type': 'final',
+                            'response': final_result['response']
+                        }
+                        if 'memoryReferences' in final_result:
+                            response_data['memoryReferences'] = final_result['memoryReferences']
+                        yield f"data: {json.dumps(response_data)}\n\n"
                     final_result_sent = True
                     break
                 except queue.Empty:
@@ -1759,6 +1818,57 @@ async def get_credentials_memory():
 
     except Exception as e:
         print(f"Error retrieving credentials memory: {str(e)}")
+        return []
+
+
+@app.get("/memory/raw")
+async def get_raw_memory():
+    """Get raw memory items (screenshots with OCR text)"""
+    if agent is None:
+        raise HTTPException(status_code=500, detail="Agent not initialized")
+
+    try:
+        # Find the current active user
+        users = agent.client.server.user_manager.list_users()
+        active_user = next((user for user in users if user.status == "active"), None)
+        target_user = active_user if active_user else (users[0] if users else None)
+
+        if not target_user:
+            return []
+
+        # Import raw memory manager and ORM
+        from mirix.services.raw_memory_manager import RawMemoryManager
+        from mirix.orm.raw_memory import RawMemoryItem
+        from mirix.server.server import db_context
+
+        raw_memory_manager = RawMemoryManager()
+
+        # Query raw_memory items for the current user
+        with db_context() as session:
+            items = session.query(RawMemoryItem).filter(
+                RawMemoryItem.user_id == target_user.id
+            ).order_by(RawMemoryItem.captured_at.desc()).limit(100).all()
+
+            # Transform to frontend format
+            raw_items = []
+            for item in items:
+                raw_items.append({
+                    "id": item.id,
+                    "screenshot_path": item.screenshot_path,
+                    "source_app": item.source_app,
+                    "source_url": item.source_url,
+                    "captured_at": item.captured_at.isoformat() if item.captured_at else None,
+                    "ocr_text": item.ocr_text,
+                    "processed": item.processed,
+                    "created_at": item.created_at.isoformat() if item.created_at else None,
+                })
+
+            return raw_items
+
+    except Exception as e:
+        print(f"Error retrieving raw memory: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return []
 
 

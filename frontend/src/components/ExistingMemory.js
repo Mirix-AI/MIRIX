@@ -14,7 +14,8 @@ const ExistingMemory = ({ settings }) => {
     'procedural': [],
     'docs-files': [],
     'core-understanding': [],
-    'credentials': []
+    'credentials': [],
+    'raw-memory': []
   });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
@@ -23,9 +24,10 @@ const ExistingMemory = ({ settings }) => {
   // State for memory view modes (list or tree) for each memory type
   const [viewModes, setViewModes] = useState({
     'past-events': 'list',
-    'semantic': 'list', 
+    'semantic': 'list',
     'procedural': 'list',
-    'docs-files': 'list'
+    'docs-files': 'list',
+    'raw-memory': 'list'
   });
   // State for Upload & Export modal
   const [showUploadExportModal, setShowUploadExportModal] = useState(false);
@@ -105,6 +107,9 @@ const ExistingMemory = ({ settings }) => {
         case 'docs-files':
           endpoint = '/memory/resources';
           break;
+        case 'raw-memory':
+          endpoint = '/memory/raw';
+          break;
         case 'core-understanding':
           endpoint = '/memory/core';
           break;
@@ -162,6 +167,10 @@ const ExistingMemory = ({ settings }) => {
         item.entry_type,
         item.source,
         item.sensitivity,
+        // Raw memory specific fields
+        item.source_app,
+        item.source_url,
+        item.ocr_text,
         // Search in tags if they exist
         ...(item.tags || []),
         // Search in emotions if they exist
@@ -189,31 +198,42 @@ const ExistingMemory = ({ settings }) => {
   };
 
   // Check if search query matches in details for auto-expansion
-  const shouldAutoExpand = (item, query) => {
-    if (!query.trim() || !item.details) return false;
-    
+  const shouldAutoExpand = (item, query, memoryType) => {
+    if (!query.trim()) return false;
+
     const searchTerm = query.toLowerCase();
-    const detailsText = item.details.toLowerCase();
-    
-    return detailsText.includes(searchTerm);
+
+    // For raw-memory, check OCR text
+    if (memoryType === 'raw-memory' && item.ocr_text) {
+      return item.ocr_text.toLowerCase().includes(searchTerm);
+    }
+
+    // For other types, check details
+    if (item.details) {
+      return item.details.toLowerCase().includes(searchTerm);
+    }
+
+    return false;
   };
 
   // Auto-expand items when search query matches their details
   useEffect(() => {
-    if ((activeSubTab === 'semantic' || activeSubTab === 'past-events') && searchQuery.trim()) {
+    if ((activeSubTab === 'semantic' || activeSubTab === 'past-events' || activeSubTab === 'raw-memory') && searchQuery.trim()) {
       const currentData = memoryData[activeSubTab] || [];
       const itemsToExpand = new Set();
-      
+
       currentData.forEach((item, index) => {
-        if (shouldAutoExpand(item, searchQuery)) {
+        if (shouldAutoExpand(item, searchQuery, activeSubTab)) {
           if (activeSubTab === 'semantic') {
             itemsToExpand.add(`semantic-${index}`);
           } else if (activeSubTab === 'past-events') {
             itemsToExpand.add(`episodic-${index}`);
+          } else if (activeSubTab === 'raw-memory') {
+            itemsToExpand.add(`raw-${index}`);
           }
         }
       });
-      
+
       setExpandedItems(itemsToExpand);
     } else if (!searchQuery.trim()) {
       // Clear expanded items when search is cleared
@@ -562,6 +582,62 @@ const ExistingMemory = ({ settings }) => {
           </div>
         );
 
+      case 'raw-memory':
+        const rawItemId = `raw-${index}`;
+        const isRawExpanded = expandedItems.has(rawItemId);
+
+        // Helper to get app icon
+        const getAppIcon = (app) => {
+          switch(app) {
+            case 'Chrome': return '🌐';
+            case 'Safari': return '🧭';
+            case 'Firefox': return '🦊';
+            case 'Notion': return '📝';
+            default: return '💻';
+          }
+        };
+
+        return (
+          <div className="raw-memory">
+            <div className="memory-app-header">
+              <span className="memory-app-icon">{getAppIcon(item.source_app)}</span>
+              <span className="memory-app-name">{highlightText(item.source_app, searchQuery)}</span>
+            </div>
+            {item.source_url && (
+              <div className="memory-source-url">{highlightText(item.source_url, searchQuery)}</div>
+            )}
+            {item.captured_at && (
+              <div className="memory-timestamp">
+                📅 {new Date(item.captured_at).toLocaleString()}
+              </div>
+            )}
+            {item.ocr_text && (
+              <div className="memory-details-section">
+                <button
+                  className="expand-toggle-button"
+                  onClick={() => toggleExpanded(rawItemId)}
+                  title={isRawExpanded ? t('memory.actions.collapseDetails') : t('memory.actions.expandDetails')}
+                >
+                  {isRawExpanded ? `▼ ${t('memory.actions.hideOCR', { defaultValue: 'Hide OCR Text' })}` : `▶ ${t('memory.actions.showOCR', { defaultValue: 'Show OCR Text' })}`}
+                </button>
+                {isRawExpanded && (
+                  <div className="memory-ocr-text">{highlightText(item.ocr_text, searchQuery)}</div>
+                )}
+              </div>
+            )}
+            {item.screenshot_path && (
+              <div className="memory-screenshot-path">
+                📸 {item.screenshot_path}
+              </div>
+            )}
+            {item.processed !== undefined && (
+              <div className="memory-processed-status">
+                {item.processed ? '✅ Processed' : '⏳ Pending'}
+              </div>
+            )}
+          </div>
+        );
+
       default:
         return <div className="memory-content">{JSON.stringify(item, null, 2)}</div>;
     }
@@ -573,6 +649,7 @@ const ExistingMemory = ({ settings }) => {
       case 'semantic': return t('memory.types.semantic');
       case 'procedural': return t('memory.types.procedural');
       case 'docs-files': return t('memory.types.resource');
+      case 'raw-memory': return t('memory.types.raw', { defaultValue: 'Raw Memory' });
       case 'core-understanding': return t('memory.types.core');
       case 'credentials': return t('memory.types.credentials');
       default: return 'Memory';
@@ -585,6 +662,7 @@ const ExistingMemory = ({ settings }) => {
       case 'semantic': return '🧠';
       case 'procedural': return '🛠️';
       case 'docs-files': return '📁';
+      case 'raw-memory': return '📸';
       case 'core-understanding': return '💡';
       case 'credentials': return '🔐';
       default: return '💭';
@@ -780,7 +858,7 @@ const ExistingMemory = ({ settings }) => {
       <div className="memory-header">
         <div className="memory-subtabs">
           <div className="memory-subtabs-left">
-            {['past-events', 'semantic', 'procedural', 'docs-files', 'core-understanding', 'credentials'].map(subTab => (
+            {['past-events', 'semantic', 'procedural', 'docs-files', 'raw-memory', 'core-understanding', 'credentials'].map(subTab => (
               <button
                 key={subTab}
                 className={`memory-subtab ${activeSubTab === subTab ? 'active' : ''}`}
