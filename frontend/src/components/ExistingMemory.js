@@ -845,32 +845,60 @@ const ExistingMemory = ({ settings }) => {
               <span className="memory-app-name">{highlightText(item.source_app, searchQuery)}</span>
             </div>
             {item.source_url && (
-              <div className="memory-source-url">{highlightText(item.source_url, searchQuery)}</div>
+              <div className="memory-source-url">
+                🔗 <a href={item.source_url} target="_blank" rel="noopener noreferrer">
+                  {highlightText(item.source_url, searchQuery)}
+                </a>
+              </div>
             )}
             {item.captured_at && (
               <div className="memory-timestamp">
                 📅 {new Date(item.captured_at).toLocaleString()}
               </div>
             )}
-            {item.ocr_text && (
+
+            {/* Screenshot Preview */}
+            {item.screenshot_url && (
+              <div className="memory-screenshot-preview">
+                <img
+                  src={`${settings.serverUrl}${item.screenshot_url}`}
+                  alt={`Screenshot from ${item.source_app}`}
+                  className="screenshot-thumbnail"
+                  onError={(e) => {
+                    e.target.style.display = 'none';
+                    const fallback = e.target.nextSibling;
+                    if (fallback) fallback.style.display = 'block';
+                  }}
+                />
+                <div className="screenshot-fallback" style={{display: 'none'}}>
+                  📸 Screenshot unavailable
+                </div>
+              </div>
+            )}
+
+            {/* OCR Preview/Full Text */}
+            {(item.ocr_preview || item.ocr_text) && (
               <div className="memory-details-section">
-                <button
-                  className="expand-toggle-button"
-                  onClick={() => toggleExpanded(rawItemId)}
-                  title={isRawExpanded ? t('memory.actions.collapseDetails') : t('memory.actions.expandDetails')}
-                >
-                  {isRawExpanded ? `▼ ${t('memory.actions.hideOCR', { defaultValue: 'Hide OCR Text' })}` : `▶ ${t('memory.actions.showOCR', { defaultValue: 'Show OCR Text' })}`}
-                </button>
-                {isRawExpanded && (
-                  <div className="memory-ocr-text">{highlightText(item.ocr_text, searchQuery)}</div>
+                <div className="memory-ocr-preview">
+                  {highlightText(item.ocr_preview || item.ocr_text, searchQuery)}
+                </div>
+                {item.ocr_text && item.ocr_text.length > 200 && (
+                  <>
+                    <button
+                      className="expand-toggle-button"
+                      onClick={() => toggleExpanded(rawItemId)}
+                      title={isRawExpanded ? t('memory.actions.collapseDetails') : t('memory.actions.expandDetails')}
+                    >
+                      {isRawExpanded ? `▼ ${t('memory.actions.hideFullText', { defaultValue: 'Hide Full Text' })}` : `▶ ${t('memory.actions.showFullText', { defaultValue: 'Show Full Text' })}`}
+                    </button>
+                    {isRawExpanded && (
+                      <div className="memory-ocr-full-text">{highlightText(item.ocr_text, searchQuery)}</div>
+                    )}
+                  </>
                 )}
               </div>
             )}
-            {item.screenshot_path && (
-              <div className="memory-screenshot-path">
-                📸 {item.screenshot_path}
-              </div>
-            )}
+
             {item.processed !== undefined && (
               <div className="memory-processed-status">
                 {item.processed ? '✅ Processed' : '⏳ Pending'}

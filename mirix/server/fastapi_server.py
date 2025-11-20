@@ -1918,13 +1918,24 @@ async def get_raw_memory():
             # Transform to frontend format
             raw_items = []
             for item in items:
+                # Generate screenshot URL instead of path
+                screenshot_url = f"/raw_memory/{item.id}/screenshot" if item.screenshot_path else None
+
+                # Create OCR preview (first 200 characters)
+                ocr_preview = None
+                if item.ocr_text:
+                    ocr_preview = item.ocr_text[:200]
+                    if len(item.ocr_text) > 200:
+                        ocr_preview += "..."
+
                 raw_items.append({
                     "id": item.id,
-                    "screenshot_path": item.screenshot_path,
+                    "screenshot_url": screenshot_url,  # ✓ Frontend can access this
                     "source_app": item.source_app,
                     "source_url": item.source_url,
                     "captured_at": item.captured_at.isoformat() if item.captured_at else None,
-                    "ocr_text": item.ocr_text,
+                    "ocr_preview": ocr_preview,  # ✓ Short preview for list view
+                    "ocr_text": item.ocr_text,  # ✓ Full text for expanded view
                     "processed": item.processed,
                     "created_at": item.created_at.isoformat() if item.created_at else None,
                 })
@@ -1936,6 +1947,58 @@ async def get_raw_memory():
         import traceback
         traceback.print_exc()
         return []
+
+
+@app.get("/raw_memory/{raw_memory_id}/screenshot")
+async def get_raw_memory_screenshot(raw_memory_id: str):
+    """Serve screenshot image for a raw_memory item"""
+    from fastapi.responses import FileResponse
+    from mirix.orm.raw_memory import RawMemoryItem
+    from mirix.server.server import db_context
+    import os
+
+    try:
+        with db_context() as session:
+            item = session.get(RawMemoryItem, raw_memory_id)
+
+            if not item:
+                raise HTTPException(status_code=404, detail="Raw memory not found")
+
+            if not item.screenshot_path:
+                raise HTTPException(status_code=404, detail="No screenshot path for this raw memory")
+
+            # Check if file exists
+            if not os.path.exists(item.screenshot_path):
+                raise HTTPException(status_code=404, detail="Screenshot file not found on disk")
+
+            # Determine media type based on file extension
+            ext = os.path.splitext(item.screenshot_path)[1].lower()
+            media_type_map = {
+                '.png': 'image/png',
+                '.jpg': 'image/jpeg',
+                '.jpeg': 'image/jpeg',
+                '.gif': 'image/gif',
+                '.webp': 'image/webp',
+            }
+            media_type = media_type_map.get(ext, 'image/png')
+
+            # Return image file with caching headers
+            return FileResponse(
+                item.screenshot_path,
+                media_type=media_type,
+                headers={
+                    "Cache-Control": "public, max-age=3600",  # Cache for 1 hour
+                    "Accept-Ranges": "bytes"
+                }
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error serving screenshot: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error serving screenshot: {str(e)}")
 
 
 @app.post("/conversation/clear", response_model=ClearConversationResponse)
