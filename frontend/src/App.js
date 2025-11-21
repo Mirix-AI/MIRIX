@@ -117,9 +117,17 @@ function App() {
       return false;
     }
 
+    console.log('🔍 Starting health check:', settings.serverUrl);
+
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 5000); // 5 second timeout
+      const timeoutId = setTimeout(() => {
+        console.warn('⏱️  Health check timeout (30s) - aborting');
+        controller.abort();
+      }, 30000); // 30 second timeout (increased from 5s)
+
+      console.log('📡 Sending fetch request...');
+      const startTime = performance.now();
 
       const response = await fetch(`${settings.serverUrl}/health`, {
         method: 'GET',
@@ -128,6 +136,9 @@ function App() {
           'Content-Type': 'application/json',
         }
       });
+
+      const elapsed = performance.now() - startTime;
+      console.log(`📥 Response received in ${elapsed.toFixed(2)}ms, status: ${response.status}`);
 
       clearTimeout(timeoutId);
 
@@ -155,6 +166,11 @@ function App() {
       }
     } catch (error) {
       console.warn('❌ Backend health check failed:', error.message);
+      console.warn('   Error name:', error.name);
+      console.warn('   Error type:', error.constructor.name);
+      if (error.name === 'AbortError') {
+        console.warn('   → Request was aborted (timeout or cancelled)');
+      }
       setBackendLoading(prev => ({
         ...prev,
         isVisible: true,
