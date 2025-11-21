@@ -1584,6 +1584,7 @@ async def get_episodic_memory(user_id: Optional[str] = None):
 
             episodic_items.append(
                 {
+                    "id": event.id,
                     "timestamp": event.occurred_at.isoformat()
                     if event.occurred_at
                     else None,
@@ -1636,6 +1637,7 @@ async def get_semantic_memory(user_id: Optional[str] = None):
 
                 semantic_items_list.append(
                     {
+                        "id": item.id,
                         "title": item.name,
                         "type": "semantic",
                         "summary": item.summary,
@@ -1714,6 +1716,7 @@ async def get_procedural_memory(user_id: Optional[str] = None):
 
                 procedural_items_list.append(
                     {
+                        "id": item.id,
                         "title": item.entry_type,
                         "type": "procedural",
                         "summary": item.summary,
@@ -1768,6 +1771,7 @@ async def get_resource_memory(user_id: Optional[str] = None):
 
             docs_files.append(
                 {
+                    "id": resource.id,
                     "filename": resource.title,
                     "type": resource.resource_type,
                     "summary": resource.summary
@@ -1871,6 +1875,7 @@ async def get_credentials_memory():
 
             credentials.append(
                 {
+                    "id": item.id,
                     "caption": item.caption,
                     "entry_type": item.entry_type,
                     "source": item.source,
@@ -1943,14 +1948,131 @@ async def get_raw_memory():
                     "processed": item.processed,
                     "created_at": item.created_at.isoformat() if item.created_at else None,
                 })
-
-            return raw_items
+        return raw_items
 
     except Exception as e:
         print(f"Error retrieving raw memory: {str(e)}")
         import traceback
         traceback.print_exc()
-        return []
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/memory/raw/{raw_memory_id}/references")
+async def get_raw_memory_references(raw_memory_id: str):
+    """Get all memories that reference a specific raw_memory item"""
+    if agent is None:
+        raise HTTPException(status_code=500, detail="Agent not initialized")
+    
+    try:
+        from mirix.orm.episodic_memory import EpisodicEvent
+        from mirix.orm.semantic_memory import SemanticMemoryItem
+        from mirix.orm.procedural_memory import ProceduralMemoryItem
+        from mirix.orm.resource_memory import ResourceMemoryItem
+        from mirix.orm.knowledge_vault import KnowledgeVaultItem
+        from mirix.server.server import db_context
+        from sqlalchemy import func
+        
+        references = {
+            "episodic": [],
+            "semantic": [],
+            "procedural": [],
+            "resource": [],
+            "knowledge_vault": []
+        }
+        
+        with db_context() as session:
+            # Query episodic memory
+            episodic_items = session.query(EpisodicEvent).filter(
+                func.jsonb_array_length(EpisodicEvent.raw_memory_references) > 0
+            ).all()
+            
+            for item in episodic_items:
+                if item.raw_memory_references and raw_memory_id in item.raw_memory_references:
+                    references["episodic"].append({
+                        "id": item.id,
+                        "type": "episodic",
+                        "title": item.summary,
+                        "summary": item.summary,
+                        "timestamp": item.occurred_at.isoformat() if item.occurred_at else None,
+                        "event_type": item.event_type
+                    })
+            
+            # Query semantic memory
+            semantic_items = session.query(SemanticMemoryItem).filter(
+                func.jsonb_array_length(SemanticMemoryItem.raw_memory_references) > 0
+            ).all()
+            
+            for item in semantic_items:
+                if item.raw_memory_references and raw_memory_id in item.raw_memory_references:
+                    references["semantic"].append({
+                        "id": item.id,
+                        "type": "semantic",
+                        "title": item.name or item.summary,
+                        "summary": item.summary,
+                        "timestamp": item.created_at.isoformat() if item.created_at else None
+                    })
+            
+            # Query procedural memory
+            procedural_items = session.query(ProceduralMemoryItem).filter(
+                func.jsonb_array_length(ProceduralMemoryItem.raw_memory_references) > 0
+            ).all()
+            
+            for item in procedural_items:
+                if item.raw_memory_references and raw_memory_id in item.raw_memory_references:
+                    references["procedural"].append({
+                        "id": item.id,
+                        "type": "procedural",
+                        "title": item.summary,
+                        "summary": item.summary,
+                        "timestamp": item.created_at.isoformat() if item.created_at else None
+                    })
+            
+            # Query resource memory
+            resource_items = session.query(ResourceMemoryItem).filter(
+                func.jsonb_array_length(ResourceMemoryItem.raw_memory_references) > 0
+            ).all()
+            
+            for item in resource_items:
+                if item.raw_memory_references and raw_memory_id in item.raw_memory_references:
+                    references["resource"].append({
+                        "id": item.id,
+                        "type": "resource",
+                        "title": item.title,
+                        "summary": item.summary,
+                        "timestamp": item.created_at.isoformat() if item.created_at else None,
+                        "resource_type": item.resource_type
+                    })
+            
+            # Query knowledge vault
+            knowledge_items = session.query(KnowledgeVaultItem).filter(
+                func.jsonb_array_length(KnowledgeVaultItem.raw_memory_references) > 0
+            ).all()
+            
+            for item in knowledge_items:
+                if item.raw_memory_references and raw_memory_id in item.raw_memory_references:
+                    references["knowledge_vault"].append({
+                        "id": item.id,
+                        "type": "knowledge_vault",
+                        "title": item.caption,
+                        "summary": item.caption,
+                        "timestamp": item.created_at.isoformat() if item.created_at else None,
+                        "entry_type": item.entry_type
+                    })
+        
+        # Calculate total count
+        total_count = sum(len(refs) for refs in references.values())
+        
+        return {
+            "raw_memory_id": raw_memory_id,
+            "total_count": total_count,
+            "references": references
+        }
+    
+    except Exception as e:
+        print(f"Error retrieving raw memory references: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/raw_memory/{raw_memory_id}/screenshot")

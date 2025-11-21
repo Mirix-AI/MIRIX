@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import './ExistingMemory.css';
 import MemoryTreeVisualization from './MemoryTreeVisualization';
+import MemoryReferences from './MemoryReferences';
 import UploadExportModal from './UploadExportModal';
 import queuedFetch from '../utils/requestQueue';
 import { useTranslation } from 'react-i18next';
@@ -26,6 +27,7 @@ const ExistingMemory = ({ settings }) => {
   const [expandedAppGroups, setExpandedAppGroups] = useState({});
   const [highlightedRawMemoryId, setHighlightedRawMemoryId] = useState(null);
   const [showOnlyReferencedRaw, setShowOnlyReferencedRaw] = useState(false);
+  const [highlightedMemoryId, setHighlightedMemoryId] = useState(null);
   // State for memory view modes (list or tree) for each memory type
   const [viewModes, setViewModes] = useState({
     'past-events': 'list',
@@ -36,12 +38,12 @@ const ExistingMemory = ({ settings }) => {
   });
   // State for Upload & Export modal
   const [showUploadExportModal, setShowUploadExportModal] = useState(false);
-  
+
   // State for Reflexion processing
   const [isReflexionProcessing, setIsReflexionProcessing] = useState(false);
   const [reflexionMessage, setReflexionMessage] = useState('');
   const [reflexionSuccess, setReflexionSuccess] = useState(null);
-  
+
   // State for tracking edits to core memories
   const [editingCoreMemories, setEditingCoreMemories] = useState(new Set());
   const [editedCoreMemories, setEditedCoreMemories] = useState({});
@@ -51,7 +53,7 @@ const ExistingMemory = ({ settings }) => {
 
   // Helper function to get view mode for current tab
   const getCurrentViewMode = () => viewModes[activeSubTab] || 'list';
-  
+
   // Helper function to set view mode for current tab
   const setCurrentViewMode = (mode) => {
     setViewModes(prev => ({
@@ -70,7 +72,7 @@ const ExistingMemory = ({ settings }) => {
     const regex = new RegExp(`(${searchTerm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
     const parts = text.split(regex);
 
-    return parts.map((part, index) => 
+    return parts.map((part, index) =>
       regex.test(part) ? (
         <span key={index} className="search-highlight">{part}</span>
       ) : part
@@ -80,10 +82,10 @@ const ExistingMemory = ({ settings }) => {
   // Function to render text with preserved newlines
   const renderTextWithNewlines = (text, query) => {
     if (!text) return text;
-    
+
     // Split by newlines first
     const lines = text.split('\n');
-    
+
     return lines.map((line, index) => (
       <React.Fragment key={index}>
         {query && query.trim() ? highlightText(line, query) : line}
@@ -199,8 +201,8 @@ const ExistingMemory = ({ settings }) => {
     const searchTerm = query.toLowerCase();
 
     return filtered.filter(item => {
-      // For raw-memory, also search by id
-      if (activeSubTab === 'raw-memory' && item.id && item.id.toLowerCase().includes(searchTerm)) {
+      // Search by id for all memory types (enables navigation from references)
+      if (item.id && item.id.toLowerCase().includes(searchTerm)) {
         return true;
       }
 
@@ -323,24 +325,24 @@ const ExistingMemory = ({ settings }) => {
 
   const renderMemoryContent = () => {
     const currentViewMode = getCurrentViewMode();
-    
+
     // Handle tree view for memory types that support it
     if (currentViewMode === 'tree') {
       const treeMemoryTypes = ['past-events', 'semantic', 'procedural', 'docs-files'];
-      
+
       if (treeMemoryTypes.includes(activeSubTab)) {
         // Use generic tree visualization for all memory types
         const memoryTypeMap = {
           'past-events': 'episodic',
           'semantic': 'semantic',
-          'procedural': 'procedural', 
+          'procedural': 'procedural',
           'docs-files': 'resource'
         };
-        
+
         const memoryType = memoryTypeMap[activeSubTab];
-        
+
         return (
-          <MemoryTreeVisualization 
+          <MemoryTreeVisualization
             memoryType={memoryType}
             serverUrl={settings.serverUrl}
             getItemTitle={(item) => {
@@ -349,7 +351,7 @@ const ExistingMemory = ({ settings }) => {
                   return item.summary || 'Episodic Event';
                 case 'semantic':
                   return item.title || item.name || item.summary || 'Semantic Item';
-                case 'procedural': 
+                case 'procedural':
                   return item.summary || item.title || 'Procedure';
                 case 'resource':
                   return item.filename || item.name || 'Resource';
@@ -413,18 +415,45 @@ const ExistingMemory = ({ settings }) => {
         {filteredData.map((item, index) => (
           activeSubTab === 'core-understanding' ? (
             // For core memory, don't add extra wrapper to avoid double containers
-            <div key={index}>
+            <div key={index} id={`memory-${item.id}`}>
               {renderMemoryItem(item, activeSubTab, index)}
             </div>
           ) : (
             // For other memory types, keep the wrapper
-            <div key={index} className="memory-item">
+            <div
+              key={index}
+              id={`memory-${item.id}`}
+              className={`memory-item ${highlightedMemoryId === item.id ? 'highlighted' : ''}`}
+            >
               {renderMemoryItem(item, activeSubTab, index)}
             </div>
           )
         ))}
       </div>
     );
+  };
+
+  // Helper function to navigate to a specific memory type and highlight an item
+  const navigateToMemory = (memoryType, memoryId) => {
+    const tabMap = {
+      'episodic': 'past-events',
+      'semantic': 'semantic',
+      'procedural': 'procedural',
+      'resource': 'docs-files',
+      'knowledge_vault': 'credentials'
+    };
+
+    const targetTab = tabMap[memoryType] || memoryType;
+    setHighlightedMemoryId(memoryId);
+    setActiveSubTab(targetTab);
+    setSearchQuery(memoryId);
+
+    setTimeout(() => {
+      const element = document.getElementById(`memory-${memoryId}`);
+      if (element) {
+        element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    }, 300);
   };
 
   // Helper function to render memory reference badges
@@ -442,7 +471,7 @@ const ExistingMemory = ({ settings }) => {
     };
 
     const getAppIcon = (app) => {
-      switch(app) {
+      switch (app) {
         case 'Chrome': return '🌐';
         case 'Safari': return '🧭';
         case 'Firefox': return '🦊';
@@ -506,6 +535,29 @@ const ExistingMemory = ({ settings }) => {
       // Scroll to the item after a short delay to allow tab switch
       setTimeout(() => {
         const element = document.getElementById(`raw-memory-${refId}`);
+        if (element) {
+          element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+      }, 300);
+    };
+
+    // Helper function to navigate to a specific memory type and highlight an item
+    const navigateToMemory = (memoryType, memoryId) => {
+      const tabMap = {
+        'episodic': 'past-events',
+        'semantic': 'semantic',
+        'procedural': 'procedural',
+        'resource': 'docs-files',
+        'knowledge_vault': 'credentials'
+      };
+
+      const targetTab = tabMap[memoryType] || memoryType;
+      setHighlightedMemoryId(memoryId);
+      setActiveSubTab(targetTab);
+      setSearchQuery(memoryId);
+
+      setTimeout(() => {
+        const element = document.getElementById(`memory-${memoryId}`);
         if (element) {
           element.scrollIntoView({ behavior: 'smooth', block: 'center' });
         }
@@ -617,7 +669,7 @@ const ExistingMemory = ({ settings }) => {
             <div className="memory-content">{highlightText(item.summary, searchQuery)}</div>
             {item.details && (
               <div className="memory-details-section">
-                <button 
+                <button
                   className="expand-toggle-button"
                   onClick={() => toggleExpanded(episodicItemId)}
                   title={isEpisodicExpanded ? t('memory.actions.expandDetails') : t('memory.actions.collapseDetails')}
@@ -625,13 +677,16 @@ const ExistingMemory = ({ settings }) => {
                   {isEpisodicExpanded ? `▼ ${t('memory.actions.hideDetails')}` : `▶ ${t('memory.actions.showDetails')}`}
                 </button>
                 {isEpisodicExpanded && (
-                  <div className="memory-details">{highlightText(item.details, searchQuery)}</div>
+                  <>
+                    <div className="memory-details">{highlightText(item.details, searchQuery)}</div>
+                    {renderMemoryReferences(item.raw_memory_references, episodicItemId)}
+                  </>
                 )}
               </div>
             )}
           </div>
         );
-      
+
       case 'semantic':
         const itemId = `semantic-${index}`;
         const isExpanded = expandedItems.has(itemId);
@@ -703,6 +758,7 @@ const ExistingMemory = ({ settings }) => {
                 ))}
               </div>
             )}
+            {renderMemoryReferences(item.raw_memory_references, `procedural-${index}`)}
           </div>
         );
 
@@ -716,6 +772,7 @@ const ExistingMemory = ({ settings }) => {
               <div className="memory-accessed">{t('memory.details.lastAccessed', { date: new Date(item.last_accessed).toLocaleString() })}</div>
             )}
             {item.size && <div className="memory-size">{t('memory.details.size', { size: item.size })}</div>}
+            {renderMemoryReferences(item.raw_memory_references, `resource-${index}`)}
           </div>
         );
 
@@ -725,7 +782,7 @@ const ExistingMemory = ({ settings }) => {
         const isSaving = savingBlocks.has(index);
         const saveError = saveErrors[index];
         const saveSuccess = saveSuccesses[index];
-        
+
         return (
           <div className="core-memory">
             <div className="memory-aspect-header">
@@ -745,7 +802,7 @@ const ExistingMemory = ({ settings }) => {
                 </button>
               )}
             </div>
-            
+
             {isEditing ? (
               <div className="memory-understanding-editable">
                 <textarea
@@ -779,7 +836,7 @@ const ExistingMemory = ({ settings }) => {
                 </div>
               </div>
             )}
-            
+
             {/* Status messages for individual blocks */}
             {saveSuccess && (
               <div className="block-save-status success">
@@ -791,7 +848,7 @@ const ExistingMemory = ({ settings }) => {
                 ❌ {t('memory.states.error', { error: saveError })}
               </div>
             )}
-            
+
             {item.last_updated && (
               <div className="memory-updated">{t('memory.details.updated', { date: new Date(item.last_updated).toLocaleString() })}</div>
             )}
@@ -816,6 +873,7 @@ const ExistingMemory = ({ settings }) => {
                 </span>
               </div>
             )}
+            {renderMemoryReferences(item.raw_memory_references, `credential-${index}`)}
           </div>
         );
 
@@ -826,7 +884,7 @@ const ExistingMemory = ({ settings }) => {
 
         // Helper to get app icon
         const getAppIcon = (app) => {
-          switch(app) {
+          switch (app) {
             case 'Chrome': return '🌐';
             case 'Safari': return '🧭';
             case 'Firefox': return '🦊';
@@ -873,7 +931,7 @@ const ExistingMemory = ({ settings }) => {
                     if (fallback) fallback.style.display = 'block';
                   }}
                 />
-                <div className="screenshot-fallback" style={{display: 'none'}}>
+                <div className="screenshot-fallback" style={{ display: 'none' }}>
                   📸 Screenshot unavailable
                 </div>
               </div>
@@ -907,6 +965,12 @@ const ExistingMemory = ({ settings }) => {
                 {item.processed ? '✅ Processed' : '⏳ Pending'}
               </div>
             )}
+            <MemoryReferences
+              rawMemoryId={item.id}
+              serverUrl={settings.serverUrl}
+              queuedFetch={queuedFetch}
+              navigateToMemory={navigateToMemory}
+            />
           </div>
         );
 
@@ -1046,7 +1110,7 @@ const ExistingMemory = ({ settings }) => {
         delete newEdited[index];
         return newEdited;
       });
-      
+
       setSaveSuccesses(prev => ({ ...prev, [index]: true }));
       setTimeout(() => {
         setSaveSuccesses(prev => {
@@ -1074,14 +1138,14 @@ const ExistingMemory = ({ settings }) => {
   // Handle reflexion request
   const handleReflexion = async () => {
     if (isReflexionProcessing) return; // Prevent multiple simultaneous requests
-    
+
     try {
       setIsReflexionProcessing(true);
       setReflexionMessage('');
       setReflexionSuccess(null);
-      
+
       console.log('Starting reflexion process...');
-      
+
       const response = await queuedFetch(`${settings.serverUrl}/reflexion`, {
         method: 'POST',
         headers: {
@@ -1095,12 +1159,12 @@ const ExistingMemory = ({ settings }) => {
       }
 
       const result = await response.json();
-      
+
       if (result.success) {
         setReflexionSuccess(true);
         setReflexionMessage(result.message);
         console.log('Reflexion completed successfully:', result.message);
-        
+
         // Optionally refresh memory data after reflexion
         // You can uncomment this if you want to refresh the current tab's data
         // await fetchMemoryData(activeSubTab);
@@ -1109,14 +1173,14 @@ const ExistingMemory = ({ settings }) => {
         setReflexionMessage(result.message || 'Reflexion failed');
         console.error('Reflexion failed:', result.message);
       }
-      
+
     } catch (err) {
       console.error('Error triggering reflexion:', err);
       setReflexionSuccess(false);
       setReflexionMessage(err.message || 'Failed to trigger reflexion');
     } finally {
       setIsReflexionProcessing(false);
-      
+
       // Clear the message after 5 seconds
       setTimeout(() => {
         setReflexionMessage('');
@@ -1148,7 +1212,7 @@ const ExistingMemory = ({ settings }) => {
               title={t('memory.tooltips.uploadExport')}
             >
               <span className="subtab-icon">📤</span>
-                              <span className="subtab-label">{t('memory.actions.uploadExport')}</span>
+              <span className="subtab-label">{t('memory.actions.uploadExport')}</span>
             </button>
             <button
               className="memory-subtab reflexion-btn"
@@ -1166,7 +1230,7 @@ const ExistingMemory = ({ settings }) => {
           </div>
         </div>
       </div>
-      
+
       <div className="memory-content">
         <div className="memory-search-and-actions">
           <div className="search-input-container">
@@ -1243,7 +1307,7 @@ const ExistingMemory = ({ settings }) => {
             🔄 {t('memory.actions.refresh')}
           </button>
         </div>
-        
+
         {/* Reflexion Status Message */}
         {reflexionMessage && (
           <div className={`reflexion-status ${reflexionSuccess ? 'success' : 'error'}`}>
@@ -1254,12 +1318,12 @@ const ExistingMemory = ({ settings }) => {
           </div>
         )}
 
-        
+
         {renderMemoryContent()}
       </div>
 
       {/* Upload & Export Modal */}
-      <UploadExportModal 
+      <UploadExportModal
         isOpen={showUploadExportModal}
         onClose={() => setShowUploadExportModal(false)}
         settings={settings}
