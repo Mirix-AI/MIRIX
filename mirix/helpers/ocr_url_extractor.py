@@ -70,9 +70,29 @@ class OCRUrlExtractor:
                 logger.warning("Tesseract OCR not installed, skipping OCR URL extraction")
                 return []
 
-            # Perform OCR
+            # Perform OCR with optimized settings
             image = Image.open(image_path)
-            text = pytesseract.image_to_string(image)
+
+            # Configure OCR with multiple languages and optimized settings
+            # Languages: English + Simplified Chinese + Traditional Chinese
+            # PSM 6: Assume a single uniform block of text
+            # OEM 3: Default OCR Engine mode (best for most cases)
+            ocr_config = r'--psm 6 --oem 3'
+
+            # Try multi-language OCR first (eng+chi_sim+chi_tra)
+            # Fall back to English-only if language packs not installed
+            try:
+                text = pytesseract.image_to_string(image, lang='eng+chi_sim+chi_tra', config=ocr_config)
+                logger.debug(f"OCR with multi-language (eng+chi_sim+chi_tra)")
+            except pytesseract.pytesseract.TesseractError as lang_error:
+                # If multi-language fails, try English + Simplified Chinese
+                try:
+                    text = pytesseract.image_to_string(image, lang='eng+chi_sim', config=ocr_config)
+                    logger.debug(f"OCR with eng+chi_sim")
+                except pytesseract.pytesseract.TesseractError:
+                    # Fall back to English only
+                    text = pytesseract.image_to_string(image, lang='eng', config=ocr_config)
+                    logger.warning(f"OCR fallback to English-only (Chinese language packs not installed)")
 
             logger.debug(f"OCR extracted text from {image_path}: {text[:100]}...")
 
@@ -182,8 +202,35 @@ class OCRUrlExtractor:
             from PIL import Image
 
             image = Image.open(image_path)
-            text = pytesseract.image_to_string(image)
-            urls = OCRUrlExtractor.extract_urls_from_image(image_path)
+
+            # Use same multi-language configuration as extract_urls_from_image
+            ocr_config = r'--psm 6 --oem 3'
+
+            try:
+                text = pytesseract.image_to_string(image, lang='eng+chi_sim+chi_tra', config=ocr_config)
+            except pytesseract.pytesseract.TesseractError:
+                try:
+                    text = pytesseract.image_to_string(image, lang='eng+chi_sim', config=ocr_config)
+                except pytesseract.pytesseract.TesseractError:
+                    text = pytesseract.image_to_string(image, lang='eng', config=ocr_config)
+
+            # Extract URLs from the OCR text
+            urls = []
+            full_urls = OCRUrlExtractor.FULL_URL_PATTERN.findall(text)
+            domains = OCRUrlExtractor.DOMAIN_PATTERN.findall(text)
+
+            # Add full URLs
+            urls.extend(full_urls)
+
+            # Add normalized domain URLs
+            for domain in domains:
+                if any(domain in url for url in full_urls):
+                    continue
+                if OCRUrlExtractor._is_likely_url(domain):
+                    urls.append(f"https://{domain}")
+
+            # Remove duplicates
+            urls = list(dict.fromkeys(urls))
 
             return text, urls
 
