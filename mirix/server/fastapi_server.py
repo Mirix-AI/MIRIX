@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import yaml
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -675,6 +675,7 @@ async def send_message_endpoint(request: MessageRequest):
                 sources=request.sources,  # Pass sources to agent
                 voice_files=request.voice_files,  # Pass voice files to agent
                 memorizing=request.memorizing,
+                delete_after_upload=False,  # Keep files for OCR processing
                 user_id=request.user_id,
             ),
         )
@@ -810,6 +811,7 @@ async def send_streaming_message_endpoint(request: MessageRequest):
                             sources=request.sources,  # Pass sources to agent
                             voice_files=request.voice_files,  # Pass raw voice files
                             memorizing=request.memorizing,
+                            delete_after_upload=False,  # Keep files for OCR processing
                             display_intermediate_message=display_intermediate_message,
                             request_user_confirmation=request_user_confirmation,
                             is_screen_monitoring=request.is_screen_monitoring,
@@ -1892,16 +1894,17 @@ async def get_raw_memory():
     """Get raw memory items (screenshots with OCR text)"""
     if agent is None:
         raise HTTPException(status_code=500, detail="Agent not initialized")
+        # disable for test
+        # Find the current active user
+        # users = agent.client.server.user_manager.list_users()
+        # active_user = next((user for user in users if user.status == "active"), None)
+        # target_user = active_user if active_user else (users[0] if users else None)
+
+        # if not target_user:
+        #     return []
+    
 
     try:
-        # Find the current active user
-        users = agent.client.server.user_manager.list_users()
-        active_user = next((user for user in users if user.status == "active"), None)
-        target_user = active_user if active_user else (users[0] if users else None)
-
-        if not target_user:
-            return []
-
         # Import raw memory manager and ORM
         from mirix.services.raw_memory_manager import RawMemoryManager
         from mirix.orm.raw_memory import RawMemoryItem
@@ -1909,11 +1912,12 @@ async def get_raw_memory():
 
         raw_memory_manager = RawMemoryManager()
 
-        # Query raw_memory items for the current user
+        # Query ALL raw_memory items (no user filter for single-user system)
+        # Increased limit to 500 to show more recent history
         with db_context() as session:
-            items = session.query(RawMemoryItem).filter(
-                RawMemoryItem.user_id == target_user.id
-            ).order_by(RawMemoryItem.captured_at.desc()).limit(100).all()
+            items = session.query(RawMemoryItem).order_by(
+                RawMemoryItem.captured_at.desc()
+            ).limit(500).all()
 
             # Transform to frontend format
             raw_items = []
@@ -1999,6 +2003,93 @@ async def get_raw_memory_screenshot(raw_memory_id: str):
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Error serving screenshot: {str(e)}")
+
+
+@app.post("/test/process_screenshot")
+async def test_process_screenshot(request: Request):
+    """
+    测试API：处理单个截图文件，运行完整的OCR和raw_memory插入流程
+
+    Request body:
+    {
+        "screenshot_path": "/path/to/screenshot.png",
+        "source_app": "Chrome" (optional, defaults to "TestApp")
+    }
+
+    Returns:
+    {
+        "success": true,
+        "raw_memory_id": "rawmem-xxx",
+        "ocr_text_length": 1234,
+        "urls_found": ["https://example.com"],
+        "screenshot_path": "/path/to/screenshot.png"
+    }
+    """
+    from mirix.helpers.ocr_url_extractor import OCRUrlExtractor
+    from mirix.services.raw_memory_manager import RawMemoryManager
+    from datetime import datetime
+    import os
+
+    try:
+        body = await request.json()
+        screenshot_path = body.get("screenshot_path")
+        source_app = body.get("source_app", "TestApp")
+
+        if not screenshot_path:
+            raise HTTPException(status_code=400, detail="screenshot_path is required")
+
+        if not os.path.exists(screenshot_path):
+            raise HTTPException(status_code=404, detail=f"Screenshot file not found: {screenshot_path}")
+
+        # Extract OCR text and URLs
+        logger.info(f"🔍 Testing OCR on: {screenshot_path}")
+        ocr_text, urls = OCRUrlExtractor.extract_urls_and_text(screenshot_path)
+        logger.info(f"✅ OCR extracted {len(urls)} URLs and {len(ocr_text) if ocr_text else 0} chars")
+
+        # Get source URL (first URL if any)
+        source_url = urls[0] if urls else None
+
+        # Get or create default user
+        from mirix.client.client import create_client
+        client = create_client()
+
+        # Insert into raw_memory
+        raw_memory_manager = RawMemoryManager()
+        captured_at = datetime.now()
+
+        logger.info(f"📸 Inserting into raw_memory: path={screenshot_path}, app={source_app}")
+        raw_memory = raw_memory_manager.insert_raw_memory(
+            actor=client.user,
+            screenshot_path=screenshot_path,
+            source_app=source_app,
+            captured_at=captured_at,
+            ocr_text=ocr_text,
+            source_url=source_url,
+            metadata={"test": True, "api_test": True},
+            organization_id=client.user.organization_id,
+        )
+
+        logger.info(f"✅ Successfully stored in raw_memory: {raw_memory.id}")
+
+        return {
+            "success": True,
+            "raw_memory_id": raw_memory.id,
+            "ocr_text_length": len(ocr_text) if ocr_text else 0,
+            "ocr_preview": ocr_text[:200] if ocr_text else None,
+            "urls_found": urls,
+            "source_url": source_url,
+            "screenshot_path": screenshot_path,
+            "source_app": source_app,
+            "captured_at": captured_at.isoformat(),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error processing screenshot: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/conversation/clear", response_model=ClearConversationResponse)
