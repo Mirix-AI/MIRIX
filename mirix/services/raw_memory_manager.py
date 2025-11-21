@@ -59,14 +59,65 @@ class RawMemoryManager:
         with self.session_maker() as session:
             # Generate embedding for OCR text if available and embeddings are enabled
             ocr_text_embedding = None
-            embedding_config = None
+            embedding_config_dict = None
 
             if ocr_text and BUILD_EMBEDDINGS_FOR_MEMORY:
-                ocr_text_embedding = embedding_model.get_embedding(ocr_text)
-                embedding_config = {
-                    "model": embedding_model.model_name,
-                    "embedding_dims": len(ocr_text_embedding) if ocr_text_embedding else 0,
-                }
+                try:
+                    # Determine which embedding provider to use
+                    from mirix.services.provider_manager import ProviderManager
+                    from mirix.settings import model_settings
+                    from mirix.schemas.embedding_config import EmbeddingConfig
+
+                    provider_manager = ProviderManager()
+                    
+                    # Check for OpenAI key (override or settings)
+                    openai_key = provider_manager.get_openai_override_key() or model_settings.openai_api_key
+                    
+                    # Check for Gemini key (override or settings)
+                    gemini_key = provider_manager.get_gemini_override_key() or model_settings.gemini_api_key
+
+                    embedding_config = None
+                    
+                    if openai_key:
+                        # Use OpenAI if available (default)
+                        embedding_config = EmbeddingConfig.default_config("text-embedding-3-small")
+                    elif gemini_key:
+                        # Use Gemini if OpenAI is not available but Gemini is
+                        embedding_config = EmbeddingConfig.default_config("text-embedding-004")
+                    
+                    if embedding_config:
+                        # Create embedding model instance
+                        embed_model = embedding_model(embedding_config)
+                        raw_embedding = embed_model.get_text_embedding(ocr_text)
+                        
+                        # Pad embedding to MAX_EMBEDDING_DIM
+                        import numpy as np
+                        from mirix.constants import MAX_EMBEDDING_DIM
+                        
+                        raw_embedding_np = np.array(raw_embedding)
+                        if len(raw_embedding) < MAX_EMBEDDING_DIM:
+                            ocr_text_embedding = np.pad(
+                                raw_embedding_np, 
+                                (0, MAX_EMBEDDING_DIM - len(raw_embedding)), 
+                                mode="constant"
+                            ).tolist()
+                        else:
+                            ocr_text_embedding = raw_embedding
+
+                        # Update embedding_dim in config to match the actual (padded) embedding length
+                        embedding_config.embedding_dim = len(ocr_text_embedding)
+                        
+                        # Use model_dump to ensure all fields are present and correct
+                        embedding_config_dict = embedding_config.model_dump()
+                    else:
+                        print("Warning: No valid API key found for embeddings (OpenAI or Gemini). Skipping embedding generation.")
+                        ocr_text_embedding = None
+                        embedding_config_dict = None
+
+                except Exception as e:
+                    print(f"Warning: Failed to generate embedding for raw memory: {e}")
+                    ocr_text_embedding = None
+                    embedding_config_dict = None
 
             # Generate ID with rawmem prefix
             raw_memory_id = f"rawmem-{uuid.uuid4()}"
@@ -82,7 +133,7 @@ class RawMemoryManager:
                 google_cloud_url=google_cloud_url,
                 metadata_=metadata or {},
                 ocr_text_embedding=ocr_text_embedding,
-                embedding_config=embedding_config,
+                embedding_config=embedding_config_dict,
                 processed=False,
                 processing_count=0,
                 user_id=actor.id,
@@ -303,11 +354,62 @@ class RawMemoryManager:
 
                 # Regenerate embedding if text changed and embeddings are enabled
                 if BUILD_EMBEDDINGS_FOR_MEMORY:
-                    raw_memory.ocr_text_embedding = embedding_model.get_embedding(ocr_text)
-                    raw_memory.embedding_config = {
-                        "model": embedding_model.model_name,
-                        "embedding_dims": len(raw_memory.ocr_text_embedding) if raw_memory.ocr_text_embedding else 0,
-                    }
+                    try:
+                        # Determine which embedding provider to use
+                        from mirix.services.provider_manager import ProviderManager
+                        from mirix.settings import model_settings
+                        from mirix.schemas.embedding_config import EmbeddingConfig
+
+                        provider_manager = ProviderManager()
+                        
+                        # Check for OpenAI key (override or settings)
+                        openai_key = provider_manager.get_openai_override_key() or model_settings.openai_api_key
+                        
+                        # Check for Gemini key (override or settings)
+                        gemini_key = provider_manager.get_gemini_override_key() or model_settings.gemini_api_key
+
+                        embedding_config = None
+                        
+                        if openai_key:
+                            # Use OpenAI if available (default)
+                            embedding_config = EmbeddingConfig.default_config("text-embedding-3-small")
+                        elif gemini_key:
+                            # Use Gemini if OpenAI is not available but Gemini is
+                            embedding_config = EmbeddingConfig.default_config("text-embedding-004")
+                        
+                        if embedding_config:
+                            # Create embedding model instance
+                            embed_model = embedding_model(embedding_config)
+                            raw_embedding = embed_model.get_text_embedding(ocr_text)
+                            
+                            # Pad embedding to MAX_EMBEDDING_DIM
+                            import numpy as np
+                            from mirix.constants import MAX_EMBEDDING_DIM
+                            
+                            raw_embedding_np = np.array(raw_embedding)
+                            if len(raw_embedding) < MAX_EMBEDDING_DIM:
+                                raw_memory.ocr_text_embedding = np.pad(
+                                    raw_embedding_np, 
+                                    (0, MAX_EMBEDDING_DIM - len(raw_embedding)), 
+                                    mode="constant"
+                                ).tolist()
+                            else:
+                                raw_memory.ocr_text_embedding = raw_embedding
+
+                            # Update embedding_dim in config to match the actual (padded) embedding length
+                            embedding_config.embedding_dim = len(raw_memory.ocr_text_embedding)
+                            
+                            # Use model_dump to ensure all fields are present and correct
+                            raw_memory.embedding_config = embedding_config.model_dump()
+                        else:
+                            print("Warning: No valid API key found for embeddings (OpenAI or Gemini). Skipping embedding generation.")
+                            raw_memory.ocr_text_embedding = None
+                            raw_memory.embedding_config = None
+
+                    except Exception as e:
+                        print(f"Warning: Failed to generate embedding for raw memory update: {e}")
+                        raw_memory.ocr_text_embedding = None
+                        raw_memory.embedding_config = None
 
             if source_url is not None:
                 raw_memory.source_url = source_url

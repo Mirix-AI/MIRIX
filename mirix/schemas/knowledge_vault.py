@@ -83,14 +83,19 @@ class KnowledgeVaultItem(KnowledgeVaultItemBase):
         """Pad embeddings to `MAX_EMBEDDING_SIZE`. This is necessary to ensure all stored embeddings are the same size."""
         import numpy as np
 
-        if embedding and len(embedding) != MAX_EMBEDDING_DIM:
-            np_embedding = np.array(embedding)
-            padded_embedding = np.pad(
-                np_embedding,
-                (0, MAX_EMBEDDING_DIM - np_embedding.shape[0]),
-                mode="constant",
-            )
-            return padded_embedding.tolist()
+        if embedding:
+            if len(embedding) > MAX_EMBEDDING_DIM:
+                # Truncate if too long
+                return embedding[:MAX_EMBEDDING_DIM]
+            elif len(embedding) < MAX_EMBEDDING_DIM:
+                # Pad if too short
+                np_embedding = np.array(embedding)
+                padded_embedding = np.pad(
+                    np_embedding,
+                    (0, MAX_EMBEDDING_DIM - np_embedding.shape[0]),
+                    mode="constant",
+                )
+                return padded_embedding.tolist()
         return embedding
 
 

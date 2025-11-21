@@ -193,6 +193,7 @@ class TemporaryMessageAccumulator:
                         timestamp,
                         {
                             "image_uris": image_uris,
+                            "original_local_paths": image_uris,  # ⬅️ Populate original_local_paths for non-Gemini models
                             "sources": sources,
                             "audio_segments": full_message.get("voice_files", []),
                             "message": full_message["message"],
@@ -623,6 +624,10 @@ class TemporaryMessageAccumulator:
                     try:
                         # Get the original local path if available
                         local_file_path = original_local_paths[idx] if idx < len(original_local_paths) else None
+
+                        # Fallback: if local_file_path is None and image_uri is a string (local path), use it
+                        if local_file_path is None and isinstance(image_uri, str):
+                            local_file_path = image_uri
 
                         # Get Google Cloud URL string if available
                         google_cloud_url_str = None
