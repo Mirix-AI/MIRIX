@@ -844,6 +844,9 @@ const ExistingMemory = ({ settings }) => {
               <span className="memory-app-icon">{getAppIcon(item.source_app)}</span>
               <span className="memory-app-name">{highlightText(item.source_app, searchQuery)}</span>
             </div>
+            <div className="memory-id-display">
+              🆔 {item.id}
+            </div>
             {item.source_url && (
               <div className="memory-source-url">
                 🔗 <a href={item.source_url} target="_blank" rel="noopener noreferrer">

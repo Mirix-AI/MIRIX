@@ -762,6 +762,18 @@
   }
 }
 
+/* Memory ID Display */
+.memory-id-display {
+  font-size: 11px;
+  color: #6b7280;
+  font-family: 'Monaco', 'Menlo', 'Courier New', monospace;
+  margin: 4px 0;
+  padding: 4px 8px;
+  background: #f3f4f6;
+  border-radius: 4px;
+  word-break: break-all;
+}
+
 /* Screenshot Preview Styles */
 .memory-screenshot-preview {
   margin: 12px 0;
