@@ -33,3 +33,6 @@ local_evaluations
 .claude/
 mirix.egg-info
 .local
+
+# macOS metadata files
+._*
