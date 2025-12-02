@@ -823,15 +823,12 @@ async def send_streaming_message_endpoint(request: MessageRequest):
                         if request.memorizing:
                             result_queue.put({"type": "final", "response": ""})
                         else:
-                            print("[DEBUG] Agent returned None response")
                             result_queue.put(
                                 {"type": "error", "error": "Agent returned no response"}
                             )
                     elif isinstance(response, str) and response.startswith("ERROR_"):
                         # Handle specific error types from agent wrapper
-                        print(f"[DEBUG] Agent returned specific error: {response}")
                         if response == "ERROR_RESPONSE_FAILED":
-                            print("[DEBUG] - Message queue response failed")
                             result_queue.put(
                                 {
                                     "type": "error",
@@ -839,9 +836,6 @@ async def send_streaming_message_endpoint(request: MessageRequest):
                                 }
                             )
                         elif response == "ERROR_INVALID_RESPONSE_STRUCTURE":
-                            print(
-                                "[DEBUG] - Response structure invalid (missing messages or insufficient count)"
-                            )
                             result_queue.put(
                                 {
                                     "type": "error",
@@ -849,9 +843,6 @@ async def send_streaming_message_endpoint(request: MessageRequest):
                                 }
                             )
                         elif response == "ERROR_NO_TOOL_CALL":
-                            print(
-                                "[DEBUG] - Expected message missing tool_call attribute"
-                            )
                             result_queue.put(
                                 {
                                     "type": "error",
@@ -859,7 +850,6 @@ async def send_streaming_message_endpoint(request: MessageRequest):
                                 }
                             )
                         elif response == "ERROR_NO_MESSAGE_IN_ARGS":
-                            print("[DEBUG] - Tool call arguments missing 'message' key")
                             result_queue.put(
                                 {
                                     "type": "error",
@@ -867,9 +857,6 @@ async def send_streaming_message_endpoint(request: MessageRequest):
                                 }
                             )
                         elif response == "ERROR_PARSING_EXCEPTION":
-                            print(
-                                "[DEBUG] - Exception occurred during response parsing"
-                            )
                             result_queue.put(
                                 {
                                     "type": "error",
@@ -877,7 +864,6 @@ async def send_streaming_message_endpoint(request: MessageRequest):
                                 }
                             )
                         else:
-                            print(f"[DEBUG] - Unknown error type: {response}")
                             result_queue.put(
                                 {
                                     "type": "error",
@@ -885,7 +871,6 @@ async def send_streaming_message_endpoint(request: MessageRequest):
                                 }
                             )
                     elif response == "ERROR":
-                        print("[DEBUG] Agent returned generic ERROR string")
                         result_queue.put(
                             {"type": "error", "error": "Agent processing failed"}
                         )
@@ -893,12 +878,8 @@ async def send_streaming_message_endpoint(request: MessageRequest):
                         isinstance(response, str) and response.strip() == ""
                     ):
                         if request.memorizing:
-                            print(
-                                "[DEBUG] Agent returned empty response - expected for memorizing=True"
-                            )
                             result_queue.put({"type": "final", "response": ""})
                         else:
-                            print("[DEBUG] Agent returned empty response unexpectedly")
                             result_queue.put(
                                 {
                                     "type": "error",
@@ -906,10 +887,6 @@ async def send_streaming_message_endpoint(request: MessageRequest):
                                 }
                             )
                     else:
-                        print(
-                            f"[DEBUG] Agent returned successful response (length: {len(str(response))})"
-                        )
-
                         # Handle dict response with memoryReferences
                         if isinstance(response, dict) and "response" in response:
                             response_text = response["response"]
@@ -942,7 +919,7 @@ async def send_streaming_message_endpoint(request: MessageRequest):
                                                     "ocr_text": raw_mem.ocr_text,
                                                 })
                                         except Exception as e:
-                                            print(f"[DEBUG] Failed to fetch raw_memory {ref_id}: {e}")
+                                            # Failed to fetch raw memory reference
                                             continue
 
                             result_queue.put({
@@ -955,7 +932,7 @@ async def send_streaming_message_endpoint(request: MessageRequest):
                             result_queue.put({"type": "final", "response": response})
 
                 except Exception as e:
-                    print(f"[DEBUG] Exception in run_agent: {str(e)}")
+                    print(f"Exception in run_agent: {str(e)}")
                     print(f"Traceback: {traceback.format_exc()}")
                     result_queue.put({"type": "error", "error": str(e)})
 
