@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from mirix.orm.message import Message
     from mirix.orm.procedural_memory import ProceduralMemoryItem
     from mirix.orm.provider import Provider
+    from mirix.orm.raw_memory import RawMemoryItem
     from mirix.orm.resource_memory import ResourceMemoryItem
     from mirix.orm.sandbox_config import (
         AgentEnvironmentVariable,
@@ -98,6 +99,12 @@ class Organization(SqlalchemyBase):
 
     semantic_memory: Mapped[List["SemanticMemoryItem"]] = relationship(
         "SemanticMemoryItem",
+        back_populates="organization",
+        cascade="all, delete-orphan",
+    )
+
+    raw_memory: Mapped[List["RawMemoryItem"]] = relationship(
+        "RawMemoryItem",
         back_populates="organization",
         cascade="all, delete-orphan",
     )

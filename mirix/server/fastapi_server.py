@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import yaml
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -50,6 +50,36 @@ def get_user_or_default(agent_wrapper, user_id: Optional[str] = None):
         return agent_wrapper.client.user
     else:
         return agent_wrapper.client.server.user_manager.get_default_user()
+
+
+def fetch_raw_memory_details(raw_memory_references: List[str]) -> List[Dict]:
+    """
+    Fetch detailed information for raw_memory references.
+    Reusable across all memory type endpoints.
+
+    Args:
+        raw_memory_references: List of raw_memory IDs
+
+    Returns:
+        List of dicts containing raw_memory details
+    """
+    from mirix.orm.raw_memory import RawMemoryItem
+    from mirix.server.server import db_context
+
+    raw_memory_details = []
+    if raw_memory_references:
+        with db_context() as session:
+            for raw_id in raw_memory_references:
+                raw_mem = session.get(RawMemoryItem, raw_id)
+                if raw_mem:
+                    raw_memory_details.append({
+                        "id": raw_mem.id,
+                        "source_app": raw_mem.source_app,
+                        "source_url": raw_mem.source_url,
+                        "captured_at": raw_mem.captured_at.isoformat() if raw_mem.captured_at else None,
+                        "ocr_text": raw_mem.ocr_text[:200] if raw_mem.ocr_text else "",
+                    })
+    return raw_memory_details
 
 
 async def handle_gmail_connection(
@@ -344,6 +374,7 @@ class MessageRequest(BaseModel):
 class MessageResponse(BaseModel):
     response: str
     status: str = "success"
+    memoryReferences: Optional[List[dict]] = None
 
 
 class ConfirmationRequest(BaseModel):
@@ -644,6 +675,7 @@ async def send_message_endpoint(request: MessageRequest):
                 sources=request.sources,  # Pass sources to agent
                 voice_files=request.voice_files,  # Pass voice files to agent
                 memorizing=request.memorizing,
+                delete_after_upload=False,  # Keep files for OCR processing
                 user_id=request.user_id,
             ),
         )
@@ -662,7 +694,15 @@ async def send_message_endpoint(request: MessageRequest):
                 # When memorizing=False, None response is an error
                 response = "I received your message but couldn't generate a response. Please try again."
 
-        return MessageResponse(response=response)
+        # Handle dict response with memoryReferences
+        if isinstance(response, dict) and "response" in response:
+            return MessageResponse(
+                response=response["response"],
+                memoryReferences=response.get("memoryReferences", None)
+            )
+        else:
+            # Backward compatibility: plain string response
+            return MessageResponse(response=response)
 
     except Exception as e:
         print(f"Error in send_message_endpoint: {str(e)}")
@@ -771,6 +811,7 @@ async def send_streaming_message_endpoint(request: MessageRequest):
                             sources=request.sources,  # Pass sources to agent
                             voice_files=request.voice_files,  # Pass raw voice files
                             memorizing=request.memorizing,
+                            delete_after_upload=False,  # Keep files for OCR processing
                             display_intermediate_message=display_intermediate_message,
                             request_user_confirmation=request_user_confirmation,
                             is_screen_monitoring=request.is_screen_monitoring,
@@ -782,15 +823,12 @@ async def send_streaming_message_endpoint(request: MessageRequest):
                         if request.memorizing:
                             result_queue.put({"type": "final", "response": ""})
                         else:
-                            print("[DEBUG] Agent returned None response")
                             result_queue.put(
                                 {"type": "error", "error": "Agent returned no response"}
                             )
                     elif isinstance(response, str) and response.startswith("ERROR_"):
                         # Handle specific error types from agent wrapper
-                        print(f"[DEBUG] Agent returned specific error: {response}")
                         if response == "ERROR_RESPONSE_FAILED":
-                            print("[DEBUG] - Message queue response failed")
                             result_queue.put(
                                 {
                                     "type": "error",
@@ -798,9 +836,6 @@ async def send_streaming_message_endpoint(request: MessageRequest):
                                 }
                             )
                         elif response == "ERROR_INVALID_RESPONSE_STRUCTURE":
-                            print(
-                                "[DEBUG] - Response structure invalid (missing messages or insufficient count)"
-                            )
                             result_queue.put(
                                 {
                                     "type": "error",
@@ -808,9 +843,6 @@ async def send_streaming_message_endpoint(request: MessageRequest):
                                 }
                             )
                         elif response == "ERROR_NO_TOOL_CALL":
-                            print(
-                                "[DEBUG] - Expected message missing tool_call attribute"
-                            )
                             result_queue.put(
                                 {
                                     "type": "error",
@@ -818,7 +850,6 @@ async def send_streaming_message_endpoint(request: MessageRequest):
                                 }
                             )
                         elif response == "ERROR_NO_MESSAGE_IN_ARGS":
-                            print("[DEBUG] - Tool call arguments missing 'message' key")
                             result_queue.put(
                                 {
                                     "type": "error",
@@ -826,9 +857,6 @@ async def send_streaming_message_endpoint(request: MessageRequest):
                                 }
                             )
                         elif response == "ERROR_PARSING_EXCEPTION":
-                            print(
-                                "[DEBUG] - Exception occurred during response parsing"
-                            )
                             result_queue.put(
                                 {
                                     "type": "error",
@@ -836,7 +864,6 @@ async def send_streaming_message_endpoint(request: MessageRequest):
                                 }
                             )
                         else:
-                            print(f"[DEBUG] - Unknown error type: {response}")
                             result_queue.put(
                                 {
                                     "type": "error",
@@ -844,7 +871,6 @@ async def send_streaming_message_endpoint(request: MessageRequest):
                                 }
                             )
                     elif response == "ERROR":
-                        print("[DEBUG] Agent returned generic ERROR string")
                         result_queue.put(
                             {"type": "error", "error": "Agent processing failed"}
                         )
@@ -852,12 +878,8 @@ async def send_streaming_message_endpoint(request: MessageRequest):
                         isinstance(response, str) and response.strip() == ""
                     ):
                         if request.memorizing:
-                            print(
-                                "[DEBUG] Agent returned empty response - expected for memorizing=True"
-                            )
                             result_queue.put({"type": "final", "response": ""})
                         else:
-                            print("[DEBUG] Agent returned empty response unexpectedly")
                             result_queue.put(
                                 {
                                     "type": "error",
@@ -865,13 +887,52 @@ async def send_streaming_message_endpoint(request: MessageRequest):
                                 }
                             )
                     else:
-                        print(
-                            f"[DEBUG] Agent returned successful response (length: {len(str(response))})"
-                        )
-                        result_queue.put({"type": "final", "response": response})
+                        # Handle dict response with memoryReferences
+                        if isinstance(response, dict) and "response" in response:
+                            response_text = response["response"]
+                            memory_refs = response.get("memoryReferences", [])
+
+                            # Fetch full raw_memory details for each reference
+                            memory_details = []
+                            if memory_refs:
+                                from mirix.services.raw_memory_manager import RawMemoryManager
+                                raw_memory_manager = RawMemoryManager()
+
+                                # Get current user for permission check
+                                users = agent.client.server.user_manager.list_users()
+                                active_user = next((u for u in users if u.status == "active"), None)
+                                current_user = active_user if active_user else (users[0] if users else None)
+
+                                if current_user:
+                                    for ref_id in memory_refs:
+                                        try:
+                                            raw_mem = raw_memory_manager.get_raw_memory_by_id(
+                                                raw_memory_id=ref_id,
+                                                user_id=current_user.id
+                                            )
+                                            if raw_mem:
+                                                memory_details.append({
+                                                    "id": raw_mem.id,
+                                                    "source_app": raw_mem.source_app,
+                                                    "source_url": raw_mem.source_url,
+                                                    "captured_at": raw_mem.captured_at.isoformat() if raw_mem.captured_at else None,
+                                                    "ocr_text": raw_mem.ocr_text,
+                                                })
+                                        except Exception as e:
+                                            # Failed to fetch raw memory reference
+                                            continue
+
+                            result_queue.put({
+                                "type": "final",
+                                "response": response_text,
+                                "memoryReferences": memory_details
+                            })
+                        else:
+                            # Backward compatibility: plain string response
+                            result_queue.put({"type": "final", "response": response})
 
                 except Exception as e:
-                    print(f"[DEBUG] Exception in run_agent: {str(e)}")
+                    print(f"Exception in run_agent: {str(e)}")
                     print(f"Traceback: {traceback.format_exc()}")
                     result_queue.put({"type": "error", "error": str(e)})
 
@@ -898,7 +959,14 @@ async def send_streaming_message_endpoint(request: MessageRequest):
                     if final_result["type"] == "error":
                         yield f"data: {json.dumps({'type': 'error', 'error': final_result['error']})}\n\n"
                     else:
-                        yield f"data: {json.dumps({'type': 'final', 'response': final_result['response']})}\n\n"
+                        # Include memoryReferences if present
+                        response_data = {
+                            'type': 'final',
+                            'response': final_result['response']
+                        }
+                        if 'memoryReferences' in final_result:
+                            response_data['memoryReferences'] = final_result['memoryReferences']
+                        yield f"data: {json.dumps(response_data)}\n\n"
                     final_result_sent = True
                     break
                 except queue.Empty:
@@ -1486,8 +1554,14 @@ async def get_episodic_memory(user_id: Optional[str] = None):
         # Transform to frontend format
         episodic_items = []
         for event in events:
+            # Fetch raw_memory_references details if they exist
+            raw_memory_details = []
+            if hasattr(event, 'raw_memory_references') and event.raw_memory_references:
+                raw_memory_details = fetch_raw_memory_details(event.raw_memory_references)
+
             episodic_items.append(
                 {
+                    "id": event.id,
                     "timestamp": event.occurred_at.isoformat()
                     if event.occurred_at
                     else None,
@@ -1495,6 +1569,7 @@ async def get_episodic_memory(user_id: Optional[str] = None):
                     "details": event.details,
                     "event_type": event.event_type,
                     "tree_path": event.tree_path if hasattr(event, "tree_path") else [],
+                    "raw_memory_references": raw_memory_details,
                 }
             )
 
@@ -1532,8 +1607,14 @@ async def get_semantic_memory(user_id: Optional[str] = None):
             )
 
             for item in semantic_items:
+                # Fetch raw_memory details if references exist
+                raw_memory_details = []
+                if hasattr(item, 'raw_memory_references') and item.raw_memory_references:
+                    raw_memory_details = fetch_raw_memory_details(item.raw_memory_references)
+
                 semantic_items_list.append(
                     {
+                        "id": item.id,
                         "title": item.name,
                         "type": "semantic",
                         "summary": item.summary,
@@ -1541,6 +1622,7 @@ async def get_semantic_memory(user_id: Optional[str] = None):
                         "tree_path": item.tree_path
                         if hasattr(item, "tree_path")
                         else [],
+                        "raw_memory_references": raw_memory_details,
                     }
                 )
         except Exception as e:
@@ -1604,8 +1686,14 @@ async def get_procedural_memory(user_id: Optional[str] = None):
                         else:
                             steps = []
 
+                # Fetch raw_memory details if references exist
+                raw_memory_details = []
+                if hasattr(item, 'raw_memory_references') and item.raw_memory_references:
+                    raw_memory_details = fetch_raw_memory_details(item.raw_memory_references)
+
                 procedural_items_list.append(
                     {
+                        "id": item.id,
                         "title": item.entry_type,
                         "type": "procedural",
                         "summary": item.summary,
@@ -1613,6 +1701,7 @@ async def get_procedural_memory(user_id: Optional[str] = None):
                         "tree_path": item.tree_path
                         if hasattr(item, "tree_path")
                         else [],
+                        "raw_memory_references": raw_memory_details,
                     }
                 )
 
@@ -1652,8 +1741,14 @@ async def get_resource_memory(user_id: Optional[str] = None):
         # Transform to frontend format
         docs_files = []
         for resource in resources:
+            # Fetch raw_memory details if references exist
+            raw_memory_details = []
+            if hasattr(resource, 'raw_memory_references') and resource.raw_memory_references:
+                raw_memory_details = fetch_raw_memory_details(resource.raw_memory_references)
+
             docs_files.append(
                 {
+                    "id": resource.id,
                     "filename": resource.title,
                     "type": resource.resource_type,
                     "summary": resource.summary
@@ -1671,6 +1766,7 @@ async def get_resource_memory(user_id: Optional[str] = None):
                     "tree_path": resource.tree_path
                     if hasattr(resource, "tree_path")
                     else [],
+                    "raw_memory_references": raw_memory_details,
                 }
             )
 
@@ -1702,6 +1798,11 @@ async def get_core_memory():
                 block_chars = len(block.value)
                 total_characters += block_chars
 
+                # Fetch raw_memory details if references exist
+                raw_memory_details = []
+                if hasattr(block, 'raw_memory_references') and block.raw_memory_references:
+                    raw_memory_details = fetch_raw_memory_details(block.raw_memory_references)
+
                 core_item = {
                     "aspect": block.label,
                     "understanding": block.value,
@@ -1709,6 +1810,7 @@ async def get_core_memory():
                     "total_characters": total_characters,
                     "max_characters": block.limit,
                     "last_updated": None,  # Core memory doesn't track individual updates
+                    "raw_memory_references": raw_memory_details,
                 }
 
                 core_understanding.append(core_item)
@@ -1743,8 +1845,14 @@ async def get_credentials_memory():
         # Transform to frontend format with masked content
         credentials = []
         for item in vault_items:
+            # Fetch raw_memory details if references exist
+            raw_memory_details = []
+            if hasattr(item, 'raw_memory_references') and item.raw_memory_references:
+                raw_memory_details = fetch_raw_memory_details(item.raw_memory_references)
+
             credentials.append(
                 {
+                    "id": item.id,
                     "caption": item.caption,
                     "entry_type": item.entry_type,
                     "source": item.source,
@@ -1752,6 +1860,7 @@ async def get_credentials_memory():
                     "content": "••••••••••••"
                     if item.sensitivity == "high"
                     else item.secret_value,  # Always mask the actual content
+                    "raw_memory_references": raw_memory_details,
                 }
             )
 
@@ -1760,6 +1869,326 @@ async def get_credentials_memory():
     except Exception as e:
         print(f"Error retrieving credentials memory: {str(e)}")
         return []
+
+
+@app.get("/memory/raw")
+async def get_raw_memory():
+    """Get raw memory items (screenshots with OCR text)"""
+    if agent is None:
+        raise HTTPException(status_code=500, detail="Agent not initialized")
+        # disable for test
+        # Find the current active user
+        # users = agent.client.server.user_manager.list_users()
+        # active_user = next((user for user in users if user.status == "active"), None)
+        # target_user = active_user if active_user else (users[0] if users else None)
+
+        # if not target_user:
+        #     return []
+    
+
+    try:
+        # Import raw memory manager and ORM
+        from mirix.services.raw_memory_manager import RawMemoryManager
+        from mirix.orm.raw_memory import RawMemoryItem
+        from mirix.server.server import db_context
+
+        raw_memory_manager = RawMemoryManager()
+
+        # Query ALL raw_memory items (no user filter for single-user system)
+        # Increased limit to 500 to show more recent history
+        with db_context() as session:
+            items = session.query(RawMemoryItem).order_by(
+                RawMemoryItem.captured_at.desc()
+            ).limit(500).all()
+
+            # Transform to frontend format
+            raw_items = []
+            for item in items:
+                # Generate screenshot URL instead of path
+                screenshot_url = f"/raw_memory/{item.id}/screenshot" if item.screenshot_path else None
+
+                # Create OCR preview (first 200 characters)
+                ocr_preview = None
+                if item.ocr_text:
+                    ocr_preview = item.ocr_text[:200]
+                    if len(item.ocr_text) > 200:
+                        ocr_preview += "..."
+
+                raw_items.append({
+                    "id": item.id,
+                    "screenshot_url": screenshot_url,  # ✓ Frontend can access this
+                    "source_app": item.source_app,
+                    "source_url": item.source_url,
+                    "captured_at": item.captured_at.isoformat() if item.captured_at else None,
+                    "ocr_preview": ocr_preview,  # ✓ Short preview for list view
+                    "ocr_text": item.ocr_text,  # ✓ Full text for expanded view
+                    "processed": item.processed,
+                    "created_at": item.created_at.isoformat() if item.created_at else None,
+                })
+        return raw_items
+
+    except Exception as e:
+        print(f"Error retrieving raw memory: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/memory/raw/{raw_memory_id}/references")
+async def get_raw_memory_references(raw_memory_id: str):
+    """Get all memories that reference a specific raw_memory item"""
+    if agent is None:
+        raise HTTPException(status_code=500, detail="Agent not initialized")
+    
+    try:
+        from mirix.orm.episodic_memory import EpisodicEvent
+        from mirix.orm.semantic_memory import SemanticMemoryItem
+        from mirix.orm.procedural_memory import ProceduralMemoryItem
+        from mirix.orm.resource_memory import ResourceMemoryItem
+        from mirix.orm.knowledge_vault import KnowledgeVaultItem
+        from mirix.server.server import db_context
+        from sqlalchemy import func
+        
+        references = {
+            "episodic": [],
+            "semantic": [],
+            "procedural": [],
+            "resource": [],
+            "knowledge_vault": []
+        }
+        
+        with db_context() as session:
+            # Query episodic memory
+            episodic_items = session.query(EpisodicEvent).filter(
+                func.jsonb_array_length(EpisodicEvent.raw_memory_references) > 0
+            ).all()
+            
+            for item in episodic_items:
+                if item.raw_memory_references and raw_memory_id in item.raw_memory_references:
+                    references["episodic"].append({
+                        "id": item.id,
+                        "type": "episodic",
+                        "title": item.summary,
+                        "summary": item.summary,
+                        "timestamp": item.occurred_at.isoformat() if item.occurred_at else None,
+                        "event_type": item.event_type
+                    })
+            
+            # Query semantic memory
+            semantic_items = session.query(SemanticMemoryItem).filter(
+                func.jsonb_array_length(SemanticMemoryItem.raw_memory_references) > 0
+            ).all()
+            
+            for item in semantic_items:
+                if item.raw_memory_references and raw_memory_id in item.raw_memory_references:
+                    references["semantic"].append({
+                        "id": item.id,
+                        "type": "semantic",
+                        "title": item.name or item.summary,
+                        "summary": item.summary,
+                        "timestamp": item.created_at.isoformat() if item.created_at else None
+                    })
+            
+            # Query procedural memory
+            procedural_items = session.query(ProceduralMemoryItem).filter(
+                func.jsonb_array_length(ProceduralMemoryItem.raw_memory_references) > 0
+            ).all()
+            
+            for item in procedural_items:
+                if item.raw_memory_references and raw_memory_id in item.raw_memory_references:
+                    references["procedural"].append({
+                        "id": item.id,
+                        "type": "procedural",
+                        "title": item.summary,
+                        "summary": item.summary,
+                        "timestamp": item.created_at.isoformat() if item.created_at else None
+                    })
+            
+            # Query resource memory
+            resource_items = session.query(ResourceMemoryItem).filter(
+                func.jsonb_array_length(ResourceMemoryItem.raw_memory_references) > 0
+            ).all()
+            
+            for item in resource_items:
+                if item.raw_memory_references and raw_memory_id in item.raw_memory_references:
+                    references["resource"].append({
+                        "id": item.id,
+                        "type": "resource",
+                        "title": item.title,
+                        "summary": item.summary,
+                        "timestamp": item.created_at.isoformat() if item.created_at else None,
+                        "resource_type": item.resource_type
+                    })
+            
+            # Query knowledge vault
+            knowledge_items = session.query(KnowledgeVaultItem).filter(
+                func.jsonb_array_length(KnowledgeVaultItem.raw_memory_references) > 0
+            ).all()
+            
+            for item in knowledge_items:
+                if item.raw_memory_references and raw_memory_id in item.raw_memory_references:
+                    references["knowledge_vault"].append({
+                        "id": item.id,
+                        "type": "knowledge_vault",
+                        "title": item.caption,
+                        "summary": item.caption,
+                        "timestamp": item.created_at.isoformat() if item.created_at else None,
+                        "entry_type": item.entry_type
+                    })
+        
+        # Calculate total count
+        total_count = sum(len(refs) for refs in references.values())
+        
+        return {
+            "raw_memory_id": raw_memory_id,
+            "total_count": total_count,
+            "references": references
+        }
+    
+    except Exception as e:
+        print(f"Error retrieving raw memory references: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/raw_memory/{raw_memory_id}/screenshot")
+async def get_raw_memory_screenshot(raw_memory_id: str):
+    """Serve screenshot image for a raw_memory item"""
+    from fastapi.responses import FileResponse
+    from mirix.orm.raw_memory import RawMemoryItem
+    from mirix.server.server import db_context
+    import os
+
+    try:
+        with db_context() as session:
+            item = session.get(RawMemoryItem, raw_memory_id)
+
+            if not item:
+                raise HTTPException(status_code=404, detail="Raw memory not found")
+
+            if not item.screenshot_path:
+                raise HTTPException(status_code=404, detail="No screenshot path for this raw memory")
+
+            # Check if file exists
+            if not os.path.exists(item.screenshot_path):
+                raise HTTPException(status_code=404, detail="Screenshot file not found on disk")
+
+            # Determine media type based on file extension
+            ext = os.path.splitext(item.screenshot_path)[1].lower()
+            media_type_map = {
+                '.png': 'image/png',
+                '.jpg': 'image/jpeg',
+                '.jpeg': 'image/jpeg',
+                '.gif': 'image/gif',
+                '.webp': 'image/webp',
+            }
+            media_type = media_type_map.get(ext, 'image/png')
+
+            # Return image file with caching headers
+            return FileResponse(
+                item.screenshot_path,
+                media_type=media_type,
+                headers={
+                    "Cache-Control": "public, max-age=3600",  # Cache for 1 hour
+                    "Accept-Ranges": "bytes"
+                }
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error serving screenshot: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error serving screenshot: {str(e)}")
+
+
+@app.post("/test/process_screenshot")
+async def test_process_screenshot(request: Request):
+    """
+    测试API：处理单个截图文件，运行完整的OCR和raw_memory插入流程
+
+    Request body:
+    {
+        "screenshot_path": "/path/to/screenshot.png",
+        "source_app": "Chrome" (optional, defaults to "TestApp")
+    }
+
+    Returns:
+    {
+        "success": true,
+        "raw_memory_id": "rawmem-xxx",
+        "ocr_text_length": 1234,
+        "urls_found": ["https://example.com"],
+        "screenshot_path": "/path/to/screenshot.png"
+    }
+    """
+    from mirix.helpers.ocr_url_extractor import OCRUrlExtractor
+    from mirix.services.raw_memory_manager import RawMemoryManager
+    from datetime import datetime
+    import os
+
+    try:
+        body = await request.json()
+        screenshot_path = body.get("screenshot_path")
+        source_app = body.get("source_app", "TestApp")
+
+        if not screenshot_path:
+            raise HTTPException(status_code=400, detail="screenshot_path is required")
+
+        if not os.path.exists(screenshot_path):
+            raise HTTPException(status_code=404, detail=f"Screenshot file not found: {screenshot_path}")
+
+        # Extract OCR text and URLs
+        logger.info(f"🔍 Testing OCR on: {screenshot_path}")
+        ocr_text, urls = OCRUrlExtractor.extract_urls_and_text(screenshot_path)
+        logger.info(f"✅ OCR extracted {len(urls)} URLs and {len(ocr_text) if ocr_text else 0} chars")
+
+        # Get source URL (first URL if any)
+        source_url = urls[0] if urls else None
+
+        # Get or create default user
+        from mirix.client.client import create_client
+        client = create_client()
+
+        # Insert into raw_memory
+        raw_memory_manager = RawMemoryManager()
+        captured_at = datetime.now()
+
+        logger.info(f"📸 Inserting into raw_memory: path={screenshot_path}, app={source_app}")
+        raw_memory = raw_memory_manager.insert_raw_memory(
+            actor=client.user,
+            screenshot_path=screenshot_path,
+            source_app=source_app,
+            captured_at=captured_at,
+            ocr_text=ocr_text,
+            source_url=source_url,
+            metadata={"test": True, "api_test": True},
+            organization_id=client.user.organization_id,
+        )
+
+        logger.info(f"✅ Successfully stored in raw_memory: {raw_memory.id}")
+
+        return {
+            "success": True,
+            "raw_memory_id": raw_memory.id,
+            "ocr_text_length": len(ocr_text) if ocr_text else 0,
+            "ocr_preview": ocr_text[:200] if ocr_text else None,
+            "urls_found": urls,
+            "source_url": source_url,
+            "screenshot_path": screenshot_path,
+            "source_app": source_app,
+            "captured_at": captured_at.isoformat(),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error processing screenshot: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/conversation/clear", response_model=ClearConversationResponse)

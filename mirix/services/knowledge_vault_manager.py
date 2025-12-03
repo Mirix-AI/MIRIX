@@ -515,6 +515,7 @@ class KnowledgeVaultManager:
         secret_value: str,
         caption: str,
         organization_id: str,
+        raw_memory_references: Optional[List[str]] = None,
     ):
         """Insert knowledge into the knowledge vault."""
         try:
@@ -538,6 +539,7 @@ class KnowledgeVaultManager:
                     organization_id=organization_id,
                     caption_embedding=caption_embedding,
                     embedding_config=embedding_config,
+                    raw_memory_references=raw_memory_references or [],
                 ),
                 actor=actor,
             )

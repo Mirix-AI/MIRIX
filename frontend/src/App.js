@@ -52,25 +52,17 @@ function App() {
 
   const checkApiKeys = useCallback(async (forceOpen = false) => {
     try {
-      console.log(`Checking API keys for model: ${settings.model}`);
       const response = await queuedFetch(`${settings.serverUrl}/api_keys/check`);
       if (response.ok) {
         const data = await response.json();
-        console.log('API key status:', data);
-        
+
         if (forceOpen || (data.requires_api_key && data.missing_keys.length > 0)) {
-          if (forceOpen) {
-            console.log('Manual API key update requested');
-          } else {
-            console.log(`Missing API keys detected: ${data.missing_keys.join(', ')}`);
-          }
           setApiKeyModal({
             isOpen: true,
             missingKeys: data.missing_keys,
             modelType: data.model_type
           });
         } else {
-          console.log('All required API keys are available');
           setApiKeyModal({
             isOpen: false,
             missingKeys: [],
@@ -87,8 +79,6 @@ function App() {
 
   // Refresh backend-dependent data after successful connection
   const refreshBackendData = useCallback(async () => {
-    console.log('🔄 Refreshing backend-dependent data...');
-    
     // Check API keys after successful backend connection
     await checkApiKeys();
     
@@ -105,7 +95,6 @@ function App() {
     // Check if health check is already in progress and capture current visibility
     setBackendLoading(prev => {
       if (prev.isChecking) {
-        console.log('Health check already in progress, skipping...');
         shouldProceed = false;
         return prev;
       }
@@ -119,7 +108,10 @@ function App() {
 
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 5000); // 5 second timeout
+      const timeoutId = setTimeout(() => {
+        controller.abort();
+      }, 30000); // 30 second timeout (increased from 5s)
+      const startTime = performance.now();
 
       const response = await fetch(`${settings.serverUrl}/health`, {
         method: 'GET',
@@ -132,8 +124,6 @@ function App() {
       clearTimeout(timeoutId);
 
       if (response.ok) {
-        console.log('✅ Backend is healthy - hiding loading modal');
-        
         setBackendLoading(prev => ({
           ...prev,
           isVisible: false,
@@ -145,7 +135,6 @@ function App() {
 
         // If the loading modal was visible, refresh backend data after successful connection
         if (currentVisibility) {
-          console.log('🔄 Backend reconnected - refreshing data...');
           await refreshBackendData();
         }
         
@@ -154,7 +143,7 @@ function App() {
         throw new Error(`Health check failed with status: ${response.status}`);
       }
     } catch (error) {
-      console.warn('❌ Backend health check failed:', error.message);
+      // Backend health check failed
       setBackendLoading(prev => ({
         ...prev,
         isVisible: true,
@@ -169,7 +158,6 @@ function App() {
 
   // Retry backend connection
   const retryBackendConnection = useCallback(async () => {
-    console.log('🔄 Retrying backend connection...');
     await checkBackendHealth();
   }, [checkBackendHealth]);
 
@@ -215,7 +203,6 @@ function App() {
           : timeSinceLastCheck > 30000 && !prev.isChecking; // Every 30 seconds when modal is hidden
         
         if (shouldCheck) {
-          console.log('🔄 Periodic health check triggered. Modal visible:', prev.isVisible);
           checkBackendHealth();
         }
         
@@ -229,19 +216,15 @@ function App() {
   // Handle window focus/visibility events for backend health check - but don't show loading modal unless backend actually fails
   useEffect(() => {
     const handleWindowFocus = async () => {
-      console.log('🔍 Window focused - checking backend health silently...');
-      
       // Check backend health silently - only show modal if it actually fails
-      const healthCheckResult = await checkBackendHealth();
+      await checkBackendHealth();
       // Loading modal will be shown automatically by checkBackendHealth if it fails
     };
 
     const handleVisibilityChange = async () => {
       if (!document.hidden) {
-        console.log('🔍 Document became visible - checking backend health silently...');
-        
         // Check backend health silently - only show modal if it actually fails
-        const healthCheckResult = await checkBackendHealth();
+        await checkBackendHealth();
         // Loading modal will be shown automatically by checkBackendHealth if it fails
       }
     };
@@ -267,7 +250,7 @@ function App() {
     
     // If there's a pending model change, retry it now
     if (pendingModelChange.retryFunction) {
-      console.log(`Retrying ${pendingModelChange.type} model change to '${pendingModelChange.model}' after API key update`);
+      // Retrying model change after API key update
       try {
         await pendingModelChange.retryFunction();
       } catch (error) {
@@ -296,7 +279,6 @@ function App() {
 
       const cleanupOpenTerminal = window.electronAPI.onMenuOpenTerminal(() => {
         // Open terminal logic here
-        console.log('Open terminal requested');
       });
       cleanupFunctions.push(cleanupOpenTerminal);
 
@@ -308,19 +290,15 @@ function App() {
 
       // Handle Electron window events - check backend health silently
       const cleanupWindowShow = window.electronAPI.onWindowShow(async () => {
-        console.log('🔍 Electron window shown - checking backend health silently...');
-        
         // Check backend health silently - only show modal if it actually fails
-        const healthCheckResult = await checkBackendHealth();
+        await checkBackendHealth();
         // Loading modal will be shown automatically by checkBackendHealth if it fails
       });
       cleanupFunctions.push(cleanupWindowShow);
 
       const cleanupAppActivate = window.electronAPI.onAppActivate(async () => {
-        console.log('🔍 Electron app activated - checking backend health silently...');
-        
         // Check backend health silently - only show modal if it actually fails
-        const healthCheckResult = await checkBackendHealth();
+        await checkBackendHealth();
         // Loading modal will be shown automatically by checkBackendHealth if it fails
       });
       cleanupFunctions.push(cleanupAppActivate);

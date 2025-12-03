@@ -15,6 +15,8 @@ from mirix.agent.app_constants import (
 )
 from mirix.agent.app_utils import encode_image
 from mirix.constants import CHAINING_FOR_MEMORY_UPDATE
+from mirix.helpers.ocr_url_extractor import OCRUrlExtractor
+from mirix.services.raw_memory_manager import RawMemoryManager
 from mirix.voice_utils import convert_base64_to_audio_segment, process_voice_files
 
 
@@ -79,11 +81,23 @@ class TemporaryMessageAccumulator:
         self.upload_start_times = {}  # Track when uploads started for cleanup purposes
 
     def add_message(
-        self, full_message, timestamp, delete_after_upload=True, async_upload=True
+        self,
+        full_message,
+        timestamp,
+        async_upload=True,
+        delete_after_upload=False,
     ):
         """Add a message to temporary storage."""
+        # DEBUG LOGGING
+        if "image_uris" in full_message and full_message["image_uris"]:
+            model_name = getattr(self.client, 'model_name', 'Unknown') if self.client else 'None'
+            self.logger.info(f"🔍 add_message: model={model_name}, delete_after_upload={delete_after_upload}, images={len(full_message['image_uris'])}")
+
         if self.needs_upload and self.upload_manager is not None:
             if "image_uris" in full_message and full_message["image_uris"]:
+                # Save original local paths BEFORE uploading
+                original_local_paths = [str(image_uri) for image_uri in full_message["image_uris"]]
+
                 # Handle image uploads with optional sources information
                 if async_upload:
                     image_file_ref_placeholders = [
@@ -105,6 +119,7 @@ class TemporaryMessageAccumulator:
                         self.upload_start_times[placeholder_id] = current_time
             else:
                 image_file_ref_placeholders = None
+                original_local_paths = None
 
             if "voice_files" in full_message and full_message["voice_files"]:
                 audio_segment = []
@@ -134,6 +149,7 @@ class TemporaryMessageAccumulator:
                         timestamp,
                         {
                             "image_uris": image_file_ref_placeholders,
+                            "original_local_paths": original_local_paths,  # ⬅️ 保存原始路径
                             "sources": sources,
                             "audio_segments": audio_segment,
                             "message": full_message["message"],
@@ -177,6 +193,7 @@ class TemporaryMessageAccumulator:
                         timestamp,
                         {
                             "image_uris": image_uris,
+                            "original_local_paths": image_uris,  # ⬅️ Populate original_local_paths for non-Gemini models
                             "sources": sources,
                             "audio_segments": full_message.get("voice_files", []),
                             "message": full_message["message"],
@@ -529,7 +546,7 @@ class TemporaryMessageAccumulator:
                 )
 
         # Process content and build message
-        message = self._build_memory_message(ready_to_process, voice_content)
+        message, raw_memory_ids = self._build_memory_message(ready_to_process, voice_content)
 
         # Handle user conversation if exists
         message, user_message_added = self._add_user_conversation_to_message(message)
@@ -590,6 +607,82 @@ class TemporaryMessageAccumulator:
 
     def _build_memory_message(self, ready_to_process, voice_content):
         """Build the message content for memory agents."""
+
+        # Store screenshots in raw_memory table before sending to memory agents
+        raw_memory_ids = []
+        raw_memory_manager = RawMemoryManager()
+
+        for timestamp, item in ready_to_process:
+            if "image_uris" in item and item["image_uris"]:
+                sources = item.get("sources", [])
+                image_uris = item["image_uris"]
+                original_local_paths = item.get("original_local_paths", [])
+
+                for idx, image_uri in enumerate(image_uris):
+                    source_app = sources[idx] if idx < len(sources) else "Unknown"
+
+                    try:
+                        # Get the original local path if available
+                        local_file_path = original_local_paths[idx] if idx < len(original_local_paths) else None
+
+                        # Fallback: if local_file_path is None and image_uri is a string (local path), use it
+                        if local_file_path is None and isinstance(image_uri, str):
+                            local_file_path = image_uri
+
+                        # Get Google Cloud URL string if available
+                        google_cloud_url_str = None
+                        if hasattr(image_uri, "uri"):
+                            google_cloud_url_str = image_uri.uri
+
+                        # Extract OCR text and URLs from the screenshot using local path
+                        ocr_text = None
+                        urls = []
+                        if local_file_path and local_file_path != "None":
+                            try:
+                                ocr_text, urls = OCRUrlExtractor.extract_urls_and_text(local_file_path)
+                                self.logger.info(f"✅ OCR extracted {len(urls)} URLs and {len(ocr_text) if ocr_text else 0} chars from {local_file_path}")
+                            except Exception as ocr_error:
+                                self.logger.error(f"❌ OCR failed for {local_file_path}: {ocr_error}")
+                        else:
+                            self.logger.warning(f"⚠️  Cannot run OCR: No local file path available (path: {local_file_path})")
+
+                        # Get the first URL as source_url (if any)
+                        source_url = urls[0] if urls else None
+
+                        # Parse timestamp
+                        captured_at = datetime.fromisoformat(timestamp) if isinstance(timestamp, str) else timestamp
+
+                        # Store in raw_memory table
+                        # Prefer local file path, fallback to Google Cloud URL string
+                        screenshot_path = local_file_path if (local_file_path and local_file_path != "None") else (google_cloud_url_str or "unknown")
+
+                        # Debug logging
+                        self.logger.info(f"📸 Storing raw_memory: local_path={local_file_path}, cloud_url={google_cloud_url_str}, screenshot_path={screenshot_path}")
+
+                        raw_memory = raw_memory_manager.insert_raw_memory(
+                            actor=self.client.user,
+                            screenshot_path=screenshot_path,
+                            source_app=source_app,
+                            captured_at=captured_at,
+                            ocr_text=ocr_text if ocr_text else None,
+                            source_url=source_url,
+                            google_cloud_url=google_cloud_url_str,
+                            metadata={
+                                "batch_index": idx,
+                                "total_in_batch": len(image_uris),
+                            },
+                            organization_id=self.client.user.organization_id,
+                        )
+
+                        raw_memory_ids.append(raw_memory.id)
+                        self.logger.info(f"✅ Stored screenshot in raw_memory: {raw_memory.id} (app: {source_app}, url: {source_url}, ocr: {len(ocr_text) if ocr_text else 0} chars)")
+
+
+                    except Exception as e:
+                        self.logger.error(f"❌ Failed to store screenshot in raw_memory: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        # Continue processing even if one screenshot fails
 
         # Collect content organized by source
         images_by_source = {}  # source_name -> [(timestamp, file_refs)]
@@ -719,7 +812,18 @@ class TemporaryMessageAccumulator:
                     {"type": "text", "text": f"Timestamp: {timestamp} Text:\n{text}"}
                 )
 
-        return message_parts
+        # Add raw_memory_ids info to message if available
+        if raw_memory_ids:
+            raw_memory_info = f"\n\n[Raw Memory References]\n"
+            raw_memory_info += f"This content references {len(raw_memory_ids)} raw memory items:\n"
+            raw_memory_info += f"IDs: {', '.join(raw_memory_ids[:5])}"  # Show first 5
+            if len(raw_memory_ids) > 5:
+                raw_memory_info += f"... and {len(raw_memory_ids) - 5} more"
+
+            message_parts.append({"type": "text", "text": raw_memory_info})
+            self.logger.info(f"📋 Added {len(raw_memory_ids)} raw_memory references to message")
+
+        return message_parts, raw_memory_ids
 
     def _add_user_conversation_to_message(self, message):
         """Add user conversation to the message if it exists."""
@@ -832,6 +936,7 @@ class TemporaryMessageAccumulator:
                     for image_uri in item["image_uris"]:
                         # Only delete if it's a local file path (string)
                         if isinstance(image_uri, str):
+                            self.logger.info(f"🔍 process_temporary_messages: Deleting local file {image_uri} because should_delete={should_delete}")
                             self._delete_local_image_file(image_uri)
 
         # Clean up user messages if added
@@ -841,6 +946,7 @@ class TemporaryMessageAccumulator:
 
     def _delete_local_image_file(self, image_path):
         """Delete a local image file with retry logic."""
+        self.logger.warning(f"⚠️ _delete_local_image_file called for {image_path}")
         try:
             max_retries = 10
             retry_count = 0
@@ -868,6 +974,7 @@ class TemporaryMessageAccumulator:
 
     def _cleanup_file_after_upload(self, filenames, placeholders):
         """Clean up local file after upload completes."""
+        self.logger.warning(f"⚠️ _cleanup_file_after_upload called for {filenames}. This means delete_after_upload was True!")
 
         if self.upload_manager is None:
             return  # No upload manager for non-GEMINI models

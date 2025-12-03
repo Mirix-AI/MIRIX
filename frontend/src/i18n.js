@@ -401,6 +401,7 @@ const resources = {
           semantic: 'Semantic',
           procedural: 'Procedural',
           resource: 'Resource',
+          raw: 'Raw Memory',
           core: 'Core',
           credentials: 'Credentials'
         },
@@ -426,7 +427,9 @@ const resources = {
           expandDetails: 'Expand details',
           collapseDetails: 'Collapse details',
           hideDetails: 'Hide Details',
-          showDetails: 'Show Details'
+          showDetails: 'Show Details',
+          showOCR: 'Show OCR Text',
+          hideOCR: 'Hide OCR Text'
         },
         search: {
           placeholder: 'Search {{type}}...',
@@ -935,6 +938,7 @@ const resources = {
           semantic: '语义记忆',
           procedural: '程序记忆',
           resource: '资源记忆',
+          raw: '原始记忆',
           core: '核心记忆',
           credentials: '凭据记忆'
         },
@@ -960,7 +964,9 @@ const resources = {
           expandDetails: '展开详情',
           collapseDetails: '折叠详情',
           hideDetails: '隐藏详情',
-          showDetails: '显示详情'
+          showDetails: '显示详情',
+          showOCR: '显示 OCR 文本',
+          hideOCR: '隐藏 OCR 文本'
         },
         search: {
           placeholder: '搜索{{type}}...',

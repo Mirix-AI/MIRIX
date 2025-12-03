@@ -30,7 +30,7 @@ TOOL_CALL_ID_MAX_LEN = 29
 MIN_CONTEXT_WINDOW = 4096
 
 # embeddings
-MAX_EMBEDDING_DIM = 4096  # maximum supported embeding size - do NOT change or else DBs will need to be reset
+MAX_EMBEDDING_DIM = 1536  # maximum supported embeding size - do NOT change or else DBs will need to be reset
 DEFAULT_EMBEDDING_CHUNK_SIZE = 300
 
 MAX_CHAINING_STEPS = 10

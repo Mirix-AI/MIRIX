@@ -663,6 +663,7 @@ class ResourceMemoryManager:
         content: str,
         organization_id: str,
         tree_path: Optional[List[str]] = None,
+        raw_memory_references: Optional[List[str]] = None,
     ) -> PydanticResourceMemoryItem:
         """Create a new resource memory item."""
         try:
@@ -686,6 +687,7 @@ class ResourceMemoryManager:
                     organization_id=organization_id,
                     summary_embedding=summary_embedding,
                     embedding_config=embedding_config,
+                    raw_memory_references=raw_memory_references or [],
                 ),
                 actor=actor,
             )

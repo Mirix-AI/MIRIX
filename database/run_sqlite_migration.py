@@ -84,6 +84,16 @@ def check_column_exists(conn, table_name, column_name):
     return column_name in columns
 
 
+def check_table_exists(conn, table_name):
+    """Check if a table exists"""
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+        (table_name,)
+    )
+    return cursor.fetchone() is not None
+
+
 def migrate_database(old_db_path, new_db_path):
     """Migrate database from old format to new format"""
 
@@ -253,6 +263,84 @@ def migrate_database(old_db_path, new_db_path):
                         (default_user_id,),
                     ),
                 ],
+            },
+            # Create raw_memory table if it doesn't exist
+            {
+                "name": "Create raw_memory table",
+                "check": lambda: check_table_exists(conn, "raw_memory"),
+                "execute": lambda: conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS raw_memory (
+                        id VARCHAR PRIMARY KEY,
+                        screenshot_path VARCHAR NOT NULL,
+                        source_app VARCHAR NOT NULL,
+                        captured_at TIMESTAMP NOT NULL,
+                        ocr_text TEXT,
+                        source_url VARCHAR,
+                        google_cloud_url VARCHAR,
+                        metadata_ JSON DEFAULT '{}',
+                        processed BOOLEAN DEFAULT 0 NOT NULL,
+                        processing_count INTEGER DEFAULT 0 NOT NULL,
+                        last_modify JSON NOT NULL,
+                        embedding_config JSON,
+                        ocr_text_embedding BLOB,
+                        user_id VARCHAR NOT NULL,
+                        organization_id VARCHAR NOT NULL,
+                        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                        FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE
+                    )
+                    """
+                ),
+            },
+            # Add raw_memory_references column to episodic_memory table
+            {
+                "name": "Add raw_memory_references column to episodic_memory table",
+                "check": lambda: check_column_exists(
+                    conn, "episodic_memory", "raw_memory_references"
+                ),
+                "execute": lambda: conn.execute(
+                    "ALTER TABLE episodic_memory ADD COLUMN raw_memory_references JSON DEFAULT '[]' NOT NULL"
+                ),
+            },
+            # Add raw_memory_references column to semantic_memory table
+            {
+                "name": "Add raw_memory_references column to semantic_memory table",
+                "check": lambda: check_column_exists(
+                    conn, "semantic_memory", "raw_memory_references"
+                ),
+                "execute": lambda: conn.execute(
+                    "ALTER TABLE semantic_memory ADD COLUMN raw_memory_references JSON DEFAULT '[]' NOT NULL"
+                ),
+            },
+            # Add raw_memory_references column to procedural_memory table
+            {
+                "name": "Add raw_memory_references column to procedural_memory table",
+                "check": lambda: check_column_exists(
+                    conn, "procedural_memory", "raw_memory_references"
+                ),
+                "execute": lambda: conn.execute(
+                    "ALTER TABLE procedural_memory ADD COLUMN raw_memory_references JSON DEFAULT '[]' NOT NULL"
+                ),
+            },
+            # Add raw_memory_references column to resource_memory table
+            {
+                "name": "Add raw_memory_references column to resource_memory table",
+                "check": lambda: check_column_exists(
+                    conn, "resource_memory", "raw_memory_references"
+                ),
+                "execute": lambda: conn.execute(
+                    "ALTER TABLE resource_memory ADD COLUMN raw_memory_references JSON DEFAULT '[]' NOT NULL"
+                ),
+            },
+            # Add raw_memory_references column to knowledge_vault table
+            {
+                "name": "Add raw_memory_references column to knowledge_vault table",
+                "check": lambda: check_column_exists(
+                    conn, "knowledge_vault", "raw_memory_references"
+                ),
+                "execute": lambda: conn.execute(
+                    "ALTER TABLE knowledge_vault ADD COLUMN raw_memory_references JSON DEFAULT '[]' NOT NULL"
+                ),
             },
         ]
 
@@ -455,6 +543,84 @@ def migrate_database_inplace(db_path):
                     ),
                 ],
             },
+            # Create raw_memory table if it doesn't exist
+            {
+                "name": "Create raw_memory table",
+                "check": lambda: check_table_exists(conn, "raw_memory"),
+                "execute": lambda: conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS raw_memory (
+                        id VARCHAR PRIMARY KEY,
+                        screenshot_path VARCHAR NOT NULL,
+                        source_app VARCHAR NOT NULL,
+                        captured_at TIMESTAMP NOT NULL,
+                        ocr_text TEXT,
+                        source_url VARCHAR,
+                        google_cloud_url VARCHAR,
+                        metadata_ JSON DEFAULT '{}',
+                        processed BOOLEAN DEFAULT 0 NOT NULL,
+                        processing_count INTEGER DEFAULT 0 NOT NULL,
+                        last_modify JSON NOT NULL,
+                        embedding_config JSON,
+                        ocr_text_embedding BLOB,
+                        user_id VARCHAR NOT NULL,
+                        organization_id VARCHAR NOT NULL,
+                        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                        FOREIGN KEY (organization_id) REFERENCES organizations(id) ON DELETE CASCADE
+                    )
+                    """
+                ),
+            },
+            # Add raw_memory_references column to episodic_memory table
+            {
+                "name": "Add raw_memory_references column to episodic_memory table",
+                "check": lambda: check_column_exists(
+                    conn, "episodic_memory", "raw_memory_references"
+                ),
+                "execute": lambda: conn.execute(
+                    "ALTER TABLE episodic_memory ADD COLUMN raw_memory_references JSON DEFAULT '[]' NOT NULL"
+                ),
+            },
+            # Add raw_memory_references column to semantic_memory table
+            {
+                "name": "Add raw_memory_references column to semantic_memory table",
+                "check": lambda: check_column_exists(
+                    conn, "semantic_memory", "raw_memory_references"
+                ),
+                "execute": lambda: conn.execute(
+                    "ALTER TABLE semantic_memory ADD COLUMN raw_memory_references JSON DEFAULT '[]' NOT NULL"
+                ),
+            },
+            # Add raw_memory_references column to procedural_memory table
+            {
+                "name": "Add raw_memory_references column to procedural_memory table",
+                "check": lambda: check_column_exists(
+                    conn, "procedural_memory", "raw_memory_references"
+                ),
+                "execute": lambda: conn.execute(
+                    "ALTER TABLE procedural_memory ADD COLUMN raw_memory_references JSON DEFAULT '[]' NOT NULL"
+                ),
+            },
+            # Add raw_memory_references column to resource_memory table
+            {
+                "name": "Add raw_memory_references column to resource_memory table",
+                "check": lambda: check_column_exists(
+                    conn, "resource_memory", "raw_memory_references"
+                ),
+                "execute": lambda: conn.execute(
+                    "ALTER TABLE resource_memory ADD COLUMN raw_memory_references JSON DEFAULT '[]' NOT NULL"
+                ),
+            },
+            # Add raw_memory_references column to knowledge_vault table
+            {
+                "name": "Add raw_memory_references column to knowledge_vault table",
+                "check": lambda: check_column_exists(
+                    conn, "knowledge_vault", "raw_memory_references"
+                ),
+                "execute": lambda: conn.execute(
+                    "ALTER TABLE knowledge_vault ADD COLUMN raw_memory_references JSON DEFAULT '[]' NOT NULL"
+                ),
+            },
         ]
 
         # Execute migrations
@@ -496,6 +662,12 @@ def verify_migration(conn):
 
     cursor = conn.cursor()
 
+    # Check that raw_memory table exists
+    if check_table_exists(conn, "raw_memory"):
+        print("✓ raw_memory table exists")
+    else:
+        print("❌ raw_memory table missing")
+
     # Check that required columns exist
     required_columns = [
         ("users", "status"),
@@ -509,6 +681,11 @@ def verify_migration(conn):
         ("resource_memory", "user_id"),
         ("semantic_memory", "user_id"),
         ("messages", "user_id"),
+        ("episodic_memory", "raw_memory_references"),
+        ("semantic_memory", "raw_memory_references"),
+        ("procedural_memory", "raw_memory_references"),
+        ("resource_memory", "raw_memory_references"),
+        ("knowledge_vault", "raw_memory_references"),
     ]
 
     for table, column in required_columns:

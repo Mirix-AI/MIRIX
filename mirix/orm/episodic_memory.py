@@ -80,6 +80,14 @@ class EpisodicEvent(SqlalchemyBase, OrganizationMixin, UserMixin):
         JSON, default={}, nullable=True, doc="Additional metadata for flexible storage"
     )
 
+    # References to raw memory items that this event is based on
+    raw_memory_references: Mapped[list] = mapped_column(
+        JSON,
+        default=list,
+        nullable=False,
+        doc="List of raw_memory IDs that this episodic event references",
+    )
+
     embedding_config: Mapped[Optional[dict]] = mapped_column(
         EmbeddingConfigColumn, nullable=True, doc="Embedding configuration"
     )

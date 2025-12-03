@@ -195,6 +195,7 @@ class Agent(BaseAgent):
         self.procedural_memory_manager = ProceduralMemoryManager()
         self.resource_memory_manager = ResourceMemoryManager()
         self.semantic_memory_manager = SemanticMemoryManager()
+        self.raw_memory_manager = None  # Lazy loaded when needed
 
         # State needed for contine_chaining pausing
 
@@ -1630,6 +1631,49 @@ class Agent(BaseAgent):
 
         return MirixUsageStatistics(**total_usage.model_dump(), step_count=step_count)
 
+    def _format_source_info(self, raw_memory_references: Optional[List[str]]) -> str:
+        """
+        Format source information from raw_memory_references.
+
+        Args:
+            raw_memory_references: List of raw_memory IDs
+
+        Returns:
+            Formatted string with source information, e.g., " [Sources: Chrome: github.com, Safari: docs.python.org]"
+        """
+        if not raw_memory_references:
+            return ""
+
+        # Lazy load raw_memory_manager
+        if self.raw_memory_manager is None:
+            from mirix.services.raw_memory_manager import RawMemoryManager
+            self.raw_memory_manager = RawMemoryManager()
+
+        sources = []
+        for ref_id in raw_memory_references[:3]:  # Limit to first 3 sources to avoid clutter
+            try:
+                raw_mem = self.raw_memory_manager.get_raw_memory_by_id(
+                    raw_memory_id=ref_id,
+                    user_id=self.user.id
+                )
+                if raw_mem:
+                    # Format: "App: URL" or just "App" if no URL
+                    if raw_mem.source_url:
+                        # Extract domain from URL
+                        from urllib.parse import urlparse
+                        parsed = urlparse(raw_mem.source_url)
+                        domain = parsed.netloc or parsed.path.split('/')[0]
+                        sources.append(f"{raw_mem.source_app}: {domain}")
+                    else:
+                        sources.append(raw_mem.source_app)
+            except Exception:
+                # Silently skip if raw_memory retrieval fails
+                continue
+
+        if sources:
+            return f" [Sources: {', '.join(sources)}]"
+        return ""
+
     def build_system_prompt_with_memories(
         self,
         raw_system: str,
@@ -1651,6 +1695,9 @@ class Agent(BaseAgent):
 
         if retrieved_memories is None:
             retrieved_memories = {}
+
+        # Initialize set to collect raw_memory_references from all retrieved memories
+        all_raw_memory_refs = set()
 
         key_words = topics if topics is not None else self.agent_state.topic
 
@@ -1723,6 +1770,11 @@ class Agent(BaseAgent):
             knowledge_vault_memory = ""
             if len(current_knowledge_vault) > 0:
                 for idx, knowledge_vault_item in enumerate(current_knowledge_vault):
+                    # Collect raw_memory_references if present
+                    raw_refs = getattr(knowledge_vault_item, 'raw_memory_references', None)
+                    if raw_refs:
+                        all_raw_memory_refs.update(raw_refs)
+
                     knowledge_vault_memory += f"[{idx}] Knowledge Vault Item ID: {knowledge_vault_item.id}; Caption: {knowledge_vault_item.caption}\n"
             retrieved_memories["knowledge_vault"] = {
                 "total_number_of_items": self.knowledge_vault_manager.get_total_number_of_items(
@@ -1751,13 +1803,18 @@ class Agent(BaseAgent):
                         if event.tree_path
                         else ""
                     )
+                    # Get source information and collect raw_memory_references
+                    raw_refs = getattr(event, 'raw_memory_references', None)
+                    source_info = self._format_source_info(raw_refs)
+                    if raw_refs:
+                        all_raw_memory_refs.update(raw_refs)
                     if (
                         self.agent_state.name == "episodic_memory_agent"
                         or self.agent_state.name == "reflexion_agent"
                     ):
-                        episodic_memory += f"[Event ID: {event.id}] Timestamp: {event.occurred_at.strftime('%Y-%m-%d %H:%M:%S')} - {event.summary}{tree_path_str} (Details: {len(event.details)} Characters)\n"
+                        episodic_memory += f"[Event ID: {event.id}] Timestamp: {event.occurred_at.strftime('%Y-%m-%d %H:%M:%S')} - {event.summary}{tree_path_str}{source_info} (Details: {len(event.details)} Characters)\n"
                     else:
-                        episodic_memory += f"[{idx}] Timestamp: {event.occurred_at.strftime('%Y-%m-%d %H:%M:%S')} - {event.summary}{tree_path_str} (Details: {len(event.details)} Characters)\n"
+                        episodic_memory += f"[{idx}] Timestamp: {event.occurred_at.strftime('%Y-%m-%d %H:%M:%S')} - {event.summary}{tree_path_str}{source_info} (Details: {len(event.details)} Characters)\n"
 
             recent_episodic_memory = episodic_memory.strip()
 
@@ -1781,13 +1838,18 @@ class Agent(BaseAgent):
                         if event.tree_path
                         else ""
                     )
+                    # Get source information and collect raw_memory_references
+                    raw_refs = getattr(event, 'raw_memory_references', None)
+                    source_info = self._format_source_info(raw_refs)
+                    if raw_refs:
+                        all_raw_memory_refs.update(raw_refs)
                     if (
                         self.agent_state.name == "episodic_memory_agent"
                         or self.agent_state.name == "reflexion_agent"
                     ):
-                        most_relevant_episodic_memory_str += f"[Event ID: {event.id}] Timestamp: {event.occurred_at.strftime('%Y-%m-%d %H:%M:%S')} - {event.summary}{tree_path_str}  (Details: {len(event.details)} Characters)\n"
+                        most_relevant_episodic_memory_str += f"[Event ID: {event.id}] Timestamp: {event.occurred_at.strftime('%Y-%m-%d %H:%M:%S')} - {event.summary}{tree_path_str}{source_info}  (Details: {len(event.details)} Characters)\n"
                     else:
-                        most_relevant_episodic_memory_str += f"[{idx}] Timestamp: {event.occurred_at.strftime('%Y-%m-%d %H:%M:%S')} - {event.summary}{tree_path_str}  (Details: {len(event.details)} Characters)\n"
+                        most_relevant_episodic_memory_str += f"[{idx}] Timestamp: {event.occurred_at.strftime('%Y-%m-%d %H:%M:%S')} - {event.summary}{tree_path_str}{source_info}  (Details: {len(event.details)} Characters)\n"
             relevant_episodic_memory = most_relevant_episodic_memory_str.strip()
             retrieved_memories["episodic"] = {
                 "total_number_of_items": self.episodic_memory_manager.get_total_number_of_items(
@@ -1817,6 +1879,11 @@ class Agent(BaseAgent):
             resource_memory = ""
             if len(current_resource_memory) > 0:
                 for idx, resource in enumerate(current_resource_memory):
+                    # Collect raw_memory_references if present
+                    raw_refs = getattr(resource, 'raw_memory_references', None)
+                    if raw_refs:
+                        all_raw_memory_refs.update(raw_refs)
+
                     tree_path_str = (
                         f"; Path: {' > '.join(resource.tree_path)}"
                         if resource.tree_path
@@ -1856,6 +1923,11 @@ class Agent(BaseAgent):
             procedural_memory = ""
             if len(current_procedural_memory) > 0:
                 for idx, procedure in enumerate(current_procedural_memory):
+                    # Collect raw_memory_references if present
+                    raw_refs = getattr(procedure, 'raw_memory_references', None)
+                    if raw_refs:
+                        all_raw_memory_refs.update(raw_refs)
+
                     tree_path_str = (
                         f"; Path: {' > '.join(procedure.tree_path)}"
                         if procedure.tree_path
@@ -1895,6 +1967,11 @@ class Agent(BaseAgent):
             semantic_memory = ""
             if len(current_semantic_memory) > 0:
                 for idx, semantic_memory_item in enumerate(current_semantic_memory):
+                    # Collect raw_memory_references if present
+                    raw_refs = getattr(semantic_memory_item, 'raw_memory_references', None)
+                    if raw_refs:
+                        all_raw_memory_refs.update(raw_refs)
+
                     tree_path_str = (
                         f"; Path: {' > '.join(semantic_memory_item.tree_path)}"
                         if semantic_memory_item.tree_path
@@ -1924,6 +2001,10 @@ class Agent(BaseAgent):
 
         if key_words:
             complete_system_prompt += "\n\nThe above memories are retrieved based on the following keywords. If some memories are empty or does not contain the content related to the keywords, it is highly likely that memory does not contain any relevant information."
+
+        # Store collected raw_memory_references for later use and add to retrieved_memories
+        self.current_raw_memory_refs = list(all_raw_memory_refs)
+        retrieved_memories["raw_memory_refs"] = self.current_raw_memory_refs
 
         return complete_system_prompt, retrieved_memories
 

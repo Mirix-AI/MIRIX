@@ -1990,11 +1990,14 @@ Please perform this analysis and create new memories as appropriate. Provide a d
                 async_upload=async_upload,
             )
 
+
             # Check if we should trigger memory absorption
             ready_messages = self.temp_message_accumulator.should_absorb_content()
-            if force_absorb_content or ready_messages:
+            # For screen monitoring, force immediate absorption to avoid waiting for 20 messages
+            should_force_absorb = force_absorb_content or is_screen_monitoring
+            if should_force_absorb or ready_messages:
                 t1 = time.time()
-                # Pass the ready messages to absorb_content_into_memory if availabl, user_id=user_ide
+                # Pass the ready messages to absorb_content_into_memory if available
                 if ready_messages:
                     self.temp_message_accumulator.absorb_content_into_memory(
                         self.agent_states, ready_messages, user_id=user_id
@@ -2008,6 +2011,7 @@ Please perform this analysis and create new memories as appropriate. Provide a d
                 self.logger.info(
                     f"Time taken to absorb content into memory: {t2 - t1} seconds"
                 )
+
                 self.clear_old_screenshots()
 
         else:
@@ -2171,7 +2175,22 @@ Please perform this analysis and create new memories as appropriate. Provide a d
                     self.agent_states, user_id=user_id
                 )
 
-            return response_text
+            # Get raw_memory_references from the loaded Agent instance
+            try:
+                loaded_agent = self.client.server.load_agent(
+                    agent_id=self.agent_states.agent_state.id,
+                    actor=self.client.user
+                )
+                raw_memory_refs = getattr(loaded_agent, 'current_raw_memory_refs', [])
+            except Exception as e:
+                print(f"[DEBUG] Failed to get raw_memory_refs: {e}")
+                raw_memory_refs = []
+
+            # Return response with memory references
+            return {
+                "response": response_text,
+                "memoryReferences": raw_memory_refs
+            }
 
     def cleanup_upload_workers(self):
         """Delegate to UploadManager for cleanup."""
