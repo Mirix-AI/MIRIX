@@ -20,6 +20,7 @@ from mirix.llm_api.google_ai import (
     convert_tools_to_google_ai_format,
     google_ai_chat_completions_request,
 )
+from mirix.llm_api.ollama_helpers import _preprocess_ollama_messages
 from mirix.llm_api.helpers import (
     add_inner_thoughts_to_functions,
     unpack_all_inner_thoughts_from_kwargs,
@@ -37,7 +38,7 @@ from mirix.schemas.openai.chat_completion_request import (
 )
 from mirix.schemas.openai.chat_completion_response import ChatCompletionResponse
 from mirix.settings import ModelSettings
-from mirix.utils import num_tokens_from_functions, num_tokens_from_messages
+from mirix.utils import num_tokens_from_functions, num_tokens_from_messages, smart_urljoin
 
 LLM_API_PROVIDER_OPTIONS = [
     "openai",
@@ -47,6 +48,7 @@ LLM_API_PROVIDER_OPTIONS = [
     "cohere",
     "local",
     "groq",
+    "ollama",
 ]
 
 
@@ -135,6 +137,9 @@ def create(
     image_uris: Optional[List[str]] = None,  # TODO: inside messages
     extra_messages: Optional[List[Message]] = None,
     get_input_data_for_debugging: bool = False,
+    user_id: Optional[str] = None,
+    put_inner_thoughts_first: bool = False,
+    name: Optional[str] = None,
 ) -> ChatCompletionResponse:
     """Return response to chat completion with backoff"""
     from mirix.utils import printd
@@ -558,6 +563,68 @@ def create(
                 max_tokens=1024,  # TODO make dynamic
             ),
         )
+
+    # ollama
+    elif llm_config.model_endpoint_type == "ollama":
+        if stream:
+            raise NotImplementedError(
+                f"Streaming not yet implemented for {llm_config.model_endpoint_type}"
+            )
+
+        if not model_settings.ollama_base_url and not llm_config.model_endpoint:
+            # Default to localhost if not set
+            llm_config.model_endpoint = "http://localhost:11434/v1"
+        elif model_settings.ollama_base_url and not llm_config.model_endpoint:
+            llm_config.model_endpoint = model_settings.ollama_base_url
+
+        # Ensure endpoint ends with /v1
+        if not llm_config.model_endpoint.endswith("/v1"):
+            llm_config.model_endpoint = smart_urljoin(llm_config.model_endpoint, "v1")
+
+        if llm_config.put_inner_thoughts_in_kwargs:
+            functions = add_inner_thoughts_to_functions(
+                functions=functions,
+                inner_thoughts_key=INNER_THOUGHTS_KWARG,
+                inner_thoughts_description=INNER_THOUGHTS_KWARG_DESCRIPTION,
+            )
+
+        tools = (
+            [{"type": "function", "function": f} for f in functions]
+            if functions is not None
+            else None
+        )
+
+        # Ollama is OpenAI compatible
+        data = ChatCompletionRequest(
+            model=llm_config.model,
+            messages=_preprocess_ollama_messages(
+                messages,
+                put_inner_thoughts_in_kwargs=llm_config.put_inner_thoughts_in_kwargs
+            ),
+            tools=tools,
+            tool_choice=function_call,
+            user=user_id if user_id else "user",
+        )
+
+        # Ollama typically doesn't need an API key, but we pass a dummy one if None
+        api_key = "ollama"
+
+        response = openai_chat_completions_request(
+            url=llm_config.model_endpoint,
+            api_key=api_key,
+            chat_completion_request=data,
+            get_input_data_for_debugging=get_input_data_for_debugging,
+        )
+
+        if get_input_data_for_debugging:
+            return response
+
+        if llm_config.put_inner_thoughts_in_kwargs:
+            response = unpack_all_inner_thoughts_from_kwargs(
+                response=response, inner_thoughts_key=INNER_THOUGHTS_KWARG
+            )
+
+        return response
 
     # local model
     else:

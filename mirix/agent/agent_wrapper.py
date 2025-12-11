@@ -20,6 +20,7 @@ from mirix.agent.app_constants import (
     GEMINI_MODELS,
     MAXIMUM_NUM_IMAGES_IN_CLOUD,
     OPENAI_MODELS,
+    OLLAMA_MODELS,
     TEMPORARY_MESSAGE_LIMIT,
 )
 
@@ -882,6 +883,8 @@ class AgentWrapper:
             return "anthropic"
         elif model_name in OPENAI_MODELS:
             return "openai"
+        elif model_name in OLLAMA_MODELS:
+            return "ollama"
         else:
             raise ValueError(f"Invalid model provider: {model_name}")
 
@@ -962,6 +965,15 @@ class AgentWrapper:
                     model_wrapper=None,
                     context_window=128000,
                 )
+
+        elif provider == "ollama":
+            llm_config = LLMConfig(
+                model=model_name,
+                model_endpoint_type="ollama",
+                model_endpoint=self.agent_config.get("ollama_base_url") or model_settings.ollama_base_url or "http://localhost:11434/v1",
+                model_wrapper=None,
+                context_window=128000,
+            )
         else:
             # Custom provider - use custom config or fallback to OpenAI-compatible
             if custom_agent_config is not None:
@@ -1051,7 +1063,7 @@ class AgentWrapper:
         """Set the model specifically for memory management operations"""
 
         # Define allowed memory models
-        ALLOWED_MEMORY_MODELS = GEMINI_MODELS + OPENAI_MODELS
+        ALLOWED_MEMORY_MODELS = GEMINI_MODELS + OPENAI_MODELS + OLLAMA_MODELS
 
         # Determine the effective provider
         provider = self._determine_model_provider(new_model, custom_agent_config)
@@ -1105,6 +1117,8 @@ class AgentWrapper:
             required_keys = ["GEMINI_API_KEY"]
         elif new_model in OPENAI_MODELS:
             required_keys = ["OPENAI_API_KEY"]
+        elif new_model in OLLAMA_MODELS:
+             required_keys = [] # Ollama usually doesn't require an API key
 
         return {
             "success": True,

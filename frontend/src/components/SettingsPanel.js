@@ -984,7 +984,14 @@ const SettingsPanel = ({ settings, onSettingsChange, onApiKeyCheck, onApiKeyRequ
     'gemini-2.5-flash',
     'gemini-2.5-flash-lite',
     'gemini-1.5-pro',
-    'gemini-2.0-flash-lite'
+    'gemini-2.0-flash-lite',
+    'llama3.2',
+    'mistral',
+    'gemma2',
+    'qwen2.5-coder-32b',
+    'deepseek-r1-distill-llama-70b',
+    'deepseek-v3.1:671b-cloud',
+    'qwen3-vl:235b-cloud'
   ];
 
   // Combine base models with custom models
@@ -999,6 +1006,13 @@ const SettingsPanel = ({ settings, onSettingsChange, onApiKeyCheck, onApiKeyRequ
     'gpt-4o',
     'gpt-4.1-mini',
     'gpt-4.1',
+    'llama3.2',
+    'mistral',
+    'gemma2',
+    'qwen2.5-coder-32b',
+    'deepseek-r1-distill-llama-70b',
+    'deepseek-v3.1:671b-cloud',
+    'qwen3-vl:235b-cloud'
   ];
 
   // Combine base memory models with custom models

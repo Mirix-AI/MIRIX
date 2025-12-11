@@ -18,6 +18,16 @@ OPENAI_MODELS = [
     "gpt-5",
 ]
 
+OLLAMA_MODELS = [
+    "llama3.2",
+    "mistral",
+    "gemma2",
+    "qwen2.5-coder-32b",
+    "deepseek-r1-distill-llama-70b",
+    "deepseek-v3.1:671b-cloud",
+    "qwen3-vl:235b-cloud",
+]
+
 STUCK_TIMEOUT = 10
 RUNNING_TIMEOUT = 30
 TOTAL_TIMEOUT = 60

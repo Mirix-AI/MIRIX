@@ -1,0 +1,6 @@
+agent_name: mirix
+model_name: qwen3-vl:235b-cloud
+model_endpoint_type: ollama
+model_endpoint: http://localhost:11434/v1
+context_window: 16384
+put_inner_thoughts_in_kwargs: true

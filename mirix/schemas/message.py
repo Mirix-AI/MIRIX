@@ -801,12 +801,14 @@ class Message(BaseMessage):
                         }
                     )
                 elif isinstance(content_part, CloudFileContent):
+                     # Fallback for OpenAI/Ollama which don't support Google Cloud URIs
                     content.append(
                         {
-                            "type": content_part.type,
-                            "cloud_file_uri": content_part.cloud_file_uri,
+                            "type": "text",
+                            "text": f"[Image File: {content_part.cloud_file_uri}]",
                         }
                     )
+                    text_content_count += 1
                 else:
                     raise ValueError(f"Invalid content type: {content_part.type}")
 

@@ -1441,12 +1441,33 @@ def num_tokens_from_messages(messages: List[dict], model: str = "gpt-4") -> int:
                         warnings.warn(
                             f"Message has null value: {key} with value: {value} - message={message}"
                         )
+                    elif isinstance(value, list) and key == "content":
+                        # Handle multimodal content (list of dicts)
+                        for item in value:
+                            if isinstance(item, dict):
+                                if item.get("type") == "text":
+                                    num_tokens += len(encoding.encode(item.get("text", "")))
+                                elif item.get("type") == "image_url":
+                                    # Approximate tokens for an image
+                                    # OpenAI pricing/sizing varies, but a safe estimate or fixed cost is often used
+                                    # High detail mode: 85 tokens + 170 * tiles. Low detail: 85 tokens.
+                                    # For now, let's assume a fixed cost or simple estimate to avoid crashing.
+                                    # 85 tokens is a reasonable minimum.
+                                    num_tokens += 85 
                     else:
                         if not isinstance(value, str):
-                            raise ValueError(
-                                f"Message has non-string value: {key} with value: {value} - message={message}"
-                            )
-                        num_tokens += len(encoding.encode(value))
+                            # Try to stringify if not string, or skip if safe?
+                            # For consistency with previous logic, we should probably warn or try to convert.
+                            # But strictly, let's keep the error for unknown non-string types unless it's the list case we just handled.
+                             try:
+                                value = str(value)
+                                num_tokens += len(encoding.encode(value))
+                             except:
+                                raise ValueError(
+                                    f"Message has non-string value: {key} with value: {value} - message={message}"
+                                )
+                        else:
+                            num_tokens += len(encoding.encode(value))
 
                 if key == "name":
                     num_tokens += tokens_per_name

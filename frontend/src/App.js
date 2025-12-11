@@ -16,6 +16,7 @@ function App() {
   const [activeTab, setActiveTab] = useState('chat');
   const [settings, setSettings] = useState({
     model: 'gpt-4o-mini',
+    memoryModel: 'gpt-4o-mini',
     persona: 'helpful_assistant',
     timezone: 'America/New_York',
     serverUrl: 'http://localhost:47283'
@@ -57,7 +58,7 @@ function App() {
       if (response.ok) {
         const data = await response.json();
         console.log('API key status:', data);
-        
+
         if (forceOpen || (data.requires_api_key && data.missing_keys.length > 0)) {
           if (forceOpen) {
             console.log('Manual API key update requested');
@@ -88,10 +89,10 @@ function App() {
   // Refresh backend-dependent data after successful connection
   const refreshBackendData = useCallback(async () => {
     console.log('🔄 Refreshing backend-dependent data...');
-    
+
     // Check API keys after successful backend connection
     await checkApiKeys();
-    
+
     // Trigger refresh of other backend-dependent components
     // This will cause components like SettingsPanel to re-fetch their data
     setSettings(prev => ({ ...prev, lastBackendRefresh: Date.now() }));
@@ -101,7 +102,7 @@ function App() {
   const checkBackendHealth = useCallback(async () => {
     let shouldProceed = true;
     let currentVisibility = false;
-    
+
     // Check if health check is already in progress and capture current visibility
     setBackendLoading(prev => {
       if (prev.isChecking) {
@@ -133,7 +134,7 @@ function App() {
 
       if (response.ok) {
         console.log('✅ Backend is healthy - hiding loading modal');
-        
+
         setBackendLoading(prev => ({
           ...prev,
           isVisible: false,
@@ -148,7 +149,7 @@ function App() {
           console.log('🔄 Backend reconnected - refreshing data...');
           await refreshBackendData();
         }
-        
+
         return true;
       } else {
         throw new Error(`Health check failed with status: ${response.status}`);
@@ -187,15 +188,15 @@ function App() {
   useEffect(() => {
     const performInitialHealthCheck = async () => {
       // Show loading modal immediately for initial startup
-      setBackendLoading(prev => ({ 
-        ...prev, 
-        isVisible: true, 
+      setBackendLoading(prev => ({
+        ...prev,
+        isVisible: true,
         isReconnection: false // This is initial startup, not reconnection
       }));
-      
+
       // Wait a moment for the UI to update
       await new Promise(resolve => setTimeout(resolve, 500));
-      
+
       // Check backend health (will automatically refresh data if modal was visible)
       await checkBackendHealth();
     };
@@ -208,17 +209,17 @@ function App() {
     const interval = setInterval(() => {
       setBackendLoading(prev => {
         const timeSinceLastCheck = Date.now() - (prev.lastCheckTime || 0);
-        
+
         // Check more frequently when modal is visible, less frequently when not
-        const shouldCheck = prev.isVisible 
+        const shouldCheck = prev.isVisible
           ? !prev.isChecking // Every 5 seconds when modal is visible
           : timeSinceLastCheck > 30000 && !prev.isChecking; // Every 30 seconds when modal is hidden
-        
+
         if (shouldCheck) {
           console.log('🔄 Periodic health check triggered. Modal visible:', prev.isVisible);
           checkBackendHealth();
         }
-        
+
         return prev; // Don't actually update state, just check conditions
       });
     }, 5000); // Check every 5 seconds
@@ -230,7 +231,7 @@ function App() {
   useEffect(() => {
     const handleWindowFocus = async () => {
       console.log('🔍 Window focused - checking backend health silently...');
-      
+
       // Check backend health silently - only show modal if it actually fails
       const healthCheckResult = await checkBackendHealth();
       // Loading modal will be shown automatically by checkBackendHealth if it fails
@@ -239,7 +240,7 @@ function App() {
     const handleVisibilityChange = async () => {
       if (!document.hidden) {
         console.log('🔍 Document became visible - checking backend health silently...');
-        
+
         // Check backend health silently - only show modal if it actually fails
         const healthCheckResult = await checkBackendHealth();
         // Loading modal will be shown automatically by checkBackendHealth if it fails
@@ -264,7 +265,7 @@ function App() {
   const handleApiKeySubmit = async () => {
     // Refresh API key status after submission
     await checkApiKeys();
-    
+
     // If there's a pending model change, retry it now
     if (pendingModelChange.retryFunction) {
       console.log(`Retrying ${pendingModelChange.type} model change to '${pendingModelChange.model}' after API key update`);
@@ -285,7 +286,7 @@ function App() {
   useEffect(() => {
     // Listen for menu events from Electron
     const cleanupFunctions = [];
-    
+
     if (window.electronAPI) {
       const cleanupNewChat = window.electronAPI.onMenuNewChat(() => {
         setActiveTab('chat');
@@ -309,7 +310,7 @@ function App() {
       // Handle Electron window events - check backend health silently
       const cleanupWindowShow = window.electronAPI.onWindowShow(async () => {
         console.log('🔍 Electron window shown - checking backend health silently...');
-        
+
         // Check backend health silently - only show modal if it actually fails
         const healthCheckResult = await checkBackendHealth();
         // Loading modal will be shown automatically by checkBackendHealth if it fails
@@ -318,7 +319,7 @@ function App() {
 
       const cleanupAppActivate = window.electronAPI.onAppActivate(async () => {
         console.log('🔍 Electron app activated - checking backend health silently...');
-        
+
         // Check backend health silently - only show modal if it actually fails
         const healthCheckResult = await checkBackendHealth();
         // Loading modal will be shown automatically by checkBackendHealth if it fails
@@ -344,32 +345,32 @@ function App() {
     <div className="App">
       <div className="app-header">
         <div className="app-title">
-          <Logo 
-            size="small" 
-            showText={false} 
+          <Logo
+            size="small"
+            showText={false}
           />
           <span className="version">v0.1.5</span>
         </div>
         <div className="tabs">
-          <button 
+          <button
             className={`tab ${activeTab === 'chat' ? 'active' : ''}`}
             onClick={() => setActiveTab('chat')}
           >
             {t('tabs.chat')}
           </button>
-          <button 
+          <button
             className={`tab ${activeTab === 'screenshots' ? 'active' : ''}`}
             onClick={() => setActiveTab('screenshots')}
           >
             {t('tabs.screenshots')}
           </button>
-          <button 
+          <button
             className={`tab ${activeTab === 'memory' ? 'active' : ''}`}
             onClick={() => setActiveTab('memory')}
           >
             {t('tabs.memory')}
           </button>
-          <button 
+          <button
             className={`tab ${activeTab === 'settings' ? 'active' : ''}`}
             onClick={() => setActiveTab('settings')}
           >
@@ -380,7 +381,7 @@ function App() {
 
       <div className="app-content">
         {/* Keep ChatWindow always mounted to maintain streaming state */}
-        <div style={{ 
+        <div style={{
           display: activeTab === 'chat' ? 'flex' : 'none',
           flexDirection: 'column',
           height: '100%'
@@ -401,8 +402,8 @@ function App() {
         </div>
         {/* Keep ScreenshotMonitor always mounted to maintain monitoring state */}
         <div style={{ display: activeTab === 'screenshots' ? 'block' : 'none' }}>
-          <ScreenshotMonitor 
-            settings={settings} 
+          <ScreenshotMonitor
+            settings={settings}
             onMonitoringStatusChange={setIsScreenMonitoring}
           />
         </div>

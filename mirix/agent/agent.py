@@ -725,6 +725,7 @@ class Agent(BaseAgent):
                         f"Attempt {attempt} failed: {he}. Retrying in {delay} seconds..."
                     )
                     time.sleep(delay)
+                    continue
 
             except Exception as e:
                 log_telemetry(
