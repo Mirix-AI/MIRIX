@@ -51,7 +51,8 @@ For more details, please refer to [Backend Usage](https://docs.mirix.io/user-gui
 
 We've created a simple [Python SDK](https://pypi.org/project/mirix/0.1.5/) that makes it incredibly easy to integrate Mirix's memory capabilities into your applications:
 
-### Installationhttps://pypi.org/project/mirix/0.1.5/
+### Installation
+https://pypi.org/project/mirix/0.1.5
 ```bash
 pip install mirix
 ```
@@ -225,14 +226,11 @@ We host weekly discussion sessions where you can:
 **🔗 Zoom Link:** [https://ucsd.zoom.us/j/96278791276](https://ucsd.zoom.us/j/96278791276)
 
 ### 📱 WeChat Group
+If the WeChat QR code expired, you can add the account `ari_asm` so that I can add you to the group chat.
 <div align="center">
 <img src="frontend/public/wechat-qr.jpg" alt="WeChat QR Code" width="200"/><br/>
 <strong>WeChat Group</strong>
 </div>
-
-## Star History
-
-[![Star History Chart](https://api.star-history.com/svg?repos=Mirix-AI/MIRIX&type=Date)](https://star-history.com/#Mirix-AI/MIRIX.&Date)
 
 ## Acknowledgement
 We would like to thank [Letta](https://github.com/letta-ai/letta) for open-sourcing their framework, which served as the foundation for the memory system in this project.

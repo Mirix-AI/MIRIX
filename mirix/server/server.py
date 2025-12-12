@@ -744,7 +744,7 @@ class SyncServer(Server):
     ) -> MirixUsageStatistics:
         """Process a CLI command"""
         # TODO: Thread actor directly through this function, since the top level caller most likely already retrieved the user
-        actor = self.user_manager.get_user_or_default(user_id=user_id)
+        actor = self.user_manager.get_user_or_admin(user_id=user_id)
 
         logger.debug("Got command: %s", command)
 
@@ -1127,7 +1127,7 @@ class SyncServer(Server):
     ) -> Union[List[Message], List[MirixMessage]]:
         # TODO: Thread actor directly through this function, since the top level caller most likely already retrieved the user
 
-        actor = self.user_manager.get_user_or_default(user_id=user_id)
+        actor = self.user_manager.get_user_or_admin(user_id=user_id)
         start_date = (
             self.message_manager.get_message_by_id(after, actor=actor, use_cache=use_cache).created_at
             if after

@@ -1,18 +1,15 @@
 #!/usr/bin/env python3
 """
-Claude Code Agent with all standard tools plus n8n-mcp server
+Claude Code Agent with all standard tools
 """
 
 import asyncio
-import os
 
 from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, query
 from dotenv import load_dotenv
 
 from mirix import Mirix
 
-# Load .env file (optional - Mirix now loads .env automatically in mirix/settings.py)
-# Kept here for backward compatibility
 load_dotenv()
 
 # Configuration
@@ -32,7 +29,6 @@ def build_system_prompt(mirix_agent=None, user_id=None, conversation_buffer=""):
     Returns:
         str: System prompt with memory context
     """
-
     # Base system prompt
     system_prompt = """You are a helpful assistant."""
 
@@ -53,6 +49,7 @@ def get_agent_options(system_prompt, session_id=None):
 
     Args:
         system_prompt: System prompt to use
+        session_id: Optional session ID to resume
 
     Returns:
         ClaudeAgentOptions: Agent configuration
@@ -95,25 +92,25 @@ def get_agent_options(system_prompt, session_id=None):
 
 
 async def run_agent():
-    """Run the comprehensive Claude Code agent with periodic memory updates"""
 
+    import os
     # Initialize Mirix memory agent
     mirix_agent = Mirix(
         model_name="gemini-2.0-flash",
         api_key=os.getenv("GEMINI_API_KEY"),
     )
     user = mirix_agent.create_user(user_name="Alice")
+    turns_since_reinit = 0
 
-    # Track conversation for memory updates
+    # Track conversation
     conversation_history = []
     turn_count = 0
-    turns_since_reinit = 0
     session_id = None
 
     try:
         while True:
-            # Initial system prompt (without memory)
-            options = get_agent_options(build_system_prompt(), session_id)
+            system_prompt = build_system_prompt()
+            options = get_agent_options(system_prompt, session_id)
 
             try:
                 user_input = input("User: ").strip()
@@ -149,7 +146,6 @@ async def run_agent():
 
                 assistant_message = None
 
-                # Query with updated system prompt - SDK maintains conversation history
                 async for message in query(prompt=user_input, options=options):
                     # The first message is a system init message with the session ID
                     if hasattr(message, "subtype") and message.subtype == "init":
