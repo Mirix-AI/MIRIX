@@ -1,10 +1,11 @@
 # inspecting tools
 import asyncio
 import os
+import sys
 import traceback
 import warnings
 from abc import abstractmethod
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime
 from typing import Callable, Dict, List, Optional, Union
 
@@ -415,6 +416,46 @@ except Exception as e:
     logger.warning("Redis initialization failed: %s", e)
     logger.info("System will continue without Redis caching")
     redis_client = None
+
+
+# ========================================================================
+# LANGFUSE OBSERVABILITY INITIALIZATION (Module Level - Runs on Import)
+# ========================================================================
+# Initialize LangFuse client for tracing and observability
+# This provides distributed tracing across API → Kafka → Worker processes
+
+try:
+    from mirix.observability import (
+        initialize_langfuse,
+        flush_langfuse,
+        shutdown_langfuse,
+    )
+    
+    logger.info("Initializing LangFuse observability...")
+    initialize_langfuse()
+except Exception as e:
+    logger.warning(f"LangFuse initialization failed: {e}. Continuing without observability.")
+
+
+# ========================================================================
+# GRACEFUL SHUTDOWN - No Custom Signal Handlers Needed
+# ========================================================================
+# Let uvicorn handle SIGTERM/SIGINT naturally.
+# The lifespan context manager (cleanup function) will automatically:
+# 1. Be called when uvicorn receives shutdown signals
+# 2. Flush LangFuse traces before final shutdown
+# 3. Clean up queue manager resources
+#
+# This approach:
+# ✅ Avoids signal handler complexity
+# ✅ No asyncio.CancelledError issues
+# ✅ Works with uvicorn's event loop
+# ✅ Compatible with Kubernetes/Docker (SIGTERM handling)
+# ✅ Ctrl+C works properly (SIGINT handling)
+#
+# The cleanup is registered in rest_api.py's lifespan context manager.
+
+logger.info("✅ Shutdown handling via FastAPI lifespan (no custom signal handlers needed)")
 
 
 # Dependency

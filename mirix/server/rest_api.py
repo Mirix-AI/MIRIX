@@ -108,6 +108,20 @@ async def cleanup():
     """
     logger.info("Shutting down Mirix REST API server")
 
+    # Flush LangFuse traces before shutdown
+    try:
+        from mirix.observability import flush_langfuse, shutdown_langfuse
+        logger.info("Flushing LangFuse traces...")
+        flush_success = flush_langfuse(timeout=10.0)  # Increased timeout for graceful shutdown
+        if flush_success:
+            logger.info("✅ LangFuse traces flushed successfully")
+        else:
+            logger.warning("⚠️ LangFuse trace flush completed with warnings")
+        shutdown_langfuse()
+        logger.info("LangFuse observability shut down")
+    except Exception as e:
+        logger.warning(f"Error during LangFuse shutdown: {e}")
+
     # Cleanup queue
     queue_manager = get_queue_manager()
     queue_manager.cleanup()
@@ -148,6 +162,103 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ============================================================================
+# LangFuse Tracing Middleware
+# ============================================================================
+
+@app.middleware("http")
+async def langfuse_tracing_middleware(request: Request, call_next):
+    """
+    Create LangFuse traces for all API requests using LangFuse 3.x context-based API.
+    
+    This middleware:
+    1. Creates a span context for each incoming request
+    2. Updates the current trace with request metadata
+    3. Sets trace context for downstream operations
+    4. Clears trace context when the request completes
+    """
+    from mirix.observability import get_langfuse_client, is_langfuse_enabled
+    from mirix.observability.context import set_trace_context, clear_trace_context
+    import uuid
+    
+    # Skip tracing if LangFuse is disabled
+    if not is_langfuse_enabled():
+        return await call_next(request)
+    
+    langfuse = get_langfuse_client()
+    if not langfuse:
+        return await call_next(request)
+    
+    # Extract metadata from request
+    method = request.method
+    path = request.url.path
+    user_id = request.headers.get("x-user-id")
+    client_id = request.headers.get("x-client-id")
+    org_id = request.headers.get("x-org-id")
+    session_id = request.headers.get("x-session-id") or f"{client_id}-{uuid.uuid4().hex[:8]}"
+    
+    # Use context manager to create a span (which creates a trace if needed)
+    with langfuse.start_as_current_span(name=f"{method} {path}") as span:
+        try:
+            # Get the trace ID from LangFuse
+            trace_id = langfuse.get_current_trace_id()
+            observation_id = langfuse.get_current_observation_id()
+            
+            logger.debug(f"LangFuse trace created: trace_id={trace_id}, path={path}")
+            
+            # Update the trace with metadata
+            langfuse.update_current_trace(
+                name=f"{method} {path}",
+                user_id=user_id or client_id,
+                session_id=session_id,
+                metadata={
+                    "method": method,
+                    "path": path,
+                    "client_id": client_id,
+                    "org_id": org_id,
+                    "user_agent": request.headers.get("user-agent"),
+                },
+            )
+            
+            # Set trace context for downstream operations
+            set_trace_context(
+                trace_id=trace_id,
+                observation_id=observation_id,
+                user_id=user_id or client_id,
+                session_id=session_id,
+            )
+            
+            # Process request
+            response = await call_next(request)
+            
+            # Update trace with response status
+            try:
+                langfuse.update_current_trace(
+                    output={"status_code": response.status_code},
+                    tags=["success" if response.status_code < 400 else "error"],
+                )
+                logger.debug(f"LangFuse trace updated: trace_id={trace_id}, status={response.status_code}")
+            except Exception as e:
+                logger.debug(f"Failed to update trace: {e}")
+            
+            return response
+            
+        except Exception as e:
+            # Log error and mark trace as failed
+            try:
+                langfuse.update_current_trace(
+                    output={"error": str(e)},
+                    tags=["error", "exception"],
+                )
+            except Exception as trace_error:
+                logger.debug(f"Failed to update trace on error: {trace_error}")
+            raise
+            
+        finally:
+            # Clear trace context
+            clear_trace_context()
 
 
 # Middleware to resolve X-API-Key into X-Client-Id/X-Org-Id for all routes

@@ -9,6 +9,8 @@ from datetime import datetime
 from mirix.queue.message_pb2 import QueueMessage
 from mirix.log import get_logger
 from mirix.services.user_manager import UserManager
+from mirix.observability import restore_trace_from_queue_message
+from mirix.observability.context import clear_trace_context
 
 if TYPE_CHECKING:
     from .queue_interface import QueueInterface
@@ -132,19 +134,23 @@ class QueueWorker:
         Args:
             message: QueueMessage protobuf to process
         """
-        # Check if server is available
-        with self._lock:
-            server = self._server
-        
-        if server is None:
-            logger.warning(
-                "No server available - skipping message: agent_id=%s, input_messages_count=%s",
-                message.agent_id,
-                len(message.input_messages)
-            )
-            return
-        
         try:
+            # Restore LangFuse trace context from queue message for distributed tracing
+            trace_restored = restore_trace_from_queue_message(message)
+            if trace_restored:
+                logger.debug("Restored trace context from queue message for processing")
+            
+            # Check if server is available
+            with self._lock:
+                server = self._server
+            
+            if server is None:
+                logger.warning(
+                    "No server available - skipping message: agent_id=%s, input_messages_count=%s",
+                    message.agent_id,
+                    len(message.input_messages)
+                )
+                return
             # Validate actor exists before processing
             if not message.HasField('actor') or not message.actor.id:
                 raise ValueError(
@@ -256,6 +262,9 @@ class QueueWorker:
                 e,
                 exc_info=True
             )
+        finally:
+            # Clear trace context to prevent leaking between messages
+            clear_trace_context()
     
     def _consume_messages(self) -> None:
         """
