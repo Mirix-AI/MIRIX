@@ -2,7 +2,7 @@
 Queue Manager - Handles queue initialization and lifecycle management
 Separates implementation logic from the public API
 
-Supports multiple workers for in-memory queue via QUEUE_NUM_WORKERS config.
+Supports multiple workers for in-memory queue via NUM_WORKERS config.
 When NUM_WORKERS > 1, uses PartitionedMemoryQueue to simulate Kafka's
 user_id-based partitioning for parallel processing.
 """
@@ -40,12 +40,7 @@ class QueueManager:
         self._num_workers = 1
         self._round_robin = False
 
-    def initialize(
-        self,
-        server: Optional[Any] = None,
-        num_workers: Optional[int] = None,
-        round_robin: Optional[bool] = None,
-    ) -> None:
+    def initialize(self, server: Optional[Any] = None) -> None:
         """
         Initialize the queue and start the background workers
         Creates appropriate queue type based on configuration
@@ -59,12 +54,6 @@ class QueueManager:
 
         Args:
             server: Optional server instance for workers to invoke APIs on
-            num_workers: Optional override for number of workers (memory queue only).
-                        If provided, takes precedence over MEMORY_QUEUE_NUM_WORKERS env var.
-            round_robin: Optional round-robin partitioning mode (memory queue only).
-                        If True, uses round-robin assignment instead of hash-based.
-                        Guarantees even distribution for benchmarking scenarios.
-                        If None/False, uses hash-based partitioning (default).
         """
         if self._initialized:
             logger.warning(
@@ -85,10 +74,8 @@ class QueueManager:
 
         # Determine number of workers (only for memory queue)
         if config.QUEUE_TYPE == "memory":
-            # Use explicit parameter if provided, otherwise default to 1
-            self._num_workers = num_workers if num_workers is not None else 1
-            # Use explicit parameter if provided, otherwise default to False (hash-based)
-            self._round_robin = bool(round_robin)
+            self._num_workers = config.NUM_WORKERS
+            self._round_robin = config.ROUND_ROBIN
         else:
             # Kafka handles its own partitioning/consumer groups
             self._num_workers = 1

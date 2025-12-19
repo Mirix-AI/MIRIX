@@ -18,6 +18,7 @@ import pytest
 
 # Import queue components
 from mirix.queue import initialize_queue, save
+from mirix.queue import config as queue_config
 from mirix.queue.manager import get_manager
 from mirix.queue.memory_queue import MemoryQueue, PartitionedMemoryQueue
 
@@ -134,6 +135,25 @@ def clean_manager():
     if manager.is_initialized:
         manager.cleanup()
     return manager
+
+
+@pytest.fixture
+def configure_workers(monkeypatch, clean_manager):
+    """
+    Factory fixture to configure worker count and round-robin mode via config patching.
+    
+    Usage:
+        def test_something(configure_workers, mock_server):
+            configure_workers(num_workers=4, round_robin=False)
+            manager = get_manager()
+            manager.initialize(server=mock_server)
+    """
+    def _configure(num_workers: int = 1, round_robin: bool = False):
+        monkeypatch.setattr(queue_config, "NUM_WORKERS", num_workers)
+        monkeypatch.setattr(queue_config, "ROUND_ROBIN", round_robin)
+        return clean_manager
+    
+    return _configure
 
 
 # ============================================================================
@@ -589,9 +609,9 @@ class TestQueueManager:
 class TestMultiWorkerManager:
     """Test the queue manager with multiple workers"""
 
-    def test_manager_single_worker_default(self, clean_manager, mock_server):
+    def test_manager_single_worker_default(self, configure_workers, mock_server):
         """Test that default is single worker"""
-        manager = clean_manager
+        manager = configure_workers(num_workers=1)
         manager.initialize(server=mock_server)
 
         assert manager.num_workers == 1
@@ -600,10 +620,10 @@ class TestMultiWorkerManager:
 
         manager.cleanup()
 
-    def test_manager_multiple_workers(self, clean_manager, mock_server):
+    def test_manager_multiple_workers(self, configure_workers, mock_server):
         """Test manager creates correct number of workers"""
-        manager = clean_manager
-        manager.initialize(server=mock_server, num_workers=4)
+        manager = configure_workers(num_workers=4)
+        manager.initialize(server=mock_server)
 
         assert manager.num_workers == 4
         assert len(manager._workers) == 4
@@ -613,11 +633,11 @@ class TestMultiWorkerManager:
         manager.cleanup()
 
     def test_manager_workers_have_unique_partition_ids(
-        self, clean_manager, mock_server
+        self, configure_workers, mock_server
     ):
         """Test each worker is assigned a unique partition_id"""
-        manager = clean_manager
-        manager.initialize(server=mock_server, num_workers=4)
+        manager = configure_workers(num_workers=4)
+        manager.initialize(server=mock_server)
 
         partition_ids = [w._partition_id for w in manager._workers]
 
@@ -626,10 +646,10 @@ class TestMultiWorkerManager:
 
         manager.cleanup()
 
-    def test_manager_all_workers_running(self, clean_manager, mock_server):
+    def test_manager_all_workers_running(self, configure_workers, mock_server):
         """Test all workers are started and running"""
-        manager = clean_manager
-        manager.initialize(server=mock_server, num_workers=3)
+        manager = configure_workers(num_workers=3)
+        manager.initialize(server=mock_server)
 
         # Give workers time to start
         time.sleep(0.2)
@@ -641,10 +661,10 @@ class TestMultiWorkerManager:
 
         manager.cleanup()
 
-    def test_manager_cleanup_stops_all_workers(self, clean_manager, mock_server):
+    def test_manager_cleanup_stops_all_workers(self, configure_workers, mock_server):
         """Test cleanup stops all workers"""
-        manager = clean_manager
-        manager.initialize(server=mock_server, num_workers=3)
+        manager = configure_workers(num_workers=3)
+        manager.initialize(server=mock_server)
 
         workers = manager._workers.copy()
 
@@ -655,21 +675,21 @@ class TestMultiWorkerManager:
         for worker in workers:
             assert not worker._running
 
-    def test_initialize_queue_with_num_workers(self, clean_manager, mock_server):
-        """Test initialize_queue() with explicit num_workers"""
-        manager = clean_manager
+    def test_initialize_queue_with_num_workers(self, configure_workers, mock_server):
+        """Test initialize_queue() respects NUM_WORKERS config"""
+        manager = configure_workers(num_workers=5)
 
-        initialize_queue(mock_server, num_workers=5)
+        initialize_queue(mock_server)
 
         assert manager.num_workers == 5
         assert len(manager._workers) == 5
 
         manager.cleanup()
 
-    def test_num_workers_one_uses_simple_queue(self, clean_manager, mock_server):
+    def test_num_workers_one_uses_simple_queue(self, configure_workers, mock_server):
         """Test that num_workers=1 uses simple MemoryQueue"""
-        manager = clean_manager
-        manager.initialize(server=mock_server, num_workers=1)
+        manager = configure_workers(num_workers=1)
+        manager.initialize(server=mock_server)
 
         assert isinstance(manager._queue, MemoryQueue)
         assert not isinstance(manager._queue, PartitionedMemoryQueue)
@@ -790,10 +810,10 @@ class TestWorkerPartitionAssignment:
         assert len(processed["worker-1"]) == 5
 
     def test_partitioned_queue_distributes_by_user_id(
-        self, clean_manager, mock_server, sample_client, sample_messages
+        self, configure_workers, mock_server, sample_client, sample_messages
     ):
         """Test end-to-end: messages route by user_id across workers"""
-        manager = clean_manager
+        manager = configure_workers(num_workers=4)
 
         # Track processed messages per partition
         processed_by_partition = {}
@@ -813,8 +833,8 @@ class TestWorkerPartitionAssignment:
 
         mock_server.send_messages = tracking_send
 
-        # Initialize with multiple workers
-        manager.initialize(server=mock_server, num_workers=4)
+        # Initialize with multiple workers (config already set via fixture)
+        manager.initialize(server=mock_server)
 
         # Send messages for different users
         user_ids = ["user-a", "user-b", "user-c", "user-d"]
