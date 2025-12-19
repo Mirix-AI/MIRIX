@@ -17,8 +17,8 @@ from unittest.mock import Mock
 import pytest
 
 # Import queue components
-from mirix.queue import initialize_queue, save
 from mirix.queue import config as queue_config
+from mirix.queue import initialize_queue, save
 from mirix.queue.manager import get_manager
 from mirix.queue.memory_queue import MemoryQueue, PartitionedMemoryQueue
 
