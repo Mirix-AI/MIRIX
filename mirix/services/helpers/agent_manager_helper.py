@@ -12,6 +12,7 @@ from mirix.schemas.enums import MessageRole
 from mirix.schemas.memory import Memory
 from mirix.schemas.message import Message, MessageCreate
 from mirix.schemas.tool_rule import ToolRule
+from mirix.schemas.client import Client
 from mirix.schemas.user import User
 from mirix.utils import get_local_time
 
@@ -248,9 +249,20 @@ def package_initial_message_sequence(
     agent_id: str,
     initial_message_sequence: List[MessageCreate],
     model: str,
-    actor: User,
+    actor: Client,
+    user_id: Optional[str] = None,
 ) -> List[Message]:
-    # create the agent object
+    """
+    Package initial messages for an agent.
+    
+    Args:
+        agent_id: The agent ID these messages belong to.
+        initial_message_sequence: List of messages to package.
+        model: The LLM model name.
+        actor: The Client performing the operation (used for organization_id).
+        user_id: The user ID to associate with these messages. If not provided,
+                 messages will have user_id=None.
+    """
     init_messages = []
     for message_create in initial_message_sequence:
         if message_create.role == MessageRole.user:
@@ -269,7 +281,7 @@ def package_initial_message_sequence(
                 role=message_create.role,
                 text=packed_message,
                 organization_id=actor.organization_id,
-                user_id=actor.id,
+                user_id=user_id,
                 agent_id=agent_id,
                 model=model,
             )

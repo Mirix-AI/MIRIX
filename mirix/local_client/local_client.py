@@ -888,19 +888,28 @@ class LocalClient(AbstractClient):
             actor=self.client,
         )
 
-    def get_in_context_messages(self, agent_id: str) -> List[Message]:
+    def get_in_context_messages(self, agent_id: str, user_id: Optional[str] = None) -> List[Message]:
         """
         Get in-context messages of an agent
 
         Args:
             agent_id (str): ID of the agent
+            user_id (str): Optional user ID to filter messages for. If None, returns all messages.
 
         Returns:
             messages (List[Message]): List of in-context messages
         """
-        return self.server.agent_manager.get_in_context_messages(
+        agent_state = self.server.agent_manager.get_agent_by_id(
             agent_id=agent_id,
             actor=self.client,
+        )
+        user = None
+        if user_id:
+            user = self.server.user_manager.get_user_by_id(user_id)
+        return self.server.agent_manager.get_in_context_messages(
+            agent_state=agent_state,
+            actor=self.client,
+            user=user,
         )
 
     # agent interactions

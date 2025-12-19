@@ -1457,7 +1457,7 @@ class Agent(BaseAgent):
 
             # Only load blocks for core_memory_agent (other agent types don't use blocks)
             from mirix.schemas.agent import AgentType
-            
+
             if self.agent_state.agent_type == AgentType.core_memory_agent:
                 # Load existing blocks for this user
                 # Note: auto_create_from_default=True will create blocks if they don't exist
@@ -1465,12 +1465,12 @@ class Agent(BaseAgent):
                     user=self.user, 
                     agent_id=self.agent_state.id
                 )
-                
+
                 # Special handling for core_memory_agent: ensure required blocks exist
                 # This automatically creates blocks on first use for each user
                 # NOTE: Block creation now happens automatically in BlockManager.get_blocks()
                 # via the auto_create_from_default parameter, so no need for manual creation here
-                
+
                 # Load blocks into memory for core_memory_agent
                 self.agent_state.memory = Memory(
                     blocks=[
@@ -2489,6 +2489,27 @@ These keywords have been used to retrieve relevant memories from the database.
                     else LLM_MAX_TOKENS["DEFAULT"]
                 )
 
+            # Log step - this must happen before messages are persisted
+            step = self.step_manager.log_step(
+                actor=self.actor,
+                provider_name=self.agent_state.llm_config.model_endpoint_type,
+                model=self.agent_state.llm_config.model,
+                context_window_limit=self.agent_state.llm_config.context_window,
+                usage=response.usage,
+            )
+            for message in all_new_messages:
+                message.step_id = step.id
+
+            # Persisting into Messages - MUST happen before summarization
+            # so that summarize_messages_inplace can see all messages
+            self.agent_state = self.agent_manager.append_to_in_context_messages(
+                all_new_messages,
+                agent_id=self.agent_state.id,
+                actor=self.actor,
+                user_id=self.user_id,
+            )
+
+            # Check memory pressure AFTER messages are persisted
             if (
                 current_total_tokens
                 > summarizer_settings.memory_warning_threshold
@@ -2512,22 +2533,6 @@ These keywords have been used to retrieve relevant memories from the database.
                 printv(
                     f"[Mirix.Agent.{self.agent_state.name}] DEBUG: Memory usage acceptable: last response total_tokens ({current_total_tokens}) < {summarizer_settings.memory_warning_threshold * int(self.agent_state.llm_config.context_window)}"
                 )
-
-            # Log step - this must happen before messages are persisted
-            step = self.step_manager.log_step(
-                actor=self.actor,
-                provider_name=self.agent_state.llm_config.model_endpoint_type,
-                model=self.agent_state.llm_config.model,
-                context_window_limit=self.agent_state.llm_config.context_window,
-                usage=response.usage,
-            )
-            for message in all_new_messages:
-                message.step_id = step.id
-
-            # Persisting into Messages
-            self.agent_state = self.agent_manager.append_to_in_context_messages(
-                all_new_messages, agent_id=self.agent_state.id, actor=self.actor
-            )
 
             # Log step completion and results
             printv(
@@ -2731,7 +2736,10 @@ These keywords have been used to retrieve relevant memories from the database.
 
         prior_len = len(in_context_messages_openai)
         self.agent_state = self.agent_manager.trim_older_in_context_messages(
-            num=cutoff, agent_id=self.agent_state.id, actor=self.user
+            num=cutoff,
+            agent_id=self.agent_state.id,
+            actor=self.actor,
+            user_id=self.user_id,
         )
         packed_summary_message = {"role": "user", "content": summary_message}
 
@@ -2745,7 +2753,8 @@ These keywords have been used to retrieve relevant memories from the database.
                 )
             ],
             agent_id=self.agent_state.id,
-            actor=self.user,
+            actor=self.actor,
+            user_id=self.user_id,
         )
 
         # reset alert
