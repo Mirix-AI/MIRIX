@@ -200,7 +200,7 @@ def episodic_memory_replace(
         if self.agent_state.parent_id is not None
         else self.agent_state.id
     )
-    
+
     # Get filter_tags, use_cache, client_id, user_id, and occurred_at from agent instance
     filter_tags = getattr(self, 'filter_tags', None)
     use_cache = getattr(self, 'use_cache', True)
@@ -208,11 +208,15 @@ def episodic_memory_replace(
     user_id = getattr(self, 'user_id', None)
     occurred_at_override = getattr(self, 'occurred_at', None)  # Optional timestamp override from API
 
+    if self.user is None:
+        raise ValueError("User is required to access episodic memory")
+
+    if self.actor.organization_id is None:
+        raise ValueError("Organization ID is required to access episodic memory")
+
     for event_id in event_ids:
         # It will raise an error if the event_id is not found in the episodic memory.
-        self.episodic_memory_manager.get_episodic_memory_by_id(
-            event_id, actor=self.actor
-        )
+        self.episodic_memory_manager.get_episodic_memory_by_id(event_id, user=self.user)
 
     for event_id in event_ids:
         self.episodic_memory_manager.delete_event_by_id(event_id, actor=self.actor)
@@ -220,12 +224,12 @@ def episodic_memory_replace(
     for new_item in new_items:
         # Use occurred_at_override if provided, otherwise use LLM-extracted timestamp
         timestamp = occurred_at_override if occurred_at_override else new_item["occurred_at"]
-        
+
         # Convert string to datetime if needed
         if isinstance(timestamp, str):
             from datetime import datetime
             timestamp = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
-        
+
         self.episodic_memory_manager.insert_event(
             actor=self.actor,
             agent_state=self.agent_state,
@@ -254,9 +258,12 @@ def check_episodic_memory(
     Returns:
         List[EpisodicEventForLLM]: List of episodic events with the given event_ids.
     """
+    if self.user is None:
+        raise ValueError("User is required to check episodic memory")
+
     episodic_memory = [
         self.episodic_memory_manager.get_episodic_memory_by_id(
-            event_id, timezone_str=timezone_str, actor=self.actor
+            event_id, user=self.user, timezone_str=timezone_str
         )
         for event_id in event_ids
     ]
@@ -530,7 +537,7 @@ def check_semantic_memory(
     """
     semantic_memory = [
         self.semantic_memory_manager.get_semantic_item_by_id(
-            semantic_memory_id=id, timezone_str=timezone_str, actor=self.actor
+            semantic_memory_id=id, user=self.user, timezone_str=timezone_str
         )
         for id in semantic_item_ids
     ]
