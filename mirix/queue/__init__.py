@@ -44,6 +44,7 @@ _manager = get_manager()
 def initialize_queue(
     server=None,
     num_workers: Optional[int] = None,
+    round_robin: Optional[bool] = None,
 ) -> None:
     """
     Initialize the queue with an optional server instance.
@@ -54,7 +55,10 @@ def initialize_queue(
     Args:
         server: Server instance (e.g., SyncServer) for processing messages
         num_workers: Optional override for number of workers (memory queue only).
-                    If provided, takes precedence over MEMORY_QUEUE_NUM_WORKERS env var.
+                    Ignored when QUEUE_TYPE is 'kafka'.
+        round_robin: Optional round-robin partitioning mode (memory queue only).
+                    When True: user1->p0, user2->p1, ... (guaranteed even distribution)
+                    When False: hash-based partitioning (Kafka-like, not guaranteed even)
                     Ignored when QUEUE_TYPE is 'kafka'.
 
     Example:
@@ -62,12 +66,16 @@ def initialize_queue(
         >>> from mirix.queue import initialize_queue
         >>>
         >>> server = SyncServer()
-        >>> initialize_queue(server)  # Uses env var or default (1)
+        >>> initialize_queue(server)  # Uses settings defaults
         >>>
-        >>> # Or with explicit worker count:
-        >>> initialize_queue(server, num_workers=8)
+        >>> # Or with explicit config for benchmarks:
+        >>> initialize_queue(server, num_workers=50, round_robin=True)
     """
-    _manager.initialize(server=server, num_workers=num_workers)
+    _manager.initialize(
+        server=server,
+        num_workers=num_workers,
+        round_robin=round_robin,
+    )
     logger.info("Queue initialized with server instance")
 
 

@@ -73,7 +73,10 @@ def get_server() -> SyncServer:
     return _server
 
 
-async def initialize(num_workers: Optional[int] = None):
+async def initialize(
+    num_workers: Optional[int] = None,
+    round_robin: Optional[bool] = None,
+):
     """
     Initialize the Mirix server and queue services.
     This function can be called by external applications to initialize the server.
@@ -81,6 +84,10 @@ async def initialize(num_workers: Optional[int] = None):
     Args:
         num_workers: Optional number of queue workers. If not provided,
                     uses settings.memory_queue_num_workers.
+        round_robin: Optional round-robin partitioning mode. If not provided,
+                    uses settings.memory_queue_round_robin.
+                    When True: user1->p0, user2->p1, ... (guaranteed even distribution)
+                    When False: hash-based partitioning (Kafka-like)
     """
     logger.info("Starting Mirix REST API server")
 
@@ -88,16 +95,24 @@ async def initialize(num_workers: Optional[int] = None):
     server = get_server()
     logger.info("SyncServer initialized")
 
-    # Use provided num_workers or fall back to settings
+    # Use provided values or fall back to settings
     effective_num_workers = (
         num_workers if num_workers is not None else settings.memory_queue_num_workers
     )
+    effective_round_robin = (
+        round_robin if round_robin is not None else settings.memory_queue_round_robin
+    )
 
     # Initialize queue with server reference
-    initialize_queue(server, num_workers=effective_num_workers)
+    initialize_queue(
+        server,
+        num_workers=effective_num_workers,
+        round_robin=effective_round_robin,
+    )
     logger.info(
-        "Queue service started with SyncServer integration (num_workers=%d)",
+        "Queue service started with SyncServer integration (num_workers=%d, round_robin=%s)",
         effective_num_workers,
+        effective_round_robin,
     )
 
 

@@ -243,6 +243,10 @@ class Settings(BaseSettings):
     # Number of worker threads for in-memory queue processing
     # Each worker owns one partition, messages are routed by user_id hash
     memory_queue_num_workers: int = Field(1, env="MIRIX_MEMORY_QUEUE_NUM_WORKERS")
+    # Round-robin partitioning for even distribution (useful for benchmarks)
+    # When True: user1->p0, user2->p1, ... (guaranteed even)
+    # When False: hash(user_id) % num_partitions (Kafka-like, not guaranteed even)
+    memory_queue_round_robin: bool = Field(False, env="MIRIX_MEMORY_QUEUE_ROUND_ROBIN")
 
     # event loop parallelism
     event_loop_threadpool_max_workers: int = 43
