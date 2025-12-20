@@ -37,3 +37,4 @@ mirix.egg-info
 # macOS metadata files
 ._*
 excalidraw.log
+.persist

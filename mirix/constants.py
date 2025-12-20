@@ -251,5 +251,5 @@ LOAD_IMAGE_CONTENT_FOR_LAST_MESSAGE_ONLY = os.getenv(
     "LOAD_IMAGE_CONTENT_FOR_LAST_MESSAGE_ONLY", "false"
 ).lower() in ("true", "1", "yes")
 BUILD_EMBEDDINGS_FOR_MEMORY = os.getenv(
-    "BUILD_EMBEDDINGS_FOR_MEMORY", "true"
+    "BUILD_EMBEDDINGS_FOR_MEMORY", "false"
 ).lower() in ("true", "1", "yes")
