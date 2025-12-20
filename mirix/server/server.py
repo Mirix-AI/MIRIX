@@ -1416,7 +1416,7 @@ class SyncServer(Server):
         # Next, attempt to run the tool with the sandbox
         try:
             sandbox_run_result = ToolExecutionSandbox(
-                tool.name, tool_args, actor, tool_object=tool
+                tool_name=tool.name, args=tool_args, actor=actor, tool_object=tool
             ).run(agent_state=agent_state, additional_env_vars=tool_env_vars)
             return ToolReturnMessage(
                 id="null",

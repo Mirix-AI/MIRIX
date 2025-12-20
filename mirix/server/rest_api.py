@@ -73,21 +73,10 @@ def get_server() -> SyncServer:
     return _server
 
 
-async def initialize(
-    num_workers: Optional[int] = None,
-    round_robin: Optional[bool] = None,
-):
+async def initialize():
     """
     Initialize the Mirix server and queue services.
     This function can be called by external applications to initialize the server.
-
-    Args:
-        num_workers: Optional number of queue workers. If not provided,
-                    uses settings.memory_queue_num_workers.
-        round_robin: Optional round-robin partitioning mode. If not provided,
-                    uses settings.memory_queue_round_robin.
-                    When True: user1->p0, user2->p1, ... (guaranteed even distribution)
-                    When False: hash-based partitioning (Kafka-like)
     """
     logger.info("Starting Mirix REST API server")
 
@@ -95,25 +84,9 @@ async def initialize(
     server = get_server()
     logger.info("SyncServer initialized")
 
-    # Use provided values or fall back to settings
-    effective_num_workers = (
-        num_workers if num_workers is not None else settings.memory_queue_num_workers
-    )
-    effective_round_robin = (
-        round_robin if round_robin is not None else settings.memory_queue_round_robin
-    )
-
     # Initialize queue with server reference
-    initialize_queue(
-        server,
-        num_workers=effective_num_workers,
-        round_robin=effective_round_robin,
-    )
-    logger.info(
-        "Queue service started with SyncServer integration (num_workers=%d, round_robin=%s)",
-        effective_num_workers,
-        effective_round_robin,
-    )
+    initialize_queue(server)
+    logger.info("Queue service started with SyncServer integration")
 
 
 async def cleanup():
@@ -194,18 +167,19 @@ async def langfuse_tracing_middleware(request: Request, call_next):
     3. Sets trace context for downstream operations
     4. Clears trace context when the request completes
     """
-    from mirix.observability import get_langfuse_client, is_langfuse_enabled
-    from mirix.observability.context import set_trace_context, clear_trace_context
     import uuid
-    
+
+    from mirix.observability import get_langfuse_client, is_langfuse_enabled
+    from mirix.observability.context import clear_trace_context, set_trace_context
+
     # Skip tracing if LangFuse is disabled
     if not is_langfuse_enabled():
         return await call_next(request)
-    
+
     langfuse = get_langfuse_client()
     if not langfuse:
         return await call_next(request)
-    
+
     # Extract metadata from request
     method = request.method
     path = request.url.path
@@ -213,16 +187,16 @@ async def langfuse_tracing_middleware(request: Request, call_next):
     client_id = request.headers.get("x-client-id")
     org_id = request.headers.get("x-org-id")
     session_id = request.headers.get("x-session-id") or f"{client_id}-{uuid.uuid4().hex[:8]}"
-    
+
     # Use context manager to create a span (which creates a trace if needed)
     with langfuse.start_as_current_span(name=f"{method} {path}") as span:
         try:
             # Get the trace ID from LangFuse
             trace_id = langfuse.get_current_trace_id()
             observation_id = langfuse.get_current_observation_id()
-            
+
             logger.debug(f"LangFuse trace created: trace_id={trace_id}, path={path}")
-            
+
             # Update the trace with metadata
             langfuse.update_current_trace(
                 name=f"{method} {path}",
@@ -236,7 +210,7 @@ async def langfuse_tracing_middleware(request: Request, call_next):
                     "user_agent": request.headers.get("user-agent"),
                 },
             )
-            
+
             # Set trace context for downstream operations
             set_trace_context(
                 trace_id=trace_id,
@@ -244,10 +218,10 @@ async def langfuse_tracing_middleware(request: Request, call_next):
                 user_id=user_id or client_id,
                 session_id=session_id,
             )
-            
+
             # Process request
             response = await call_next(request)
-            
+
             # Update trace with response status
             try:
                 langfuse.update_current_trace(
@@ -257,9 +231,9 @@ async def langfuse_tracing_middleware(request: Request, call_next):
                 logger.debug(f"LangFuse trace updated: trace_id={trace_id}, status={response.status_code}")
             except Exception as e:
                 logger.debug(f"Failed to update trace: {e}")
-            
+
             return response
-            
+
         except Exception as e:
             # Log error and mark trace as failed
             try:
@@ -270,7 +244,7 @@ async def langfuse_tracing_middleware(request: Request, call_next):
             except Exception as trace_error:
                 logger.debug(f"Failed to update trace on error: {trace_error}")
             raise
-            
+
         finally:
             # Clear trace context
             clear_trace_context()
@@ -3524,20 +3498,20 @@ async def update_semantic_memory(
     """
     # Authenticate with either JWT or API key
     client, auth_type = get_client_from_jwt_or_api_key(authorization, http_request)
-    
+
     server = get_server()
-    
+
     # If user_id is not provided, use the admin user for this client
     if not user_id:
         from mirix.services.admin_user_manager import ClientAuthManager
         user_id = ClientAuthManager.get_admin_user_id_for_client(client.id)
         logger.debug("No user_id provided, using admin user: %s", user_id)
-    
+
     # Get user
     user = server.user_manager.get_user_by_id(user_id)
     if not user:
         raise HTTPException(status_code=404, detail=f"User {user_id} not found")
-    
+
     try:
         semantic_update_data = {"id": memory_id}
         if request.name is not None:
@@ -3550,6 +3524,7 @@ async def update_semantic_memory(
         updated_memory = server.semantic_memory_manager.update_item(
             item_update=SemanticMemoryItemUpdate.model_validate(semantic_update_data),
             user=user,
+            actor=client,
         )
         return {
             "success": True,
@@ -3611,20 +3586,20 @@ async def update_procedural_memory(
     """
     # Authenticate with either JWT or API key
     client, auth_type = get_client_from_jwt_or_api_key(authorization, http_request)
-    
+
     server = get_server()
-    
+
     # If user_id is not provided, use the admin user for this client
     if not user_id:
         from mirix.services.admin_user_manager import ClientAuthManager
         user_id = ClientAuthManager.get_admin_user_id_for_client(client.id)
         logger.debug("No user_id provided, using admin user: %s", user_id)
-    
+
     # Get user
     user = server.user_manager.get_user_by_id(user_id)
     if not user:
         raise HTTPException(status_code=404, detail=f"User {user_id} not found")
-    
+
     try:
         procedural_update_data = {"id": memory_id}
         if request.summary is not None:
@@ -3637,6 +3612,7 @@ async def update_procedural_memory(
                 procedural_update_data
             ),
             user=user,
+            actor=client,
         )
         return {
             "success": True,
@@ -3698,20 +3674,20 @@ async def update_resource_memory(
     """
     # Authenticate with either JWT or API key
     client, auth_type = get_client_from_jwt_or_api_key(authorization, http_request)
-    
+
     server = get_server()
-    
+
     # If user_id is not provided, use the admin user for this client
     if not user_id:
         from mirix.services.admin_user_manager import ClientAuthManager
         user_id = ClientAuthManager.get_admin_user_id_for_client(client.id)
         logger.debug("No user_id provided, using admin user: %s", user_id)
-    
+
     # Get user
     user = server.user_manager.get_user_by_id(user_id)
     if not user:
         raise HTTPException(status_code=404, detail=f"User {user_id} not found")
-    
+
     try:
         resource_update_data = {"id": memory_id}
         if request.title is not None:
@@ -3724,6 +3700,7 @@ async def update_resource_memory(
         updated_memory = server.resource_memory_manager.update_item(
             item_update=ResourceMemoryItemUpdate.model_validate(resource_update_data),
             user=user,
+            actor=client,
         )
         return {
             "success": True,

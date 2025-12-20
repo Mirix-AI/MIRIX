@@ -21,9 +21,9 @@ if TYPE_CHECKING:
         Execution = Any  # type: ignore
         Sandbox = Any  # type: ignore
 from mirix.schemas.agent import AgentState
+from mirix.schemas.client import Client
 from mirix.schemas.sandbox_config import SandboxConfig, SandboxRunResult, SandboxType
 from mirix.schemas.tool import Tool
-from mirix.schemas.user import User
 from mirix.services.tool_manager import ToolManager
 from mirix.settings import tool_settings
 from mirix.utils import get_friendly_error_msg
@@ -52,13 +52,13 @@ class ToolExecutionSandbox:
         self,
         tool_name: str,
         args: dict,
-        user: User,
+        actor: Client,
         force_recreate=True,
         tool_object: Optional[Tool] = None,
     ):
         self.tool_name = tool_name
         self.args = args
-        self.user = user
+        self.actor = actor
 
         # If a tool object is provided, we use it directly, otherwise pull via name
         if tool_object is not None:
@@ -68,11 +68,11 @@ class ToolExecutionSandbox:
             # TODO: So in theory, it's possible this retrieves a tool not provisioned to the agent
             # TODO: That would probably imply that agent_state is incorrectly configured
             self.tool = ToolManager().get_tool_by_name(
-                tool_name=tool_name, actor=self.user
+                tool_name=tool_name, actor=self.actor
             )
             if not self.tool:
                 raise ValueError(
-                    f"Agent attempted to invoke tool {self.tool_name} that does not exist for organization {self.user.organization_id}"
+                    f"Agent attempted to invoke tool {self.tool_name} that does not exist for organization {self.actor.organization_id}"
                 )
 
         self.force_recreate = force_recreate
@@ -133,14 +133,14 @@ class ToolExecutionSandbox:
         additional_env_vars: Optional[Dict] = None,
     ) -> SandboxRunResult:
         sbx_config = self.sandbox_config_manager.get_or_create_default_sandbox_config(
-            sandbox_type=SandboxType.LOCAL, actor=self.user
+            sandbox_type=SandboxType.LOCAL, actor=self.actor
         )
         local_configs = sbx_config.get_local_config()
 
         # Get environment variables for the sandbox
         env = os.environ.copy()
         env_vars = self.sandbox_config_manager.get_sandbox_env_vars_as_dict(
-            sandbox_config_id=sbx_config.id, actor=self.user, limit=100
+            sandbox_config_id=sbx_config.id, actor=self.actor, limit=100
         )
         env.update(env_vars)
 
@@ -324,9 +324,10 @@ class ToolExecutionSandbox:
         marker_len = len(self.LOCAL_SANDBOX_RESULT_START_MARKER)
         start_index = text.index(self.LOCAL_SANDBOX_RESULT_START_MARKER) + marker_len
         end_index = text.index(self.LOCAL_SANDBOX_RESULT_END_MARKER)
-        return text[start_index:end_index], text[: start_index - marker_len] + text[
-            end_index + +marker_len :
-        ]
+        return (
+            text[start_index:end_index],
+            text[: start_index - marker_len] + text[end_index + +marker_len :],
+        )
 
     def create_venv_for_local_sandbox(
         self, sandbox_dir_path: str, venv_path: str, env: Dict[str, str]
@@ -373,7 +374,7 @@ class ToolExecutionSandbox:
         additional_env_vars: Optional[Dict] = None,
     ) -> SandboxRunResult:
         sbx_config = self.sandbox_config_manager.get_or_create_default_sandbox_config(
-            sandbox_type=SandboxType.E2B, actor=self.user
+            sandbox_type=SandboxType.E2B, actor=self.actor
         )
         sbx = self.get_running_e2b_sandbox_with_same_state(sbx_config)
         if not sbx or self.force_recreate:
@@ -394,7 +395,7 @@ class ToolExecutionSandbox:
         # Get environment variables for the sandbox
         # TODO: We set limit to 100 here, but maybe we want it uncapped? Realistically this should be fine.
         env_vars = self.sandbox_config_manager.get_sandbox_env_vars_as_dict(
-            sandbox_config_id=sbx_config.id, actor=self.user, limit=100
+            sandbox_config_id=sbx_config.id, actor=self.actor, limit=100
         )
         # Get environment variables for this agent specifically
         if agent_state:

@@ -215,6 +215,7 @@ def make_post_request(
         printd(error_message)
         raise Exception(error_message) from e
 
+
 def calculate_summarizer_cutoff(
     in_context_messages: List[Message],
     token_counts: List[int],
@@ -254,6 +255,8 @@ def calculate_summarizer_cutoff(
                 msg["role"] not in ["user", "tool", "function"]
                 and tokens_so_far >= desired_token_count_to_summarize
             ):
+                # The intent of this code is to break on an assistant message boundary,
+                # so that we don't summarize in the middle of a back and forth turn.
                 # Break if the role is NOT a user or tool/function and tokens_so_far is enough
                 break
             elif (
@@ -266,8 +269,13 @@ def calculate_summarizer_cutoff(
                     f"Breaking summary cutoff early on role={msg['role']} because we hit the `keep_last_n_messages`={summarizer_settings.keep_last_n_messages}"
                 )
                 break
-
-        while in_context_messages_openai[cutoff + 1]["role"] == MessageRole.tool:
+        # If the next message is a tool call result, then include it in the set of messages to summarize as well.
+        # The intent of this code is so that tool calls and their results stay together. They are either both summarized
+        # or neither is.
+        while (
+            cutoff + 1 < len(in_context_messages_openai)
+            and in_context_messages_openai[cutoff + 1]["role"] == MessageRole.tool
+        ):
             cutoff += 1
 
         logger.debug("Evicting %s/%s messages...", cutoff, len(in_context_messages))

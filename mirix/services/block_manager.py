@@ -2,16 +2,16 @@ import os
 from typing import List, Optional
 
 from mirix.log import get_logger
+from mirix.orm import user
 from mirix.orm.block import Block as BlockModel
+from mirix.orm.enums import AccessType
 from mirix.orm.errors import NoResultFound
-from mirix.schemas.block import Block, BlockUpdate, Human, Persona
+from mirix.schemas.block import Block
 from mirix.schemas.block import Block as PydanticBlock
+from mirix.schemas.block import BlockUpdate, Human, Persona
 from mirix.schemas.client import Client as PydanticClient
 from mirix.schemas.user import User as PydanticUser
 from mirix.utils import enforce_types, list_human_files, list_persona_files
-
-from mirix.orm import user
-from mirix.orm.enums import AccessType
 
 logger = get_logger(__name__)
 
@@ -74,28 +74,28 @@ class BlockManager:
         try:
             from mirix.database.redis_client import get_redis_client
             redis_client = get_redis_client()
-            
+
             if redis_client:
                 # Get all agent IDs that reference this block
                 reverse_key = f"{redis_client.BLOCK_PREFIX}{block_id}:agents"
                 agent_ids = redis_client.client.smembers(reverse_key)
-                
+
                 if agent_ids:
                     logger.debug("Invalidating %s agent caches due to block %s change", len(agent_ids), block_id)
-                    
+
                     # Delete each agent's cache
                     for agent_id in agent_ids:
                         agent_key = f"{redis_client.AGENT_PREFIX}{agent_id.decode() if isinstance(agent_id, bytes) else agent_id}"
                         redis_client.delete(agent_key)
-                    
+
                     # Clean up the reverse mapping
                     redis_client.delete(reverse_key)
-                    
+
                     logger.debug("✅ Invalidated %s agent caches for block %s", len(agent_ids), block_id)
         except Exception as e:
             # Log but don't fail the operation if cache invalidation fails
             logger.warning("Failed to invalidate agent caches for block %s: %s", block_id, e)
-    
+
     def update_block(
         self, 
         block_id: str, 
@@ -120,16 +120,16 @@ class BlockManager:
 
             for key, value in update_data.items():
                 setattr(block, key, value)
-            
+
             # Update user_id if provided (allows changing ownership)
             if user is not None:
                 block.user_id = user.id
 
             block.update_with_redis(db_session=session, actor=actor)  # ⭐ Use Redis integration
-            
+
             # ⭐ Invalidate agent caches that reference this block
             self._invalidate_agent_caches_for_block(block_id)
-            
+
             return block.to_pydantic()
 
     @enforce_types
@@ -143,10 +143,10 @@ class BlockManager:
             if redis_client:
                 redis_key = f"{redis_client.BLOCK_PREFIX}{block_id}"
                 redis_client.delete(redis_key)
-            
+
             # ⭐ Invalidate agent caches that reference this block
             self._invalidate_agent_caches_for_block(block_id)
-            
+
             block.hard_delete(db_session=session, actor=actor)
             return block.to_pydantic()
 
@@ -209,7 +209,7 @@ class BlockManager:
                 )
 
             return [block.to_pydantic() for block in blocks]
-    
+
     def _copy_blocks_from_default_user(
         self,
         session,
@@ -234,7 +234,7 @@ class BlockManager:
         """
         from mirix.services.user_manager import UserManager
         from mirix.utils import generate_unique_short_id
-        
+
         # ✅ NEW: Get the organization-specific default user
         # This ensures we copy blocks from the correct template within the same organization
         user_manager = UserManager()
@@ -256,7 +256,7 @@ class BlockManager:
                 "Failed to get org default user, falling back to global admin: %s", e
             )
             default_user_id = UserManager.ADMIN_USER_ID
-        
+
         # Find default user's blocks for this agent
         default_blocks = BlockModel.list(
             db_session=session,
@@ -265,7 +265,7 @@ class BlockManager:
             organization_id=organization_id,
             limit=100  # Core memory typically has 2-10 blocks
         )
-        
+
         logger.debug(
             "Found %d default template blocks for agent %s (user_id=%s, org_id=%s)",
             len(default_blocks),
@@ -273,7 +273,7 @@ class BlockManager:
             default_user_id,
             organization_id
         )
-        
+
         if not default_blocks:
             logger.warning(
                 "No default template blocks found for agent %s. User %s will have no blocks.",
@@ -281,7 +281,7 @@ class BlockManager:
                 target_user.id
             )
             return []
-        
+
         # Create copies for the target user
         new_blocks = []
         logger.debug(
@@ -290,20 +290,20 @@ class BlockManager:
             target_user.id,
             agent_id
         )
-        
+
         for template_block in default_blocks:
             logger.debug(
                 "Copying block %s (label=%s) from template user",
                 template_block.id,
                 template_block.label
             )
-            
+
             try:
                 # Generate new unique ID using Block schema's standard ID generator
                 from mirix.schemas.block import Block as PydanticBlock
                 new_block_id = PydanticBlock._generate_id()
                 logger.debug(f"Generated new block ID: {new_block_id}")
-                
+
                 # Create copy with user's ID
                 new_block = BlockModel(
                     id=new_block_id,
@@ -317,26 +317,26 @@ class BlockManager:
                     last_updated_by_id=target_user.id
                 )
                 logger.debug(f"Created BlockModel instance for {new_block_id}")
-                
+
                 # Save to database (directly to session, not via create_with_redis to avoid nested context manager issues)
                 session.add(new_block)
                 logger.debug(f"Added block {new_block_id} to session")
-                
+
                 session.commit()
                 logger.debug(f"Committed block {new_block_id} to database")
-                
+
                 session.refresh(new_block)
                 logger.debug(f"Refreshed block {new_block_id} from database")
-                
+
                 # Update Redis cache manually
                 try:
                     new_block._update_redis_cache(operation="create", actor=None)
                     logger.debug(f"Cached copied block {new_block.id} to Redis")
                 except Exception as e:
                     logger.warning(f"Failed to cache block {new_block.id} to Redis: {e}")
-                
+
                 new_blocks.append(new_block)
-                
+
                 logger.debug(
                     "Created block %s (label=%s) for user %s from default template %s",
                     new_block.id,
@@ -355,14 +355,14 @@ class BlockManager:
                 session.rollback()
                 # Continue with next block instead of failing completely
                 continue
-        
+
         logger.info(
             "✅ Created %d blocks for user %s from default user template (agent=%s)",
             len(new_blocks),
             target_user.id,
             agent_id
         )
-        
+
         return new_blocks
 
     @enforce_types
@@ -374,7 +374,7 @@ class BlockManager:
         try:
             from mirix.database.redis_client import get_redis_client
             redis_client = get_redis_client()
-            
+
             if redis_client:
                 redis_key = f"{redis_client.BLOCK_PREFIX}{block_id}"
                 cached_data = redis_client.get_hash(redis_key)
@@ -387,15 +387,18 @@ class BlockManager:
         except Exception as e:
             # Log but continue to PostgreSQL on Redis error
             logger.warning("Redis cache read failed for block %s: %s", block_id, e)
-        
+
         # Cache MISS or Redis unavailable - fetch from PostgreSQL
         with self.session_maker() as session:
             try:
                 block = BlockModel.read(
-                    db_session=session, identifier=block_id, actor=user, user=user, access_type=AccessType.USER
+                    db_session=session,
+                    identifier=block_id,
+                    user=user,
+                    access_type=AccessType.USER,
                 )
                 pydantic_block = block.to_pydantic()
-                
+
                 # Populate Redis cache for next time
                 try:
                     if redis_client:
@@ -406,7 +409,7 @@ class BlockManager:
                 except Exception as e:
                     # Log but don't fail on cache population error
                     logger.warning("Failed to populate Redis cache for block %s: %s", block_id, e)
-                
+
                 return pydantic_block
             except NoResultFound:
                 return None
@@ -433,32 +436,32 @@ class BlockManager:
             Number of records soft deleted
         """
         from mirix.database.redis_client import get_redis_client
-        
+
         with self.session_maker() as session:
             # Query all non-deleted records for this user
             blocks = session.query(BlockModel).filter(
                 BlockModel.user_id == user_id,
                 BlockModel.is_deleted == False
             ).all()
-            
+
             count = len(blocks)
             if count == 0:
                 return 0
-            
+
             # Extract IDs BEFORE committing (to avoid detached instance errors)
             block_ids = [block.id for block in blocks]
-            
+
             # Soft delete from database (set is_deleted = True directly, don't call block.delete())
             for block in blocks:
                 block.is_deleted = True
                 block.set_updated_at()
-            
+
             session.commit()
-        
+
         # Invalidate agent caches and update Redis (outside session)
         for block_id in block_ids:
             self._invalidate_agent_caches_for_block(block_id)
-        
+
         redis_client = get_redis_client()
         if redis_client:
             for block_id in block_ids:
@@ -468,7 +471,7 @@ class BlockManager:
                 except Exception:
                     # If update fails, remove from cache
                     redis_client.delete(redis_key)
-        
+
         return count
 
     def delete_by_user_id(self, user_id: str) -> int:
@@ -483,39 +486,39 @@ class BlockManager:
             Number of records deleted
         """
         from mirix.database.redis_client import get_redis_client
-        
+
         with self.session_maker() as session:
             # Get IDs for Redis cleanup (only fetch IDs, not full objects)
             block_ids = [row[0] for row in session.query(BlockModel.id).filter(
                 BlockModel.user_id == user_id
             ).all()]
-            
+
             count = len(block_ids)
             if count == 0:
                 return 0
-            
+
             # Invalidate agent caches that reference these blocks (before deletion)
             for block_id in block_ids:
                 self._invalidate_agent_caches_for_block(block_id)
-            
+
             # Bulk delete in single query
             session.query(BlockModel).filter(
                 BlockModel.user_id == user_id
             ).delete(synchronize_session=False)
-            
+
             session.commit()
-        
+
         # Batch delete from Redis cache (outside of session context)
         redis_client = get_redis_client()
         if redis_client and block_ids:
             redis_keys = [f"{redis_client.BLOCK_PREFIX}{block_id}" for block_id in block_ids]
-            
+
             # Delete in batches to avoid command size limits
             BATCH_SIZE = 1000
             for i in range(0, len(redis_keys), BATCH_SIZE):
                 batch = redis_keys[i:i + BATCH_SIZE]
                 redis_client.client.delete(*batch)
-        
+
         return count
 
     @enforce_types
@@ -531,7 +534,7 @@ class BlockManager:
         if user is None:
             from mirix.services.user_manager import UserManager
             user = UserManager().get_admin_user()
-        
+
         for persona_file in list_persona_files():
             text = open(persona_file, "r", encoding="utf-8").read()
             name = os.path.basename(persona_file).replace(".txt", "")
