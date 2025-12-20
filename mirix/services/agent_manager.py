@@ -1811,21 +1811,9 @@ class AgentManager:
         user: Optional[PydanticUser] = None,
     ) -> List[PydanticMessage]:
         message_ids = agent_state.message_ids
-        
-        # DEBUG: Trace message retrieval
-        print(f"🔍 DEBUG get_in_context_messages: agent={agent_state.name}, message_ids={message_ids}")
-        print(f"🔍 DEBUG get_in_context_messages: actor.id={actor.id}, actor.org_id={actor.organization_id}")
-        
         messages = self.message_manager.get_messages_by_ids(
             message_ids=message_ids, actor=actor
         )
-        
-        # DEBUG: After retrieval
-        print(f"🔍 DEBUG get_in_context_messages: retrieved {len(messages)} messages from {len(message_ids) if message_ids else 0} message_ids")
-        for i, msg in enumerate(messages[:3]):  # Show first 3
-            print(f"🔍 DEBUG get_in_context_messages: msg[{i}] id={msg.id}, role={msg.role}, org_id={msg.organization_id}, user_id={msg.user_id}, content_len={len(msg.content) if msg.content else 0}")
-        # END DEBUG
-        
         # Handle empty message list (e.g., after deletion)
         if not messages:
             return []

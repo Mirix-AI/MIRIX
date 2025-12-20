@@ -2315,27 +2315,6 @@ These keywords have been used to retrieve relevant memories from the database.
                 agent_state=self.agent_state, actor=self.actor, user=self.user
             )
 
-            # DEBUG: Trace message retrieval issue
-            print(f"🔍 DEBUG inner_step: agent={self.agent_state.name}")
-            print(
-                f"🔍 DEBUG inner_step: message_ids on agent_state={self.agent_state.message_ids}"
-            )
-            print(
-                f"🔍 DEBUG inner_step: actor.id={self.actor.id if self.actor else None}, actor.org_id={self.actor.organization_id if self.actor else None}"
-            )
-            print(
-                f"🔍 DEBUG inner_step: user.id={self.user.id if self.user else None}, user.org_id={self.user.organization_id if self.user else None}"
-            )
-            print(f"🔍 DEBUG inner_step: retrieved {len(in_context_messages)} messages")
-            if in_context_messages:
-                msg0 = in_context_messages[0]
-                print(
-                    f"🔍 DEBUG inner_step: first msg role={msg0.role}, content={msg0.content}, content_len={len(msg0.content) if msg0.content else 0}"
-                )
-            else:
-                print(f"🔍 DEBUG inner_step: NO MESSAGES RETRIEVED!")
-            # END DEBUG
-
             assert in_context_messages[0].role == MessageRole.system
             raw_system = in_context_messages[0].content[0].text
 
