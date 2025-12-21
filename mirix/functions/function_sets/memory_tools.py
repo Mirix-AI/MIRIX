@@ -5,6 +5,9 @@ from copy import deepcopy
 from typing import List, Optional
 
 from mirix.agent import Agent, AgentState
+from mirix.log import get_logger
+
+logger = get_logger(__name__)
 from mirix.schemas.episodic_memory import EpisodicEventForLLM
 from mirix.schemas.knowledge_vault import KnowledgeVaultItemBase
 from mirix.schemas.mirix_message_content import TextContent
@@ -122,6 +125,21 @@ def episodic_memory_insert(self: "Agent", items: List[EpisodicEventForLLM]):
         self, "occurred_at", None
     )  # Optional timestamp override from API
 
+    # DEBUG: Log how many items are being inserted and their summaries
+    logger.debug(
+        "episodic_memory_insert called with %d items for user_id=%s: %s",
+        len(items),
+        user_id,
+        [
+            (
+                item.get("summary", "")[:80] + "..."
+                if len(item.get("summary", "")) > 80
+                else item.get("summary", "")
+            )
+            for item in items
+        ],
+    )
+
     for item in items:
         # Use occurred_at_override if provided, otherwise use LLM-extracted timestamp
         timestamp = (
@@ -134,6 +152,16 @@ def episodic_memory_insert(self: "Agent", items: List[EpisodicEventForLLM]):
 
             timestamp = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
 
+        logger.debug(
+            "Inserting event: type=%s, actor=%s, summary='%s'",
+            item["event_type"],
+            item["actor"],
+            (
+                item["summary"][:60] + "..."
+                if len(item["summary"]) > 60
+                else item["summary"]
+            ),
+        )
         self.episodic_memory_manager.insert_event(
             actor=self.actor,
             agent_state=self.agent_state,
@@ -148,6 +176,8 @@ def episodic_memory_insert(self: "Agent", items: List[EpisodicEventForLLM]):
             use_cache=use_cache,
             user_id=user_id,
         )
+
+    logger.info("✅ episodic_memory_insert completed: %d events inserted", len(items))
     response = "Events inserted! Now you need to check if there are repeated events shown in the system prompt."
     return response
 
