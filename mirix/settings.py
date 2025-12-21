@@ -266,6 +266,17 @@ class Settings(BaseSettings):
     httpx_max_keepalive_connections: int = 500
     httpx_keepalive_expiry: float = 120.0
 
+    # LLM retry settings (for agent-level retries on transient errors)
+    llm_retry_limit: int = Field(
+        3, env="MIRIX_LLM_RETRY_LIMIT"
+    )  # Max retry attempts for LLM calls
+    llm_retry_backoff_factor: float = Field(
+        0.5, env="MIRIX_LLM_RETRY_BACKOFF_FACTOR"
+    )  # Exponential backoff multiplier
+    llm_retry_max_delay: float = Field(
+        10.0, env="MIRIX_LLM_RETRY_MAX_DELAY"
+    )  # Max delay between retries (seconds)
+
     # cron job parameters
     enable_batch_job_polling: bool = False
     poll_running_llm_batches_interval_seconds: int = 5 * 60

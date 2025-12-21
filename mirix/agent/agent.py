@@ -81,7 +81,7 @@ from mirix.services.resource_memory_manager import ResourceMemoryManager
 from mirix.services.semantic_memory_manager import SemanticMemoryManager
 from mirix.services.step_manager import StepManager
 from mirix.services.tool_execution_sandbox import ToolExecutionSandbox
-from mirix.settings import summarizer_settings
+from mirix.settings import settings, summarizer_settings
 from mirix.system import (
     get_contine_chaining,
     get_token_limit_warning,
@@ -522,9 +522,13 @@ class Agent(BaseAgent):
         function_call: Optional[str] = None,
         first_message: bool = False,
         stream: bool = False,  # TODO move to config?
-        empty_response_retry_limit: int = 3,
-        backoff_factor: float = 0.5,  # delay multiplier for exponential backoff
-        max_delay: float = 10.0,  # max delay between retries
+        empty_response_retry_limit: Optional[
+            int
+        ] = None,  # Uses settings.llm_retry_limit if None
+        backoff_factor: Optional[
+            float
+        ] = None,  # Uses settings.llm_retry_backoff_factor if None
+        max_delay: Optional[float] = None,  # Uses settings.llm_retry_max_delay if None
         step_count: Optional[int] = None,
         last_function_failed: bool = False,
         get_input_data_for_debugging: bool = False,
@@ -532,7 +536,21 @@ class Agent(BaseAgent):
         second_try: bool = False,
         llm_client: Optional[LLMClient] = None,
     ) -> ChatCompletionResponse:
-        """Get response from LLM API with robust retry mechanism."""
+        """Get response from LLM API with robust retry mechanism.
+
+        Retry settings can be configured via environment variables:
+        - MIRIX_LLM_RETRY_LIMIT: Max retry attempts (default: 3)
+        - MIRIX_LLM_RETRY_BACKOFF_FACTOR: Exponential backoff multiplier (default: 0.5)
+        - MIRIX_LLM_RETRY_MAX_DELAY: Max delay between retries in seconds (default: 10.0)
+        """
+        # Apply defaults from settings if not explicitly provided
+        if empty_response_retry_limit is None:
+            empty_response_retry_limit = settings.llm_retry_limit
+        if backoff_factor is None:
+            backoff_factor = settings.llm_retry_backoff_factor
+        if max_delay is None:
+            max_delay = settings.llm_retry_max_delay
+
         log_telemetry(self.logger, "_get_ai_reply start")
         allowed_tool_names = self.tool_rules_solver.get_allowed_tool_names(
             last_function_response=self.last_function_response

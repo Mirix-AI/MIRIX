@@ -454,10 +454,27 @@ class OpenAIClient(LLMClientBase):
                 details=e.body,
             )
 
-        # General API error catch-all
+        # 424 Failed Dependency - external service timeout (e.g., model couldn't respond in time)
+        # Note: OpenAI SDK doesn't have a specific exception class for 424, so we check status_code
+        # This is a somewhat non-standard error code, but some openai compatible wrapper endpoints use
+        # it.
+        if isinstance(e, openai.APIStatusError) and e.status_code == 424:
+            logger.warning(
+                "[OpenAI] Dependency timeout. Consider backoff. (424): %s", str(e)
+            )
+            return LLMServerError(
+                message=f"External service dependency timeout: {str(e)}",
+                code=ErrorCode.DEPENDENCY_TIMEOUT,
+                details={
+                    "status_code": e.status_code,
+                    "response": str(e.response),
+                    "body": e.body,
+                },
+            )
+
+        # General API error catch-all for other status codes
         if isinstance(e, openai.APIStatusError):
             logger.warning("[OpenAI] API status error (%s): %s", e.status_code, str(e))
-            # Map based on status code potentially
             if e.status_code >= 500:
                 error_cls = LLMServerError
                 error_code = ErrorCode.INTERNAL_SERVER_ERROR
