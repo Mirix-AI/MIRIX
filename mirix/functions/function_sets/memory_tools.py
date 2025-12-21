@@ -5,12 +5,15 @@ from copy import deepcopy
 from typing import List, Optional
 
 from mirix.agent import Agent, AgentState
+from mirix.log import get_logger
 from mirix.schemas.episodic_memory import EpisodicEventForLLM
 from mirix.schemas.knowledge_vault import KnowledgeVaultItemBase
 from mirix.schemas.mirix_message_content import TextContent
 from mirix.schemas.procedural_memory import ProceduralMemoryItemBase
 from mirix.schemas.resource_memory import ResourceMemoryItemBase
 from mirix.schemas.semantic_memory import SemanticMemoryItemBase
+
+logger = get_logger(__name__)
 
 
 def core_memory_append(
@@ -926,6 +929,18 @@ def trigger_memory_update(
     if not isinstance(user_message, dict):
         raise TypeError(
             f"user_message must be a dictionary, got {type(user_message).__name__}: {user_message}"
+        )
+
+    # De-duplicate memory types while preserving order.
+    # The MetaMemoryAgent (LLM) can occasionally emit duplicates (e.g., ["semantic", "semantic"]).
+    # Running duplicates in parallel can cause races (e.g., double-deletes).
+    original_memory_types = list(memory_types)
+    memory_types = list(dict.fromkeys(memory_types))
+    if len(memory_types) != len(original_memory_types):
+        logger.debug(
+            "De-duplicated trigger_memory_update memory_types: %s -> %s",
+            original_memory_types,
+            memory_types,
         )
 
     # Map memory types to agent classes
