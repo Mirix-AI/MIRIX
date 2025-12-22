@@ -672,18 +672,26 @@ class Agent(BaseAgent):
                 log_telemetry(self.logger, "_handle_ai_response finish")
 
             except ValueError as ve:
+                # Some upstream libraries raise ValueError() with an empty message, which
+                # makes retry logs unhelpful. Always include type + repr for visibility.
+                ve_desc = f"{type(ve).__name__}: {ve!r}"
                 if attempt >= empty_response_retry_limit:
                     printv(
-                        f"[Mirix.Agent.{self.agent_state.name}] ERROR: Retry limit reached. Final error: {ve}"
+                        f"[Mirix.Agent.{self.agent_state.name}] ERROR: Retry limit reached. Final error: {ve_desc}"
                     )
                     log_telemetry(self.logger, "_handle_ai_response finish ValueError")
+                    # Log traceback once at the final attempt for actionable debugging.
+                    self.logger.exception(
+                        "[Mirix.Agent.%s] Retry limit reached (ValueError).",
+                        self.agent_state.name,
+                    )
                     raise Exception(
-                        f"Retries exhausted and no valid response received. Final error: {ve}"
+                        f"Retries exhausted and no valid response received. Final error: {ve_desc}"
                     )
                 else:
                     delay = min(backoff_factor * (2 ** (attempt - 1)), max_delay)
                     printv(
-                        f"[Mirix.Agent.{self.agent_state.name}] WARNING: Attempt {attempt} failed: {ve}. Retrying in {delay} seconds..."
+                        f"[Mirix.Agent.{self.agent_state.name}] WARNING: Attempt {attempt} failed: {ve_desc}. Retrying in {delay} seconds..."
                     )
                     time.sleep(delay)
                     continue
@@ -691,34 +699,44 @@ class Agent(BaseAgent):
             except KeyError as ke:
                 # Gemini api sometimes can yield empty response
                 # This is a retryable error
+                ke_desc = f"{type(ke).__name__}: {ke!r}"
                 if attempt >= empty_response_retry_limit:
                     printv(
-                        f"[Mirix.Agent.{self.agent_state.name}] ERROR: Retry limit reached. Final error: {ke}"
+                        f"[Mirix.Agent.{self.agent_state.name}] ERROR: Retry limit reached. Final error: {ke_desc}"
                     )
                     log_telemetry(self.logger, "_handle_ai_response finish KeyError")
+                    self.logger.exception(
+                        "[Mirix.Agent.%s] Retry limit reached (KeyError).",
+                        self.agent_state.name,
+                    )
                     raise Exception(
-                        f"Retries exhausted and no valid response received. Final error: {ke}"
+                        f"Retries exhausted and no valid response received. Final error: {ke_desc}"
                     )
                 else:
                     delay = min(backoff_factor * (2 ** (attempt - 1)), max_delay)
                     printv(
-                        f"[Mirix.Agent.{self.agent_state.name}] WARNING: Attempt {attempt} failed: {ke}. Retrying in {delay} seconds..."
+                        f"[Mirix.Agent.{self.agent_state.name}] WARNING: Attempt {attempt} failed: {ke_desc}. Retrying in {delay} seconds..."
                     )
                     time.sleep(delay)
                     continue
 
             except LLMError as llm_error:
+                llm_error_desc = f"{type(llm_error).__name__}: {llm_error!r}"
                 if attempt >= empty_response_retry_limit:
                     printv(
-                        f"[Mirix.Agent.{self.agent_state.name}] ERROR: Retry limit reached. Final error: {llm_error}"
+                        f"[Mirix.Agent.{self.agent_state.name}] ERROR: Retry limit reached. Final error: {llm_error_desc}"
                     )
                     log_telemetry(self.logger, "_handle_ai_response finish LLMError")
                     log_telemetry(
                         self.logger, "_get_ai_reply_last_message_hacking start"
                     )
+                    self.logger.exception(
+                        "[Mirix.Agent.%s] Retry limit reached (LLMError).",
+                        self.agent_state.name,
+                    )
                     if second_try:
                         raise Exception(
-                            f"Retries exhausted and no valid response received. Final error: {llm_error}"
+                            f"Retries exhausted and no valid response received. Final error: {llm_error_desc}"
                         )
                     return self._get_ai_reply(
                         [message_sequence[-1]],
@@ -738,41 +756,52 @@ class Agent(BaseAgent):
                 else:
                     delay = min(backoff_factor * (2 ** (attempt - 1)), max_delay)
                     printv(
-                        f"[Mirix.Agent.{self.agent_state.name}] WARNING: Attempt {attempt} failed: {llm_error}. Retrying in {delay} seconds..."
+                        f"[Mirix.Agent.{self.agent_state.name}] WARNING: Attempt {attempt} failed: {llm_error_desc}. Retrying in {delay} seconds..."
                     )
                     time.sleep(delay)
                     continue
 
             except AssertionError as ae:
+                ae_desc = f"{type(ae).__name__}: {ae!r}"
                 if attempt >= empty_response_retry_limit:
                     printv(
-                        f"[Mirix.Agent.{self.agent_state.name}] ERROR: Retry limit reached. Final error: {ae}"
+                        f"[Mirix.Agent.{self.agent_state.name}] ERROR: Retry limit reached. Final error: {ae_desc}"
+                    )
+                    self.logger.exception(
+                        "[Mirix.Agent.%s] Retry limit reached (AssertionError).",
+                        self.agent_state.name,
                     )
                     raise Exception(
-                        f"Retries exhausted and no valid response received. Final error: {ae}"
+                        f"Retries exhausted and no valid response received. Final error: {ae_desc}"
                     )
                 else:
                     delay = min(backoff_factor * (2 ** (attempt - 1)), max_delay)
                     printv(
-                        f"[Mirix.Agent.{self.agent_state.name}] WARNING: Attempt {attempt} failed: {ae}. Retrying in {delay} seconds..."
+                        f"[Mirix.Agent.{self.agent_state.name}] WARNING: Attempt {attempt} failed: {ae_desc}. Retrying in {delay} seconds..."
                     )
                     time.sleep(delay)
                     continue
 
             except requests.exceptions.HTTPError as he:
+                he_desc = f"{type(he).__name__}: {he!r}"
                 if attempt >= empty_response_retry_limit:
                     printv(
-                        f"[Mirix.Agent.{self.agent_state.name}] ERROR: Retry limit reached. Final error: {he}"
+                        f"[Mirix.Agent.{self.agent_state.name}] ERROR: Retry limit reached. Final error: {he_desc}"
+                    )
+                    self.logger.exception(
+                        "[Mirix.Agent.%s] Retry limit reached (HTTPError).",
+                        self.agent_state.name,
                     )
                     raise Exception(
-                        f"Retries exhausted and no valid response received. Final error: {he}"
+                        f"Retries exhausted and no valid response received. Final error: {he_desc}"
                     )
                 else:
                     delay = min(backoff_factor * (2 ** (attempt - 1)), max_delay)
                     printv(
-                        f"[Mirix.Agent.{self.agent_state.name}] WARNING: Attempt {attempt} failed: {he}. Retrying in {delay} seconds..."
+                        f"[Mirix.Agent.{self.agent_state.name}] WARNING: Attempt {attempt} failed: {he_desc}. Retrying in {delay} seconds..."
                     )
                     time.sleep(delay)
+                    continue
 
             except Exception as e:
                 log_telemetry(
@@ -846,6 +875,43 @@ class Agent(BaseAgent):
             else:
                 for tool_call in response_message.tool_calls:
                     assert tool_call.id is not None  # should be defined
+
+            # Memory agents are instructed to emit only ONE tool call per step.
+            # In practice, the LLM can occasionally return multiple tool calls (often duplicates),
+            # which can cause non-idempotent operations to fail (e.g., double deletes).
+            # To match the prompt contract and keep behavior predictable, truncate to the first.
+            from mirix.schemas.agent import AgentType
+
+            memory_agent_types = {
+                AgentType.core_memory_agent,
+                AgentType.episodic_memory_agent,
+                AgentType.procedural_memory_agent,
+                AgentType.resource_memory_agent,
+                AgentType.knowledge_vault_memory_agent,
+                AgentType.semantic_memory_agent,
+            }
+
+            if (
+                self.agent_state.agent_type in memory_agent_types
+                and response_message.tool_calls is not None
+                and len(response_message.tool_calls) > 1
+            ):
+                kept = response_message.tool_calls[0]
+                dropped = response_message.tool_calls[1:]
+                dropped_desc = [
+                    f"{tc.function.name}:{tc.id}"
+                    for tc in dropped
+                    if tc and tc.function
+                ]
+                self.logger.warning(
+                    "Truncating %d extra tool call(s) for memory agent %s (keeping %s:%s, dropping %s)",
+                    len(dropped),
+                    self.agent_state.agent_type,
+                    kept.function.name if kept and kept.function else None,
+                    kept.id if kept else None,
+                    dropped_desc,
+                )
+                response_message.tool_calls = [kept]
 
             # role: assistant (requesting tool call, set tool call ID)
             messages.append(
