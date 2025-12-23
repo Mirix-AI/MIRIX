@@ -762,7 +762,8 @@ class Agent(BaseAgent):
                     continue
 
             except AssertionError as ae:
-                ae_desc = f"{type(ae).__name__}: {ae!r}"
+                tb_str = traceback.format_exc()
+                ae_desc = f"{type(ae).__name__}: {ae!r}\nTraceback:\n{tb_str}"
                 if attempt >= empty_response_retry_limit:
                     printv(
                         f"[Mirix.Agent.{self.agent_state.name}] ERROR: Retry limit reached. Final error: {ae_desc}"
