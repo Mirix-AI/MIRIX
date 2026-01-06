@@ -41,10 +41,7 @@ __version__ = "0.1.0"
 _manager = get_manager()
 
 
-def initialize_queue(
-    server=None,
-    num_workers: Optional[int] = None,
-) -> None:
+def initialize_queue(server=None) -> None:
     """
     Initialize the queue with an optional server instance.
 
@@ -53,21 +50,15 @@ def initialize_queue(
 
     Args:
         server: Server instance (e.g., SyncServer) for processing messages
-        num_workers: Optional override for number of workers (memory queue only).
-                    If provided, takes precedence over MEMORY_QUEUE_NUM_WORKERS env var.
-                    Ignored when QUEUE_TYPE is 'kafka'.
 
     Example:
         >>> from mirix.server.server import SyncServer
         >>> from mirix.queue import initialize_queue
         >>>
         >>> server = SyncServer()
-        >>> initialize_queue(server)  # Uses env var or default (1)
-        >>>
-        >>> # Or with explicit worker count:
-        >>> initialize_queue(server, num_workers=8)
+        >>> initialize_queue(server)
     """
-    _manager.initialize(server=server, num_workers=num_workers)
+    _manager.initialize(server=server)
     logger.info("Queue initialized with server instance")
 
 

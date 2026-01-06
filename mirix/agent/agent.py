@@ -81,7 +81,7 @@ from mirix.services.resource_memory_manager import ResourceMemoryManager
 from mirix.services.semantic_memory_manager import SemanticMemoryManager
 from mirix.services.step_manager import StepManager
 from mirix.services.tool_execution_sandbox import ToolExecutionSandbox
-from mirix.settings import summarizer_settings
+from mirix.settings import settings, summarizer_settings
 from mirix.system import (
     get_contine_chaining,
     get_token_limit_warning,
@@ -156,7 +156,9 @@ class Agent(BaseAgent):
         self.filter_tags = deepcopy(filter_tags) if filter_tags is not None else None
         self.use_cache = use_cache  # Store use_cache for memory operations
         self.user = user  # Store user for end-user tracking
-        self.occurred_at = None  # Optional timestamp for episodic memory, set by server if provided
+        self.occurred_at = (
+            None  # Optional timestamp for episodic memory, set by server if provided
+        )
 
         # Initialize logger early in constructor
         self.logger = logging.getLogger(f"Mirix.Agent.{self.agent_state.name}")
@@ -292,8 +294,8 @@ class Agent(BaseAgent):
                 blocks=[
                     self.block_manager.get_block_by_id(block.id, user=self.user)
                     for block in self.block_manager.get_blocks(
-                        user=self.user, 
-                        auto_create_from_default=False  # Don't auto-create here, only in step()
+                        user=self.user,
+                        auto_create_from_default=False,  # Don't auto-create here, only in step()
                     )
                 ]
             )
@@ -389,9 +391,9 @@ class Agent(BaseAgent):
             blocks=[
                 self.block_manager.get_block_by_id(block.id, user=self.user)
                 for block in self.block_manager.get_blocks(
-                    user=self.user, 
+                    user=self.user,
                     agent_id=self.agent_state.id,
-                    auto_create_from_default=False  # Don't auto-create here, only in step()
+                    auto_create_from_default=False,  # Don't auto-create here, only in step()
                 )
             ]
         )
@@ -482,7 +484,7 @@ class Agent(BaseAgent):
                 sandbox = ToolExecutionSandbox(
                     tool_name=function_name,
                     args=function_args,
-                    user=self.user,
+                    actor=self.actor,
                     tool_object=target_mirix_tool,
                 )
                 sandbox_result = sandbox.run(agent_state=agent_state_copy)
@@ -520,9 +522,13 @@ class Agent(BaseAgent):
         function_call: Optional[str] = None,
         first_message: bool = False,
         stream: bool = False,  # TODO move to config?
-        empty_response_retry_limit: int = 3,
-        backoff_factor: float = 0.5,  # delay multiplier for exponential backoff
-        max_delay: float = 10.0,  # max delay between retries
+        empty_response_retry_limit: Optional[
+            int
+        ] = None,  # Uses settings.llm_retry_limit if None
+        backoff_factor: Optional[
+            float
+        ] = None,  # Uses settings.llm_retry_backoff_factor if None
+        max_delay: Optional[float] = None,  # Uses settings.llm_retry_max_delay if None
         step_count: Optional[int] = None,
         last_function_failed: bool = False,
         get_input_data_for_debugging: bool = False,
@@ -530,7 +536,21 @@ class Agent(BaseAgent):
         second_try: bool = False,
         llm_client: Optional[LLMClient] = None,
     ) -> ChatCompletionResponse:
-        """Get response from LLM API with robust retry mechanism."""
+        """Get response from LLM API with robust retry mechanism.
+
+        Retry settings can be configured via environment variables:
+        - MIRIX_LLM_RETRY_LIMIT: Max retry attempts (default: 3)
+        - MIRIX_LLM_RETRY_BACKOFF_FACTOR: Exponential backoff multiplier (default: 0.5)
+        - MIRIX_LLM_RETRY_MAX_DELAY: Max delay between retries in seconds (default: 10.0)
+        """
+        # Apply defaults from settings if not explicitly provided
+        if empty_response_retry_limit is None:
+            empty_response_retry_limit = settings.llm_retry_limit
+        if backoff_factor is None:
+            backoff_factor = settings.llm_retry_backoff_factor
+        if max_delay is None:
+            max_delay = settings.llm_retry_max_delay
+
         log_telemetry(self.logger, "_get_ai_reply start")
         allowed_tool_names = self.tool_rules_solver.get_allowed_tool_names(
             last_function_response=self.last_function_response
@@ -652,18 +672,26 @@ class Agent(BaseAgent):
                 log_telemetry(self.logger, "_handle_ai_response finish")
 
             except ValueError as ve:
+                # Some upstream libraries raise ValueError() with an empty message, which
+                # makes retry logs unhelpful. Always include type + repr for visibility.
+                ve_desc = f"{type(ve).__name__}: {ve!r}"
                 if attempt >= empty_response_retry_limit:
                     printv(
-                        f"[Mirix.Agent.{self.agent_state.name}] ERROR: Retry limit reached. Final error: {ve}"
+                        f"[Mirix.Agent.{self.agent_state.name}] ERROR: Retry limit reached. Final error: {ve_desc}"
                     )
                     log_telemetry(self.logger, "_handle_ai_response finish ValueError")
+                    # Log traceback once at the final attempt for actionable debugging.
+                    self.logger.exception(
+                        "[Mirix.Agent.%s] Retry limit reached (ValueError).",
+                        self.agent_state.name,
+                    )
                     raise Exception(
-                        f"Retries exhausted and no valid response received. Final error: {ve}"
+                        f"Retries exhausted and no valid response received. Final error: {ve_desc}"
                     )
                 else:
                     delay = min(backoff_factor * (2 ** (attempt - 1)), max_delay)
                     printv(
-                        f"[Mirix.Agent.{self.agent_state.name}] WARNING: Attempt {attempt} failed: {ve}. Retrying in {delay} seconds..."
+                        f"[Mirix.Agent.{self.agent_state.name}] WARNING: Attempt {attempt} failed: {ve_desc}. Retrying in {delay} seconds..."
                     )
                     time.sleep(delay)
                     continue
@@ -671,34 +699,44 @@ class Agent(BaseAgent):
             except KeyError as ke:
                 # Gemini api sometimes can yield empty response
                 # This is a retryable error
+                ke_desc = f"{type(ke).__name__}: {ke!r}"
                 if attempt >= empty_response_retry_limit:
                     printv(
-                        f"[Mirix.Agent.{self.agent_state.name}] ERROR: Retry limit reached. Final error: {ke}"
+                        f"[Mirix.Agent.{self.agent_state.name}] ERROR: Retry limit reached. Final error: {ke_desc}"
                     )
                     log_telemetry(self.logger, "_handle_ai_response finish KeyError")
+                    self.logger.exception(
+                        "[Mirix.Agent.%s] Retry limit reached (KeyError).",
+                        self.agent_state.name,
+                    )
                     raise Exception(
-                        f"Retries exhausted and no valid response received. Final error: {ke}"
+                        f"Retries exhausted and no valid response received. Final error: {ke_desc}"
                     )
                 else:
                     delay = min(backoff_factor * (2 ** (attempt - 1)), max_delay)
                     printv(
-                        f"[Mirix.Agent.{self.agent_state.name}] WARNING: Attempt {attempt} failed: {ke}. Retrying in {delay} seconds..."
+                        f"[Mirix.Agent.{self.agent_state.name}] WARNING: Attempt {attempt} failed: {ke_desc}. Retrying in {delay} seconds..."
                     )
                     time.sleep(delay)
                     continue
 
             except LLMError as llm_error:
+                llm_error_desc = f"{type(llm_error).__name__}: {llm_error!r}"
                 if attempt >= empty_response_retry_limit:
                     printv(
-                        f"[Mirix.Agent.{self.agent_state.name}] ERROR: Retry limit reached. Final error: {llm_error}"
+                        f"[Mirix.Agent.{self.agent_state.name}] ERROR: Retry limit reached. Final error: {llm_error_desc}"
                     )
                     log_telemetry(self.logger, "_handle_ai_response finish LLMError")
                     log_telemetry(
                         self.logger, "_get_ai_reply_last_message_hacking start"
                     )
+                    self.logger.exception(
+                        "[Mirix.Agent.%s] Retry limit reached (LLMError).",
+                        self.agent_state.name,
+                    )
                     if second_try:
                         raise Exception(
-                            f"Retries exhausted and no valid response received. Final error: {llm_error}"
+                            f"Retries exhausted and no valid response received. Final error: {llm_error_desc}"
                         )
                     return self._get_ai_reply(
                         [message_sequence[-1]],
@@ -718,41 +756,52 @@ class Agent(BaseAgent):
                 else:
                     delay = min(backoff_factor * (2 ** (attempt - 1)), max_delay)
                     printv(
-                        f"[Mirix.Agent.{self.agent_state.name}] WARNING: Attempt {attempt} failed: {llm_error}. Retrying in {delay} seconds..."
+                        f"[Mirix.Agent.{self.agent_state.name}] WARNING: Attempt {attempt} failed: {llm_error_desc}. Retrying in {delay} seconds..."
                     )
                     time.sleep(delay)
                     continue
 
             except AssertionError as ae:
+                ae_desc = f"{type(ae).__name__}: {ae!r}"
                 if attempt >= empty_response_retry_limit:
                     printv(
-                        f"[Mirix.Agent.{self.agent_state.name}] ERROR: Retry limit reached. Final error: {ae}"
+                        f"[Mirix.Agent.{self.agent_state.name}] ERROR: Retry limit reached. Final error: {ae_desc}"
+                    )
+                    self.logger.exception(
+                        "[Mirix.Agent.%s] Retry limit reached (AssertionError).",
+                        self.agent_state.name,
                     )
                     raise Exception(
-                        f"Retries exhausted and no valid response received. Final error: {ae}"
+                        f"Retries exhausted and no valid response received. Final error: {ae_desc}"
                     )
                 else:
                     delay = min(backoff_factor * (2 ** (attempt - 1)), max_delay)
                     printv(
-                        f"[Mirix.Agent.{self.agent_state.name}] WARNING: Attempt {attempt} failed: {ae}. Retrying in {delay} seconds..."
+                        f"[Mirix.Agent.{self.agent_state.name}] WARNING: Attempt {attempt} failed: {ae_desc}. Retrying in {delay} seconds..."
                     )
                     time.sleep(delay)
                     continue
 
             except requests.exceptions.HTTPError as he:
+                he_desc = f"{type(he).__name__}: {he!r}"
                 if attempt >= empty_response_retry_limit:
                     printv(
-                        f"[Mirix.Agent.{self.agent_state.name}] ERROR: Retry limit reached. Final error: {he}"
+                        f"[Mirix.Agent.{self.agent_state.name}] ERROR: Retry limit reached. Final error: {he_desc}"
+                    )
+                    self.logger.exception(
+                        "[Mirix.Agent.%s] Retry limit reached (HTTPError).",
+                        self.agent_state.name,
                     )
                     raise Exception(
-                        f"Retries exhausted and no valid response received. Final error: {he}"
+                        f"Retries exhausted and no valid response received. Final error: {he_desc}"
                     )
                 else:
                     delay = min(backoff_factor * (2 ** (attempt - 1)), max_delay)
                     printv(
-                        f"[Mirix.Agent.{self.agent_state.name}] WARNING: Attempt {attempt} failed: {he}. Retrying in {delay} seconds..."
+                        f"[Mirix.Agent.{self.agent_state.name}] WARNING: Attempt {attempt} failed: {he_desc}. Retrying in {delay} seconds..."
                     )
                     time.sleep(delay)
+                    continue
 
             except Exception as e:
                 log_telemetry(
@@ -826,6 +875,43 @@ class Agent(BaseAgent):
             else:
                 for tool_call in response_message.tool_calls:
                     assert tool_call.id is not None  # should be defined
+
+            # Memory agents are instructed to emit only ONE tool call per step.
+            # In practice, the LLM can occasionally return multiple tool calls (often duplicates),
+            # which can cause non-idempotent operations to fail (e.g., double deletes).
+            # To match the prompt contract and keep behavior predictable, truncate to the first.
+            from mirix.schemas.agent import AgentType
+
+            memory_agent_types = {
+                AgentType.core_memory_agent,
+                AgentType.episodic_memory_agent,
+                AgentType.procedural_memory_agent,
+                AgentType.resource_memory_agent,
+                AgentType.knowledge_vault_memory_agent,
+                AgentType.semantic_memory_agent,
+            }
+
+            if (
+                self.agent_state.agent_type in memory_agent_types
+                and response_message.tool_calls is not None
+                and len(response_message.tool_calls) > 1
+            ):
+                kept = response_message.tool_calls[0]
+                dropped = response_message.tool_calls[1:]
+                dropped_desc = [
+                    f"{tc.function.name}:{tc.id}"
+                    for tc in dropped
+                    if tc and tc.function
+                ]
+                self.logger.warning(
+                    "Truncating %d extra tool call(s) for memory agent %s (keeping %s:%s, dropping %s)",
+                    len(dropped),
+                    self.agent_state.agent_type,
+                    kept.function.name if kept and kept.function else None,
+                    kept.id if kept else None,
+                    dropped_desc,
+                )
+                response_message.tool_calls = [kept]
 
             # role: assistant (requesting tool call, set tool call ID)
             messages.append(
@@ -1144,9 +1230,12 @@ class Agent(BaseAgent):
                     memory_item = None
                     memory_item_str = None
 
+                    if self.user is None:
+                        raise ValueError("User is required to clear history")
+
                     if self.agent_state.name == "episodic_memory_agent":
                         memory_item = self.episodic_memory_manager.get_most_recently_updated_event(
-                            actor=self.user,
+                            user=self.user,
                             timezone_str=self.user.timezone,
                         )
                         if memory_item:
@@ -1179,7 +1268,7 @@ class Agent(BaseAgent):
 
                     elif self.agent_state.name == "procedural_memory_agent":
                         memory_item = self.procedural_memory_manager.get_most_recently_updated_item(
-                            actor=self.user,
+                            user=self.user,
                             timezone_str=self.user.timezone,
                         )
                         if memory_item:
@@ -1211,7 +1300,7 @@ class Agent(BaseAgent):
                     elif self.agent_state.name == "resource_memory_agent":
                         memory_item = (
                             self.resource_memory_manager.get_most_recently_updated_item(
-                                actor=self.user,
+                                user=self.user,
                                 timezone_str=self.user.timezone,
                             )
                         )
@@ -1245,7 +1334,7 @@ class Agent(BaseAgent):
                     elif self.agent_state.name == "knowledge_vault_memory_agent":
                         memory_item = (
                             self.knowledge_vault_manager.get_most_recently_updated_item(
-                                actor=self.user,
+                                user=self.user,
                                 timezone_str=self.user.timezone,
                             )
                         )
@@ -1290,7 +1379,7 @@ class Agent(BaseAgent):
                     elif self.agent_state.name == "semantic_memory_agent":
                         memory_item = (
                             self.semantic_memory_manager.get_most_recently_updated_item(
-                                actor=self.user,
+                                user=self.user,
                                 timezone_str=self.user.timezone,
                             )
                         )
@@ -1384,10 +1473,10 @@ class Agent(BaseAgent):
                         self.agent_manager.set_in_context_messages(
                             agent_id=self.agent_state.id,
                             message_ids=message_ids,
-                            actor=self.user,
+                            actor=self.actor,
                         )
                         self.message_manager.delete_detached_messages_for_agent(
-                            agent_id=self.agent_state.id, actor=self.user
+                            agent_id=self.agent_state.id, actor=self.actor
                         )
 
                     # Clear all messages since they were manually added to the conversation history
@@ -1457,20 +1546,19 @@ class Agent(BaseAgent):
 
             # Only load blocks for core_memory_agent (other agent types don't use blocks)
             from mirix.schemas.agent import AgentType
-            
+
             if self.agent_state.agent_type == AgentType.core_memory_agent:
                 # Load existing blocks for this user
                 # Note: auto_create_from_default=True will create blocks if they don't exist
                 existing_blocks = self.block_manager.get_blocks(
-                    user=self.user, 
-                    agent_id=self.agent_state.id
+                    user=self.user, agent_id=self.agent_state.id
                 )
-                
+
                 # Special handling for core_memory_agent: ensure required blocks exist
                 # This automatically creates blocks on first use for each user
                 # NOTE: Block creation now happens automatically in BlockManager.get_blocks()
                 # via the auto_create_from_default parameter, so no need for manual creation here
-                
+
                 # Load blocks into memory for core_memory_agent
                 self.agent_state.memory = Memory(
                     blocks=[
@@ -1541,7 +1629,7 @@ class Agent(BaseAgent):
             self.agent_manager.set_in_context_messages(
                 agent_id=self.agent_state.id,
                 message_ids=[message.id for message in in_context_messages],
-                actor=self.user,
+                actor=self.actor,
             )
 
         # Initialize the LLM client once per step to reuse across retries.
@@ -1722,7 +1810,7 @@ class Agent(BaseAgent):
                     b
                     for block in self.block_manager.get_blocks(
                         user=self.user,
-                        auto_create_from_default=False  # Don't auto-create here, only in step()
+                        auto_create_from_default=False,  # Don't auto-create here, only in step()
                     )
                     if (
                         b := self.block_manager.get_block_by_id(
@@ -2489,6 +2577,27 @@ These keywords have been used to retrieve relevant memories from the database.
                     else LLM_MAX_TOKENS["DEFAULT"]
                 )
 
+            # Log step - this must happen before messages are persisted
+            step = self.step_manager.log_step(
+                actor=self.actor,
+                provider_name=self.agent_state.llm_config.model_endpoint_type,
+                model=self.agent_state.llm_config.model,
+                context_window_limit=self.agent_state.llm_config.context_window,
+                usage=response.usage,
+            )
+            for message in all_new_messages:
+                message.step_id = step.id
+
+            # Persisting into Messages - MUST happen before summarization
+            # so that summarize_messages_inplace can see all messages
+            self.agent_state = self.agent_manager.append_to_in_context_messages(
+                all_new_messages,
+                agent_id=self.agent_state.id,
+                actor=self.actor,
+                user_id=self.user_id,
+            )
+
+            # Check memory pressure AFTER messages are persisted
             if (
                 current_total_tokens
                 > summarizer_settings.memory_warning_threshold
@@ -2512,22 +2621,6 @@ These keywords have been used to retrieve relevant memories from the database.
                 printv(
                     f"[Mirix.Agent.{self.agent_state.name}] DEBUG: Memory usage acceptable: last response total_tokens ({current_total_tokens}) < {summarizer_settings.memory_warning_threshold * int(self.agent_state.llm_config.context_window)}"
                 )
-
-            # Log step - this must happen before messages are persisted
-            step = self.step_manager.log_step(
-                actor=self.actor,
-                provider_name=self.agent_state.llm_config.model_endpoint_type,
-                model=self.agent_state.llm_config.model,
-                context_window_limit=self.agent_state.llm_config.context_window,
-                usage=response.usage,
-            )
-            for message in all_new_messages:
-                message.step_id = step.id
-
-            # Persisting into Messages
-            self.agent_state = self.agent_manager.append_to_in_context_messages(
-                all_new_messages, agent_id=self.agent_state.id, actor=self.actor
-            )
 
             # Log step completion and results
             printv(
@@ -2717,7 +2810,7 @@ These keywords have been used to retrieve relevant memories from the database.
 
         # Metadata that's useful for the agent to see
         all_time_message_count = self.message_manager.size(
-            agent_id=self.agent_state.id, actor=self.user
+            agent_id=self.agent_state.id, actor=self.actor, user_id=self.user_id
         )
         remaining_message_count = (
             1 + len(in_context_messages) - cutoff
@@ -2731,7 +2824,10 @@ These keywords have been used to retrieve relevant memories from the database.
 
         prior_len = len(in_context_messages_openai)
         self.agent_state = self.agent_manager.trim_older_in_context_messages(
-            num=cutoff, agent_id=self.agent_state.id, actor=self.user
+            num=cutoff,
+            agent_id=self.agent_state.id,
+            actor=self.actor,
+            user_id=self.user_id,
         )
         packed_summary_message = {"role": "user", "content": summary_message}
 
@@ -2745,7 +2841,8 @@ These keywords have been used to retrieve relevant memories from the database.
                 )
             ],
             agent_id=self.agent_state.id,
-            actor=self.user,
+            actor=self.actor,
+            user_id=self.user_id,
         )
 
         # reset alert
@@ -2828,12 +2925,12 @@ These keywords have been used to retrieve relevant memories from the database.
             )
 
         message_manager_size = self.message_manager.size(
-            actor=self.user, agent_id=self.agent_state.id
+            actor=self.actor, agent_id=self.agent_state.id, user_id=self.user_id
         )
         external_memory_summary = compile_memory_metadata_block(
             memory_edit_timestamp=get_utc_time(),
             previous_message_count=self.message_manager.size(
-                actor=self.user, agent_id=self.agent_state.id
+                actor=self.actor, agent_id=self.agent_state.id, user_id=self.user_id
             ),
         )
         num_tokens_external_memory_summary = count_tokens(external_memory_summary)

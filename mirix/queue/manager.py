@@ -2,7 +2,7 @@
 Queue Manager - Handles queue initialization and lifecycle management
 Separates implementation logic from the public API
 
-Supports multiple workers for in-memory queue via QUEUE_NUM_WORKERS config.
+Supports multiple workers for in-memory queue via NUM_WORKERS config.
 When NUM_WORKERS > 1, uses PartitionedMemoryQueue to simulate Kafka's
 user_id-based partitioning for parallel processing.
 """
@@ -38,12 +38,9 @@ class QueueManager:
         self._server: Optional[Any] = None
         self._initialized = False
         self._num_workers = 1
+        self._round_robin = False
 
-    def initialize(
-        self,
-        server: Optional[Any] = None,
-        num_workers: Optional[int] = None,
-    ) -> None:
+    def initialize(self, server: Optional[Any] = None) -> None:
         """
         Initialize the queue and start the background workers
         Creates appropriate queue type based on configuration
@@ -57,8 +54,6 @@ class QueueManager:
 
         Args:
             server: Optional server instance for workers to invoke APIs on
-            num_workers: Optional override for number of workers (memory queue only).
-                        If provided, takes precedence over MEMORY_QUEUE_NUM_WORKERS env var.
         """
         if self._initialized:
             logger.warning(
@@ -79,16 +74,19 @@ class QueueManager:
 
         # Determine number of workers (only for memory queue)
         if config.QUEUE_TYPE == "memory":
-            # Use explicit parameter if provided, otherwise default to 1
-            self._num_workers = num_workers if num_workers is not None else 1
+            self._num_workers = config.NUM_WORKERS
+            self._round_robin = config.ROUND_ROBIN
         else:
             # Kafka handles its own partitioning/consumer groups
             self._num_workers = 1
+            self._round_robin = False  # N/A for Kafka
 
+        partition_mode = "round-robin" if self._round_robin else "hash"
         logger.info(
-            "🚀 Initializing queue manager: type=%s, num_workers=%d, server=%s",
+            "🚀 Initializing queue manager: type=%s, num_workers=%d, partitioning=%s, server=%s",
             config.QUEUE_TYPE,
             self._num_workers,
+            partition_mode,
             "provided" if server else "None",
         )
 
@@ -181,11 +179,16 @@ class QueueManager:
             # In-memory queue
             if self._num_workers > 1:
                 # Use partitioned queue for multiple workers
+                mode = "round-robin" if self._round_robin else "hash"
                 logger.info(
-                    "📦 Using PartitionedMemoryQueue with %d partitions",
+                    "📦 Using PartitionedMemoryQueue with %d partitions, mode=%s",
                     self._num_workers,
+                    mode,
                 )
-                return PartitionedMemoryQueue(num_partitions=self._num_workers)
+                return PartitionedMemoryQueue(
+                    num_partitions=self._num_workers,
+                    round_robin=self._round_robin,
+                )
             else:
                 # Default to simple in-memory queue
                 return MemoryQueue()
@@ -249,6 +252,23 @@ class QueueManager:
     def num_workers(self) -> int:
         """Get the number of workers"""
         return self._num_workers
+
+    @property
+    def round_robin(self) -> bool:
+        """Check if round-robin partitioning mode is enabled"""
+        return self._round_robin
+
+    def get_partition_stats(self) -> Optional[dict]:
+        """
+        Get statistics about partition distribution (memory queue only).
+        Useful for debugging/benchmarking to verify even distribution.
+
+        Returns:
+            Dict with partition stats, or None if not using partitioned queue
+        """
+        if isinstance(self._queue, PartitionedMemoryQueue):
+            return self._queue.get_partition_stats()
+        return None
 
 
 # Global singleton instance

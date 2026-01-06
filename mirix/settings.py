@@ -239,11 +239,6 @@ class Settings(BaseSettings):
     uvicorn_reload: bool = False
     uvicorn_timeout_keep_alive: int = 5
 
-    # memory queue settings (for local/dev - simulates Kafka partitioning)
-    # Number of worker threads for in-memory queue processing
-    # Each worker owns one partition, messages are routed by user_id hash
-    memory_queue_num_workers: int = Field(1, env="MIRIX_MEMORY_QUEUE_NUM_WORKERS")
-
     # event loop parallelism
     event_loop_threadpool_max_workers: int = 43
 
@@ -270,6 +265,17 @@ class Settings(BaseSettings):
     httpx_max_connections: int = 500
     httpx_max_keepalive_connections: int = 500
     httpx_keepalive_expiry: float = 120.0
+
+    # LLM retry settings (for agent-level retries on transient errors)
+    llm_retry_limit: int = Field(
+        3, env="MIRIX_LLM_RETRY_LIMIT"
+    )  # Max retry attempts for LLM calls
+    llm_retry_backoff_factor: float = Field(
+        0.5, env="MIRIX_LLM_RETRY_BACKOFF_FACTOR"
+    )  # Exponential backoff multiplier
+    llm_retry_max_delay: float = Field(
+        10.0, env="MIRIX_LLM_RETRY_MAX_DELAY"
+    )  # Max delay between retries (seconds)
 
     # cron job parameters
     enable_batch_job_polling: bool = False

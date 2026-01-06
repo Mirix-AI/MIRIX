@@ -9,11 +9,30 @@ if TYPE_CHECKING:
 
 
 class ErrorCode(Enum):
-    """Enum for error codes used by client."""
+    """Enum for error codes used across all LLM client implementations.
 
+    These codes provide a standardized way to categorize errors from different
+    LLM providers (OpenAI, Anthropic, Google AI, etc.) into common categories.
+    """
+
+    # Server-side errors
     INTERNAL_SERVER_ERROR = "INTERNAL_SERVER_ERROR"
+    SERVICE_UNAVAILABLE = "SERVICE_UNAVAILABLE"
+    DEPENDENCY_TIMEOUT = (
+        "DEPENDENCY_TIMEOUT"  # External service timeout (e.g., 424 errors)
+    )
+
+    # Request/response errors
     CONTEXT_WINDOW_EXCEEDED = "CONTEXT_WINDOW_EXCEEDED"
     RATE_LIMIT_EXCEEDED = "RATE_LIMIT_EXCEEDED"
+    INVALID_ARGUMENT = "INVALID_ARGUMENT"  # Bad request / validation errors
+
+    # Authentication/authorization errors
+    UNAUTHENTICATED = "UNAUTHENTICATED"  # 401 - Missing/invalid credentials
+    PERMISSION_DENIED = "PERMISSION_DENIED"  # 403 - Valid credentials but no access
+
+    # Resource errors
+    NOT_FOUND = "NOT_FOUND"  # 404 - Model/resource doesn't exist
 
 
 class MirixError(Exception):

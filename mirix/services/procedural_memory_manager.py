@@ -9,6 +9,7 @@ from sqlalchemy import func, select, text
 
 from mirix.constants import BUILD_EMBEDDINGS_FOR_MEMORY
 from mirix.embeddings import embedding_model
+from mirix.log import get_logger
 from mirix.orm.errors import NoResultFound
 from mirix.orm.procedural_memory import ProceduralMemoryItem
 from mirix.schemas.agent import AgentState
@@ -21,7 +22,6 @@ from mirix.schemas.user import User as PydanticUser
 from mirix.services.utils import build_query, update_timezone
 from mirix.settings import settings
 from mirix.utils import enforce_types
-from mirix.log import get_logger
 
 logger = get_logger(__name__)
 
@@ -405,7 +405,7 @@ class ProceduralMemoryManager:
         try:
             from mirix.database.redis_client import get_redis_client
             redis_client = get_redis_client()
-            
+
             if redis_client:
                 redis_key = f"{redis_client.PROCEDURAL_PREFIX}{item_id}"
                 cached_data = redis_client.get_json(redis_key)
@@ -414,15 +414,15 @@ class ProceduralMemoryManager:
                     return PydanticProceduralMemoryItem(**cached_data)
         except Exception as e:
             logger.warning("Redis cache read failed for procedural memory %s: %s", item_id, e)
-        
+
         # Cache MISS - fetch from PostgreSQL
         with self.session_maker() as session:
             try:
                 item = ProceduralMemoryItem.read(
-                    db_session=session, identifier=item_id, actor=user
+                    db_session=session, identifier=item_id, user=user
                 )
                 pydantic_item = item.to_pydantic()
-                
+
                 # Populate Redis cache
                 try:
                     if redis_client:
@@ -432,7 +432,7 @@ class ProceduralMemoryManager:
                         redis_client.set_json(redis_key, data, ttl=settings.redis_ttl_default)
                 except Exception as e:
                     logger.warning("Failed to populate Redis cache: %s", e)
-                
+
                 return pydantic_item
             except NoResultFound:
                 raise NoResultFound(
@@ -485,7 +485,7 @@ class ProceduralMemoryManager:
             user_id: End-user identifier (optional)
             use_cache: If True, cache in Redis. If False, skip caching.
         """
-        
+
         # Backward compatibility
         if client_id is None:
             client_id = actor.id
@@ -511,7 +511,7 @@ class ProceduralMemoryManager:
         # Set client_id and user_id on the memory
         data_dict["client_id"] = client_id
         data_dict["user_id"] = user_id
-        
+
         logger.debug(
             "create_item: client_id=%s, user_id=%s", 
             client_id, user_id
@@ -524,19 +524,22 @@ class ProceduralMemoryManager:
 
     @enforce_types
     def update_item(
-        self, item_update: ProceduralMemoryItemUpdate, user: PydanticUser
+        self,
+        item_update: ProceduralMemoryItemUpdate,
+        user: PydanticUser,
+        actor: PydanticClient,
     ) -> PydanticProceduralMemoryItem:
         """Update an existing procedural memory item."""
         with self.session_maker() as session:
             item = ProceduralMemoryItem.read(
-                db_session=session, identifier=item_update.id, actor=user
+                db_session=session, identifier=item_update.id, user=user
             )
             update_data = item_update.model_dump(exclude_unset=True)
             for k, v in update_data.items():
                 if k not in ["id", "updated_at"]:  # Exclude updated_at - handled by update() method
                     setattr(item, k, v)
             # updated_at is automatically set to current UTC time by item.update()
-            item.update_with_redis(session, actor=user)  # ⭐ Updates Redis JSON cache
+            item.update_with_redis(session, actor=actor)  # ⭐ Updates Redis JSON cache
             return item.to_pydantic()
 
     @enforce_types
@@ -608,14 +611,14 @@ class ProceduralMemoryManager:
         """
         query = query.strip() if query else ""
         is_empty_query = not query or query == ""
-        
+
         # Extract organization_id from user for multi-tenant isolation
         organization_id = user.organization_id
-        
+
         # ⭐ Try Redis Search first (if cache enabled and Redis is available)
         from mirix.database.redis_client import get_redis_client
         redis_client = get_redis_client()
-        
+
         if use_cache and redis_client:
             try:
                 # Case 1: No query - get recent items (regardless of search_method)
@@ -635,7 +638,7 @@ class ProceduralMemoryManager:
                         results = redis_client.clean_redis_fields(results)
                         return [PydanticProceduralMemoryItem(**item) for item in results]
                     # If no results, fall through to PostgreSQL (don't return empty list)
-                
+
                 # Case 2: Vector similarity search
                 elif search_method == "embedding":
                     if embedded_text is None:
@@ -643,9 +646,9 @@ class ProceduralMemoryManager:
                         embedded_text = embedding_model.embed_and_upload_batch(
                             [query], agent_state.embedding_config
                         )[0]
-                    
+
                     vector_field = f"{search_field}_embedding" if search_field else "summary_embedding"
-                    
+
                     results = redis_client.search_vector(
                         index_name=redis_client.PROCEDURAL_INDEX,
                         embedding=embedded_text,
@@ -660,10 +663,10 @@ class ProceduralMemoryManager:
                         # Clean Redis-specific fields before Pydantic validation
                         results = redis_client.clean_redis_fields(results)
                         return [PydanticProceduralMemoryItem(**item) for item in results]
-                
+
                 elif search_method in ["bm25", "string_match"]:
                     fields = [search_field] if search_field else ["summary", "steps"]
-                    
+
                     results = redis_client.search_text(
                         index_name=redis_client.PROCEDURAL_INDEX,
                         query=query,
@@ -678,10 +681,10 @@ class ProceduralMemoryManager:
                         # Clean Redis-specific fields before Pydantic validation
                         results = redis_client.clean_redis_fields(results)
                         return [PydanticProceduralMemoryItem(**item) for item in results]
-            
+
             except Exception as e:
                 logger.warning("Redis search failed for procedural memory, falling back to PostgreSQL: %s", e)
-        
+
         # Log when bypassing cache or Redis unavailable
         if not use_cache:
             logger.debug("⏭️  Bypassing Redis cache (use_cache=False), querying PostgreSQL directly for procedural memory")
@@ -696,12 +699,12 @@ class ProceduralMemoryManager:
                     .where(ProceduralMemoryItem.organization_id == organization_id)
                     .order_by(ProceduralMemoryItem.created_at.desc())
                 )
-                
+
                 # Apply filter_tags if provided
                 if filter_tags:
                     for key, value in filter_tags.items():
                         query_stmt = query_stmt.where(ProceduralMemoryItem.filter_tags[key].as_string() == str(value))
-                
+
                 if limit:
                     query_stmt = query_stmt.limit(limit)
                 result = session.execute(query_stmt)
@@ -727,7 +730,7 @@ class ProceduralMemoryManager:
                 ).where(
                     ProceduralMemoryItem.organization_id == organization_id
                 )
-                
+
                 # Apply filter_tags if provided
                 if filter_tags:
                     for key, value in filter_tags.items():
@@ -922,7 +925,7 @@ class ProceduralMemoryManager:
 
             # Set client_id from actor, user_id with fallback to DEFAULT_USER_ID
             from mirix.services.user_manager import UserManager
-            
+
             client_id = actor.id  # Always derive from actor
             if user_id is None:
                 user_id = UserManager.ADMIN_USER_ID
@@ -982,35 +985,35 @@ class ProceduralMemoryManager:
             Number of records deleted
         """
         from mirix.database.redis_client import get_redis_client
-        
+
         with self.session_maker() as session:
             # Get IDs for Redis cleanup (only fetch IDs, not full objects)
             item_ids = [row[0] for row in session.query(ProceduralMemoryItem.id).filter(
                 ProceduralMemoryItem.client_id == actor.id
             ).all()]
-            
+
             count = len(item_ids)
             if count == 0:
                 return 0
-            
+
             # Bulk delete in single query
             session.query(ProceduralMemoryItem).filter(
                 ProceduralMemoryItem.client_id == actor.id
             ).delete(synchronize_session=False)
-            
+
             session.commit()
-        
+
         # Batch delete from Redis cache (outside of session context)
         redis_client = get_redis_client()
         if redis_client and item_ids:
             redis_keys = [f"{redis_client.PROCEDURAL_PREFIX}{item_id}" for item_id in item_ids]
-            
+
             # Delete in batches to avoid command size limits
             BATCH_SIZE = 1000
             for i in range(0, len(redis_keys), BATCH_SIZE):
                 batch = redis_keys[i:i + BATCH_SIZE]
                 redis_client.client.delete(*batch)
-        
+
         return count
 
     def soft_delete_by_client_id(self, actor: PydanticClient) -> int:
@@ -1024,28 +1027,28 @@ class ProceduralMemoryManager:
             Number of records soft deleted
         """
         from mirix.database.redis_client import get_redis_client
-        
+
         with self.session_maker() as session:
             # Query all non-deleted records for this client (use actor.id)
             items = session.query(ProceduralMemoryItem).filter(
                 ProceduralMemoryItem.client_id == actor.id,
                 ProceduralMemoryItem.is_deleted == False
             ).all()
-            
+
             count = len(items)
             if count == 0:
                 return 0
-            
+
             # Extract IDs BEFORE committing (to avoid detached instance errors)
             item_ids = [item.id for item in items]
-            
+
             # Soft delete from database (set is_deleted = True directly, don't call item.delete())
             for item in items:
                 item.is_deleted = True
                 item.set_updated_at()
-            
+
             session.commit()
-        
+
         # Update Redis cache with is_deleted=true (outside session)
         redis_client = get_redis_client()
         if redis_client:
@@ -1056,7 +1059,7 @@ class ProceduralMemoryManager:
                 except Exception:
                     # If update fails, remove from cache
                     redis_client.delete(redis_key)
-        
+
         return count
 
     def soft_delete_by_user_id(self, user_id: str) -> int:
@@ -1070,28 +1073,28 @@ class ProceduralMemoryManager:
             Number of records soft deleted
         """
         from mirix.database.redis_client import get_redis_client
-        
+
         with self.session_maker() as session:
             # Query all non-deleted records for this user
             items = session.query(ProceduralMemoryItem).filter(
                 ProceduralMemoryItem.user_id == user_id,
                 ProceduralMemoryItem.is_deleted == False
             ).all()
-            
+
             count = len(items)
             if count == 0:
                 return 0
-            
+
             # Extract IDs BEFORE committing (to avoid detached instance errors)
             item_ids = [item.id for item in items]
-            
+
             # Soft delete from database (set is_deleted = True directly, don't call item.delete())
             for item in items:
                 item.is_deleted = True
                 item.set_updated_at()
-            
+
             session.commit()
-        
+
         # Update Redis cache with is_deleted=true (outside session)
         redis_client = get_redis_client()
         if redis_client:
@@ -1102,7 +1105,7 @@ class ProceduralMemoryManager:
                 except Exception:
                     # If update fails, remove from cache
                     redis_client.delete(redis_key)
-        
+
         return count
 
     def delete_by_user_id(self, user_id: str) -> int:
@@ -1117,35 +1120,35 @@ class ProceduralMemoryManager:
             Number of records deleted
         """
         from mirix.database.redis_client import get_redis_client
-        
+
         with self.session_maker() as session:
             # Get IDs for Redis cleanup (only fetch IDs, not full objects)
             item_ids = [row[0] for row in session.query(ProceduralMemoryItem.id).filter(
                 ProceduralMemoryItem.user_id == user_id
             ).all()]
-            
+
             count = len(item_ids)
             if count == 0:
                 return 0
-            
+
             # Bulk delete in single query
             session.query(ProceduralMemoryItem).filter(
                 ProceduralMemoryItem.user_id == user_id
             ).delete(synchronize_session=False)
-            
+
             session.commit()
-        
+
         # Batch delete from Redis cache (outside of session context)
         redis_client = get_redis_client()
         if redis_client and item_ids:
             redis_keys = [f"{redis_client.PROCEDURAL_PREFIX}{item_id}" for item_id in item_ids]
-            
+
             # Delete in batches to avoid command size limits
             BATCH_SIZE = 1000
             for i in range(0, len(redis_keys), BATCH_SIZE):
                 batch = redis_keys[i:i + BATCH_SIZE]
                 redis_client.client.delete(*batch)
-        
+
         return count
 
     @update_timezone
@@ -1169,7 +1172,7 @@ class ProceduralMemoryManager:
         """
         from mirix.database.redis_client import get_redis_client
         redis_client = get_redis_client()
-        
+
         if use_cache and redis_client:
             try:
                 if not query or query == "":
@@ -1184,13 +1187,14 @@ class ProceduralMemoryManager:
                         logger.debug("✅ Redis: %d procedural memories for org %s", len(results), organization_id)
                         results = redis_client.clean_redis_fields(results)
                         return [PydanticProceduralMemoryItem(**item) for item in results]
-                
+
                 elif search_method == "embedding":
                     if embedded_text is None:
-                        from mirix.embeddings import embedding_model
                         import numpy as np
+
                         from mirix.constants import MAX_EMBEDDING_DIM
-                        
+                        from mirix.embeddings import embedding_model
+
                         embedded_text = embedding_model(agent_state.embedding_config).get_text_embedding(query)
                         embedded_text = np.array(embedded_text)
                         embedded_text = np.pad(
@@ -1198,7 +1202,7 @@ class ProceduralMemoryManager:
                             (0, MAX_EMBEDDING_DIM - embedded_text.shape[0]),
                             mode="constant",
                         ).tolist()
-                    
+
                     vector_field = f"{search_field}_embedding" if search_field else "summary_embedding"
                     results = redis_client.search_vector_by_org(
                         index_name=redis_client.PROCEDURAL_INDEX,
@@ -1212,7 +1216,7 @@ class ProceduralMemoryManager:
                         logger.debug("✅ Redis vector: %d results", len(results))
                         results = redis_client.clean_redis_fields(results)
                         return [PydanticProceduralMemoryItem(**item) for item in results]
-                
+
                 else:
                     results = redis_client.search_text_by_org(
                         index_name=redis_client.PROCEDURAL_INDEX,
@@ -1229,12 +1233,12 @@ class ProceduralMemoryManager:
                         return [PydanticProceduralMemoryItem(**item) for item in results]
             except Exception as e:
                 logger.warning("Redis search failed: %s", e)
-        
+
         with self.session_maker() as session:
             base_query = select(ProceduralMemoryItem).where(
                 ProceduralMemoryItem.organization_id == organization_id
             )
-            
+
             if filter_tags:
                 from sqlalchemy import func, or_
                 for key, value in filter_tags.items():
@@ -1249,7 +1253,7 @@ class ProceduralMemoryManager:
                     else:
                         # Other keys: exact match
                         base_query = base_query.where(ProceduralMemoryItem.filter_tags[key].as_string() == str(value))
-            
+
             # Handle empty query - fall back to recent sort
             if not query or query == "":
                 base_query = base_query.order_by(ProceduralMemoryItem.created_at.desc())
@@ -1265,7 +1269,7 @@ class ProceduralMemoryManager:
                 if embedded_text is None:
                     from mirix.embeddings import embedding_model
                     embedded_text = embedding_model(embedding_config).get_text_embedding(query)
-                
+
                 # Determine which embedding field to search
                 if search_field == "summary":
                     embedding_field = ProceduralMemoryItem.summary_embedding
@@ -1273,20 +1277,20 @@ class ProceduralMemoryManager:
                     embedding_field = ProceduralMemoryItem.steps_embedding
                 else:
                     embedding_field = ProceduralMemoryItem.summary_embedding
-                
+
                 embedding_query_field = embedding_field.cosine_distance(embedded_text).label("distance")
                 base_query = base_query.add_columns(embedding_query_field)
-                
+
                 # Apply similarity threshold if provided
                 if similarity_threshold is not None:
                     base_query = base_query.where(embedding_query_field < similarity_threshold)
-                
+
                 base_query = base_query.order_by(embedding_query_field)
-            
+
             # BM25 search
             elif search_method == "bm25":
                 from sqlalchemy import func
-                
+
                 # Determine search field
                 if search_field == "summary":
                     text_field = ProceduralMemoryItem.summary
@@ -1294,21 +1298,21 @@ class ProceduralMemoryManager:
                     text_field = ProceduralMemoryItem.steps
                 else:
                     text_field = ProceduralMemoryItem.summary
-                
+
                 tsquery = func.plainto_tsquery("english", query)
                 tsvector = func.to_tsvector("english", text_field)
                 rank = func.ts_rank_cd(tsvector, tsquery).label("rank")
-                
+
                 base_query = (
                     base_query
                     .add_columns(rank)
                     .where(tsvector.op("@@")(tsquery))
                     .order_by(rank.desc())
                 )
-            
+
             if limit:
                 base_query = base_query.limit(limit)
-            
+
             result = session.execute(base_query)
             items = result.scalars().all()
             return [item.to_pydantic() for item in items]
