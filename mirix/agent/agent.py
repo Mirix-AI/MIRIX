@@ -1485,6 +1485,12 @@ class Agent(BaseAgent):
 
         else:
             # Standard non-function reply
+            # Validate that we have content - LLM returned neither tool_calls nor content
+            if not response_message.content:
+                raise ValueError(
+                    f"LLM returned empty response, "
+                    f"no tool_calls and no content. Response: {response_message}"
+                )
             messages.append(
                 Message.dict_to_message(
                     id=response_message_id,
