@@ -82,6 +82,7 @@ from mirix.services.semantic_memory_manager import SemanticMemoryManager
 from mirix.services.step_manager import StepManager
 from mirix.services.tool_execution_sandbox import ToolExecutionSandbox
 from mirix.settings import settings, summarizer_settings
+from mirix.agent.tool_validators import validate_tool_args
 from mirix.system import (
     get_contine_chaining,
     get_token_limit_warning,
@@ -1035,6 +1036,28 @@ class Agent(BaseAgent):
                     )
 
                 continue_chaining = True
+
+                # Failure case 3: function arguments fail validation
+                validation_error = validate_tool_args(function_name, function_args)
+                if validation_error:
+                    function_response = package_function_response(False, validation_error)
+                    messages.append(
+                        Message.dict_to_message(
+                            agent_id=self.agent_state.id,
+                            model=self.model,
+                            openai_message_dict={
+                                "role": "tool",
+                                "name": function_name,
+                                "content": function_response,
+                                "tool_call_id": tool_call_id,
+                            },
+                        )
+                    )
+                    self.interface.function_message(
+                        f"Validation Error: {validation_error}", msg_obj=messages[-1]
+                    )
+                    overall_function_failed = True
+                    continue  # Skip execution, let LLM retry
 
                 # Failure case 5: function failed during execution
                 # NOTE: the msg_obj associated with the "Running " message is the prior assistant message, not the function/tool role message
