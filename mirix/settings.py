@@ -213,15 +213,6 @@ class Settings(BaseSettings):
         else:
             return None
 
-    # LangFuse observability configuration
-    langfuse_enabled: bool = Field(False, env="MIRIX_LANGFUSE_ENABLED")
-    langfuse_public_key: Optional[str] = Field(None, env="MIRIX_LANGFUSE_PUBLIC_KEY")
-    langfuse_secret_key: Optional[str] = Field(None, env="MIRIX_LANGFUSE_SECRET_KEY")
-    langfuse_host: str = Field("https://cloud.langfuse.com", env="MIRIX_LANGFUSE_HOST")
-    langfuse_flush_interval: int = Field(10, env="MIRIX_LANGFUSE_FLUSH_INTERVAL")  # 10s for containers
-    langfuse_debug: bool = Field(False, env="MIRIX_LANGFUSE_DEBUG")
-    langfuse_flush_timeout: float = Field(10.0, env="MIRIX_LANGFUSE_FLUSH_TIMEOUT")  # Shutdown timeout
-
     # multi agent settings
     multi_agent_send_message_max_retries: int = 3
     multi_agent_send_message_timeout: int = 20 * 60
