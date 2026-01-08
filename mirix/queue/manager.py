@@ -104,11 +104,25 @@ class QueueManager:
             # Import Kafka queue (lazy import to avoid unnecessary dependency)
             try:
                 from .kafka_queue import KafkaQueue
-                return KafkaQueue(
-                    bootstrap_servers=config.KAFKA_BOOTSTRAP_SERVERS,
-                    topic=config.KAFKA_TOPIC,
-                    group_id=config.KAFKA_GROUP_ID
-                )
+                
+                # Build kwargs for KafkaQueue
+                kafka_kwargs = {
+                    'bootstrap_servers': config.KAFKA_BOOTSTRAP_SERVERS,
+                    'topic': config.KAFKA_TOPIC,
+                    'group_id': config.KAFKA_GROUP_ID,
+                    'serialization_format': config.KAFKA_SERIALIZATION_FORMAT,
+                    'security_protocol': config.KAFKA_SECURITY_PROTOCOL,
+                }
+                
+                # Add SSL parameters if provided
+                if config.KAFKA_SSL_CAFILE:
+                    kafka_kwargs['ssl_cafile'] = config.KAFKA_SSL_CAFILE
+                if config.KAFKA_SSL_CERTFILE:
+                    kafka_kwargs['ssl_certfile'] = config.KAFKA_SSL_CERTFILE
+                if config.KAFKA_SSL_KEYFILE:
+                    kafka_kwargs['ssl_keyfile'] = config.KAFKA_SSL_KEYFILE
+                
+                return KafkaQueue(**kafka_kwargs)
             except ImportError as e:
                 raise ImportError(
                     f"Kafka queue requested but dependencies not installed: {e}\n"

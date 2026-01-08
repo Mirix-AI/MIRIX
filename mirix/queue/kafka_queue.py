@@ -1,11 +1,13 @@
 """
 Kafka queue implementation
 Requires kafka-python and protobuf libraries to be installed
-Uses Google Protocol Buffers for message serialization
+Supports both Protocol Buffers and JSON serialization
 """
+import json
 import logging
 from typing import Optional
 
+from google.protobuf.json_format import MessageToDict, ParseDict
 from mirix.queue.queue_interface import QueueInterface
 from mirix.queue.message_pb2 import QueueMessage
 
@@ -13,18 +15,36 @@ logger = logging.getLogger(__name__)
 
 
 class KafkaQueue(QueueInterface):
-    """Kafka-based queue implementation using Protocol Buffers"""
+    """Kafka-based queue implementation supporting Protobuf and JSON serialization"""
     
-    def __init__(self, bootstrap_servers: str, topic: str, group_id: str):
+    def __init__(
+        self, 
+        bootstrap_servers: str, 
+        topic: str, 
+        group_id: str,
+        serialization_format: str = 'protobuf',
+        security_protocol: str = 'PLAINTEXT',
+        ssl_cafile: Optional[str] = None,
+        ssl_certfile: Optional[str] = None,
+        ssl_keyfile: Optional[str] = None
+    ):
         """
-        Initialize Kafka producer and consumer with Protobuf serialization
+        Initialize Kafka producer and consumer with configurable serialization
         
         Args:
             bootstrap_servers: Kafka broker address(es)
             topic: Kafka topic name
             group_id: Consumer group ID
+            serialization_format: 'protobuf' or 'json' (default: 'protobuf')
+            security_protocol: Kafka security protocol - 'PLAINTEXT', 'SSL', 'SASL_PLAINTEXT', 'SASL_SSL'
+            ssl_cafile: Path to CA certificate file for SSL/TLS verification
+            ssl_certfile: Path to client certificate file for mTLS
+            ssl_keyfile: Path to client private key file for mTLS
         """
-        logger.debug("Initializing Kafka queue: servers=%s, topic=%s, group=%s", bootstrap_servers, topic, group_id)
+        logger.debug(
+            "Initializing Kafka queue: servers=%s, topic=%s, group=%s, format=%s, security=%s", 
+            bootstrap_servers, topic, group_id, serialization_format, security_protocol
+        )
         
         try:
             from kafka import KafkaProducer, KafkaConsumer
@@ -36,6 +56,7 @@ class KafkaQueue(QueueInterface):
             )
         
         self.topic = topic
+        self.serialization_format = serialization_format.lower()
         
         # Protobuf serializer: Convert QueueMessage to bytes
         def protobuf_serializer(message: QueueMessage) -> bytes:
@@ -65,20 +86,74 @@ class KafkaQueue(QueueInterface):
             msg.ParseFromString(serialized_msg)
             return msg
         
-        # Initialize Kafka producer with Protobuf serializer and key serializer
+        # JSON serializer: Convert QueueMessage to JSON bytes
+        def json_serializer(message: QueueMessage) -> bytes:
+            """
+            Serialize QueueMessage to JSON format
+            
+            Args:
+                message: QueueMessage protobuf to serialize
+                
+            Returns:
+                JSON bytes
+            """
+            message_dict = MessageToDict(message, preserving_proto_field_name=True)
+            return json.dumps(message_dict).encode('utf-8')
+        
+        # JSON deserializer: Convert JSON bytes to QueueMessage
+        def json_deserializer(serialized_msg: bytes) -> QueueMessage:
+            """
+            Deserialize JSON message to QueueMessage
+            
+            Args:
+                serialized_msg: JSON bytes
+                
+            Returns:
+                QueueMessage protobuf object
+            """
+            message_dict = json.loads(serialized_msg.decode('utf-8'))
+            return ParseDict(message_dict, QueueMessage())
+        
+        # Select serializer/deserializer based on format
+        if self.serialization_format == 'json':
+            value_serializer = json_serializer
+            value_deserializer = json_deserializer
+            logger.info("Using JSON serialization for Kafka messages")
+        else:
+            value_serializer = protobuf_serializer
+            value_deserializer = protobuf_deserializer
+            logger.info("Using Protobuf serialization for Kafka messages")
+        
+        # Build Kafka producer/consumer config with optional SSL
+        kafka_config = {
+            'bootstrap_servers': bootstrap_servers,
+        }
+        
+        # Add SSL configuration if security protocol is SSL
+        if security_protocol.upper() in ['SSL', 'SASL_SSL']:
+            kafka_config['security_protocol'] = security_protocol.upper()
+            if ssl_cafile:
+                kafka_config['ssl_cafile'] = ssl_cafile
+            if ssl_certfile:
+                kafka_config['ssl_certfile'] = ssl_certfile
+            if ssl_keyfile:
+                kafka_config['ssl_keyfile'] = ssl_keyfile
+            logger.info("Kafka SSL/TLS configured: protocol=%s", security_protocol)
+        
+        # Initialize Kafka producer with selected serializer and key serializer
         # Key serializer enables partition key routing for consistent message ordering per user
         self.producer = KafkaProducer(
-            bootstrap_servers=bootstrap_servers,
+            **kafka_config,
             key_serializer=lambda k: k.encode('utf-8'),  # Encode partition key to bytes
-            value_serializer=protobuf_serializer
+            value_serializer=value_serializer
         )
         
-        # Initialize Kafka consumer with Protobuf deserializer
+        # Initialize Kafka consumer with selected deserializer
         self.consumer = KafkaConsumer(
             topic,
-            bootstrap_servers=bootstrap_servers,
+            **kafka_config,
             group_id=group_id,
-            value_deserializer=protobuf_deserializer,
+            value_deserializer=value_deserializer,
             auto_offset_reset='earliest',  # Start from beginning if no offset exists
             enable_auto_commit=True,
             consumer_timeout_ms=1000  # Timeout for polling
