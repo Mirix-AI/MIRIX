@@ -41,8 +41,8 @@ class KafkaQueue(QueueInterface):
             ssl_certfile: Path to client certificate file for mTLS
             ssl_keyfile: Path to client private key file for mTLS
         """
-        logger.debug(
-            "Initializing Kafka queue: servers=%s, topic=%s, group=%s, format=%s, security=%s", 
+        logger.info(
+            "🔧 Initializing Kafka queue: servers=%s, topic=%s, group=%s, format=%s, security=%s", 
             bootstrap_servers, topic, group_id, serialization_format, security_protocol
         )
         
