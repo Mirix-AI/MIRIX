@@ -11,6 +11,7 @@ import numpy as np
 import pytz
 import requests
 
+from mirix.agent.tool_validators import validate_tool_args
 from mirix.constants import (
     CHAINING_FOR_MEMORY_UPDATE,
     CLEAR_HISTORY_AFTER_MEMORY_UPDATE,
@@ -82,7 +83,6 @@ from mirix.services.semantic_memory_manager import SemanticMemoryManager
 from mirix.services.step_manager import StepManager
 from mirix.services.tool_execution_sandbox import ToolExecutionSandbox
 from mirix.settings import settings, summarizer_settings
-from mirix.agent.tool_validators import validate_tool_args
 from mirix.system import (
     get_contine_chaining,
     get_token_limit_warning,

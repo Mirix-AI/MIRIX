@@ -6,12 +6,24 @@ from typing import List, Optional
 
 from mirix.agent import Agent, AgentState
 from mirix.log import get_logger
+from mirix.observability.context import (
+    clear_trace_context,
+    get_trace_context,
+    set_trace_context,
+)
+from mirix.observability.langfuse_client import get_langfuse_client
 from mirix.schemas.episodic_memory import EpisodicEventForLLM
 from mirix.schemas.knowledge_vault import KnowledgeVaultItemBase
 from mirix.schemas.mirix_message_content import TextContent
 from mirix.schemas.procedural_memory import ProceduralMemoryItemBase
 from mirix.schemas.resource_memory import ResourceMemoryItemBase
 from mirix.schemas.semantic_memory import SemanticMemoryItemBase
+
+# Import for setting AS_ROOT attribute
+try:
+    from langfuse._client.attributes import LangfuseOtelSpanAttributes
+except ImportError:
+    LangfuseOtelSpanAttributes = None  # type: ignore
 
 logger = get_logger(__name__)
 
@@ -970,81 +982,167 @@ def trigger_memory_update(
         agent_state.agent_type: agent_state for agent_state in child_agent_states
     }
 
+    # Capture trace context from main thread BEFORE spawning worker threads
+    # ContextVars don't automatically propagate to ThreadPoolExecutor workers
+    parent_trace_context = get_trace_context()
+    langfuse = get_langfuse_client()
+
     def _run_single_memory_update(memory_type: str) -> str:
-        agent_class = memory_type_to_agent_class[memory_type]
-        agent_type_str = f"{memory_type}_memory_agent"
+        # ThreadPoolExecutor reuses worker threads; ContextVars can leak between runs unless cleared.
+        try:
+            # Restore trace context in worker thread (ContextVars are thread-local)
+            # This is for LangFuse hierarchical tracing
+            if parent_trace_context.get("trace_id"):
+                set_trace_context(
+                    trace_id=parent_trace_context.get("trace_id"),
+                    observation_id=parent_trace_context.get("observation_id"),
+                    user_id=parent_trace_context.get("user_id"),
+                    session_id=parent_trace_context.get("session_id"),
+                )
 
-        agent_state = agent_type_to_state.get(agent_type_str)
-        if agent_state is None:
-            raise ValueError(f"No agent found with type '{agent_type_str}'")
+            agent_class = memory_type_to_agent_class[memory_type]
+            agent_type_str = f"{memory_type}_memory_agent"
 
-        # Get filter_tags, use_cache, client_id, user_id, and occurred_at from parent agent instance
-        # Deep copy filter_tags to ensure complete isolation between child agents
-        parent_filter_tags = getattr(self, "filter_tags", None)
-        # Don't use 'or {}' because empty dict {} is valid and different from None
-        filter_tags = (
-            deepcopy(parent_filter_tags) if parent_filter_tags is not None else None
-        )
-        use_cache = getattr(self, "use_cache", True)
-        actor = getattr(self, "actor", None)
-        user = getattr(self, "user", None)
-        occurred_at = getattr(
-            self, "occurred_at", None
-        )  # Get occurred_at from parent agent
+            agent_state = agent_type_to_state.get(agent_type_str)
+            if agent_state is None:
+                raise ValueError(f"No agent found with type '{agent_type_str}'")
 
-        import logging
-
-        logger = logging.getLogger(__name__)
-        logger.info(
-            f"🏷️  Creating {memory_type} agent with filter_tags={filter_tags}, client_id={actor.id if actor else None}, user_id={user.id if user else None}, occurred_at={occurred_at}"
-        )
-
-        memory_agent = agent_class(
-            agent_state=agent_state,
-            interface=self.interface,
-            actor=actor,
-            user=user,
-            filter_tags=filter_tags,
-            use_cache=use_cache,
-        )
-
-        # Set occurred_at on the child agent so it can use it during memory operations
-        if occurred_at is not None:
-            memory_agent.occurred_at = occurred_at
-
-        # Work on a copy of the user message so parallel updates do not interfere
-        if "message" not in user_message:
-            raise KeyError("user_message must contain a 'message' field")
-
-        if hasattr(user_message["message"], "model_copy"):
-            message_copy = user_message["message"].model_copy(deep=True)  # type: ignore[attr-defined]
-        else:
-            message_copy = deepcopy(user_message["message"])
-
-        system_msg = TextContent(
-            text=(
-                "[System Message] According to the instructions, the retrieved memories "
-                "and the above content, update the corresponding memory."
+            # Get filter_tags, use_cache, client_id, user_id, and occurred_at from parent agent instance
+            # Deep copy filter_tags to ensure complete isolation between child agents
+            parent_filter_tags = getattr(self, "filter_tags", None)
+            # Don't use 'or {}' because empty dict {} is valid and different from None
+            filter_tags = (
+                deepcopy(parent_filter_tags) if parent_filter_tags is not None else None
             )
-        )
+            use_cache = getattr(self, "use_cache", True)
+            actor = getattr(self, "actor", None)
+            user = getattr(self, "user", None)
+            occurred_at = getattr(
+                self, "occurred_at", None
+            )  # Get occurred_at from parent agent
 
-        if isinstance(message_copy.content, str):
-            message_copy.content = [TextContent(text=message_copy.content), system_msg]
-        elif isinstance(message_copy.content, list):
-            message_copy.content = list(message_copy.content) + [system_msg]
-        else:
-            message_copy.content = [system_msg]
+            import logging
 
-        # Pass actor (Client) and user (User) to memory agent
-        # actor is needed for write operations, user is needed for read operations
-        memory_agent.step(
-            input_messages=message_copy,
-            chaining=user_message.get("chaining", False),
-            actor=actor,  # Client for write operations
-            user=user,  # User for read operations
-        )
+            logger = logging.getLogger(__name__)
+            logger.info(
+                f"🏷️  Creating {memory_type} agent with filter_tags={filter_tags}, client_id={actor.id if actor else None}, user_id={user.id if user else None}, occurred_at={occurred_at}"
+            )
 
-        return f"[System Message] Agent {agent_state.name} has been triggered to update the memory.\n"
+            memory_agent = agent_class(
+                agent_state=agent_state,
+                interface=self.interface,
+                actor=actor,
+                user=user,
+                filter_tags=filter_tags,
+                use_cache=use_cache,
+            )
+
+            # Set occurred_at on the child agent so it can use it during memory operations
+            if occurred_at is not None:
+                memory_agent.occurred_at = occurred_at
+
+            # Work on a copy of the user message so parallel updates do not interfere
+            if "message" not in user_message:
+                raise KeyError("user_message must contain a 'message' field")
+
+            if hasattr(user_message["message"], "model_copy"):
+                message_copy = user_message["message"].model_copy(deep=True)  # type: ignore[attr-defined]
+            else:
+                message_copy = deepcopy(user_message["message"])
+
+            system_msg = TextContent(
+                text=(
+                    "[System Message] According to the instructions, the retrieved memories "
+                    "and the above content, update the corresponding memory."
+                )
+            )
+
+            if isinstance(message_copy.content, str):
+                message_copy.content = [
+                    TextContent(text=message_copy.content),
+                    system_msg,
+                ]
+            elif isinstance(message_copy.content, list):
+                message_copy.content = list(message_copy.content) + [system_msg]
+            else:
+                message_copy.content = [system_msg]
+
+            # Pass actor (Client) and user (User) to memory agent
+            # actor is needed for write operations, user is needed for read operations
+
+            # Wrap child agent execution in a LangFuse span for hierarchical tracing
+            trace_id = (
+                parent_trace_context.get("trace_id") if parent_trace_context else None
+            )
+            parent_span_id = (
+                parent_trace_context.get("observation_id")
+                if parent_trace_context
+                else None
+            )
+            if langfuse and trace_id:
+                from typing import cast
+
+                from langfuse.types import TraceContext
+
+                # Format span name as Title Case (e.g., "Episodic Memory Agent")
+                span_name = agent_type_str.replace("_", " ").title()
+
+                # Build trace_context with parent_span_id (per Langfuse v3 docs)
+                trace_context_dict: dict = {"trace_id": trace_id}
+                if parent_span_id:
+                    trace_context_dict["parent_span_id"] = parent_span_id
+
+                # Use context manager for proper OTel context propagation
+                with langfuse.start_as_current_observation(
+                    name=span_name,
+                    as_type="span",
+                    trace_context=cast(TraceContext, trace_context_dict),
+                    metadata={
+                        "memory_type": memory_type,
+                        "agent_name": agent_state.name,
+                    },
+                ) as span:
+                    # Override AS_ROOT to False - this span is a child, not a root
+                    # The SDK sets AS_ROOT=True when trace_context is provided, but we want proper nesting
+                    if LangfuseOtelSpanAttributes is not None and hasattr(
+                        span, "_otel_span"
+                    ):
+                        span._otel_span.set_attribute(
+                            LangfuseOtelSpanAttributes.AS_ROOT, False
+                        )
+                    # Get this span's ID for child operations
+                    span_observation_id = getattr(span, "id", None)
+                    if span_observation_id:
+                        logger.debug(
+                            f"Child agent span created: agent={agent_type_str}, "
+                            f"span_id={span_observation_id}, parent={parent_span_id}"
+                        )
+                        # Update ContextVar so child LLM calls use this span as parent
+                        set_trace_context(
+                            trace_id=trace_id,
+                            observation_id=span_observation_id,
+                            user_id=parent_trace_context.get("user_id"),
+                            session_id=parent_trace_context.get("session_id"),
+                        )
+
+                    memory_agent.step(
+                        input_messages=message_copy,
+                        chaining=user_message.get("chaining", False),
+                        actor=actor,
+                        user=user,
+                    )
+            else:
+                # No tracing available, run directly
+                memory_agent.step(
+                    input_messages=message_copy,
+                    chaining=user_message.get("chaining", False),
+                    actor=actor,
+                    user=user,
+                )
+
+            return f"[System Message] Agent {agent_state.name} has been triggered to update the memory.\n"
+        finally:
+            clear_trace_context()
 
     max_workers = min(len(memory_types), max(os.cpu_count() or 1, 1))
     responses: dict[int, str] = {}

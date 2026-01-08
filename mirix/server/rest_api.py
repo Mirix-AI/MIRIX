@@ -159,15 +159,17 @@ app.add_middleware(
 @app.middleware("http")
 async def langfuse_tracing_middleware(request: Request, call_next):
     """
-    Create LangFuse traces for all API requests using LangFuse 3.x context-based API.
-    
+    Create LangFuse traces for all API requests using context manager pattern.
+
     This middleware:
-    1. Creates a span context for each incoming request
-    2. Updates the current trace with request metadata
+    1. Resets OTel context to prevent leaking from previous requests
+    2. Creates a root span for each incoming request
     3. Sets trace context for downstream operations
     4. Clears trace context when the request completes
     """
     import uuid
+
+    from opentelemetry import context as otel_context
 
     from mirix.observability import get_langfuse_client, is_langfuse_enabled
     from mirix.observability.context import clear_trace_context, set_trace_context
@@ -180,74 +182,91 @@ async def langfuse_tracing_middleware(request: Request, call_next):
     if not langfuse:
         return await call_next(request)
 
-    # Extract metadata from request
-    method = request.method
-    path = request.url.path
-    user_id = request.headers.get("x-user-id")
-    client_id = request.headers.get("x-client-id")
-    org_id = request.headers.get("x-org-id")
-    session_id = request.headers.get("x-session-id") or f"{client_id}-{uuid.uuid4().hex[:8]}"
+    # For LangFuse, reset OTel context to prevent leaking from previous requests.
+    # Without this, subsequent requests inherit the previous request's start time,
+    # causing trace durations to accumulate incorrectly.
+    otel_token = otel_context.attach(otel_context.Context())
 
-    # Use context manager to create a span (which creates a trace if needed)
-    with langfuse.start_as_current_span(name=f"{method} {path}") as span:
-        try:
-            # Get the trace ID from LangFuse
-            trace_id = langfuse.get_current_trace_id()
-            observation_id = langfuse.get_current_observation_id()
+    try:
+        # Extract metadata from request
+        method = request.method
+        path = request.url.path
+        user_id = request.headers.get("x-user-id")
+        client_id = request.headers.get("x-client-id")
+        org_id = request.headers.get("x-org-id")
+        session_id = f"{client_id}-{uuid.uuid4().hex[:8]}"
 
-            logger.debug(f"LangFuse trace created: trace_id={trace_id}, path={path}")
+        # Generate a unique trace_id for each request to ensure separate traces
+        trace_id = uuid.uuid4().hex
 
-            # Update the trace with metadata
-            langfuse.update_current_trace(
-                name=f"{method} {path}",
-                user_id=user_id or client_id,
-                session_id=session_id,
-                metadata={
-                    "method": method,
-                    "path": path,
-                    "client_id": client_id,
-                    "org_id": org_id,
-                    "user_agent": request.headers.get("user-agent"),
-                },
-            )
+        # Use context manager - this properly sets up OTel context
+        # Root trace has no parent_span_id
+        from typing import cast
 
-            # Set trace context for downstream operations
-            set_trace_context(
-                trace_id=trace_id,
-                observation_id=observation_id,
-                user_id=user_id or client_id,
-                session_id=session_id,
-            )
+        from langfuse.types import TraceContext
 
-            # Process request
-            response = await call_next(request)
-
-            # Update trace with response status
+        with langfuse.start_as_current_observation(
+            name=f"{method} {path}",
+            as_type="span",
+            trace_context=cast(TraceContext, {"trace_id": trace_id}),
+        ) as span:
             try:
-                langfuse.update_current_trace(
-                    output={"status_code": response.status_code},
-                    tags=["success" if response.status_code < 400 else "error"],
+                # Get observation_id from the span object
+                observation_id = getattr(span, "id", None)
+                logger.debug(
+                    f"LangFuse trace created: trace_id={trace_id}, observation_id={observation_id}, path={path}"
                 )
-                logger.debug(f"LangFuse trace updated: trace_id={trace_id}, status={response.status_code}")
+
+                # Update trace with user info
+                langfuse.update_current_trace(
+                    name=f"{method} {path}",
+                    user_id=user_id or client_id,
+                    session_id=session_id,
+                    metadata={
+                        "method": method,
+                        "path": path,
+                        "client_id": client_id,
+                        "org_id": org_id,
+                        "user_agent": request.headers.get("user-agent"),
+                    },
+                )
+
+                # Set trace context for downstream operations
+                set_trace_context(
+                    trace_id=trace_id,
+                    observation_id=observation_id,
+                    user_id=user_id or client_id,
+                    session_id=session_id,
+                )
+
+                # Process request
+                response = await call_next(request)
+
+                # Update span with response status
+                try:
+                    span.update(output={"status_code": response.status_code})
+                    logger.debug(
+                        f"LangFuse trace updated: trace_id={trace_id}, status={response.status_code}"
+                    )
+                except Exception as e:
+                    logger.debug(f"Failed to update trace: {e}")
+
+                return response
+
             except Exception as e:
-                logger.debug(f"Failed to update trace: {e}")
+                # Log error and mark span as failed
+                try:
+                    span.update(output={"error": str(e)}, level="ERROR")
+                except Exception as trace_error:
+                    logger.debug(f"Failed to update trace on error: {trace_error}")
+                raise
 
-            return response
+            finally:
+                clear_trace_context()
 
-        except Exception as e:
-            # Log error and mark trace as failed
-            try:
-                langfuse.update_current_trace(
-                    output={"error": str(e)},
-                    tags=["error", "exception"],
-                )
-            except Exception as trace_error:
-                logger.debug(f"Failed to update trace on error: {trace_error}")
-            raise
-
-        finally:
-            # Clear trace context
-            clear_trace_context()
+    finally:
+        # Always detach the OTel context we attached, even if an error occurred
+        otel_context.detach(otel_token)
 
 
 # Middleware to resolve X-API-Key into X-Client-Id/X-Org-Id for all routes
