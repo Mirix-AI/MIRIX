@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Optional
+from typing import List, Optional
 import uuid
 
 from pydantic import Field
@@ -27,6 +27,8 @@ class Client(ClientBase):
         name (str): The name of the client application.
         status (str): Whether the client is active or not.
         scope (str): Scope of client (read, write, read_write, admin).
+        email (str): Optional email for dashboard login.
+        password_hash (str): Optional password hash for dashboard login.
         created_at (datetime): The creation date of the client.
     """
 
@@ -41,9 +43,11 @@ class Client(ClientBase):
     name: str = Field(..., description="The name of the client application.")
     status: str = Field("active", description="Whether the client is active or not.")
     scope: str = Field("read_write", description="Scope of client.")
-
-    # Authentication
-    api_key_hash: Optional[str] = Field(None, description="Hashed API key")
+    
+    # Dashboard authentication fields
+    email: Optional[str] = Field(None, description="Email address for dashboard login.")
+    password_hash: Optional[str] = Field(None, description="Hashed password for dashboard login.")
+    last_login: Optional[datetime] = Field(None, description="Last dashboard login time.")
 
     created_at: Optional[datetime] = Field(
         default_factory=get_utc_time, description="The creation date of the client."

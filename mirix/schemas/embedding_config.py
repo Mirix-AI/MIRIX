@@ -93,14 +93,6 @@ class EmbeddingConfig(BaseModel):
                 embedding_dim=768,
                 embedding_chunk_size=2048,
             )
-        elif model_name == "mirix":
-            return cls(
-                embedding_endpoint="https://embeddings.memgpt.ai",
-                embedding_model="BAAI/bge-large-en-v1.5",
-                embedding_dim=1024,
-                embedding_chunk_size=300,
-                embedding_endpoint_type="hugging-face",
-            )
         else:
             raise ValueError(f"Model {model_name} not supported.")
 

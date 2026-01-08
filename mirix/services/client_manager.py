@@ -3,10 +3,14 @@ from typing import List, Optional
 from mirix.orm.errors import NoResultFound
 from mirix.orm.organization import Organization as OrganizationModel
 from mirix.orm.client import Client as ClientModel
+from mirix.orm.client_api_key import ClientApiKey as ClientApiKeyModel
 from mirix.schemas.client import Client as PydanticClient
 from mirix.schemas.client import ClientUpdate
+from mirix.schemas.client_api_key import ClientApiKey as PydanticClientApiKey
+from mirix.schemas.client_api_key import ClientApiKeyCreate
 from mirix.services.organization_manager import OrganizationManager
 from mirix.utils import enforce_types
+from mirix.security.api_keys import hash_api_key
 
 
 class ClientManager:
@@ -78,6 +82,102 @@ class ClientManager:
             # Commit the updated client and update cache
             existing_client.update_with_redis(session, actor=None)  # Updates Redis cache
             return existing_client.to_pydantic()
+
+    @enforce_types
+    def create_client_api_key(
+        self, 
+        client_id: str, 
+        api_key: str, 
+        name: Optional[str] = None,
+        permission: str = "all",
+        user_id: Optional[str] = None
+    ) -> PydanticClientApiKey:
+        """Create a new API key for a client."""
+        hashed = hash_api_key(api_key)
+        with self.session_maker() as session:
+            # Verify client exists
+            existing_client = ClientModel.read(db_session=session, identifier=client_id)
+            
+            # Create new API key with full Pydantic model (generates ID)
+            api_key_pydantic = PydanticClientApiKey(
+                client_id=client_id,
+                organization_id=existing_client.organization_id,
+                api_key_hash=hashed,
+                name=name,
+                status="active",
+                permission=permission,
+                user_id=user_id
+            )
+            # Convert to ORM model
+            new_api_key = ClientApiKeyModel(**api_key_pydantic.model_dump())
+            new_api_key.create(session)
+            return new_api_key.to_pydantic()
+
+    @enforce_types
+    def set_client_api_key(self, client_id: str, api_key: str, name: Optional[str] = None) -> PydanticClientApiKey:
+        """
+        Create a new API key for a client (deprecated name, use create_client_api_key).
+        
+        This method now creates a new API key entry in the client_api_keys table.
+        For backward compatibility with existing scripts.
+        """
+        return self.create_client_api_key(client_id, api_key, name)
+
+    @enforce_types
+    def get_client_by_api_key(self, api_key: str) -> Optional[PydanticClient]:
+        """Lookup a client via API key (hash match) from the client_api_keys table."""
+        hashed = hash_api_key(api_key)
+        with self.session_maker() as session:
+            # Query the ClientApiKey table
+            api_key_record = (
+                session.query(ClientApiKeyModel)
+                .filter(
+                    ClientApiKeyModel.api_key_hash == hashed,
+                    ClientApiKeyModel.status == "active",
+                    ClientApiKeyModel.is_deleted == False
+                )
+                .first()
+            )
+            if not api_key_record:
+                return None
+            
+            # Get the associated client
+            client = ClientModel.read(db_session=session, identifier=api_key_record.client_id)
+            if client.is_deleted or client.status != "active":
+                return None
+            
+            return client.to_pydantic()
+
+    @enforce_types
+    def list_client_api_keys(self, client_id: str) -> List[PydanticClientApiKey]:
+        """List all API keys for a client."""
+        with self.session_maker() as session:
+            api_keys = (
+                session.query(ClientApiKeyModel)
+                .filter(
+                    ClientApiKeyModel.client_id == client_id,
+                    ClientApiKeyModel.is_deleted == False
+                )
+                .all()
+            )
+            return [key.to_pydantic() for key in api_keys]
+
+    @enforce_types
+    def revoke_client_api_key(self, api_key_id: str) -> PydanticClientApiKey:
+        """Revoke an API key (set status to 'revoked')."""
+        with self.session_maker() as session:
+            api_key = ClientApiKeyModel.read(db_session=session, identifier=api_key_id)
+            api_key.status = "revoked"
+            api_key.update(session, actor=None)
+            return api_key.to_pydantic()
+
+    @enforce_types
+    def delete_client_api_key(self, api_key_id: str) -> None:
+        """Permanently delete an API key from the database."""
+        with self.session_maker() as session:
+            api_key = ClientApiKeyModel.read(db_session=session, identifier=api_key_id)
+            session.delete(api_key)
+            session.commit()
 
     @enforce_types
     def update_client_status(self, client_id: str, status: str) -> PydanticClient:
@@ -483,8 +583,16 @@ class ClientManager:
 
     @enforce_types
     def get_default_client(self) -> PydanticClient:
-        """Fetch the default client."""
-        return self.get_client_by_id(self.DEFAULT_CLIENT_ID)
+        """Fetch the default client, creating it if it doesn't exist."""
+        try:
+            return self.get_client_by_id(self.DEFAULT_CLIENT_ID)
+        except NoResultFound:
+            # Default client doesn't exist, create it
+            # First ensure the default organization exists
+            from mirix.services.organization_manager import OrganizationManager
+            org_mgr = OrganizationManager()
+            org_mgr.get_default_organization()  # Auto-creates if missing
+            return self.create_default_client(org_id=OrganizationManager.DEFAULT_ORG_ID)
 
     @enforce_types
     def get_client_or_default(

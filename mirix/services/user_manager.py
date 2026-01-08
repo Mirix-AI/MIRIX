@@ -1,5 +1,6 @@
 from typing import List, Optional, Tuple
 
+from mirix.log import get_logger
 from mirix.orm.errors import NoResultFound
 from mirix.orm.organization import Organization as OrganizationModel
 from mirix.orm.user import User as UserModel
@@ -8,12 +9,15 @@ from mirix.schemas.user import UserUpdate
 from mirix.services.organization_manager import OrganizationManager
 from mirix.utils import enforce_types
 
+logger = get_logger(__name__)
+
 
 class UserManager:
     """Manager class to handle business logic related to Users."""
 
-    DEFAULT_USER_NAME = "default_user"
-    DEFAULT_USER_ID = "user-00000000-0000-4000-8000-000000000000"
+    ADMIN_USER_NAME = "admin_user"
+    ADMIN_USER_ID = "user-00000000-0000-4000-8000-000000000000"
+    DEFAULT_USER_NAME = "default_user"  # Organization-specific default user for block templates
     DEFAULT_TIME_ZONE = "UTC (UTC+00:00)"
 
     def __init__(self):
@@ -23,10 +27,10 @@ class UserManager:
         self.session_maker = db_context
 
     @enforce_types
-    def create_default_user(
+    def create_admin_user(
         self, org_id: str = OrganizationManager.DEFAULT_ORG_ID
     ) -> PydanticUser:
-        """Create the default user."""
+        """Create the admin user."""
         with self.session_maker() as session:
             # Make sure the org id exists
             try:
@@ -39,26 +43,39 @@ class UserManager:
             # Try to retrieve the user
             try:
                 user = UserModel.read(
-                    db_session=session, identifier=self.DEFAULT_USER_ID
+                    db_session=session, identifier=self.ADMIN_USER_ID
                 )
             except NoResultFound:
                 # If it doesn't exist, make it
                 user = UserModel(
-                    id=self.DEFAULT_USER_ID,
-                    name=self.DEFAULT_USER_NAME,
+                    id=self.ADMIN_USER_ID,
+                    name=self.ADMIN_USER_NAME,
                     status="active",
                     timezone=self.DEFAULT_TIME_ZONE,
                     organization_id=org_id,
+                    is_admin=True,
                 )
                 user.create(session)
 
             return user.to_pydantic()
 
     @enforce_types
-    def create_user(self, pydantic_user: PydanticUser) -> PydanticUser:
-        """Create a new user if it doesn't already exist (with Redis caching)."""
+    def create_user(
+        self, 
+        pydantic_user: PydanticUser, 
+        client_id: Optional[str] = None
+    ) -> PydanticUser:
+        """Create a new user if it doesn't already exist (with Redis caching).
+        
+        Args:
+            pydantic_user: The user data
+            client_id: Optional client ID to associate the user with
+        """
         with self.session_maker() as session:
-            new_user = UserModel(**pydantic_user.model_dump())
+            user_data = pydantic_user.model_dump()
+            if client_id:
+                user_data["client_id"] = client_id
+            new_user = UserModel(**user_data)
             new_user.create_with_redis(session, actor=None)  # ⭐ Auto-caches to Redis
             return new_user.to_pydantic()
 
@@ -376,26 +393,115 @@ class UserManager:
             return pydantic_user
 
     @enforce_types
-    def get_default_user(self) -> PydanticUser:
-        """Fetch the default user."""
-        return self.get_user_by_id(self.DEFAULT_USER_ID)
+    def get_admin_user(self) -> PydanticUser:
+        """Fetch the admin user, creating it if it doesn't exist."""
+        try:
+            return self.get_user_by_id(self.ADMIN_USER_ID)
+        except NoResultFound:
+            # Admin user doesn't exist, create it
+            # First ensure the default organization exists
+            from mirix.services.organization_manager import OrganizationManager
+            org_mgr = OrganizationManager()
+            org_mgr.get_default_organization()  # Auto-creates if missing
+            return self.create_admin_user(org_id=OrganizationManager.DEFAULT_ORG_ID)
 
     @enforce_types
-    def get_user_or_default(self, user_id: Optional[str] = None):
-        """Fetch the user or default user."""
+    def get_or_create_org_default_user(self, org_id: str, client_id: Optional[str] = None) -> PydanticUser:
+        """
+        Get or create the default template user for an organization.
+        This user serves as the template for copying blocks to new users.
+        
+        Args:
+            org_id: Organization ID
+            client_id: Optional client ID (for audit trail)
+            
+        Returns:
+            PydanticUser: The default user for this organization
+        """
+        # Try to find existing default user for this org
+        with self.session_maker() as session:
+            try:
+                user = session.query(UserModel).filter(
+                    UserModel.name == self.DEFAULT_USER_NAME,
+                    UserModel.organization_id == org_id,
+                    UserModel.is_deleted == False
+                ).first()
+                
+                if user:
+                    logger.debug("Found existing default user %s for organization %s", user.id, org_id)
+                    return user.to_pydantic()
+            except Exception as e:
+                logger.debug("Error finding default user: %s", e)
+        
+        # Default user doesn't exist, create it
+        logger.info("Creating default template user for organization %s", org_id)
+        
+        # Generate a deterministic user_id for the default user
+        default_user_id = f"user-default-{org_id}"
+        
+        try:
+            # Try to get by ID first (in case it exists with that ID)
+            return self.get_user_by_id(default_user_id)
+        except NoResultFound:
+            pass
+        
+        # Create the default user
+        with self.session_maker() as session:
+            user = UserModel(
+                id=default_user_id,
+                name=self.DEFAULT_USER_NAME,
+                status="active",
+                timezone=self.DEFAULT_TIME_ZONE,
+                organization_id=org_id,
+                client_id=client_id,  # Optional - which client created this user
+            )
+            user.create(session)
+            logger.info("✅ Created default template user %s for organization %s", default_user_id, org_id)
+            return user.to_pydantic()
+
+    @enforce_types
+    def get_user_or_admin(self, user_id: Optional[str] = None):
+        """Fetch the user or admin user."""
         if not user_id:
-            return self.get_default_user()
+            return self.get_admin_user()
 
         try:
             return self.get_user_by_id(user_id=user_id)
         except NoResultFound:
-            return self.get_default_user()
+            return self.get_admin_user()
 
     @enforce_types
     def list_users(
-        self, cursor: Optional[str] = None, limit: Optional[int] = 50
-    ) -> Tuple[Optional[str], List[PydanticUser]]:
-        """List users with pagination using cursor (id) and limit."""
+        self, 
+        cursor: Optional[str] = None, 
+        limit: Optional[int] = 50,
+        client_id: Optional[str] = None,
+        organization_id: Optional[str] = None,
+    ) -> List[PydanticUser]:
+        """List users with pagination using cursor (id) and limit.
+        
+        Args:
+            cursor: Cursor for pagination
+            limit: Maximum number of users to return
+            client_id: Filter by client ID (users belonging to this client)
+            organization_id: Filter by organization ID
+        """
         with self.session_maker() as session:
-            results = UserModel.list(db_session=session, cursor=cursor, limit=limit)
+            query = session.query(UserModel).filter(UserModel.is_deleted == False)
+            
+            if client_id:
+                query = query.filter(UserModel.client_id == client_id)
+            
+            if organization_id:
+                query = query.filter(UserModel.organization_id == organization_id)
+            
+            query = query.order_by(UserModel.created_at.desc())
+            
+            if cursor:
+                query = query.filter(UserModel.id < cursor)
+            
+            if limit:
+                query = query.limit(limit)
+            
+            results = query.all()
             return [user.to_pydantic() for user in results]

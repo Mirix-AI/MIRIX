@@ -3,10 +3,10 @@ from typing import Dict, List, Optional
 
 from mirix.orm.errors import NoResultFound
 from mirix.orm.message import Message as MessageModel
+from mirix.schemas.client import Client as PydanticClient
 from mirix.schemas.enums import MessageRole
 from mirix.schemas.message import Message as PydanticMessage
 from mirix.schemas.message import MessageUpdate
-from mirix.schemas.client import Client as PydanticClient
 from mirix.services.utils import update_timezone
 from mirix.utils import enforce_types
 
@@ -29,7 +29,7 @@ class MessageManager:
         try:
             from mirix.database.redis_client import get_redis_client
             redis_client = get_redis_client()
-            
+
             if use_cache and redis_client:
                 redis_key = f"{redis_client.MESSAGE_PREFIX}{message_id}"
                 cached_data = redis_client.get_hash(redis_key)
@@ -41,7 +41,7 @@ class MessageManager:
             from mirix.log import get_logger
             logger = get_logger(__name__)
             logger.warning("Redis cache read failed for message %s: %s", message_id, e)
-        
+
         # Cache MISS or Redis unavailable - fetch from PostgreSQL
         with self.session_maker() as session:
             try:
@@ -49,7 +49,7 @@ class MessageManager:
                     db_session=session, identifier=message_id, actor=actor
                 )
                 pydantic_message = message.to_pydantic()
-                
+
                 # Populate Redis cache for next time
                 try:
                     if redis_client:
@@ -62,7 +62,7 @@ class MessageManager:
                     from mirix.log import get_logger
                     logger = get_logger(__name__)
                     logger.warning("Failed to populate Redis cache for message %s: %s", message_id, e)
-                
+
                 return pydantic_message
             except NoResultFound:
                 return None
@@ -82,14 +82,10 @@ class MessageManager:
                 limit=len(message_ids),
             )
 
-            if len(results) != len(message_ids):
-                raise NoResultFound(
-                    f"Expected {len(message_ids)} messages, but found {len(results)}. Missing ids={set(message_ids) - set([r.id for r in results])}"
-                )
-
-            # Sort results directly based on message_ids
+            # Return messages in requested order, skipping any missing IDs
+            # (messages may be missing due to concurrent summarization/cleanup by other workers)
             result_dict = {msg.id: msg.to_pydantic() for msg in results}
-            return [result_dict[msg_id] for msg_id in message_ids]
+            return [result_dict[msg_id] for msg_id in message_ids if msg_id in result_dict]
 
     @enforce_types
     def create_message(
@@ -112,21 +108,21 @@ class MessageManager:
         with self.session_maker() as session:
             # Set the organization id of the Pydantic message
             pydantic_msg.organization_id = actor.organization_id
-            
+
             # Set client_id: use provided value, or from message, or from actor
             if client_id:
                 pydantic_msg.client_id = client_id
             elif not pydantic_msg.client_id:
                 pydantic_msg.client_id = actor.id
-            
+
             # Set user_id: use provided value, or from message, or fallback to default user
             if user_id is not None:
                 pydantic_msg.user_id = user_id
             elif not pydantic_msg.user_id:
                 # Fallback: use default system user for client-level operations
                 from mirix.services.user_manager import UserManager
-                pydantic_msg.user_id = UserManager.DEFAULT_USER_ID
-            
+                pydantic_msg.user_id = UserManager.ADMIN_USER_ID
+
             msg_data = pydantic_msg.model_dump()
             msg = MessageModel(**msg_data)
             msg.create_with_redis(session, actor=actor, use_cache=use_cache)
@@ -220,37 +216,37 @@ class MessageManager:
         """
         from mirix.database.redis_client import get_redis_client
         from mirix.schemas.message import MessageRole
-        
+
         with self.session_maker() as session:
             # Get IDs for non-system messages only (preserve system messages)
             message_ids = [row[0] for row in session.query(MessageModel.id).filter(
                 MessageModel.client_id == actor.id,
                 MessageModel.role != MessageRole.system  # Exclude system messages
             ).all()]
-            
+
             count = len(message_ids)
             if count == 0:
                 return 0
-            
+
             # Bulk delete in single query (exclude system messages)
             session.query(MessageModel).filter(
                 MessageModel.client_id == actor.id,
                 MessageModel.role != MessageRole.system
             ).delete(synchronize_session=False)
-            
+
             session.commit()
-        
+
         # Batch delete from Redis cache (outside of session context)
         redis_client = get_redis_client()
         if redis_client and message_ids:
             redis_keys = [f"{redis_client.MESSAGE_PREFIX}{msg_id}" for msg_id in message_ids]
-            
+
             # Delete in batches to avoid command size limits
             BATCH_SIZE = 1000
             for i in range(0, len(redis_keys), BATCH_SIZE):
                 batch = redis_keys[i:i + BATCH_SIZE]
                 redis_client.client.delete(*batch)
-        
+
         return count
 
     def soft_delete_by_client_id(self, actor: PydanticClient) -> int:
@@ -264,28 +260,28 @@ class MessageManager:
             Number of records soft deleted
         """
         from mirix.database.redis_client import get_redis_client
-        
+
         with self.session_maker() as session:
             # Query all non-deleted records for this client (use actor.id)
             messages = session.query(MessageModel).filter(
                 MessageModel.client_id == actor.id,
                 MessageModel.is_deleted == False
             ).all()
-            
+
             count = len(messages)
             if count == 0:
                 return 0
-            
+
             # Extract IDs BEFORE committing (to avoid detached instance errors)
             message_ids = [msg.id for msg in messages]
-            
+
             # Soft delete from database (set is_deleted = True directly, don't call msg.delete())
             for msg in messages:
                 msg.is_deleted = True
                 msg.set_updated_at()
-            
+
             session.commit()
-        
+
         # Update Redis cache with is_deleted=true (outside session)
         redis_client = get_redis_client()
         if redis_client:
@@ -296,7 +292,7 @@ class MessageManager:
                 except Exception:
                     # If update fails, remove from cache
                     redis_client.delete(redis_key)
-        
+
         return count
 
     def soft_delete_by_user_id(self, user_id: str) -> int:
@@ -310,28 +306,28 @@ class MessageManager:
             Number of records soft deleted
         """
         from mirix.database.redis_client import get_redis_client
-        
+
         with self.session_maker() as session:
             # Query all non-deleted records for this user
             messages = session.query(MessageModel).filter(
                 MessageModel.user_id == user_id,
                 MessageModel.is_deleted == False
             ).all()
-            
+
             count = len(messages)
             if count == 0:
                 return 0
-            
+
             # Extract IDs BEFORE committing (to avoid detached instance errors)
             message_ids = [msg.id for msg in messages]
-            
+
             # Soft delete from database (set is_deleted = True directly, don't call msg.delete())
             for msg in messages:
                 msg.is_deleted = True
                 msg.set_updated_at()
-            
+
             session.commit()
-        
+
         # Update Redis cache with is_deleted=true (outside session)
         redis_client = get_redis_client()
         if redis_client:
@@ -342,7 +338,7 @@ class MessageManager:
                 except Exception:
                     # If update fails, remove from cache
                     redis_client.delete(redis_key)
-        
+
         return count
 
     def delete_by_user_id(self, user_id: str) -> int:
@@ -359,37 +355,37 @@ class MessageManager:
         """
         from mirix.database.redis_client import get_redis_client
         from mirix.schemas.message import MessageRole
-        
+
         with self.session_maker() as session:
             # Get IDs for non-system messages only (preserve system messages)
             message_ids = [row[0] for row in session.query(MessageModel.id).filter(
                 MessageModel.user_id == user_id,
                 MessageModel.role != MessageRole.system  # Exclude system messages
             ).all()]
-            
+
             count = len(message_ids)
             if count == 0:
                 return 0
-            
+
             # Bulk delete in single query (exclude system messages)
             session.query(MessageModel).filter(
                 MessageModel.user_id == user_id,
                 MessageModel.role != MessageRole.system
             ).delete(synchronize_session=False)
-            
+
             session.commit()
-        
+
         # Batch delete from Redis cache (outside of session context)
         redis_client = get_redis_client()
         if redis_client and message_ids:
             redis_keys = [f"{redis_client.MESSAGE_PREFIX}{msg_id}" for msg_id in message_ids]
-            
+
             # Delete in batches to avoid command size limits
             BATCH_SIZE = 1000
             for i in range(0, len(redis_keys), BATCH_SIZE):
                 batch = redis_keys[i:i + BATCH_SIZE]
                 redis_client.client.delete(*batch)
-        
+
         return count
 
     @enforce_types
@@ -397,17 +393,22 @@ class MessageManager:
         self,
         actor: PydanticClient,
         role: Optional[MessageRole] = None,
+        user_id: Optional[str] = None,
         agent_id: Optional[str] = None,
     ) -> int:
         """Get the total count of messages with optional filters.
 
         Args:
-            actor: The user requesting the count
+            actor: The client requesting the count
             role: The role of the message
         """
         with self.session_maker() as session:
             return MessageModel.size(
-                db_session=session, actor=actor, role=role, agent_id=agent_id
+                db_session=session,
+                actor=actor,
+                role=role,
+                user_id=user_id,
+                agent_id=agent_id,
             )
 
     @update_timezone
@@ -553,7 +554,7 @@ class MessageManager:
             deleted_count = 0
             from mirix.database.redis_client import get_redis_client
             redis_client = get_redis_client()
-            
+
             for msg in detached_messages:
                 # Remove from Redis cache
                 if redis_client:
@@ -607,13 +608,13 @@ class MessageManager:
                 deleted_count = 0
                 from mirix.database.redis_client import get_redis_client
                 redis_client = get_redis_client()
-                
+
                 for msg in detached_messages:
                     # Remove from Redis cache
                     if redis_client:
                         redis_key = f"{redis_client.MESSAGE_PREFIX}{msg.id}"
                         redis_client.delete(redis_key)
-                    msg.hard_delete(session, actor=actor)
+                    msg.hard_delete(session)
                     deleted_count += 1
 
                 cleanup_results[agent.id] = deleted_count

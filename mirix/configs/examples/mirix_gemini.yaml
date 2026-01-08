@@ -13,7 +13,6 @@ embedding_config:
   embedding_endpoint: "https://generativelanguage.googleapis.com"
   embedding_dim: 768
 
-
 meta_agent_config:
   system_prompts_folder: mirix\prompts\system\base
   agents:

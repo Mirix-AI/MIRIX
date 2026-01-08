@@ -2,9 +2,9 @@ name: Tests
 
 on:
   push:
-    branches: [ main, master, dev, re-org ]
+    branches: [ main, master, dev, re-org, production ]
   pull_request:
-    branches: [ main, master, dev, re-org ]
+    branches: [ main, master, dev, re-org, production ]
 
 jobs:
   test:
@@ -36,15 +36,49 @@ jobs:
         pip install -e .
         pip install pytest pytest-cov python-dotenv requests pyyaml
 
-    - name: Run memory server tests (fast)
-      run: pytest tests/test_memory_server.py -v
+    - name: Verify workspace structure
+      run: |
+        echo "Current directory: ${{ github.workspace }}"
+        ls -la
+      shell: bash
+
+    - name: Run unit/in-process tests (no server required)
+      run: |
+        cd "${{ github.workspace }}"
+        python -m pytest tests/test_memory_server.py \
+               tests/test_auth_provider.py \
+               tests/test_queue.py \
+               tests/test_redis_integration.py -v
+      shell: bash
       env:
         GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 
-    - name: Run memory integration tests (with server)
-      run: pytest tests/test_memory_integration.py -v -m integration
+    - name: Start API server
+      if: matrix.os != 'windows-latest'
+      run: |
+        python scripts/start_server.py --port 8000 --log-level warning &
+        sleep 8
+        curl --retry 5 --retry-delay 3 --retry-all-errors http://localhost:8000/health
+      shell: bash
+      env:
+        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+
+    - name: Run API/integration tests
+      if: matrix.os != 'windows-latest'
+      run: |
+        cd "${{ github.workspace }}"
+        python -m pytest \
+          tests/test_memory_integration.py \
+          tests/test_agent_prompt_update.py \
+          tests/test_client_agent_isolation.py \
+          tests/test_deletion_apis.py \
+          tests/test_temporal_queries.py \
+          tests/test_user.py -v
+      shell: bash
       env:
         GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -53,7 +87,10 @@ jobs:
 
     - name: Generate coverage (Ubuntu + Python 3.12 only)
       if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
-      run: pytest tests/test_memory_server.py --cov=mirix --cov-report=html --cov-report=term
+      run: |
+        cd "${{ github.workspace }}"
+        python -m pytest tests/test_memory_server.py --cov=mirix --cov-report=html --cov-report=term
+      shell: bash
       continue-on-error: true
 
     - name: Upload coverage report

@@ -174,13 +174,6 @@ class LLMConfig(BaseModel):
                 model_wrapper=None,
                 context_window=128000,
             )
-        elif model_name == "letta":
-            return cls(
-                model="memgpt-openai",
-                model_endpoint_type="openai",
-                model_endpoint="https://inference.memgpt.ai",
-                context_window=8192,
-            )
         else:
             raise ValueError(f"Model {model_name} not supported.")
 

@@ -13,9 +13,9 @@ from mirix import EmbeddingConfig, LLMConfig
 from mirix.agent.agent import Agent, BaseAgent
 from mirix.agent.message_queue import MessageQueue
 from mirix.interface import AgentInterface
-from mirix.orm import User
+from mirix.orm import Client, User
 from mirix.prompts import gpt_system
-from mirix.schemas.agent import AgentState, AgentType
+from mirix.schemas.agent import AgentState, AgentType, CreateAgent
 from mirix.schemas.memory import Memory
 from mirix.schemas.message import Message
 from mirix.schemas.usage import MirixUsageStatistics
@@ -167,6 +167,7 @@ class MetaAgent(BaseAgent):
         self,
         server: "SyncServer",
         user: User,
+        actor: Client,
         memory: Memory,
         llm_config: Optional[LLMConfig] = None,
         embedding_config: Optional[EmbeddingConfig] = None,
@@ -196,12 +197,14 @@ class MetaAgent(BaseAgent):
 
         self.server = server
         self.user = user
+        self.actor = actor
         self.memory = memory
         self.interface = interface
         self.system_prompts = system_prompts or {}
-        
+
         # Store filter_tags as a COPY to prevent mutation across agent instances
         from copy import deepcopy
+
         # Keep None as None, don't convert to empty dict - they have different meanings
         self.filter_tags = deepcopy(filter_tags) if filter_tags is not None else None
         self.use_cache = use_cache  # Store use_cache for memory operations
@@ -238,7 +241,7 @@ class MetaAgent(BaseAgent):
         Either loads existing agents from server or creates new ones.
         """
         # Check if agents already exist
-        existing_agents = self.server.agent_manager.list_agents(actor=self.user)
+        existing_agents = self.server.agent_manager.list_agents(actor=self.actor)
 
         printv(
             f"[Mirix.Agent.{self.agent_state.name}] INFO: Found {len(existing_agents)} existing agents"
@@ -288,23 +291,24 @@ class MetaAgent(BaseAgent):
         )
 
         # Ensure base tools are available
-        self.server.tool_manager.upsert_base_tools(self.user)
+        self.server.tool_manager.upsert_base_tools(self.actor)
 
         for config in MEMORY_AGENT_CONFIGS:
             # Get system prompt
             system_prompt = self._get_system_prompt_for_agent(config["name"])
 
             # Create agent state
-            agent_state = self.server.agent_manager.create_agent(
-                request=None,  # We'll handle this through the create_agent method parameters
-                actor=self.user,
+            agent_create = CreateAgent(
                 name=config["name"],
                 agent_type=config["agent_type"],
-                memory=self.memory,
                 system=system_prompt,
                 llm_config=self.llm_config,
                 embedding_config=self.embedding_config,
                 include_base_tools=config["include_base_tools"],
+            )
+            agent_state = self.server.agent_manager.create_agent(
+                agent_create=agent_create,
+                actor=self.actor,
             )
 
             # Store the agent state
@@ -353,7 +357,7 @@ class MetaAgent(BaseAgent):
             # Update agent
             self.server.agent_manager.update_agent_tools_and_system_prompts(
                 agent_id=agent_state.id,
-                actor=self.user,
+                actor=self.actor,
                 system_prompt=system_prompt,
             )
 
@@ -361,7 +365,7 @@ class MetaAgent(BaseAgent):
             self.server.agent_manager.update_llm_config(
                 agent_id=agent_state.id,
                 llm_config=self.llm_config,
-                actor=self.user,
+                actor=self.actor,
             )
 
         printv(
@@ -383,6 +387,7 @@ class MetaAgent(BaseAgent):
                     interface=self.interface,
                     agent_state=agent_state,
                     user=self.user,
+                    actor=self.actor,
                     filter_tags=self.filter_tags,
                     use_cache=self.use_cache,
                 )
@@ -488,7 +493,7 @@ class MetaAgent(BaseAgent):
                 self.server.agent_manager.update_llm_config(
                     agent_id=agent_state.id,
                     llm_config=llm_config,
-                    actor=self.user,
+                    actor=self.actor,
                 )
 
         printv(
@@ -508,7 +513,7 @@ class MetaAgent(BaseAgent):
         actor = None
         if self.client_id:
             actor = self.server.client_manager.get_client_by_id(self.client_id)
-        
+
         for agent_state in self.memory_agent_states.get_all_agent_states_list():
             if agent_state is not None:
                 self.server.agent_manager.update_agent(
@@ -548,7 +553,7 @@ class MetaAgent(BaseAgent):
         Refresh all agent states from the server.
         Useful after external modifications to agent configurations.
         """
-        existing_agents = self.server.agent_manager.list_agents(actor=self.user)
+        existing_agents = self.server.agent_manager.list_agents(actor=self.actor)
         self._load_existing_agents(existing_agents)
         self._initialize_agent_instances()
         printv(

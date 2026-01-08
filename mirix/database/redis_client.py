@@ -976,6 +976,7 @@ class RedisMemoryClient:
         search_fields: List[str],
         limit: int = 10,
         user_id: Optional[str] = None,
+        organization_id: Optional[str] = None,
         return_fields: Optional[List[str]] = None,
         filter_tags: Optional[Dict[str, Any]] = None,
         start_date: Optional[Any] = None,
@@ -990,6 +991,7 @@ class RedisMemoryClient:
             search_fields: Fields to search in (e.g., ["summary", "details"])
             limit: Maximum number of results
             user_id: Filter by user_id (optional)
+            organization_id: Filter by organization_id (optional)
             return_fields: Specific fields to return (None = return all)
             filter_tags: Optional filter tags for additional filtering
             start_date: Optional start datetime for temporal filtering
@@ -1005,6 +1007,7 @@ class RedisMemoryClient:
                 search_fields=["details"],
                 limit=10,
                 user_id="user-123",
+                organization_id="org-456",
                 filter_tags={"expert_id": "expert-123"},
                 start_date=datetime(2025, 11, 19),
                 end_date=datetime(2025, 11, 19, 23, 59, 59)
@@ -1031,6 +1034,11 @@ class RedisMemoryClient:
             if user_id:
                 escaped_user_id = user_id.replace("-", "\\-").replace(":", "\\:")
                 query_parts.append(f"@user_id:{{{escaped_user_id}}}")
+            
+            # Add organization_id filter (TEXT field)
+            if organization_id:
+                escaped_org_id = organization_id.replace("-", "\\-").replace(":", "\\:")
+                query_parts.append(f"@organization_id:{escaped_org_id}")
             
             # Add temporal filtering (numeric range query on occurred_at_ts)
             if start_date or end_date:
@@ -1096,6 +1104,7 @@ class RedisMemoryClient:
         vector_field: str,
         limit: int = 10,
         user_id: Optional[str] = None,
+        organization_id: Optional[str] = None,
         return_fields: Optional[List[str]] = None,
         filter_tags: Optional[Dict[str, Any]] = None,
         start_date: Optional[Any] = None,
@@ -1110,6 +1119,7 @@ class RedisMemoryClient:
             vector_field: Vector field to search (e.g., "summary_embedding", "details_embedding")
             limit: Maximum number of results (K in KNN)
             user_id: Filter by user_id (optional)
+            organization_id: Filter by organization_id (optional)
             return_fields: Specific fields to return (None = return all)
             filter_tags: Optional filter tags for additional filtering
             start_date: Optional start datetime for temporal filtering
@@ -1125,6 +1135,7 @@ class RedisMemoryClient:
                 vector_field="summary_embedding",
                 limit=10,
                 user_id="user-123",
+                organization_id="org-456",
                 filter_tags={"expert_id": "expert-123"}
             )
         """
@@ -1143,6 +1154,11 @@ class RedisMemoryClient:
             if user_id:
                 escaped_user_id = user_id.replace("-", "\\-").replace(":", "\\:")
                 query_parts.append(f"@user_id:{{{escaped_user_id}}}")
+            
+            # Add organization_id filter (TEXT field)
+            if organization_id:
+                escaped_org_id = organization_id.replace("-", "\\-").replace(":", "\\:")
+                query_parts.append(f"@organization_id:{escaped_org_id}")
             
             # Add temporal filtering (numeric range query on occurred_at_ts)
             if start_date or end_date:
@@ -1217,6 +1233,7 @@ class RedisMemoryClient:
         index_name: str,
         limit: int = 10,
         user_id: Optional[str] = None,
+        organization_id: Optional[str] = None,
         sort_by: str = "created_at_ts",
         return_fields: Optional[List[str]] = None,
         filter_tags: Optional[Dict[str, Any]] = None,
@@ -1230,6 +1247,7 @@ class RedisMemoryClient:
             index_name: Index to search
             limit: Maximum number of results
             user_id: Filter by user_id (optional)
+            organization_id: Filter by organization_id (optional)
             sort_by: Field to sort by (default: "created_at_ts")
             return_fields: Specific fields to return (None = return all)
             filter_tags: Optional filter tags for additional filtering
@@ -1244,6 +1262,7 @@ class RedisMemoryClient:
                 index_name="idx:episodic_memory",
                 limit=10,
                 user_id="user-123",
+                organization_id="org-456",
                 sort_by="occurred_at_ts",
                 filter_tags={"expert_id": "expert-123"},
                 start_date=datetime(2025, 11, 19),
@@ -1261,6 +1280,11 @@ class RedisMemoryClient:
             if user_id:
                 escaped_user_id = user_id.replace("-", "\\-").replace(":", "\\:")
                 query_parts.append(f"@user_id:{{{escaped_user_id}}}")
+            
+            # Add organization_id filter (TEXT field)
+            if organization_id:
+                escaped_org_id = organization_id.replace("-", "\\-").replace(":", "\\:")
+                query_parts.append(f"@organization_id:{escaped_org_id}")
             
             # Add temporal filtering (numeric range query on occurred_at_ts)
             if start_date or end_date:

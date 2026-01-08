@@ -5,9 +5,9 @@ from logging import CRITICAL, DEBUG, ERROR, INFO, NOTSET, WARN, WARNING
 # Client Constants - Used by both client and server
 # ============================================================================
 
-# Default organization and user IDs (needed by schemas)
+# Default organization and admin user IDs (needed by schemas)
 DEFAULT_ORG_ID = "org-00000000-0000-4000-8000-000000000000"
-DEFAULT_USER_ID = "user-00000000-0000-4000-8000-000000000000"
+ADMIN_USER_ID = "user-00000000-0000-4000-8000-000000000000"
 
 # Embedding constants
 MAX_EMBEDDING_DIM = 4096  # maximum supported embedding size - do NOT change or else DBs will need to be reset

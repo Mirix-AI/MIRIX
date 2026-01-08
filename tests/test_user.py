@@ -68,11 +68,10 @@ def server_check():
 
 
 @pytest.fixture(scope="module")
-def client(server_check):
+def client(server_check, api_auth):
     """Create a client connected to the test server."""
     client = MirixClient(
-        client_id=TEST_CLIENT_ID,
-        org_id=TEST_ORG_ID,
+        api_key=api_auth["api_key"],
         debug=False,
     )
     

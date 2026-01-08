@@ -48,3 +48,5 @@ htmlcov/
 *.sqlite-journal
 test-results/
 test_*.db
+*.log
+.persist

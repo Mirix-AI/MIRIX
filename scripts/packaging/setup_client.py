@@ -48,9 +48,21 @@ if "--version" in sys.argv:
 this_directory = os.path.abspath(os.path.dirname(__file__))
 # Go up two levels: packaging/ -> scripts/ -> project_root/
 project_root = os.path.dirname(os.path.dirname(this_directory))
+CLIENT_VERSION = "0.1.0"
 
 with open(os.path.join(project_root, "README.md"), encoding="utf-8") as f:
     long_description = f.read()
+
+
+def load_requirements(filename: str) -> list[str]:
+    """Load dependency list from a requirements file, ignoring comments/blanks."""
+    req_path = os.path.join(this_directory, filename)
+    with open(req_path, encoding="utf-8") as req_file:
+        return [
+            line.strip()
+            for line in req_file.readlines()
+            if line.strip() and not line.startswith("#")
+        ]
 
 
 # Get version from command line or __init__.py
@@ -71,22 +83,8 @@ def get_version():
             return version_match.group(1)
         raise RuntimeError("Unable to find version string.")
 
-
 # Client-specific dependencies (minimal)
-client_dependencies = [
-    "requests>=2.31.0",
-    "pydantic>=2.0.0",
-    "pydantic-settings>=2.0.0",
-    "python-dotenv>=1.0.0",
-    "httpx>=0.25.0",
-    "jinja2>=3.1.0",
-    "demjson3>=3.0.0",
-    "json-repair>=0.25.0",
-    "rich>=13.7.1,<14.0.0",
-    "pytz>=2024.1",
-    "docstring-parser>=0.15",
-    "pyhumps>=3.8.0",
-]
+client_dependencies = load_requirements("requirements_client.txt")
 
 # Change to project root directory so we can use relative paths
 os.chdir(project_root)
@@ -106,27 +104,21 @@ setup(
         "Source Code": "https://github.com/Mirix-AI/MIRIX",
         "Bug Reports": "https://github.com/Mirix-AI/MIRIX/issues",
     },
-    # Only include client-related packages
+    # Only include client-related packages (explicit to avoid pulling server code)
     packages=[
         "mirix.client",
         "mirix.schemas",
         "mirix.schemas.openai",
         "mirix.helpers",
-        "mirix.functions",
-        "mirix.functions.function_sets",
     ],
     py_modules=[
         "mirix.system",
         "mirix.settings",
         "mirix.log",
         "mirix.constants",
-        "mirix.errors",
     ],
     package_dir={"": "."},
-    include_package_data=True,
-    package_data={
-        "mirix": [],
-    },
+    include_package_data=False,
     install_requires=client_dependencies,
     extras_require={
         "dev": [

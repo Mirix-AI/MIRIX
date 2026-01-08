@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mirix"
-version = "0.6.5"
+version = "0.1.0"
 description = "Multi-Agent Personal Assistant with an Advanced Memory System"
 readme = "README.md"
 license = {text = "Apache License 2.0"}
@@ -85,6 +85,9 @@ dependencies = [
     "ipdb (>=0.13.13,<0.14.0)",
     "protobuf (>=5.0.0,<6.0.0)",
     "redis[hiredis] (>=7.0.1,<8.0.0)",
+    "bcrypt (>=4.0.0)",
+    "PyJWT (>=2.10.1)",
+    "langfuse (>=3.11.0,<4.0.0)",
 ]
 
 [project.optional-dependencies]

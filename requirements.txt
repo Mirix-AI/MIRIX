@@ -53,3 +53,7 @@ pytest
 pytest-cov
 pyyaml
 requests
+bcrypt
+PyJWT>=2.10.1
+langfuse>=2.52.0
+langfuse-openai>=2.0.0

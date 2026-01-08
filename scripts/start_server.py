@@ -7,7 +7,7 @@ Usage:
 
 Options:
     --host HOST         Host to bind to (default: 0.0.0.0)
-    --port PORT         Port to bind to (default: 8000)
+    --port PORT         Port to bind to (default: 8531)
     --reload            Enable auto-reload for development
     --workers N         Number of worker processes (default: 1)
     --log-level LEVEL   Log level (default: info)
@@ -38,8 +38,8 @@ def main():
     parser.add_argument(
         "--port",
         type=int,
-        default=8000,
-        help="Port to bind to (default: 8000)",
+        default=8531,
+        help="Port to bind to (default: 8531)",
     )
     
     parser.add_argument(

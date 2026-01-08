@@ -1,6 +1,6 @@
 from typing import TYPE_CHECKING, Optional, Type
 
-from sqlalchemy import BigInteger, ForeignKey, Integer, String, event
+from sqlalchemy import BigInteger, ForeignKey, Index, Integer, String, UniqueConstraint, event
 from sqlalchemy.orm import (
     Mapped,
     declared_attr,
@@ -25,6 +25,10 @@ class Block(OrganizationMixin, UserMixin, SqlalchemyBase):
 
     __tablename__ = "block"
     __pydantic_model__ = PydanticBlock
+    __table_args__ = (
+        UniqueConstraint("id", "label", name="unique_block_id_label"),
+        Index("idx_block_id_label", "id", "label", unique=True),
+    )
 
     label: Mapped[str] = mapped_column(
         doc="the type of memory block in use, ie 'human', 'persona', 'system'"

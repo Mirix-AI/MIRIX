@@ -32,11 +32,6 @@ sys.path.insert(0, str(project_root))
 
 from mirix.client import MirixClient
 
-# Use existing client/org that already has agents initialized
-# Change these to match your working setup (e.g., from run_client.py or samples)
-TEST_ORG_ID = "demo-org"  # Replace with your actual org_id
-TEST_CLIENT_ID = "demo-client"  # Replace with your actual client_id
-
 # Mark all tests as integration tests
 pytestmark = [
     pytest.mark.integration,
@@ -70,7 +65,7 @@ def server_check():
 
 
 @pytest.fixture(scope="module")
-def client(server_check):
+def client(server_check, api_auth):
     """
     Create a client connected to the test server.
     
@@ -83,14 +78,12 @@ def client(server_check):
     
     # Create client with same parameters as add_test_memory.py
     client = MirixClient(
-        api_key=None,
-        client_id=TEST_CLIENT_ID,
+        api_key=api_auth["api_key"],
         client_name="Demo Client Application",
         client_scope="Sales",
-        org_id=TEST_ORG_ID,
         debug=False,
     )
-    print(f"[SETUP] ✓ Client created: {TEST_CLIENT_ID}")
+    print("[SETUP] Client created via API key")
     
     # Create or get user (ensures user exists in backend database)
     print(f"[SETUP] Creating/getting user: demo-user")
@@ -98,9 +91,8 @@ def client(server_check):
         user_id = client.create_or_get_user(
             user_id="demo-user",
             user_name="Demo User",
-            org_id=TEST_ORG_ID
         )
-        print(f"[SETUP] ✓ User ready: {user_id}")
+        print(f"[SETUP] User ready: {user_id}")
     except Exception as e:
         import traceback
         error_details = traceback.format_exc()
@@ -194,7 +186,7 @@ def client(server_check):
         if len(all_agents) == 0:
             pytest.skip(
                 "\n" + "="*70 + "\n"
-                f"No agents found for client '{TEST_CLIENT_ID}' in org '{TEST_ORG_ID}'.\n\n"
+                "No agents found for client via API key.\n\n"
                 "Agent initialization failed. Check server logs for errors.\n"
                 + "="*70
             )

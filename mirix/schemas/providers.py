@@ -68,27 +68,10 @@ class MirixProvider(Provider):
     name: str = "mirix"
 
     def list_llm_models(self) -> List[LLMConfig]:
-        return [
-            LLMConfig(
-                model="mirix-free",  # NOTE: renamed
-                model_endpoint_type="openai",
-                model_endpoint="https://inference.memgpt.ai",
-                context_window=8192,
-                handle=self.get_handle("mirix-free"),
-            )
-        ]
+        return []
 
     def list_embedding_models(self):
-        return [
-            EmbeddingConfig(
-                embedding_model="mirix-free",  # NOTE: renamed
-                embedding_endpoint_type="hugging-face",
-                embedding_endpoint="https://embeddings.memgpt.ai",
-                embedding_dim=1024,
-                embedding_chunk_size=300,
-                handle=self.get_handle("mirix-free"),
-            )
-        ]
+        return []
 
 class OpenAIProvider(Provider):
     name: str = "openai"

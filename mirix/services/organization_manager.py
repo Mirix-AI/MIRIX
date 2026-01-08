@@ -19,8 +19,12 @@ class OrganizationManager:
 
     @enforce_types
     def get_default_organization(self) -> PydanticOrganization:
-        """Fetch the default organization."""
-        return self.get_organization_by_id(self.DEFAULT_ORG_ID)
+        """Fetch the default organization, creating it if it doesn't exist."""
+        try:
+            return self.get_organization_by_id(self.DEFAULT_ORG_ID)
+        except NoResultFound:
+            # Default organization doesn't exist, create it
+            return self.create_default_organization()
 
     @enforce_types
     def get_organization_by_id(self, org_id: str) -> Optional[PydanticOrganization]:

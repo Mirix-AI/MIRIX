@@ -154,8 +154,8 @@ class LocalClient(AbstractClient):
         if user_id:
             self.user_id = user_id
         else:
-            # get default user
-            self.user_id = self.server.user_manager.DEFAULT_USER_ID
+            # get default admin user
+            self.user_id = self.server.user_manager.ADMIN_USER_ID
         # save client_id that `LocalClient` is associated with
         if client_id:
             self.client_id = client_id
@@ -888,19 +888,28 @@ class LocalClient(AbstractClient):
             actor=self.client,
         )
 
-    def get_in_context_messages(self, agent_id: str) -> List[Message]:
+    def get_in_context_messages(self, agent_id: str, user_id: Optional[str] = None) -> List[Message]:
         """
         Get in-context messages of an agent
 
         Args:
             agent_id (str): ID of the agent
+            user_id (str): Optional user ID to filter messages for. If None, returns all messages.
 
         Returns:
             messages (List[Message]): List of in-context messages
         """
-        return self.server.agent_manager.get_in_context_messages(
+        agent_state = self.server.agent_manager.get_agent_by_id(
             agent_id=agent_id,
             actor=self.client,
+        )
+        user = None
+        if user_id:
+            user = self.server.user_manager.get_user_by_id(user_id)
+        return self.server.agent_manager.get_in_context_messages(
+            agent_state=agent_state,
+            actor=self.client,
+            user=user,
         )
 
     # agent interactions
@@ -933,6 +942,7 @@ class LocalClient(AbstractClient):
         self,
         agent_id: str,
         messages: List[Union[Message | MessageCreate]],
+        user_id: Optional[str] = None,  # End-user ID
     ):
         """
         Send pre-packed messages to an agent.
@@ -940,15 +950,32 @@ class LocalClient(AbstractClient):
         Args:
             agent_id (str): ID of the agent
             messages (List[Union[Message | MessageCreate]]): List of messages to send
+            user_id (str): Optional end-user ID for message attribution
 
         Returns:
             response (MirixResponse): Response from the agent
         """
         self.interface.clear()
+        
+        # Determine which user to use
+        target_user = None
+        if user_id is not None:
+            target_user = self.server.user_manager.get_user_by_id(user_id)
+            if target_user is None:
+                from mirix.log import get_logger
+                logger = get_logger(__name__)
+                logger.warning(
+                    f"User {user_id} not found, falling back to LocalClient's default user {self.user_id}"
+                )
+                target_user = self.user
+        else:
+            target_user = self.user
+        
         usage = self.server.send_messages(
             actor=self.client,
             agent_id=agent_id,
             input_messages=messages,
+            user=target_user,  # Pass user object
         )
 
         # format messages
@@ -961,6 +988,7 @@ class LocalClient(AbstractClient):
         name: Optional[str] = None,
         agent_id: Optional[str] = None,
         agent_name: Optional[str] = None,
+        user_id: Optional[str] = None,  # End-user ID for message attribution
         stream_steps: bool = False,
         stream_tokens: bool = False,
         chaining: Optional[bool] = None,
@@ -973,7 +1001,10 @@ class LocalClient(AbstractClient):
             message (str): Message to send
             role (str): Role of the message
             agent_id (str): ID of the agent
-            name(str): Name of the sender
+            name (str): Name of the sender
+            user_id (str): Optional end-user ID for message attribution. If not provided,
+                          uses the LocalClient's default user_id (set during initialization).
+                          This is critical for multi-user scenarios.
             stream_steps (bool): Stream the steps (default: `False`)
             stream_tokens (bool): Stream the tokens (default: `False`)
             chaining (bool): Whether to enable chaining for this message
@@ -1106,11 +1137,30 @@ class LocalClient(AbstractClient):
         else:
             raise ValueError(f"Invalid message type: {type(message)}")
 
+        # Determine which user to use
+        # If user_id provided, create User object for it; otherwise use LocalClient's default user
+        target_user = None
+        if user_id is not None:
+            # Get or create the specified user
+            target_user = self.server.user_manager.get_user_by_id(user_id)
+            if target_user is None:
+                # User doesn't exist, fall back to default
+                from mirix.log import get_logger
+                logger = get_logger(__name__)
+                logger.warning(
+                    f"User {user_id} not found, falling back to LocalClient's default user {self.user_id}"
+                )
+                target_user = self.user
+        else:
+            # Use LocalClient's default user
+            target_user = self.user
+
         usage = self.server.send_messages(
             actor=self.client,
             agent_id=agent_id,
             input_messages=input_messages,
             chaining=chaining,
+            user=target_user,  # Pass user object instead of relying on default
             verbose=verbose,
         )
 
@@ -1123,19 +1173,30 @@ class LocalClient(AbstractClient):
 
         return MirixResponse(messages=mirix_messages, usage=usage)
 
-    def user_message(self, agent_id: str, message: str) -> MirixResponse:
+    def user_message(
+        self, 
+        agent_id: str, 
+        message: str, 
+        user_id: Optional[str] = None  # End-user ID
+    ) -> MirixResponse:
         """
         Send a message to an agent as a user
 
         Args:
             agent_id (str): ID of the agent
             message (str): Message to send
+            user_id (str): Optional end-user ID for message attribution
 
         Returns:
             response (MirixResponse): Response from the agent
         """
         self.interface.clear()
-        return self.send_message(role="user", agent_id=agent_id, message=message)
+        return self.send_message(
+            role="user", 
+            agent_id=agent_id, 
+            message=message, 
+            user_id=user_id  # Pass user_id
+        )
 
     def run_command(self, agent_id: str, command: str) -> MirixResponse:
         """

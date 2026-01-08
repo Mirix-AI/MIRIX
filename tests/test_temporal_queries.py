@@ -143,21 +143,21 @@ class TestTemporalIntegration:
     # They are marked with @pytest.mark.integration to skip in unit test runs
     
     @pytest.mark.integration
-    def test_retrieve_with_temporal_expression(self, client, test_user):
+    def test_retrieve_with_temporal_expression(self):
         """Test retrieval with natural language temporal expression."""
         # This would test the full flow from client to database
         # Skip for now as it requires full setup
-        pytest.skip("Integration test - requires running server")
+        pytest.skip("Integration test - requires running server and full setup")
     
     @pytest.mark.integration
-    def test_retrieve_with_explicit_date_range(self, client, test_user):
+    def test_retrieve_with_explicit_date_range(self):
         """Test retrieval with explicit start_date and end_date."""
-        pytest.skip("Integration test - requires running server")
+        pytest.skip("Integration test - requires running server and full setup")
     
     @pytest.mark.integration
-    def test_temporal_filtering_episodic_only(self, client, test_user):
+    def test_temporal_filtering_episodic_only(self):
         """Test that temporal filtering only affects episodic memories."""
-        pytest.skip("Integration test - requires running server")
+        pytest.skip("Integration test - requires running server and full setup")
 
 
 # Additional documentation and usage examples

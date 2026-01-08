@@ -597,7 +597,7 @@ class KnowledgeVaultManager:
             
             client_id = actor.id  # Always derive from actor
             if user_id is None:
-                user_id = UserManager.DEFAULT_USER_ID
+                user_id = UserManager.ADMIN_USER_ID
 
             knowledge = self.create_item(
                 PydanticKnowledgeVaultItem(
@@ -647,7 +647,8 @@ class KnowledgeVaultManager:
         sensitivity: Optional[List[str]] = None,
         filter_tags: Optional[dict] = None,
         use_cache: bool = True,
-    ) -> List[PydanticKnowledgeVaultItem]:
+        similarity_threshold: Optional[float] = None,
+        ) -> List[PydanticKnowledgeVaultItem]:
         """
         Retrieve knowledge vault items according to the query.
 
@@ -682,6 +683,9 @@ class KnowledgeVaultManager:
               proper BM25 ranking
         """
         
+        # Extract organization_id from user for multi-tenant isolation
+        organization_id = user.organization_id
+        
         # ⭐ Try Redis Search first (if cache enabled and Redis is available)
         from mirix.database.redis_client import get_redis_client
         
@@ -697,6 +701,7 @@ class KnowledgeVaultManager:
                         index_name=redis_client.KNOWLEDGE_INDEX,
                         limit=limit or 50,
                         user_id=user.id,
+                        organization_id=organization_id,
                         filter_tags=filter_tags
                     )
                     if results:
@@ -720,6 +725,7 @@ class KnowledgeVaultManager:
                         vector_field="caption_embedding",
                         limit=limit or 50,
                         user_id=user.id,
+                        organization_id=organization_id,
                         filter_tags=filter_tags
                     )
                     if results:
@@ -737,6 +743,7 @@ class KnowledgeVaultManager:
                         search_fields=fields,
                         limit=limit or 50,
                         user_id=user.id,
+                        organization_id=organization_id,
                         filter_tags=filter_tags
                     )
                     if results:
@@ -762,6 +769,7 @@ class KnowledgeVaultManager:
                 query_stmt = (
                     select(KnowledgeVaultItem)
                     .where(KnowledgeVaultItem.user_id == user.id)
+                    .where(KnowledgeVaultItem.organization_id == organization_id)
                     .order_by(
                         cast(
                             text("knowledge_vault.last_modify ->> 'timestamp'"),
@@ -799,7 +807,11 @@ class KnowledgeVaultManager:
                     KnowledgeVaultItem.last_modify.label("last_modify"),
                     KnowledgeVaultItem.user_id.label("user_id"),
                     KnowledgeVaultItem.agent_id.label("agent_id"),
-                ).where(KnowledgeVaultItem.user_id == user.id)
+                ).where(
+                    KnowledgeVaultItem.user_id == user.id
+                ).where(
+                    KnowledgeVaultItem.organization_id == organization_id
+                )
 
                 # Add sensitivity filter to base query if provided
                 if sensitivity is not None:
@@ -826,6 +838,7 @@ class KnowledgeVaultManager:
                             KnowledgeVaultItem, search_field + "_embedding"
                         ),
                         target_class=KnowledgeVaultItem,
+                        similarity_threshold=similarity_threshold,
                     )
 
                 elif search_method == "string_match":
@@ -1177,7 +1190,8 @@ class KnowledgeVaultManager:
         sensitivity: Optional[List[str]] = None,
         filter_tags: Optional[dict] = None,
         use_cache: bool = True,
-    ) -> List[PydanticKnowledgeVaultItem]:
+        similarity_threshold: Optional[float] = None,
+        ) -> List[PydanticKnowledgeVaultItem]:
         """List knowledge vault items across ALL users in an organization."""
         from mirix.database.redis_client import get_redis_client
         redis_client = get_redis_client()
@@ -1274,7 +1288,7 @@ class KnowledgeVaultManager:
                 embedding_config = agent_state.embedding_config
                 if embedded_text is None:
                     from mirix.embeddings import embedding_model
-                    embedded_text = embedding_model.embed_and_upload_batch([query], embedding_config)[0]
+                    embedded_text = embedding_model(embedding_config).get_text_embedding(query)
                 
                 # Determine which embedding field to search
                 if search_field == "caption":
@@ -1283,7 +1297,13 @@ class KnowledgeVaultManager:
                     embedding_field = KnowledgeVaultItem.caption_embedding
                 
                 embedding_query_field = embedding_field.cosine_distance(embedded_text).label("distance")
-                base_query = base_query.add_columns(embedding_query_field).order_by(embedding_query_field)
+                base_query = base_query.add_columns(embedding_query_field)
+                
+                # Apply similarity threshold if provided
+                if similarity_threshold is not None:
+                    base_query = base_query.where(embedding_query_field < similarity_threshold)
+                
+                base_query = base_query.order_by(embedding_query_field)
             
             # BM25 search
             elif search_method == "bm25":

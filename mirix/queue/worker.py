@@ -9,6 +9,8 @@ from datetime import datetime
 from mirix.queue.message_pb2 import QueueMessage
 from mirix.log import get_logger
 from mirix.services.user_manager import UserManager
+from mirix.observability import restore_trace_from_queue_message
+from mirix.observability.context import clear_trace_context
 
 if TYPE_CHECKING:
     from .queue_interface import QueueInterface
@@ -22,18 +24,31 @@ logger = get_logger(__name__)  # Use Mirix logger for proper configuration
 class QueueWorker:
     """Background worker that processes messages from the queue"""
     
-    def __init__(self, queue: 'QueueInterface', server: Optional[Any] = None):
+    def __init__(
+        self,
+        queue: 'QueueInterface',
+        server: Optional[Any] = None,
+        partition_id: Optional[int] = None
+    ):
         """
         Initialize the queue worker
         
         Args:
             queue: Queue implementation to consume from
             server: Optional server instance to invoke APIs on
+            partition_id: Optional partition ID for partitioned queues.
+                         If set, worker will only consume from this partition.
+                         If None, uses default queue.get() behavior.
         """
-        logger.debug("Initializing queue worker with server=%s", 'provided' if server else 'None')
+        logger.debug(
+            "Initializing queue worker: server=%s, partition_id=%s",
+            'provided' if server else 'None',
+            partition_id
+        )
         
         self.queue = queue
         self._server = server
+        self._partition_id = partition_id
         self._running = False
         self._thread = None
         self._lock = threading.RLock()
@@ -63,8 +78,7 @@ class QueueWorker:
             # Client doesn't have timezone field - it's only for User
             created_at=proto_user.created_at.ToDatetime() if proto_user.HasField('created_at') else datetime.now(),
             updated_at=proto_user.updated_at.ToDatetime() if proto_user.HasField('updated_at') else datetime.now(),
-            is_deleted=proto_user.is_deleted,
-            api_key_hash=None  # No API key hash from protobuf
+            is_deleted=proto_user.is_deleted
         )
     
     def _convert_proto_message_to_pydantic(self, proto_msg) -> 'MessageCreate':
@@ -120,19 +134,23 @@ class QueueWorker:
         Args:
             message: QueueMessage protobuf to process
         """
-        # Check if server is available
-        with self._lock:
-            server = self._server
-        
-        if server is None:
-            logger.warning(
-                "No server available - skipping message: agent_id=%s, input_messages_count=%s",
-                message.agent_id,
-                len(message.input_messages)
-            )
-            return
-        
         try:
+            # Restore LangFuse trace context from queue message for distributed tracing
+            trace_restored = restore_trace_from_queue_message(message)
+            if trace_restored:
+                logger.debug("Restored trace context from queue message for processing")
+            
+            # Check if server is available
+            with self._lock:
+                server = self._server
+            
+            if server is None:
+                logger.warning(
+                    "No server available - skipping message: agent_id=%s, input_messages_count=%s",
+                    message.agent_id,
+                    len(message.input_messages)
+                )
+                return
             # Validate actor exists before processing
             if not message.HasField('actor') or not message.actor.id:
                 raise ValueError(
@@ -183,17 +201,17 @@ class QueueWorker:
                         )
                         logger.info("✓ Auto-created user: %s in organization: %s", user_id, actor.organization_id)
                     except Exception as create_error:
-                        # If auto-creation fails, fall back to default user
+                        # If auto-creation fails, fall back to admin user
                         logger.error(
-                            "Failed to auto-create user with id=%s: %s. Falling back to default user.",
+                            "Failed to auto-create user with id=%s: %s. Falling back to admin user.",
                             user_id,
                             create_error
-                    )
-                    user = user_manager.get_default_user()
+                        )
+                        user = user_manager.get_admin_user()
             else:
-                # If no user_id provided, use default user
+                # If no user_id provided, use admin user
                 user_manager = UserManager()
-                user = user_manager.get_default_user()            
+                user = user_manager.get_admin_user()            
             
             # Extract filter_tags from protobuf Struct
             filter_tags = None
@@ -244,23 +262,34 @@ class QueueWorker:
                 e,
                 exc_info=True
             )
+        finally:
+            # Clear trace context to prevent leaking between messages
+            clear_trace_context()
     
     def _consume_messages(self) -> None:
         """
         Main worker loop - continuously consume and process messages
         Runs in a separate thread
         """
-        logger.info("🎯 Queue worker thread ENTERED _consume_messages()")
+        partition_info = f", partition={self._partition_id}" if self._partition_id is not None else ""
+        logger.info("🎯 Queue worker thread ENTERED _consume_messages()%s", partition_info)
         logger.info("   _running=%s, _server=%s", self._running, self._server is not None)
         
         while self._running:
             try:
                 # Get message from queue (with timeout to allow graceful shutdown)
-                message: QueueMessage = self.queue.get(timeout=1.0)
+                # Use partition-specific get if partition_id is set and queue supports it
+                if self._partition_id is not None and hasattr(self.queue, 'get_from_partition'):
+                    message: QueueMessage = self.queue.get_from_partition(
+                        self._partition_id, timeout=1.0
+                    )
+                else:
+                    message: QueueMessage = self.queue.get(timeout=1.0)
                 
                 # Log receipt of message
                 logger.debug(
-                    "Received message: agent_id=%s, user_id=%s, input_messages_count=%s (client_id will be derived from actor)",
+                    "Received message%s: agent_id=%s, user_id=%s, input_messages_count=%s (client_id will be derived from actor)",
+                    partition_info,
                     message.agent_id,
                     message.user_id if message.HasField('user_id') else 'None',
                     len(message.input_messages)
@@ -286,24 +315,34 @@ class QueueWorker:
             logger.warning("⚠️ Queue worker already running")
             return  # Already running
         
-        logger.info("🚀 Starting queue worker thread...")
+        partition_info = f" (partition {self._partition_id})" if self._partition_id is not None else ""
+        logger.info("🚀 Starting queue worker thread%s...", partition_info)
         self._running = True
         
         # Create and start daemon thread
         # Daemon threads automatically stop when the main program exits
-        logger.info("📝 Creating daemon thread for message consumption...")
-        self._thread = threading.Thread(target=self._consume_messages, daemon=True)
+        thread_name = f"QueueWorker-{self._partition_id}" if self._partition_id is not None else "QueueWorker"
+        logger.info("📝 Creating daemon thread for message consumption%s...", partition_info)
+        self._thread = threading.Thread(
+            target=self._consume_messages,
+            daemon=True,
+            name=thread_name
+        )
         logger.info("✅ Thread created: %s", self._thread)
         
         logger.info("▶️  Starting thread...")
         self._thread.start()
         logger.info("✅ Thread.start() called, is_alive=%s", self._thread.is_alive())
         
-        logger.info("✅ Queue worker thread started successfully")
+        logger.info("✅ Queue worker thread%s started successfully", partition_info)
     
-    def stop(self) -> None:
+    def stop(self, close_queue: bool = True) -> None:
         """
         Stop the background worker thread
+        
+        Args:
+            close_queue: Whether to close the queue resources. Set to False
+                        when multiple workers share the same queue.
         
         Note: No logging during stop to avoid errors when called during shutdown,
         as the logging system may have already closed its file handlers.
@@ -317,7 +356,9 @@ class QueueWorker:
         if self._thread:
             self._thread.join(timeout=5.0)
         
-        # Close queue resources
-        self.queue.close()
+        # Close queue resources only if requested
+        # (shared queues should be closed by the manager, not individual workers)
+        if close_queue:
+            self.queue.close()
 
 

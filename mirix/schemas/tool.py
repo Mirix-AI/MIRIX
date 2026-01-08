@@ -9,14 +9,26 @@ from mirix.constants import (
     MIRIX_EXTRA_TOOL_MODULE_NAME,
     MIRIX_MEMORY_TOOL_MODULE_NAME,
 )
-from mirix.functions.functions import (
-    derive_openai_json_schema,
-    get_json_schema_from_module,
-)
-from mirix.functions.helpers import generate_langchain_tool_wrapper
-from mirix.functions.schema_generator import generate_schema_from_args_schema_v2
 from mirix.schemas.enums import ToolType
 from mirix.schemas.mirix_base import MirixBase
+
+try:
+    from mirix.functions.functions import (
+        derive_openai_json_schema,
+        get_json_schema_from_module,
+    )
+    from mirix.functions.helpers import generate_langchain_tool_wrapper
+    from mirix.functions.schema_generator import (
+        generate_schema_from_args_schema_v2,
+    )
+
+    _FUNCTION_UTILS_AVAILABLE = True
+except ImportError:
+    derive_openai_json_schema = None  # type: ignore
+    get_json_schema_from_module = None  # type: ignore
+    generate_langchain_tool_wrapper = None  # type: ignore
+    generate_schema_from_args_schema_v2 = None  # type: ignore
+    _FUNCTION_UTILS_AVAILABLE = False
 
 if TYPE_CHECKING:
     try:
@@ -91,9 +103,13 @@ class Tool(BaseTool):
             # Always derive json_schema for freshest possible json_schema
             # TODO: Instead of checking the tag, we should having `COMPOSIO` as a specific ToolType
             # TODO: We skip this for Composio bc composio json schemas are derived differently
-            if COMPOSIO_TOOL_TAG_NAME not in self.tags:
+            if COMPOSIO_TOOL_TAG_NAME not in self.tags and _FUNCTION_UTILS_AVAILABLE:
                 self.json_schema = derive_openai_json_schema(
                     source_code=self.source_code
+                )
+            elif COMPOSIO_TOOL_TAG_NAME not in self.tags and not self.json_schema:
+                raise ValueError(
+                    "Custom tool is missing json_schema and schema helpers are not available in the client-only build."
                 )
         elif self.tool_type in {ToolType.MIRIX_CORE}:
             # If it's mirix core tool, we generate the json_schema on the fly here
@@ -103,27 +119,45 @@ class Tool(BaseTool):
                     raise ValueError(
                         f"MIRIX_CORE tool with id={self.id} requires 'name' field to generate schema"
                     )
-                self.json_schema = get_json_schema_from_module(
-                    module_name=MIRIX_CORE_TOOL_MODULE_NAME, function_name=self.name
-                )
+                if get_json_schema_from_module:
+                    self.json_schema = get_json_schema_from_module(
+                        module_name=MIRIX_CORE_TOOL_MODULE_NAME,
+                        function_name=self.name,
+                    )
+                else:
+                    raise ValueError(
+                        "Tool schema helpers are not available in the client-only build. Provide json_schema explicitly."
+                    )
         elif self.tool_type in {ToolType.MIRIX_MEMORY_CORE}:
             if not self.json_schema:
                 if not self.name:
                     raise ValueError(
                         f"MIRIX_MEMORY_CORE tool with id={self.id} requires 'name' field to generate schema"
                     )
-                self.json_schema = get_json_schema_from_module(
-                    module_name=MIRIX_MEMORY_TOOL_MODULE_NAME, function_name=self.name
-                )
+                if get_json_schema_from_module:
+                    self.json_schema = get_json_schema_from_module(
+                        module_name=MIRIX_MEMORY_TOOL_MODULE_NAME,
+                        function_name=self.name,
+                    )
+                else:
+                    raise ValueError(
+                        "Tool schema helpers are not available in the client-only build. Provide json_schema explicitly."
+                    )
         elif self.tool_type in {ToolType.MIRIX_EXTRA}:
             if not self.json_schema:
                 if not self.name:
                     raise ValueError(
                         f"MIRIX_EXTRA tool with id={self.id} requires 'name' field to generate schema"
                     )
-                self.json_schema = get_json_schema_from_module(
-                    module_name=MIRIX_EXTRA_TOOL_MODULE_NAME, function_name=self.name
-                )
+                if get_json_schema_from_module:
+                    self.json_schema = get_json_schema_from_module(
+                        module_name=MIRIX_EXTRA_TOOL_MODULE_NAME,
+                        function_name=self.name,
+                    )
+                else:
+                    raise ValueError(
+                        "Tool schema helpers are not available in the client-only build. Provide json_schema explicitly."
+                    )
         elif self.tool_type in {ToolType.MIRIX_MCP}:
             # MCP tools have their json_schema already provided by MCP tool registry
             # Skip validation since these are auto-generated tools
@@ -179,6 +213,12 @@ class ToolCreate(MirixBase):
         Returns:
             Tool: A Mirix Tool initialized with attributes derived from the provided LangChain BaseTool object.
         """
+        if not _FUNCTION_UTILS_AVAILABLE:
+            raise ImportError(
+                "LangChain helpers are unavailable in the client-only build. "
+                "Install the full Mirix package to enable from_langchain()."
+            )
+
         description = langchain_tool.description
         source_type = "python"
         tags = ["langchain"]

@@ -126,6 +126,7 @@ class AbstractClient(object):
         role: str,
         agent_id: Optional[str] = None,
         agent_name: Optional[str] = None,
+        user_id: Optional[str] = None,  # End-user ID for message attribution
         name: Optional[str] = None,
         stream_steps: bool = False,
         stream_tokens: bool = False,

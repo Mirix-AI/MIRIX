@@ -23,9 +23,14 @@ def build_query(
     embedding_config: Optional[EmbeddingConfig] = None,
     ascending: bool = True,
     target_class: object = None,
+    similarity_threshold: Optional[float] = None,
 ):
     """
     Build a query based on the query text
+    
+    Args:
+        similarity_threshold: Maximum cosine distance (0.0=identical, 2.0=opposite).
+                             Results with distance >= threshold are excluded.
     """
 
     if embed_query:
@@ -52,31 +57,42 @@ def build_query(
         # Check which database type we're using
         if settings.mirix_pg_uri_no_default:
             # PostgreSQL with pgvector - use direct cosine_distance method
+            distance_field = search_field.cosine_distance(embedded_text)
+            
+            # Apply similarity threshold filter if provided
+            if similarity_threshold is not None:
+                main_query = main_query.where(distance_field < similarity_threshold)
+            
             if ascending:
                 main_query = main_query.order_by(
-                    search_field.cosine_distance(embedded_text).asc(),
+                    distance_field.asc(),
                     target_class.created_at.asc(),
                     target_class.id.asc(),
                 )
             else:
                 main_query = main_query.order_by(
-                    search_field.cosine_distance(embedded_text).asc(),
+                    distance_field.asc(),
                     target_class.created_at.desc(),
                     target_class.id.asc(),
                 )
         else:
             # SQLite with custom vector type
             query_embedding_binary = adapt_array(embedded_text)
+            distance_field = func.cosine_distance(search_field, query_embedding_binary)
+            
+            # Apply similarity threshold filter if provided
+            if similarity_threshold is not None:
+                main_query = main_query.where(distance_field < similarity_threshold)
 
             if ascending:
                 main_query = main_query.order_by(
-                    func.cosine_distance(search_field, query_embedding_binary).asc(),
+                    distance_field.asc(),
                     target_class.created_at.asc(),
                     target_class.id.asc(),
                 )
             else:
                 main_query = main_query.order_by(
-                    func.cosine_distance(search_field, query_embedding_binary).asc(),
+                    distance_field.asc(),
                     target_class.created_at.desc(),
                     target_class.id.asc(),
                 )

@@ -22,6 +22,7 @@ from mirix.llm_api.llm_client import LLMClient
 from mirix.log import get_logger
 from mirix.schemas.agent import AgentState, AgentType, CreateAgent
 from mirix.schemas.block import Block, BlockUpdate, CreateBlock, Human, Persona
+from mirix.schemas.client import Client, ClientCreate, ClientUpdate
 from mirix.schemas.embedding_config import EmbeddingConfig
 from mirix.schemas.enums import MessageRole
 from mirix.schemas.environment_variables import (
@@ -35,6 +36,8 @@ from mirix.schemas.memory import ArchivalMemorySummary, Memory, RecallMemorySumm
 from mirix.schemas.message import Message, MessageCreate
 from mirix.schemas.mirix_response import MirixResponse
 from mirix.schemas.organization import Organization
+from mirix.schemas.procedural_memory import ProceduralMemoryItemUpdate
+from mirix.schemas.resource_memory import ResourceMemoryItemUpdate
 from mirix.schemas.sandbox_config import (
     E2BSandboxConfig,
     LocalSandboxConfig,
@@ -42,12 +45,12 @@ from mirix.schemas.sandbox_config import (
     SandboxConfigCreate,
     SandboxConfigUpdate,
 )
+from mirix.schemas.semantic_memory import SemanticMemoryItemUpdate
 from mirix.schemas.tool import Tool, ToolCreate, ToolUpdate
 from mirix.schemas.tool_rule import BaseToolRule
 from mirix.schemas.user import User
-from mirix.schemas.client import Client, ClientCreate, ClientUpdate
 from mirix.server.server import SyncServer
-from mirix.settings import model_settings
+from mirix.settings import model_settings, settings
 from mirix.utils import convert_message_to_mirix_message
 
 logger = get_logger(__name__)
@@ -93,6 +96,20 @@ async def cleanup():
     """
     logger.info("Shutting down Mirix REST API server")
 
+    # Flush LangFuse traces before shutdown
+    try:
+        from mirix.observability import flush_langfuse, shutdown_langfuse
+        logger.info("Flushing LangFuse traces...")
+        flush_success = flush_langfuse(timeout=10.0)  # Increased timeout for graceful shutdown
+        if flush_success:
+            logger.info("✅ LangFuse traces flushed successfully")
+        else:
+            logger.warning("⚠️ LangFuse trace flush completed with warnings")
+        shutdown_langfuse()
+        logger.info("LangFuse observability shut down")
+    except Exception as e:
+        logger.warning(f"Error during LangFuse shutdown: {e}")
+
     # Cleanup queue
     queue_manager = get_queue_manager()
     queue_manager.cleanup()
@@ -136,6 +153,132 @@ app.add_middleware(
 
 
 # ============================================================================
+# LangFuse Tracing Middleware
+# ============================================================================
+
+@app.middleware("http")
+async def langfuse_tracing_middleware(request: Request, call_next):
+    """
+    Create LangFuse traces for all API requests using LangFuse 3.x context-based API.
+    
+    This middleware:
+    1. Creates a span context for each incoming request
+    2. Updates the current trace with request metadata
+    3. Sets trace context for downstream operations
+    4. Clears trace context when the request completes
+    """
+    import uuid
+
+    from mirix.observability import get_langfuse_client, is_langfuse_enabled
+    from mirix.observability.context import clear_trace_context, set_trace_context
+
+    # Skip tracing if LangFuse is disabled
+    if not is_langfuse_enabled():
+        return await call_next(request)
+
+    langfuse = get_langfuse_client()
+    if not langfuse:
+        return await call_next(request)
+
+    # Extract metadata from request
+    method = request.method
+    path = request.url.path
+    user_id = request.headers.get("x-user-id")
+    client_id = request.headers.get("x-client-id")
+    org_id = request.headers.get("x-org-id")
+    session_id = request.headers.get("x-session-id") or f"{client_id}-{uuid.uuid4().hex[:8]}"
+
+    # Use context manager to create a span (which creates a trace if needed)
+    with langfuse.start_as_current_span(name=f"{method} {path}") as span:
+        try:
+            # Get the trace ID from LangFuse
+            trace_id = langfuse.get_current_trace_id()
+            observation_id = langfuse.get_current_observation_id()
+
+            logger.debug(f"LangFuse trace created: trace_id={trace_id}, path={path}")
+
+            # Update the trace with metadata
+            langfuse.update_current_trace(
+                name=f"{method} {path}",
+                user_id=user_id or client_id,
+                session_id=session_id,
+                metadata={
+                    "method": method,
+                    "path": path,
+                    "client_id": client_id,
+                    "org_id": org_id,
+                    "user_agent": request.headers.get("user-agent"),
+                },
+            )
+
+            # Set trace context for downstream operations
+            set_trace_context(
+                trace_id=trace_id,
+                observation_id=observation_id,
+                user_id=user_id or client_id,
+                session_id=session_id,
+            )
+
+            # Process request
+            response = await call_next(request)
+
+            # Update trace with response status
+            try:
+                langfuse.update_current_trace(
+                    output={"status_code": response.status_code},
+                    tags=["success" if response.status_code < 400 else "error"],
+                )
+                logger.debug(f"LangFuse trace updated: trace_id={trace_id}, status={response.status_code}")
+            except Exception as e:
+                logger.debug(f"Failed to update trace: {e}")
+
+            return response
+
+        except Exception as e:
+            # Log error and mark trace as failed
+            try:
+                langfuse.update_current_trace(
+                    output={"error": str(e)},
+                    tags=["error", "exception"],
+                )
+            except Exception as trace_error:
+                logger.debug(f"Failed to update trace on error: {trace_error}")
+            raise
+
+        finally:
+            # Clear trace context
+            clear_trace_context()
+
+
+# Middleware to resolve X-API-Key into X-Client-Id/X-Org-Id for all routes
+@app.middleware("http")
+async def inject_client_org_headers(request: Request, call_next):
+    """
+    If a request includes X-API-Key, resolve it to client/org and inject
+    X-Client-Id and X-Org-Id headers so downstream endpoints don't need to
+    handle X-API-Key directly.
+    """
+    x_api_key = request.headers.get("x-api-key")
+    if x_api_key:
+        try:
+            client_id, org_id = get_client_and_org(x_api_key=x_api_key)
+
+            # Replace or add headers so FastAPI dependencies can read them
+            headers = [
+                (name, value)
+                for name, value in request.scope.get("headers", [])
+                if name.lower() not in {b"x-client-id", b"x-org-id"}
+            ]
+            headers.append((b"x-client-id", client_id.encode()))
+            headers.append((b"x-org-id", org_id.encode()))
+            request.scope["headers"] = headers
+        except HTTPException as exc:
+            return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+
+    return await call_next(request)
+
+
+# ============================================================================
 # Helper Functions
 # ============================================================================
 
@@ -143,6 +286,7 @@ app.add_middleware(
 def get_client_and_org(
     x_client_id: Optional[str] = None,
     x_org_id: Optional[str] = None,
+    x_api_key: Optional[str] = None,
 ) -> tuple[str, str]:
     """
     Get client_id and org_id from headers or use defaults.
@@ -152,12 +296,23 @@ def get_client_and_org(
     """
     server = get_server()
     
-    if x_client_id:
+    if x_api_key:
+        # get_client_by_api_key already verifies the API key hash internally
+        client = server.client_manager.get_client_by_api_key(x_api_key)
+        if not client:
+            raise HTTPException(status_code=401, detail="Invalid API key")
+        if client.is_deleted or client.status != "active":
+            raise HTTPException(status_code=403, detail="Client is inactive or deleted")
+        client_id = client.id
+        org_id = client.organization_id or server.organization_manager.DEFAULT_ORG_ID
+    elif x_client_id:
         client_id = x_client_id
         org_id = x_org_id or server.organization_manager.DEFAULT_ORG_ID
     else:
-        client_id = server.client_manager.DEFAULT_CLIENT_ID
-        org_id = server.organization_manager.DEFAULT_ORG_ID
+        raise HTTPException(
+            status_code=401,
+            detail="X-API-Key header is required for this endpoint",
+        )
     
     return client_id, org_id
 
@@ -339,8 +494,6 @@ def extract_topics_with_local_model(messages: List[Dict[str, Any]], model_name: 
     Reference: https://github.com/ollama/ollama/blob/main/docs/api.md#chat
     """
 
-    import ipdb; ipdb.set_trace()
-
     base_url = model_settings.ollama_base_url
     if not base_url:
         logger.warning(
@@ -380,7 +533,6 @@ def extract_topics_with_local_model(messages: List[Dict[str, Any]], model_name: 
     }
 
     try:
-        import ipdb; ipdb.set_trace()
         response = requests.post(
             f"{base_url.rstrip('/')}/api/chat",
             json=payload,
@@ -738,11 +890,11 @@ async def update_agent_system_prompt(
     2. Updates the agent.system field in Redis cache
     3. Creates a new system message
     4. Updates message_ids[0] to reference the new system message
-    
+
     Args:
         agent_id: ID of the agent to update (e.g., "agent-123")
         request: UpdateSystemPromptRequest with the new system prompt
-        
+    
     Returns:
         AgentState: The updated agent state
         
@@ -767,89 +919,15 @@ async def update_agent_system_prompt(
 # ============================================================================
 # Memory Endpoints
 # ============================================================================
-
-
-@router.get("/agents/{agent_id}/memory", response_model=Memory)
-async def get_agent_memory(
-    agent_id: str,
-    x_client_id: Optional[str] = Header(None),
-    x_org_id: Optional[str] = Header(None),
-):
-    """Get an agent's in-context memory."""
-    server = get_server()
-    client_id, org_id = get_client_and_org(x_client_id, x_org_id)
-    client = server.client_manager.get_client_by_id(client_id)
-    return server.get_agent_memory(agent_id=agent_id, actor=client)
-
-
-@router.get("/agents/{agent_id}/memory/archival", response_model=ArchivalMemorySummary)
-async def get_archival_memory_summary(
-    agent_id: str,
-    x_client_id: Optional[str] = Header(None),
-    x_org_id: Optional[str] = Header(None),
-):
-    """Get archival memory summary."""
-    server = get_server()
-    client_id, org_id = get_client_and_org(x_client_id, x_org_id)
-    client = server.client_manager.get_client_by_id(client_id)
-    return server.get_archival_memory_summary(agent_id=agent_id, actor=client)
-
-
-@router.get("/agents/{agent_id}/memory/recall", response_model=RecallMemorySummary)
-async def get_recall_memory_summary(
-    agent_id: str,
-    x_client_id: Optional[str] = Header(None),
-    x_org_id: Optional[str] = Header(None),
-):
-    """Get recall memory summary."""
-    server = get_server()
-    client_id, org_id = get_client_and_org(x_client_id, x_org_id)
-    client = server.client_manager.get_client_by_id(client_id)
-    return server.get_recall_memory_summary(agent_id=agent_id, actor=client)
-
-
-@router.get("/agents/{agent_id}/messages", response_model=List[Message])
-async def get_agent_messages(
-    agent_id: str,
-    cursor: Optional[str] = None,
-    limit: int = 1000,
-    use_cache: bool = True,
-    x_client_id: Optional[str] = Header(None),
-    x_org_id: Optional[str] = Header(None),
-):
-    """Get messages from an agent.
-
-    Args:
-        agent_id: The ID of the agent
-        cursor: Cursor for pagination
-        limit: Maximum number of messages to return
-        use_cache: Control Redis cache behavior (default: True)
-        x_user_id: User ID from header
-        x_org_id: Organization ID from header
-    
-    Returns:
-        List of messages
-    """
-    server = get_server()
-    client_id, org_id = get_client_and_org(x_client_id, x_org_id)
-    return server.get_agent_recall_cursor(
-        user_id=user_id,
-        agent_id=agent_id,
-        before=cursor,
-        limit=limit,
-        reverse=True,
-        use_cache=use_cache,
-    )
-
-
 class SendMessageRequest(BaseModel):
     """Request to send a message to an agent."""
     message: str
     role: str
+    user_id: Optional[str] = None  # End-user ID for message attribution
     name: Optional[str] = None
     stream_steps: bool = False
     stream_tokens: bool = False
-    filter_tags: Optional[Dict[str, Any]] = None  # NEW: filter tags support
+    filter_tags: Optional[Dict[str, Any]] = None  # Filter tags support
     use_cache: bool = True  # Control Redis cache behavior
 
 
@@ -867,12 +945,16 @@ async def send_message_to_agent(
     
     Args:
         agent_id: The ID of the agent to send the message to
-        request: The message request containing text, role, and optional filter_tags
-        x_user_id: User ID from header
+        request: The message request containing text, role, user_id, and optional filter_tags
+        x_client_id: Client ID from header (identifies the client application)
         x_org_id: Organization ID from header
     
     Returns:
         MirixResponse: The agent's response including messages and usage statistics
+        
+    Note:
+        If user_id is not provided in the request, messages will be associated with
+        the default user (DEFAULT_USER_ID).
     """
     server = get_server()
     client_id, org_id = get_client_and_org(x_client_id, x_org_id)
@@ -892,6 +974,7 @@ async def send_message_to_agent(
             agent_id=agent_id,
             input_messages=[message_create],
             chaining=True,
+            user_id=request.user_id,  # Pass user_id to queue
             filter_tags=request.filter_tags,  # Pass filter_tags to queue
             use_cache=request.use_cache,  # Pass use_cache to queue
         )
@@ -983,7 +1066,7 @@ async def list_blocks(
     client_id, org_id = get_client_and_org(x_client_id, x_org_id)
     client = server.client_manager.get_client_by_id(client_id)
     # Get default user for block queries (blocks are user-scoped, not client-scoped)
-    user = server.user_manager.get_default_user()
+    user = server.user_manager.get_admin_user()
     return server.block_manager.get_blocks(user=user, label=label)
 
 
@@ -997,8 +1080,8 @@ async def get_block(
     server = get_server()
     client_id, org_id = get_client_and_org(x_client_id, x_org_id)
     client = server.client_manager.get_client_by_id(client_id)
-    # Get default user for block queries (blocks are user-scoped, not client-scoped)
-    user = server.user_manager.get_default_user()
+    # Get admin user for block queries (blocks are user-scoped, not client-scoped)
+    user = server.user_manager.get_admin_user()
     return server.block_manager.get_block_by_id(block_id, user=user)
 
 
@@ -1170,21 +1253,33 @@ class CreateOrGetUserRequest(BaseModel):
 
     user_id: Optional[str] = None
     name: Optional[str] = None
-    org_id: Optional[str] = None
 
 
 @router.post("/users/create_or_get", response_model=User)
 async def create_or_get_user(
     request: CreateOrGetUserRequest,
+    authorization: Optional[str] = Header(None),
+    http_request: Request = None,
 ):
     """
     Create user if it doesn't exist, or get existing one.
-    This endpoint doesn't require authentication as it's used during client initialization.
     
+    **Accepts both JWT (dashboard) and Client API Key (programmatic access).**
+    
+    The user will be associated with the authenticated client.
+    The organization is determined from the API key or JWT token.
     If user_id is not provided, a random ID will be generated.
-    If user_id is provided, it will be used as-is (no prefix constraint).
     """
     server = get_server()
+    
+    # Accept JWT or injected headers (from API key middleware)
+    client, auth_type = get_client_from_jwt_or_api_key(authorization, http_request)
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+    
+    # Extract client_id and org_id from client object
+    client_id = client.id
+    org_id = client.organization_id or server.organization_manager.DEFAULT_ORG_ID
 
     # Use provided user_id or generate a new one
     if request.user_id:
@@ -1193,10 +1288,6 @@ async def create_or_get_user(
         # Generate a random user ID
         import uuid
         user_id = f"user-{uuid.uuid4().hex[:8]}"
-
-    org_id = request.org_id
-    if not org_id:
-        org_id = server.organization_manager.DEFAULT_ORG_ID
 
     try:
         # Try to get existing user
@@ -1208,7 +1299,7 @@ async def create_or_get_user(
 
     from mirix.schemas.user import User as PydanticUser
 
-    # Create a User object with all required fields
+    # Create a User object with all required fields, linked to the client
     user = server.user_manager.create_user(
         pydantic_user=PydanticUser(
             id=user_id,
@@ -1216,9 +1307,10 @@ async def create_or_get_user(
             organization_id=org_id,
             timezone=server.user_manager.DEFAULT_TIME_ZONE,
             status="active"
+        ),
+        client_id=client_id,  # Associate user with client
         )
-    )
-    logger.debug("Created new user: %s", user_id)
+    logger.debug("Created new user: %s for client: %s", user_id, client_id)
     return user
 
 
@@ -1287,6 +1379,31 @@ async def delete_user_memories(user_id: str):
         }
     except Exception as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.get("/users", response_model=List[User])
+async def list_users(
+    cursor: Optional[str] = None,
+    limit: int = 50,
+    authorization: Optional[str] = Header(None),
+):
+    """
+    List all users for the authenticated client.
+    
+    **Requires JWT authentication (dashboard only).**
+    """
+    # Require admin JWT authentication
+    client_payload = get_current_admin(authorization)
+    client_id = client_payload["sub"]
+    
+    server = get_server()
+    
+    users = server.user_manager.list_users(
+        cursor=cursor,
+        limit=limit,
+        client_id=client_id,  # Filter by client
+    )
+    return users
 
 
 # ============================================================================
@@ -1368,10 +1485,16 @@ async def list_clients(
     cursor: Optional[str] = None,
     limit: int = 50,
     x_org_id: Optional[str] = Header(None),
+    authorization: Optional[str] = Header(None),
 ):
     """
     List all clients with optional pagination.
+    
+    **Requires JWT authentication (dashboard only).**
     """
+    # Require admin JWT authentication for listing clients
+    get_current_admin(authorization)
+    
     server = get_server()
     org_id = x_org_id or server.organization_manager.DEFAULT_ORG_ID
     
@@ -1384,10 +1507,18 @@ async def list_clients(
 
 
 @router.get("/clients/{client_id}", response_model=Client)
-async def get_client(client_id: str):
+async def get_client(
+    client_id: str,
+    authorization: Optional[str] = Header(None),
+):
     """
     Get a specific client by ID.
+    
+    **Requires JWT authentication (dashboard only).**
     """
+    # Require admin JWT authentication
+    get_current_admin(authorization)
+    
     server = get_server()
     client = server.client_manager.get_client_by_id(client_id)
     
@@ -1486,6 +1617,161 @@ async def delete_client_memories(client_id: str):
 
 
 # ============================================================================
+# API Key Management Endpoints (Dashboard Only - JWT Authentication Required)
+# ============================================================================
+
+
+class CreateApiKeyRequest(BaseModel):
+    """Request model for creating an API key."""
+    name: Optional[str] = Field(None, description="Optional name/label for the API key")
+    permission: Optional[str] = Field("all", description="Permission level: all, restricted, read_only")
+    user_id: Optional[str] = Field(None, description="User ID this API key is associated with")
+
+
+class CreateApiKeyResponse(BaseModel):
+    """Response model for API key creation - includes the raw API key (only shown once)."""
+    id: str
+    client_id: str
+    name: Optional[str]
+    api_key: str  # Raw API key - only returned at creation time
+    status: str
+    permission: str  # Permission level: all, restricted, read_only
+    created_at: Optional[datetime]
+
+
+@router.post("/clients/{client_id}/api-keys", response_model=CreateApiKeyResponse)
+async def create_client_api_key(
+    client_id: str,
+    request: CreateApiKeyRequest,
+    authorization: Optional[str] = Header(None),
+):
+    """
+    Create a new API key for a client.
+    
+    **Requires JWT authentication (dashboard only).**
+    
+    The raw API key is only returned once at creation time. Store it securely.
+    Subsequent requests will only show the key ID, not the raw key.
+    
+    Returns:
+        CreateApiKeyResponse with the raw API key (only shown once)
+    """
+    # Require admin JWT authentication
+    get_current_admin(authorization)
+    
+    from mirix.security.api_keys import generate_api_key
+    
+    server = get_server()
+    
+    # Verify client exists
+    client = server.client_manager.get_client_by_id(client_id)
+    if not client:
+        raise HTTPException(status_code=404, detail=f"Client {client_id} not found")
+    
+    # Generate new API key
+    raw_api_key = generate_api_key()
+    
+    # Create API key record (stores hashed version)
+    api_key_record = server.client_manager.create_client_api_key(
+        client_id=client_id,
+        api_key=raw_api_key,
+        name=request.name,
+        permission=request.permission or "all",
+        user_id=request.user_id
+    )
+    
+    return CreateApiKeyResponse(
+        id=api_key_record.id,
+        client_id=api_key_record.client_id,
+        name=api_key_record.name,
+        api_key=raw_api_key,  # Return raw key only at creation
+        status=api_key_record.status,
+        permission=api_key_record.permission,
+        created_at=api_key_record.created_at
+    )
+
+
+class ApiKeyInfo(BaseModel):
+    """API key information (without the raw key)."""
+    id: str
+    client_id: str
+    name: Optional[str]
+    status: str
+    created_at: Optional[datetime]
+
+
+@router.get("/clients/{client_id}/api-keys", response_model=List[ApiKeyInfo])
+async def list_client_api_keys(
+    client_id: str,
+    authorization: Optional[str] = Header(None),
+):
+    """
+    List all API keys for a client.
+    
+    **Requires JWT authentication (dashboard only).**
+    
+    Note: The raw API key values are never returned after creation.
+    Only metadata (id, name, status, created_at) is shown.
+    """
+    # Require admin JWT authentication
+    get_current_admin(authorization)
+    
+    server = get_server()
+    
+    # Verify client exists
+    client = server.client_manager.get_client_by_id(client_id)
+    if not client:
+        raise HTTPException(status_code=404, detail=f"Client {client_id} not found")
+    
+    api_keys = server.client_manager.list_client_api_keys(client_id)
+    
+    return [
+        ApiKeyInfo(
+            id=key.id,
+            client_id=key.client_id,
+            name=key.name,
+            status=key.status,
+            created_at=key.created_at
+        )
+        for key in api_keys
+    ]
+
+
+@router.delete("/clients/{client_id}/api-keys/{api_key_id}")
+async def delete_client_api_key(
+    client_id: str,
+    api_key_id: str,
+    authorization: Optional[str] = Header(None),
+):
+    """
+    Delete an API key permanently.
+    
+    **Requires JWT authentication (dashboard only).**
+    
+    This permanently removes the API key from the database.
+    Any applications using this key will immediately stop working.
+    """
+    # Require admin JWT authentication
+    get_current_admin(authorization)
+    
+    server = get_server()
+    
+    # Verify client exists
+    client = server.client_manager.get_client_by_id(client_id)
+    if not client:
+        raise HTTPException(status_code=404, detail=f"Client {client_id} not found")
+    
+    try:
+        server.client_manager.delete_client_api_key(api_key_id)
+        return {
+            "message": f"API key {api_key_id} deleted successfully",
+            "id": api_key_id,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=f"API key {api_key_id} not found")
+
+
+# ============================================================================
 # Memory API Endpoints (New)
 # ============================================================================
 
@@ -1515,10 +1801,6 @@ async def initialize_meta_agent(
 
     # Extract config components
     config = request.config
-    llm_config = None
-    embedding_config = None
-    system_prompts = None
-    agents_config = None
 
     # Build create_params by flattening meta_agent_config
     create_params = {
@@ -1569,7 +1851,7 @@ async def initialize_meta_agent(
 class AddMemoryRequest(BaseModel):
     """Request model for adding memory."""
 
-    user_id: str
+    user_id: Optional[str] = None  # Optional - uses admin user if not provided
     meta_agent_id: str
     messages: List[Dict[str, Any]]
     chaining: bool = True
@@ -1613,6 +1895,13 @@ async def add_memory(
     # TODO: need to check if we really need to check if the meta_agent exists here 
     meta_agent = server.agent_manager.get_agent_by_id(request.meta_agent_id, actor=client)
 
+    # If user_id is not provided, use the admin user for this client
+    user_id = request.user_id
+    if not user_id:
+        from mirix.services.admin_user_manager import ClientAuthManager
+        user_id = ClientAuthManager.get_admin_user_id_for_client(client.id)
+        logger.debug("No user_id provided, using admin user: %s", user_id)
+
     message = request.messages
 
     if isinstance(message, list) and "role" in message[0].keys():
@@ -1651,13 +1940,13 @@ async def add_memory(
 
     # Queue for async processing instead of synchronous execution
     # Note: actor is Client for org-level access control
-    #       user_id in request body represents the actual end-user
+    #       user_id represents the actual end-user (or admin user if not provided)
     put_messages(
         actor=client,
         agent_id=meta_agent.id,
         input_messages=input_messages,
         chaining=request.chaining,
-        user_id=request.user_id,  # End-user for data filtering
+        user_id=user_id,  # End-user for data filtering (or admin user)
         verbose=request.verbose,
         filter_tags=filter_tags,
         use_cache=request.use_cache,
@@ -1678,7 +1967,7 @@ async def add_memory(
 class RetrieveMemoryRequest(BaseModel):
     """Request model for retrieving memory."""
 
-    user_id: str
+    user_id: Optional[str] = None  # Optional - uses admin user if not provided
     messages: List[Dict[str, Any]]
     limit: int = 10  # Maximum number of items to retrieve per memory type
     local_model_for_retrieval: Optional[str] = None  # Optional local Ollama model for topic extraction
@@ -1957,6 +2246,13 @@ async def retrieve_memory_with_conversation(
     client_id, org_id = get_client_and_org(x_client_id, x_org_id)
     client = server.client_manager.get_client_by_id(client_id)
 
+    # If user_id is not provided, use the admin user for this client
+    user_id = request.user_id
+    if not user_id:
+        from mirix.services.admin_user_manager import ClientAuthManager
+        user_id = ClientAuthManager.get_admin_user_id_for_client(client.id)
+        logger.debug("No user_id provided, using admin user: %s", user_id)
+
     # Add client scope to filter_tags (create if not provided)
     if request.filter_tags is not None:
         # Create a copy to avoid modifying the original request
@@ -1964,7 +2260,7 @@ async def retrieve_memory_with_conversation(
     else:
         # Create new filter_tags if not provided
         filter_tags = {}
-    
+
     # Add or update the "scope" key with the client's scope
     filter_tags["scope"] = client.scope
 
@@ -1996,7 +2292,7 @@ async def retrieve_memory_with_conversation(
 
     topics: Optional[str] = None
     temporal_expr: Optional[str] = None
-    
+
     if has_content:
         # Prefer local model for topic extraction when explicitly requested
         if request.local_model_for_retrieval:
@@ -2025,7 +2321,7 @@ async def retrieve_memory_with_conversation(
     # NEW: Parse temporal expression to date range
     start_date: Optional[datetime] = None
     end_date: Optional[datetime] = None
-    
+
     # Priority: explicit request parameters > LLM-extracted temporal expression
     if request.start_date or request.end_date:
         # Use explicit date range from request
@@ -2040,17 +2336,17 @@ async def retrieve_memory_with_conversation(
     elif temporal_expr:
         # Parse LLM-extracted temporal expression
         from mirix.temporal.temporal_parser import parse_temporal_expression
-        
+
         # Get user's timezone for accurate "today" interpretation
         try:
-            user = server.user_manager.get_user_by_id(request.user_id)
+            user = server.user_manager.get_user_by_id(user_id)
             import pytz
             user_tz = pytz.timezone(user.timezone)
             reference_time = datetime.now(user_tz)
         except Exception:
             # Fallback to UTC if user timezone not available
             reference_time = datetime.now()
-        
+
         temporal_range = parse_temporal_expression(temporal_expr, reference_time)
         if temporal_range:
             start_date = temporal_range.start
@@ -2069,7 +2365,7 @@ async def retrieve_memory_with_conversation(
     memories = retrieve_memories_by_keywords(
         server=server,
         client=client,
-        user_id=request.user_id,
+        user_id=user_id,
         agent_state=all_agents[0],
         key_words=key_words,
         limit=request.limit,
@@ -2093,8 +2389,8 @@ async def retrieve_memory_with_conversation(
 
 @router.get("/memory/retrieve/topic")
 async def retrieve_memory_with_topic(
-    user_id: str,
-    topic: str,
+    user_id: Optional[str] = None,
+    topic: str = "",
     limit: int = 10,
     filter_tags: Optional[str] = None,
     use_cache: bool = True,
@@ -2105,7 +2401,7 @@ async def retrieve_memory_with_topic(
     Retrieve relevant memories based on a topic using BM25 search.
     
     Args:
-        user_id: The user ID to retrieve memories for
+        user_id: The user ID to retrieve memories for (uses admin user if not provided)
         topic: The topic/keywords to search for
         limit: Maximum number of items to retrieve per memory type (default: 10)
         filter_tags: Optional JSON string of tags to filter memories (default: None)
@@ -2114,6 +2410,12 @@ async def retrieve_memory_with_topic(
     server = get_server()
     client_id, org_id = get_client_and_org(x_client_id, x_org_id)
     client = server.client_manager.get_client_by_id(client_id)
+
+    # If user_id is not provided, use the admin user for this client
+    if not user_id:
+        from mirix.services.admin_user_manager import ClientAuthManager
+        user_id = ClientAuthManager.get_admin_user_id_for_client(client.id)
+        logger.debug("No user_id provided, using admin user: %s", user_id)
 
     # Parse filter_tags from JSON string to dict
     parsed_filter_tags = None
@@ -2169,21 +2471,26 @@ async def retrieve_memory_with_topic(
 
 @router.get("/memory/search")
 async def search_memory(
-    user_id: str,
-    query: str,
+    user_id: Optional[str] = None,
+    query: str = "",
     memory_type: str = "all",
     search_field: str = "null",
     search_method: str = "bm25",
     limit: int = 10,
+    authorization: Optional[str] = Header(None),
+    filter_tags: Optional[str] = Query(None),
+    similarity_threshold: Optional[float] = Query(None),
+    start_date: Optional[str] = Query(None),
+    end_date: Optional[str] = Query(None),
     x_client_id: Optional[str] = Header(None),
     x_org_id: Optional[str] = Header(None),
 ):
     """
-    Search for memories using various search methods.
+    Search for memories using various search methods with optional temporal filtering.
     Similar to the search_in_memory tool function.
     
     Args:
-        user_id: The user ID to retrieve memories for
+        user_id: The user ID to retrieve memories for (uses admin user if not provided)
         query: The search query string
         memory_type: Type of memory to search. Options: "episodic", "resource", "procedural", 
                     "knowledge_vault", "semantic", "all" (default: "all")
@@ -2196,10 +2503,41 @@ async def search_memory(
                      - For "all": use "null" (default)
         search_method: Search method. Options: "bm25" (default), "embedding"
         limit: Maximum number of results per memory type (default: 10)
+        filter_tags: Optional JSON string of filter tags (scope added automatically)
+        similarity_threshold: Optional similarity threshold for embedding search (0.0-2.0).
+                             Only results with cosine distance < threshold are returned.
+                             Only applies when search_method="embedding"
+        start_date: Optional start date/time for episodic memory filtering (ISO 8601 format)
+        end_date: Optional end date/time for episodic memory filtering (ISO 8601 format)
     """
     server = get_server()
-    client_id, org_id = get_client_and_org(x_client_id, x_org_id)
-    client = server.client_manager.get_client_by_id(client_id)
+
+    client = None
+
+    # Support both dashboard JWTs and programmatic API key access
+    if authorization:
+        try:
+            client, _ = get_client_from_jwt_or_api_key(authorization)
+        except HTTPException:
+            # If JWT/API key auth fails, fall through to use x_client_id
+            pass
+    
+    # Fallback to use the client_id and org_id passed in the method parameters.
+    if not client and x_client_id:
+        client_id = x_client_id
+        client = server.client_manager.get_client_by_id(client_id)
+    else:
+        if not client:
+            raise HTTPException(
+                status_code=401,
+                detail="Authentication required. Provide either Authorization (Bearer JWT) or X-API-Key header, or x-client-id and x-org-id headers.",
+            )
+
+    # If user_id is not provided, use the admin user for this client
+    if not user_id:
+        from mirix.services.admin_user_manager import ClientAuthManager
+        user_id = ClientAuthManager.get_admin_user_id_for_client(client.id)
+        logger.debug("No user_id provided, using admin user: %s", user_id)
 
     # Get all agents for this client (automatically filtered by client via apply_access_predicate)
     all_agents = server.agent_manager.list_agents(actor=client, limit=1000)
@@ -2221,6 +2559,49 @@ async def search_memory(
         timezone_str = user.timezone
     except:
         timezone_str = "UTC"
+
+    # Parse filter_tags from JSON string to dict
+    parsed_filter_tags = None
+    if filter_tags:
+        try:
+            parsed_filter_tags = json.loads(filter_tags)
+        except json.JSONDecodeError:
+            return {
+                "success": False,
+                "error": f"Invalid filter_tags JSON: {filter_tags}",
+                "query": query,
+                "results": [],
+                "count": 0,
+            }
+    
+    # Add client scope to filter_tags (create if not provided)
+    if parsed_filter_tags is None:
+        parsed_filter_tags = {}
+    
+    # Add or update the "scope" key with the client's scope
+    parsed_filter_tags["scope"] = client.scope
+
+    # Parse temporal filtering parameters
+    parsed_start_date: Optional[datetime] = None
+    parsed_end_date: Optional[datetime] = None
+    
+    if start_date:
+        try:
+            parsed_start_date = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
+            # Strip timezone for DB comparison (DB stores naive datetimes)
+            if parsed_start_date.tzinfo:
+                parsed_start_date = parsed_start_date.replace(tzinfo=None)
+        except ValueError as e:
+            logger.warning("Invalid start_date format: %s", e)
+    
+    if end_date:
+        try:
+            parsed_end_date = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
+            # Strip timezone for DB comparison
+            if parsed_end_date.tzinfo:
+                parsed_end_date = parsed_end_date.replace(tzinfo=None)
+        except ValueError as e:
+            logger.warning("Invalid end_date format: %s", e)
 
     # Validate search parameters
     if memory_type == "resource" and search_field == "content" and search_method == "embedding":
@@ -2247,17 +2628,21 @@ async def search_memory(
     # Collect results from requested memory types
     all_results = []
 
-    # Search episodic memories
+    # Search episodic memories (WITH temporal filtering)
     if memory_type in ["episodic", "all"]:
         try:
             episodic_memories = server.episodic_memory_manager.list_episodic_memory(
-                actor=client,
                 agent_state=agent_state,
+                user=user,
                 query=query,
                 search_field=search_field if search_field != "null" else "summary",
                 search_method=search_method,
                 limit=limit,
                 timezone_str=timezone_str,
+                filter_tags=parsed_filter_tags,
+                start_date=parsed_start_date,
+                end_date=parsed_end_date,
+                similarity_threshold=similarity_threshold,
             )
             all_results.extend([
                 {
@@ -2278,13 +2663,15 @@ async def search_memory(
     if memory_type in ["resource", "all"]:
         try:
             resource_memories = server.resource_memory_manager.list_resources(
-                actor=client,
                 agent_state=agent_state,
+                user=user,
                 query=query,
                 search_field=search_field if search_field != "null" else ("summary" if search_method == "embedding" else "content"),
                 search_method=search_method,
                 limit=limit,
                 timezone_str=timezone_str,
+                filter_tags=parsed_filter_tags,
+                similarity_threshold=similarity_threshold,
             )
             all_results.extend([
                 {
@@ -2304,13 +2691,15 @@ async def search_memory(
     if memory_type in ["procedural", "all"]:
         try:
             procedural_memories = server.procedural_memory_manager.list_procedures(
-                actor=client,
                 agent_state=agent_state,
+                user=user,
                 query=query,
                 search_field=search_field if search_field != "null" else "summary",
                 search_method=search_method,
                 limit=limit,
                 timezone_str=timezone_str,
+                filter_tags=parsed_filter_tags,
+                similarity_threshold=similarity_threshold,
             )
             all_results.extend([
                 {
@@ -2329,13 +2718,15 @@ async def search_memory(
     if memory_type in ["knowledge_vault", "all"]:
         try:
             knowledge_vault_memories = server.knowledge_vault_manager.list_knowledge(
-                actor=client,
                 agent_state=agent_state,
+                user=user,
                 query=query,
                 search_field=search_field if search_field != "null" else "caption",
                 search_method=search_method,
                 limit=limit,
                 timezone_str=timezone_str,
+                filter_tags=parsed_filter_tags,
+                similarity_threshold=similarity_threshold,
             )
             all_results.extend([
                 {
@@ -2356,13 +2747,15 @@ async def search_memory(
     if memory_type in ["semantic", "all"]:
         try:
             semantic_memories = server.semantic_memory_manager.list_semantic_items(
-                actor=client,
                 agent_state=agent_state,
+                user=user,
                 query=query,
                 search_field=search_field if search_field != "null" else "summary",
                 search_method=search_method,
                 limit=limit,
                 timezone_str=timezone_str,
+                filter_tags=parsed_filter_tags,
+                similarity_threshold=similarity_threshold,
             )
             all_results.extend([
                 {
@@ -2384,6 +2777,10 @@ async def search_memory(
         "memory_type": memory_type,
         "search_field": search_field,
         "search_method": search_method,
+        "date_range": {
+            "start": parsed_start_date.isoformat() if parsed_start_date else None,
+            "end": parsed_end_date.isoformat() if parsed_end_date else None,
+        } if (parsed_start_date or parsed_end_date) else None,
         "results": all_results,
         "count": len(all_results),
     }
@@ -2399,11 +2796,14 @@ async def search_memory_all_users(
     client_id: Optional[str] = Query(None),
     org_id: Optional[str] = Query(None),
     filter_tags: Optional[str] = Query(None),
+    similarity_threshold: Optional[float] = Query(None),
+    start_date: Optional[str] = Query(None),
+    end_date: Optional[str] = Query(None),
     x_client_id: Optional[str] = Header(None),
     x_org_id: Optional[str] = Header(None),
 ):
     """
-    Search for memories across ALL users in the organization.
+    Search for memories across ALL users in the organization with optional temporal filtering.
     Automatically filters by client scope using filter_tags.
     
     Organization resolution priority:
@@ -2420,6 +2820,9 @@ async def search_memory_all_users(
         client_id: Optional client ID (uses its org_id and scope)
         org_id: Optional organization ID (used if client_id not provided)
         filter_tags: Optional JSON string of additional filter tags
+        similarity_threshold: Optional similarity threshold for embedding search (0.0-2.0)
+        start_date: Optional start date/time for episodic memory filtering (ISO 8601 format)
+        end_date: Optional end date/time for episodic memory filtering (ISO 8601 format)
     """
     import json
     
@@ -2463,9 +2866,31 @@ async def search_memory_all_users(
     filter_tags_dict["scope"] = client.scope
     
     logger.info(
-        "Cross-user search: client=%s, org=%s, client_scope=%s, filter_tags=%s",
-        effective_client_id, effective_org_id, client.scope, filter_tags_dict
+        "Cross-user search: client=%s, org=%s, client_scope=%s, filter_tags=%s, similarity_threshold=%s",
+        effective_client_id, effective_org_id, client.scope, filter_tags_dict, similarity_threshold
     )
+
+    # Parse temporal filtering parameters
+    parsed_start_date: Optional[datetime] = None
+    parsed_end_date: Optional[datetime] = None
+    
+    if start_date:
+        try:
+            parsed_start_date = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
+            # Strip timezone for DB comparison (DB stores naive datetimes)
+            if parsed_start_date.tzinfo:
+                parsed_start_date = parsed_start_date.replace(tzinfo=None)
+        except ValueError as e:
+            logger.warning("Invalid start_date format: %s", e)
+    
+    if end_date:
+        try:
+            parsed_end_date = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
+            # Strip timezone for DB comparison
+            if parsed_end_date.tzinfo:
+                parsed_end_date = parsed_end_date.replace(tzinfo=None)
+        except ValueError as e:
+            logger.warning("Invalid end_date format: %s", e)
 
     # Get agents for this client
     all_agents = server.agent_manager.list_agents(actor=client, limit=1000)
@@ -2505,7 +2930,7 @@ async def search_memory_all_users(
     # Collect results using organization_id filter
     all_results = []
 
-    # Search episodic memories across organization
+    # Search episodic memories across organization (WITH temporal filtering)
     if memory_type in ["episodic", "all"]:
         try:
             episodic_memories = server.episodic_memory_manager.list_episodic_memory_by_org(
@@ -2517,6 +2942,9 @@ async def search_memory_all_users(
                 limit=limit,
                 timezone_str="UTC",
                 filter_tags=filter_tags_dict,
+                start_date=parsed_start_date,
+                end_date=parsed_end_date,
+                similarity_threshold=similarity_threshold,
             )
             all_results.extend([
                 {
@@ -2546,6 +2974,7 @@ async def search_memory_all_users(
                 limit=limit,
                 timezone_str="UTC",
                 filter_tags=filter_tags_dict,
+                similarity_threshold=similarity_threshold,
             )
             all_results.extend([
                 {
@@ -2574,6 +3003,7 @@ async def search_memory_all_users(
                 limit=limit,
                 timezone_str="UTC",
                 filter_tags=filter_tags_dict,
+                similarity_threshold=similarity_threshold,
             )
             all_results.extend([
                 {
@@ -2601,6 +3031,7 @@ async def search_memory_all_users(
                 limit=limit,
                 timezone_str="UTC",
                 filter_tags=filter_tags_dict,
+                similarity_threshold=similarity_threshold,
             )
             all_results.extend([
                 {
@@ -2630,6 +3061,7 @@ async def search_memory_all_users(
                 limit=limit,
                 timezone_str="UTC",
                 filter_tags=filter_tags_dict,
+                similarity_threshold=similarity_threshold,
             )
             all_results.extend([
                 {
@@ -2652,12 +3084,1006 @@ async def search_memory_all_users(
         "memory_type": memory_type,
         "search_field": search_field,
         "search_method": search_method,
+        "date_range": {
+            "start": parsed_start_date.isoformat() if parsed_start_date else None,
+            "end": parsed_end_date.isoformat() if parsed_end_date else None,
+        } if (parsed_start_date or parsed_end_date) else None,
         "results": all_results,
         "count": len(all_results),
         "client_id": effective_client_id,
         "organization_id": effective_org_id,
         "client_scope": client.scope,
         "filter_tags": filter_tags_dict,
+    }
+
+
+@router.get("/memory/components")
+async def list_memory_components(
+    user_id: Optional[str] = None,
+    memory_type: str = "all",
+    limit: int = 50,
+    authorization: Optional[str] = Header(None),
+    http_request: Request = None,
+):
+    """
+    Return memory records grouped by component for the given user.
+
+    **Accepts both JWT (dashboard) and Client API Key (programmatic).**
+
+    Args:
+        user_id: End-user whose memories should be listed (defaults to the client's admin user)
+        memory_type: One of ["episodic","semantic","procedural","resource","knowledge_vault","core","all"]
+        limit: Maximum number of items to return per memory type
+    """
+    valid_memory_types = {
+        "episodic",
+        "semantic",
+        "procedural",
+        "resource",
+        "knowledge_vault",
+        "core",
+        "all",
+    }
+    memory_type = (memory_type or "all").lower()
+    if memory_type not in valid_memory_types:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported memory_type '{memory_type}'. Must be one of {sorted(valid_memory_types)}",
+        )
+
+    # Authenticate (JWT or API key)
+    client, auth_type = get_client_from_jwt_or_api_key(authorization, http_request)
+    server = get_server()
+
+    # Default to the admin user for this client
+    if not user_id:
+        from mirix.services.admin_user_manager import ClientAuthManager
+        user_id = ClientAuthManager.get_admin_user_id_for_client(client.id)
+        logger.debug("No user_id provided, using admin user: %s", user_id)
+
+    user = server.user_manager.get_user_by_id(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail=f"User {user_id} not found")
+
+    timezone_str = getattr(user, "timezone", None) or "UTC"
+    limit = max(1, min(limit, 200))  # guardrails
+
+    # Need an agent state for memory manager configuration
+    agents = server.agent_manager.list_agents(actor=client, limit=1)
+    if not agents:
+        raise HTTPException(status_code=404, detail="No agents found for this client")
+    agent_state = agents[0]
+
+    fetch_all = memory_type == "all"
+    memories: Dict[str, Any] = {}
+
+    if fetch_all or memory_type == "episodic":
+        episodic_items = server.episodic_memory_manager.list_episodic_memory(
+            agent_state=agent_state,
+            user=user,
+            limit=limit,
+            timezone_str=timezone_str,
+        )
+        memories["episodic"] = {
+            "total_count": server.episodic_memory_manager.get_total_number_of_items(user=user),
+            "items": [
+                {
+                    "id": item.id,
+                    "occurred_at": item.occurred_at.isoformat() if item.occurred_at else None,
+                    "event_type": item.event_type,
+                    "actor": item.actor,
+                    "summary": item.summary,
+                    "details": item.details,
+                    "created_at": item.created_at.isoformat() if getattr(item, "created_at", None) else None,
+                    "updated_at": item.updated_at.isoformat() if getattr(item, "updated_at", None) else None,
+                }
+                for item in episodic_items
+            ],
+        }
+
+    if fetch_all or memory_type == "semantic":
+        semantic_items = server.semantic_memory_manager.list_semantic_items(
+            agent_state=agent_state,
+            user=user,
+            query="",
+            search_field="summary",
+            search_method="bm25",
+            limit=limit,
+            timezone_str=timezone_str,
+        )
+        memories["semantic"] = {
+            "total_count": server.semantic_memory_manager.get_total_number_of_items(user=user),
+            "items": [
+                {
+                    "id": item.id,
+                    "name": item.name,
+                    "summary": item.summary,
+                    "details": item.details,
+                    "source": item.source,
+                    "created_at": item.created_at.isoformat() if getattr(item, "created_at", None) else None,
+                    "updated_at": item.updated_at.isoformat() if getattr(item, "updated_at", None) else None,
+                }
+                for item in semantic_items
+            ],
+        }
+
+    if fetch_all or memory_type == "procedural":
+        procedural_items = server.procedural_memory_manager.list_procedures(
+            agent_state=agent_state,
+            user=user,
+            query="",
+            search_field="summary",
+            search_method="bm25",
+            limit=limit,
+            timezone_str=timezone_str,
+        )
+        memories["procedural"] = {
+            "total_count": server.procedural_memory_manager.get_total_number_of_items(user=user),
+            "items": [
+                {
+                    "id": item.id,
+                    "entry_type": item.entry_type,
+                    "summary": item.summary,
+                    "steps": item.steps,
+                    "created_at": item.created_at.isoformat() if getattr(item, "created_at", None) else None,
+                    "updated_at": item.updated_at.isoformat() if getattr(item, "updated_at", None) else None,
+                }
+                for item in procedural_items
+            ],
+        }
+
+    if fetch_all or memory_type == "resource":
+        resource_items = server.resource_memory_manager.list_resources(
+            agent_state=agent_state,
+            user=user,
+            query="",
+            search_field="summary",
+            search_method="bm25",
+            limit=limit,
+            timezone_str=timezone_str,
+        )
+        memories["resource"] = {
+            "total_count": server.resource_memory_manager.get_total_number_of_items(user=user),
+            "items": [
+                {
+                    "id": item.id,
+                    "resource_type": item.resource_type,
+                    "title": item.title,
+                    "summary": item.summary,
+                    "content": item.content,
+                    "created_at": item.created_at.isoformat() if getattr(item, "created_at", None) else None,
+                    "updated_at": item.updated_at.isoformat() if getattr(item, "updated_at", None) else None,
+                }
+                for item in resource_items
+            ],
+        }
+
+    if fetch_all or memory_type == "knowledge_vault":
+        knowledge_items = server.knowledge_vault_manager.list_knowledge(
+            agent_state=agent_state,
+            user=user,
+            query="",
+            search_field="caption",
+            search_method="bm25",
+            limit=limit,
+            timezone_str=timezone_str,
+        )
+        memories["knowledge_vault"] = {
+            "total_count": server.knowledge_vault_manager.get_total_number_of_items(user=user),
+            "items": [
+                {
+                    "id": item.id,
+                    "entry_type": item.entry_type,
+                    "source": item.source,
+                    "sensitivity": item.sensitivity,
+                    "secret_value": item.secret_value,
+                    "caption": item.caption,
+                    "created_at": item.created_at.isoformat() if getattr(item, "created_at", None) else None,
+                    "updated_at": item.updated_at.isoformat() if getattr(item, "updated_at", None) else None,
+                }
+                for item in knowledge_items
+            ],
+        }
+
+    if fetch_all or memory_type == "core":
+        blocks = server.block_manager.get_blocks(user=user)
+        memories["core"] = {
+            "total_count": len(blocks),
+            "items": [
+                {
+                    "id": block.id,
+                    "label": block.label,
+                    "value": block.value,
+                }
+                for block in blocks[:limit]
+            ],
+        }
+
+    return {
+        "success": True,
+        "user_id": user_id,
+        "memory_type": memory_type,
+        "limit": limit,
+        "memories": memories,
+    }
+
+
+@router.get("/memory/fields")
+async def list_memory_fields(
+    authorization: Optional[str] = Header(None),
+    http_request: Request = None,
+):
+    """
+    Return the searchable fields for each memory component.
+
+    Useful for UI clients to populate search field dropdowns in sync with
+    what the backend supports.
+    """
+    # Authenticate to keep parity with other memory endpoints
+    get_client_from_jwt_or_api_key(authorization, http_request)
+
+    fields_by_type = {
+        "episodic": ["summary", "details"],
+        "semantic": ["name", "summary", "details"],
+        "procedural": ["summary", "steps"],
+        "resource": ["summary", "content"],
+        "knowledge_vault": ["caption", "secret_value"],
+        "core": ["label", "value"],
+    }
+
+    return {
+        "success": True,
+        "fields": fields_by_type,
+    }
+
+
+# ============================================================================
+# Memory CRUD Endpoints (Update/Delete individual memories)
+# Accepts both JWT (dashboard) and Client API Key (programmatic access)
+# ============================================================================
+
+
+def get_client_from_jwt_or_api_key(
+    authorization: Optional[str] = None,
+    request: Optional[Request] = None,
+) -> tuple:
+    """
+    Authenticate using either JWT token (dashboard) or Client API Key (programmatic).
+    
+    Args:
+        authorization: Bearer JWT token from Authorization header
+        request: FastAPI request to inspect injected headers (from X-API-Key middleware)
+        
+    Returns:
+        tuple: (client, auth_type) where auth_type is "jwt" or "api_key"
+        Both authentication methods return a valid client object.
+        
+    Raises:
+        HTTPException: If neither auth method is provided or valid
+    """
+    server = get_server()
+    
+    # Try JWT first (dashboard)
+    if authorization:
+        try:
+            admin_payload = get_current_admin(authorization)
+            # Get client from JWT payload (sub contains client_id)
+            client_id = admin_payload["sub"]
+            client = server.client_manager.get_client_by_id(client_id)
+            if not client:
+                raise HTTPException(status_code=404, detail=f"Client {client_id} not found")
+            return client, "jwt"
+        except HTTPException:
+            pass  # Try API key next
+    
+    # Try injected client headers (programmatic access via middleware)
+    if request:
+        client_id = request.headers.get("x-client-id")
+        org_id = request.headers.get("x-org-id")
+        if client_id:
+            client_id, org_id = get_client_and_org(client_id, org_id)
+            client = server.client_manager.get_client_by_id(client_id)
+            if not client:
+                raise HTTPException(status_code=404, detail=f"Client {client_id} not found")
+            return client, "api_key"
+    
+    raise HTTPException(
+        status_code=401,
+        detail="Authentication required. Provide either Authorization (Bearer JWT) or X-API-Key header.",
+    )
+
+
+class UpdateEpisodicMemoryRequest(BaseModel):
+    """Request model for updating an episodic memory."""
+    summary: Optional[str] = None
+    details: Optional[str] = None
+
+
+@router.patch("/memory/episodic/{memory_id}")
+async def update_episodic_memory(
+    memory_id: str,
+    request: UpdateEpisodicMemoryRequest,
+    user_id: Optional[str] = None,
+    authorization: Optional[str] = Header(None),
+    http_request: Request = None,
+):
+    """
+    Update an episodic memory by ID.
+    
+    **Accepts both JWT (dashboard) and Client API Key (programmatic).**
+    
+    Updates the summary and/or details fields of the memory.
+    """
+    # Authenticate with either JWT or API key
+    client, auth_type = get_client_from_jwt_or_api_key(authorization, http_request)
+    
+    server = get_server()
+    
+    # If user_id is not provided, use the admin user for this client
+    if not user_id:
+        from mirix.services.admin_user_manager import ClientAuthManager
+        user_id = ClientAuthManager.get_admin_user_id_for_client(client.id)
+        logger.debug("No user_id provided, using admin user: %s", user_id)
+    
+    # Get user
+    user = server.user_manager.get_user_by_id(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail=f"User {user_id} not found")
+    
+    try:
+        updated_memory = server.episodic_memory_manager.update_event(
+            event_id=memory_id,
+            new_summary=request.summary,
+            new_details=request.details,
+            user=user,
+            actor=client,
+        )
+        return {
+            "success": True,
+            "message": f"Episodic memory {memory_id} updated",
+            "memory": {
+                "id": updated_memory.id,
+                "summary": updated_memory.summary,
+                "details": updated_memory.details,
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.delete("/memory/episodic/{memory_id}")
+async def delete_episodic_memory(
+    memory_id: str,
+    authorization: Optional[str] = Header(None),
+    http_request: Request = None,
+):
+    """
+    Delete an episodic memory by ID.
+    
+    **Accepts both JWT (dashboard) and Client API Key (programmatic).**
+    """
+    client, auth_type = get_client_from_jwt_or_api_key(authorization, http_request)
+    
+    server = get_server()
+    
+    try:
+        server.episodic_memory_manager.delete_event_by_id(memory_id, actor=client)
+        return {
+            "success": True,
+            "message": f"Episodic memory {memory_id} deleted"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+class UpdateSemanticMemoryRequest(BaseModel):
+    """Request model for updating a semantic memory."""
+    name: Optional[str] = None
+    summary: Optional[str] = None
+    details: Optional[str] = None
+
+
+@router.patch("/memory/semantic/{memory_id}")
+async def update_semantic_memory(
+    memory_id: str,
+    request: UpdateSemanticMemoryRequest,
+    user_id: Optional[str] = None,
+    authorization: Optional[str] = Header(None),
+    http_request: Request = None,
+):
+    """
+    Update a semantic memory by ID.
+    
+    **Accepts both JWT (dashboard) and Client API Key (programmatic).**
+    """
+    # Authenticate with either JWT or API key
+    client, auth_type = get_client_from_jwt_or_api_key(authorization, http_request)
+
+    server = get_server()
+
+    # If user_id is not provided, use the admin user for this client
+    if not user_id:
+        from mirix.services.admin_user_manager import ClientAuthManager
+        user_id = ClientAuthManager.get_admin_user_id_for_client(client.id)
+        logger.debug("No user_id provided, using admin user: %s", user_id)
+
+    # Get user
+    user = server.user_manager.get_user_by_id(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail=f"User {user_id} not found")
+
+    try:
+        semantic_update_data = {"id": memory_id}
+        if request.name is not None:
+            semantic_update_data["name"] = request.name
+        if request.summary is not None:
+            semantic_update_data["summary"] = request.summary
+        if request.details is not None:
+            semantic_update_data["details"] = request.details
+
+        updated_memory = server.semantic_memory_manager.update_item(
+            item_update=SemanticMemoryItemUpdate.model_validate(semantic_update_data),
+            user=user,
+            actor=client,
+        )
+        return {
+            "success": True,
+            "message": f"Semantic memory {memory_id} updated",
+            "memory": {
+                "id": updated_memory.id,
+                "name": updated_memory.name,
+                "summary": updated_memory.summary,
+                "details": updated_memory.details,
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.delete("/memory/semantic/{memory_id}")
+async def delete_semantic_memory(
+    memory_id: str,
+    authorization: Optional[str] = Header(None),
+    http_request: Request = None,
+):
+    """
+    Delete a semantic memory by ID.
+    
+    **Accepts both JWT (dashboard) and Client API Key (programmatic).**
+    """
+    client, auth_type = get_client_from_jwt_or_api_key(authorization, http_request)
+    
+    server = get_server()
+    
+    try:
+        server.semantic_memory_manager.delete_semantic_item_by_id(memory_id, actor=client)
+        return {
+            "success": True,
+            "message": f"Semantic memory {memory_id} deleted"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+class UpdateProceduralMemoryRequest(BaseModel):
+    """Request model for updating a procedural memory."""
+    summary: Optional[str] = None
+    steps: Optional[List[str]] = None
+
+
+@router.patch("/memory/procedural/{memory_id}")
+async def update_procedural_memory(
+    memory_id: str,
+    request: UpdateProceduralMemoryRequest,
+    user_id: Optional[str] = None,
+    authorization: Optional[str] = Header(None),
+    http_request: Request = None,
+):
+    """
+    Update a procedural memory by ID.
+    
+    **Accepts both JWT (dashboard) and Client API Key (programmatic).**
+    """
+    # Authenticate with either JWT or API key
+    client, auth_type = get_client_from_jwt_or_api_key(authorization, http_request)
+
+    server = get_server()
+
+    # If user_id is not provided, use the admin user for this client
+    if not user_id:
+        from mirix.services.admin_user_manager import ClientAuthManager
+        user_id = ClientAuthManager.get_admin_user_id_for_client(client.id)
+        logger.debug("No user_id provided, using admin user: %s", user_id)
+
+    # Get user
+    user = server.user_manager.get_user_by_id(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail=f"User {user_id} not found")
+
+    try:
+        procedural_update_data = {"id": memory_id}
+        if request.summary is not None:
+            procedural_update_data["summary"] = request.summary
+        if request.steps is not None:
+            procedural_update_data["steps"] = request.steps
+
+        updated_memory = server.procedural_memory_manager.update_item(
+            item_update=ProceduralMemoryItemUpdate.model_validate(
+                procedural_update_data
+            ),
+            user=user,
+            actor=client,
+        )
+        return {
+            "success": True,
+            "message": f"Procedural memory {memory_id} updated",
+            "memory": {
+                "id": updated_memory.id,
+                "summary": updated_memory.summary,
+                "steps": updated_memory.steps,
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.delete("/memory/procedural/{memory_id}")
+async def delete_procedural_memory(
+    memory_id: str,
+    authorization: Optional[str] = Header(None),
+    http_request: Request = None,
+):
+    """
+    Delete a procedural memory by ID.
+    
+    **Accepts both JWT (dashboard) and Client API Key (programmatic).**
+    """
+    client, auth_type = get_client_from_jwt_or_api_key(authorization, http_request)
+    
+    server = get_server()
+    
+    try:
+        server.procedural_memory_manager.delete_procedure_by_id(memory_id, actor=client)
+        return {
+            "success": True,
+            "message": f"Procedural memory {memory_id} deleted"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+class UpdateResourceMemoryRequest(BaseModel):
+    """Request model for updating a resource memory."""
+    title: Optional[str] = None
+    summary: Optional[str] = None
+    content: Optional[str] = None
+
+
+@router.patch("/memory/resource/{memory_id}")
+async def update_resource_memory(
+    memory_id: str,
+    request: UpdateResourceMemoryRequest,
+    user_id: Optional[str] = None,
+    authorization: Optional[str] = Header(None),
+    http_request: Request = None,
+):
+    """
+    Update a resource memory by ID.
+    
+    **Accepts both JWT (dashboard) and Client API Key (programmatic).**
+    """
+    # Authenticate with either JWT or API key
+    client, auth_type = get_client_from_jwt_or_api_key(authorization, http_request)
+
+    server = get_server()
+
+    # If user_id is not provided, use the admin user for this client
+    if not user_id:
+        from mirix.services.admin_user_manager import ClientAuthManager
+        user_id = ClientAuthManager.get_admin_user_id_for_client(client.id)
+        logger.debug("No user_id provided, using admin user: %s", user_id)
+
+    # Get user
+    user = server.user_manager.get_user_by_id(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail=f"User {user_id} not found")
+
+    try:
+        resource_update_data = {"id": memory_id}
+        if request.title is not None:
+            resource_update_data["title"] = request.title
+        if request.summary is not None:
+            resource_update_data["summary"] = request.summary
+        if request.content is not None:
+            resource_update_data["content"] = request.content
+
+        updated_memory = server.resource_memory_manager.update_item(
+            item_update=ResourceMemoryItemUpdate.model_validate(resource_update_data),
+            user=user,
+            actor=client,
+        )
+        return {
+            "success": True,
+            "message": f"Resource memory {memory_id} updated",
+            "memory": {
+                "id": updated_memory.id,
+                "title": updated_memory.title,
+                "summary": updated_memory.summary,
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.delete("/memory/resource/{memory_id}")
+async def delete_resource_memory(
+    memory_id: str,
+    authorization: Optional[str] = Header(None),
+    http_request: Request = None,
+):
+    """
+    Delete a resource memory by ID.
+    
+    **Accepts both JWT (dashboard) and Client API Key (programmatic).**
+    """
+    client, auth_type = get_client_from_jwt_or_api_key(authorization, http_request)
+    
+    server = get_server()
+    
+    try:
+        server.resource_memory_manager.delete_resource_by_id(memory_id, actor=client)
+        return {
+            "success": True,
+            "message": f"Resource memory {memory_id} deleted"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.delete("/memory/knowledge_vault/{memory_id}")
+async def delete_knowledge_vault_memory(
+    memory_id: str,
+    authorization: Optional[str] = Header(None),
+    http_request: Request = None,
+):
+    """
+    Delete a knowledge vault item by ID.
+    
+    **Accepts both JWT (dashboard) and Client API Key (programmatic).**
+    """
+    client, auth_type = get_client_from_jwt_or_api_key(authorization, http_request)
+    
+    server = get_server()
+    
+    try:
+        server.knowledge_vault_manager.delete_knowledge_by_id(memory_id, actor=client)
+        return {
+            "success": True,
+            "message": f"Knowledge vault item {memory_id} deleted"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+# ============================================================================
+# Dashboard Authentication Endpoints (Client-based)
+# ============================================================================
+
+
+class DashboardLoginRequest(BaseModel):
+    """Request model for dashboard login."""
+    email: str = Field(..., description="Client email")
+    password: str = Field(..., description="Client password")
+
+
+class DashboardRegisterRequest(BaseModel):
+    """Request model for dashboard registration."""
+    name: str = Field(..., max_length=100, description="Client name")
+    email: str = Field(..., description="Email address for login")
+    password: str = Field(..., description="Password for login")
+
+
+class DashboardClientResponse(BaseModel):
+    """Response model for dashboard client (excludes sensitive data)."""
+    id: str
+    name: str
+    email: Optional[str]
+    scope: str
+    status: str
+    admin_user_id: str  # Admin user for memory operations
+    created_at: Optional[datetime]
+    last_login: Optional[datetime]
+
+
+class TokenResponse(BaseModel):
+    """Response model for authentication token."""
+    access_token: str
+    token_type: str = "bearer"
+    expires_in: int
+    client: DashboardClientResponse
+
+
+def get_current_admin(authorization: Optional[str] = Header(None)) -> dict:
+    """
+    Dependency to get the current authenticated client from JWT token.
+    
+    Args:
+        authorization: Bearer token from Authorization header
+        
+    Returns:
+        Decoded JWT payload with client info
+        
+    Raises:
+        HTTPException: If token is invalid or missing
+    """
+    if not authorization:
+        raise HTTPException(
+            status_code=401,
+            detail="Authorization header required",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    # Extract token from "Bearer <token>"
+    parts = authorization.split()
+    if len(parts) != 2 or parts[0].lower() != "bearer":
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid authorization header format. Use: Bearer <token>",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    token = parts[1]
+    
+    from mirix.services.admin_user_manager import ClientAuthManager
+    
+    payload = ClientAuthManager.decode_access_token(token)
+    if not payload:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid or expired token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    return payload
+
+
+def require_scope(required_scopes: List[str]):
+    """
+    Dependency factory to require specific client scopes.
+    
+    Args:
+        required_scopes: List of allowed scopes
+        
+    Returns:
+        Dependency function that validates scope
+    """
+    def scope_checker(client_payload: dict = None):
+        if client_payload is None:
+            raise HTTPException(status_code=401, detail="Not authenticated")
+        
+        if client_payload.get("scope") not in required_scopes:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Insufficient permissions. Required scopes: {required_scopes}"
+            )
+        return client_payload
+    
+    return scope_checker
+
+
+@router.post("/admin/auth/register", response_model=TokenResponse)
+async def dashboard_register(request: DashboardRegisterRequest):
+    """
+    Register a new client with dashboard access.
+    
+    - First registration: Creates an admin client (no auth required)
+    - Subsequent registrations: May require authentication (future feature)
+    
+    For the first client, no authentication is needed (bootstrap).
+    """
+    from mirix.services.admin_user_manager import ClientAuthManager
+    
+    auth_manager = ClientAuthManager()
+    
+    # Check if this is the first dashboard user (bootstrap mode)
+    is_first = auth_manager.is_first_dashboard_user()
+    
+    if is_first:
+        logger.info("Creating first dashboard client (bootstrap mode)")
+    
+    try:
+        # Create client with dashboard credentials
+        client = auth_manager.register_client_for_dashboard(
+            name=request.name,
+            email=request.email,
+            password=request.password,
+            scope="admin",  # First/dashboard users get admin scope
+        )
+        
+        # Generate token
+        access_token = ClientAuthManager.create_access_token(client)
+        
+        return TokenResponse(
+            access_token=access_token,
+            token_type="bearer",
+            expires_in=24 * 3600,  # 24 hours in seconds
+            client=DashboardClientResponse(
+                id=client.id,
+                name=client.name,
+                email=client.email,
+                scope=client.scope,
+                status=client.status,
+                admin_user_id=ClientAuthManager.get_admin_user_id_for_client(client.id),
+                created_at=client.created_at,
+                last_login=client.last_login
+            )
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/admin/auth/login", response_model=TokenResponse)
+async def dashboard_login(request: DashboardLoginRequest):
+    """
+    Authenticate client for dashboard and return JWT token.
+    """
+    from mirix.services.admin_user_manager import ClientAuthManager
+    
+    auth_manager = ClientAuthManager()
+    
+    client, access_token, auth_status = auth_manager.authenticate(request.email, request.password)
+    
+    if auth_status == "not_found":
+        raise HTTPException(
+            status_code=404,
+            detail="Account does not exist. Please create an account."
+        )
+    if auth_status == "wrong_password":
+        raise HTTPException(
+            status_code=401,
+            detail="Incorrect password"
+        )
+    if auth_status != "ok" or not client or not access_token:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid email or password"
+        )
+    
+    return TokenResponse(
+        access_token=access_token,
+        token_type="bearer",
+        expires_in=24 * 3600,
+        client=DashboardClientResponse(
+            id=client.id,
+            name=client.name,
+            email=client.email,
+            scope=client.scope,
+            status=client.status,
+            admin_user_id=ClientAuthManager.get_admin_user_id_for_client(client.id),
+            created_at=client.created_at,
+            last_login=client.last_login
+        )
+    )
+
+
+@router.get("/admin/auth/me", response_model=DashboardClientResponse)
+async def dashboard_get_current_client(authorization: Optional[str] = Header(None)):
+    """
+    Get current authenticated client.
+    """
+    client_payload = get_current_admin(authorization)
+    
+    from mirix.services.admin_user_manager import ClientAuthManager
+    
+    auth_manager = ClientAuthManager()
+    client = auth_manager.get_client_by_id(client_payload["sub"])
+    
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+    
+    return DashboardClientResponse(
+        id=client.id,
+        name=client.name,
+        email=client.email,
+        scope=client.scope,
+        status=client.status,
+        admin_user_id=ClientAuthManager.get_admin_user_id_for_client(client.id),
+        created_at=client.created_at,
+        last_login=client.last_login
+    )
+
+
+@router.get("/admin/dashboard-clients", response_model=List[DashboardClientResponse])
+async def list_dashboard_clients(
+    cursor: Optional[str] = None,
+    limit: int = 50,
+    authorization: Optional[str] = Header(None),
+):
+    """
+    List all clients with dashboard access. Requires admin scope.
+    """
+    client_payload = get_current_admin(authorization)
+    
+    # Check scope - only admin can list dashboard clients
+    if client_payload.get("scope") != "admin":
+        raise HTTPException(
+            status_code=403,
+            detail="Only admin clients can list dashboard clients"
+        )
+    
+    from mirix.services.admin_user_manager import ClientAuthManager
+    
+    auth_manager = ClientAuthManager()
+    clients = auth_manager.list_dashboard_clients(cursor=cursor, limit=limit)
+    
+    from mirix.services.admin_user_manager import ClientAuthManager
+    
+    return [
+        DashboardClientResponse(
+            id=c.id,
+            name=c.name,
+            email=c.email,
+            scope=c.scope,
+            status=c.status,
+            admin_user_id=ClientAuthManager.get_admin_user_id_for_client(c.id),
+            created_at=c.created_at,
+            last_login=c.last_login
+        )
+        for c in clients
+    ]
+
+
+class PasswordChangeRequest(BaseModel):
+    """Request model for password change."""
+    current_password: str = Field(..., description="Current password")
+    new_password: str = Field(..., min_length=8, description="New password")
+
+
+@router.post("/admin/auth/change-password")
+async def dashboard_change_password(
+    request: PasswordChangeRequest,
+    authorization: Optional[str] = Header(None),
+):
+    """
+    Change the current client's dashboard password.
+    """
+    client_payload = get_current_admin(authorization)
+    
+    from mirix.services.admin_user_manager import ClientAuthManager
+    
+    auth_manager = ClientAuthManager()
+    
+    success = auth_manager.change_password(
+        client_id=client_payload["sub"],
+        current_password=request.current_password,
+        new_password=request.new_password
+    )
+    
+    if not success:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid current password"
+        )
+    
+    return {"message": "Password changed successfully"}
+
+
+@router.get("/admin/auth/check-setup")
+async def dashboard_check_setup():
+    """
+    Check if dashboard setup is complete (any dashboard clients exist).
+    
+    This endpoint is public and used by the dashboard to determine
+    whether to show the registration or login page.
+    """
+    from mirix.services.admin_user_manager import ClientAuthManager
+    
+    auth_manager = ClientAuthManager()
+    is_first = auth_manager.is_first_dashboard_user()
+    
+    return {
+        "setup_required": is_first,
+        "message": "No dashboard users exist. Please create the first account." if is_first else "Dashboard setup complete."
     }
 
 

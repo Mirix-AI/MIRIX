@@ -1,10 +1,11 @@
 # inspecting tools
 import asyncio
 import os
+import sys
 import traceback
 import warnings
 from abc import abstractmethod
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime
 from typing import Callable, Dict, List, Optional, Union
 
@@ -417,6 +418,46 @@ except Exception as e:
     redis_client = None
 
 
+# ========================================================================
+# LANGFUSE OBSERVABILITY INITIALIZATION (Module Level - Runs on Import)
+# ========================================================================
+# Initialize LangFuse client for tracing and observability
+# This provides distributed tracing across API → Kafka → Worker processes
+
+try:
+    from mirix.observability import (
+        initialize_langfuse,
+        flush_langfuse,
+        shutdown_langfuse,
+    )
+    
+    logger.info("Initializing LangFuse observability...")
+    initialize_langfuse()
+except Exception as e:
+    logger.warning(f"LangFuse initialization failed: {e}. Continuing without observability.")
+
+
+# ========================================================================
+# GRACEFUL SHUTDOWN - No Custom Signal Handlers Needed
+# ========================================================================
+# Let uvicorn handle SIGTERM/SIGINT naturally.
+# The lifespan context manager (cleanup function) will automatically:
+# 1. Be called when uvicorn receives shutdown signals
+# 2. Flush LangFuse traces before final shutdown
+# 3. Clean up queue manager resources
+#
+# This approach:
+# ✅ Avoids signal handler complexity
+# ✅ No asyncio.CancelledError issues
+# ✅ Works with uvicorn's event loop
+# ✅ Compatible with Kubernetes/Docker (SIGTERM handling)
+# ✅ Ctrl+C works properly (SIGINT handling)
+#
+# The cleanup is registered in rest_api.py's lifespan context manager.
+
+logger.info("✅ Shutdown handling via FastAPI lifespan (no custom signal handlers needed)")
+
+
 # Dependency
 def get_db():
     db = SessionLocal()
@@ -500,12 +541,12 @@ class SyncServer(Server):
         # Managers that interface with parallelism
         self.per_agent_lock_manager = PerAgentLockManager()
 
-        # Make default user and org
+        # Make admin user and default org
         if init_with_default_org_and_user:
             self.default_org = self.organization_manager.create_default_organization()
-            self.default_user = self.user_manager.create_default_user()
+            self.admin_user = self.user_manager.create_admin_user()
             self.default_client = self.client_manager.create_default_client()
-            # self.block_manager.add_default_blocks(actor=self.default_user)
+            # self.block_manager.add_default_blocks(actor=self.admin_user)
             self.tool_manager.upsert_base_tools(actor=self.default_client)
 
         # collect providers (always has Mirix as a default)
@@ -1375,7 +1416,7 @@ class SyncServer(Server):
         # Next, attempt to run the tool with the sandbox
         try:
             sandbox_run_result = ToolExecutionSandbox(
-                tool.name, tool_args, actor, tool_object=tool
+                tool_name=tool.name, args=tool_args, actor=actor, tool_object=tool
             ).run(agent_state=agent_state, additional_env_vars=tool_env_vars)
             return ToolReturnMessage(
                 id="null",
@@ -1467,10 +1508,9 @@ class SyncServer(Server):
             llm_config = mirix_agent.agent_state.llm_config
             if stream_tokens and (
                 llm_config.model_endpoint_type != "openai"
-                or "inference.memgpt.ai" in llm_config.model_endpoint
             ):
                 warnings.warn(
-                    "Token streaming is only supported for models with type 'openai' or `inference.memgpt.ai` in the model_endpoint: agent has endpoint type {llm_config.model_endpoint_type} and {llm_config.model_endpoint}. Setting stream_tokens to False."
+                    "Token streaming is only supported for models with type 'openai' in the model_endpoint: agent has endpoint type {llm_config.model_endpoint_type} and {llm_config.model_endpoint}. Setting stream_tokens to False."
                 )
                 stream_tokens = False
 

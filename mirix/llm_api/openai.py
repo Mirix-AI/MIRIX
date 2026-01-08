@@ -170,13 +170,6 @@ def build_openai_chat_completions_request(
         # if "gpt-4o" in llm_config.model or "gpt-4-turbo" in llm_config.model or "gpt-3.5-turbo" in llm_config.model:
         # data.response_format = {"type": "json_object"}
 
-    if "inference.memgpt.ai" in llm_config.model_endpoint:
-        # override user id for inference.memgpt.ai
-        import uuid
-
-        data.user = str(uuid.UUID(int=0))
-        data.model = "memgpt-openai"
-
     return data
 
 def openai_chat_completions_process_stream(

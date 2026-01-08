@@ -146,8 +146,7 @@ def test_client(test_organization):
         scope="read_write",
         created_at=datetime.now(dt_timezone.utc),
         updated_at=datetime.now(dt_timezone.utc),
-        is_deleted=False,
-        api_key_hash=None
+        is_deleted=False
     )
     created_client = client_manager.create_client(client)
     yield created_client

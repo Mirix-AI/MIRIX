@@ -60,30 +60,28 @@ def check_server():
 
 
 @pytest.fixture(scope="module")
-def client(check_server):
+def client(check_server, api_key_factory):
     """Create and initialize MirixClient."""
     logger.info("\n" + "="*80)
     logger.info("INITIALIZING TEST CLIENT")
     logger.info("="*80)
-    
+
+    auth = api_key_factory(TEST_CLIENT_ID, TEST_ORG_ID)
     client = MirixClient(
-        api_key=None,
-        client_id=TEST_CLIENT_ID,
+        api_key=auth["api_key"],
         client_name="Test Deletion Client",
         client_scope="test",
-        org_id=TEST_ORG_ID,
         debug=False,
     )
-    logger.info("✓ Client initialized: %s", TEST_CLIENT_ID)
+    logger.info("Client initialized via API key: %s", TEST_CLIENT_ID)
     
     # Create or get user
     try:
         returned_user_id = client.create_or_get_user(
             user_id=TEST_USER_ID,
             user_name="Test Deletion User",
-            org_id=TEST_ORG_ID
         )
-        logger.info("✓ User ready: %s (requested: %s)", returned_user_id, TEST_USER_ID)
+        logger.info("User ready: %s (requested: %s)", returned_user_id, TEST_USER_ID)
         
         # Verify they match
         if returned_user_id != TEST_USER_ID:

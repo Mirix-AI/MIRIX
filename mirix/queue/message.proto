@@ -35,6 +35,19 @@ message QueueMessage {
   // Optional occurred_at timestamp for episodic memory
   // ISO 8601 format string (e.g., "2025-11-18T10:30:00+00:00")
   optional string occurred_at = 9;
+  
+  // ========== LANGFUSE TRACE CONTEXT (for observability) ==========
+  // LangFuse trace ID for distributed tracing continuity
+  optional string langfuse_trace_id = 10;
+  
+  // LangFuse observation/span ID (parent span)
+  optional string langfuse_observation_id = 11;
+  
+  // LangFuse session ID (agent/conversation session)
+  optional string langfuse_session_id = 12;
+  
+  // LangFuse user ID (for user-level tracking)
+  optional string langfuse_user_id = 13;
 }
 
 // User representation

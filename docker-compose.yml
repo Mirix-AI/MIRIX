@@ -1,0 +1,250 @@
+# ============================================================================
+# Mirix Docker Compose Configuration
+# ============================================================================
+# This file sets up the complete Mirix infrastructure:
+#   - PostgreSQL with pgvector extension for vector similarity search
+#   - Redis Stack for caching and high-performance vector search
+#   - Mirix API backend server
+#   - Mirix Dashboard (React web UI)
+#
+# Usage:
+#   docker-compose up -d              # Start all services
+#   docker-compose down               # Stop all services
+#   docker-compose down -v            # Stop and remove volumes
+#   docker-compose logs -f            # View logs
+#
+# Environment Variables (can be set in .env file):
+#   See docker/env.example for full list
+# ============================================================================
+
+services:
+  # ==========================================================================
+  # PostgreSQL with pgvector
+  # ==========================================================================
+  mirix_db:
+    image: ankane/pgvector:v0.5.1
+    container_name: mirix_pgvector
+    restart: unless-stopped
+    networks:
+      default:
+        aliases:
+          - pgvector_db
+          - mirix-db
+    environment:
+      - POSTGRES_USER=${MIRIX_PG_USER:-mirix}
+      - POSTGRES_PASSWORD=${MIRIX_PG_PASSWORD:-mirix}
+      - POSTGRES_DB=${MIRIX_PG_DB:-mirix}
+    volumes:
+      - ./.persist/pgdata:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${MIRIX_PG_USER:-mirix} -d ${MIRIX_PG_DB:-mirix}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ==========================================================================
+  # Redis Stack
+  # ==========================================================================
+  redis:
+    image: redis/redis-stack-server:latest
+    container_name: mirix_redis
+    restart: unless-stopped
+    networks:
+      default:
+        aliases:
+          - redis-cache
+          - mirix-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - ./.persist/redis-data:/data
+    environment:
+      - REDIS_ARGS=--appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  # ==========================================================================
+  # Mirix API Backend
+  # ==========================================================================
+  # FastAPI-based REST API server that exposes all Mirix endpoints.
+  # Connects to PostgreSQL for data storage and Redis for caching.
+  #
+  # API Documentation:
+  #   - Swagger UI: http://localhost:8000/docs
+  #   - ReDoc: http://localhost:8000/redoc
+  #
+  # Key Endpoints:
+  #   - POST /memory/add - Add memories
+  #   - POST /memory/retrieve/conversation - Retrieve memories
+  #   - POST /agents/meta/initialize - Initialize meta agent
+  #   - GET /health - Health check
+  # ==========================================================================
+  mirix_api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: docker.io/yuwucsd/mirix-api:latest
+    container_name: mirix_api
+    restart: unless-stopped
+    depends_on:
+      mirix_db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      default:
+        aliases:
+          - mirix-api
+          - api
+    ports:
+      - "8531:8531"
+    volumes:
+      # Persistent data storage for Mirix
+      - ./.persist/mirix-data:/app/data
+    environment:
+      # =======================================================================
+      # PostgreSQL Configuration
+      # =======================================================================
+      # The API connects to PostgreSQL using these settings.
+      # Inside Docker network, use service name 'mirix_db' as host.
+      - MIRIX_PG_HOST=mirix_db
+      - MIRIX_PG_PORT=5432
+      - MIRIX_PG_USER=${MIRIX_PG_USER:-mirix}
+      - MIRIX_PG_PASSWORD=${MIRIX_PG_PASSWORD:-mirix}
+      - MIRIX_PG_DB=${MIRIX_PG_DB:-mirix}
+      # Alternative: Full PostgreSQL URI (overrides individual settings)
+      # - MIRIX_PG_URI=postgresql+pg8000://mirix:mirix@mirix_db:5432/mirix
+
+      # =======================================================================
+      # Redis Configuration
+      # =======================================================================
+      # Enable Redis for high-performance caching.
+      # Inside Docker network, use service name 'redis' as host.
+      - MIRIX_REDIS_ENABLED=true
+      - MIRIX_REDIS_HOST=redis
+      - MIRIX_REDIS_PORT=6379
+      # - MIRIX_REDIS_PASSWORD=           # Set if Redis requires auth
+      # - MIRIX_REDIS_DB=0                # Redis database number
+      # Alternative: Full Redis URI (overrides individual settings)
+      # - MIRIX_REDIS_URI=redis://redis:6379/0
+
+      # =======================================================================
+      # Application Settings
+      # =======================================================================
+      - MIRIX_DIR=/app/data
+      - MIRIX_IMAGES_DIR=/app/data/images
+      - MIRIX_LOG_LEVEL=${MIRIX_LOG_LEVEL:-INFO}
+      - MIRIX_LOG_TO_CONSOLE=true
+
+      # =======================================================================
+      # JWT Authentication (for dashboard)
+      # =======================================================================
+      # Generate a secure secret: openssl rand -hex 32
+      - MIRIX_JWT_SECRET_KEY=${MIRIX_JWT_SECRET_KEY:-change-this-to-a-secure-secret-key}
+      - MIRIX_JWT_EXPIRATION_HOURS=${MIRIX_JWT_EXPIRATION_HOURS:-24}
+
+      # =======================================================================
+      # LLM Provider API Keys (set in .env file)
+      # =======================================================================
+      # At least one LLM provider is required for memory operations.
+      # Uncomment and set the keys for your preferred provider(s).
+      
+      # OpenAI (most common)
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENAI_API_BASE=${OPENAI_API_BASE:-https://api.openai.com/v1}
+      
+      # Anthropic Claude
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      
+      # Google Gemini
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      
+      # Azure OpenAI
+      - AZURE_API_KEY=${AZURE_API_KEY:-}
+      - AZURE_BASE_URL=${AZURE_BASE_URL:-}
+      - AZURE_API_VERSION=${AZURE_API_VERSION:-2024-09-01-preview}
+      
+      # Ollama (local models)
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-}
+      
+      # Groq
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
+      
+      # Together AI
+      - TOGETHER_API_KEY=${TOGETHER_API_KEY:-}
+
+      # =======================================================================
+      # Embedding Configuration
+      # =======================================================================
+      # Used for semantic search in memory retrieval.
+      # Default uses OpenAI embeddings if OPENAI_API_KEY is set.
+
+      # =======================================================================
+      # Optional: Telemetry & Tracing
+      # =======================================================================
+      # - MIRIX_OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      # - MIRIX_DISABLE_TRACING=false
+      # - MIRIX_VERBOSE_TELEMETRY_LOGGING=false
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8531/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # ==========================================================================
+  # Mirix Dashboard (Web UI)
+  # ==========================================================================
+  # React-based dashboard for managing Mirix.
+  # Proxies API requests to the backend via nginx.
+  #
+  # Access:
+  #   - Dashboard: http://localhost:3000
+  #   - API calls are proxied to mirix_api via /api/*
+  #
+  # Features:
+  #   - User authentication (register/login)
+  #   - Memory management (view, search, delete)
+  #   - API key management
+  #   - Client/user management
+  # ==========================================================================
+  dashboard:
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+    image: docker.io/yuwucsd/mirix-dashboard:latest
+    container_name: mirix_dashboard
+    restart: unless-stopped
+    depends_on:
+      mirix_api:
+        condition: service_healthy
+    networks:
+      default:
+        aliases:
+          - mirix-dashboard
+          - frontend
+    ports:
+      - "5173:80"
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:80/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+# ============================================================================
+# Networks
+# ============================================================================
+networks:
+  default:
+    name: mirix_network
+    driver: bridge

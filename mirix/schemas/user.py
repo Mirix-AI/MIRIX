@@ -26,20 +26,30 @@ class User(UserBase):
         id (str): The unique identifier of the user.
         name (str): The name of the user.
         status (str): Whether the user is active or not.
+        client_id (str): The client this user belongs to.
         created_at (datetime): The creation date of the user.
     """
 
+    # ID is now a REQUIRED field (no default_factory) to prevent ID overwrite bugs.
+    # Previously, default_factory=_generate_user_id would regenerate IDs when
+    # existing users were loaded from DB and re-validated through Pydantic,
+    # causing user IDs to be overwritten in the queue worker.
     id: str = Field(
-        default_factory=_generate_user_id,
+        ...,
         description="The unique identifier of the user.",
     )
     organization_id: Optional[str] = Field(
         DEFAULT_ORG_ID,
         description="The organization id of the user",
     )
+    client_id: Optional[str] = Field(
+        None,
+        description="The client this user belongs to.",
+    )
     name: str = Field(..., description="The name of the user.")
     status: str = Field("active", description="Whether the user is active or not.")
     timezone: str = Field(..., description="The timezone of the user.")
+    is_admin: bool = Field(False, description="Whether this is an admin user for the client.")
     created_at: Optional[datetime] = Field(
         default_factory=get_utc_time, description="The creation date of the user."
     )

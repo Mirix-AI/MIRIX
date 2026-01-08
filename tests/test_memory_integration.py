@@ -78,12 +78,11 @@ def server_process():
 
 
 @pytest.fixture(scope="module")
-def client(server_process):
+def client(server_process, api_auth):
     """Create a client connected to the test server."""
     # Use same user/org as run_client.py to ensure agents are already initialized
     client = MirixClient(
-        client_id = "demo-client",
-        org_id=TEST_ORG_ID,  # Explicitly set org_id (same as run_client.py)
+        api_key=api_auth["api_key"],
         debug=False,  # Turn off debug to avoid Unicode encoding issues on Windows
     )
     

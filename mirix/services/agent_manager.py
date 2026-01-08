@@ -211,25 +211,34 @@ class AgentManager:
         if not meta_agent_create.llm_config or not meta_agent_create.embedding_config:
             raise ValueError("llm_config and embedding_config are required")
 
-        # Use default user_id if not provided (for system blocks)
-        # Initialize user from user_id
-        user = None
+        # ✅ NEW: Get or create organization-specific default user for block templates
+        user_manager = UserManager()
 
         if user_id:
-            user_manager = UserManager()
+            # Specific user_id provided - use it
             try:
                 user = user_manager.get_user_by_id(user_id)
             except Exception as e:
                 logger.warning(
-                    "Failed to load user with id=%s, falling back to default user: %s",
+                    "Failed to load user with id=%s, falling back to org default user: %s",
                     user_id,
                     e,
                 )
-                user = user_manager.get_default_user()
+                # Fall back to organization's default user (not global admin)
+                user = user_manager.get_or_create_org_default_user(
+                    org_id=actor.organization_id, client_id=actor.id
+                )
         else:
-            # If no user_id provided, use default user
-            user_manager = UserManager()
-            user = user_manager.get_default_user()
+            # No user_id provided - use organization's default template user
+            # This user will serve as the template for copying blocks to new users
+            user = user_manager.get_or_create_org_default_user(
+                org_id=actor.organization_id, client_id=actor.id
+            )
+            logger.debug(
+                "Using organization default user %s for block templates in org %s",
+                user.id,
+                actor.organization_id,
+            )
 
         # Ensure base tools are available in the database for this organization
         self.tool_manager.upsert_base_tools(actor=actor)
@@ -368,6 +377,14 @@ class AgentManager:
                 logger.debug(
                     f"Created {len(memory_block_configs)} memory blocks for {agent_name} (agent_id: {agent_state.id})"
                 )
+
+                # ✅ Ensure blocks are committed to database before proceeding
+                # This is critical for template block copying to work correctly
+                logger.debug(
+                    f"Flushing database session to ensure blocks are committed for agent {agent_state.id}"
+                )
+                with self.block_manager.session_maker() as session:
+                    session.commit()  # Explicit commit to ensure blocks are visible to other sessions
 
             # Future: Add handling for other agent-specific configs here if needed
             # E.g., if 'initial_data' in agent_config: ...
@@ -720,6 +737,7 @@ class AgentManager:
         actor: PydanticClient,
         agent_state: PydanticAgentState,
         supplied_initial_message_sequence: Optional[List[MessageCreate]] = None,
+        user_id: Optional[str] = None,
     ) -> List[PydanticMessage]:
         init_messages = initialize_message_sequence(
             agent_state=agent_state,
@@ -741,6 +759,7 @@ class AgentManager:
                     supplied_initial_message_sequence,
                     agent_state.llm_config.model,
                     actor,
+                    user_id=user_id,
                 )
             )
         else:
@@ -761,12 +780,13 @@ class AgentManager:
         actor: PydanticClient,
         agent_state: PydanticAgentState,
         initial_message_sequence: Optional[List[MessageCreate]] = None,
+        user_id: Optional[str] = None,
     ) -> PydanticAgentState:
         init_messages = self._generate_initial_message_sequence(
-            actor, agent_state, initial_message_sequence
+            actor, agent_state, initial_message_sequence, user_id=user_id
         )
         return self.append_to_in_context_messages(
-            init_messages, agent_id=agent_state.id, actor=actor
+            init_messages, agent_id=agent_state.id, actor=actor, user_id=user_id
         )
 
     @enforce_types
@@ -822,19 +842,23 @@ class AgentManager:
         old_agent_state = None
         if agent_update.system:
             old_agent_state = self.get_agent_by_id(agent_id=agent_id, actor=actor)
-        
+
         # Update agent (including system field in database)
         agent_state = self._update_agent(
             agent_id=agent_id, agent_update=agent_update, actor=actor
         )
 
         # Rebuild the system prompt if it changed
-        if agent_update.system and old_agent_state and agent_update.system != old_agent_state.system:
+        if (
+            agent_update.system
+            and old_agent_state
+            and agent_update.system != old_agent_state.system
+        ):
             agent_state = self.rebuild_system_prompt(
                 agent_id=agent_state.id,
                 system_prompt=agent_update.system,  # Pass the new system prompt
                 actor=actor,
-                force=True
+                force=True,
             )
 
         return agent_state
@@ -1577,15 +1601,16 @@ class AgentManager:
                     cached_data.pop("memory_prompt_template", None)
 
                     agent_state = PydanticAgentState(**cached_data)
-                    
+
                     # SECURITY CHECK: Verify agent belongs to this client
                     # Prevents cross-client access via Redis cache
                     if agent_state.created_by_id != actor.id:
                         from sqlalchemy.exc import NoResultFound
+
                         raise NoResultFound(
                             f"Agent {agent_id} not found or not accessible to client {actor.id}"
                         )
-                    
+
                     return agent_state  # Cache HIT (agent + tools + memory)
         except Exception as e:
             # Log but continue to PostgreSQL on Redis error
@@ -1601,7 +1626,7 @@ class AgentManager:
             agent = AgentModel.read(
                 db_session=session,
                 identifier=agent_id,
-                actor=actor  # Triggers client-level filtering via apply_access_predicate
+                actor=actor,  # Triggers client-level filtering via apply_access_predicate
             )
             pydantic_agent = agent.to_pydantic()
 
@@ -1780,7 +1805,10 @@ class AgentManager:
     #     return messages
     @enforce_types
     def get_in_context_messages(
-        self, agent_state: PydanticAgentState, actor: PydanticClient
+        self,
+        agent_state: PydanticAgentState,
+        actor: PydanticClient,
+        user: Optional[PydanticUser] = None,
     ) -> List[PydanticMessage]:
         message_ids = agent_state.message_ids
         messages = self.message_manager.get_messages_by_ids(
@@ -1789,11 +1817,12 @@ class AgentManager:
         # Handle empty message list (e.g., after deletion)
         if not messages:
             return []
-        
+
         # Keep first message (system message) and filter rest by user_id
-        messages = [messages[0]] + [
-            message for message in messages[1:] if message.user_id == actor.id
-        ]
+        if user:
+            messages = [messages[0]] + [
+                message for message in messages[1:] if message.user_id == user.id
+            ]
         return messages
 
     @enforce_types
@@ -1802,11 +1831,11 @@ class AgentManager:
     ) -> PydanticMessage:
         agent_state = self.get_agent_by_id(agent_id=agent_id, actor=actor)
         message_ids = agent_state.message_ids
-        
+
         # Handle empty message_ids (e.g., after deletion)
         if not message_ids:
             return None
-        
+
         return self.message_manager.get_message_by_id(
             message_id=message_ids[0], actor=actor
         )
@@ -1844,28 +1873,42 @@ class AgentManager:
 
     @enforce_types
     def trim_older_in_context_messages(
-        self, num: int, agent_id: str, actor: PydanticClient
+        self,
+        num: int,
+        agent_id: str,
+        actor: PydanticClient,
+        user_id: Optional[str] = None,
     ) -> PydanticAgentState:
+        """
+        Trim older messages from the in-context message list, keeping `num` most recent messages
+        for the specified user. Messages from other users are preserved.
+
+        Args:
+            num: Number of most recent user messages to keep.
+            agent_id: The agent ID.
+            actor: The Client performing the operation.
+            user_id: The user whose messages to trim. If None, trims all non-system messages.
+        """
         message_ids = self.get_agent_by_id(agent_id=agent_id, actor=actor).message_ids
         system_message_id = message_ids[0]
         message_ids = message_ids[1:]
 
-        message_id_indices_belonging_to_actor = [
+        message_id_indices_belonging_to_user = [
             idx
             for idx, message_id in enumerate(message_ids)
             if self.message_manager.get_message_by_id(
                 message_id=message_id, actor=actor
             ).user_id
-            == actor.id
+            == user_id
         ]
-        message_ids_belonging_to_actor = [
-            message_ids[idx] for idx in message_id_indices_belonging_to_actor
+        message_ids_belonging_to_user = [
+            message_ids[idx] for idx in message_id_indices_belonging_to_user
         ]
         message_ids_to_keep = [
-            message_ids[idx] for idx in message_id_indices_belonging_to_actor[num - 1 :]
+            message_ids[idx] for idx in message_id_indices_belonging_to_user[num - 1 :]
         ]
 
-        message_ids_belonging_to_actor = set(message_ids_belonging_to_actor)
+        message_ids_belonging_to_user = set(message_ids_belonging_to_user)
         message_ids_to_keep = set(message_ids_to_keep)
 
         # new_messages = [message_ids[0]] + message_ids[num:]  # 0 is system message
@@ -1873,7 +1916,7 @@ class AgentManager:
             msg_id
             for msg_id in message_ids
             if (
-                msg_id not in message_ids_belonging_to_actor
+                msg_id not in message_ids_belonging_to_user
                 or msg_id in message_ids_to_keep
             )
         ]
@@ -1883,18 +1926,27 @@ class AgentManager:
 
     @enforce_types
     def trim_all_in_context_messages_except_system(
-        self, agent_id: str, actor: PydanticClient
+        self, agent_id: str, actor: PydanticClient, user_id: Optional[str] = None
     ) -> PydanticAgentState:
+        """
+        Remove all messages except the system message for a specific user.
+        Messages from other users are preserved.
+
+        Args:
+            agent_id: The agent ID.
+            actor: The Client performing the operation.
+            user_id: The user whose messages to remove. If None, removes all non-system messages.
+        """
         message_ids = self.get_agent_by_id(agent_id=agent_id, actor=actor).message_ids
         system_message_id = message_ids[0]  # 0 is system message
 
-        # Keep system message and only filter out messages belonging to the current actor
+        # Keep system message and only filter out messages belonging to the specified user
         new_message_ids = [system_message_id]
         for message_id in message_ids[1:]:  # Skip system message
             message = self.message_manager.get_message_by_id(
                 message_id=message_id, actor=actor
             )
-            if message.user_id != actor.id:
+            if message.user_id != user_id:
                 new_message_ids.append(message_id)
 
         return self.set_in_context_messages(
@@ -1903,10 +1955,16 @@ class AgentManager:
 
     @enforce_types
     def prepend_to_in_context_messages(
-        self, messages: List[PydanticMessage], agent_id: str, actor: PydanticClient
+        self,
+        messages: List[PydanticMessage],
+        agent_id: str,
+        actor: PydanticClient,
+        user_id: Optional[str] = None,
     ) -> PydanticAgentState:
         message_ids = self.get_agent_by_id(agent_id=agent_id, actor=actor).message_ids
-        new_messages = self.message_manager.create_many_messages(messages, actor=actor)
+        new_messages = self.message_manager.create_many_messages(
+            messages, actor=actor, user_id=user_id
+        )
         message_ids = [message_ids[0]] + [m.id for m in new_messages] + message_ids[1:]
         return self.set_in_context_messages(
             agent_id=agent_id, message_ids=message_ids, actor=actor
@@ -1914,9 +1972,15 @@ class AgentManager:
 
     @enforce_types
     def append_to_in_context_messages(
-        self, messages: List[PydanticMessage], agent_id: str, actor: PydanticClient
+        self,
+        messages: List[PydanticMessage],
+        agent_id: str,
+        actor: PydanticClient,
+        user_id: Optional[str] = None,
     ) -> PydanticAgentState:
-        messages = self.message_manager.create_many_messages(messages, actor=actor)
+        messages = self.message_manager.create_many_messages(
+            messages, actor=actor, user_id=user_id
+        )
         message_ids = (
             self.get_agent_by_id(agent_id=agent_id, actor=actor).message_ids or []
         )
@@ -1930,21 +1994,23 @@ class AgentManager:
         self,
         agent_id: str,
         actor: PydanticClient,
+        user_id: Optional[str] = None,
         add_default_initial_messages: bool = False,
     ) -> PydanticAgentState:
         """
-        Removes messages belonging to the specified actor from the agent's conversation history.
-        Preserves system messages and messages from other actors.
+        Removes messages belonging to the specified user from the agent's conversation history.
+        Preserves system messages and messages from other users.
 
         This action is destructive and cannot be undone once committed.
 
         Args:
-            add_default_initial_messages: If true, adds the default initial messages after resetting.
             agent_id (str): The ID of the agent whose messages will be reset.
-            actor (PydanticUser): The user performing this action - only their messages will be removed.
+            actor (PydanticClient): The Client performing this action.
+            user_id (str): The user whose messages will be removed. If None, removes all non-system messages.
+            add_default_initial_messages: If true, adds the default initial messages after resetting.
 
         Returns:
-            PydanticAgentState: The updated agent state with actor's messages removed.
+            PydanticAgentState: The updated agent state with user's messages removed.
         """
         with self.session_maker() as session:
             # Retrieve the existing agent (will raise NoResultFound if invalid)
@@ -1955,16 +2021,21 @@ class AgentManager:
             # Get current messages to filter
             current_messages = agent.messages
 
-            # Filter out messages belonging to the specific actor, but keep:
-            # 1. System messages (role='system')
-            # 2. Messages from other actors (user_id != actor.id)
+            # Filter out messages belonging to the specific user, but keep:
+            # 1. System messages (role='system') - always keep
+            # 2. Messages from other users (user_id != specified user_id)
             messages_to_keep = []
             messages_to_remove = []
 
             for message in current_messages:
-                if message.role == "system" or message.user_id == actor.id:
+                if message.role == "system":
+                    # Always keep system messages
+                    messages_to_keep.append(message)
+                elif user_id is None or message.user_id == user_id:
+                    # Remove this user's messages (or all if user_id is None)
                     messages_to_remove.append(message)
                 else:
+                    # Keep messages from other users
                     messages_to_keep.append(message)
 
             # Update the agent's messages relationship to only keep filtered messages
@@ -1981,7 +2052,7 @@ class AgentManager:
 
         if add_default_initial_messages:
             return self.append_initial_message_sequence_to_in_context_messages(
-                user, agent_state
+                actor, agent_state, user_id=user_id
             )
         else:
             # We still want to always have a system message
