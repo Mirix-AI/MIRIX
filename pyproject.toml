@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mirix"
-version = "0.1.0"
+version = "0.20.0"
 description = "Multi-Agent Personal Assistant with an Advanced Memory System"
 readme = "README.md"
 license = {text = "Apache License 2.0"}
