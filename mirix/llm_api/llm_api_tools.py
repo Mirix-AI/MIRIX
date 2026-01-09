@@ -6,8 +6,8 @@ import requests
 
 from mirix.constants import CLI_WARNING_PREFIX
 from mirix.log import get_logger
-from mirix.observability.langfuse_client import get_langfuse_client
 from mirix.observability.context import get_trace_context
+from mirix.observability.langfuse_client import get_langfuse_client
 
 logger = get_logger(__name__)
 
@@ -108,29 +108,32 @@ def retry_with_exponential_backoff(
 
     return wrapper
 
+
 # Add this helper function to extract generation metadata for LangFuse
-def _extract_generation_metadata(llm_config, functions, max_tokens, summarizing, image_uris):
+def _extract_generation_metadata(
+    llm_config, functions, max_tokens, summarizing, image_uris
+):
     """Extract metadata for LangFuse generation tracking."""
     metadata = {
         "provider": llm_config.model_endpoint_type,
         "endpoint": llm_config.model_endpoint,
         "summarizing": summarizing,
     }
-    
+
     if functions:
         metadata["functions_count"] = len(functions)
         metadata["function_names"] = [
-            f.get("name") for f in functions 
-            if isinstance(f, dict) and "name" in f
+            f.get("name") for f in functions if isinstance(f, dict) and "name" in f
         ]
-    
+
     if max_tokens:
         metadata["max_tokens"] = max_tokens
-    
+
     if image_uris:
         metadata["image_count"] = len(image_uris)
-    
+
     return metadata
+
 
 @retry_with_exponential_backoff
 def create(
@@ -158,46 +161,48 @@ def create(
     extra_messages: Optional[List[Message]] = None,
     get_input_data_for_debugging: bool = False,
 ) -> ChatCompletionResponse:
-
     """
     Return response to chat completion with backoff
 
     Create LLM completion with LangFuse tracing.
-    
+
     CENTRAL INSTRUMENTATION POINT - captures ALL provider calls:
     OpenAI, Azure, Anthropic, Google AI, Bedrock, Groq, etc.
     """
     from mirix.utils import printd
 
-      # ========== LANGFUSE INITIALIZATION ==========
+    # ========== LANGFUSE INITIALIZATION ==========
     # Initialize LangFuse tracing (safe to call even if disabled)
     langfuse = get_langfuse_client()
     generation = None
-    trace_context = get_trace_context() if langfuse else {}  
-    
+    trace_context = get_trace_context() if langfuse else {}
+
     # Prepare input for tracing (truncated for performance)
     messages_for_trace = []
     try:
         messages_for_trace = [
             {
-                "role": m.role.value if hasattr(m.role, 'value') else str(m.role),
-                "content": str(m.text)[:500] if hasattr(m, 'text') else str(m)[:500],
+                "role": m.role.value if hasattr(m.role, "value") else str(m.role),
+                "content": str(m.text)[:500] if hasattr(m, "text") else str(m)[:500],
             }
             for m in messages[:10]  # Limit to first 10 messages
         ]
     except Exception as e:
         logger.debug(f"Failed to prepare messages for trace: {e}")
 
-    # Create LangFuse generation span
-    if langfuse:
+    # Create LangFuse generation span.
+    if langfuse and trace_context.get("trace_id"):
         try:
             # Extract model parameters
             model_parameters = {}
-            if hasattr(llm_config, 'temperature') and llm_config.temperature is not None:
+            if (
+                hasattr(llm_config, "temperature")
+                and llm_config.temperature is not None
+            ):
                 model_parameters["temperature"] = llm_config.temperature
             if max_tokens:
                 model_parameters["max_tokens"] = max_tokens
-            
+
             # Create generation span
             generation = langfuse.generation(
                 name="llm_completion",
@@ -272,7 +277,12 @@ def create(
                 function_call = "required"
 
             data = build_openai_chat_completions_request(
-                llm_config, messages, functions, function_call, use_tool_naming, max_tokens
+                llm_config,
+                messages,
+                functions,
+                function_call,
+                use_tool_naming,
+                max_tokens,
             )
             # if stream:  # Client requested token streaming
             #     data.stream = True
@@ -301,34 +311,48 @@ def create(
                 try:
                     # Extract output message
                     output_message = None
-                    if hasattr(response, 'choices') and len(response.choices) > 0:
+                    if hasattr(response, "choices") and len(response.choices) > 0:
                         choice = response.choices[0]
-                        if hasattr(choice, 'message'):
+                        if hasattr(choice, "message"):
                             msg = choice.message
                             output_message = {
-                                "role": msg.role if hasattr(msg, 'role') else "assistant",
-                                "content": str(msg.content)[:500] if hasattr(msg, 'content') else "",
+                                "role": (
+                                    msg.role if hasattr(msg, "role") else "assistant"
+                                ),
+                                "content": (
+                                    str(msg.content)[:500]
+                                    if hasattr(msg, "content")
+                                    else ""
+                                ),
                             }
-                            
+
                             # Add tool calls if present
-                            if hasattr(msg, 'tool_calls') and msg.tool_calls:
+                            if hasattr(msg, "tool_calls") and msg.tool_calls:
                                 output_message["tool_calls"] = [
                                     {
-                                        "name": tc.function.name if hasattr(tc, 'function') else str(tc),
-                                        "arguments": str(tc.function.arguments)[:200] if hasattr(tc, 'function') else "",
+                                        "name": (
+                                            tc.function.name
+                                            if hasattr(tc, "function")
+                                            else str(tc)
+                                        ),
+                                        "arguments": (
+                                            str(tc.function.arguments)[:200]
+                                            if hasattr(tc, "function")
+                                            else ""
+                                        ),
                                     }
                                     for tc in msg.tool_calls[:5]
                                 ]
-                    
+
                     # Extract usage statistics
                     usage_dict = None
-                    if hasattr(response, 'usage') and response.usage:
+                    if hasattr(response, "usage") and response.usage:
                         usage_dict = {
-                            "input": getattr(response.usage, 'prompt_tokens', 0),
-                            "output": getattr(response.usage, 'completion_tokens', 0),
-                            "total": getattr(response.usage, 'total_tokens', 0),
+                            "input": getattr(response.usage, "prompt_tokens", 0),
+                            "output": getattr(response.usage, "completion_tokens", 0),
+                            "total": getattr(response.usage, "total_tokens", 0),
                         }
-                    
+
                     generation.update(
                         output=output_message,
                         usage=usage_dict,
@@ -412,7 +436,8 @@ def create(
                 tools = [{"type": "function", "function": f} for f in functions]
                 tools = [Tool(**t) for t in tools]
                 tools = convert_tools_to_google_ai_format(
-                    tools, inner_thoughts_in_kwargs=llm_config.put_inner_thoughts_in_kwargs
+                    tools,
+                    inner_thoughts_in_kwargs=llm_config.put_inner_thoughts_in_kwargs,
                 )
             else:
                 tools = None
@@ -432,7 +457,10 @@ def create(
                         last_message_type = "chat"
 
                     elif len(messages) == 0 and len(extra_messages) > 0:
-                        if last_message_type is not None and last_message_type == "extra":
+                        if (
+                            last_message_type is not None
+                            and last_message_type == "extra"
+                        ):
                             # It means two extra messages in a row. Then we need to put them into one message:
                             m = extra_messages.pop(0)
                             new_messages[-1].text += (
@@ -463,7 +491,10 @@ def create(
                         last_message_type = "chat"
 
                     else:
-                        if last_message_type is not None and last_message_type == "extra":
+                        if (
+                            last_message_type is not None
+                            and last_message_type == "extra"
+                        ):
                             # It means two extra messages in a row. Then we need to put them into one message:
                             m = extra_messages.pop(0)
                             new_messages[-1].text += (
@@ -713,9 +744,11 @@ def create(
                 generation.update(
                     status_message=str(e)[:500],
                     level="ERROR",
-                    metadata={"error_type": type(e).__name__}
+                    metadata={"error_type": type(e).__name__},
                 )
                 generation.end()
             except Exception as update_error:
-                logger.warning(f"Failed to update LangFuse generation with error: {update_error}")
+                logger.warning(
+                    f"Failed to update LangFuse generation with error: {update_error}"
+                )
         raise  # Re-raise to preserve existing error handling

@@ -16,7 +16,7 @@ from mirix.constants import (
     TOOL_CALL_ID_MAX_LEN,
 )
 from mirix.helpers.datetime_helpers import get_utc_time, is_utc_datetime
-from mirix.helpers.json_helpers import json_dumps
+from mirix.helpers.json_helpers import json_dumps, parse_json
 from mirix.schemas.enums import MessageRole
 from mirix.schemas.mirix_base import OrmMetadataBase
 from mirix.schemas.mirix_message import (
@@ -43,7 +43,7 @@ from mirix.schemas.mirix_message_content import (
 from mirix.schemas.openai.openai import Function as OpenAIFunction
 from mirix.schemas.openai.openai import ToolCall as OpenAIToolCall
 from mirix.system import unpack_message
-from mirix.helpers.json_helpers import parse_json
+
 
 class BaseMessage(OrmMetadataBase):
     __id_prefix__ = "message"
@@ -702,6 +702,14 @@ class Message(BaseMessage):
             else:
                 tool_calls = None
 
+            # Validate assistant messages have either content or tool_calls
+            if openai_message_dict["role"] == "assistant":
+                if not content and tool_calls is None:
+                    raise ValueError(
+                        f"Invalid assistant message: must have content or tool_calls. "
+                        f"Got empty content and no tool_calls."
+                    )
+
             # If we're going from tool-call style
             if id is not None:
                 return Message(
@@ -833,7 +841,11 @@ class Message(BaseMessage):
             }
 
         elif self.role == "assistant":
-            assert self.tool_calls is not None or content is not None
+            if self.tool_calls is None and content is None:
+                raise ValueError(
+                    f"Invalid assistant message {self.id}: must have content or tool_calls. "
+                    f"raw_content={self.content}, tool_calls={self.tool_calls}"
+                )
             openai_message = {
                 "content": None if put_inner_thoughts_in_kwargs else content,
                 "role": self.role,

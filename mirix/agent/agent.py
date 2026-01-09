@@ -11,6 +11,7 @@ import numpy as np
 import pytz
 import requests
 
+from mirix.agent.tool_validators import validate_tool_args
 from mirix.constants import (
     CHAINING_FOR_MEMORY_UPDATE,
     CLEAR_HISTORY_AFTER_MEMORY_UPDATE,
@@ -762,7 +763,8 @@ class Agent(BaseAgent):
                     continue
 
             except AssertionError as ae:
-                ae_desc = f"{type(ae).__name__}: {ae!r}"
+                tb_str = traceback.format_exc()
+                ae_desc = f"{type(ae).__name__}: {ae!r}\nTraceback:\n{tb_str}"
                 if attempt >= empty_response_retry_limit:
                     printv(
                         f"[Mirix.Agent.{self.agent_state.name}] ERROR: Retry limit reached. Final error: {ae_desc}"
@@ -1034,6 +1036,28 @@ class Agent(BaseAgent):
                     )
 
                 continue_chaining = True
+
+                # Failure case 3: function arguments fail validation
+                validation_error = validate_tool_args(function_name, function_args)
+                if validation_error:
+                    function_response = package_function_response(False, validation_error)
+                    messages.append(
+                        Message.dict_to_message(
+                            agent_id=self.agent_state.id,
+                            model=self.model,
+                            openai_message_dict={
+                                "role": "tool",
+                                "name": function_name,
+                                "content": function_response,
+                                "tool_call_id": tool_call_id,
+                            },
+                        )
+                    )
+                    self.interface.function_message(
+                        f"Validation Error: {validation_error}", msg_obj=messages[-1]
+                    )
+                    overall_function_failed = True
+                    continue  # Skip execution, let LLM retry
 
                 # Failure case 5: function failed during execution
                 # NOTE: the msg_obj associated with the "Running " message is the prior assistant message, not the function/tool role message
@@ -1484,6 +1508,12 @@ class Agent(BaseAgent):
 
         else:
             # Standard non-function reply
+            # Validate that we have content - LLM returned neither tool_calls nor content
+            if not response_message.content:
+                raise ValueError(
+                    f"LLM returned empty response, "
+                    f"no tool_calls and no content. Response: {response_message}"
+                )
             messages.append(
                 Message.dict_to_message(
                     id=response_message_id,

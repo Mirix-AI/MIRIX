@@ -7,9 +7,12 @@ Each container instance gets its own singleton client.
 
 import atexit
 import threading
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from mirix.log import get_logger
+
+if TYPE_CHECKING:
+    from langfuse import Langfuse
 
 logger = get_logger(__name__)
 
@@ -36,27 +39,27 @@ def initialize_langfuse(force: bool = False) -> Optional["Langfuse"]:
         Langfuse client instance or None if disabled/failed
     """
     global _langfuse_client, _langfuse_enabled, _initialization_attempted
-    
+
     # Fast path: already initialized
     if _initialization_attempted and not force:
         return _langfuse_client
-    
+
     # Thread-safe initialization
     with _init_lock:
         # Double-check inside lock
         if _initialization_attempted and not force:
             return _langfuse_client
-        
+
         _initialization_attempted = True
-        
+
         try:
             from mirix.settings import settings
-            
+
             if not settings.langfuse_enabled:
                 logger.info("LangFuse observability is disabled")
                 _langfuse_enabled = False
                 return None
-            
+
             if not settings.langfuse_public_key or not settings.langfuse_secret_key:
                 logger.warning(
                     "LangFuse enabled but missing credentials. "
@@ -65,11 +68,11 @@ def initialize_langfuse(force: bool = False) -> Optional["Langfuse"]:
                 )
                 _langfuse_enabled = False
                 return None
-            
+
             logger.info(f"Initializing LangFuse client (host: {settings.langfuse_host})")
-            
+
             from langfuse import Langfuse
-            
+
             # LangFuse 3.x removed the 'enabled' parameter
             # Client is enabled by default when instantiated
             _langfuse_client = Langfuse(
@@ -79,12 +82,12 @@ def initialize_langfuse(force: bool = False) -> Optional["Langfuse"]:
                 debug=settings.langfuse_debug,
                 flush_interval=settings.langfuse_flush_interval,
             )
-            
+
             _langfuse_enabled = True
-            
+
             # Register cleanup on process exit
             atexit.register(flush_langfuse)
-            
+
             # Verify connection with initial flush
             try:
                 _langfuse_client.flush()
@@ -92,9 +95,9 @@ def initialize_langfuse(force: bool = False) -> Optional["Langfuse"]:
             except Exception as health_error:
                 logger.warning(f"LangFuse initialized but health check failed: {health_error}")
                 # Continue anyway - will retry on actual use
-            
+
             return _langfuse_client
-            
+
         except Exception as e:
             logger.error(f"Failed to initialize LangFuse: {e}", exc_info=True)
             _langfuse_enabled = False
@@ -214,4 +217,3 @@ def _reset_for_testing() -> None:
     _langfuse_client = None
     _langfuse_enabled = False
     _initialization_attempted = False
-

@@ -159,15 +159,17 @@ app.add_middleware(
 @app.middleware("http")
 async def langfuse_tracing_middleware(request: Request, call_next):
     """
-    Create LangFuse traces for all API requests using LangFuse 3.x context-based API.
-    
+    Create LangFuse traces for all API requests using context manager pattern.
+
     This middleware:
-    1. Creates a span context for each incoming request
-    2. Updates the current trace with request metadata
+    1. Resets OTel context to prevent leaking from previous requests
+    2. Creates a root span for each incoming request
     3. Sets trace context for downstream operations
     4. Clears trace context when the request completes
     """
     import uuid
+
+    from opentelemetry import context as otel_context
 
     from mirix.observability import get_langfuse_client, is_langfuse_enabled
     from mirix.observability.context import clear_trace_context, set_trace_context
@@ -186,18 +188,30 @@ async def langfuse_tracing_middleware(request: Request, call_next):
     user_id = request.headers.get("x-user-id")
     client_id = request.headers.get("x-client-id")
     org_id = request.headers.get("x-org-id")
-    session_id = request.headers.get("x-session-id") or f"{client_id}-{uuid.uuid4().hex[:8]}"
+    session_id = f"{client_id}-{uuid.uuid4().hex[:8]}"
 
-    # Use context manager to create a span (which creates a trace if needed)
-    with langfuse.start_as_current_span(name=f"{method} {path}") as span:
+    # Generate a unique trace_id for each request to ensure separate traces
+    trace_id = uuid.uuid4().hex
+
+    # Use context manager - this properly sets up OTel context
+    # Root trace has no parent_span_id
+    from typing import cast
+
+    from langfuse.types import TraceContext
+
+    with langfuse.start_as_current_observation(
+        name=f"{method} {path}",
+        as_type="span",
+        trace_context=cast(TraceContext, {"trace_id": trace_id}),
+    ) as span:
         try:
-            # Get the trace ID from LangFuse
-            trace_id = langfuse.get_current_trace_id()
-            observation_id = langfuse.get_current_observation_id()
+            # Get observation_id from the span object
+            observation_id = getattr(span, "id", None)
+            logger.debug(
+                f"LangFuse trace created: trace_id={trace_id}, observation_id={observation_id}, path={path}"
+            )
 
-            logger.debug(f"LangFuse trace created: trace_id={trace_id}, path={path}")
-
-            # Update the trace with metadata
+            # Update trace with user info
             langfuse.update_current_trace(
                 name=f"{method} {path}",
                 user_id=user_id or client_id,
@@ -222,31 +236,26 @@ async def langfuse_tracing_middleware(request: Request, call_next):
             # Process request
             response = await call_next(request)
 
-            # Update trace with response status
+            # Update span with response status
             try:
-                langfuse.update_current_trace(
-                    output={"status_code": response.status_code},
-                    tags=["success" if response.status_code < 400 else "error"],
+                span.update(output={"status_code": response.status_code})
+                logger.debug(
+                    f"LangFuse trace updated: trace_id={trace_id}, status={response.status_code}"
                 )
-                logger.debug(f"LangFuse trace updated: trace_id={trace_id}, status={response.status_code}")
             except Exception as e:
                 logger.debug(f"Failed to update trace: {e}")
 
             return response
 
         except Exception as e:
-            # Log error and mark trace as failed
+            # Log error and mark span as failed
             try:
-                langfuse.update_current_trace(
-                    output={"error": str(e)},
-                    tags=["error", "exception"],
-                )
+                span.update(output={"error": str(e)}, level="ERROR")
             except Exception as trace_error:
                 logger.debug(f"Failed to update trace on error: {trace_error}")
             raise
 
         finally:
-            # Clear trace context
             clear_trace_context()
 
 
