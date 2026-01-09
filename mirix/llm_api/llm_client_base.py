@@ -241,8 +241,11 @@ class LLMClientBase:
 
                 return chat_completion_data
 
+        except LLMError:
+            # LLM errors should propagate for retry handling
+            raise
         except Exception as e:
-            # If LangFuse fails entirely, fall back to non-traced execution
+            # Only catch Langfuse-specific failures, fall back to non-traced execution
             self.logger.warning(f"LangFuse tracing failed, executing without: {e}")
             return self._execute_without_langfuse(request_data, messages)
 
