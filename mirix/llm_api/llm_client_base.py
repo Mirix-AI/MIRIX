@@ -144,6 +144,11 @@ class LLMClientBase:
         if parent_span_id:
             trace_context_dict["parent_span_id"] = parent_span_id
 
+        # Prepare input that includes both messages and tools (like OpenAI API format)
+        trace_input: dict = {"messages": messages_for_trace}
+        if tools:
+            trace_input["tools"] = tools
+
         try:
             # Use context manager for proper OTel context propagation
             with langfuse.start_as_current_observation(
@@ -151,7 +156,7 @@ class LLMClientBase:
                 as_type="generation",
                 trace_context=cast("TraceContext", trace_context_dict),
                 model=self.llm_config.model,
-                input=messages_for_trace,
+                input=trace_input,
                 metadata={
                     "provider": self.llm_config.model_endpoint_type,
                     "tools_count": len(tools) if tools else 0,

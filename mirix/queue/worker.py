@@ -2,6 +2,7 @@
 Background worker that consumes messages from the queue
 Runs in a daemon thread and processes messages through the server
 """
+
 import threading
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Optional
@@ -33,13 +34,13 @@ class QueueWorker:
 
     def __init__(
         self,
-        queue: 'QueueInterface',
+        queue: "QueueInterface",
         server: Optional[Any] = None,
-        partition_id: Optional[int] = None
+        partition_id: Optional[int] = None,
     ):
         """
         Initialize the queue worker
-        
+
         Args:
             queue: Queue implementation to consume from
             server: Optional server instance to invoke APIs on
@@ -49,8 +50,8 @@ class QueueWorker:
         """
         logger.debug(
             "Initializing queue worker: server=%s, partition_id=%s",
-            'provided' if server else 'None',
-            partition_id
+            "provided" if server else "None",
+            partition_id,
         )
 
         self.queue = queue
@@ -60,16 +61,16 @@ class QueueWorker:
         self._thread = None
         self._lock = threading.RLock()
 
-    def _convert_proto_user_to_pydantic(self, proto_user) -> 'Client':
+    def _convert_proto_user_to_pydantic(self, proto_user) -> "Client":
         """
         Convert protobuf User to Pydantic Client
-        
+
         Note: The protobuf schema still uses "User" for historical reasons,
         but it actually represents a Client in the new architecture.
-        
+
         Args:
             proto_user: Protobuf User message (actually represents a Client)
-            
+
         Returns:
             Pydantic Client object
         """
@@ -78,23 +79,33 @@ class QueueWorker:
 
         return Client(
             id=proto_user.id,
-            organization_id=proto_user.organization_id if proto_user.organization_id else None,
+            organization_id=(
+                proto_user.organization_id if proto_user.organization_id else None
+            ),
             name=proto_user.name,
             status=proto_user.status,
             scope="",  # Default scope
             # Client doesn't have timezone field - it's only for User
-            created_at=proto_user.created_at.ToDatetime() if proto_user.HasField('created_at') else datetime.now(),
-            updated_at=proto_user.updated_at.ToDatetime() if proto_user.HasField('updated_at') else datetime.now(),
-            is_deleted=proto_user.is_deleted
+            created_at=(
+                proto_user.created_at.ToDatetime()
+                if proto_user.HasField("created_at")
+                else datetime.now()
+            ),
+            updated_at=(
+                proto_user.updated_at.ToDatetime()
+                if proto_user.HasField("updated_at")
+                else datetime.now()
+            ),
+            is_deleted=proto_user.is_deleted,
         )
 
-    def _convert_proto_message_to_pydantic(self, proto_msg) -> 'MessageCreate':
+    def _convert_proto_message_to_pydantic(self, proto_msg) -> "MessageCreate":
         """
         Convert protobuf MessageCreate to Pydantic MessageCreate
-        
+
         Args:
             proto_msg: Protobuf MessageCreate message
-            
+
         Returns:
             Pydantic MessageCreate object
         """
@@ -111,22 +122,22 @@ class QueueWorker:
             role = MessageRole.user  # Default
 
         # Get content (currently only supporting text_content)
-        content = proto_msg.text_content if proto_msg.HasField('text_content') else ""
+        content = proto_msg.text_content if proto_msg.HasField("text_content") else ""
 
         return MessageCreate(
             role=role,
             content=content,
-            name=proto_msg.name if proto_msg.HasField('name') else None,
-            otid=proto_msg.otid if proto_msg.HasField('otid') else None,
-            sender_id=proto_msg.sender_id if proto_msg.HasField('sender_id') else None,
-            group_id=proto_msg.group_id if proto_msg.HasField('group_id') else None,
-            filter_tags=None  # Filter tags not stored in protobuf message
+            name=proto_msg.name if proto_msg.HasField("name") else None,
+            otid=proto_msg.otid if proto_msg.HasField("otid") else None,
+            sender_id=proto_msg.sender_id if proto_msg.HasField("sender_id") else None,
+            group_id=proto_msg.group_id if proto_msg.HasField("group_id") else None,
+            filter_tags=None,  # Filter tags not stored in protobuf message
         )
 
     def set_server(self, server: Any) -> None:
         """
         Set or update the server instance.
-        
+
         Args:
             server: Server instance to invoke APIs on
         """
@@ -137,7 +148,7 @@ class QueueWorker:
     def _process_message(self, message: QueueMessage) -> None:
         """
         Process a queue message by calling server.send_messages()
-        
+
         Args:
             message: QueueMessage protobuf to process
         """
@@ -155,7 +166,7 @@ class QueueWorker:
                 logger.warning(
                     "No server available - skipping message: agent_id=%s, input_messages_count=%s",
                     message.agent_id,
-                    len(message.input_messages)
+                    len(message.input_messages),
                 )
                 return
 
@@ -171,7 +182,7 @@ class QueueWorker:
                 f"parent_span_id={parent_span_id}"
             )
             # Validate actor exists before processing
-            if not message.HasField('actor') or not message.actor.id:
+            if not message.HasField("actor") or not message.actor.id:
                 raise ValueError(
                     f"Queue message for agent {message.agent_id} missing required actor information"
                 )
@@ -180,15 +191,15 @@ class QueueWorker:
             actor = self._convert_proto_user_to_pydantic(message.actor)
 
             input_messages = [
-                self._convert_proto_message_to_pydantic(msg) 
+                self._convert_proto_message_to_pydantic(msg)
                 for msg in message.input_messages
             ]
 
             # Extract optional parameters
-            chaining = message.chaining if message.HasField('chaining') else True
+            chaining = message.chaining if message.HasField("chaining") else True
 
             # Extract user_id from queue message
-            user_id = message.user_id if message.HasField('user_id') else None
+            user_id = message.user_id if message.HasField("user_id") else None
 
             # Initialize user from user_id
             user = None
@@ -201,7 +212,7 @@ class QueueWorker:
                     logger.info(
                         "User with id=%s not found, auto-creating with organization_id=%s",
                         user_id,
-                        actor.organization_id
+                        actor.organization_id,
                     )
 
                     from mirix.schemas.user import User as PydanticUser
@@ -215,33 +226,39 @@ class QueueWorker:
                                 organization_id=actor.organization_id,
                                 timezone=user_manager.DEFAULT_TIME_ZONE,
                                 status="active",
-                                is_deleted=False
+                                is_deleted=False,
                             )
                         )
-                        logger.info("✓ Auto-created user: %s in organization: %s", user_id, actor.organization_id)
+                        logger.info(
+                            "✓ Auto-created user: %s in organization: %s",
+                            user_id,
+                            actor.organization_id,
+                        )
                     except Exception as create_error:
                         # If auto-creation fails, fall back to admin user
                         logger.error(
                             "Failed to auto-create user with id=%s: %s. Falling back to admin user.",
                             user_id,
-                            create_error
+                            create_error,
                         )
                         user = user_manager.get_admin_user()
             else:
                 # If no user_id provided, use admin user
                 user_manager = UserManager()
-                user = user_manager.get_admin_user()            
+                user = user_manager.get_admin_user()
 
             # Extract filter_tags from protobuf Struct
             filter_tags = None
-            if message.HasField('filter_tags') and message.filter_tags:
+            if message.HasField("filter_tags") and message.filter_tags:
                 filter_tags = dict(message.filter_tags)
 
             # Extract use_cache
-            use_cache = message.use_cache if message.HasField('use_cache') else True
+            use_cache = message.use_cache if message.HasField("use_cache") else True
 
             # Extract occurred_at
-            occurred_at = message.occurred_at if message.HasField('occurred_at') else None
+            occurred_at = (
+                message.occurred_at if message.HasField("occurred_at") else None
+            )
 
             # Log the processing
             logger.info(
@@ -252,7 +269,7 @@ class QueueWorker:
                 len(input_messages),
                 use_cache,
                 filter_tags,
-                occurred_at
+                occurred_at,
             )
 
             # Wrap processing in LangFuse span for proper trace hierarchy
@@ -275,10 +292,8 @@ class QueueWorker:
 
                 from mirix.observability.context import set_trace_context
 
-                # Build trace_context with parent_span_id (per Langfuse v3 docs)
+                # Build trace_context with trace_id
                 trace_context_dict: dict = {"trace_id": trace_id}
-                if parent_span_id:
-                    trace_context_dict["parent_span_id"] = parent_span_id
 
                 # Use context manager for proper OTel context propagation
                 with langfuse.start_as_current_observation(
@@ -291,14 +306,6 @@ class QueueWorker:
                         "source": "queue_worker",
                     },
                 ) as span:
-                    # Override AS_ROOT to False - this span is a child, not a root
-                    # The SDK sets AS_ROOT=True when trace_context is provided, but we want proper nesting
-                    if LangfuseOtelSpanAttributes is not None and hasattr(
-                        span, "_otel_span"
-                    ):
-                        span._otel_span.set_attribute(
-                            LangfuseOtelSpanAttributes.AS_ROOT, False
-                        )
                     # Get this span's ID for child operations
                     span_observation_id = getattr(span, "id", None)
                     if span_observation_id:
@@ -316,7 +323,7 @@ class QueueWorker:
             logger.debug(
                 "Successfully processed message: agent_id=%s, usage=%s",
                 message.agent_id,
-                usage.model_dump() if usage else 'None'
+                usage.model_dump() if usage else "None",
             )
 
         except Exception as e:
@@ -324,7 +331,7 @@ class QueueWorker:
                 "Error processing message for agent_id=%s: %s",
                 message.agent_id,
                 e,
-                exc_info=True
+                exc_info=True,
             )
         finally:
             # Clear trace context to prevent leaking between messages
@@ -335,16 +342,26 @@ class QueueWorker:
         Main worker loop - continuously consume and process messages
         Runs in a separate thread
         """
-        partition_info = f", partition={self._partition_id}" if self._partition_id is not None else ""
-        logger.info("🎯 Queue worker thread ENTERED _consume_messages()%s", partition_info)
-        logger.info("   _running=%s, _server=%s", self._running, self._server is not None)
+        partition_info = (
+            f", partition={self._partition_id}"
+            if self._partition_id is not None
+            else ""
+        )
+        logger.info(
+            "🎯 Queue worker thread ENTERED _consume_messages()%s", partition_info
+        )
+        logger.info(
+            "   _running=%s, _server=%s", self._running, self._server is not None
+        )
 
         while self._running:
             try:
                 # Get message from queue (with timeout to allow graceful shutdown)
                 # Use partition-specific get if partition_id is set and queue supports it
                 message: QueueMessage
-                if self._partition_id is not None and hasattr(self.queue, 'get_from_partition'):
+                if self._partition_id is not None and hasattr(
+                    self.queue, "get_from_partition"
+                ):
                     message = self.queue.get_from_partition(
                         self._partition_id, timeout=1.0
                     )
@@ -356,8 +373,8 @@ class QueueWorker:
                     "Received message%s: agent_id=%s, user_id=%s, input_messages_count=%s (client_id will be derived from actor)",
                     partition_info,
                     message.agent_id,
-                    message.user_id if message.HasField('user_id') else 'None',
-                    len(message.input_messages)
+                    message.user_id if message.HasField("user_id") else "None",
+                    len(message.input_messages),
                 )
 
                 # Process the message through the server
@@ -366,10 +383,12 @@ class QueueWorker:
             except Exception as e:
                 # Handle timeout and other exceptions
                 # For queue.Empty or StopIteration, just continue
-                if type(e).__name__ in ['Empty', 'StopIteration']:
+                if type(e).__name__ in ["Empty", "StopIteration"]:
                     continue
                 else:
-                    logger.error("Error in message consumption loop: %s", e, exc_info=True)
+                    logger.error(
+                        "Error in message consumption loop: %s", e, exc_info=True
+                    )
 
         # Note: No logging here to avoid errors during shutdown
         # when logging system may already be closed
@@ -380,18 +399,26 @@ class QueueWorker:
             logger.warning("⚠️ Queue worker already running")
             return  # Already running
 
-        partition_info = f" (partition {self._partition_id})" if self._partition_id is not None else ""
+        partition_info = (
+            f" (partition {self._partition_id})"
+            if self._partition_id is not None
+            else ""
+        )
         logger.info("🚀 Starting queue worker thread%s...", partition_info)
         self._running = True
 
         # Create and start daemon thread
         # Daemon threads automatically stop when the main program exits
-        thread_name = f"QueueWorker-{self._partition_id}" if self._partition_id is not None else "QueueWorker"
-        logger.info("📝 Creating daemon thread for message consumption%s...", partition_info)
+        thread_name = (
+            f"QueueWorker-{self._partition_id}"
+            if self._partition_id is not None
+            else "QueueWorker"
+        )
+        logger.info(
+            "📝 Creating daemon thread for message consumption%s...", partition_info
+        )
         self._thread = threading.Thread(
-            target=self._consume_messages,
-            daemon=True,
-            name=thread_name
+            target=self._consume_messages, daemon=True, name=thread_name
         )
         logger.info("✅ Thread created: %s", self._thread)
 
@@ -404,11 +431,11 @@ class QueueWorker:
     def stop(self, close_queue: bool = True) -> None:
         """
         Stop the background worker thread
-        
+
         Args:
             close_queue: Whether to close the queue resources. Set to False
                         when multiple workers share the same queue.
-        
+
         Note: No logging during stop to avoid errors when called during shutdown,
         as the logging system may have already closed its file handlers.
         """
