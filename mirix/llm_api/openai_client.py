@@ -334,7 +334,8 @@ class OpenAIClient(LLMClientBase):
         response: ChatCompletion = client.chat.completions.create(**request_data)
         if not response.object:
             response.object = "chat.completion"
-        return response.model_dump()
+        response_dict = response.model_dump()
+        return response_dict
 
     async def request_async(self, request_data: dict) -> dict:
         """

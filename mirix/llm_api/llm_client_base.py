@@ -3,8 +3,10 @@ import time
 from abc import abstractmethod
 from typing import TYPE_CHECKING, List, Optional, cast
 
+from langfuse import Langfuse
+
 from mirix.errors import LLMError
-from mirix.observability.context import get_trace_context
+from mirix.observability.context import get_trace_context, mark_observation_as_child
 from mirix.observability.langfuse_client import get_langfuse_client
 from mirix.schemas.llm_config import LLMConfig
 from mirix.schemas.message import Message
@@ -14,12 +16,6 @@ from mirix.services.file_manager import FileManager
 
 if TYPE_CHECKING:
     from langfuse.types import TraceContext
-
-# Import for setting AS_ROOT attribute
-try:
-    from langfuse._client.attributes import LangfuseOtelSpanAttributes
-except ImportError:
-    LangfuseOtelSpanAttributes = None  # type: ignore
 
 
 class LLMClientBase:
@@ -90,7 +86,7 @@ class LLMClientBase:
 
     def _execute_with_langfuse(
         self,
-        langfuse,
+        langfuse: Langfuse,
         request_data: dict,
         messages: List[Message],
         tools: Optional[List[dict]],
@@ -149,9 +145,9 @@ class LLMClientBase:
         if tools:
             trace_input["tools"] = tools
 
+        # Try to start Langfuse observation - if this fails, execute without tracing
         try:
-            # Use context manager for proper OTel context propagation
-            with langfuse.start_as_current_observation(
+            observation_context = langfuse.start_as_current_observation(
                 name="llm_completion",
                 as_type="generation",
                 trace_context=cast("TraceContext", trace_context_dict),
@@ -161,98 +157,113 @@ class LLMClientBase:
                     "provider": self.llm_config.model_endpoint_type,
                     "tools_count": len(tools) if tools else 0,
                 },
-            ) as generation:
-                # Override AS_ROOT to False - this span is a child, not a root
-                # The SDK sets AS_ROOT=True when trace_context is provided, but we want proper nesting
-                if LangfuseOtelSpanAttributes is not None and hasattr(
-                    generation, "_otel_span"
-                ):
-                    generation._otel_span.set_attribute(
-                        LangfuseOtelSpanAttributes.AS_ROOT, False
-                    )
+            )
+        except Exception as e:
+            # Langfuse failed to start observation - execute without tracing
+            self.logger.error(
+                f"Langfuse failed to start observation. Continuing without tracing: {e}"
+            )
+            return self._execute_without_langfuse(request_data, messages)
+
+        # Now execute with tracing - LLM errors propagate normally
+        with observation_context as generation:
+            mark_observation_as_child(generation)
+
+            # Execute the LLM request
+            try:
+                t1 = time.time()
+                response_data = self.request(request_data)
+                t2 = time.time()
+                self.logger.debug("LLM request time: %.2f seconds", t2 - t1)
+            except Exception as e:
+                # Try to update trace with error before re-raising
                 try:
-                    t1 = time.time()
-                    response_data = self.request(request_data)
-                    t2 = time.time()
-                    self.logger.debug("LLM request time: %.2f seconds", t2 - t1)
-                except Exception as e:
                     generation.update(
                         status_message=str(e),
                         level="ERROR",
                         metadata={"error_type": type(e).__name__},
                     )
-                    raise self.handle_llm_error(e)
+                except Exception as langfuse_err:
+                    # log then swallow if we were unable to update langfuse
+                    self.logger.error(
+                        f"Failed to update LangFuse trace with error. Continuing: {langfuse_err}"
+                    )
+                raise self.handle_llm_error(e)
 
-                chat_completion_data = self.convert_response_to_chat_completion(
-                    response_data, messages
+            chat_completion_data = self.convert_response_to_chat_completion(
+                response_data, messages
+            )
+
+            # Try to update trace with success
+            try:
+                output_message = self._build_output_message(chat_completion_data)
+                usage_dict = self._build_usage_dict(chat_completion_data)
+
+                generation.update(output=output_message, usage_details=usage_dict)
+            except Exception as update_err:
+                # log then swallow if we were unable to update langfuse
+                self.logger.error(
+                    f"Failed to update LangFuse trace with success. Continuing: {update_err}"
                 )
 
-                # Update generation with output
-                try:
-                    output_message = None
-                    if (
-                        hasattr(chat_completion_data, "choices")
-                        and len(chat_completion_data.choices) > 0
-                    ):
-                        choice = chat_completion_data.choices[0]
-                        if hasattr(choice, "message"):
-                            msg = choice.message
-                            output_message = {
-                                "role": getattr(msg, "role", "assistant"),
-                                "content": getattr(msg, "content", None),
-                            }
-                            # Include tool_calls if present (common for agent responses)
-                            if hasattr(msg, "tool_calls") and msg.tool_calls:
-                                output_message["tool_calls"] = [
-                                    {
-                                        "id": getattr(tc, "id", None),
-                                        "type": getattr(tc, "type", "function"),
-                                        "function": {
-                                            "name": (
-                                                getattr(tc.function, "name", None)
-                                                if hasattr(tc, "function")
-                                                else None
-                                            ),
-                                            "arguments": (
-                                                getattr(tc.function, "arguments", None)
-                                                if hasattr(tc, "function")
-                                                else None
-                                            ),
-                                        },
-                                    }
-                                    for tc in msg.tool_calls
-                                ]
+            return chat_completion_data
 
-                    usage_dict = None
-                    if (
-                        hasattr(chat_completion_data, "usage")
-                        and chat_completion_data.usage
-                    ):
-                        usage_dict = {
-                            "input": getattr(
-                                chat_completion_data.usage, "prompt_tokens", 0
-                            ),
-                            "output": getattr(
-                                chat_completion_data.usage, "completion_tokens", 0
-                            ),
-                            "total": getattr(
-                                chat_completion_data.usage, "total_tokens", 0
-                            ),
-                        }
+    def _build_output_message(
+        self, chat_completion_data: ChatCompletionResponse
+    ) -> Optional[dict]:
+        """Build output message dict for Langfuse trace."""
+        if (
+            not hasattr(chat_completion_data, "choices")
+            or len(chat_completion_data.choices) == 0
+        ):
+            return None
 
-                    generation.update(output=output_message, usage=usage_dict)
-                except Exception as update_err:
-                    self.logger.warning(f"Failed to update generation: {update_err}")
+        choice = chat_completion_data.choices[0]
+        if not hasattr(choice, "message"):
+            return None
 
-                return chat_completion_data
+        msg = choice.message
+        output_message = {
+            "role": getattr(msg, "role", "assistant"),
+            "content": getattr(msg, "content", None),
+        }
 
-        except LLMError:
-            # LLM errors should propagate for retry handling
-            raise
-        except Exception as e:
-            # Only catch Langfuse-specific failures, fall back to non-traced execution
-            self.logger.warning(f"LangFuse tracing failed, executing without: {e}")
-            return self._execute_without_langfuse(request_data, messages)
+        # Include tool_calls if present (common for agent responses)
+        if hasattr(msg, "tool_calls") and msg.tool_calls:
+            output_message["tool_calls"] = [
+                {
+                    "id": getattr(tc, "id", None),
+                    "type": getattr(tc, "type", "function"),
+                    "function": {
+                        "name": (
+                            getattr(tc.function, "name", None)
+                            if hasattr(tc, "function")
+                            else None
+                        ),
+                        "arguments": (
+                            getattr(tc.function, "arguments", None)
+                            if hasattr(tc, "function")
+                            else None
+                        ),
+                    },
+                }
+                for tc in msg.tool_calls
+            ]
+
+        return output_message
+
+    def _build_usage_dict(
+        self, chat_completion_data: ChatCompletionResponse
+    ) -> Optional[dict]:
+        """Build usage dict for Langfuse trace."""
+        if not hasattr(chat_completion_data, "usage") or not chat_completion_data.usage:
+            return None
+
+        return {
+            "input": getattr(chat_completion_data.usage, "prompt_tokens", 0),
+            "output": getattr(chat_completion_data.usage, "completion_tokens", 0),
+            "total": getattr(chat_completion_data.usage, "total_tokens", 0),
+        }
 
     @abstractmethod
     def build_request_data(

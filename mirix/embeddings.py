@@ -11,7 +11,7 @@ from mirix.constants import (
 )
 from mirix.llm_api.llm_api_tools import retry_with_exponential_backoff
 from mirix.log import get_logger
-from mirix.observability.context import get_trace_context
+from mirix.observability.context import get_trace_context, mark_observation_as_child
 from mirix.observability.langfuse_client import get_langfuse_client
 from mirix.schemas.embedding_config import EmbeddingConfig
 from mirix.utils import is_valid_url, printd
@@ -99,6 +99,8 @@ def traced_embedding_with_retry(
 
         # Now execute with tracing - embedding errors propagate normally
         with observation_context as generation:
+            mark_observation_as_child(generation)
+
             try:
                 result = embedding_func()
                 # Try to update trace with success - don't fail if this errors

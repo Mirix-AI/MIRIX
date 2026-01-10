@@ -1,13 +1,25 @@
 """Context management for LangFuse tracing across async operations."""
 
 from contextvars import ContextVar
-from typing import Optional
+from typing import Any, Optional
+
+# Import for setting AS_ROOT attribute
+try:
+    from langfuse._client.attributes import LangfuseOtelSpanAttributes
+except ImportError:
+    LangfuseOtelSpanAttributes = None  # type: ignore
 
 # Context variables for trace propagation
 # These propagate through async/await boundaries automatically
-current_trace_id: ContextVar[Optional[str]] = ContextVar("current_trace_id", default=None)
-current_observation_id: ContextVar[Optional[str]] = ContextVar("current_observation_id", default=None)
-current_session_id: ContextVar[Optional[str]] = ContextVar("current_session_id", default=None)
+current_trace_id: ContextVar[Optional[str]] = ContextVar(
+    "current_trace_id", default=None
+)
+current_observation_id: ContextVar[Optional[str]] = ContextVar(
+    "current_observation_id", default=None
+)
+current_session_id: ContextVar[Optional[str]] = ContextVar(
+    "current_session_id", default=None
+)
 current_user_id: ContextVar[Optional[str]] = ContextVar("current_user_id", default=None)
 
 
@@ -19,7 +31,7 @@ def set_trace_context(
 ) -> None:
     """
     Set current trace context.
-    
+
     Used to propagate trace information through async operations
     and across service boundaries (e.g., Kafka messages).
     """
@@ -36,7 +48,7 @@ def set_trace_context(
 def get_trace_context() -> dict:
     """
     Get current trace context.
-    
+
     Returns:
         Dictionary with current trace IDs and metadata
     """
@@ -51,7 +63,7 @@ def get_trace_context() -> dict:
 def clear_trace_context() -> None:
     """
     Clear trace context.
-    
+
     Should be called at the end of request/task processing to avoid
     context leaking between unrelated operations.
     """
@@ -60,3 +72,17 @@ def clear_trace_context() -> None:
     current_session_id.set(None)
     current_user_id.set(None)
 
+
+def mark_observation_as_child(observation: Any) -> None:
+    """
+    Mark a Langfuse observation as a child (not root).
+
+    The Langfuse SDK sets AS_ROOT=True when trace_context is provided,
+    but we want proper nesting for child observations. This function overrides
+    that behavior.
+
+    Args:
+        observation: A Langfuse observation object from start_as_current_observation
+    """
+    if LangfuseOtelSpanAttributes is not None and hasattr(observation, "_otel_span"):
+        observation._otel_span.set_attribute(LangfuseOtelSpanAttributes.AS_ROOT, False)

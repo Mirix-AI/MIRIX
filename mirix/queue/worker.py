@@ -8,7 +8,11 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, Optional
 
 from mirix.log import get_logger
-from mirix.observability import get_langfuse_client, restore_trace_from_queue_message
+from mirix.observability import (
+    get_langfuse_client,
+    mark_observation_as_child,
+    restore_trace_from_queue_message,
+)
 from mirix.observability.context import clear_trace_context, get_trace_context
 from mirix.queue.message_pb2 import QueueMessage
 from mirix.services.user_manager import UserManager
@@ -20,11 +24,6 @@ if TYPE_CHECKING:
 
     from .queue_interface import QueueInterface
 
-# Import for setting AS_ROOT attribute
-try:
-    from langfuse._client.attributes import LangfuseOtelSpanAttributes
-except ImportError:
-    LangfuseOtelSpanAttributes = None  # type: ignore
 
 logger = get_logger(__name__)  # Use Mirix logger for proper configuration
 
@@ -306,6 +305,8 @@ class QueueWorker:
                         "source": "queue_worker",
                     },
                 ) as span:
+                    mark_observation_as_child(span)
+
                     # Get this span's ID for child operations
                     span_observation_id = getattr(span, "id", None)
                     if span_observation_id:
