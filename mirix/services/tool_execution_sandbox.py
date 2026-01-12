@@ -13,6 +13,8 @@ import venv
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from mirix.log import get_logger
+from mirix.observability.context import get_trace_context
+from mirix.observability.langfuse_client import get_langfuse_client
 
 if TYPE_CHECKING:
     try:
@@ -92,16 +94,78 @@ class ToolExecutionSandbox:
         Returns:
             Tuple[Any, Optional[AgentState]]: Tuple containing (tool_result, agent_state)
         """
-        if tool_settings.e2b_api_key:
-            logger.debug("Using e2b sandbox to execute %s", self.tool_name)
-            result = self.run_e2b_sandbox(
-                agent_state=agent_state, additional_env_vars=additional_env_vars
-            )
+        # Determine sandbox type for tracing
+        sandbox_type = "e2b" if tool_settings.e2b_api_key else "local"
+
+        # Get Langfuse client for tracing
+        langfuse = get_langfuse_client()
+        trace_context = get_trace_context() if langfuse else {}
+        trace_id = trace_context.get("trace_id") if trace_context else None
+        parent_span_id = trace_context.get("observation_id") if trace_context else None
+
+        def _execute_tool() -> SandboxRunResult:
+            if tool_settings.e2b_api_key:
+                logger.debug("Using e2b sandbox to execute %s", self.tool_name)
+                return self.run_e2b_sandbox(
+                    agent_state=agent_state, additional_env_vars=additional_env_vars
+                )
+            else:
+                logger.debug("Using local sandbox to execute %s", self.tool_name)
+                return self.run_local_dir_sandbox(
+                    agent_state=agent_state, additional_env_vars=additional_env_vars
+                )
+
+        # Execute with Langfuse tracing if available
+        if langfuse and trace_id:
+            from typing import cast
+
+            from langfuse.types import TraceContext
+
+            # Build trace context
+            trace_context_dict: dict = {"trace_id": trace_id}
+            if parent_span_id:
+                trace_context_dict["parent_span_id"] = parent_span_id
+
+            # Sanitize args for tracing (truncate long values)
+            args_for_trace = {}
+            for key, value in self.args.items():
+                str_value = str(value)
+                args_for_trace[key] = (
+                    str_value[:200] + "..." if len(str_value) > 200 else str_value
+                )
+
+            try:
+                with langfuse.start_as_current_observation(
+                    name=f"tool_execution: {self.tool_name}",
+                    as_type="span",
+                    trace_context=cast(TraceContext, trace_context_dict),
+                    input={"tool_name": self.tool_name, "args": args_for_trace},
+                    metadata={
+                        "sandbox_type": sandbox_type,
+                        "tool_name": self.tool_name,
+                    },
+                ) as span:
+                    result = _execute_tool()
+
+                    # Update span with result info
+                    span.update(
+                        output={
+                            "status": result.status,
+                            "has_stdout": bool(result.stdout),
+                            "has_stderr": bool(result.stderr),
+                        },
+                        metadata={
+                            "sandbox_type": sandbox_type,
+                            "tool_name": self.tool_name,
+                            "status": result.status,
+                        },
+                        level="ERROR" if result.status == "error" else "DEFAULT",
+                    )
+            except Exception as e:
+                logger.debug(f"Langfuse tool execution trace failed: {e}")
+                result = _execute_tool()
         else:
-            logger.debug("Using local sandbox to execute %s", self.tool_name)
-            result = self.run_local_dir_sandbox(
-                agent_state=agent_state, additional_env_vars=additional_env_vars
-            )
+            result = _execute_tool()
 
         # Log out any stdout/stderr from the tool run
         logger.debug(

@@ -190,6 +190,11 @@ def create(
     except Exception as e:
         logger.debug(f"Failed to prepare messages for trace: {e}")
 
+    # Prepare input that includes both messages and tools (like OpenAI API format)
+    trace_input: dict = {"messages": messages_for_trace}
+    if functions:
+        trace_input["tools"] = functions
+
     # Create LangFuse generation span.
     if langfuse and trace_context.get("trace_id"):
         try:
@@ -208,7 +213,7 @@ def create(
                 name="llm_completion",
                 model=llm_config.model,
                 model_parameters=model_parameters,
-                input=messages_for_trace,
+                input=trace_input,
                 metadata=_extract_generation_metadata(
                     llm_config, functions, max_tokens, summarizing, image_uris
                 ),

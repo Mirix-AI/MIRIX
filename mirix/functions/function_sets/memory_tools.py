@@ -9,6 +9,7 @@ from mirix.log import get_logger
 from mirix.observability.context import (
     clear_trace_context,
     get_trace_context,
+    mark_observation_as_child,
     set_trace_context,
 )
 from mirix.observability.langfuse_client import get_langfuse_client
@@ -19,11 +20,6 @@ from mirix.schemas.procedural_memory import ProceduralMemoryItemBase
 from mirix.schemas.resource_memory import ResourceMemoryItemBase
 from mirix.schemas.semantic_memory import SemanticMemoryItemBase
 
-# Import for setting AS_ROOT attribute
-try:
-    from langfuse._client.attributes import LangfuseOtelSpanAttributes
-except ImportError:
-    LangfuseOtelSpanAttributes = None  # type: ignore
 
 logger = get_logger(__name__)
 
@@ -1102,14 +1098,8 @@ def trigger_memory_update(
                         "agent_name": agent_state.name,
                     },
                 ) as span:
-                    # Override AS_ROOT to False - this span is a child, not a root
-                    # The SDK sets AS_ROOT=True when trace_context is provided, but we want proper nesting
-                    if LangfuseOtelSpanAttributes is not None and hasattr(
-                        span, "_otel_span"
-                    ):
-                        span._otel_span.set_attribute(
-                            LangfuseOtelSpanAttributes.AS_ROOT, False
-                        )
+                    mark_observation_as_child(span)
+
                     # Get this span's ID for child operations
                     span_observation_id = getattr(span, "id", None)
                     if span_observation_id:

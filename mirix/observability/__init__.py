@@ -11,6 +11,7 @@ from mirix.observability.trace_propagation import (
     add_trace_to_queue_message,
     restore_trace_from_queue_message,
 )
+from mirix.observability.context import mark_observation_as_child
 
 __all__ = [
     "get_langfuse_client",
@@ -20,5 +21,6 @@ __all__ = [
     "shutdown_langfuse",
     "add_trace_to_queue_message",
     "restore_trace_from_queue_message",
+    "mark_observation_as_child",
 ]
 
