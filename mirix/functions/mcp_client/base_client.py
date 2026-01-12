@@ -161,18 +161,13 @@ class BaseMCPClient(ABC):
             if parent_span_id:
                 trace_context_dict["parent_span_id"] = parent_span_id
 
-            # Sanitize args for tracing (truncate long values)
-            args_for_trace = {}
-            for key, value in tool_args.items():
-                str_value = str(value)
-                args_for_trace[key] = (
-                    str_value[:200] + "..." if len(str_value) > 200 else str_value
-                )
+            # Sanitize args for tracing
+            args_for_trace = {key: str(value) for key, value in tool_args.items()}
 
             try:
                 with langfuse.start_as_current_observation(
                     name=f"mcp_tool: {tool_name}",
-                    as_type="span",
+                    as_type="tool",
                     trace_context=cast(TraceContext, trace_context_dict),
                     input={
                         "tool_name": tool_name,
@@ -186,16 +181,9 @@ class BaseMCPClient(ABC):
                 ) as span:
                     final_content, is_error = _do_execute()
 
-                    # Truncate response for trace
-                    response_preview = (
-                        final_content[:500] + "..."
-                        if len(final_content) > 500
-                        else final_content
-                    )
-
                     # Update span with result
                     span.update(
-                        output={"response": response_preview, "is_error": is_error},
+                        output={"response": final_content, "is_error": is_error},
                         level="ERROR" if is_error else "DEFAULT",
                     )
                     return final_content, is_error
@@ -312,18 +300,13 @@ class BaseAsyncMCPClient(ABC):
             if parent_span_id:
                 trace_context_dict["parent_span_id"] = parent_span_id
 
-            # Sanitize args for tracing (truncate long values)
-            args_for_trace = {}
-            for key, value in tool_args.items():
-                str_value = str(value)
-                args_for_trace[key] = (
-                    str_value[:200] + "..." if len(str_value) > 200 else str_value
-                )
+            # Sanitize args for tracing
+            args_for_trace = {key: str(value) for key, value in tool_args.items()}
 
             try:
                 with langfuse.start_as_current_observation(
                     name=f"mcp_tool: {tool_name}",
-                    as_type="span",
+                    as_type="tool",
                     trace_context=cast(TraceContext, trace_context_dict),
                     input={
                         "tool_name": tool_name,
@@ -337,16 +320,9 @@ class BaseAsyncMCPClient(ABC):
                 ) as span:
                     final_content, is_error = await _do_execute()
 
-                    # Truncate response for trace
-                    response_preview = (
-                        final_content[:500] + "..."
-                        if len(final_content) > 500
-                        else final_content
-                    )
-
                     # Update span with result
                     span.update(
-                        output={"response": response_preview, "is_error": is_error},
+                        output={"response": final_content, "is_error": is_error},
                         level="ERROR" if is_error else "DEFAULT",
                     )
                     return final_content, is_error

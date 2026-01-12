@@ -43,6 +43,8 @@ from mirix.llm_api.llm_api_tools import create
 from mirix.llm_api.llm_client import LLMClient
 from mirix.log import get_logger
 from mirix.memory import summarize_messages
+from mirix.observability.context import get_trace_context, mark_observation_as_child
+from mirix.observability.langfuse_client import get_langfuse_client
 from mirix.schemas.agent import AgentState, AgentStepResponse, UpdateAgent
 from mirix.schemas.block import BlockUpdate
 from mirix.schemas.client import Client
@@ -399,120 +401,187 @@ class Agent(BaseAgent):
             ]
         )
 
-        # TODO: need to have an AgentState object that actually has full access to the block data
-        # this is because the sandbox tools need to be able to access block.value to edit this data
-        try:
-            if function_name in [
-                "episodic_memory_insert",
-                "episodic_memory_replace",
-                "list_memory_within_timerange",
-            ]:
-                key = (
-                    "items"
-                    if function_name == "episodic_memory_insert"
-                    else "new_items"
-                )
-                if key in function_args:
-                    # Need to change the timezone into UTC timezone
-                    for item in function_args[key]:
-                        if "occurred_at" in item:
-                            item["occurred_at"] = convert_timezone_to_utc(
-                                item["occurred_at"],
-                                self.user.timezone,
+        # Get Langfuse client for tracing tool executions
+        langfuse = get_langfuse_client()
+        trace_context = get_trace_context() if langfuse else {}
+        trace_id = trace_context.get("trace_id") if trace_context else None
+        parent_span_id = trace_context.get("observation_id") if trace_context else None
+
+        # Sanitize args for tracing (exclude 'self')
+        args_for_trace = {}
+        for key, value in function_args.items():
+            if key == "self":
+                continue  # Don't include 'self' in trace
+            args_for_trace[key] = str(value)
+
+        def _execute_tool_inner() -> Tuple[str, bool]:
+            """Inner function to execute tool. Returns (response, is_error)."""
+            nonlocal function_args  # Allow modification of outer function_args
+            function_response = ""
+            is_error = False
+
+            try:
+                if function_name in [
+                    "episodic_memory_insert",
+                    "episodic_memory_replace",
+                    "list_memory_within_timerange",
+                ]:
+                    key = (
+                        "items"
+                        if function_name == "episodic_memory_insert"
+                        else "new_items"
+                    )
+                    if key in function_args:
+                        # Need to change the timezone into UTC timezone
+                        for item in function_args[key]:
+                            if "occurred_at" in item:
+                                item["occurred_at"] = convert_timezone_to_utc(
+                                    item["occurred_at"],
+                                    self.user.timezone,
+                                )
+
+                if function_name in [
+                    "search_in_memory",
+                    "list_memory_within_timerange",
+                ]:
+                    function_args["timezone_str"] = self.user.timezone
+
+                if target_mirix_tool.tool_type == ToolType.MIRIX_CORE:
+                    # base tools are allowed to access the `Agent` object and run on the database
+                    callable_func = get_function_from_module(
+                        MIRIX_CORE_TOOL_MODULE_NAME, function_name
+                    )
+                    function_args["self"] = (
+                        self  # need to attach self to arg since it's dynamically linked
+                    )
+                    if function_name in ["send_message", "send_intermediate_message"]:
+                        agent_state_copy = self.agent_state.__deepcopy__()
+                        function_args["agent_state"] = (
+                            agent_state_copy  # need to attach self to arg since it's dynamically linked
+                        )
+                    function_response = callable_func(**function_args)
+                    # if function_name in ["send_message", "send_intermediate_message"]:
+                    #     self.update_topic_if_changed(agent_state_copy.topic)
+                    if function_name == "send_intermediate_message":
+                        # send intermediate message to the user
+                        if display_intermediate_message:
+                            display_intermediate_message(
+                                "response", function_args["message"]
                             )
 
-            if function_name in ["search_in_memory", "list_memory_within_timerange"]:
-                function_args["timezone_str"] = self.user.timezone
-
-            if target_mirix_tool.tool_type == ToolType.MIRIX_CORE:
-                # base tools are allowed to access the `Agent` object and run on the database
-                callable_func = get_function_from_module(
-                    MIRIX_CORE_TOOL_MODULE_NAME, function_name
-                )
-                function_args["self"] = (
-                    self  # need to attach self to arg since it's dynamically linked
-                )
-                if function_name in ["send_message", "send_intermediate_message"]:
-                    agent_state_copy = self.agent_state.__deepcopy__()
-                    function_args["agent_state"] = (
-                        agent_state_copy  # need to attach self to arg since it's dynamically linked
+                elif target_mirix_tool.tool_type == ToolType.MIRIX_MEMORY_CORE:
+                    callable_func = get_function_from_module(
+                        MIRIX_MEMORY_TOOL_MODULE_NAME, function_name
                     )
-                function_response = callable_func(**function_args)
-                # if function_name in ["send_message", "send_intermediate_message"]:
-                #     self.update_topic_if_changed(agent_state_copy.topic)
-                if function_name == "send_intermediate_message":
-                    # send intermediate message to the user
-                    if display_intermediate_message:
-                        display_intermediate_message(
-                            "response", function_args["message"]
+                    if function_name in ["core_memory_append", "core_memory_rewrite"]:
+                        agent_state_copy = self.agent_state.__deepcopy__()
+                        function_args["agent_state"] = (
+                            agent_state_copy  # need to attach self to arg since it's dynamically linked
                         )
+                    if function_name in [
+                        "check_episodic_memory",
+                        "check_semantic_memory",
+                    ]:
+                        function_args["timezone_str"] = self.user.timezone
+                    function_args["self"] = self
 
-            elif target_mirix_tool.tool_type == ToolType.MIRIX_MEMORY_CORE:
-                callable_func = get_function_from_module(
-                    MIRIX_MEMORY_TOOL_MODULE_NAME, function_name
-                )
-                if function_name in ["core_memory_append", "core_memory_rewrite"]:
-                    agent_state_copy = self.agent_state.__deepcopy__()
-                    function_args["agent_state"] = (
-                        agent_state_copy  # need to attach self to arg since it's dynamically linked
+                    # Defensive: finish_memory_update takes no parameters (except self)
+                    # Remove any unexpected parameters that LLM might hallucinate
+                    if function_name == "finish_memory_update":
+                        function_args = {"self": self}
+
+                    function_response = callable_func(**function_args)
+                    if function_name in ["core_memory_append", "core_memory_rewrite"]:
+                        self.update_memory_if_changed(agent_state_copy.memory)
+
+                elif target_mirix_tool.tool_type == ToolType.MIRIX_EXTRA:
+                    callable_func = get_function_from_module(
+                        MIRIX_EXTRA_TOOL_MODULE_NAME, function_name
                     )
-                if function_name in ["check_episodic_memory", "check_semantic_memory"]:
-                    function_args["timezone_str"] = self.user.timezone
-                function_args["self"] = self
+                    function_args["self"] = (
+                        self  # need to attach self to arg since it's dynamically linked
+                    )
+                    function_response = callable_func(**function_args)
 
-                # Defensive: finish_memory_update takes no parameters (except self)
-                # Remove any unexpected parameters that LLM might hallucinate
-                if function_name == "finish_memory_update":
-                    function_args = {"self": self}
+                elif target_mirix_tool.tool_type == ToolType.USER_DEFINED:
+                    agent_state_copy = self.agent_state.__deepcopy__()
 
-                function_response = callable_func(**function_args)
-                if function_name in ["core_memory_append", "core_memory_rewrite"]:
-                    self.update_memory_if_changed(agent_state_copy.memory)
+                    # Execute user-defined tool in sandbox for security
+                    sandbox = ToolExecutionSandbox(
+                        tool_name=function_name,
+                        args=function_args,
+                        actor=self.actor,
+                        tool_object=target_mirix_tool,
+                    )
+                    sandbox_result = sandbox.run(agent_state=agent_state_copy)
+                    function_response = sandbox_result.func_return
 
-            elif target_mirix_tool.tool_type == ToolType.MIRIX_EXTRA:
-                callable_func = get_function_from_module(
-                    MIRIX_EXTRA_TOOL_MODULE_NAME, function_name
-                )
-                function_args["self"] = (
-                    self  # need to attach self to arg since it's dynamically linked
-                )
-                function_response = callable_func(**function_args)
+                elif target_mirix_tool.tool_type == ToolType.MIRIX_MCP:
+                    # Handle MCP tool execution
+                    function_response = self._execute_mcp_tool(
+                        function_name,
+                        function_args,
+                        target_mirix_tool,
+                        request_user_confirmation,
+                    )
 
-            elif target_mirix_tool.tool_type == ToolType.USER_DEFINED:
-                agent_state_copy = self.agent_state.__deepcopy__()
+                else:
+                    raise ValueError(
+                        f"Tool type {target_mirix_tool.tool_type} not supported"
+                    )
 
-                # Execute user-defined tool in sandbox for security
-                sandbox = ToolExecutionSandbox(
-                    tool_name=function_name,
-                    args=function_args,
-                    actor=self.actor,
-                    tool_object=target_mirix_tool,
-                )
-                sandbox_result = sandbox.run(agent_state=agent_state_copy)
-                function_response = sandbox_result.func_return
-
-            elif target_mirix_tool.tool_type == ToolType.MIRIX_MCP:
-                # Handle MCP tool execution
-                function_response = self._execute_mcp_tool(
-                    function_name,
-                    function_args,
-                    target_mirix_tool,
-                    request_user_confirmation,
+            except Exception as e:
+                # Need to catch error here, or else truncation wont happen
+                is_error = True
+                function_response = get_friendly_error_msg(
+                    function_name=function_name,
+                    exception_name=type(e).__name__,
+                    exception_message=str(e),
                 )
 
-            else:
-                raise ValueError(
-                    f"Tool type {target_mirix_tool.tool_type} not supported"
-                )
+            return function_response, is_error
 
-        except Exception as e:
-            # Need to catch error here, or else trunction wont happen
-            # TODO: modify to function execution error
-            function_response = get_friendly_error_msg(
-                function_name=function_name,
-                exception_name=type(e).__name__,
-                exception_message=str(e),
-            )
+        # Execute with Langfuse tracing if available
+        if langfuse and trace_id:
+            from typing import cast
+
+            from langfuse.types import TraceContext
+
+            # Build trace context
+            trace_context_dict: dict = {"trace_id": trace_id}
+            if parent_span_id:
+                trace_context_dict["parent_span_id"] = parent_span_id
+
+            try:
+                with langfuse.start_as_current_observation(
+                    name=f"tool: {function_name}",
+                    as_type="tool",
+                    trace_context=cast(TraceContext, trace_context_dict),
+                    input={"tool_name": function_name, "args": args_for_trace},
+                    metadata={
+                        "tool_type": str(target_mirix_tool.tool_type),
+                        "tool_name": function_name,
+                        "agent_name": self.agent_state.name,
+                    },
+                ) as span:
+                    mark_observation_as_child(span)  # Ensure this is not marked as root
+                    function_response, is_error = _execute_tool_inner()
+
+                    # Update span with result info
+                    span.update(
+                        output={"response": str(function_response), "is_error": is_error},
+                        metadata={
+                            "tool_type": str(target_mirix_tool.tool_type),
+                            "tool_name": function_name,
+                            "is_error": is_error,
+                        },
+                        level="ERROR" if is_error else "DEFAULT",
+                    )
+            except Exception as e:
+                self.logger.debug(f"Langfuse tool execution trace failed: {e}")
+                function_response, _ = _execute_tool_inner()
+        else:
+            function_response, _ = _execute_tool_inner()
 
         return function_response
 
@@ -1040,7 +1109,9 @@ class Agent(BaseAgent):
                 # Failure case 3: function arguments fail validation
                 validation_error = validate_tool_args(function_name, function_args)
                 if validation_error:
-                    function_response = package_function_response(False, validation_error)
+                    function_response = package_function_response(
+                        False, validation_error
+                    )
                     messages.append(
                         Message.dict_to_message(
                             agent_id=self.agent_state.id,
@@ -1257,7 +1328,7 @@ class Agent(BaseAgent):
                     if self.user is None:
                         raise ValueError("User is required to clear history")
 
-                    if self.agent_state.name == "episodic_memory_agent":
+                    if self.agent_state.name.endswith("episodic_memory_agent"):
                         memory_item = self.episodic_memory_manager.get_most_recently_updated_event(
                             user=self.user,
                             timezone_str=self.user.timezone,
@@ -1290,7 +1361,7 @@ class Agent(BaseAgent):
                             )
                             memory_item_str = memory_item_str.strip()
 
-                    elif self.agent_state.name == "procedural_memory_agent":
+                    elif self.agent_state.name.endswith("procedural_memory_agent"):
                         memory_item = self.procedural_memory_manager.get_most_recently_updated_item(
                             user=self.user,
                             timezone_str=self.user.timezone,
@@ -1321,7 +1392,7 @@ class Agent(BaseAgent):
                             )
                             memory_item_str = memory_item_str.strip()
 
-                    elif self.agent_state.name == "resource_memory_agent":
+                    elif self.agent_state.name.endswith("resource_memory_agent"):
                         memory_item = (
                             self.resource_memory_manager.get_most_recently_updated_item(
                                 user=self.user,
@@ -1355,7 +1426,7 @@ class Agent(BaseAgent):
                             )
                             memory_item_str = memory_item_str.strip()
 
-                    elif self.agent_state.name == "knowledge_vault_memory_agent":
+                    elif self.agent_state.name.endswith("knowledge_vault_memory_agent"):
                         memory_item = (
                             self.knowledge_vault_manager.get_most_recently_updated_item(
                                 user=self.user,
@@ -1400,7 +1471,7 @@ class Agent(BaseAgent):
                             )
                             memory_item_str = memory_item_str.strip()
 
-                    elif self.agent_state.name == "semantic_memory_agent":
+                    elif self.agent_state.name.endswith("semantic_memory_agent"):
                         memory_item = (
                             self.semantic_memory_manager.get_most_recently_updated_item(
                                 user=self.user,
@@ -1434,12 +1505,12 @@ class Agent(BaseAgent):
                             )
                             memory_item_str = memory_item_str.strip()
 
-                    elif self.agent_state.name == "core_memory_agent":
+                    elif self.agent_state.name.endswith("core_memory_agent"):
                         memory_item_str = self.agent_state.memory.compile()
 
                     # create a new message for this:
                     if memory_item_str:
-                        if self.agent_state.name == "core_memory_agent":
+                        if self.agent_state.name.endswith("core_memory_agent"):
                             message_content = (
                                 "Current Full Core Memory:\n\n" + memory_item_str
                             )
@@ -1692,6 +1763,19 @@ class Agent(BaseAgent):
                     )
                     pass
 
+            if self.agent_state.name == "meta_memory_agent" and step_count == 0:
+                meta_message = prepare_input_message_create(
+                    MessageCreate(
+                        role="user",
+                        content="[System Message] As the meta memory manager, analyze the provided content and perform your function.",
+                        filter_tags=self.filter_tags,
+                    ),
+                    self.agent_state.id,
+                    wrap_user_message=False,
+                    wrap_system_message=True,
+                )
+                next_input_message.append(meta_message)
+
             step_response = self.inner_step(
                 first_input_messge=first_input_message,
                 messages=next_input_message,
@@ -1699,6 +1783,7 @@ class Agent(BaseAgent):
                 initial_message_count=initial_message_count,
                 chaining=chaining,
                 llm_client=llm_client,
+                **kwargs,
             )
 
             continue_chaining = step_response.continue_chaining
@@ -2068,7 +2153,7 @@ class Agent(BaseAgent):
         complete_system_prompt = raw_system + "\n\n" + memory_system_prompt
 
         if key_words:
-            complete_system_prompt += "\n\nThe above memories are retrieved based on the following keywords. If some memories are empty or does not contain the content related to the keywords, it is highly likely that memory does not contain any relevant information."
+            complete_system_prompt += "\n\nThe above memories were retrieved based on the previously listed keywords. If some memories are empty or do not contain the content related to the keywords, it is highly likely that memory does not contain any relevant information."
 
         return complete_system_prompt, retrieved_memories
 

@@ -190,7 +190,14 @@ class ProceduralMemoryManager:
         return word_matches
 
     def _postgresql_fulltext_search(
-        self, session, base_query, query_text, search_field, limit, user
+        self,
+        session,
+        base_query,
+        query_text,
+        search_field,
+        limit,
+        user,
+        filter_tags=None,
     ):
         """
         Efficient PostgreSQL-native full-text search using ts_rank_cd for BM25-like functionality.
@@ -198,10 +205,12 @@ class ProceduralMemoryManager:
 
         Args:
             session: Database session
-            base_query: Base SQLAlchemy query
+            base_query: Base SQLAlchemy query (not used, kept for API compatibility)
             query_text: Search query string
             search_field: Field to search in ('summary', 'steps', 'entry_type', etc.)
             limit: Maximum number of results to return
+            user: User object to filter by
+            filter_tags: Optional dict of tag key-value pairs to filter by (e.g., {"scope": "CARE"})
 
         Returns:
             List of ProceduralMemoryItem objects ranked by relevance
@@ -270,31 +279,42 @@ class ProceduralMemoryManager:
                 setweight(to_tsvector('english', coalesce(entry_type, '')), 'C'),
                 to_tsquery('english', :tsquery), 32)"""
 
+        # Build WHERE clauses dynamically
+        where_clauses = [
+            f"{tsvector_sql} @@ to_tsquery('english', :tsquery)",
+            "user_id = :user_id",
+        ]
+        query_params = {
+            "tsquery": tsquery_string_and,
+            "user_id": user.id,
+            "limit_val": limit or 50,
+        }
+
+        # Add filter_tags filtering (e.g., {"scope": "CARE"})
+        if filter_tags:
+            for key, value in filter_tags.items():
+                where_clauses.append(f"filter_tags->>'{key}' = :filter_tag_{key}")
+                query_params[f"filter_tag_{key}"] = str(value)
+
+        where_clause = " AND ".join(where_clauses)
+
         # Try AND query first for more precise results
         try:
-            and_query_sql = text(f"""
+            and_query_sql = text(
+                f"""
                 SELECT 
                     id, created_at, entry_type, summary, steps,
                     steps_embedding, summary_embedding, embedding_config,
                     organization_id, last_modify, user_id,
                     {rank_sql} as rank_score
                 FROM procedural_memory 
-                WHERE {tsvector_sql} @@ to_tsquery('english', :tsquery)
-                    AND user_id = :user_id
+                WHERE {where_clause}
                 ORDER BY rank_score DESC, created_at DESC
                 LIMIT :limit_val
-            """)
-
-            results = list(
-                session.execute(
-                    and_query_sql,
-                    {
-                        "tsquery": tsquery_string_and,
-                        "user_id": user.id,
-                        "limit_val": limit or 50,
-                    },
-                )
+            """
             )
+
+            results = list(session.execute(and_query_sql, query_params))
 
             # If AND query returns sufficient results, use them
             if len(results) >= min(limit or 10, 10):
@@ -328,27 +348,25 @@ class ProceduralMemoryManager:
 
         # If AND query fails or returns too few results, try OR query
         try:
-            or_query_sql = text(f"""
+            # Update query params for OR query
+            or_query_params = query_params.copy()
+            or_query_params["tsquery"] = tsquery_string_or
+
+            or_query_sql = text(
+                f"""
                 SELECT 
                     id, created_at, entry_type, summary, steps,
                     steps_embedding, summary_embedding, embedding_config,
                     organization_id, last_modify, user_id,
                     {rank_sql} as rank_score
                 FROM procedural_memory 
-                WHERE {tsvector_sql} @@ to_tsquery('english', :tsquery)
-                    AND user_id = :user_id
+                WHERE {where_clause}
                 ORDER BY rank_score DESC, created_at DESC
                 LIMIT :limit_val
-            """)
-
-            results = session.execute(
-                or_query_sql,
-                {
-                    "tsquery": tsquery_string_or,
-                    "user_id": user.id,
-                    "limit_val": limit or 50,
-                },
+            """
             )
+
+            results = session.execute(or_query_sql, or_query_params)
 
             procedures = []
             for row in results:
@@ -777,7 +795,13 @@ class ProceduralMemoryManager:
                     if settings.mirix_pg_uri_no_default:
                         # Use PostgreSQL native full-text search
                         return self._postgresql_fulltext_search(
-                            session, base_query, query, search_field, limit, user
+                            session,
+                            base_query,
+                            query,
+                            search_field,
+                            limit,
+                            user,
+                            filter_tags=filter_tags,
                         )
                     else:
                         # Fallback to in-memory BM25 for SQLite (legacy method)

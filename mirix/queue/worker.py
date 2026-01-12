@@ -296,8 +296,8 @@ class QueueWorker:
 
                 # Use context manager for proper OTel context propagation
                 with langfuse.start_as_current_observation(
-                    name="Worker Processing",
-                    as_type="span",
+                    name="Meta Agent",
+                    as_type="agent",
                     trace_context=cast(TraceContext, trace_context_dict),
                     metadata={
                         "agent_id": message.agent_id,

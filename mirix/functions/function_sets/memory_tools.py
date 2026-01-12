@@ -20,7 +20,6 @@ from mirix.schemas.procedural_memory import ProceduralMemoryItemBase
 from mirix.schemas.resource_memory import ResourceMemoryItemBase
 from mirix.schemas.semantic_memory import SemanticMemoryItemBase
 
-
 logger = get_logger(__name__)
 
 
@@ -186,6 +185,8 @@ def episodic_memory_merge(
         new_summary=combined_summary,
         new_details=combined_details,
         actor=self.actor,
+        agent_state=self.agent_state,
+        update_mode="replace",
     )
     response = (
         "These are the `summary` and the `details` of the updated event:\n",
@@ -1063,6 +1064,13 @@ def trigger_memory_update(
             else:
                 message_copy.content = [system_msg]
 
+            # Extract topics and retrieved_memories from parent agent to pass to sub-agents
+            # This ensures sub-agents use the same keywords for memory retrieval
+            retrieved_memories = user_message.get("retrieved_memories", None)
+            topics = None
+            if retrieved_memories and isinstance(retrieved_memories, dict):
+                topics = retrieved_memories.get("key_words", None)
+
             # Pass actor (Client) and user (User) to memory agent
             # actor is needed for write operations, user is needed for read operations
 
@@ -1091,7 +1099,7 @@ def trigger_memory_update(
                 # Use context manager for proper OTel context propagation
                 with langfuse.start_as_current_observation(
                     name=span_name,
-                    as_type="span",
+                    as_type="agent",
                     trace_context=cast(TraceContext, trace_context_dict),
                     metadata={
                         "memory_type": memory_type,
@@ -1120,6 +1128,8 @@ def trigger_memory_update(
                         chaining=user_message.get("chaining", False),
                         actor=actor,
                         user=user,
+                        topics=topics,
+                        retrieved_memories=retrieved_memories,
                     )
             else:
                 # No tracing available, run directly
@@ -1128,6 +1138,8 @@ def trigger_memory_update(
                     chaining=user_message.get("chaining", False),
                     actor=actor,
                     user=user,
+                    topics=topics,
+                    retrieved_memories=retrieved_memories,
                 )
 
             return f"[System Message] Agent {agent_state.name} has been triggered to update the memory.\n"

@@ -518,7 +518,7 @@ class TemporaryMessageAccumulator:
             if user_message_added:
                 system_message = "[System Message] As the meta memory manager, analyze the provided content and the conversations between the user and the chat agent. Based on what the user is doing, determine which memory should be updated (episodic, procedural, knowledge vault, semantic, core, and resource)."
             else:
-                system_message = "[System Message] As the meta memory manager, analyze the provided content. Based on the content, determine what memories need to be updated (episodic, procedural, knowledge vault, semantic, core, and resource)"
+                system_message = "[System Message] As the meta memory manager, analyze the provided content and perform your function."
 
         message.append({"type": "text", "text": system_message})
 

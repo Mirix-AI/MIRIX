@@ -126,18 +126,13 @@ class ToolExecutionSandbox:
             if parent_span_id:
                 trace_context_dict["parent_span_id"] = parent_span_id
 
-            # Sanitize args for tracing (truncate long values)
-            args_for_trace = {}
-            for key, value in self.args.items():
-                str_value = str(value)
-                args_for_trace[key] = (
-                    str_value[:200] + "..." if len(str_value) > 200 else str_value
-                )
+            # Sanitize args for tracing
+            args_for_trace = {key: str(value) for key, value in self.args.items()}
 
             try:
                 with langfuse.start_as_current_observation(
                     name=f"tool_execution: {self.tool_name}",
-                    as_type="span",
+                    as_type="tool",
                     trace_context=cast(TraceContext, trace_context_dict),
                     input={"tool_name": self.tool_name, "args": args_for_trace},
                     metadata={

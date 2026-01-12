@@ -35,29 +35,24 @@ from mirix.agent import (
     SemanticMemoryAgent,
     save_agent,
 )
+from mirix.config import MirixConfig
 
 # TODO use custom interface
-from mirix.interface import (
-    AgentInterface,  # abstract
-    CLIInterface,  # for printing to terminal
-    QueuingInterface,  # for message queuing
-)
-from mirix.config import MirixConfig
+from mirix.interface import AgentInterface  # abstract
+from mirix.interface import CLIInterface  # for printing to terminal
+from mirix.interface import QueuingInterface  # for message queuing
 from mirix.log import get_logger
 from mirix.orm import Base
 from mirix.orm.errors import NoResultFound
 from mirix.schemas.agent import AgentState, AgentType, CreateAgent, CreateMetaAgent
 from mirix.schemas.block import BlockUpdate
+from mirix.schemas.client import Client
 from mirix.schemas.embedding_config import EmbeddingConfig
 
 # openai schemas
 from mirix.schemas.enums import MessageStreamStatus
 from mirix.schemas.llm_config import LLMConfig
-from mirix.schemas.memory import (
-    ContextWindowOverview,
-    Memory,
-    RecallMemorySummary,
-)
+from mirix.schemas.memory import ContextWindowOverview, Memory, RecallMemorySummary
 from mirix.schemas.message import Message, MessageCreate, MessageUpdate
 from mirix.schemas.mirix_message import (
     LegacyMirixMessage,
@@ -83,7 +78,6 @@ from mirix.schemas.providers import (
 from mirix.schemas.tool import Tool
 from mirix.schemas.usage import MirixUsageStatistics
 from mirix.schemas.user import User
-from mirix.schemas.client import Client
 from mirix.services.agent_manager import AgentManager
 from mirix.services.block_manager import BlockManager
 from mirix.services.client_manager import ClientManager
@@ -426,11 +420,11 @@ except Exception as e:
 
 try:
     from mirix.observability import (
-        initialize_langfuse,
         flush_langfuse,
+        initialize_langfuse,
         shutdown_langfuse,
     )
-    
+
     logger.info("Initializing LangFuse observability...")
     initialize_langfuse()
 except Exception as e:
@@ -728,7 +722,7 @@ class SyncServer(Server):
                 raise KeyError(
                     f"Agent (user={actor.id}, agent={agent_id}) is not loaded"
                 )
-            
+
             # Store occurred_at on agent instance for use during memory extraction
             if occurred_at is not None:
                 mirix_agent.occurred_at = occurred_at
@@ -744,16 +738,6 @@ class SyncServer(Server):
 
             # Use provided chaining value or fall back to server default
             effective_chaining = chaining if chaining is not None else self.chaining
-
-            logger.debug("Agent type: %s, filter_tags param: %s", mirix_agent.agent_state.agent_type, filter_tags)
-            if mirix_agent.agent_state.agent_type == AgentType.meta_memory_agent:
-                meta_message = MessageCreate(
-                    role="user",
-                    content="[System Message] As the meta memory manager, analyze the provided content. Based on the content, determine what memories need to be updated (episodic, procedural, knowledge vault, semantic, core, and resource)",
-                    filter_tags=filter_tags,  # Also attach to message for reference
-                )
-                logger.debug("Created meta_message with filter_tags=%s", filter_tags)
-                input_messages.append(meta_message)
 
             # Note: user object is already retrieved in load_agent() above
             # actor (Client) for write operations (agent_manager, message persistence)
@@ -1609,5 +1593,3 @@ class SyncServer(Server):
 
             traceback.print_exc()
             raise HTTPException(status_code=500, detail=f"{e}")
-
-
