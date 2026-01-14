@@ -28,13 +28,13 @@ _initialization_attempted: bool = False
 def initialize_langfuse(force: bool = False) -> Optional["Langfuse"]:
     """
     Initialize LangFuse client from settings (thread-safe).
-    
+
     Called during server startup. Uses double-checked locking pattern
     for thread-safe lazy initialization.
-    
+
     Args:
         force: Force re-initialization even if already initialized
-    
+
     Returns:
         Langfuse client instance or None if disabled/failed
     """
@@ -69,9 +69,12 @@ def initialize_langfuse(force: bool = False) -> Optional["Langfuse"]:
                 _langfuse_enabled = False
                 return None
 
-            logger.info(f"Initializing LangFuse client (host: {settings.langfuse_host})")
+            logger.info(
+                f"Initializing LangFuse client (host: {settings.langfuse_host})"
+            )
 
             from langfuse import Langfuse
+            from opentelemetry.sdk.trace import TracerProvider
 
             # LangFuse 3.x removed the 'enabled' parameter
             # Client is enabled by default when instantiated
@@ -81,6 +84,7 @@ def initialize_langfuse(force: bool = False) -> Optional["Langfuse"]:
                 host=settings.langfuse_host,
                 debug=settings.langfuse_debug,
                 flush_interval=settings.langfuse_flush_interval,
+                tracer_provider=TracerProvider(),
             )
 
             _langfuse_enabled = True
@@ -91,9 +95,13 @@ def initialize_langfuse(force: bool = False) -> Optional["Langfuse"]:
             # Verify connection with initial flush
             try:
                 _langfuse_client.flush()
-                logger.info("✅ LangFuse observability initialized and verified successfully")
+                logger.info(
+                    "✅ LangFuse observability initialized and verified successfully"
+                )
             except Exception as health_error:
-                logger.warning(f"LangFuse initialized but health check failed: {health_error}")
+                logger.warning(
+                    f"LangFuse initialized but health check failed: {health_error}"
+                )
                 # Continue anyway - will retry on actual use
 
             return _langfuse_client
@@ -108,19 +116,19 @@ def initialize_langfuse(force: bool = False) -> Optional["Langfuse"]:
 def get_langfuse_client() -> Optional["Langfuse"]:
     """
     Get the global LangFuse client instance (lazy initialization).
-    
+
     Thread-safe and efficient - only initializes once per container.
     Each container instance has its own singleton client.
-    
+
     Returns:
         Langfuse client or None if not initialized/disabled
     """
     global _langfuse_client, _initialization_attempted
-    
+
     # Fast path: already initialized
     if _initialization_attempted:
         return _langfuse_client if _langfuse_enabled else None
-    
+
     # Lazy initialization on first use
     return initialize_langfuse()
 
@@ -128,7 +136,7 @@ def get_langfuse_client() -> Optional["Langfuse"]:
 def is_langfuse_enabled() -> bool:
     """
     Check if LangFuse tracing is enabled and initialized.
-    
+
     Returns:
         True if LangFuse is enabled and client is initialized
     """
@@ -138,29 +146,30 @@ def is_langfuse_enabled() -> bool:
 def flush_langfuse(timeout: Optional[float] = None) -> bool:
     """
     Flush all pending LangFuse traces synchronously.
-    
+
     Critical for container shutdown - ensures traces are sent before
     process termination.
-    
+
     Args:
         timeout: Maximum time to wait for flush (seconds).
                 Uses settings default if not specified.
-    
+
     Returns:
         True if flush successful, False otherwise
     """
     global _langfuse_client
-    
+
     if not _langfuse_client or not _langfuse_enabled:
         return True
-    
+
     if timeout is None:
         try:
             from mirix.settings import settings
+
             timeout = settings.langfuse_flush_timeout
         except:
             timeout = 10.0  # Default fallback
-    
+
     try:
         logger.info(f"Flushing LangFuse traces (timeout: {timeout}s)...")
         _langfuse_client.flush()
@@ -174,23 +183,23 @@ def flush_langfuse(timeout: Optional[float] = None) -> bool:
 def shutdown_langfuse() -> None:
     """
     Shutdown LangFuse client and clean up resources.
-    
+
     Should be called on application shutdown to ensure all traces
     are sent and resources are properly released.
     """
     global _langfuse_client, _langfuse_enabled, _initialization_attempted
-    
+
     if _langfuse_client:
         try:
             logger.info("Shutting down LangFuse client...")
-            
+
             # Final flush with timeout
             flush_langfuse()
-            
+
             # Close client if SDK provides shutdown method
-            if hasattr(_langfuse_client, 'shutdown'):
+            if hasattr(_langfuse_client, "shutdown"):
                 _langfuse_client.shutdown()
-            
+
             logger.info("✅ LangFuse client shutdown complete")
         except Exception as e:
             logger.warning(f"Error during LangFuse shutdown: {e}")
@@ -203,17 +212,17 @@ def shutdown_langfuse() -> None:
 def _reset_for_testing() -> None:
     """
     Reset singleton state for testing.
-    
+
     WARNING: DO NOT use in production code. Only for unit tests.
     """
     global _langfuse_client, _langfuse_enabled, _initialization_attempted
-    
+
     if _langfuse_client:
         try:
             _langfuse_client.flush()
         except:
             pass
-    
+
     _langfuse_client = None
     _langfuse_enabled = False
     _initialization_attempted = False
