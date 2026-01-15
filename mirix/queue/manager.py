@@ -164,7 +164,7 @@ class QueueManager:
             # Import Kafka queue (lazy import to avoid unnecessary dependency)
             try:
                 from .kafka_queue import KafkaQueue
-# Build kwargs for KafkaQueue
+                # Build kwargs for KafkaQueue
                 kafka_kwargs = {
                     'bootstrap_servers': config.KAFKA_BOOTSTRAP_SERVERS,
                     'topic': config.KAFKA_TOPIC,

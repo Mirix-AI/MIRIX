@@ -40,6 +40,10 @@ class KafkaQueue(QueueInterface):
             ssl_cafile: Path to CA certificate file for SSL/TLS verification
             ssl_certfile: Path to client certificate file for mTLS
             ssl_keyfile: Path to client private key file for mTLS
+        
+        Note:
+            Consumer timeouts are set to 15 minutes (max_poll_interval_ms=900000) and 30 seconds 
+            (session_timeout_ms=30000) to accommodate long-running memory agent operations.
         """
         logger.info(
             "🔧 Initializing Kafka queue: servers=%s, topic=%s, group=%s, format=%s, security=%s", 
@@ -149,6 +153,7 @@ class KafkaQueue(QueueInterface):
         )
         
         # Initialize Kafka consumer with selected deserializer
+        # Use increased timeouts for long-running operations (memory agent chains)
         self.consumer = KafkaConsumer(
             topic,
             **kafka_config,
@@ -156,7 +161,13 @@ class KafkaQueue(QueueInterface):
             value_deserializer=value_deserializer,
             auto_offset_reset='earliest',  # Start from beginning if no offset exists
             enable_auto_commit=True,
-            consumer_timeout_ms=1000  # Timeout for polling
+            max_poll_interval_ms=900000,  # 15 minutes (increased from kafka-python default of 5 min)
+            session_timeout_ms=30000,     # 30 seconds (increased from kafka-python default of 10 sec)
+            consumer_timeout_ms=1000      # Timeout for polling
+        )
+        
+        logger.info(
+            "✅ Kafka consumer configured with extended timeouts: max_poll_interval=900000ms (15.0 min), session_timeout=30000ms"
         )
     
     def put(self, message: QueueMessage) -> None:
