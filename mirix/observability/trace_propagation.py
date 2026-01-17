@@ -14,16 +14,17 @@ logger = get_logger(__name__)
 # For dict-based message metadata (e.g., Kafka headers/payloads in older codepaths/tests)
 TRACE_METADATA_KEY = "trace_metadata"
 
+
 def add_trace_to_queue_message(message: Any) -> Any:
     """
     Add current trace context to queue message (Protocol Buffer).
-    
+
     Works for both in-memory and Kafka queues since both use the same
     protobuf schema.
-    
+
     Args:
         message: QueueMessage protobuf instance
-    
+
     Returns:
         The same message with trace fields populated
     """
@@ -31,7 +32,9 @@ def add_trace_to_queue_message(message: Any) -> Any:
 
     # Only add if we have an active trace
     if not context.get("trace_id"):
-        logger.debug("No active trace context when queueing message - LangFuse tracing will not propagate to worker")
+        logger.debug(
+            "No active trace context when queueing message - LangFuse tracing will not propagate to worker"
+        )
         return message
 
     # Set trace fields on protobuf message
@@ -55,21 +58,23 @@ def add_trace_to_queue_message(message: Any) -> Any:
 def restore_trace_from_queue_message(message: Any) -> bool:
     """
     Restore trace context from queue message (Protocol Buffer).
-    
+
     Works for both in-memory and Kafka queues.
-    
+
     Args:
         message: QueueMessage protobuf instance
-    
+
     Returns:
         True if trace context was restored, False otherwise
     """
     # Check if message has trace fields
-    if not hasattr(message, 'langfuse_trace_id'):
+    if not hasattr(message, "langfuse_trace_id"):
         logger.debug("Message does not have trace fields (old schema version?)")
         return False
 
-    trace_id = message.langfuse_trace_id if message.HasField('langfuse_trace_id') else None
+    trace_id = (
+        message.langfuse_trace_id if message.HasField("langfuse_trace_id") else None
+    )
 
     if not trace_id:
         logger.debug("No trace ID in queue message")
@@ -104,6 +109,7 @@ def restore_trace_from_queue_message(message: Any) -> bool:
 # ============================================================================
 # Backwards-compatible helpers (dict-based message propagation)
 # ============================================================================
+
 
 def serialize_trace_context() -> dict | None:
     """
