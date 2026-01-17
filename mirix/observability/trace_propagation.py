@@ -31,6 +31,7 @@ def add_trace_to_queue_message(message: Any) -> Any:
 
     # Only add if we have an active trace
     if not context.get("trace_id"):
+        logger.debug("No active trace context when queueing message - LangFuse tracing will not propagate to worker")
         return message
 
     # Set trace fields on protobuf message

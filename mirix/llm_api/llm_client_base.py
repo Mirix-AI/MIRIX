@@ -67,7 +67,9 @@ class LLMClientBase:
                 langfuse, request_data, messages, tools, trace_id, parent_span_id
             )
         else:
-            self.logger.debug("Sending LLM request without LangFuse tracing")
+            # Provide diagnostic info about why tracing is not active
+            reason = "LangFuse client not available" if not langfuse else "No active trace_id in context"
+            self.logger.debug(f"Sending LLM request without LangFuse tracing ({reason})")
             return self._execute_without_langfuse(request_data, messages)
 
     def _execute_without_langfuse(
