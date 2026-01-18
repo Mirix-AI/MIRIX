@@ -242,6 +242,11 @@ CALL_MEMORY_AGENT_IN_PARALLEL = os.getenv(
 CHAINING_FOR_MEMORY_UPDATE = os.getenv(
     "CHAINING_FOR_MEMORY_UPDATE", "false"
 ).lower() in ("true", "1", "yes")
+CHAINING_FOR_META_AGENT = os.getenv("CHAINING_FOR_META_AGENT", "true").lower() in (
+    "true",
+    "1",
+    "yes",
+)
 
 LOAD_IMAGE_CONTENT_FOR_LAST_MESSAGE_ONLY = os.getenv(
     "LOAD_IMAGE_CONTENT_FOR_LAST_MESSAGE_ONLY", "false"
