@@ -106,6 +106,25 @@ class AgentState(OrmMetadataBase, validate_assignment=True):
         description="List of connected MCP server names (e.g., ['gmail-native'])",
     )
 
+    def is_type(self, *agent_types: "AgentType") -> bool:
+        """Check if agent matches any of the given types (by enum or name fallback).
+
+        Args:
+            *agent_types: One or more AgentType enum values to check against.
+
+        Returns:
+            True if the agent matches any of the provided types.
+
+        Example:
+            agent_state.is_type(AgentType.core_memory_agent)
+            agent_state.is_type(AgentType.episodic_memory_agent, AgentType.reflexion_agent)
+        """
+        for at in agent_types:
+            # Direct enum comparison (works for both enum and string values due to str, Enum)
+            if self.agent_type == at or at.value in self.name:
+                return True
+        return False
+
 
 class CreateAgent(BaseModel, validate_assignment=True):  #
     # all optional as server can generate defaults

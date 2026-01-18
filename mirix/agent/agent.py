@@ -1648,7 +1648,7 @@ class Agent(BaseAgent):
             # Only load blocks for core_memory_agent (other agent types don't use blocks)
             from mirix.schemas.agent import AgentType
 
-            if self.agent_state.agent_type == AgentType.core_memory_agent:
+            if self.agent_state.is_type(AgentType.core_memory_agent):
                 # Load existing blocks for this user
                 # Note: auto_create_from_default=True will create blocks if they don't exist
                 existing_blocks = self.block_manager.get_blocks(
@@ -1917,7 +1917,7 @@ class Agent(BaseAgent):
 
         # Retrieve core memory
         if (
-            self.agent_state.agent_type == AgentType.core_memory_agent
+            self.agent_state.is_type(AgentType.core_memory_agent)
             or "core" not in retrieved_memories
         ):
             current_persisted_memory = Memory(
@@ -1939,12 +1939,11 @@ class Agent(BaseAgent):
             retrieved_memories["core"] = core_memory
 
         if (
-            self.agent_state.agent_type == AgentType.knowledge_vault_memory_agent
+            self.agent_state.is_type(AgentType.knowledge_vault_memory_agent)
             or "knowledge_vault" not in retrieved_memories
         ):
-            if (
-                self.agent_state.agent_type == AgentType.knowledge_vault_memory_agent
-                or self.agent_state.agent_type == AgentType.reflexion_agent
+            if self.agent_state.is_type(
+                AgentType.knowledge_vault_memory_agent, AgentType.reflexion_agent
             ):
                 current_knowledge_vault = self.knowledge_vault_manager.list_knowledge(
                     agent_state=self.agent_state,
@@ -1982,10 +1981,10 @@ class Agent(BaseAgent):
             }
 
         # Retrieve episodic memory
-        if (
-            self.agent_state.name == "episodic_memory_agent"
-            or "episodic" not in retrieved_memories
-        ):
+        is_owning_agent = self.agent_state.is_type(
+            AgentType.episodic_memory_agent, AgentType.reflexion_agent
+        )
+        if is_owning_agent or "episodic" not in retrieved_memories:
             current_episodic_memory = self.episodic_memory_manager.list_episodic_memory(
                 agent_state=self.agent_state,
                 user=self.user,
@@ -1995,13 +1994,7 @@ class Agent(BaseAgent):
             episodic_memory = ""
             if len(current_episodic_memory) > 0:
                 for idx, event in enumerate(current_episodic_memory):
-                    # Use agent_type instead of name to handle both standalone and meta-agent child agents
-                    from mirix.schemas.agent import AgentType
-
-                    if (
-                        self.agent_state.agent_type == AgentType.episodic_memory_agent
-                        or self.agent_state.agent_type == AgentType.reflexion_agent
-                    ):
+                    if is_owning_agent:
                         episodic_memory += f"[Event ID: {event.id}] Timestamp: {event.occurred_at.strftime('%Y-%m-%d %H:%M:%S')} - {event.summary} (Details: {len(event.details)} Characters)\n"
                     else:
                         episodic_memory += f"[{idx}] Timestamp: {event.occurred_at.strftime('%Y-%m-%d %H:%M:%S')} - {event.summary} (Details: {len(event.details)} Characters)\n"
@@ -2023,13 +2016,7 @@ class Agent(BaseAgent):
             most_relevant_episodic_memory_str = ""
             if len(most_relevant_episodic_memory) > 0:
                 for idx, event in enumerate(most_relevant_episodic_memory):
-                    # Use agent_type instead of name to handle both standalone and meta-agent child agents
-                    from mirix.schemas.agent import AgentType
-
-                    if (
-                        self.agent_state.agent_type == AgentType.episodic_memory_agent
-                        or self.agent_state.agent_type == AgentType.reflexion_agent
-                    ):
+                    if is_owning_agent:
                         most_relevant_episodic_memory_str += f"[Event ID: {event.id}] Timestamp: {event.occurred_at.strftime('%Y-%m-%d %H:%M:%S')} - {event.summary}  (Details: {len(event.details)} Characters)\n"
                     else:
                         most_relevant_episodic_memory_str += f"[{idx}] Timestamp: {event.occurred_at.strftime('%Y-%m-%d %H:%M:%S')} - {event.summary}  (Details: {len(event.details)} Characters)\n"
@@ -2045,10 +2032,11 @@ class Agent(BaseAgent):
             }
 
         # Retrieve resource memory
-        if (
-            self.agent_state.agent_type == AgentType.resource_memory_agent
-            or "resource" not in retrieved_memories
-        ):
+        # Owning agents need IDs for merge/update operations, so always retrieve fresh
+        is_owning_agent = self.agent_state.is_type(
+            AgentType.resource_memory_agent, AgentType.reflexion_agent
+        )
+        if is_owning_agent or "resource" not in retrieved_memories:
             current_resource_memory = self.resource_memory_manager.list_resources(
                 agent_state=self.agent_state,
                 user=self.user,
@@ -2062,10 +2050,7 @@ class Agent(BaseAgent):
             resource_memory = ""
             if len(current_resource_memory) > 0:
                 for idx, resource in enumerate(current_resource_memory):
-                    if (
-                        self.agent_state.agent_type == AgentType.resource_memory_agent
-                        or self.agent_state.agent_type == AgentType.reflexion_agent
-                    ):
+                    if is_owning_agent:
                         resource_memory += f"[Resource ID: {resource.id}] Resource Title: {resource.title}; Resource Summary: {resource.summary} Resource Type: {resource.resource_type}\n"
                     else:
                         resource_memory += f"[{idx}] Resource Title: {resource.title}; Resource Summary: {resource.summary} Resource Type: {resource.resource_type}\n"
@@ -2079,10 +2064,11 @@ class Agent(BaseAgent):
             }
 
         # Retrieve procedural memory
-        if (
-            self.agent_state.agent_type == AgentType.procedural_memory_agent
-            or "procedural" not in retrieved_memories
-        ):
+        # Owning agents need IDs for merge/update operations, so always retrieve fresh
+        is_owning_agent = self.agent_state.is_type(
+            AgentType.procedural_memory_agent, AgentType.reflexion_agent
+        )
+        if is_owning_agent or "procedural" not in retrieved_memories:
             current_procedural_memory = self.procedural_memory_manager.list_procedures(
                 agent_state=self.agent_state,
                 user=self.user,
@@ -2096,10 +2082,7 @@ class Agent(BaseAgent):
             procedural_memory = ""
             if len(current_procedural_memory) > 0:
                 for idx, procedure in enumerate(current_procedural_memory):
-                    if (
-                        self.agent_state.agent_type == AgentType.procedural_memory_agent
-                        or self.agent_state.agent_type == AgentType.reflexion_agent
-                    ):
+                    if is_owning_agent:
                         procedural_memory += f"[Procedure ID: {procedure.id}] Entry Type: {procedure.entry_type}; Summary: {procedure.summary}\n"
                     else:
                         procedural_memory += f"[{idx}] Entry Type: {procedure.entry_type}; Summary: {procedure.summary}\n"
@@ -2113,10 +2096,11 @@ class Agent(BaseAgent):
             }
 
         # Retrieve semantic memory
-        if (
-            self.agent_state.agent_type == AgentType.semantic_memory_agent
-            or "semantic" not in retrieved_memories
-        ):
+        # Owning agents need IDs for merge/update operations, so always retrieve fresh
+        is_owning_agent = self.agent_state.is_type(
+            AgentType.semantic_memory_agent, AgentType.reflexion_agent
+        )
+        if is_owning_agent or "semantic" not in retrieved_memories:
             current_semantic_memory = self.semantic_memory_manager.list_semantic_items(
                 agent_state=self.agent_state,
                 user=self.user,
@@ -2130,10 +2114,7 @@ class Agent(BaseAgent):
             semantic_memory = ""
             if len(current_semantic_memory) > 0:
                 for idx, semantic_memory_item in enumerate(current_semantic_memory):
-                    if (
-                        self.agent_state.agent_type == AgentType.semantic_memory_agent
-                        or self.agent_state.agent_type == AgentType.reflexion_agent
-                    ):
+                    if is_owning_agent:
                         semantic_memory += f"[Semantic Memory ID: {semantic_memory_item.id}] Name: {semantic_memory_item.name}; Summary: {semantic_memory_item.summary}\n"
                     else:
                         semantic_memory += f"[{idx}] Name: {semantic_memory_item.name}; Summary: {semantic_memory_item.summary}\n"
