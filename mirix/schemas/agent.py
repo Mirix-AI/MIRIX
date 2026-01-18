@@ -334,6 +334,7 @@ class CreateMetaAgent(BaseModel):
         description="Embedding configuration for memory agents. Required if no default is set.",
     )
 
+
 class UpdateMetaAgent(BaseModel):
     """Request schema for updating a MetaAgent."""
 
