@@ -1292,19 +1292,19 @@ class Agent(BaseAgent):
                 should_clear_history = False
                 for func_name in executed_function_names:
                     if CLEAR_HISTORY_AFTER_MEMORY_UPDATE:
-                        if self.agent_state.name == "reflexion_agent":
+                        if self.agent_state.is_type(AgentType.reflexion_agent):
                             if func_name == "finish_memory_update":
                                 should_clear_history = True
                                 break
-                        elif self.agent_state.name == "meta_memory_agent" and (
+                        elif self.agent_state.is_type(AgentType.meta_memory_agent) and (
                             func_name == "finish_memory_update" or not chaining
                         ):
                             should_clear_history = True
                             break
-                        elif self.agent_state.name not in [
-                            "meta_memory_agent",
-                            "chat_agent",
-                        ] and (func_name == "finish_memory_update" or not chaining):
+                        elif not self.agent_state.is_type(
+                            AgentType.meta_memory_agent,
+                            AgentType.chat_agent,
+                        ) and (func_name == "finish_memory_update" or not chaining):
                             should_clear_history = True
                             break
 
@@ -1554,7 +1554,7 @@ class Agent(BaseAgent):
                             agent_id=self.agent_state.id, actor=self.actor
                         )
 
-                    if self.agent_state.name == "meta_memory_agent":
+                    if self.agent_state.is_type(AgentType.meta_memory_agent):
                         self.agent_manager.set_in_context_messages(
                             agent_id=self.agent_state.id,
                             message_ids=message_ids,
@@ -1564,7 +1564,7 @@ class Agent(BaseAgent):
                             agent_id=self.agent_state.id, actor=self.actor
                         )
 
-                    if self.agent_state.name == "reflexion_agent":
+                    if self.agent_state.is_type(AgentType.reflexion_agent):
                         self.agent_manager.set_in_context_messages(
                             agent_id=self.agent_state.id,
                             message_ids=message_ids,
@@ -1721,7 +1721,7 @@ class Agent(BaseAgent):
             )
         )
 
-        if self.agent_state.name == "reflexion_agent":
+        if self.agent_state.is_type(AgentType.reflexion_agent):
             # clear previous messages
             in_context_messages = self.agent_manager.get_in_context_messages(
                 agent_state=self.agent_state, actor=self.actor, user=self.user
@@ -1743,7 +1743,9 @@ class Agent(BaseAgent):
             kwargs["step_count"] = step_count
 
             if (
-                self.agent_state.name in ["meta_memory_agent", "chat_agent"]
+                self.agent_state.is_type(
+                    AgentType.meta_memory_agent, AgentType.chat_agent
+                )
                 and step_count == 0
             ):
                 # When the agent first gets the screenshots, we need to extract the topic to search the query.
@@ -1763,7 +1765,10 @@ class Agent(BaseAgent):
                     )
                     pass
 
-            if self.agent_state.name == "meta_memory_agent" and step_count == 0:
+            if (
+                self.agent_state.is_type(AgentType.meta_memory_agent)
+                and step_count == 0
+            ):
                 meta_message = prepare_input_message_create(
                     MessageCreate(
                         role="user",
@@ -1808,7 +1813,7 @@ class Agent(BaseAgent):
                 break
             elif max_chaining_steps is not None and counter == max_chaining_steps:
                 # Add warning message based on agent type
-                if self.agent_state.name == "chat_agent":
+                if self.agent_state.is_type(AgentType.chat_agent):
                     warning_content = "[System Message] You have reached the maximum chaining steps. Please call 'send_message' to send your response to the user."
                 else:
                     warning_content = "[System Message] You have reached the maximum chaining steps. Please call 'finish_memory_update' to end the chaining."
