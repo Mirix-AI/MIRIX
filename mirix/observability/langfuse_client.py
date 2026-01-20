@@ -69,8 +69,9 @@ def initialize_langfuse(force: bool = False) -> Optional["Langfuse"]:
                 _langfuse_enabled = False
                 return None
 
+            environment = settings.langfuse_environment
             logger.info(
-                f"Initializing LangFuse client (host: {settings.langfuse_host})"
+                f"Initializing LangFuse client (host: {settings.langfuse_host}, environment: {environment})"
             )
 
             from langfuse import Langfuse
@@ -78,13 +79,17 @@ def initialize_langfuse(force: bool = False) -> Optional["Langfuse"]:
 
             # LangFuse 3.x removed the 'enabled' parameter
             # Client is enabled by default when instantiated
+            # The 'environment' parameter provides native environment filtering in Langfuse
+            # (environment must match regex: ^(?!langfuse)[a-z0-9-_]+$ with max 40 chars)
             _langfuse_client = Langfuse(
                 public_key=settings.langfuse_public_key,
                 secret_key=settings.langfuse_secret_key,
                 host=settings.langfuse_host,
                 debug=settings.langfuse_debug,
                 flush_interval=settings.langfuse_flush_interval,
+                flush_at=settings.langfuse_flush_at,
                 tracer_provider=TracerProvider(),
+                environment=environment,
             )
 
             _langfuse_enabled = True
@@ -96,7 +101,7 @@ def initialize_langfuse(force: bool = False) -> Optional["Langfuse"]:
             try:
                 _langfuse_client.flush()
                 logger.info(
-                    "✅ LangFuse observability initialized and verified successfully"
+                    f"✅ LangFuse observability initialized and verified successfully (environment: {environment})"
                 )
             except Exception as health_error:
                 logger.warning(

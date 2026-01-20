@@ -5,6 +5,7 @@ allowing MirixClient instances to communicate with a cloud-hosted server.
 """
 
 import copy
+import functools
 import json
 import traceback
 from contextlib import asynccontextmanager
@@ -153,110 +154,136 @@ app.add_middleware(
 
 
 # ============================================================================
-# LangFuse Tracing Middleware
+# Request Context (for accessing request in decorators)
 # ============================================================================
 
-@app.middleware("http")
-async def langfuse_tracing_middleware(request: Request, call_next):
-    """
-    Create LangFuse traces for all API requests using context manager pattern.
+from contextvars import ContextVar
 
-    This middleware:
-    1. Resets OTel context to prevent leaking from previous requests
-    2. Creates a root span for each incoming request
-    3. Sets trace context for downstream operations
-    4. Clears trace context when the request completes
+# Stores the current request for access by decorators
+_current_request: ContextVar[Optional[Request]] = ContextVar(
+    "current_request", default=None
+)
+
+
+def get_current_request() -> Optional[Request]:
+    """Get the current request from context."""
+    return _current_request.get()
+
+
+# Middleware to store request in context (runs for all requests, lightweight)
+@app.middleware("http")
+async def store_request_context(request: Request, call_next):
+    """Store the request in context so decorators can access it."""
+    token = _current_request.set(request)
+    try:
+        return await call_next(request)
+    finally:
+        _current_request.reset(token)
+
+
+# ============================================================================
+# LangFuse Tracing Decorator (for agentic endpoints only)
+# ============================================================================
+
+
+def with_langfuse_tracing(func):
+    """
+    Decorator that adds LangFuse tracing to agentic endpoints.
+
+    Usage:
+        @router.post("/memory/add")
+        @with_langfuse_tracing
+        async def add_memory(...):
+            ...
+
+    The request is automatically accessed from context - no special
+    parameters needed on the decorated function.
     """
     import uuid
-
-    from opentelemetry import context as otel_context
-
-    from mirix.observability import get_langfuse_client, is_langfuse_enabled
-    from mirix.observability.context import clear_trace_context, set_trace_context
-
-    # Skip tracing if LangFuse is disabled
-    if not is_langfuse_enabled():
-        return await call_next(request)
-
-    langfuse = get_langfuse_client()
-    if not langfuse:
-        return await call_next(request)
-
-    # Extract metadata from request
-    method = request.method
-    path = request.url.path
-    user_id = request.headers.get("x-user-id")
-    client_id = request.headers.get("x-client-id")
-    org_id = request.headers.get("x-org-id")
-    session_id = f"{client_id}-{uuid.uuid4().hex[:8]}"
-
-    # Generate a unique trace_id for each request to ensure separate traces
-    trace_id = uuid.uuid4().hex
-
-    # Use context manager - this properly sets up OTel context
-    # Root trace has no parent_span_id
     from typing import cast
 
     from langfuse.types import TraceContext
 
-    with langfuse.start_as_current_observation(
-        name=f"{method} {path}",
-        as_type="span",
-        trace_context=cast(TraceContext, {"trace_id": trace_id}),
-    ) as span:
-        try:
-            # Get observation_id from the span object
-            observation_id = getattr(span, "id", None)
-            logger.debug(
-                f"LangFuse trace created: trace_id={trace_id}, observation_id={observation_id}, path={path}"
-            )
+    from mirix.observability import get_langfuse_client, is_langfuse_enabled
+    from mirix.observability.context import clear_trace_context, set_trace_context
 
-            # Update trace with user info
-            langfuse.update_current_trace(
-                name=f"{method} {path}",
-                user_id=user_id or client_id,
-                session_id=session_id,
-                metadata={
-                    "method": method,
-                    "path": path,
-                    "client_id": client_id,
-                    "org_id": org_id,
-                    "user_agent": request.headers.get("user-agent"),
-                },
-            )
+    @functools.wraps(func)
+    async def wrapper(*args, **kwargs):
+        # Get request from context (set by middleware)
+        request = get_current_request()
 
-            # Set trace context for downstream operations
-            set_trace_context(
-                trace_id=trace_id,
-                observation_id=observation_id,
-                user_id=user_id or client_id,
-                session_id=session_id,
-            )
+        # Skip tracing if LangFuse is disabled or no request available
+        if not is_langfuse_enabled() or not request:
+            return await func(*args, **kwargs)
 
-            # Process request
-            response = await call_next(request)
+        langfuse = get_langfuse_client()
+        if not langfuse:
+            return await func(*args, **kwargs)
 
-            # Update span with response status
+        # Extract metadata from request
+        method = request.method
+        path = request.url.path
+        user_id = request.headers.get("x-user-id")
+        client_id = request.headers.get("x-client-id")
+        org_id = request.headers.get("x-org-id")
+        session_id = f"{client_id}-{uuid.uuid4().hex[:8]}"
+
+        # Generate a unique trace_id for each request
+        trace_id = uuid.uuid4().hex
+
+        with langfuse.start_as_current_observation(
+            name=f"{method} {path}",
+            as_type="span",
+            trace_context=cast(TraceContext, {"trace_id": trace_id}),
+        ) as span:
             try:
-                span.update(output={"status_code": response.status_code})
+                observation_id = getattr(span, "id", None)
                 logger.debug(
-                    f"LangFuse trace updated: trace_id={trace_id}, status={response.status_code}"
+                    f"LangFuse trace created: trace_id={trace_id}, observation_id={observation_id}, path={path}"
                 )
+
+                langfuse.update_current_trace(
+                    name=f"{method} {path}",
+                    user_id=user_id or client_id,
+                    session_id=session_id,
+                    metadata={
+                        "method": method,
+                        "path": path,
+                        "client_id": client_id,
+                        "org_id": org_id,
+                        "user_agent": request.headers.get("user-agent"),
+                    },
+                )
+
+                set_trace_context(
+                    trace_id=trace_id,
+                    observation_id=observation_id,
+                    user_id=user_id or client_id,
+                    session_id=session_id,
+                )
+
+                # Execute the actual endpoint function
+                result = await func(*args, **kwargs)
+
+                try:
+                    span.update(output={"status": "completed"})
+                    logger.debug(f"LangFuse trace completed: trace_id={trace_id}")
+                except Exception as e:
+                    logger.debug(f"Failed to update trace: {e}")
+
+                return result
+
             except Exception as e:
-                logger.debug(f"Failed to update trace: {e}")
+                try:
+                    span.update(output={"error": str(e)}, level="ERROR")
+                except Exception as trace_error:
+                    logger.debug(f"Failed to update trace on error: {trace_error}")
+                raise
 
-            return response
+            finally:
+                clear_trace_context()
 
-        except Exception as e:
-            # Log error and mark span as failed
-            try:
-                span.update(output={"error": str(e)}, level="ERROR")
-            except Exception as trace_error:
-                logger.debug(f"Failed to update trace on error: {trace_error}")
-            raise
-
-        finally:
-            clear_trace_context()
+    return wrapper
 
 
 # Middleware to resolve X-API-Key into X-Client-Id/X-Org-Id for all routes
@@ -1871,6 +1898,7 @@ class AddMemoryRequest(BaseModel):
 
 
 @router.post("/memory/add")
+@with_langfuse_tracing
 async def add_memory(
     request: AddMemoryRequest,
     x_org_id: Optional[str] = Header(None),
@@ -1885,7 +1913,7 @@ async def add_memory(
     server = get_server()
     client_id, org_id = get_client_and_org(x_client_id, x_org_id)
     client = server.client_manager.get_client_by_id(client_id)
-    
+
     # If client doesn't exist, create the default client
     if client is None:
         logger.warning("Client %s not found, creating default client", client_id)
@@ -1899,9 +1927,9 @@ async def add_memory(
                 status_code=404,
                 detail=f"Client {client_id} not found. Please create the client first."
             )
-    
+
     # Get the meta agent by ID
-    # TODO: need to check if we really need to check if the meta_agent exists here 
+    # TODO: need to check if we really need to check if the meta_agent exists here
     meta_agent = server.agent_manager.get_agent_by_id(request.meta_agent_id, actor=client)
 
     # If user_id is not provided, use the admin user for this client
@@ -1921,7 +1949,7 @@ async def add_memory(
         new_message = []
         for msg in message:
             new_message.append({'type': "text", "text": "[USER]" if msg["role"] == "user" else "[ASSISTANT]"})
-            
+
             # Handle both string and list content
             content = msg["content"]
             if isinstance(content, str):
@@ -1943,7 +1971,7 @@ async def add_memory(
     else:
         # Create new filter_tags if not provided
         filter_tags = {}
-    
+
     # Add or update the "scope" key with the client's scope
     filter_tags["scope"] = client.scope
 
@@ -1961,7 +1989,7 @@ async def add_memory(
         use_cache=request.use_cache,
         occurred_at=request.occurred_at,  # Optional timestamp for episodic memory
     )
-    
+
     logger.debug("Memory queued for processing: %s", meta_agent.id)
 
     return {
@@ -2017,7 +2045,7 @@ def retrieve_memories_by_keywords(
         Dictionary containing all memory types with their items
     """
     search_method = "bm25"
-    
+
     # Log temporal filtering for monitoring
     if start_date or end_date:
         logger.info(
@@ -2025,7 +2053,7 @@ def retrieve_memories_by_keywords(
             start_date.isoformat() if start_date else None,
             end_date.isoformat() if end_date else None
         )
-    
+
     # Get timezone from user record (if exists)
     try:
         user = server.user_manager.get_user_by_id(user_id)
@@ -2241,6 +2269,7 @@ def retrieve_memories_by_keywords(
 
 
 @router.post("/memory/retrieve/conversation")
+@with_langfuse_tracing
 async def retrieve_memory_with_conversation(
     request: RetrieveMemoryRequest,
     x_client_id: Optional[str] = Header(None),
@@ -2397,6 +2426,7 @@ async def retrieve_memory_with_conversation(
 
 
 @router.get("/memory/retrieve/topic")
+@with_langfuse_tracing
 async def retrieve_memory_with_topic(
     user_id: Optional[str] = None,
     topic: str = "",
@@ -2439,12 +2469,11 @@ async def retrieve_memory_with_topic(
                 "memories": {},
             }
 
-
     # Add client scope to filter_tags (create if not provided)
     if parsed_filter_tags is None:
         # Create new filter_tags if not provided
         parsed_filter_tags = {}
-    
+
     # Add or update the "scope" key with the client's scope
     parsed_filter_tags["scope"] = client.scope
 
@@ -2479,6 +2508,7 @@ async def retrieve_memory_with_topic(
 
 
 @router.get("/memory/search")
+@with_langfuse_tracing
 async def search_memory(
     user_id: Optional[str] = None,
     query: str = "",
@@ -2530,7 +2560,7 @@ async def search_memory(
         except HTTPException:
             # If JWT/API key auth fails, fall through to use x_client_id
             pass
-    
+
     # Fallback to use the client_id and org_id passed in the method parameters.
     if not client and x_client_id:
         client_id = x_client_id
@@ -2561,7 +2591,7 @@ async def search_memory(
         }
 
     agent_state = all_agents[0]
-    
+
     # Get timezone from user record (if exists)
     try:
         user = server.user_manager.get_user_by_id(user_id)
@@ -2582,18 +2612,18 @@ async def search_memory(
                 "results": [],
                 "count": 0,
             }
-    
+
     # Add client scope to filter_tags (create if not provided)
     if parsed_filter_tags is None:
         parsed_filter_tags = {}
-    
+
     # Add or update the "scope" key with the client's scope
     parsed_filter_tags["scope"] = client.scope
 
     # Parse temporal filtering parameters
     parsed_start_date: Optional[datetime] = None
     parsed_end_date: Optional[datetime] = None
-    
+
     if start_date:
         try:
             parsed_start_date = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
@@ -2602,7 +2632,7 @@ async def search_memory(
                 parsed_start_date = parsed_start_date.replace(tzinfo=None)
         except ValueError as e:
             logger.warning("Invalid start_date format: %s", e)
-    
+
     if end_date:
         try:
             parsed_end_date = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
@@ -2796,6 +2826,7 @@ async def search_memory(
 
 
 @router.get("/memory/search_all_users")
+@with_langfuse_tracing
 async def search_memory_all_users(
     query: str,
     memory_type: str = "all",
@@ -2834,9 +2865,9 @@ async def search_memory_all_users(
         end_date: Optional end date/time for episodic memory filtering (ISO 8601 format)
     """
     import json
-    
+
     server = get_server()
-    
+
     # Determine which client to use and which org to search
     if client_id:
         # Use the provided client_id - fetch its org_id
@@ -2869,11 +2900,11 @@ async def search_memory_all_users(
             )
     else:
         filter_tags_dict = {}
-    
+
     # Add client scope to filter_tags (same pattern as retrieve_with_conversation)
     # This filters memories where memory.filter_tags["scope"] == client.scope
     filter_tags_dict["scope"] = client.scope
-    
+
     logger.info(
         "Cross-user search: client=%s, org=%s, client_scope=%s, filter_tags=%s, similarity_threshold=%s",
         effective_client_id, effective_org_id, client.scope, filter_tags_dict, similarity_threshold
@@ -2882,7 +2913,7 @@ async def search_memory_all_users(
     # Parse temporal filtering parameters
     parsed_start_date: Optional[datetime] = None
     parsed_end_date: Optional[datetime] = None
-    
+
     if start_date:
         try:
             parsed_start_date = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
@@ -2891,7 +2922,7 @@ async def search_memory_all_users(
                 parsed_start_date = parsed_start_date.replace(tzinfo=None)
         except ValueError as e:
             logger.warning("Invalid start_date format: %s", e)
-    
+
     if end_date:
         try:
             parsed_end_date = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
@@ -2913,7 +2944,7 @@ async def search_memory_all_users(
         }
 
     agent_state = all_agents[0]
-    
+
     # Validate search parameters
     if memory_type == "resource" and search_field == "content" and search_method == "embedding":
         return {

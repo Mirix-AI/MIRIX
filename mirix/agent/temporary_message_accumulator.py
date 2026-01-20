@@ -14,7 +14,7 @@ from mirix.agent.app_constants import (
     TEMPORARY_MESSAGE_LIMIT,
 )
 from mirix.agent.app_utils import encode_image
-from mirix.constants import CHAINING_FOR_MEMORY_UPDATE
+from mirix.constants import CHAINING_FOR_MEMORY_UPDATE, CHAINING_FOR_META_AGENT
 from mirix.voice_utils import convert_base64_to_audio_segment, process_voice_files
 
 
@@ -715,7 +715,7 @@ class TemporaryMessageAccumulator:
         payloads = {
             "message": message,
             "existing_file_uris": existing_file_uris,
-            "chaining": CHAINING_FOR_MEMORY_UPDATE,
+            "chaining": CHAINING_FOR_META_AGENT,
             "message_queue": self.message_queue,
             "user_id": user_id,
         }

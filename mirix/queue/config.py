@@ -22,6 +22,27 @@ KAFKA_SSL_CAFILE = os.environ.get("KAFKA_SSL_CAFILE")
 KAFKA_SSL_CERTFILE = os.environ.get("KAFKA_SSL_CERTFILE")
 KAFKA_SSL_KEYFILE = os.environ.get("KAFKA_SSL_KEYFILE")
 
+# Kafka consumer configuration
+# auto_offset_reset: Where to start consuming if no offset exists
+#   - 'earliest': Start from the beginning of the topic (default - ensures no messages are missed)
+#   - 'latest': Start from the end (only new messages) - useful when "clearing the queue"
+# Note: Changing group_id + setting auto_offset_reset='latest' can effectively "clear the queue"
+KAFKA_AUTO_OFFSET_RESET = os.environ.get("KAFKA_AUTO_OFFSET_RESET", "earliest")
+
+# consumer_timeout_ms: Timeout for polling messages (milliseconds)
+# After this timeout, the consumer iterator will raise StopIteration
+KAFKA_CONSUMER_TIMEOUT_MS = int(os.environ.get("KAFKA_CONSUMER_TIMEOUT_MS", "1000"))
+
+# max_poll_interval_ms: Maximum time between poll() calls before consumer is considered failed (milliseconds)
+# Increased to 15 minutes to accommodate long-running memory agent operations
+# Default kafka-python value is 5 minutes (300000)
+KAFKA_MAX_POLL_INTERVAL_MS = int(os.environ.get("KAFKA_MAX_POLL_INTERVAL_MS", "900000"))
+
+# session_timeout_ms: Timeout for detecting consumer failures (milliseconds)
+# If no heartbeat is received within this time, the consumer is removed from the group
+# Increased to 30 seconds from kafka-python default of 10 seconds
+KAFKA_SESSION_TIMEOUT_MS = int(os.environ.get("KAFKA_SESSION_TIMEOUT_MS", "30000"))
+
 NUM_WORKERS = int(os.environ.get("MIRIX_MEMORY_QUEUE_NUM_WORKERS", 1))
 ROUND_ROBIN = os.environ.get("MIRIX_MEMORY_QUEUE_ROUND_ROBIN", "false").lower() in (
     "true",

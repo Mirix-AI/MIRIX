@@ -569,7 +569,10 @@ class Agent(BaseAgent):
 
                     # Update span with result info
                     span.update(
-                        output={"response": str(function_response), "is_error": is_error},
+                        output={
+                            "response": str(function_response),
+                            "is_error": is_error,
+                        },
                         metadata={
                             "tool_type": str(target_mirix_tool.tool_type),
                             "tool_name": function_name,
@@ -1288,35 +1291,38 @@ class Agent(BaseAgent):
 
             # Handle context message clearing only if ALL functions succeeded
             if not overall_function_failed:
-                # Check if any executed function should trigger history clearing
                 should_clear_history = False
-                for func_name in executed_function_names:
-                    if CLEAR_HISTORY_AFTER_MEMORY_UPDATE:
-                        if self.agent_state.name == "reflexion_agent":
+
+                # Clear history for all non-chat agents when:
+                # 1. chaining=False (clear regardless of function calls), OR
+                # 2. finish_memory_update was called (clear when chaining completes)
+                if CLEAR_HISTORY_AFTER_MEMORY_UPDATE and not self.agent_state.is_type(
+                    AgentType.chat_agent
+                ):
+                    if not chaining:
+                        should_clear_history = True
+                        self.logger.info(f"should_clear_history=True (chaining=False)")
+                    else:
+                        for func_name in executed_function_names:
                             if func_name == "finish_memory_update":
                                 should_clear_history = True
+                                self.logger.info(
+                                    f"should_clear_history=True (finish_memory_update called)"
+                                )
                                 break
-                        elif self.agent_state.name == "meta_memory_agent" and (
-                            func_name == "finish_memory_update" or not chaining
-                        ):
-                            should_clear_history = True
-                            break
-                        elif self.agent_state.name not in [
-                            "meta_memory_agent",
-                            "chat_agent",
-                        ] and (func_name == "finish_memory_update" or not chaining):
-                            should_clear_history = True
-                            break
+                else:
+                    self.logger.debug(
+                        f"Clearing skipped - CLEAR_HISTORY_AFTER_MEMORY_UPDATE={CLEAR_HISTORY_AFTER_MEMORY_UPDATE}, is_chat_agent={self.agent_state.is_type(AgentType.chat_agent)}"
+                    )
 
                 if should_clear_history:
-                    # It means one of the following conditions is met:
-                    # (1) meta_memory_agent, finish_memory_update -> continue_chaining = False
-                    # (2) non-meta_memory_agent, finish_memory_update -> continue_chaining = False
-                    # (3) non-meta_memory_agent, CHAINING_FOR_MEMORY_UPDATE = False -> continue_chaining = False
                     continue_chaining = False
 
                     in_context_messages = self.agent_manager.get_in_context_messages(
                         agent_state=self.agent_state, actor=self.actor, user=self.user
+                    )
+                    self.logger.info(
+                        f"Clearing history - {len(in_context_messages)} messages -> keeping only system message"
                     )
                     message_ids = [message.id for message in in_context_messages]
                     message_ids = [message_ids[0]]
@@ -1508,7 +1514,7 @@ class Agent(BaseAgent):
                     elif self.agent_state.name.endswith("core_memory_agent"):
                         memory_item_str = self.agent_state.memory.compile()
 
-                    # create a new message for this:
+                    # Optionally create a summary message showing last edited memory item
                     if memory_item_str:
                         if self.agent_state.name.endswith("core_memory_agent"):
                             message_content = (
@@ -1543,36 +1549,17 @@ class Agent(BaseAgent):
 
                         # append the persisted message ID to the message list
                         message_ids.append(persisted_message.id)
-                        self.agent_manager.set_in_context_messages(
-                            agent_id=self.agent_state.id,
-                            message_ids=message_ids,
-                            actor=self.actor,
-                        )
 
-                        # delete the detached messages
-                        self.message_manager.delete_detached_messages_for_agent(
-                            agent_id=self.agent_state.id, actor=self.actor
-                        )
-
-                    if self.agent_state.name == "meta_memory_agent":
-                        self.agent_manager.set_in_context_messages(
-                            agent_id=self.agent_state.id,
-                            message_ids=message_ids,
-                            actor=self.actor,
-                        )
-                        self.message_manager.delete_detached_messages_for_agent(
-                            agent_id=self.agent_state.id, actor=self.actor
-                        )
-
-                    if self.agent_state.name == "reflexion_agent":
-                        self.agent_manager.set_in_context_messages(
-                            agent_id=self.agent_state.id,
-                            message_ids=message_ids,
-                            actor=self.actor,
-                        )
-                        self.message_manager.delete_detached_messages_for_agent(
-                            agent_id=self.agent_state.id, actor=self.actor
-                        )
+                    # Clear history for all non-chat agents when should_clear_history is True
+                    # This applies to meta_memory_agent and all memory sub-agents
+                    self.agent_manager.set_in_context_messages(
+                        agent_id=self.agent_state.id,
+                        message_ids=message_ids,
+                        actor=self.actor,
+                    )
+                    self.message_manager.delete_detached_messages_for_agent(
+                        agent_id=self.agent_state.id, actor=self.actor
+                    )
 
                     # Clear all messages since they were manually added to the conversation history
                     messages = []
@@ -1648,7 +1635,7 @@ class Agent(BaseAgent):
             # Only load blocks for core_memory_agent (other agent types don't use blocks)
             from mirix.schemas.agent import AgentType
 
-            if self.agent_state.agent_type == AgentType.core_memory_agent:
+            if self.agent_state.is_type(AgentType.core_memory_agent):
                 # Load existing blocks for this user
                 # Note: auto_create_from_default=True will create blocks if they don't exist
                 existing_blocks = self.block_manager.get_blocks(
@@ -1721,7 +1708,7 @@ class Agent(BaseAgent):
             )
         )
 
-        if self.agent_state.name == "reflexion_agent":
+        if self.agent_state.is_type(AgentType.reflexion_agent):
             # clear previous messages
             in_context_messages = self.agent_manager.get_in_context_messages(
                 agent_state=self.agent_state, actor=self.actor, user=self.user
@@ -1743,7 +1730,9 @@ class Agent(BaseAgent):
             kwargs["step_count"] = step_count
 
             if (
-                self.agent_state.name in ["meta_memory_agent", "chat_agent"]
+                self.agent_state.is_type(
+                    AgentType.meta_memory_agent, AgentType.chat_agent
+                )
                 and step_count == 0
             ):
                 # When the agent first gets the screenshots, we need to extract the topic to search the query.
@@ -1763,7 +1752,10 @@ class Agent(BaseAgent):
                     )
                     pass
 
-            if self.agent_state.name == "meta_memory_agent" and step_count == 0:
+            if (
+                self.agent_state.is_type(AgentType.meta_memory_agent)
+                and step_count == 0
+            ):
                 meta_message = prepare_input_message_create(
                     MessageCreate(
                         role="user",
@@ -1808,7 +1800,7 @@ class Agent(BaseAgent):
                 break
             elif max_chaining_steps is not None and counter == max_chaining_steps:
                 # Add warning message based on agent type
-                if self.agent_state.name == "chat_agent":
+                if self.agent_state.is_type(AgentType.chat_agent):
                     warning_content = "[System Message] You have reached the maximum chaining steps. Please call 'send_message' to send your response to the user."
                 else:
                     warning_content = "[System Message] You have reached the maximum chaining steps. Please call 'finish_memory_update' to end the chaining."
@@ -1917,7 +1909,7 @@ class Agent(BaseAgent):
 
         # Retrieve core memory
         if (
-            self.agent_state.agent_type == AgentType.core_memory_agent
+            self.agent_state.is_type(AgentType.core_memory_agent)
             or "core" not in retrieved_memories
         ):
             current_persisted_memory = Memory(
@@ -1939,12 +1931,11 @@ class Agent(BaseAgent):
             retrieved_memories["core"] = core_memory
 
         if (
-            self.agent_state.agent_type == AgentType.knowledge_vault_memory_agent
+            self.agent_state.is_type(AgentType.knowledge_vault_memory_agent)
             or "knowledge_vault" not in retrieved_memories
         ):
-            if (
-                self.agent_state.agent_type == AgentType.knowledge_vault_memory_agent
-                or self.agent_state.agent_type == AgentType.reflexion_agent
+            if self.agent_state.is_type(
+                AgentType.knowledge_vault_memory_agent, AgentType.reflexion_agent
             ):
                 current_knowledge_vault = self.knowledge_vault_manager.list_knowledge(
                     agent_state=self.agent_state,
@@ -1982,10 +1973,10 @@ class Agent(BaseAgent):
             }
 
         # Retrieve episodic memory
-        if (
-            self.agent_state.name == "episodic_memory_agent"
-            or "episodic" not in retrieved_memories
-        ):
+        is_owning_agent = self.agent_state.is_type(
+            AgentType.episodic_memory_agent, AgentType.reflexion_agent
+        )
+        if is_owning_agent or "episodic" not in retrieved_memories:
             current_episodic_memory = self.episodic_memory_manager.list_episodic_memory(
                 agent_state=self.agent_state,
                 user=self.user,
@@ -1995,13 +1986,7 @@ class Agent(BaseAgent):
             episodic_memory = ""
             if len(current_episodic_memory) > 0:
                 for idx, event in enumerate(current_episodic_memory):
-                    # Use agent_type instead of name to handle both standalone and meta-agent child agents
-                    from mirix.schemas.agent import AgentType
-
-                    if (
-                        self.agent_state.agent_type == AgentType.episodic_memory_agent
-                        or self.agent_state.agent_type == AgentType.reflexion_agent
-                    ):
+                    if is_owning_agent:
                         episodic_memory += f"[Event ID: {event.id}] Timestamp: {event.occurred_at.strftime('%Y-%m-%d %H:%M:%S')} - {event.summary} (Details: {len(event.details)} Characters)\n"
                     else:
                         episodic_memory += f"[{idx}] Timestamp: {event.occurred_at.strftime('%Y-%m-%d %H:%M:%S')} - {event.summary} (Details: {len(event.details)} Characters)\n"
@@ -2023,13 +2008,7 @@ class Agent(BaseAgent):
             most_relevant_episodic_memory_str = ""
             if len(most_relevant_episodic_memory) > 0:
                 for idx, event in enumerate(most_relevant_episodic_memory):
-                    # Use agent_type instead of name to handle both standalone and meta-agent child agents
-                    from mirix.schemas.agent import AgentType
-
-                    if (
-                        self.agent_state.agent_type == AgentType.episodic_memory_agent
-                        or self.agent_state.agent_type == AgentType.reflexion_agent
-                    ):
+                    if is_owning_agent:
                         most_relevant_episodic_memory_str += f"[Event ID: {event.id}] Timestamp: {event.occurred_at.strftime('%Y-%m-%d %H:%M:%S')} - {event.summary}  (Details: {len(event.details)} Characters)\n"
                     else:
                         most_relevant_episodic_memory_str += f"[{idx}] Timestamp: {event.occurred_at.strftime('%Y-%m-%d %H:%M:%S')} - {event.summary}  (Details: {len(event.details)} Characters)\n"
@@ -2045,10 +2024,11 @@ class Agent(BaseAgent):
             }
 
         # Retrieve resource memory
-        if (
-            self.agent_state.agent_type == AgentType.resource_memory_agent
-            or "resource" not in retrieved_memories
-        ):
+        # Owning agents need IDs for merge/update operations, so always retrieve fresh
+        is_owning_agent = self.agent_state.is_type(
+            AgentType.resource_memory_agent, AgentType.reflexion_agent
+        )
+        if is_owning_agent or "resource" not in retrieved_memories:
             current_resource_memory = self.resource_memory_manager.list_resources(
                 agent_state=self.agent_state,
                 user=self.user,
@@ -2062,10 +2042,7 @@ class Agent(BaseAgent):
             resource_memory = ""
             if len(current_resource_memory) > 0:
                 for idx, resource in enumerate(current_resource_memory):
-                    if (
-                        self.agent_state.agent_type == AgentType.resource_memory_agent
-                        or self.agent_state.agent_type == AgentType.reflexion_agent
-                    ):
+                    if is_owning_agent:
                         resource_memory += f"[Resource ID: {resource.id}] Resource Title: {resource.title}; Resource Summary: {resource.summary} Resource Type: {resource.resource_type}\n"
                     else:
                         resource_memory += f"[{idx}] Resource Title: {resource.title}; Resource Summary: {resource.summary} Resource Type: {resource.resource_type}\n"
@@ -2079,10 +2056,11 @@ class Agent(BaseAgent):
             }
 
         # Retrieve procedural memory
-        if (
-            self.agent_state.agent_type == AgentType.procedural_memory_agent
-            or "procedural" not in retrieved_memories
-        ):
+        # Owning agents need IDs for merge/update operations, so always retrieve fresh
+        is_owning_agent = self.agent_state.is_type(
+            AgentType.procedural_memory_agent, AgentType.reflexion_agent
+        )
+        if is_owning_agent or "procedural" not in retrieved_memories:
             current_procedural_memory = self.procedural_memory_manager.list_procedures(
                 agent_state=self.agent_state,
                 user=self.user,
@@ -2096,10 +2074,7 @@ class Agent(BaseAgent):
             procedural_memory = ""
             if len(current_procedural_memory) > 0:
                 for idx, procedure in enumerate(current_procedural_memory):
-                    if (
-                        self.agent_state.agent_type == AgentType.procedural_memory_agent
-                        or self.agent_state.agent_type == AgentType.reflexion_agent
-                    ):
+                    if is_owning_agent:
                         procedural_memory += f"[Procedure ID: {procedure.id}] Entry Type: {procedure.entry_type}; Summary: {procedure.summary}\n"
                     else:
                         procedural_memory += f"[{idx}] Entry Type: {procedure.entry_type}; Summary: {procedure.summary}\n"
@@ -2113,10 +2088,11 @@ class Agent(BaseAgent):
             }
 
         # Retrieve semantic memory
-        if (
-            self.agent_state.agent_type == AgentType.semantic_memory_agent
-            or "semantic" not in retrieved_memories
-        ):
+        # Owning agents need IDs for merge/update operations, so always retrieve fresh
+        is_owning_agent = self.agent_state.is_type(
+            AgentType.semantic_memory_agent, AgentType.reflexion_agent
+        )
+        if is_owning_agent or "semantic" not in retrieved_memories:
             current_semantic_memory = self.semantic_memory_manager.list_semantic_items(
                 agent_state=self.agent_state,
                 user=self.user,
@@ -2130,10 +2106,7 @@ class Agent(BaseAgent):
             semantic_memory = ""
             if len(current_semantic_memory) > 0:
                 for idx, semantic_memory_item in enumerate(current_semantic_memory):
-                    if (
-                        self.agent_state.agent_type == AgentType.semantic_memory_agent
-                        or self.agent_state.agent_type == AgentType.reflexion_agent
-                    ):
+                    if is_owning_agent:
                         semantic_memory += f"[Semantic Memory ID: {semantic_memory_item.id}] Name: {semantic_memory_item.name}; Summary: {semantic_memory_item.summary}\n"
                     else:
                         semantic_memory += f"[{idx}] Name: {semantic_memory_item.name}; Summary: {semantic_memory_item.summary}\n"

@@ -171,6 +171,11 @@ class QueueManager:
                     'group_id': config.KAFKA_GROUP_ID,
                     'serialization_format': config.KAFKA_SERIALIZATION_FORMAT,
                     'security_protocol': config.KAFKA_SECURITY_PROTOCOL,
+                    # Consumer configuration (configurable via env vars)
+                    'auto_offset_reset': config.KAFKA_AUTO_OFFSET_RESET,
+                    'consumer_timeout_ms': config.KAFKA_CONSUMER_TIMEOUT_MS,
+                    'max_poll_interval_ms': config.KAFKA_MAX_POLL_INTERVAL_MS,
+                    'session_timeout_ms': config.KAFKA_SESSION_TIMEOUT_MS,
                 }
                 
                 # Add SSL parameters if provided

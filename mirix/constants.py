@@ -83,7 +83,7 @@ OPENAI_CONTEXT_WINDOW_ERROR_SUBSTRING = "maximum context length"
 # System prompt templating
 IN_CONTEXT_MEMORY_KEYWORD = "CORE_MEMORY"
 
-MAX_CHAINING_STEPS = 10
+MAX_CHAINING_STEPS = int(os.getenv("MAX_CHAINING_STEPS", "10"))
 MAX_RETRIEVAL_LIMIT_IN_SYSTEM = 10
 
 # tokenizers
@@ -242,6 +242,11 @@ CALL_MEMORY_AGENT_IN_PARALLEL = os.getenv(
 CHAINING_FOR_MEMORY_UPDATE = os.getenv(
     "CHAINING_FOR_MEMORY_UPDATE", "false"
 ).lower() in ("true", "1", "yes")
+CHAINING_FOR_META_AGENT = os.getenv("CHAINING_FOR_META_AGENT", "true").lower() in (
+    "true",
+    "1",
+    "yes",
+)
 
 LOAD_IMAGE_CONTENT_FOR_LAST_MESSAGE_ONLY = os.getenv(
     "LOAD_IMAGE_CONTENT_FOR_LAST_MESSAGE_ONLY", "false"
