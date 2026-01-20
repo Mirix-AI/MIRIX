@@ -2664,6 +2664,21 @@ async def search_memory(
     if memory_type == "all":
         search_field = "null"
 
+    # Pre-compute embedding once if using embedding search (to avoid redundant embeddings)
+    embedded_text = None
+    if search_method == "embedding" and query:
+        from mirix.embeddings import embedding_model
+        import numpy as np
+        from mirix.constants import MAX_EMBEDDING_DIM
+        
+        embedded_text = embedding_model(agent_state.embedding_config).get_text_embedding(query)
+        # Pad for episodic memory which requires MAX_EMBEDDING_DIM
+        embedded_text_padded = np.pad(
+            np.array(embedded_text),
+            (0, MAX_EMBEDDING_DIM - len(embedded_text)),
+            mode="constant"
+        ).tolist()
+
     # Collect results from requested memory types
     all_results = []
 
@@ -2674,6 +2689,7 @@ async def search_memory(
                 agent_state=agent_state,
                 user=user,
                 query=query,
+                embedded_text=embedded_text_padded if search_method == "embedding" and query else None,
                 search_field=search_field if search_field != "null" else "summary",
                 search_method=search_method,
                 limit=limit,
@@ -2705,6 +2721,7 @@ async def search_memory(
                 agent_state=agent_state,
                 user=user,
                 query=query,
+                embedded_text=embedded_text if search_method == "embedding" and query else None,
                 search_field=search_field if search_field != "null" else ("summary" if search_method == "embedding" else "content"),
                 search_method=search_method,
                 limit=limit,
@@ -2733,6 +2750,7 @@ async def search_memory(
                 agent_state=agent_state,
                 user=user,
                 query=query,
+                embedded_text=embedded_text if search_method == "embedding" and query else None,
                 search_field=search_field if search_field != "null" else "summary",
                 search_method=search_method,
                 limit=limit,
@@ -2760,6 +2778,7 @@ async def search_memory(
                 agent_state=agent_state,
                 user=user,
                 query=query,
+                embedded_text=embedded_text if search_method == "embedding" and query else None,
                 search_field=search_field if search_field != "null" else "caption",
                 search_method=search_method,
                 limit=limit,
@@ -2789,6 +2808,7 @@ async def search_memory(
                 agent_state=agent_state,
                 user=user,
                 query=query,
+                embedded_text=embedded_text if search_method == "embedding" and query else None,
                 search_field=search_field if search_field != "null" else "summary",
                 search_method=search_method,
                 limit=limit,
@@ -2967,6 +2987,21 @@ async def search_memory_all_users(
     if memory_type == "all":
         search_field = "null"
 
+    # Pre-compute embedding once if using embedding search (to avoid redundant embeddings)
+    embedded_text = None
+    if search_method == "embedding" and query:
+        from mirix.embeddings import embedding_model
+        import numpy as np
+        from mirix.constants import MAX_EMBEDDING_DIM
+        
+        embedded_text = embedding_model(agent_state.embedding_config).get_text_embedding(query)
+        # Pad for episodic memory which requires MAX_EMBEDDING_DIM
+        embedded_text_padded = np.pad(
+            np.array(embedded_text),
+            (0, MAX_EMBEDDING_DIM - len(embedded_text)),
+            mode="constant"
+        ).tolist()
+
     # Collect results using organization_id filter
     all_results = []
 
@@ -2977,6 +3012,7 @@ async def search_memory_all_users(
                 agent_state=agent_state,
                 organization_id=effective_org_id,
                 query=query,
+                embedded_text=embedded_text_padded if search_method == "embedding" and query else None,
                 search_field=search_field if search_field != "null" else "summary",
                 search_method=search_method,
                 limit=limit,
@@ -3009,6 +3045,7 @@ async def search_memory_all_users(
                 agent_state=agent_state,
                 organization_id=effective_org_id,
                 query=query,
+                embedded_text=embedded_text if search_method == "embedding" and query else None,
                 search_field=search_field if search_field != "null" else ("summary" if search_method == "embedding" else "content"),
                 search_method=search_method,
                 limit=limit,
@@ -3038,6 +3075,7 @@ async def search_memory_all_users(
                 agent_state=agent_state,
                 organization_id=effective_org_id,
                 query=query,
+                embedded_text=embedded_text if search_method == "embedding" and query else None,
                 search_field=search_field if search_field != "null" else "summary",
                 search_method=search_method,
                 limit=limit,
@@ -3066,6 +3104,7 @@ async def search_memory_all_users(
                 agent_state=agent_state,
                 organization_id=effective_org_id,
                 query=query,
+                embedded_text=embedded_text if search_method == "embedding" and query else None,
                 search_field=search_field if search_field != "null" else "caption",
                 search_method=search_method,
                 limit=limit,
@@ -3096,6 +3135,7 @@ async def search_memory_all_users(
                 agent_state=agent_state,
                 organization_id=effective_org_id,
                 query=query,
+                embedded_text=embedded_text if search_method == "embedding" and query else None,
                 search_field=search_field if search_field != "null" else "summary",
                 search_method=search_method,
                 limit=limit,
