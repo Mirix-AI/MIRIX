@@ -2507,6 +2507,45 @@ async def retrieve_memory_with_topic(
     }
 
 
+def _precompute_embedding_for_search(
+    search_method: str,
+    query: str,
+    agent_state: AgentState
+) -> tuple[Optional[List[float]], Optional[List[float]]]:
+    """
+    Pre-compute embedding once for memory search to avoid redundant API calls.
+    
+    Args:
+        search_method: The search method ('embedding', 'bm25', or 'string_match')
+        query: The search query text
+        agent_state: Agent state containing embedding configuration
+    
+    Returns:
+        Tuple of (embedded_text, embedded_text_padded):
+        - embedded_text: The raw embedding vector (for most memory types)
+        - embedded_text_padded: Padded to MAX_EMBEDDING_DIM (for episodic memory)
+        Both are None if search_method is not 'embedding' or query is empty.
+    """
+    if search_method != "embedding" or not query:
+        return None, None
+    
+    from mirix.embeddings import embedding_model
+    import numpy as np
+    from mirix.constants import MAX_EMBEDDING_DIM
+    
+    # Compute embedding once
+    embedded_text = embedding_model(agent_state.embedding_config).get_text_embedding(query)
+    
+    # Pad for episodic memory which requires MAX_EMBEDDING_DIM
+    embedded_text_padded = np.pad(
+        np.array(embedded_text),
+        (0, MAX_EMBEDDING_DIM - len(embedded_text)),
+        mode="constant"
+    ).tolist()
+    
+    return embedded_text, embedded_text_padded
+
+
 @router.get("/memory/search")
 @with_langfuse_tracing
 async def search_memory(
@@ -2664,16 +2703,176 @@ async def search_memory(
     if memory_type == "all":
         search_field = "null"
 
+    # Pre-compute embedding once if using embedding search (to avoid redundant embeddings)
+    embedded_text, embedded_text_padded = _precompute_embedding_for_search(
+        search_method, query, agent_state
+    )
+
     # Collect results from requested memory types
     all_results = []
 
-    # Search episodic memories (WITH temporal filtering)
-    if memory_type in ["episodic", "all"]:
+    # If searching all memory types, run searches concurrently for better performance
+    if memory_type == "all":
+        import asyncio
+        
+        # Define async wrappers for each manager call
+        async def search_episodic():
+            try:
+                memories = await asyncio.to_thread(
+                    server.episodic_memory_manager.list_episodic_memory,
+                    agent_state=agent_state,
+                    user=user,
+                    query=query,
+                    embedded_text=embedded_text_padded if search_method == "embedding" and query else None,
+                    search_field=search_field if search_field != "null" else "summary",
+                    search_method=search_method,
+                    limit=limit,
+                    timezone_str=timezone_str,
+                    filter_tags=parsed_filter_tags,
+                    start_date=parsed_start_date,
+                    end_date=parsed_end_date,
+                    similarity_threshold=similarity_threshold,
+                )
+                return [{
+                    "memory_type": "episodic",
+                    "id": x.id,
+                    "timestamp": x.occurred_at.isoformat() if x.occurred_at else None,
+                    "event_type": x.event_type,
+                    "actor": x.actor,
+                    "summary": x.summary,
+                    "details": x.details,
+                } for x in memories]
+            except Exception as e:
+                logger.error("Error searching episodic memories: %s", e)
+                return []
+        
+        async def search_resource():
+            try:
+                memories = await asyncio.to_thread(
+                    server.resource_memory_manager.list_resources,
+                    agent_state=agent_state,
+                    user=user,
+                    query=query,
+                    embedded_text=embedded_text if search_method == "embedding" and query else None,
+                    search_field=search_field if search_field != "null" else ("summary" if search_method == "embedding" else "content"),
+                    search_method=search_method,
+                    limit=limit,
+                    timezone_str=timezone_str,
+                    filter_tags=parsed_filter_tags,
+                    similarity_threshold=similarity_threshold,
+                )
+                return [{
+                    "memory_type": "resource",
+                    "id": x.id,
+                    "resource_type": x.resource_type,
+                    "title": x.title,
+                    "summary": x.summary,
+                    "content": x.content[:200] if x.content else None,
+                } for x in memories]
+            except Exception as e:
+                logger.error("Error searching resource memories: %s", e)
+                return []
+        
+        async def search_procedural():
+            try:
+                memories = await asyncio.to_thread(
+                    server.procedural_memory_manager.list_procedures,
+                    agent_state=agent_state,
+                    user=user,
+                    query=query,
+                    embedded_text=embedded_text if search_method == "embedding" and query else None,
+                    search_field=search_field if search_field != "null" else "summary",
+                    search_method=search_method,
+                    limit=limit,
+                    timezone_str=timezone_str,
+                    filter_tags=parsed_filter_tags,
+                    similarity_threshold=similarity_threshold,
+                )
+                return [{
+                    "memory_type": "procedural",
+                    "id": x.id,
+                    "entry_type": x.entry_type,
+                    "summary": x.summary,
+                    "steps": x.steps,
+                } for x in memories]
+            except Exception as e:
+                logger.error("Error searching procedural memories: %s", e)
+                return []
+        
+        async def search_knowledge():
+            try:
+                memories = await asyncio.to_thread(
+                    server.knowledge_vault_manager.list_knowledge,
+                    agent_state=agent_state,
+                    user=user,
+                    query=query,
+                    embedded_text=embedded_text if search_method == "embedding" and query else None,
+                    search_field=search_field if search_field != "null" else "caption",
+                    search_method=search_method,
+                    limit=limit,
+                    timezone_str=timezone_str,
+                    filter_tags=parsed_filter_tags,
+                    similarity_threshold=similarity_threshold,
+                )
+                return [{
+                    "memory_type": "knowledge_vault",
+                    "id": x.id,
+                    "entry_type": x.entry_type,
+                    "source": x.source,
+                    "sensitivity": x.sensitivity,
+                    "secret_value": x.secret_value,
+                    "caption": x.caption,
+                } for x in memories]
+            except Exception as e:
+                logger.error("Error searching knowledge vault: %s", e)
+                return []
+        
+        async def search_semantic():
+            try:
+                memories = await asyncio.to_thread(
+                    server.semantic_memory_manager.list_semantic_items,
+                    agent_state=agent_state,
+                    user=user,
+                    query=query,
+                    embedded_text=embedded_text if search_method == "embedding" and query else None,
+                    search_field=search_field if search_field != "null" else "summary",
+                    search_method=search_method,
+                    limit=limit,
+                    timezone_str=timezone_str,
+                    filter_tags=parsed_filter_tags,
+                    similarity_threshold=similarity_threshold,
+                )
+                return [{
+                    "memory_type": "semantic",
+                    "id": x.id,
+                    "summary": x.summary,
+                    "details": x.details,
+                } for x in memories]
+            except Exception as e:
+                logger.error("Error searching semantic memories: %s", e)
+                return []
+        
+        # Run all searches concurrently
+        results = await asyncio.gather(
+            search_episodic(),
+            search_resource(),
+            search_procedural(),
+            search_knowledge(),
+            search_semantic(),
+        )
+        
+        # Flatten results
+        for result_list in results:
+            all_results.extend(result_list)
+    
+    # Single memory type searches (run serially as before)
+    elif memory_type == "episodic":
         try:
             episodic_memories = server.episodic_memory_manager.list_episodic_memory(
                 agent_state=agent_state,
                 user=user,
                 query=query,
+                embedded_text=embedded_text_padded if search_method == "embedding" and query else None,
                 search_field=search_field if search_field != "null" else "summary",
                 search_method=search_method,
                 limit=limit,
@@ -2699,12 +2898,13 @@ async def search_memory(
             logger.error("Error searching episodic memories: %s", e)
 
     # Search resource memories
-    if memory_type in ["resource", "all"]:
+    elif memory_type == "resource":
         try:
             resource_memories = server.resource_memory_manager.list_resources(
                 agent_state=agent_state,
                 user=user,
                 query=query,
+                embedded_text=embedded_text if search_method == "embedding" and query else None,
                 search_field=search_field if search_field != "null" else ("summary" if search_method == "embedding" else "content"),
                 search_method=search_method,
                 limit=limit,
@@ -2727,12 +2927,13 @@ async def search_memory(
             logger.error("Error searching resource memories: %s", e)
 
     # Search procedural memories
-    if memory_type in ["procedural", "all"]:
+    elif memory_type == "procedural":
         try:
             procedural_memories = server.procedural_memory_manager.list_procedures(
                 agent_state=agent_state,
                 user=user,
                 query=query,
+                embedded_text=embedded_text if search_method == "embedding" and query else None,
                 search_field=search_field if search_field != "null" else "summary",
                 search_method=search_method,
                 limit=limit,
@@ -2754,12 +2955,13 @@ async def search_memory(
             logger.error("Error searching procedural memories: %s", e)
 
     # Search knowledge vault
-    if memory_type in ["knowledge_vault", "all"]:
+    elif memory_type == "knowledge_vault":
         try:
             knowledge_vault_memories = server.knowledge_vault_manager.list_knowledge(
                 agent_state=agent_state,
                 user=user,
                 query=query,
+                embedded_text=embedded_text if search_method == "embedding" and query else None,
                 search_field=search_field if search_field != "null" else "caption",
                 search_method=search_method,
                 limit=limit,
@@ -2783,12 +2985,13 @@ async def search_memory(
             logger.error("Error searching knowledge vault: %s", e)
 
     # Search semantic memories
-    if memory_type in ["semantic", "all"]:
+    elif memory_type == "semantic":
         try:
             semantic_memories = server.semantic_memory_manager.list_semantic_items(
                 agent_state=agent_state,
                 user=user,
                 query=query,
+                embedded_text=embedded_text if search_method == "embedding" and query else None,
                 search_field=search_field if search_field != "null" else "summary",
                 search_method=search_method,
                 limit=limit,
@@ -2967,16 +3170,181 @@ async def search_memory_all_users(
     if memory_type == "all":
         search_field = "null"
 
+    # Pre-compute embedding once if using embedding search (to avoid redundant embeddings)
+    embedded_text, embedded_text_padded = _precompute_embedding_for_search(
+        search_method, query, agent_state
+    )
+
     # Collect results using organization_id filter
     all_results = []
 
-    # Search episodic memories across organization (WITH temporal filtering)
-    if memory_type in ["episodic", "all"]:
+    # If searching all memory types, run searches concurrently for better performance
+    if memory_type == "all":
+        import asyncio
+        
+        # Define async wrappers for each manager call
+        async def search_episodic():
+            try:
+                memories = await asyncio.to_thread(
+                    server.episodic_memory_manager.list_episodic_memory_by_org,
+                    agent_state=agent_state,
+                    organization_id=effective_org_id,
+                    query=query,
+                    embedded_text=embedded_text_padded if search_method == "embedding" and query else None,
+                    search_field=search_field if search_field != "null" else "summary",
+                    search_method=search_method,
+                    limit=limit,
+                    timezone_str="UTC",
+                    filter_tags=filter_tags_dict,
+                    start_date=parsed_start_date,
+                    end_date=parsed_end_date,
+                    similarity_threshold=similarity_threshold,
+                )
+                return [{
+                    "memory_type": "episodic",
+                    "id": x.id,
+                    "timestamp": x.occurred_at.isoformat() if x.occurred_at else None,
+                    "event_type": x.event_type,
+                    "actor": x.actor,
+                    "summary": x.summary,
+                    "details": x.details,
+                    "user_id": str(x.user_id),
+                } for x in memories]
+            except Exception as e:
+                logger.error("Error searching episodic memories across org: %s", e)
+                return []
+        
+        async def search_resource():
+            try:
+                memories = await asyncio.to_thread(
+                    server.resource_memory_manager.list_resources_by_org,
+                    agent_state=agent_state,
+                    organization_id=effective_org_id,
+                    query=query,
+                    embedded_text=embedded_text if search_method == "embedding" and query else None,
+                    search_field=search_field if search_field != "null" else ("summary" if search_method == "embedding" else "content"),
+                    search_method=search_method,
+                    limit=limit,
+                    timezone_str="UTC",
+                    filter_tags=filter_tags_dict,
+                    similarity_threshold=similarity_threshold,
+                )
+                return [{
+                    "memory_type": "resource",
+                    "id": x.id,
+                    "resource_type": x.resource_type,
+                    "title": x.title,
+                    "summary": x.summary,
+                    "content": x.content[:200] if x.content else None,
+                    "user_id": str(x.user_id),
+                } for x in memories]
+            except Exception as e:
+                logger.error("Error searching resource memories across org: %s", e)
+                return []
+        
+        async def search_procedural():
+            try:
+                memories = await asyncio.to_thread(
+                    server.procedural_memory_manager.list_procedures_by_org,
+                    agent_state=agent_state,
+                    organization_id=effective_org_id,
+                    query=query,
+                    embedded_text=embedded_text if search_method == "embedding" and query else None,
+                    search_field=search_field if search_field != "null" else "summary",
+                    search_method=search_method,
+                    limit=limit,
+                    timezone_str="UTC",
+                    filter_tags=filter_tags_dict,
+                    similarity_threshold=similarity_threshold,
+                )
+                return [{
+                    "memory_type": "procedural",
+                    "id": x.id,
+                    "entry_type": x.entry_type,
+                    "summary": x.summary,
+                    "steps": x.steps,
+                    "user_id": str(x.user_id),
+                } for x in memories]
+            except Exception as e:
+                logger.error("Error searching procedural memories across org: %s", e)
+                return []
+        
+        async def search_knowledge():
+            try:
+                memories = await asyncio.to_thread(
+                    server.knowledge_vault_manager.list_knowledge_by_org,
+                    agent_state=agent_state,
+                    organization_id=effective_org_id,
+                    query=query,
+                    embedded_text=embedded_text if search_method == "embedding" and query else None,
+                    search_field=search_field if search_field != "null" else "caption",
+                    search_method=search_method,
+                    limit=limit,
+                    timezone_str="UTC",
+                    filter_tags=filter_tags_dict,
+                    similarity_threshold=similarity_threshold,
+                )
+                return [{
+                    "memory_type": "knowledge_vault",
+                    "id": x.id,
+                    "entry_type": x.entry_type,
+                    "source": x.source,
+                    "sensitivity": x.sensitivity,
+                    "secret_value": x.secret_value,
+                    "caption": x.caption,
+                    "user_id": str(x.user_id),
+                } for x in memories]
+            except Exception as e:
+                logger.error("Error searching knowledge vault across org: %s", e)
+                return []
+        
+        async def search_semantic():
+            try:
+                memories = await asyncio.to_thread(
+                    server.semantic_memory_manager.list_semantic_items_by_org,
+                    agent_state=agent_state,
+                    organization_id=effective_org_id,
+                    query=query,
+                    embedded_text=embedded_text if search_method == "embedding" and query else None,
+                    search_field=search_field if search_field != "null" else "summary",
+                    search_method=search_method,
+                    limit=limit,
+                    timezone_str="UTC",
+                    filter_tags=filter_tags_dict,
+                    similarity_threshold=similarity_threshold,
+                )
+                return [{
+                    "memory_type": "semantic",
+                    "id": x.id,
+                    "summary": x.summary,
+                    "details": x.details,
+                    "user_id": str(x.user_id),
+                } for x in memories]
+            except Exception as e:
+                logger.error("Error searching semantic memories across org: %s", e)
+                return []
+        
+        # Run all searches concurrently
+        results = await asyncio.gather(
+            search_episodic(),
+            search_resource(),
+            search_procedural(),
+            search_knowledge(),
+            search_semantic(),
+        )
+        
+        # Flatten results
+        for result_list in results:
+            all_results.extend(result_list)
+    
+    # Single memory type searches (run serially as before)
+    elif memory_type == "episodic":
         try:
             episodic_memories = server.episodic_memory_manager.list_episodic_memory_by_org(
                 agent_state=agent_state,
                 organization_id=effective_org_id,
                 query=query,
+                embedded_text=embedded_text_padded if search_method == "embedding" and query else None,
                 search_field=search_field if search_field != "null" else "summary",
                 search_method=search_method,
                 limit=limit,
@@ -3003,12 +3371,13 @@ async def search_memory_all_users(
             logger.error("Error searching episodic memories across organization: %s", e)
 
     # Search resource memories across organization
-    if memory_type in ["resource", "all"]:
+    elif memory_type == "resource":
         try:
             resource_memories = server.resource_memory_manager.list_resources_by_org(
                 agent_state=agent_state,
                 organization_id=effective_org_id,
                 query=query,
+                embedded_text=embedded_text if search_method == "embedding" and query else None,
                 search_field=search_field if search_field != "null" else ("summary" if search_method == "embedding" else "content"),
                 search_method=search_method,
                 limit=limit,
@@ -3032,12 +3401,13 @@ async def search_memory_all_users(
             logger.error("Error searching resource memories across organization: %s", e)
 
     # Search procedural memories across organization
-    if memory_type in ["procedural", "all"]:
+    elif memory_type == "procedural":
         try:
             procedural_memories = server.procedural_memory_manager.list_procedures_by_org(
                 agent_state=agent_state,
                 organization_id=effective_org_id,
                 query=query,
+                embedded_text=embedded_text if search_method == "embedding" and query else None,
                 search_field=search_field if search_field != "null" else "summary",
                 search_method=search_method,
                 limit=limit,
@@ -3060,12 +3430,13 @@ async def search_memory_all_users(
             logger.error("Error searching procedural memories across organization: %s", e)
 
     # Search knowledge vault across organization
-    if memory_type in ["knowledge_vault", "all"]:
+    elif memory_type == "knowledge_vault":
         try:
             knowledge_vault_memories = server.knowledge_vault_manager.list_knowledge_by_org(
                 agent_state=agent_state,
                 organization_id=effective_org_id,
                 query=query,
+                embedded_text=embedded_text if search_method == "embedding" and query else None,
                 search_field=search_field if search_field != "null" else "caption",
                 search_method=search_method,
                 limit=limit,
@@ -3090,12 +3461,13 @@ async def search_memory_all_users(
             logger.error("Error searching knowledge vault across organization: %s", e)
 
     # Search semantic memories across organization
-    if memory_type in ["semantic", "all"]:
+    elif memory_type == "semantic":
         try:
             semantic_memories = server.semantic_memory_manager.list_semantic_items_by_org(
                 agent_state=agent_state,
                 organization_id=effective_org_id,
                 query=query,
+                embedded_text=embedded_text if search_method == "embedding" and query else None,
                 search_field=search_field if search_field != "null" else "summary",
                 search_method=search_method,
                 limit=limit,

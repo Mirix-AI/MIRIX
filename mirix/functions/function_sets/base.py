@@ -135,6 +135,21 @@ def search_in_memory(
     if memory_type == "all":
         search_field = "null"
 
+    # Pre-compute embedding once if using embedding search (to avoid redundant embeddings)
+    embedded_text = None
+    if search_method == "embedding" and query:
+        from mirix.embeddings import embedding_model
+        import numpy as np
+        from mirix.constants import MAX_EMBEDDING_DIM
+        
+        embedded_text = embedding_model(self.agent_state.embedding_config).get_text_embedding(query)
+        # Pad for episodic memory which requires MAX_EMBEDDING_DIM
+        embedded_text_padded = np.pad(
+            np.array(embedded_text),
+            (0, MAX_EMBEDDING_DIM - len(embedded_text)),
+            mode="constant"
+        ).tolist()
+
     if memory_type == "core":
         # It means the model is an idiot, but we still return the results:
         return self.agent_state.memory.compile(), len(
@@ -146,6 +161,7 @@ def search_in_memory(
             user=self.user,
             agent_state=self.agent_state,
             query=query,
+            embedded_text=embedded_text_padded if search_method == "embedding" and query else None,
             search_field=search_field if search_field != "null" else "summary",
             search_method=search_method,
             limit=10,
@@ -171,6 +187,7 @@ def search_in_memory(
             user=self.user,
             agent_state=self.agent_state,
             query=query,
+            embedded_text=embedded_text if search_method == "embedding" and query else None,
             search_field=(
                 search_field
                 if search_field != "null"
@@ -198,6 +215,7 @@ def search_in_memory(
             user=self.user,
             agent_state=self.agent_state,
             query=query,
+            embedded_text=embedded_text if search_method == "embedding" and query else None,
             search_field=search_field if search_field != "null" else "summary",
             search_method=search_method,
             limit=10,
@@ -221,6 +239,7 @@ def search_in_memory(
             user=self.user,
             agent_state=self.agent_state,
             query=query,
+            embedded_text=embedded_text if search_method == "embedding" and query else None,
             search_field=search_field if search_field != "null" else "caption",
             search_method=search_method,
             limit=10,
@@ -248,6 +267,7 @@ def search_in_memory(
             user=self.user,
             agent_state=self.agent_state,
             query=query,
+            embedded_text=embedded_text if search_method == "embedding" and query else None,
             search_field=search_field if search_field != "null" else "summary",
             search_method=search_method,
             limit=10,
