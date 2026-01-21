@@ -2507,6 +2507,45 @@ async def retrieve_memory_with_topic(
     }
 
 
+def _precompute_embedding_for_search(
+    search_method: str,
+    query: str,
+    agent_state: AgentState
+) -> tuple[Optional[List[float]], Optional[List[float]]]:
+    """
+    Pre-compute embedding once for memory search to avoid redundant API calls.
+    
+    Args:
+        search_method: The search method ('embedding', 'bm25', or 'string_match')
+        query: The search query text
+        agent_state: Agent state containing embedding configuration
+    
+    Returns:
+        Tuple of (embedded_text, embedded_text_padded):
+        - embedded_text: The raw embedding vector (for most memory types)
+        - embedded_text_padded: Padded to MAX_EMBEDDING_DIM (for episodic memory)
+        Both are None if search_method is not 'embedding' or query is empty.
+    """
+    if search_method != "embedding" or not query:
+        return None, None
+    
+    from mirix.embeddings import embedding_model
+    import numpy as np
+    from mirix.constants import MAX_EMBEDDING_DIM
+    
+    # Compute embedding once
+    embedded_text = embedding_model(agent_state.embedding_config).get_text_embedding(query)
+    
+    # Pad for episodic memory which requires MAX_EMBEDDING_DIM
+    embedded_text_padded = np.pad(
+        np.array(embedded_text),
+        (0, MAX_EMBEDDING_DIM - len(embedded_text)),
+        mode="constant"
+    ).tolist()
+    
+    return embedded_text, embedded_text_padded
+
+
 @router.get("/memory/search")
 @with_langfuse_tracing
 async def search_memory(
@@ -2665,19 +2704,9 @@ async def search_memory(
         search_field = "null"
 
     # Pre-compute embedding once if using embedding search (to avoid redundant embeddings)
-    embedded_text = None
-    if search_method == "embedding" and query:
-        from mirix.embeddings import embedding_model
-        import numpy as np
-        from mirix.constants import MAX_EMBEDDING_DIM
-        
-        embedded_text = embedding_model(agent_state.embedding_config).get_text_embedding(query)
-        # Pad for episodic memory which requires MAX_EMBEDDING_DIM
-        embedded_text_padded = np.pad(
-            np.array(embedded_text),
-            (0, MAX_EMBEDDING_DIM - len(embedded_text)),
-            mode="constant"
-        ).tolist()
+    embedded_text, embedded_text_padded = _precompute_embedding_for_search(
+        search_method, query, agent_state
+    )
 
     # Collect results from requested memory types
     all_results = []
@@ -3142,19 +3171,9 @@ async def search_memory_all_users(
         search_field = "null"
 
     # Pre-compute embedding once if using embedding search (to avoid redundant embeddings)
-    embedded_text = None
-    if search_method == "embedding" and query:
-        from mirix.embeddings import embedding_model
-        import numpy as np
-        from mirix.constants import MAX_EMBEDDING_DIM
-        
-        embedded_text = embedding_model(agent_state.embedding_config).get_text_embedding(query)
-        # Pad for episodic memory which requires MAX_EMBEDDING_DIM
-        embedded_text_padded = np.pad(
-            np.array(embedded_text),
-            (0, MAX_EMBEDDING_DIM - len(embedded_text)),
-            mode="constant"
-        ).tolist()
+    embedded_text, embedded_text_padded = _precompute_embedding_for_search(
+        search_method, query, agent_state
+    )
 
     # Collect results using organization_id filter
     all_results = []
