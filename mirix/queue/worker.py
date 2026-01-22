@@ -144,6 +144,50 @@ class QueueWorker:
             self._server = server
             logger.info("Updated worker server instance")
 
+    def process_external_message(self, message: QueueMessage) -> None:
+        """
+        Process a message that was consumed by an external Kafka consumer.
+        
+        This allows you to use your own custom Kafka consumer logic while still
+        leveraging MIRIX's message processing capabilities. This is useful when:
+        - You need custom Kafka consumer configuration not exposed by MIRIX
+        - You want to use a different Kafka client library
+        - You're integrating with existing event processing infrastructure
+        
+        Args:
+            message: QueueMessage protobuf that was already consumed from Kafka
+            
+        Example:
+            ```python
+            # Create worker without starting internal consumer
+            worker = QueueWorker(queue=None, server=server)
+            worker.set_server(server)
+            
+            # Your custom Kafka consumer
+            from kafka import KafkaConsumer
+            consumer = KafkaConsumer('my-topic', ...)
+            
+            for kafka_msg in consumer:
+                # Deserialize to QueueMessage protobuf
+                queue_message = QueueMessage()
+                queue_message.ParseFromString(kafka_msg.value)
+                
+                # Process via MIRIX worker
+                worker.process_external_message(queue_message)
+            ```
+        
+        Note:
+            - This method is thread-safe and can be called from multiple threads
+            - When using this method, you typically don't call worker.start()
+            - The internal _consume_messages() loop is not used in this mode
+        """
+        logger.debug(
+            "Processing externally consumed message: agent_id=%s, user_id=%s",
+            message.agent_id,
+            message.user_id if message.HasField("user_id") else "None",
+        )
+        self._process_message(message)
+
     def _process_message(self, message: QueueMessage) -> None:
         """
         Process a queue message by calling server.send_messages()
