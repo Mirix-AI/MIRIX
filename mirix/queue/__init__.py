@@ -89,5 +89,73 @@ def save(message: QueueMessage) -> None:
     _manager.save(message)
 
 
+def process_external_message(raw_message: bytes) -> None:
+    """
+    Process a message consumed by an external system (e.g., Numaflow, custom Kafka consumer).
+    
+    This is the primary high-level API for integrating with external Kafka consumers or event
+    processing systems. It handles all internal details of deserialization and processing,
+    providing a clean abstraction layer for external applications like ECMS.
+    
+    Args:
+        raw_message: Raw protobuf bytes from Kafka or event bus
+        
+    Raises:
+        RuntimeError: If queue not initialized. Call initialize_queue() first.
+        ValueError: If message parsing fails
+        
+    Example:
+        >>> # In your Numaflow handler or external consumer
+        >>> from mirix.queue import process_external_message
+        >>> 
+        >>> def handle_kafka_message(raw_bytes: bytes):
+        >>>     process_external_message(raw_bytes)
+    
+    Note:
+        - Queue must be initialized first via initialize_queue()
+        - Set MIRIX_QUEUE_AUTO_START_WORKERS=false to disable internal Kafka consumer
+        - This function is thread-safe and can be called from multiple threads
+        - The Kafka producer remains functional for enqueueing messages via save()
+        
+    Configuration:
+        To use with external consumers (Numaflow, etc.), set environment variable:
+        
+        >>> import os
+        >>> os.environ["MIRIX_QUEUE_AUTO_START_WORKERS"] = "false"
+        >>> # Then initialize normally - workers created but not started
+        >>> initialize_queue(server)
+    """
+    if not _manager.is_initialized:
+        raise RuntimeError(
+            "Queue not initialized. Call initialize_queue() before processing external messages."
+        )
+    
+    # Get the worker (created but not started if AUTO_START_WORKERS=false)
+    workers = _manager._workers
+    if not workers:
+        raise RuntimeError(
+            "No workers available. Ensure initialize_queue() was called successfully."
+        )
+    
+    worker = workers[0]  # Use first worker
+    
+    # Parse protobuf
+    queue_message = QueueMessage()
+    try:
+        queue_message.ParseFromString(raw_message)
+    except Exception as e:
+        raise ValueError(f"Failed to parse message as QueueMessage protobuf: {e}") from e
+    
+    # Log for debugging
+    logger.debug(
+        "Processing external message: agent_id=%s, user_id=%s",
+        queue_message.agent_id,
+        queue_message.user_id if queue_message.HasField("user_id") else "None",
+    )
+    
+    # Process through MIRIX (delegates to worker.process_external_message() from PR #35)
+    worker.process_external_message(queue_message)
+
+
 # Export public API
-__all__ = ["initialize_queue", "save", "QueueMessage"]
+__all__ = ["initialize_queue", "save", "process_external_message", "QueueMessage"]

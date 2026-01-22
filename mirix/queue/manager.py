@@ -118,30 +118,36 @@ class QueueManager:
             self._workers.append(worker)
             logger.debug("✅ Worker created")
 
-        # Start all workers
-        logger.info("▶️  Starting %d background worker thread(s)...", len(self._workers))
-        for worker in self._workers:
-            worker.start()
+        # Start all workers (unless AUTO_START_WORKERS is disabled)
+        if config.AUTO_START_WORKERS:
+            logger.info("▶️  Starting %d background worker thread(s)...", len(self._workers))
+            for worker in self._workers:
+                worker.start()
 
-        # Give threads a moment to start and verify they're running
-        time.sleep(0.1)
+            # Give threads a moment to start and verify they're running
+            time.sleep(0.1)
 
-        running_count = sum(1 for w in self._workers if w._running)
-        alive_count = sum(
-            1 for w in self._workers if w._thread and w._thread.is_alive()
-        )
+            running_count = sum(1 for w in self._workers if w._running)
+            alive_count = sum(
+                1 for w in self._workers if w._thread and w._thread.is_alive()
+            )
 
-        logger.info(
-            f"🔍 Worker status: running={running_count}/{len(self._workers)}, threads_alive={alive_count}/{len(self._workers)}"
-        )
+            logger.info(
+                f"🔍 Worker status: running={running_count}/{len(self._workers)}, threads_alive={alive_count}/{len(self._workers)}"
+            )
 
-        if running_count != len(self._workers) or alive_count != len(self._workers):
-            logger.error("❌ CRITICAL: Some queue workers failed to start!")
-            logger.error(f"   Workers running: {running_count}/{len(self._workers)}")
-            logger.error(f"   Threads alive: {alive_count}/{len(self._workers)}")
+            if running_count != len(self._workers) or alive_count != len(self._workers):
+                logger.error("❌ CRITICAL: Some queue workers failed to start!")
+                logger.error(f"   Workers running: {running_count}/{len(self._workers)}")
+                logger.error(f"   Threads alive: {alive_count}/{len(self._workers)}")
+            else:
+                logger.info(
+                    "✅ All %d queue worker(s) started successfully!", len(self._workers)
+                )
         else:
             logger.info(
-                "✅ All %d queue worker(s) started successfully!", len(self._workers)
+                "⏸️  Workers created but NOT started (AUTO_START_WORKERS=false) - "
+                "Use process_external_message() to process messages from external consumer"
             )
 
         # Register cleanup function to stop workers on exit
