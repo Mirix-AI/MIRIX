@@ -5,6 +5,7 @@ allowing MirixClient instances to communicate with a cloud-hosted server.
 """
 
 import copy
+import functools
 import json
 import traceback
 from contextlib import asynccontextmanager
@@ -73,14 +74,10 @@ def get_server() -> SyncServer:
     return _server
 
 
-async def initialize(num_workers: Optional[int] = None):
+async def initialize():
     """
     Initialize the Mirix server and queue services.
     This function can be called by external applications to initialize the server.
-
-    Args:
-        num_workers: Optional number of queue workers. If not provided,
-                    uses settings.memory_queue_num_workers.
     """
     logger.info("Starting Mirix REST API server")
 
@@ -88,17 +85,9 @@ async def initialize(num_workers: Optional[int] = None):
     server = get_server()
     logger.info("SyncServer initialized")
 
-    # Use provided num_workers or fall back to settings
-    effective_num_workers = (
-        num_workers if num_workers is not None else settings.memory_queue_num_workers
-    )
-
     # Initialize queue with server reference
-    initialize_queue(server, num_workers=effective_num_workers)
-    logger.info(
-        "Queue service started with SyncServer integration (num_workers=%d)",
-        effective_num_workers,
-    )
+    initialize_queue(server)
+    logger.info("Queue service started with SyncServer integration")
 
 
 async def cleanup():
@@ -107,6 +96,20 @@ async def cleanup():
     This function can be called by external applications to cleanup the server.
     """
     logger.info("Shutting down Mirix REST API server")
+
+    # Flush LangFuse traces before shutdown
+    try:
+        from mirix.observability import flush_langfuse, shutdown_langfuse
+        logger.info("Flushing LangFuse traces...")
+        flush_success = flush_langfuse(timeout=10.0)  # Increased timeout for graceful shutdown
+        if flush_success:
+            logger.info("✅ LangFuse traces flushed successfully")
+        else:
+            logger.warning("⚠️ LangFuse trace flush completed with warnings")
+        shutdown_langfuse()
+        logger.info("LangFuse observability shut down")
+    except Exception as e:
+        logger.warning(f"Error during LangFuse shutdown: {e}")
 
     # Cleanup queue
     queue_manager = get_queue_manager()
@@ -148,6 +151,139 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ============================================================================
+# Request Context (for accessing request in decorators)
+# ============================================================================
+
+from contextvars import ContextVar
+
+# Stores the current request for access by decorators
+_current_request: ContextVar[Optional[Request]] = ContextVar(
+    "current_request", default=None
+)
+
+
+def get_current_request() -> Optional[Request]:
+    """Get the current request from context."""
+    return _current_request.get()
+
+
+# Middleware to store request in context (runs for all requests, lightweight)
+@app.middleware("http")
+async def store_request_context(request: Request, call_next):
+    """Store the request in context so decorators can access it."""
+    token = _current_request.set(request)
+    try:
+        return await call_next(request)
+    finally:
+        _current_request.reset(token)
+
+
+# ============================================================================
+# LangFuse Tracing Decorator (for agentic endpoints only)
+# ============================================================================
+
+
+def with_langfuse_tracing(func):
+    """
+    Decorator that adds LangFuse tracing to agentic endpoints.
+
+    Usage:
+        @router.post("/memory/add")
+        @with_langfuse_tracing
+        async def add_memory(...):
+            ...
+
+    The request is automatically accessed from context - no special
+    parameters needed on the decorated function.
+    """
+    import uuid
+    from typing import cast
+
+    from langfuse.types import TraceContext
+
+    from mirix.observability import get_langfuse_client, is_langfuse_enabled
+    from mirix.observability.context import clear_trace_context, set_trace_context
+
+    @functools.wraps(func)
+    async def wrapper(*args, **kwargs):
+        # Get request from context (set by middleware)
+        request = get_current_request()
+
+        # Skip tracing if LangFuse is disabled or no request available
+        if not is_langfuse_enabled() or not request:
+            return await func(*args, **kwargs)
+
+        langfuse = get_langfuse_client()
+        if not langfuse:
+            return await func(*args, **kwargs)
+
+        # Extract metadata from request
+        method = request.method
+        path = request.url.path
+        user_id = request.headers.get("x-user-id")
+        client_id = request.headers.get("x-client-id")
+        org_id = request.headers.get("x-org-id")
+        session_id = f"{client_id}-{uuid.uuid4().hex[:8]}"
+
+        # Generate a unique trace_id for each request
+        trace_id = uuid.uuid4().hex
+
+        with langfuse.start_as_current_observation(
+            name=f"{method} {path}",
+            as_type="span",
+            trace_context=cast(TraceContext, {"trace_id": trace_id}),
+        ) as span:
+            try:
+                observation_id = getattr(span, "id", None)
+                logger.debug(
+                    f"LangFuse trace created: trace_id={trace_id}, observation_id={observation_id}, path={path}"
+                )
+
+                langfuse.update_current_trace(
+                    name=f"{method} {path}",
+                    user_id=user_id or client_id,
+                    session_id=session_id,
+                    metadata={
+                        "method": method,
+                        "path": path,
+                        "client_id": client_id,
+                        "org_id": org_id,
+                        "user_agent": request.headers.get("user-agent"),
+                    },
+                )
+
+                set_trace_context(
+                    trace_id=trace_id,
+                    observation_id=observation_id,
+                    user_id=user_id or client_id,
+                    session_id=session_id,
+                )
+
+                # Execute the actual endpoint function
+                result = await func(*args, **kwargs)
+
+                try:
+                    span.update(output={"status": "completed"})
+                    logger.debug(f"LangFuse trace completed: trace_id={trace_id}")
+                except Exception as e:
+                    logger.debug(f"Failed to update trace: {e}")
+
+                return result
+
+            except Exception as e:
+                try:
+                    span.update(output={"error": str(e)}, level="ERROR")
+                except Exception as trace_error:
+                    logger.debug(f"Failed to update trace on error: {trace_error}")
+                raise
+
+            finally:
+                clear_trace_context()
+
+    return wrapper
 
 
 # Middleware to resolve X-API-Key into X-Client-Id/X-Org-Id for all routes
@@ -1762,6 +1898,7 @@ class AddMemoryRequest(BaseModel):
 
 
 @router.post("/memory/add")
+@with_langfuse_tracing
 async def add_memory(
     request: AddMemoryRequest,
     x_org_id: Optional[str] = Header(None),
@@ -1776,7 +1913,7 @@ async def add_memory(
     server = get_server()
     client_id, org_id = get_client_and_org(x_client_id, x_org_id)
     client = server.client_manager.get_client_by_id(client_id)
-    
+
     # If client doesn't exist, create the default client
     if client is None:
         logger.warning("Client %s not found, creating default client", client_id)
@@ -1790,9 +1927,9 @@ async def add_memory(
                 status_code=404,
                 detail=f"Client {client_id} not found. Please create the client first."
             )
-    
+
     # Get the meta agent by ID
-    # TODO: need to check if we really need to check if the meta_agent exists here 
+    # TODO: need to check if we really need to check if the meta_agent exists here
     meta_agent = server.agent_manager.get_agent_by_id(request.meta_agent_id, actor=client)
 
     # If user_id is not provided, use the admin user for this client
@@ -1812,7 +1949,7 @@ async def add_memory(
         new_message = []
         for msg in message:
             new_message.append({'type': "text", "text": "[USER]" if msg["role"] == "user" else "[ASSISTANT]"})
-            
+
             # Handle both string and list content
             content = msg["content"]
             if isinstance(content, str):
@@ -1834,7 +1971,7 @@ async def add_memory(
     else:
         # Create new filter_tags if not provided
         filter_tags = {}
-    
+
     # Add or update the "scope" key with the client's scope
     filter_tags["scope"] = client.scope
 
@@ -1852,7 +1989,7 @@ async def add_memory(
         use_cache=request.use_cache,
         occurred_at=request.occurred_at,  # Optional timestamp for episodic memory
     )
-    
+
     logger.debug("Memory queued for processing: %s", meta_agent.id)
 
     return {
@@ -1908,7 +2045,7 @@ def retrieve_memories_by_keywords(
         Dictionary containing all memory types with their items
     """
     search_method = "bm25"
-    
+
     # Log temporal filtering for monitoring
     if start_date or end_date:
         logger.info(
@@ -1916,7 +2053,7 @@ def retrieve_memories_by_keywords(
             start_date.isoformat() if start_date else None,
             end_date.isoformat() if end_date else None
         )
-    
+
     # Get timezone from user record (if exists)
     try:
         user = server.user_manager.get_user_by_id(user_id)
@@ -2132,6 +2269,7 @@ def retrieve_memories_by_keywords(
 
 
 @router.post("/memory/retrieve/conversation")
+@with_langfuse_tracing
 async def retrieve_memory_with_conversation(
     request: RetrieveMemoryRequest,
     x_client_id: Optional[str] = Header(None),
@@ -2288,6 +2426,7 @@ async def retrieve_memory_with_conversation(
 
 
 @router.get("/memory/retrieve/topic")
+@with_langfuse_tracing
 async def retrieve_memory_with_topic(
     user_id: Optional[str] = None,
     topic: str = "",
@@ -2330,12 +2469,11 @@ async def retrieve_memory_with_topic(
                 "memories": {},
             }
 
-
     # Add client scope to filter_tags (create if not provided)
     if parsed_filter_tags is None:
         # Create new filter_tags if not provided
         parsed_filter_tags = {}
-    
+
     # Add or update the "scope" key with the client's scope
     parsed_filter_tags["scope"] = client.scope
 
@@ -2369,7 +2507,47 @@ async def retrieve_memory_with_topic(
     }
 
 
+def _precompute_embedding_for_search(
+    search_method: str,
+    query: str,
+    agent_state: AgentState
+) -> tuple[Optional[List[float]], Optional[List[float]]]:
+    """
+    Pre-compute embedding once for memory search to avoid redundant API calls.
+    
+    Args:
+        search_method: The search method ('embedding', 'bm25', or 'string_match')
+        query: The search query text
+        agent_state: Agent state containing embedding configuration
+    
+    Returns:
+        Tuple of (embedded_text, embedded_text_padded):
+        - embedded_text: The raw embedding vector (for most memory types)
+        - embedded_text_padded: Padded to MAX_EMBEDDING_DIM (for episodic memory)
+        Both are None if search_method is not 'embedding' or query is empty.
+    """
+    if search_method != "embedding" or not query:
+        return None, None
+    
+    from mirix.embeddings import embedding_model
+    import numpy as np
+    from mirix.constants import MAX_EMBEDDING_DIM
+    
+    # Compute embedding once
+    embedded_text = embedding_model(agent_state.embedding_config).get_text_embedding(query)
+    
+    # Pad for episodic memory which requires MAX_EMBEDDING_DIM
+    embedded_text_padded = np.pad(
+        np.array(embedded_text),
+        (0, MAX_EMBEDDING_DIM - len(embedded_text)),
+        mode="constant"
+    ).tolist()
+    
+    return embedded_text, embedded_text_padded
+
+
 @router.get("/memory/search")
+@with_langfuse_tracing
 async def search_memory(
     user_id: Optional[str] = None,
     query: str = "",
@@ -2421,7 +2599,7 @@ async def search_memory(
         except HTTPException:
             # If JWT/API key auth fails, fall through to use x_client_id
             pass
-    
+
     # Fallback to use the client_id and org_id passed in the method parameters.
     if not client and x_client_id:
         client_id = x_client_id
@@ -2452,7 +2630,7 @@ async def search_memory(
         }
 
     agent_state = all_agents[0]
-    
+
     # Get timezone from user record (if exists)
     try:
         user = server.user_manager.get_user_by_id(user_id)
@@ -2473,18 +2651,18 @@ async def search_memory(
                 "results": [],
                 "count": 0,
             }
-    
+
     # Add client scope to filter_tags (create if not provided)
     if parsed_filter_tags is None:
         parsed_filter_tags = {}
-    
+
     # Add or update the "scope" key with the client's scope
     parsed_filter_tags["scope"] = client.scope
 
     # Parse temporal filtering parameters
     parsed_start_date: Optional[datetime] = None
     parsed_end_date: Optional[datetime] = None
-    
+
     if start_date:
         try:
             parsed_start_date = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
@@ -2493,7 +2671,7 @@ async def search_memory(
                 parsed_start_date = parsed_start_date.replace(tzinfo=None)
         except ValueError as e:
             logger.warning("Invalid start_date format: %s", e)
-    
+
     if end_date:
         try:
             parsed_end_date = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
@@ -2525,16 +2703,176 @@ async def search_memory(
     if memory_type == "all":
         search_field = "null"
 
+    # Pre-compute embedding once if using embedding search (to avoid redundant embeddings)
+    embedded_text, embedded_text_padded = _precompute_embedding_for_search(
+        search_method, query, agent_state
+    )
+
     # Collect results from requested memory types
     all_results = []
 
-    # Search episodic memories (WITH temporal filtering)
-    if memory_type in ["episodic", "all"]:
+    # If searching all memory types, run searches concurrently for better performance
+    if memory_type == "all":
+        import asyncio
+        
+        # Define async wrappers for each manager call
+        async def search_episodic():
+            try:
+                memories = await asyncio.to_thread(
+                    server.episodic_memory_manager.list_episodic_memory,
+                    agent_state=agent_state,
+                    user=user,
+                    query=query,
+                    embedded_text=embedded_text_padded if search_method == "embedding" and query else None,
+                    search_field=search_field if search_field != "null" else "summary",
+                    search_method=search_method,
+                    limit=limit,
+                    timezone_str=timezone_str,
+                    filter_tags=parsed_filter_tags,
+                    start_date=parsed_start_date,
+                    end_date=parsed_end_date,
+                    similarity_threshold=similarity_threshold,
+                )
+                return [{
+                    "memory_type": "episodic",
+                    "id": x.id,
+                    "timestamp": x.occurred_at.isoformat() if x.occurred_at else None,
+                    "event_type": x.event_type,
+                    "actor": x.actor,
+                    "summary": x.summary,
+                    "details": x.details,
+                } for x in memories]
+            except Exception as e:
+                logger.error("Error searching episodic memories: %s", e)
+                return []
+        
+        async def search_resource():
+            try:
+                memories = await asyncio.to_thread(
+                    server.resource_memory_manager.list_resources,
+                    agent_state=agent_state,
+                    user=user,
+                    query=query,
+                    embedded_text=embedded_text if search_method == "embedding" and query else None,
+                    search_field=search_field if search_field != "null" else ("summary" if search_method == "embedding" else "content"),
+                    search_method=search_method,
+                    limit=limit,
+                    timezone_str=timezone_str,
+                    filter_tags=parsed_filter_tags,
+                    similarity_threshold=similarity_threshold,
+                )
+                return [{
+                    "memory_type": "resource",
+                    "id": x.id,
+                    "resource_type": x.resource_type,
+                    "title": x.title,
+                    "summary": x.summary,
+                    "content": x.content[:200] if x.content else None,
+                } for x in memories]
+            except Exception as e:
+                logger.error("Error searching resource memories: %s", e)
+                return []
+        
+        async def search_procedural():
+            try:
+                memories = await asyncio.to_thread(
+                    server.procedural_memory_manager.list_procedures,
+                    agent_state=agent_state,
+                    user=user,
+                    query=query,
+                    embedded_text=embedded_text if search_method == "embedding" and query else None,
+                    search_field=search_field if search_field != "null" else "summary",
+                    search_method=search_method,
+                    limit=limit,
+                    timezone_str=timezone_str,
+                    filter_tags=parsed_filter_tags,
+                    similarity_threshold=similarity_threshold,
+                )
+                return [{
+                    "memory_type": "procedural",
+                    "id": x.id,
+                    "entry_type": x.entry_type,
+                    "summary": x.summary,
+                    "steps": x.steps,
+                } for x in memories]
+            except Exception as e:
+                logger.error("Error searching procedural memories: %s", e)
+                return []
+        
+        async def search_knowledge():
+            try:
+                memories = await asyncio.to_thread(
+                    server.knowledge_vault_manager.list_knowledge,
+                    agent_state=agent_state,
+                    user=user,
+                    query=query,
+                    embedded_text=embedded_text if search_method == "embedding" and query else None,
+                    search_field=search_field if search_field != "null" else "caption",
+                    search_method=search_method,
+                    limit=limit,
+                    timezone_str=timezone_str,
+                    filter_tags=parsed_filter_tags,
+                    similarity_threshold=similarity_threshold,
+                )
+                return [{
+                    "memory_type": "knowledge_vault",
+                    "id": x.id,
+                    "entry_type": x.entry_type,
+                    "source": x.source,
+                    "sensitivity": x.sensitivity,
+                    "secret_value": x.secret_value,
+                    "caption": x.caption,
+                } for x in memories]
+            except Exception as e:
+                logger.error("Error searching knowledge vault: %s", e)
+                return []
+        
+        async def search_semantic():
+            try:
+                memories = await asyncio.to_thread(
+                    server.semantic_memory_manager.list_semantic_items,
+                    agent_state=agent_state,
+                    user=user,
+                    query=query,
+                    embedded_text=embedded_text if search_method == "embedding" and query else None,
+                    search_field=search_field if search_field != "null" else "summary",
+                    search_method=search_method,
+                    limit=limit,
+                    timezone_str=timezone_str,
+                    filter_tags=parsed_filter_tags,
+                    similarity_threshold=similarity_threshold,
+                )
+                return [{
+                    "memory_type": "semantic",
+                    "id": x.id,
+                    "summary": x.summary,
+                    "details": x.details,
+                } for x in memories]
+            except Exception as e:
+                logger.error("Error searching semantic memories: %s", e)
+                return []
+        
+        # Run all searches concurrently
+        results = await asyncio.gather(
+            search_episodic(),
+            search_resource(),
+            search_procedural(),
+            search_knowledge(),
+            search_semantic(),
+        )
+        
+        # Flatten results
+        for result_list in results:
+            all_results.extend(result_list)
+    
+    # Single memory type searches (run serially as before)
+    elif memory_type == "episodic":
         try:
             episodic_memories = server.episodic_memory_manager.list_episodic_memory(
                 agent_state=agent_state,
                 user=user,
                 query=query,
+                embedded_text=embedded_text_padded if search_method == "embedding" and query else None,
                 search_field=search_field if search_field != "null" else "summary",
                 search_method=search_method,
                 limit=limit,
@@ -2560,12 +2898,13 @@ async def search_memory(
             logger.error("Error searching episodic memories: %s", e)
 
     # Search resource memories
-    if memory_type in ["resource", "all"]:
+    elif memory_type == "resource":
         try:
             resource_memories = server.resource_memory_manager.list_resources(
                 agent_state=agent_state,
                 user=user,
                 query=query,
+                embedded_text=embedded_text if search_method == "embedding" and query else None,
                 search_field=search_field if search_field != "null" else ("summary" if search_method == "embedding" else "content"),
                 search_method=search_method,
                 limit=limit,
@@ -2588,12 +2927,13 @@ async def search_memory(
             logger.error("Error searching resource memories: %s", e)
 
     # Search procedural memories
-    if memory_type in ["procedural", "all"]:
+    elif memory_type == "procedural":
         try:
             procedural_memories = server.procedural_memory_manager.list_procedures(
                 agent_state=agent_state,
                 user=user,
                 query=query,
+                embedded_text=embedded_text if search_method == "embedding" and query else None,
                 search_field=search_field if search_field != "null" else "summary",
                 search_method=search_method,
                 limit=limit,
@@ -2615,12 +2955,13 @@ async def search_memory(
             logger.error("Error searching procedural memories: %s", e)
 
     # Search knowledge vault
-    if memory_type in ["knowledge_vault", "all"]:
+    elif memory_type == "knowledge_vault":
         try:
             knowledge_vault_memories = server.knowledge_vault_manager.list_knowledge(
                 agent_state=agent_state,
                 user=user,
                 query=query,
+                embedded_text=embedded_text if search_method == "embedding" and query else None,
                 search_field=search_field if search_field != "null" else "caption",
                 search_method=search_method,
                 limit=limit,
@@ -2644,12 +2985,13 @@ async def search_memory(
             logger.error("Error searching knowledge vault: %s", e)
 
     # Search semantic memories
-    if memory_type in ["semantic", "all"]:
+    elif memory_type == "semantic":
         try:
             semantic_memories = server.semantic_memory_manager.list_semantic_items(
                 agent_state=agent_state,
                 user=user,
                 query=query,
+                embedded_text=embedded_text if search_method == "embedding" and query else None,
                 search_field=search_field if search_field != "null" else "summary",
                 search_method=search_method,
                 limit=limit,
@@ -2687,6 +3029,7 @@ async def search_memory(
 
 
 @router.get("/memory/search_all_users")
+@with_langfuse_tracing
 async def search_memory_all_users(
     query: str,
     memory_type: str = "all",
@@ -2725,9 +3068,9 @@ async def search_memory_all_users(
         end_date: Optional end date/time for episodic memory filtering (ISO 8601 format)
     """
     import json
-    
+
     server = get_server()
-    
+
     # Determine which client to use and which org to search
     if client_id:
         # Use the provided client_id - fetch its org_id
@@ -2760,11 +3103,11 @@ async def search_memory_all_users(
             )
     else:
         filter_tags_dict = {}
-    
+
     # Add client scope to filter_tags (same pattern as retrieve_with_conversation)
     # This filters memories where memory.filter_tags["scope"] == client.scope
     filter_tags_dict["scope"] = client.scope
-    
+
     logger.info(
         "Cross-user search: client=%s, org=%s, client_scope=%s, filter_tags=%s, similarity_threshold=%s",
         effective_client_id, effective_org_id, client.scope, filter_tags_dict, similarity_threshold
@@ -2773,7 +3116,7 @@ async def search_memory_all_users(
     # Parse temporal filtering parameters
     parsed_start_date: Optional[datetime] = None
     parsed_end_date: Optional[datetime] = None
-    
+
     if start_date:
         try:
             parsed_start_date = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
@@ -2782,7 +3125,7 @@ async def search_memory_all_users(
                 parsed_start_date = parsed_start_date.replace(tzinfo=None)
         except ValueError as e:
             logger.warning("Invalid start_date format: %s", e)
-    
+
     if end_date:
         try:
             parsed_end_date = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
@@ -2804,7 +3147,7 @@ async def search_memory_all_users(
         }
 
     agent_state = all_agents[0]
-    
+
     # Validate search parameters
     if memory_type == "resource" and search_field == "content" and search_method == "embedding":
         return {
@@ -2827,16 +3170,181 @@ async def search_memory_all_users(
     if memory_type == "all":
         search_field = "null"
 
+    # Pre-compute embedding once if using embedding search (to avoid redundant embeddings)
+    embedded_text, embedded_text_padded = _precompute_embedding_for_search(
+        search_method, query, agent_state
+    )
+
     # Collect results using organization_id filter
     all_results = []
 
-    # Search episodic memories across organization (WITH temporal filtering)
-    if memory_type in ["episodic", "all"]:
+    # If searching all memory types, run searches concurrently for better performance
+    if memory_type == "all":
+        import asyncio
+        
+        # Define async wrappers for each manager call
+        async def search_episodic():
+            try:
+                memories = await asyncio.to_thread(
+                    server.episodic_memory_manager.list_episodic_memory_by_org,
+                    agent_state=agent_state,
+                    organization_id=effective_org_id,
+                    query=query,
+                    embedded_text=embedded_text_padded if search_method == "embedding" and query else None,
+                    search_field=search_field if search_field != "null" else "summary",
+                    search_method=search_method,
+                    limit=limit,
+                    timezone_str="UTC",
+                    filter_tags=filter_tags_dict,
+                    start_date=parsed_start_date,
+                    end_date=parsed_end_date,
+                    similarity_threshold=similarity_threshold,
+                )
+                return [{
+                    "memory_type": "episodic",
+                    "id": x.id,
+                    "timestamp": x.occurred_at.isoformat() if x.occurred_at else None,
+                    "event_type": x.event_type,
+                    "actor": x.actor,
+                    "summary": x.summary,
+                    "details": x.details,
+                    "user_id": str(x.user_id),
+                } for x in memories]
+            except Exception as e:
+                logger.error("Error searching episodic memories across org: %s", e)
+                return []
+        
+        async def search_resource():
+            try:
+                memories = await asyncio.to_thread(
+                    server.resource_memory_manager.list_resources_by_org,
+                    agent_state=agent_state,
+                    organization_id=effective_org_id,
+                    query=query,
+                    embedded_text=embedded_text if search_method == "embedding" and query else None,
+                    search_field=search_field if search_field != "null" else ("summary" if search_method == "embedding" else "content"),
+                    search_method=search_method,
+                    limit=limit,
+                    timezone_str="UTC",
+                    filter_tags=filter_tags_dict,
+                    similarity_threshold=similarity_threshold,
+                )
+                return [{
+                    "memory_type": "resource",
+                    "id": x.id,
+                    "resource_type": x.resource_type,
+                    "title": x.title,
+                    "summary": x.summary,
+                    "content": x.content[:200] if x.content else None,
+                    "user_id": str(x.user_id),
+                } for x in memories]
+            except Exception as e:
+                logger.error("Error searching resource memories across org: %s", e)
+                return []
+        
+        async def search_procedural():
+            try:
+                memories = await asyncio.to_thread(
+                    server.procedural_memory_manager.list_procedures_by_org,
+                    agent_state=agent_state,
+                    organization_id=effective_org_id,
+                    query=query,
+                    embedded_text=embedded_text if search_method == "embedding" and query else None,
+                    search_field=search_field if search_field != "null" else "summary",
+                    search_method=search_method,
+                    limit=limit,
+                    timezone_str="UTC",
+                    filter_tags=filter_tags_dict,
+                    similarity_threshold=similarity_threshold,
+                )
+                return [{
+                    "memory_type": "procedural",
+                    "id": x.id,
+                    "entry_type": x.entry_type,
+                    "summary": x.summary,
+                    "steps": x.steps,
+                    "user_id": str(x.user_id),
+                } for x in memories]
+            except Exception as e:
+                logger.error("Error searching procedural memories across org: %s", e)
+                return []
+        
+        async def search_knowledge():
+            try:
+                memories = await asyncio.to_thread(
+                    server.knowledge_vault_manager.list_knowledge_by_org,
+                    agent_state=agent_state,
+                    organization_id=effective_org_id,
+                    query=query,
+                    embedded_text=embedded_text if search_method == "embedding" and query else None,
+                    search_field=search_field if search_field != "null" else "caption",
+                    search_method=search_method,
+                    limit=limit,
+                    timezone_str="UTC",
+                    filter_tags=filter_tags_dict,
+                    similarity_threshold=similarity_threshold,
+                )
+                return [{
+                    "memory_type": "knowledge_vault",
+                    "id": x.id,
+                    "entry_type": x.entry_type,
+                    "source": x.source,
+                    "sensitivity": x.sensitivity,
+                    "secret_value": x.secret_value,
+                    "caption": x.caption,
+                    "user_id": str(x.user_id),
+                } for x in memories]
+            except Exception as e:
+                logger.error("Error searching knowledge vault across org: %s", e)
+                return []
+        
+        async def search_semantic():
+            try:
+                memories = await asyncio.to_thread(
+                    server.semantic_memory_manager.list_semantic_items_by_org,
+                    agent_state=agent_state,
+                    organization_id=effective_org_id,
+                    query=query,
+                    embedded_text=embedded_text if search_method == "embedding" and query else None,
+                    search_field=search_field if search_field != "null" else "summary",
+                    search_method=search_method,
+                    limit=limit,
+                    timezone_str="UTC",
+                    filter_tags=filter_tags_dict,
+                    similarity_threshold=similarity_threshold,
+                )
+                return [{
+                    "memory_type": "semantic",
+                    "id": x.id,
+                    "summary": x.summary,
+                    "details": x.details,
+                    "user_id": str(x.user_id),
+                } for x in memories]
+            except Exception as e:
+                logger.error("Error searching semantic memories across org: %s", e)
+                return []
+        
+        # Run all searches concurrently
+        results = await asyncio.gather(
+            search_episodic(),
+            search_resource(),
+            search_procedural(),
+            search_knowledge(),
+            search_semantic(),
+        )
+        
+        # Flatten results
+        for result_list in results:
+            all_results.extend(result_list)
+    
+    # Single memory type searches (run serially as before)
+    elif memory_type == "episodic":
         try:
             episodic_memories = server.episodic_memory_manager.list_episodic_memory_by_org(
                 agent_state=agent_state,
                 organization_id=effective_org_id,
                 query=query,
+                embedded_text=embedded_text_padded if search_method == "embedding" and query else None,
                 search_field=search_field if search_field != "null" else "summary",
                 search_method=search_method,
                 limit=limit,
@@ -2863,12 +3371,13 @@ async def search_memory_all_users(
             logger.error("Error searching episodic memories across organization: %s", e)
 
     # Search resource memories across organization
-    if memory_type in ["resource", "all"]:
+    elif memory_type == "resource":
         try:
             resource_memories = server.resource_memory_manager.list_resources_by_org(
                 agent_state=agent_state,
                 organization_id=effective_org_id,
                 query=query,
+                embedded_text=embedded_text if search_method == "embedding" and query else None,
                 search_field=search_field if search_field != "null" else ("summary" if search_method == "embedding" else "content"),
                 search_method=search_method,
                 limit=limit,
@@ -2892,12 +3401,13 @@ async def search_memory_all_users(
             logger.error("Error searching resource memories across organization: %s", e)
 
     # Search procedural memories across organization
-    if memory_type in ["procedural", "all"]:
+    elif memory_type == "procedural":
         try:
             procedural_memories = server.procedural_memory_manager.list_procedures_by_org(
                 agent_state=agent_state,
                 organization_id=effective_org_id,
                 query=query,
+                embedded_text=embedded_text if search_method == "embedding" and query else None,
                 search_field=search_field if search_field != "null" else "summary",
                 search_method=search_method,
                 limit=limit,
@@ -2920,12 +3430,13 @@ async def search_memory_all_users(
             logger.error("Error searching procedural memories across organization: %s", e)
 
     # Search knowledge vault across organization
-    if memory_type in ["knowledge_vault", "all"]:
+    elif memory_type == "knowledge_vault":
         try:
             knowledge_vault_memories = server.knowledge_vault_manager.list_knowledge_by_org(
                 agent_state=agent_state,
                 organization_id=effective_org_id,
                 query=query,
+                embedded_text=embedded_text if search_method == "embedding" and query else None,
                 search_field=search_field if search_field != "null" else "caption",
                 search_method=search_method,
                 limit=limit,
@@ -2950,12 +3461,13 @@ async def search_memory_all_users(
             logger.error("Error searching knowledge vault across organization: %s", e)
 
     # Search semantic memories across organization
-    if memory_type in ["semantic", "all"]:
+    elif memory_type == "semantic":
         try:
             semantic_memories = server.semantic_memory_manager.list_semantic_items_by_org(
                 agent_state=agent_state,
                 organization_id=effective_org_id,
                 query=query,
+                embedded_text=embedded_text if search_method == "embedding" and query else None,
                 search_field=search_field if search_field != "null" else "summary",
                 search_method=search_method,
                 limit=limit,
@@ -3398,20 +3910,20 @@ async def update_semantic_memory(
     """
     # Authenticate with either JWT or API key
     client, auth_type = get_client_from_jwt_or_api_key(authorization, http_request)
-    
+
     server = get_server()
-    
+
     # If user_id is not provided, use the admin user for this client
     if not user_id:
         from mirix.services.admin_user_manager import ClientAuthManager
         user_id = ClientAuthManager.get_admin_user_id_for_client(client.id)
         logger.debug("No user_id provided, using admin user: %s", user_id)
-    
+
     # Get user
     user = server.user_manager.get_user_by_id(user_id)
     if not user:
         raise HTTPException(status_code=404, detail=f"User {user_id} not found")
-    
+
     try:
         semantic_update_data = {"id": memory_id}
         if request.name is not None:
@@ -3424,6 +3936,7 @@ async def update_semantic_memory(
         updated_memory = server.semantic_memory_manager.update_item(
             item_update=SemanticMemoryItemUpdate.model_validate(semantic_update_data),
             user=user,
+            actor=client,
         )
         return {
             "success": True,
@@ -3485,20 +3998,20 @@ async def update_procedural_memory(
     """
     # Authenticate with either JWT or API key
     client, auth_type = get_client_from_jwt_or_api_key(authorization, http_request)
-    
+
     server = get_server()
-    
+
     # If user_id is not provided, use the admin user for this client
     if not user_id:
         from mirix.services.admin_user_manager import ClientAuthManager
         user_id = ClientAuthManager.get_admin_user_id_for_client(client.id)
         logger.debug("No user_id provided, using admin user: %s", user_id)
-    
+
     # Get user
     user = server.user_manager.get_user_by_id(user_id)
     if not user:
         raise HTTPException(status_code=404, detail=f"User {user_id} not found")
-    
+
     try:
         procedural_update_data = {"id": memory_id}
         if request.summary is not None:
@@ -3511,6 +4024,7 @@ async def update_procedural_memory(
                 procedural_update_data
             ),
             user=user,
+            actor=client,
         )
         return {
             "success": True,
@@ -3572,20 +4086,20 @@ async def update_resource_memory(
     """
     # Authenticate with either JWT or API key
     client, auth_type = get_client_from_jwt_or_api_key(authorization, http_request)
-    
+
     server = get_server()
-    
+
     # If user_id is not provided, use the admin user for this client
     if not user_id:
         from mirix.services.admin_user_manager import ClientAuthManager
         user_id = ClientAuthManager.get_admin_user_id_for_client(client.id)
         logger.debug("No user_id provided, using admin user: %s", user_id)
-    
+
     # Get user
     user = server.user_manager.get_user_by_id(user_id)
     if not user:
         raise HTTPException(status_code=404, detail=f"User {user_id} not found")
-    
+
     try:
         resource_update_data = {"id": memory_id}
         if request.title is not None:
@@ -3598,6 +4112,7 @@ async def update_resource_memory(
         updated_memory = server.resource_memory_manager.update_item(
             item_update=ResourceMemoryItemUpdate.model_validate(resource_update_data),
             user=user,
+            actor=client,
         )
         return {
             "success": True,

@@ -144,7 +144,14 @@ class ResourceMemoryManager:
             return None
 
     def _postgresql_fulltext_search(
-        self, session, base_query, query_text, search_field, limit, user_id
+        self,
+        session,
+        base_query,
+        query_text,
+        search_field,
+        limit,
+        user_id,
+        filter_tags=None,
     ):
         """
         Efficient PostgreSQL-native full-text search using ts_rank_cd for BM25-like functionality.
@@ -152,10 +159,12 @@ class ResourceMemoryManager:
 
         Args:
             session: Database session
-            base_query: Base SQLAlchemy query
+            base_query: Base SQLAlchemy query (not used, kept for API compatibility)
             query_text: Search query string
             search_field: Field to search in ('title', 'summary', 'content', 'resource_type', etc.)
             limit: Maximum number of results to return
+            user_id: User ID to filter by
+            filter_tags: Optional dict of tag key-value pairs to filter by (e.g., {"scope": "CARE"})
 
         Returns:
             List of ResourceMemoryItem objects ranked by relevance
@@ -227,30 +236,41 @@ class ResourceMemoryManager:
                 setweight(to_tsvector('english', coalesce(resource_type, '')), 'D'),
                 to_tsquery('english', :tsquery), 32)"""
 
+        # Build WHERE clauses dynamically
+        where_clauses = [
+            f"{tsvector_sql} @@ to_tsquery('english', :tsquery)",
+            "user_id = :user_id",
+        ]
+        query_params = {
+            "tsquery": tsquery_string_and,
+            "user_id": user_id,
+            "limit_val": limit or 50,
+        }
+
+        # Add filter_tags filtering (e.g., {"scope": "CARE"})
+        if filter_tags:
+            for key, value in filter_tags.items():
+                where_clauses.append(f"filter_tags->>'{key}' = :filter_tag_{key}")
+                query_params[f"filter_tag_{key}"] = str(value)
+
+        where_clause = " AND ".join(where_clauses)
+
         # Try AND query first for more precise results
         try:
-            and_query_sql = text(f"""
+            and_query_sql = text(
+                f"""
                 SELECT 
                     id, title, summary, content, summary_embedding, embedding_config,
                     created_at, resource_type, organization_id, last_modify, user_id,
                     {rank_sql} as rank_score
                 FROM resource_memory 
-                WHERE {tsvector_sql} @@ to_tsquery('english', :tsquery)
-                    AND user_id = :user_id
+                WHERE {where_clause}
                 ORDER BY rank_score DESC, created_at DESC
                 LIMIT :limit_val
-            """)
-
-            results = list(
-                session.execute(
-                    and_query_sql,
-                    {
-                        "tsquery": tsquery_string_and,
-                        "user_id": user_id,
-                        "limit_val": limit or 50,
-                    },
-                )
+            """
             )
+
+            results = list(session.execute(and_query_sql, query_params))
 
             # If AND query returns sufficient results, use them
             if len(results) >= min(limit or 10, 10):
@@ -284,26 +304,24 @@ class ResourceMemoryManager:
 
         # If AND query fails or returns too few results, try OR query
         try:
-            or_query_sql = text(f"""
+            # Update query params for OR query
+            or_query_params = query_params.copy()
+            or_query_params["tsquery"] = tsquery_string_or
+
+            or_query_sql = text(
+                f"""
                 SELECT 
                     id, title, summary, content, summary_embedding, embedding_config,
                     created_at, resource_type, organization_id, last_modify, user_id,
                     {rank_sql} as rank_score
                 FROM resource_memory 
-                WHERE {tsvector_sql} @@ to_tsquery('english', :tsquery)
-                    AND user_id = :user_id
+                WHERE {where_clause}
                 ORDER BY rank_score DESC, created_at DESC
                 LIMIT :limit_val
-            """)
-
-            results = session.execute(
-                or_query_sql,
-                {
-                    "tsquery": tsquery_string_or,
-                    "user_id": user_id,
-                    "limit_val": limit or 50,
-                },
+            """
             )
+
+            results = session.execute(or_query_sql, or_query_params)
 
             resources = []
             for row in results:
@@ -360,7 +378,7 @@ class ResourceMemoryManager:
         try:
             from mirix.database.redis_client import get_redis_client
             redis_client = get_redis_client()
-            
+
             if redis_client:
                 redis_key = f"{redis_client.RESOURCE_PREFIX}{item_id}"
                 cached_data = redis_client.get_json(redis_key)
@@ -369,15 +387,15 @@ class ResourceMemoryManager:
                     return PydanticResourceMemoryItem(**cached_data)
         except Exception as e:
             logger.warning("Redis cache read failed for resource memory %s: %s", item_id, e)
-        
+
         # Cache MISS - fetch from PostgreSQL
         with self.session_maker() as session:
             try:
                 item = ResourceMemoryItem.read(
-                    db_session=session, identifier=item_id, actor=user
+                    db_session=session, identifier=item_id, user=user
                 )
                 pydantic_item = item.to_pydantic()
-                
+
                 # Populate Redis cache
                 try:
                     if redis_client:
@@ -387,7 +405,7 @@ class ResourceMemoryManager:
                         redis_client.set_json(redis_key, data, ttl=settings.redis_ttl_default)
                 except Exception as e:
                     logger.warning("Failed to populate Redis cache: %s", e)
-                
+
                 return pydantic_item
             except NoResultFound:
                 raise NoResultFound(
@@ -463,7 +481,7 @@ class ResourceMemoryManager:
         # Set client_id and user_id on the memory
         data_dict["client_id"] = client_id
         data_dict["user_id"] = user_id
-        
+
         logger.debug(
             "create_item: client_id=%s, user_id=%s", 
             client_id, user_id
@@ -476,19 +494,22 @@ class ResourceMemoryManager:
 
     @enforce_types
     def update_item(
-        self, item_update: ResourceMemoryItemUpdate, user: PydanticUser
+        self,
+        item_update: ResourceMemoryItemUpdate,
+        user: PydanticUser,
+        actor: PydanticClient,
     ) -> PydanticResourceMemoryItem:
         """Update an existing resource memory item."""
         with self.session_maker() as session:
             item = ResourceMemoryItem.read(
-                db_session=session, identifier=item_update.id, actor=user
+                db_session=session, identifier=item_update.id, user=user
             )
             update_data = item_update.model_dump(exclude_unset=True)
             for k, v in update_data.items():
                 if k not in ["id", "updated_at"]:  # Exclude updated_at - handled by update() method
                     setattr(item, k, v)
             # updated_at is automatically set to current UTC time by item.update()
-            item.update_with_redis(session, actor=user)  # ⭐ Updates Redis JSON cache
+            item.update_with_redis(session, actor=actor)  # ⭐ Updates Redis JSON cache
             return item.to_pydantic()
 
     @enforce_types
@@ -558,18 +579,18 @@ class ResourceMemoryManager:
             - Fallback 'bm25' (SQLite): In-memory processing, slower for large datasets but still provides
               proper BM25 ranking
         """
-        
+
         # Extract organization_id from user for multi-tenant isolation
         organization_id = user.organization_id
-        
+
         # ⭐ Try Redis Search first (if cache enabled and Redis is available)
         from mirix.database.redis_client import get_redis_client
-        
+
         query = query.strip() if query else ""
         is_empty_query = not query or query == ""
-        
+
         redis_client = get_redis_client()
-        
+
         if use_cache and redis_client:
             try:
                 if is_empty_query:
@@ -586,14 +607,14 @@ class ResourceMemoryManager:
                         results = redis_client.clean_redis_fields(results)
                         return [PydanticResourceMemoryItem(**item) for item in results]
                     # If no results, fall through to PostgreSQL (don't return empty list)
-                
+
                 elif search_method == "embedding":
                     if embedded_text is None:
                         from mirix.embeddings import embedding_model
                         embedded_text = embedding_model.embed_and_upload_batch(
                             [query], agent_state.embedding_config
                         )[0]
-                    
+
                     # Resource only has summary_embedding
                     results = redis_client.search_vector(
                         index_name=redis_client.RESOURCE_INDEX,
@@ -609,10 +630,10 @@ class ResourceMemoryManager:
                         # Clean Redis-specific fields before Pydantic validation
                         results = redis_client.clean_redis_fields(results)
                         return [PydanticResourceMemoryItem(**item) for item in results]
-                
+
                 elif search_method in ["bm25", "string_match"]:
                     fields = [search_field] if search_field else ["summary", "content"]
-                    
+
                     results = redis_client.search_text(
                         index_name=redis_client.RESOURCE_INDEX,
                         query=query,
@@ -627,10 +648,10 @@ class ResourceMemoryManager:
                         # Clean Redis-specific fields before Pydantic validation
                         results = redis_client.clean_redis_fields(results)
                         return [PydanticResourceMemoryItem(**item) for item in results]
-            
+
             except Exception as e:
                 logger.warning("Redis search failed for resource memory, falling back to PostgreSQL: %s", e)
-        
+
         # Log when bypassing cache or Redis unavailable
         if not use_cache:
             logger.debug("⏭️  Bypassing Redis cache (use_cache=False), querying PostgreSQL directly for resource memory")
@@ -653,12 +674,12 @@ class ResourceMemoryManager:
                         ).desc()
                     )
                 )
-                
+
                 # Apply filter_tags if provided
                 if filter_tags:
                     for key, value in filter_tags.items():
                         query_stmt = query_stmt.where(ResourceMemoryItem.filter_tags[key].as_string() == str(value))
-                
+
                 if limit:
                     query_stmt = query_stmt.limit(limit)
                 result = session.execute(query_stmt)
@@ -683,7 +704,7 @@ class ResourceMemoryManager:
             ).where(
                 ResourceMemoryItem.organization_id == organization_id
             )
-            
+
             # Apply filter_tags if provided
             if filter_tags:
                 for key, value in filter_tags.items():
@@ -718,7 +739,13 @@ class ResourceMemoryManager:
                 if settings.mirix_pg_uri_no_default:
                     # Use PostgreSQL native full-text search
                     return self._postgresql_fulltext_search(
-                        session, base_query, query, search_field, limit, user.id
+                        session,
+                        base_query,
+                        query,
+                        search_field,
+                        limit,
+                        user.id,
+                        filter_tags=filter_tags,
                     )
                 else:
                     # Fallback to in-memory BM25 for SQLite (legacy method)
@@ -825,7 +852,7 @@ class ResourceMemoryManager:
 
             # Set client_id from actor, user_id with fallback to DEFAULT_USER_ID
             from mirix.services.user_manager import UserManager
-            
+
             client_id = actor.id  # Always derive from actor
             if user_id is None:
                 user_id = UserManager.ADMIN_USER_ID
@@ -886,35 +913,35 @@ class ResourceMemoryManager:
             Number of records deleted
         """
         from mirix.database.redis_client import get_redis_client
-        
+
         with self.session_maker() as session:
             # Get IDs for Redis cleanup (only fetch IDs, not full objects)
             item_ids = [row[0] for row in session.query(ResourceMemoryItem.id).filter(
                 ResourceMemoryItem.client_id == actor.id
             ).all()]
-            
+
             count = len(item_ids)
             if count == 0:
                 return 0
-            
+
             # Bulk delete in single query
             session.query(ResourceMemoryItem).filter(
                 ResourceMemoryItem.client_id == actor.id
             ).delete(synchronize_session=False)
-            
+
             session.commit()
-        
+
         # Batch delete from Redis cache (outside of session context)
         redis_client = get_redis_client()
         if redis_client and item_ids:
             redis_keys = [f"{redis_client.RESOURCE_PREFIX}{item_id}" for item_id in item_ids]
-            
+
             # Delete in batches to avoid command size limits
             BATCH_SIZE = 1000
             for i in range(0, len(redis_keys), BATCH_SIZE):
                 batch = redis_keys[i:i + BATCH_SIZE]
                 redis_client.client.delete(*batch)
-        
+
         return count
 
     def soft_delete_by_client_id(self, actor: PydanticClient) -> int:
@@ -928,28 +955,28 @@ class ResourceMemoryManager:
             Number of records soft deleted
         """
         from mirix.database.redis_client import get_redis_client
-        
+
         with self.session_maker() as session:
             # Query all non-deleted records for this client (use actor.id)
             items = session.query(ResourceMemoryItem).filter(
                 ResourceMemoryItem.client_id == actor.id,
                 ResourceMemoryItem.is_deleted == False
             ).all()
-            
+
             count = len(items)
             if count == 0:
                 return 0
-            
+
             # Extract IDs BEFORE committing (to avoid detached instance errors)
             item_ids = [item.id for item in items]
-            
+
             # Soft delete from database (set is_deleted = True directly, don't call item.delete())
             for item in items:
                 item.is_deleted = True
                 item.set_updated_at()
-            
+
             session.commit()
-        
+
         # Update Redis cache with is_deleted=true (outside session)
         redis_client = get_redis_client()
         if redis_client:
@@ -960,7 +987,7 @@ class ResourceMemoryManager:
                 except Exception:
                     # If update fails, remove from cache
                     redis_client.delete(redis_key)
-        
+
         return count
 
     def soft_delete_by_user_id(self, user_id: str) -> int:
@@ -974,28 +1001,28 @@ class ResourceMemoryManager:
             Number of records soft deleted
         """
         from mirix.database.redis_client import get_redis_client
-        
+
         with self.session_maker() as session:
             # Query all non-deleted records for this user
             items = session.query(ResourceMemoryItem).filter(
                 ResourceMemoryItem.user_id == user_id,
                 ResourceMemoryItem.is_deleted == False
             ).all()
-            
+
             count = len(items)
             if count == 0:
                 return 0
-            
+
             # Extract IDs BEFORE committing (to avoid detached instance errors)
             item_ids = [item.id for item in items]
-            
+
             # Soft delete from database (set is_deleted = True directly, don't call item.delete())
             for item in items:
                 item.is_deleted = True
                 item.set_updated_at()
-            
+
             session.commit()
-        
+
         # Update Redis cache with is_deleted=true (outside session)
         redis_client = get_redis_client()
         if redis_client:
@@ -1006,7 +1033,7 @@ class ResourceMemoryManager:
                 except Exception:
                     # If update fails, remove from cache
                     redis_client.delete(redis_key)
-        
+
         return count
 
     def delete_by_user_id(self, user_id: str) -> int:
@@ -1021,35 +1048,35 @@ class ResourceMemoryManager:
             Number of records deleted
         """
         from mirix.database.redis_client import get_redis_client
-        
+
         with self.session_maker() as session:
             # Get IDs for Redis cleanup (only fetch IDs, not full objects)
             item_ids = [row[0] for row in session.query(ResourceMemoryItem.id).filter(
                 ResourceMemoryItem.user_id == user_id
             ).all()]
-            
+
             count = len(item_ids)
             if count == 0:
                 return 0
-            
+
             # Bulk delete in single query
             session.query(ResourceMemoryItem).filter(
                 ResourceMemoryItem.user_id == user_id
             ).delete(synchronize_session=False)
-            
+
             session.commit()
-        
+
         # Batch delete from Redis cache (outside of session context)
         redis_client = get_redis_client()
         if redis_client and item_ids:
             redis_keys = [f"{redis_client.RESOURCE_PREFIX}{item_id}" for item_id in item_ids]
-            
+
             # Delete in batches to avoid command size limits
             BATCH_SIZE = 1000
             for i in range(0, len(redis_keys), BATCH_SIZE):
                 batch = redis_keys[i:i + BATCH_SIZE]
                 redis_client.client.delete(*batch)
-        
+
         return count
 
     @update_timezone
@@ -1086,11 +1113,11 @@ class ResourceMemoryManager:
         Returns:
             List of resource memories matching org_id and filter_tags["scope"]
         """
-        
+
         # Try Redis Search first
         from mirix.database.redis_client import get_redis_client
         redis_client = get_redis_client()
-        
+
         if use_cache and redis_client:
             try:
                 # Case 1: No query - recent items
@@ -1106,14 +1133,15 @@ class ResourceMemoryManager:
                         logger.debug("✅ Redis: %d resource memories for org %s", len(results), organization_id)
                         results = redis_client.clean_redis_fields(results)
                         return [PydanticResourceMemoryItem(**item) for item in results]
-                
+
                 # Case 2: Vector search
                 elif search_method == "embedding":
                     if embedded_text is None:
-                        from mirix.embeddings import embedding_model
                         import numpy as np
+
                         from mirix.constants import MAX_EMBEDDING_DIM
-                        
+                        from mirix.embeddings import embedding_model
+
                         embedded_text = embedding_model(agent_state.embedding_config).get_text_embedding(query)
                         embedded_text = np.array(embedded_text)
                         embedded_text = np.pad(
@@ -1121,9 +1149,9 @@ class ResourceMemoryManager:
                             (0, MAX_EMBEDDING_DIM - embedded_text.shape[0]),
                             mode="constant",
                         ).tolist()
-                    
+
                     vector_field = "summary_embedding"
-                    
+
                     results = redis_client.search_vector_by_org(
                         index_name=redis_client.RESOURCE_INDEX,
                         embedding=embedded_text,
@@ -1136,7 +1164,7 @@ class ResourceMemoryManager:
                         logger.debug("✅ Redis vector: %d results for org %s", len(results), organization_id)
                         results = redis_client.clean_redis_fields(results)
                         return [PydanticResourceMemoryItem(**item) for item in results]
-                
+
                 # Case 3: Text search
                 else:
                     results = redis_client.search_text_by_org(
@@ -1152,19 +1180,19 @@ class ResourceMemoryManager:
                         logger.debug("✅ Redis text: %d results for org %s", len(results), organization_id)
                         results = redis_client.clean_redis_fields(results)
                         return [PydanticResourceMemoryItem(**item) for item in results]
-            
+
             except Exception as e:
                 logger.warning("Redis search failed: %s", e)
-        
+
         # PostgreSQL fallback
         logger.debug("⚠️ PostgreSQL fallback for org %s", organization_id)
-        
+
         with self.session_maker() as session:
             # Return full ResourceMemoryItem objects, not individual columns
             base_query = select(ResourceMemoryItem).where(
                 ResourceMemoryItem.organization_id == organization_id
             )
-            
+
             # Apply filter_tags (INCLUDING SCOPE)
             if filter_tags:
                 from sqlalchemy import func, or_
@@ -1201,28 +1229,28 @@ class ResourceMemoryManager:
                 if embedded_text is None:
                     from mirix.embeddings import embedding_model
                     embedded_text = embedding_model(embedding_config).get_text_embedding(query)
-                
+
                 embedding_query_field = ResourceMemoryItem.summary_embedding.cosine_distance(embedded_text).label("distance")
                 base_query = base_query.add_columns(embedding_query_field)
-                
+
                 # Apply similarity threshold if provided
                 if similarity_threshold is not None:
                     base_query = base_query.where(embedding_query_field < similarity_threshold)
-                
+
                 base_query = base_query.order_by(embedding_query_field)
             elif search_method == "bm25":
                 from sqlalchemy import func
-                
+
                 text_field = ResourceMemoryItem.content if search_field == "content" else ResourceMemoryItem.summary
                 tsquery = func.plainto_tsquery("english", query)
                 tsvector = func.to_tsvector("english", text_field)
                 rank = func.ts_rank_cd(tsvector, tsquery).label("rank")
-                
+
                 base_query = base_query.add_columns(rank).where(tsvector.op("@@")(tsquery)).order_by(rank.desc())
-            
+
             if limit:
                 base_query = base_query.limit(limit)
-            
+
             result = session.execute(base_query)
             resource_memory = result.scalars().all()
             return [item.to_pydantic() for item in resource_memory]

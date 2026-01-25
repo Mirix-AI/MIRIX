@@ -12,6 +12,8 @@ from mirix.queue.message_pb2 import MessageCreate as ProtoMessageCreate
 from mirix.queue.message_pb2 import QueueMessage
 import mirix.queue as queue
 
+from mirix.observability import add_trace_to_queue_message
+
 logger = logging.getLogger(__name__)
 
 def put_messages(
@@ -125,6 +127,9 @@ def put_messages(
         # Set occurred_at if provided
         if occurred_at is not None:
             queue_msg.occurred_at = occurred_at
+        
+        # Add LangFuse trace context for distributed tracing
+        queue_msg = add_trace_to_queue_message(queue_msg)
         
         # Send to queue
         logger.debug("Sending message to queue: agent_id=%s, input_messages_count=%s, occurred_at=%s", 

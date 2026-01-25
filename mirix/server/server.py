@@ -1,10 +1,11 @@
 # inspecting tools
 import asyncio
 import os
+import sys
 import traceback
 import warnings
 from abc import abstractmethod
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime
 from typing import Callable, Dict, List, Optional, Union
 
@@ -34,29 +35,24 @@ from mirix.agent import (
     SemanticMemoryAgent,
     save_agent,
 )
+from mirix.config import MirixConfig
 
 # TODO use custom interface
-from mirix.interface import (
-    AgentInterface,  # abstract
-    CLIInterface,  # for printing to terminal
-    QueuingInterface,  # for message queuing
-)
-from mirix.config import MirixConfig
+from mirix.interface import AgentInterface  # abstract
+from mirix.interface import CLIInterface  # for printing to terminal
+from mirix.interface import QueuingInterface  # for message queuing
 from mirix.log import get_logger
 from mirix.orm import Base
 from mirix.orm.errors import NoResultFound
 from mirix.schemas.agent import AgentState, AgentType, CreateAgent, CreateMetaAgent
 from mirix.schemas.block import BlockUpdate
+from mirix.schemas.client import Client
 from mirix.schemas.embedding_config import EmbeddingConfig
 
 # openai schemas
 from mirix.schemas.enums import MessageStreamStatus
 from mirix.schemas.llm_config import LLMConfig
-from mirix.schemas.memory import (
-    ContextWindowOverview,
-    Memory,
-    RecallMemorySummary,
-)
+from mirix.schemas.memory import ContextWindowOverview, Memory, RecallMemorySummary
 from mirix.schemas.message import Message, MessageCreate, MessageUpdate
 from mirix.schemas.mirix_message import (
     LegacyMirixMessage,
@@ -82,7 +78,6 @@ from mirix.schemas.providers import (
 from mirix.schemas.tool import Tool
 from mirix.schemas.usage import MirixUsageStatistics
 from mirix.schemas.user import User
-from mirix.schemas.client import Client
 from mirix.services.agent_manager import AgentManager
 from mirix.services.block_manager import BlockManager
 from mirix.services.client_manager import ClientManager
@@ -317,13 +312,13 @@ if not USE_PGLITE and settings.mirix_pg_uri_no_default:
         if ":" in credentials_part and "//" in credentials_part:
             protocol_user = credentials_part.rsplit(":", 1)[0]  # Keep protocol and user
             pg_uri_for_log = f"{protocol_user}:****@{parts[1]}"
-    
+
     logger.debug("Connection String: %s", pg_uri_for_log)
     logger.debug("Pool Size: %s", settings.pg_pool_size)
     logger.debug("Max Overflow: %s", settings.pg_max_overflow)
     logger.debug("Pool Timeout: %ss", settings.pg_pool_timeout)
     logger.debug("Pool Recycle: %ss", settings.pg_pool_recycle)
-    
+
     logger.debug("Creating engine: %s", settings.mirix_pg_uri)
     config.recall_storage_type = "postgres"
     config.recall_storage_uri = settings.mirix_pg_uri_no_default
@@ -406,6 +401,7 @@ if not USE_PGLITE:
 
 try:
     from mirix.database.redis_client import initialize_redis_client
+
     redis_client = initialize_redis_client()
     if redis_client:
         logger.info("✅ Redis integration enabled")
@@ -415,6 +411,50 @@ except Exception as e:
     logger.warning("Redis initialization failed: %s", e)
     logger.info("System will continue without Redis caching")
     redis_client = None
+
+
+# ========================================================================
+# LANGFUSE OBSERVABILITY INITIALIZATION (Module Level - Runs on Import)
+# ========================================================================
+# Initialize LangFuse client for tracing and observability
+# This provides distributed tracing across API → Kafka → Worker processes
+
+try:
+    from mirix.observability import (
+        flush_langfuse,
+        initialize_langfuse,
+        shutdown_langfuse,
+    )
+
+    logger.info("Initializing LangFuse observability...")
+    initialize_langfuse()
+except Exception as e:
+    logger.warning(
+        f"LangFuse initialization failed: {e}. Continuing without observability."
+    )
+
+
+# ========================================================================
+# GRACEFUL SHUTDOWN - No Custom Signal Handlers Needed
+# ========================================================================
+# Let uvicorn handle SIGTERM/SIGINT naturally.
+# The lifespan context manager (cleanup function) will automatically:
+# 1. Be called when uvicorn receives shutdown signals
+# 2. Flush LangFuse traces before final shutdown
+# 3. Clean up queue manager resources
+#
+# This approach:
+# ✅ Avoids signal handler complexity
+# ✅ No asyncio.CancelledError issues
+# ✅ Works with uvicorn's event loop
+# ✅ Compatible with Kubernetes/Docker (SIGTERM handling)
+# ✅ Ctrl+C works properly (SIGINT handling)
+#
+# The cleanup is registered in rest_api.py's lifespan context manager.
+
+logger.info(
+    "✅ Shutdown handling via FastAPI lifespan (no custom signal handlers needed)"
+)
 
 
 # Dependency
@@ -603,7 +643,13 @@ class SyncServer(Server):
             )
 
     def load_agent(
-        self, agent_id: str, actor: Client, interface: Union[AgentInterface, None] = None, filter_tags: Optional[dict] = None, use_cache: bool = True, user: Optional[User] = None
+        self,
+        agent_id: str,
+        actor: Client,
+        interface: Union[AgentInterface, None] = None,
+        filter_tags: Optional[dict] = None,
+        use_cache: bool = True,
+        user: Optional[User] = None,
     ) -> Agent:
         """Updated method to load agents from persisted storage"""
         agent_lock = self.per_agent_lock_manager.get_lock(agent_id)
@@ -615,49 +661,99 @@ class SyncServer(Server):
             interface = interface or self.default_interface_factory()
             if agent_state.agent_type == AgentType.chat_agent:
                 agent = Agent(
-                    agent_state=agent_state, interface=interface, actor=actor, filter_tags=filter_tags, use_cache=use_cache, user=user
-                    )
+                    agent_state=agent_state,
+                    interface=interface,
+                    actor=actor,
+                    filter_tags=filter_tags,
+                    use_cache=use_cache,
+                    user=user,
+                )
             elif agent_state.agent_type == AgentType.episodic_memory_agent:
                 agent = EpisodicMemoryAgent(
-                    agent_state=agent_state, interface=interface, actor=actor, filter_tags=filter_tags, use_cache=use_cache, user=user
+                    agent_state=agent_state,
+                    interface=interface,
+                    actor=actor,
+                    filter_tags=filter_tags,
+                    use_cache=use_cache,
+                    user=user,
                 )
             elif agent_state.agent_type == AgentType.knowledge_vault_memory_agent:
                 agent = KnowledgeVaultAgent(
-                    agent_state=agent_state, interface=interface, actor=actor, filter_tags=filter_tags, use_cache=use_cache, user=user
+                    agent_state=agent_state,
+                    interface=interface,
+                    actor=actor,
+                    filter_tags=filter_tags,
+                    use_cache=use_cache,
+                    user=user,
                 )
             elif agent_state.agent_type == AgentType.procedural_memory_agent:
                 agent = ProceduralMemoryAgent(
-                    agent_state=agent_state, interface=interface, actor=actor, filter_tags=filter_tags, use_cache=use_cache, user=user
+                    agent_state=agent_state,
+                    interface=interface,
+                    actor=actor,
+                    filter_tags=filter_tags,
+                    use_cache=use_cache,
+                    user=user,
                 )
             elif agent_state.agent_type == AgentType.resource_memory_agent:
                 agent = ResourceMemoryAgent(
-                    agent_state=agent_state, interface=interface, actor=actor, filter_tags=filter_tags, use_cache=use_cache, user=user
+                    agent_state=agent_state,
+                    interface=interface,
+                    actor=actor,
+                    filter_tags=filter_tags,
+                    use_cache=use_cache,
+                    user=user,
                 )
             elif agent_state.agent_type == AgentType.meta_memory_agent:
                 logger.info(
                     "🏷️  Loading MetaMemoryAgent with filter_tags=%s, client_id=%s, user_id=%s",
                     filter_tags,
                     actor.id,
-                    user.id if user else None
+                    user.id if user else None,
                 )
                 agent = MetaMemoryAgent(
-                    agent_state=agent_state, interface=interface, actor=actor, filter_tags=filter_tags, use_cache=use_cache, user=user
+                    agent_state=agent_state,
+                    interface=interface,
+                    actor=actor,
+                    filter_tags=filter_tags,
+                    use_cache=use_cache,
+                    user=user,
                 )
             elif agent_state.agent_type == AgentType.semantic_memory_agent:
                 agent = SemanticMemoryAgent(
-                    agent_state=agent_state, interface=interface, actor=actor, filter_tags=filter_tags, use_cache=use_cache, user=user
+                    agent_state=agent_state,
+                    interface=interface,
+                    actor=actor,
+                    filter_tags=filter_tags,
+                    use_cache=use_cache,
+                    user=user,
                 )
             elif agent_state.agent_type == AgentType.core_memory_agent:
                 agent = CoreMemoryAgent(
-                    agent_state=agent_state, interface=interface, actor=actor, filter_tags=filter_tags, use_cache=use_cache, user=user
+                    agent_state=agent_state,
+                    interface=interface,
+                    actor=actor,
+                    filter_tags=filter_tags,
+                    use_cache=use_cache,
+                    user=user,
                 )
             elif agent_state.agent_type == AgentType.reflexion_agent:
                 agent = ReflexionAgent(
-                    agent_state=agent_state, interface=interface, actor=actor, filter_tags=filter_tags, use_cache=use_cache, user=user
+                    agent_state=agent_state,
+                    interface=interface,
+                    actor=actor,
+                    filter_tags=filter_tags,
+                    use_cache=use_cache,
+                    user=user,
                 )
             elif agent_state.agent_type == AgentType.background_agent:
                 agent = BackgroundAgent(
-                    agent_state=agent_state, interface=interface, actor=actor, filter_tags=filter_tags, use_cache=use_cache, user=user
+                    agent_state=agent_state,
+                    interface=interface,
+                    actor=actor,
+                    filter_tags=filter_tags,
+                    use_cache=use_cache,
+                    user=user,
                 )
             else:
                 raise ValueError(f"Invalid agent type {agent_state.agent_type}")
@@ -680,14 +776,19 @@ class SyncServer(Server):
         mirix_agent = None
         try:
             mirix_agent = self.load_agent(
-                agent_id=agent_id, interface=None, actor=actor, filter_tags=filter_tags, use_cache=use_cache, user=user
+                agent_id=agent_id,
+                interface=None,
+                actor=actor,
+                filter_tags=filter_tags,
+                use_cache=use_cache,
+                user=user,
             )
 
             if mirix_agent is None:
                 raise KeyError(
                     f"Agent (user={actor.id}, agent={agent_id}) is not loaded"
                 )
-            
+
             # Store occurred_at on agent instance for use during memory extraction
             if occurred_at is not None:
                 mirix_agent.occurred_at = occurred_at
@@ -702,17 +803,15 @@ class SyncServer(Server):
             logger.debug("Starting agent step")
 
             # Use provided chaining value or fall back to server default
-            effective_chaining = chaining if chaining is not None else self.chaining
-
-            logger.debug("Agent type: %s, filter_tags param: %s", mirix_agent.agent_state.agent_type, filter_tags)
+            # For meta_memory_agent, ALWAYS use CHAINING_FOR_META_AGENT setting (ignores passed value)
             if mirix_agent.agent_state.agent_type == AgentType.meta_memory_agent:
-                meta_message = MessageCreate(
-                    role="user",
-                    content="[System Message] As the meta memory manager, analyze the provided content. Based on the content, determine what memories need to be updated (episodic, procedural, knowledge vault, semantic, core, and resource)",
-                    filter_tags=filter_tags,  # Also attach to message for reference
-                )
-                logger.debug("Created meta_message with filter_tags=%s", filter_tags)
-                input_messages.append(meta_message)
+                from mirix.constants import CHAINING_FOR_META_AGENT
+
+                effective_chaining = CHAINING_FOR_META_AGENT
+            elif chaining is not None:
+                effective_chaining = chaining
+            else:
+                effective_chaining = self.chaining
 
             # Note: user object is already retrieved in load_agent() above
             # actor (Client) for write operations (agent_manager, message persistence)
@@ -725,7 +824,7 @@ class SyncServer(Server):
                 stream=token_streaming,
                 skip_verify=True,
                 actor=actor,  # Client for write operations (audit trail)
-                user=user     # User for read operations (data filtering)
+                user=user,  # User for read operations (data filtering)
             )
 
         except Exception as e:
@@ -983,7 +1082,9 @@ class SyncServer(Server):
         # Run the agent state forward
         return self._step(actor=actor, agent_id=agent_id, input_messages=message)
 
-    def construct_system_message(self, agent_id: str, message: str, actor: Client) -> str:
+    def construct_system_message(
+        self, agent_id: str, message: str, actor: Client
+    ) -> str:
         """
         Construct a system message from a message.
         """
@@ -1020,7 +1121,7 @@ class SyncServer(Server):
         occurred_at: Optional[str] = None,
     ) -> MirixUsageStatistics:
         """Send a list of messages to the agent.
-        
+
         Args:
             actor: Client performing the action (for authorization/write operations)
             agent_id: ID of the agent to send messages to
@@ -1031,7 +1132,7 @@ class SyncServer(Server):
             filter_tags: Optional filter tags for memory operations
             use_cache: Control Redis cache behavior (default: True)
             occurred_at: Optional ISO 8601 timestamp for episodic memory (default: None)
-        
+
         Returns:
             MirixUsageStatistics containing usage information
         """
@@ -1039,6 +1140,7 @@ class SyncServer(Server):
         # Set verbose flag for THIS request context only (thread-safe)
         if verbose is not None:
             from mirix.utils import set_verbose
+
             set_verbose(verbose)
 
         try:
@@ -1129,12 +1231,16 @@ class SyncServer(Server):
 
         actor = self.user_manager.get_user_or_admin(user_id=user_id)
         start_date = (
-            self.message_manager.get_message_by_id(after, actor=actor, use_cache=use_cache).created_at
+            self.message_manager.get_message_by_id(
+                after, actor=actor, use_cache=use_cache
+            ).created_at
             if after
             else None
         )
         end_date = (
-            self.message_manager.get_message_by_id(before, actor=actor, use_cache=use_cache).created_at
+            self.message_manager.get_message_by_id(
+                before, actor=actor, use_cache=use_cache
+            ).created_at
             if before
             else None
         )
@@ -1375,7 +1481,7 @@ class SyncServer(Server):
         # Next, attempt to run the tool with the sandbox
         try:
             sandbox_run_result = ToolExecutionSandbox(
-                tool.name, tool_args, actor, tool_object=tool
+                tool_name=tool.name, args=tool_args, actor=actor, tool_object=tool
             ).run(agent_state=agent_state, additional_env_vars=tool_env_vars)
             return ToolReturnMessage(
                 id="null",
@@ -1465,9 +1571,7 @@ class SyncServer(Server):
             # Disable token streaming if not OpenAI
             # TODO: cleanup this logic
             llm_config = mirix_agent.agent_state.llm_config
-            if stream_tokens and (
-                llm_config.model_endpoint_type != "openai"
-            ):
+            if stream_tokens and (llm_config.model_endpoint_type != "openai"):
                 warnings.warn(
                     "Token streaming is only supported for models with type 'openai' in the model_endpoint: agent has endpoint type {llm_config.model_endpoint_type} and {llm_config.model_endpoint}. Setting stream_tokens to False."
                 )
@@ -1478,13 +1582,17 @@ class SyncServer(Server):
             mirix_agent.interface = QueuingInterface(debug=False)
             streaming_interface = mirix_agent.interface
             # Set attributes if they exist
-            if hasattr(streaming_interface, 'use_assistant_message'):
+            if hasattr(streaming_interface, "use_assistant_message"):
                 streaming_interface.use_assistant_message = use_assistant_message
-            if hasattr(streaming_interface, 'assistant_message_tool_name'):
-                streaming_interface.assistant_message_tool_name = assistant_message_tool_name
-            if hasattr(streaming_interface, 'assistant_message_tool_kwarg'):
-                streaming_interface.assistant_message_tool_kwarg = assistant_message_tool_kwarg
-            if hasattr(streaming_interface, 'inner_thoughts_in_kwargs'):
+            if hasattr(streaming_interface, "assistant_message_tool_name"):
+                streaming_interface.assistant_message_tool_name = (
+                    assistant_message_tool_name
+                )
+            if hasattr(streaming_interface, "assistant_message_tool_kwarg"):
+                streaming_interface.assistant_message_tool_kwarg = (
+                    assistant_message_tool_kwarg
+                )
+            if hasattr(streaming_interface, "inner_thoughts_in_kwargs"):
                 streaming_interface.inner_thoughts_in_kwargs = (
                     llm_config.put_inner_thoughts_in_kwargs
                     if llm_config.put_inner_thoughts_in_kwargs is not None
@@ -1568,5 +1676,3 @@ class SyncServer(Server):
 
             traceback.print_exc()
             raise HTTPException(status_code=500, detail=f"{e}")
-
-

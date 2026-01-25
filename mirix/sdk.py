@@ -100,7 +100,7 @@ class Mirix:
                 with open(config_path, "r") as f:
                     config_data = yaml.safe_load(f)
                     system_prompts_folder = config_data.get("system_prompts_folder")
-                    
+
                     # Load llm_config from file
                     if "llm_config" in config_data:
                         llm_config = LLMConfig(**config_data["llm_config"])
@@ -108,7 +108,7 @@ class Mirix:
                         # Fall back to default
                         model = model or "gemini-2.0-flash"
                         llm_config = LLMConfig.default_config(model)
-                    
+
                     # Load embedding_config from file
                     if "embedding_config" in config_data:
                         embedding_config = EmbeddingConfig(**config_data["embedding_config"])
@@ -171,14 +171,14 @@ class Mirix:
             message=content,
             **kwargs
         )
-        
+
         # Extract the response text from MirixResponse
         if hasattr(response, 'messages') and response.messages:
             # Get last assistant message
             for msg in reversed(response.messages):
                 if msg.role == "assistant":
                     return {"response": msg.text, "success": True}
-        
+
         return {"response": str(response), "success": True}
 
     def list_users(self) -> List[Any]:
@@ -239,7 +239,6 @@ class Mirix:
                 return user
         return None
 
-
     def clear(self) -> Dict[str, Any]:
         """
         Clear all memories.
@@ -299,18 +298,25 @@ class Mirix:
         try:
             if user_id is None:
                 # Clear all messages except system messages (original behavior)
+                # Get agent state first, then get messages
+                agent_state = self._client.server.agent_manager.get_agent_by_id(
+                    agent_id=self._meta_agent.id,
+                    actor=self._client.client,
+                )
                 current_messages = (
                     self._client.server.agent_manager.get_in_context_messages(
-                        agent_id=self._meta_agent.id,
-                        actor=self._client.user,
+                        agent_state=agent_state,
+                        actor=self._client.client,
                     )
                 )
                 messages_count = len(current_messages)
 
                 # Clear conversation history using the agent manager reset_messages method
+                # actor=Client (for authorization), user_id=None (clear all users' messages)
                 self._client.server.agent_manager.reset_messages(
                     agent_id=self._meta_agent.id,
-                    actor=self._client.user,
+                    actor=self._client.client,
+                    user_id=None,  # Clear messages for all users
                     add_default_initial_messages=True,  # Keep system message and initial setup
                 )
 
@@ -333,10 +339,15 @@ class Mirix:
 
                 # Clear messages for specific user (same as FastAPI server implementation)
                 # Get current message count for this specific user for reporting
+                agent_state = self._client.server.agent_manager.get_agent_by_id(
+                    agent_id=self._meta_agent.id,
+                    actor=self._client.client,
+                )
                 current_messages = (
                     self._client.server.agent_manager.get_in_context_messages(
-                        agent_id=self._meta_agent.id,
-                        actor=target_user,
+                        agent_state=agent_state,
+                        actor=self._client.client,
+                        user=target_user,
                     )
                 )
                 # Count messages belonging to this user (excluding system messages)
@@ -349,9 +360,11 @@ class Mirix:
                 )
 
                 # Clear conversation history using the agent manager reset_messages method
+                # actor=Client (for authorization), user_id=specific user to clear
                 self._client.server.agent_manager.reset_messages(
                     agent_id=self._meta_agent.id,
-                    actor=target_user,
+                    actor=self._client.client,
+                    user_id=target_user.id,  # Clear messages only for this user
                     add_default_initial_messages=True,  # Keep system message and initial setup
                 )
 
@@ -449,10 +462,10 @@ class Mirix:
         """
         from mirix.schemas.user import UserCreate
         from mirix.services.organization_manager import OrganizationManager
-        
+
         if organization_id is None:
             organization_id = OrganizationManager.DEFAULT_ORG_ID
-        
+
         return self._client.server.user_manager.create_user(
             pydantic_user=UserCreate(
                 name=user_name,
@@ -515,7 +528,7 @@ class Mirix:
 
         # Check if tool name already exists
         existing_tool = tool_manager.get_tool_by_name(
-            tool_name=name, actor=self._client.user
+            tool_name=name, actor=self._client.client
         )
 
         if existing_tool:
@@ -551,14 +564,14 @@ class Mirix:
 
             # Use the tool manager's create_or_update_tool method
             created_tool = tool_manager.create_or_update_tool(
-                pydantic_tool=pydantic_tool, actor=self._client.user
+                pydantic_tool=pydantic_tool, actor=self._client.client
             )
 
         # Apply tool to all existing agents if requested
         if apply_to_agents:
             # Get all existing agents
             all_agents = self._client.server.agent_manager.list_agents(
-                actor=self._client.user,
+                actor=self._client.client,
                 limit=1000,  # Get all agents
             )
 
@@ -581,7 +594,7 @@ class Mirix:
                     self._client.server.agent_manager.update_agent(
                         agent_id=agent.id,
                         agent_update=UpdateAgent(tool_ids=new_tool_ids),
-                        actor=self._client.user,
+                        actor=self._client.client,
                     )
 
         return {
@@ -687,7 +700,7 @@ class Mirix:
 
             # Get the meta agent state to access memory agents
             meta_agent_state = self._client.get_agent(self._meta_agent.id)
-            
+
             memories = {}
 
             # Get episodic memory
@@ -700,7 +713,7 @@ class Mirix:
                     if agent.agent_type == AgentType.episodic_memory_agent:
                         episodic_agent = agent
                         break
-                
+
                 if episodic_agent:
                     events = episodic_manager.list_episodic_memory(
                         agent_state=episodic_agent,
@@ -735,7 +748,7 @@ class Mirix:
                     if agent.agent_type == AgentType.semantic_memory_agent:
                         semantic_agent = agent
                         break
-                
+
                 if semantic_agent:
                     semantic_items = semantic_manager.list_semantic_items(
                         agent_state=semantic_agent,
@@ -768,7 +781,7 @@ class Mirix:
                     if agent.agent_type == AgentType.procedural_memory_agent:
                         procedural_agent = agent
                         break
-                
+
                 if procedural_agent:
                     procedural_items = procedural_manager.list_procedures(
                         agent_state=procedural_agent,
@@ -828,7 +841,7 @@ class Mirix:
                     if agent.agent_type == AgentType.resource_memory_agent:
                         resource_agent = agent
                         break
-                
+
                 if resource_agent:
                     resources = resource_manager.list_resources(
                         agent_state=resource_agent,
@@ -908,7 +921,7 @@ class Mirix:
                     if agent.agent_type == AgentType.knowledge_vault_memory_agent:
                         knowledge_vault_memory_agent = agent
                         break
-                
+
                 if knowledge_vault_memory_agent:
                     vault_items = knowledge_vault_manager.list_knowledge(
                         actor=target_user,
@@ -1003,7 +1016,7 @@ class Mirix:
             else:
                 # Use current user
                 target_user = self._client.user
-            
+
             # Update core memory using the client's update_in_context_memory method
             self._client.update_in_context_memory(
                 agent_id=self._meta_agent.id,

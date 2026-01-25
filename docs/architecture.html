@@ -1,5 +1,8 @@
+<!-- prettier-ignore-start -->
+<!-- @formatter:off -->
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -25,7 +28,7 @@
             background: #252526;
             border-radius: 10px;
             overflow: hidden;
-            box-shadow: 0 8px 32px rgba(0,0,0,0.6);
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
         }
 
         .header {
@@ -91,8 +94,13 @@
         }
 
         @keyframes fadeIn {
-            from { opacity: 0; }
-            to { opacity: 1; }
+            from {
+                opacity: 0;
+            }
+
+            to {
+                opacity: 1;
+            }
         }
 
         .architecture-row {
@@ -180,10 +188,25 @@
             margin-right: 10px;
         }
 
-        .endpoint-method.get { background: #4ec9b0; color: #000; }
-        .endpoint-method.post { background: #ce9178; color: #000; }
-        .endpoint-method.patch { background: #dcdcaa; color: #000; }
-        .endpoint-method.delete { background: #f48771; color: #000; }
+        .endpoint-method.get {
+            background: #4ec9b0;
+            color: #000;
+        }
+
+        .endpoint-method.post {
+            background: #ce9178;
+            color: #000;
+        }
+
+        .endpoint-method.patch {
+            background: #dcdcaa;
+            color: #000;
+        }
+
+        .endpoint-method.delete {
+            background: #f48771;
+            color: #000;
+        }
 
         .endpoint-path {
             color: #ce9178;
@@ -243,15 +266,34 @@
             margin: 15px 0;
             overflow-x: auto;
             font-size: 0.85em;
-            white-space: pre-wrap;
             line-height: 1.6;
         }
 
-        .code-block .keyword { color: #569cd6; }
-        .code-block .string { color: #ce9178; }
-        .code-block .function { color: #dcdcaa; }
-        .code-block .comment { color: #6a9955; }
-        .code-block .variable { color: #9cdcfe; }
+        .code-block pre {
+            margin: 0;
+            white-space: pre;
+            font-family: inherit;
+        }
+
+        .code-block .keyword {
+            color: #569cd6;
+        }
+
+        .code-block .string {
+            color: #ce9178;
+        }
+
+        .code-block .function {
+            color: #dcdcaa;
+        }
+
+        .code-block .comment {
+            color: #6a9955;
+        }
+
+        .code-block .variable {
+            color: #9cdcfe;
+        }
 
         .mapping-table {
             width: 100%;
@@ -345,6 +387,7 @@
         }
     </style>
 </head>
+
 <body>
     <div class="container">
         <div class="header">
@@ -358,6 +401,7 @@
             <button class="nav-button" onclick="showSection('endpoints')">ENDPOINTS</button>
             <button class="nav-button" onclick="showSection('mapping')">METHOD MAPPING</button>
             <button class="nav-button" onclick="showSection('flow')">REQUEST FLOW</button>
+            <button class="nav-button" onclick="showSection('agent')">AGENT EXECUTION</button>
         </div>
 
         <div class="content">
@@ -367,26 +411,30 @@
 
                 <div class="stats">
                     <div class="stat-card">
-                        <div class="stat-number">689</div>
+                        <div class="stat-number">1835</div>
                         <div class="stat-label">lines in remote_client.py</div>
                     </div>
                     <div class="stat-card">
-                        <div class="stat-number">700+</div>
+                        <div class="stat-number">4120</div>
                         <div class="stat-label">lines in rest_api.py</div>
                     </div>
                     <div class="stat-card">
-                        <div class="stat-number">1580</div>
+                        <div class="stat-number">1613</div>
                         <div class="stat-label">lines in server.py</div>
                     </div>
                     <div class="stat-card">
-                        <div class="stat-number">30+</div>
+                        <div class="stat-number">3128</div>
+                        <div class="stat-label">lines in agent.py</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-number">59</div>
                         <div class="stat-label">REST endpoints</div>
                     </div>
                 </div>
 
                 <div class="flow-diagram">
                     <h3 style="color: #4ec9b0; margin-bottom: 20px;">Three-Tier Architecture</h3>
-                    
+
                     <div class="flow-step">
                         <div class="flow-step-number">1</div>
                         <div>
@@ -426,12 +474,14 @@
                 </div>
 
                 <div class="info-box">
-                    <strong>Key Point:</strong> The REST API (rest_api.py) is a thin wrapper around SyncServer (server.py). 
-                    MirixClient makes HTTP requests to REST API endpoints, which then call corresponding SyncServer methods.
+                    <strong>Key Point:</strong> The REST API (rest_api.py) is a thin wrapper around SyncServer
+                    (server.py).
+                    MirixClient makes HTTP requests to REST API endpoints, which then call corresponding SyncServer
+                    methods.
                 </div>
 
                 <div class="code-block">
-<span class="comment"># Example: How a request flows through the system</span>
+                    <pre><span class="comment"># Example: How a request flows through the system</span>
 
 <span class="comment"># 1. Client makes a call</span>
 <span class="variable">client</span> = <span class="function">MirixClient</span>(base_url=<span class="string">"http://localhost:8000"</span>)
@@ -452,7 +502,7 @@
 <span class="keyword">class</span> SyncServer:
     <span class="keyword">def</span> <span class="function">create_agent</span>(self, request, actor):
         agent_state = self.agent_manager.<span class="function">create_agent</span>(...)
-        <span class="keyword">return</span> agent_state
+        <span class="keyword">return</span> agent_state</pre>
                 </div>
             </div>
 
@@ -467,12 +517,13 @@
                         <span class="file-path">mirix/client/remote_client.py</span>
 
                         <div class="info-box" style="margin-top: 10px; padding: 10px;">
-                            HTTP client that implements AbstractClient interface. Makes REST API calls instead of direct method calls.
+                            HTTP client that implements AbstractClient interface. Makes REST API calls instead of direct
+                            method calls.
                         </div>
 
                         <div class="method-list">
                             <div style="color: #4ec9b0; font-weight: 600; margin-bottom: 10px;">Key Methods:</div>
-                            
+
                             <div class="method">
                                 <div class="method-name">__init__(base_url, api_key, ...)</div>
                                 <div class="method-desc">Initialize with server URL and auth</div>
@@ -560,7 +611,7 @@
 
                         <div class="method-list">
                             <div style="color: #4ec9b0; font-weight: 600; margin-bottom: 10px;">Core Functions:</div>
-                            
+
                             <div class="method">
                                 <div class="method-name">get_server() → SyncServer</div>
                                 <div class="method-desc">Returns singleton SyncServer instance</div>
@@ -650,10 +701,11 @@
 
                         <div class="method-list">
                             <div style="color: #4ec9b0; font-weight: 600; margin-bottom: 10px;">Initialization:</div>
-                            
+
                             <div class="method">
                                 <div class="method-name">__init__()</div>
-                                <div class="method-desc">Creates managers: agent_manager, user_manager, tool_manager, etc.</div>
+                                <div class="method-desc">Creates managers: agent_manager, user_manager, tool_manager,
+                                    etc.</div>
                             </div>
 
                             <div style="color: #4ec9b0; font-weight: 600; margin: 20px 0 10px;">Agent Methods:</div>
@@ -725,7 +777,8 @@
                             </div>
 
                             <div style="color: #858585; font-size: 0.85em; margin-top: 15px; text-align: center;">
-                                + service managers: agent_manager, user_manager, tool_manager, block_manager, message_manager, and 10+ more...
+                                + service managers: agent_manager, user_manager, tool_manager, block_manager,
+                                message_manager, and 10+ more...
                             </div>
                         </div>
                     </div>
@@ -894,7 +947,8 @@
                 </div>
 
                 <div class="info-box" style="margin-top: 30px;">
-                    <strong>Total:</strong> 30+ REST API endpoints covering agents, messages, memory, tools, blocks, and configuration.
+                    <strong>Total:</strong> 30+ REST API endpoints covering agents, messages, memory, tools, blocks, and
+                    configuration.
                     All endpoints require authentication via Bearer token or X-User-ID/X-Org-ID headers.
                 </div>
             </div>
@@ -1039,12 +1093,12 @@
                         <div>
                             <strong>User Code</strong>
                             <div class="code-block" style="margin-top: 10px;">
-<span class="variable">client</span> = <span class="function">MirixClient</span>(base_url=<span class="string">"http://localhost:8000"</span>)
+                                <pre><span class="variable">client</span> = <span class="function">MirixClient</span>(base_url=<span class="string">"http://localhost:8000"</span>)
 <span class="variable">response</span> = <span class="variable">client</span>.<span class="function">send_message</span>(
     agent_id=<span class="string">"agent-123"</span>,
     message=<span class="string">"Hello!"</span>,
     role=<span class="string">"user"</span>
-)
+)</pre>
                             </div>
                         </div>
                     </div>
@@ -1059,14 +1113,14 @@
                                 File: mirix/client/remote_client.py
                             </div>
                             <div class="code-block" style="margin-top: 10px;">
-<span class="keyword">def</span> <span class="function">send_message</span>(self, message, role, agent_id, ...):
+                                <pre><span class="keyword">def</span> <span class="function">send_message</span>(self, message, role, agent_id, ...):
     request_data = {
         <span class="string">"message"</span>: message,
         <span class="string">"role"</span>: role,
         ...
     }
     data = self.<span class="function">_request</span>(<span class="string">"POST"</span>, <span class="string">f"/agents/{agent_id}/messages"</span>, json=request_data)
-    <span class="keyword">return</span> <span class="function">MirixResponse</span>(**data)
+    <span class="keyword">return</span> <span class="function">MirixResponse</span>(**data)</pre>
                             </div>
                         </div>
                     </div>
@@ -1078,13 +1132,14 @@
                         <div>
                             <strong>MirixClient._request()</strong>
                             <div class="code-block" style="margin-top: 10px;">
-<span class="comment"># Makes HTTP request with retry logic</span>
+                                <pre><span class="comment"># Makes HTTP request with retry logic</span>
 <span class="keyword">POST</span> http://localhost:8000/agents/agent-123/messages
 <span class="keyword">Headers:</span>
     <span class="string">Authorization: Bearer sk-...</span>
     <span class="string">Content-Type: application/json</span>
 <span class="keyword">Body:</span>
-    { <span class="string">"message"</span>: <span class="string">"Hello!"</span>, <span class="string">"role"</span>: <span class="string">"user"</span>, ... }
+    { <span class="string">"message"</span>: <span class="string">"Hello!"</span>, <span class="string">"role"</span>: <span
+        class="string">"user"</span>, ... }</pre>
                             </div>
                         </div>
                     </div>
@@ -1099,7 +1154,7 @@
                                 File: mirix/server/rest_api.py
                             </div>
                             <div class="code-block" style="margin-top: 10px;">
-@app.<span class="function">post</span>(<span class="string">"/agents/{agent_id}/messages"</span>)
+                                <pre>@app.<span class="function">post</span>(<span class="string">"/agents/{agent_id}/messages"</span>)
 <span class="keyword">async def</span> <span class="function">send_message</span>(
     agent_id: str,
     request: SendMessageRequest,
@@ -1107,7 +1162,7 @@
 ):
     server = <span class="function">get_server</span>()  <span class="comment"># Get SyncServer singleton</span>
     user = server.user_manager.<span class="function">get_user_by_id</span>(auth.user_id)
-    ...
+    ...</pre>
                             </div>
                         </div>
                     </div>
@@ -1134,11 +1189,11 @@
                                 File: mirix/server/server.py
                             </div>
                             <div class="code-block" style="margin-top: 10px;">
-usage = server.<span class="function">send_messages</span>(
+                                <pre>usage = server.<span class="function">send_messages</span>(
     actor=user,
     agent_id=agent_id,
     input_messages=input_messages,
-)
+)</pre>
                             </div>
                         </div>
                     </div>
@@ -1153,8 +1208,8 @@ usage = server.<span class="function">send_messages</span>(
                                 Retrieves agent from database via ORM
                             </div>
                             <div class="code-block" style="margin-top: 10px;">
-agent = self.agent_manager.<span class="function">get_agent_by_id</span>(agent_id, actor=user)
-<span class="comment"># Returns AgentState with all agent configuration</span>
+                                <pre>agent = self.agent_manager.<span class="function">get_agent_by_id</span>(agent_id, actor=user)
+                                <span class="comment"># Returns AgentState with all agent configuration</span></pre>
                             </div>
                         </div>
                     </div>
@@ -1169,12 +1224,12 @@ agent = self.agent_manager.<span class="function">get_agent_by_id</span>(agent_i
                                 File: mirix/agent/agent.py - Agent processes the message
                             </div>
                             <div class="code-block" style="margin-top: 10px;">
-<span class="comment"># Agent executes one reasoning step</span>
+                                <pre><span class="comment"># Agent executes one reasoning step</span>
 <span class="comment"># 1. Constructs prompt with memory + message</span>
 <span class="comment"># 2. Calls LLM API (OpenAI, Anthropic, etc.)</span>
 <span class="comment"># 3. Processes tool calls if any</span>
 <span class="comment"># 4. Updates memory</span>
-<span class="comment"># 5. Saves messages to database</span>
+<span class="comment"># 5. Saves messages to database</span></pre>
                             </div>
                         </div>
                     </div>
@@ -1186,24 +1241,308 @@ agent = self.agent_manager.<span class="function">get_agent_by_id</span>(agent_i
                         <div>
                             <strong>Response Flows Back</strong>
                             <div class="code-block" style="margin-top: 10px;">
-<span class="comment"># FastAPI returns JSON response</span>
+                                <pre><span class="comment"># FastAPI returns JSON response</span>
 <span class="keyword">return</span> <span class="function">MirixResponse</span>(messages=mirix_messages, usage=usage)
 
 <span class="comment"># MirixClient receives and deserializes</span>
 <span class="keyword">return</span> <span class="function">MirixResponse</span>(**response.json())
 
 <span class="comment"># User gets the response</span>
-<span class="keyword">print</span>(response.messages[-1].text)
+<span class="keyword">print</span>(response.messages[-1].text)</pre>
                             </div>
                         </div>
                     </div>
                 </div>
 
                 <div class="info-box" style="margin-top: 30px;">
-                    <strong>Performance:</strong> Network latency + LLM API call (500ms-5s) dominates the request time. 
+                    <strong>Performance:</strong> Network latency + LLM API call (500ms-5s) dominates the request time.
                     The REST API wrapper adds minimal overhead (~1-5ms).
                 </div>
             </div>
+            <!-- Agent Execution Section -->
+            <!-- Agent Execution Section -->
+            <!-- Agent Execution Section -->
+            <div id="agent" class="section">
+                <h2 class="section-title">Agent Step Execution Model</h2>
+            
+                <div class="info-box">
+                    Deep dive into how <code>Agent.step()</code> processes messages, executes tools, and manages the
+                    chaining loop.
+                    <br><br>
+                    <strong>File:</strong> mirix/agent/agent.py (3,128 lines)
+                </div>
+            
+                <div class="stats" style="margin: 20px 0;">
+                    <div class="stat-card">
+                        <div class="stat-number">10</div>
+                        <div class="stat-label">agent types</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-number">6</div>
+                        <div class="stat-label">memory managers</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-number">5</div>
+                        <div class="stat-label">tool types</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-number">∞</div>
+                        <div class="stat-label">chaining steps</div>
+                    </div>
+                </div>
+            
+                <!-- Agent Class Hierarchy -->
+                <div class="flow-diagram">
+                    <h3 style="color: #4ec9b0; margin-bottom: 20px;">Agent Class Hierarchy</h3>
+                    <div class="flow-step">
+                        <div class="flow-step-number">A</div>
+                        <div>
+                            <strong style="color: #4ec9b0;">BaseAgent</strong>
+                            <span style="color: #858585; margin-left: 10px;">Abstract base class (ABC)</span>
+                            <div style="color: #858585; font-size: 0.85em; margin-top: 5px;">
+                                Defines the <code>step()</code> interface that all agents must implement
+                            </div>
+                        </div>
+                    </div>
+                    <div class="flow-arrow">↓ extends ─────────────────┐</div>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+                        <div class="flow-step" style="margin: 0;">
+                            <div class="flow-step-number">B</div>
+                            <div>
+                                <strong style="color: #dcdcaa;">Agent</strong>
+                                <span style="color: #858585; margin-left: 10px;">agent.py</span>
+                                <div style="color: #858585; font-size: 0.85em; margin-top: 5px;">
+                                    Full agent with LLM calls, tool execution, memory management, and chaining
+                                </div>
+                            </div>
+                        </div>
+                        <div class="flow-step" style="margin: 0;">
+                            <div class="flow-step-number">C</div>
+                            <div>
+                                <strong style="color: #ce9178;">MetaAgent</strong>
+                                <span style="color: #858585; margin-left: 10px;">meta_agent.py</span>
+                                <div style="color: #858585; font-size: 0.85em; margin-top: 5px;">
+                                    Coordinates multiple Agent instances for specialized memory operations
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            
+                <!-- Message Management Section -->
+                <h3 style="color: #4ec9b0; margin: 30px 0 20px;">Message Management</h3>
+                <div class="component-box">
+                    <h3>In-Context Messages Per Agent</h3>
+                    <div style="margin-top: 15px; color: #858585;">
+                        Each agent maintains its own <strong>in-context message history</strong> - the conversation
+                        window sent to
+                        the LLM on each call.
+                        Messages are stored in the database and loaded via
+                        <code>agent_manager.get_in_context_messages()</code>.
+                    </div>
+                    <div class="code-block" style="margin-top: 15px;">
+                        <pre><span class="comment"># Message structure for each agent</span>
+            in_context_messages = [
+                Message(role=<span class="string">"system"</span>, content=system_prompt),
+                Message(role=<span class="string">"user"</span>, content=<span class="string">"..."</span>),
+                Message(role=<span class="string">"assistant"</span>, content=<span class="string">"..."</span>, tool_calls=[...]),
+                Message(role=<span class="string">"tool"</span>, content=<span class="string">"..."</span>, tool_call_id=<span class="string">"..."</span>),
+            ]</pre>
+                    </div>
+                </div>
+            
+                <!-- Chat Agent vs Memory Agents -->
+                <h3 style="color: #4ec9b0; margin: 30px 0 20px;">Chat Agent vs Memory Agents</h3>
+                <div class="architecture-row" style="grid-template-columns: 1fr 1fr;">
+                    <div class="component-box" style="border-left: 3px solid #4ec9b0;">
+                        <h3 style="color: #4ec9b0;">Chat Agent (Optional)</h3>
+                        <span class="file-path">User-facing conversation</span>
+                        <div style="margin-top: 15px; color: #858585;">
+                            The <strong>user-facing conversational interface</strong>. Receives user messages,
+                            searches memory for context, and delivers responses.
+                        </div>
+                        <div class="method-list" style="margin-top: 15px;">
+                            <div class="method">
+                                <div class="method-name">Terminal Tool</div>
+                                <div class="method-desc"><code>send_message()</code> - outputs to user</div>
+                            </div>
+                            <div class="method">
+                                <div class="method-name">Memory Access</div>
+                                <div class="method-desc">Read (search) + can trigger updates</div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="component-box" style="border-left: 3px solid #ce9178;">
+                        <h3 style="color: #ce9178;">Memory Agents (8 types)</h3>
+                        <span class="file-path">Background memory processing</span>
+                        <div style="margin-top: 15px; color: #858585;">
+                            <strong>Background processors</strong> that handle memory CRUD operations.
+                            Each specializes in a memory type. Coordinated by MetaAgent.
+                        </div>
+                        <div class="method-list" style="margin-top: 15px;">
+                            <div class="method">
+                                <div class="method-name">Terminal Tool</div>
+                                <div class="method-desc"><code>finish_memory_update()</code> - signals done</div>
+                            </div>
+                            <div class="method">
+                                <div class="method-name">Memory Access</div>
+                                <div class="method-desc">Full read/write to their memory type</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            
+                <div class="info-box" style="margin-top: 20px;">
+                    <strong>Chat Agent is Optional:</strong> You can use MIRIX in <em>memory-only mode</em> without
+                    chat_agent.
+                    Send messages to MetaAgent for memory processing, then retrieve memories via
+                    <code>extract_memory_for_system_prompt()</code> to inject into your own LLM calls.
+                </div>
+            
+                <!-- Summarization Section -->
+                <h3 style="color: #4ec9b0; margin: 30px 0 20px;">Context Window Summarization</h3>
+                <div class="flow-diagram">
+                    <h3 style="color: #ce9178; margin-bottom: 15px;">Why Summarize?</h3>
+                    <div style="color: #858585; margin-bottom: 20px;">
+                        LLMs have a fixed context window (e.g., 128K tokens). When the conversation history exceeds a
+                        threshold
+                        (default: 75% of context window), older messages are <strong>summarized</strong> to make room
+                        for new ones.
+                    </div>
+                    <div class="flow-step">
+                        <div class="flow-step-number">1</div>
+                        <div>
+                            <strong>Trigger Condition</strong>
+                            <div class="code-block" style="margin-top: 10px;">
+                                <pre><span class="keyword">if</span> current_total_tokens > memory_warning_threshold * context_window:
+                self.<span class="function">summarize_messages_inplace</span>()</pre>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="flow-arrow">↓</div>
+                    <div class="flow-step">
+                        <div class="flow-step-number">2</div>
+                        <div>
+                            <strong>summarize_messages_inplace()</strong>
+                            <div class="code-block" style="margin-top: 10px;">
+                                <pre><span class="comment"># 1. Calculate cutoff point</span>
+            cutoff = <span class="function">calculate_summarizer_cutoff</span>(in_context_messages, token_counts)
+            <span class="comment"># 2. Extract messages to summarize</span>
+            message_sequence = in_context_messages[1:cutoff]
+            <span class="comment"># 3. Call LLM to generate summary</span>
+            summary = <span class="function">summarize_messages</span>(agent_state, message_sequence)
+            <span class="comment"># 4. Trim old messages, prepend summary</span></pre>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            
+                <!-- Heartbeats and Chaining Section -->
+                <h3 style="color: #4ec9b0; margin: 30px 0 20px;">Heartbeats & Chaining</h3>
+                <div class="architecture-row" style="grid-template-columns: 1fr 1fr;">
+                    <div class="component-box">
+                        <h3>What is Chaining?</h3>
+                        <div style="margin-top: 15px; color: #858585;">
+                            <strong>Chaining</strong> allows an agent to take <em>multiple actions</em> before
+                            responding.
+                            The agent loops until it decides to stop.
+                        </div>
+                        <div style="margin-top: 15px; color: #858585;">
+                            <strong>Why?</strong> Complex tasks require multiple steps: search memory, analyze, then
+                            respond.
+                        </div>
+                    </div>
+                    <div class="component-box">
+                        <h3>What are Heartbeats?</h3>
+                        <div style="margin-top: 15px; color: #858585;">
+                            <strong>Heartbeats</strong> are synthetic messages injected between chaining steps to keep
+                            the
+                            LLM conversation flowing.
+                        </div>
+                        <div class="code-block" style="margin-top: 15px; font-size: 0.85em;">
+                            <pre>REQ_HEARTBEAT_MESSAGE = <span class="string">"[System] continue_chaining=true"</span>
+            FUNC_FAILED_HEARTBEAT_MESSAGE = <span class="string">"[System] Function call failed"</span></pre>
+                        </div>
+                    </div>
+                </div>
+            
+                <div class="component-box" style="margin-top: 20px;">
+                    <h3>Chaining Loop Logic</h3>
+                    <div class="code-block" style="margin-top: 15px;">
+                        <pre><span class="keyword">while</span> True:
+                step_response = self.<span class="function">inner_step</span>(next_input_message)
+            
+                <span class="keyword">if</span> function_name == <span class="string">"send_message"</span>:  <span class="comment"># chat_agent done</span>
+                    continue_chaining = False
+                <span class="keyword">elif</span> function_name == <span class="string">"finish_memory_update"</span>:  <span class="comment"># memory agent done</span>
+                    continue_chaining = False
+            
+                <span class="keyword">if</span> <span class="keyword">not</span> continue_chaining:
+                    <span class="keyword">break</span>
+                <span class="keyword">elif</span> function_failed:
+                    next_input = FUNC_FAILED_HEARTBEAT_MESSAGE
+                <span class="keyword">else</span>:
+                    next_input = REQ_HEARTBEAT_MESSAGE</pre>
+                    </div>
+                </div>
+            
+                <!-- Step Execution Flow -->
+                <h3 style="color: #4ec9b0; margin: 30px 0 20px;">Step Execution Flow</h3>
+                <div class="flow-diagram">
+                    <div class="flow-step">
+                        <div class="flow-step-number">1</div>
+                        <div>
+                            <strong>step()</strong>
+                            <span style="color: #858585; margin-left: 10px;">Entry point</span>
+                            <div class="code-block" style="margin-top: 10px;">
+                                <pre><span class="keyword">def</span> <span class="function">step</span>(self, input_messages, chaining=True):
+                llm_client = LLMClient.<span class="function">create</span>(llm_config=self.agent_state.llm_config)
+                <span class="keyword">while</span> True:
+                    step_response = self.<span class="function">inner_step</span>(messages, llm_client)
+                    <span class="keyword">if</span> <span class="keyword">not</span> step_response.continue_chaining:
+                        <span class="keyword">break</span>
+                <span class="keyword">return</span> MirixUsageStatistics(step_count)</pre>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="flow-arrow">↓</div>
+                    <div class="flow-step">
+                        <div class="flow-step-number">2</div>
+                        <div>
+                            <strong>inner_step()</strong>
+                            <span style="color: #858585; margin-left: 10px;">Single LLM call</span>
+                            <div class="code-block" style="margin-top: 10px;">
+                                <pre>in_context_messages = self.agent_manager.<span class="function">get_in_context_messages</span>(...)
+            complete_prompt = self.<span class="function">build_system_prompt_with_memories</span>(raw_system)
+            response = self.<span class="function">_get_ai_reply</span>(input_message_sequence)
+            messages, continue_chaining, failed = self.<span class="function">_handle_ai_response</span>(response)</pre>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="flow-arrow">↓</div>
+                    <div class="flow-step">
+                        <div class="flow-step-number">3</div>
+                        <div>
+                            <strong>_handle_ai_response()</strong>
+                            <span style="color: #858585; margin-left: 10px;">Tool execution</span>
+                            <div class="code-block" style="margin-top: 10px;">
+                                <pre><span class="keyword">for</span> tool_call <span class="keyword">in</span> response_message.tool_calls:
+                <span class="keyword">if</span> tool.tool_type == ToolType.MIRIX_CORE:
+                    result = <span class="function">get_function_from_module</span>(name)(**args)
+                <span class="keyword">elif</span> tool.tool_type == ToolType.USER_DEFINED:
+                    result = ToolExecutionSandbox(...).<span class="function">run</span>()</pre>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            
+                <div class="info-box" style="margin-top: 20px;">
+                    <strong>Key Insight:</strong> Each <code>step()</code> call runs a complete reasoning cycle:
+                    retrieve memories → build prompt → call LLM → execute tools → persist state.
+                    Chaining with heartbeats enables autonomous multi-step task completion.
+                </div>
+            </div>
+
         </div>
     </div>
 
@@ -1220,6 +1559,10 @@ agent = self.agent_manager.<span class="function">get_agent_by_id</span>(agent_i
 
             window.scrollTo({ top: 0, behavior: 'smooth' });
         }
+
     </script>
 </body>
+
 </html>
+<!-- @formatter:on -->
+<!-- prettier-ignore-end -->

@@ -888,19 +888,28 @@ class LocalClient(AbstractClient):
             actor=self.client,
         )
 
-    def get_in_context_messages(self, agent_id: str) -> List[Message]:
+    def get_in_context_messages(self, agent_id: str, user_id: Optional[str] = None) -> List[Message]:
         """
         Get in-context messages of an agent
 
         Args:
             agent_id (str): ID of the agent
+            user_id (str): Optional user ID to filter messages for. If None, returns all messages.
 
         Returns:
             messages (List[Message]): List of in-context messages
         """
-        return self.server.agent_manager.get_in_context_messages(
+        agent_state = self.server.agent_manager.get_agent_by_id(
             agent_id=agent_id,
             actor=self.client,
+        )
+        user = None
+        if user_id:
+            user = self.server.user_manager.get_user_by_id(user_id)
+        return self.server.agent_manager.get_in_context_messages(
+            agent_state=agent_state,
+            actor=self.client,
+            user=user,
         )
 
     # agent interactions
@@ -2236,6 +2245,23 @@ class LocalClient(AbstractClient):
         if memory_type == "all":
             search_field = "null"
 
+        # Pre-compute embedding once if using embedding search (to avoid redundant embeddings)
+        embedded_text = None
+        if search_method == "embedding" and query:
+            from mirix.embeddings import embedding_model
+            import numpy as np
+            from mirix.constants import MAX_EMBEDDING_DIM
+            
+            embedded_text = embedding_model(agent_state.embedding_config).get_text_embedding(query)
+            # Pad for episodic memory which requires MAX_EMBEDDING_DIM
+            embedded_text_padded = np.pad(
+                np.array(embedded_text),
+                (0, MAX_EMBEDDING_DIM - len(embedded_text)),
+                mode="constant"
+            ).tolist()
+        else:
+            embedded_text_padded = None  # Ensure it's None if not embedding search
+
         # Initialize result lists
         formatted_results = []
 
@@ -2245,6 +2271,7 @@ class LocalClient(AbstractClient):
                 user=self.user,
                 agent_state=agent_state,
                 query=query,
+                embedded_text=embedded_text_padded if search_method == "embedding" and query else None,
                 search_field=search_field if search_field != "null" else "summary",
                 search_method=search_method,
                 limit=limit,
@@ -2275,6 +2302,7 @@ class LocalClient(AbstractClient):
                 user=self.user,
                 agent_state=agent_state,
                 query=query,
+                embedded_text=embedded_text if search_method == "embedding" and query else None,
                 search_field=(
                     search_field
                     if search_field != "null"
@@ -2307,6 +2335,7 @@ class LocalClient(AbstractClient):
                 user=self.user,
                 agent_state=agent_state,
                 query=query,
+                embedded_text=embedded_text if search_method == "embedding" and query else None,
                 search_field=search_field if search_field != "null" else "summary",
                 search_method=search_method,
                 limit=limit,
@@ -2336,6 +2365,7 @@ class LocalClient(AbstractClient):
                     user=self.user,
                     agent_state=agent_state,
                     query=query,
+                    embedded_text=embedded_text if search_method == "embedding" and query else None,
                     search_field=search_field if search_field != "null" else "caption",
                     search_method=search_method,
                     limit=limit,
@@ -2367,6 +2397,7 @@ class LocalClient(AbstractClient):
                 user=self.user,
                 agent_state=agent_state,
                 query=query,
+                embedded_text=embedded_text if search_method == "embedding" and query else None,
                 search_field=search_field if search_field != "null" else "summary",
                 search_method=search_method,
                 limit=limit,

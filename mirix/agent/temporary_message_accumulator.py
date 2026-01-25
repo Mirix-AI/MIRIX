@@ -14,7 +14,7 @@ from mirix.agent.app_constants import (
     TEMPORARY_MESSAGE_LIMIT,
 )
 from mirix.agent.app_utils import encode_image
-from mirix.constants import CHAINING_FOR_MEMORY_UPDATE
+from mirix.constants import CHAINING_FOR_MEMORY_UPDATE, CHAINING_FOR_META_AGENT
 from mirix.voice_utils import convert_base64_to_audio_segment, process_voice_files
 
 
@@ -518,7 +518,7 @@ class TemporaryMessageAccumulator:
             if user_message_added:
                 system_message = "[System Message] As the meta memory manager, analyze the provided content and the conversations between the user and the chat agent. Based on what the user is doing, determine which memory should be updated (episodic, procedural, knowledge vault, semantic, core, and resource)."
             else:
-                system_message = "[System Message] As the meta memory manager, analyze the provided content. Based on the content, determine what memories need to be updated (episodic, procedural, knowledge vault, semantic, core, and resource)"
+                system_message = "[System Message] As the meta memory manager, analyze the provided content and perform your function."
 
         message.append({"type": "text", "text": system_message})
 
@@ -715,7 +715,7 @@ class TemporaryMessageAccumulator:
         payloads = {
             "message": message,
             "existing_file_uris": existing_file_uris,
-            "chaining": CHAINING_FOR_MEMORY_UPDATE,
+            "chaining": CHAINING_FOR_META_AGENT,
             "message_queue": self.message_queue,
             "user_id": user_id,
         }

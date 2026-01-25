@@ -10,6 +10,9 @@ from typing import Any, Dict, List, Optional, Tuple
 from mcp import ClientSession
 from mcp.types import TextContent
 
+from mirix.observability.context import get_trace_context
+from mirix.observability.langfuse_client import get_langfuse_client
+
 from .exceptions import MCPConnectionError, MCPNotInitializedError, MCPTimeoutError
 from .types import BaseServerConfig, MCPTool
 
@@ -107,36 +110,88 @@ class BaseMCPClient(ABC):
         """Execute a tool on the MCP server"""
         self._check_initialized()
 
-        try:
-            result = self.loop.run_until_complete(
-                asyncio.wait_for(
-                    self.session.call_tool(tool_name, tool_args), timeout=timeout
+        # Get Langfuse client for tracing
+        langfuse = get_langfuse_client()
+        trace_context = get_trace_context() if langfuse else {}
+        trace_id = trace_context.get("trace_id") if trace_context else None
+        parent_span_id = trace_context.get("observation_id") if trace_context else None
+
+        def _do_execute() -> Tuple[str, bool]:
+            try:
+                result = self.loop.run_until_complete(
+                    asyncio.wait_for(
+                        self.session.call_tool(tool_name, tool_args), timeout=timeout
+                    )
                 )
-            )
 
-            # Parse the content from the result
-            parsed_content = []
-            for content_piece in result.content:
-                if isinstance(content_piece, TextContent):
-                    parsed_content.append(content_piece.text)
+                # Parse the content from the result
+                parsed_content = []
+                for content_piece in result.content:
+                    if isinstance(content_piece, TextContent):
+                        parsed_content.append(content_piece.text)
+                    else:
+                        parsed_content.append(str(content_piece))
+
+                if len(parsed_content) > 0:
+                    final_content = " ".join(parsed_content)
                 else:
-                    parsed_content.append(str(content_piece))
+                    final_content = "Empty response from tool"
 
-            if len(parsed_content) > 0:
-                final_content = " ".join(parsed_content)
-            else:
-                final_content = "Empty response from tool"
+                # Return content and whether there was an error
+                return final_content, getattr(result, "isError", False)
 
-            # Return content and whether there was an error
-            return final_content, getattr(result, "isError", False)
+            except asyncio.TimeoutError:
+                logger.error(
+                    f"Timed out while executing tool '{tool_name}' for MCP server {self.server_config.server_name}"
+                )
+                raise MCPTimeoutError(
+                    f"executing tool '{tool_name}'",
+                    self.server_config.server_name,
+                    timeout,
+                )
 
-        except asyncio.TimeoutError:
-            logger.error(
-                f"Timed out while executing tool '{tool_name}' for MCP server {self.server_config.server_name}"
-            )
-            raise MCPTimeoutError(
-                f"executing tool '{tool_name}'", self.server_config.server_name, timeout
-            )
+        # Execute with Langfuse tracing if available
+        if langfuse and trace_id:
+            from typing import cast
+
+            from langfuse.types import TraceContext
+
+            # Build trace context
+            trace_context_dict: dict = {"trace_id": trace_id}
+            if parent_span_id:
+                trace_context_dict["parent_span_id"] = parent_span_id
+
+            # Sanitize args for tracing
+            args_for_trace = {key: str(value) for key, value in tool_args.items()}
+
+            try:
+                with langfuse.start_as_current_observation(
+                    name=f"mcp_tool: {tool_name}",
+                    as_type="tool",
+                    trace_context=cast(TraceContext, trace_context_dict),
+                    input={
+                        "tool_name": tool_name,
+                        "server": self.server_config.server_name,
+                        "args": args_for_trace,
+                    },
+                    metadata={
+                        "mcp_server": self.server_config.server_name,
+                        "tool_name": tool_name,
+                    },
+                ) as span:
+                    final_content, is_error = _do_execute()
+
+                    # Update span with result
+                    span.update(
+                        output={"response": final_content, "is_error": is_error},
+                        level="ERROR" if is_error else "DEFAULT",
+                    )
+                    return final_content, is_error
+            except Exception as e:
+                logger.debug(f"Langfuse MCP tool trace failed: {e}")
+                return _do_execute()
+        else:
+            return _do_execute()
 
     def _check_initialized(self):
         """Check if the client has been initialized"""
@@ -210,21 +265,72 @@ class BaseAsyncMCPClient(ABC):
     ) -> Tuple[str, bool]:
         """Asynchronously execute a tool"""
         self._check_initialized()
-        result = await self.session.call_tool(tool_name, tool_args)
 
-        parsed_content = []
-        for content_piece in result.content:
-            if isinstance(content_piece, TextContent):
-                parsed_content.append(content_piece.text)
+        # Get Langfuse client for tracing
+        langfuse = get_langfuse_client()
+        trace_context = get_trace_context() if langfuse else {}
+        trace_id = trace_context.get("trace_id") if trace_context else None
+        parent_span_id = trace_context.get("observation_id") if trace_context else None
+
+        async def _do_execute() -> Tuple[str, bool]:
+            result = await self.session.call_tool(tool_name, tool_args)
+
+            parsed_content = []
+            for content_piece in result.content:
+                if isinstance(content_piece, TextContent):
+                    parsed_content.append(content_piece.text)
+                else:
+                    parsed_content.append(str(content_piece))
+
+            if len(parsed_content) > 0:
+                final_content = " ".join(parsed_content)
             else:
-                parsed_content.append(str(content_piece))
+                final_content = "Empty response from tool"
 
-        if len(parsed_content) > 0:
-            final_content = " ".join(parsed_content)
+            return final_content, getattr(result, "isError", False)
+
+        # Execute with Langfuse tracing if available
+        if langfuse and trace_id:
+            from typing import cast
+
+            from langfuse.types import TraceContext
+
+            # Build trace context
+            trace_context_dict: dict = {"trace_id": trace_id}
+            if parent_span_id:
+                trace_context_dict["parent_span_id"] = parent_span_id
+
+            # Sanitize args for tracing
+            args_for_trace = {key: str(value) for key, value in tool_args.items()}
+
+            try:
+                with langfuse.start_as_current_observation(
+                    name=f"mcp_tool: {tool_name}",
+                    as_type="tool",
+                    trace_context=cast(TraceContext, trace_context_dict),
+                    input={
+                        "tool_name": tool_name,
+                        "server": self.server_config.server_name,
+                        "args": args_for_trace,
+                    },
+                    metadata={
+                        "mcp_server": self.server_config.server_name,
+                        "tool_name": tool_name,
+                    },
+                ) as span:
+                    final_content, is_error = await _do_execute()
+
+                    # Update span with result
+                    span.update(
+                        output={"response": final_content, "is_error": is_error},
+                        level="ERROR" if is_error else "DEFAULT",
+                    )
+                    return final_content, is_error
+            except Exception as e:
+                logger.debug(f"Langfuse MCP tool trace failed: {e}")
+                return await _do_execute()
         else:
-            final_content = "Empty response from tool"
-
-        return final_content, getattr(result, "isError", False)
+            return await _do_execute()
 
     def _check_initialized(self):
         """Check if the async client has been initialized"""

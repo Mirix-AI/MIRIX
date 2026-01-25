@@ -160,10 +160,10 @@ class Memory(BaseModel, validate_assignment=True):
 
     def get_block_usage_stats(self, label: str) -> dict:
         """Get usage statistics for a specific block.
-        
+
         Args:
             label: The label of the block to get stats for
-            
+
         Returns:
             dict: Dictionary containing current_size, limit, percentage, and status
         """
@@ -171,7 +171,7 @@ class Memory(BaseModel, validate_assignment=True):
         current_size = len(block.value)
         limit = block.limit
         percentage = int((current_size / limit) * 100)
-        
+
         if percentage >= 90:
             status = "critical"
             recommendation = "USE core_memory_rewrite NOW"
@@ -184,13 +184,13 @@ class Memory(BaseModel, validate_assignment=True):
         else:
             status = "good"
             recommendation = "Plenty of space available"
-            
+
         return {
             "current_size": current_size,
             "limit": limit,
             "percentage": percentage,
             "status": status,
-            "recommendation": recommendation
+            "recommendation": recommendation,
         }
 
     def compile(self) -> str:
@@ -247,7 +247,7 @@ class Memory(BaseModel, validate_assignment=True):
         # Defensive: Handle None blocks - initialize if needed
         if self.blocks is None:
             self.blocks = []
-        
+
         for block in self.blocks:
             if block.label == label:
                 block.value = value
@@ -324,7 +324,7 @@ class ChatMemory(BasicBlockMemory):
         self,
         persona: str,
         human: str,
-        actor: PydanticUser,
+        user: PydanticUser,
         limit: int = CORE_MEMORY_BLOCK_CHAR_LIMIT,
     ):
         """
@@ -333,13 +333,14 @@ class ChatMemory(BasicBlockMemory):
         Args:
             persona (str): The starter value for the persona block.
             human (str): The starter value for the human block.
+            user (PydanticUser): The user who owns this memory (used for user_id on blocks).
             limit (int): The character limit for each block.
         """
         # TODO: Should these be CreateBlocks?
         super().__init__(
             blocks=[
-                Block(value=persona, limit=limit, label="persona", user_id=actor.id),
-                Block(value=human, limit=limit, label="human", user_id=actor.id),
+                Block(value=persona, limit=limit, label="persona", user_id=user.id),
+                Block(value=human, limit=limit, label="human", user_id=user.id),
             ]
         )
 

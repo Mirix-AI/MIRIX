@@ -87,6 +87,7 @@ dependencies = [
     "redis[hiredis] (>=7.0.1,<8.0.0)",
     "bcrypt (>=4.0.0)",
     "PyJWT (>=2.10.1)",
+    "langfuse (>=3.11.0,<4.0.0)",
 ]
 
 [project.optional-dependencies]

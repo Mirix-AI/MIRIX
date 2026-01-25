@@ -230,11 +230,6 @@ class Settings(BaseSettings):
     uvicorn_reload: bool = False
     uvicorn_timeout_keep_alive: int = 5
 
-    # memory queue settings (for local/dev - simulates Kafka partitioning)
-    # Number of worker threads for in-memory queue processing
-    # Each worker owns one partition, messages are routed by user_id hash
-    memory_queue_num_workers: int = Field(1, env="MIRIX_MEMORY_QUEUE_NUM_WORKERS")
-
     # event loop parallelism
     event_loop_threadpool_max_workers: int = 43
 
@@ -262,9 +257,40 @@ class Settings(BaseSettings):
     httpx_max_keepalive_connections: int = 500
     httpx_keepalive_expiry: float = 120.0
 
+    # LLM retry settings (for agent-level retries on transient errors)
+    llm_retry_limit: int = Field(
+        3, env="MIRIX_LLM_RETRY_LIMIT"
+    )  # Max retry attempts for LLM calls
+    llm_retry_backoff_factor: float = Field(
+        0.5, env="MIRIX_LLM_RETRY_BACKOFF_FACTOR"
+    )  # Exponential backoff multiplier
+    llm_retry_max_delay: float = Field(
+        10.0, env="MIRIX_LLM_RETRY_MAX_DELAY"
+    )  # Max delay between retries (seconds)
+
     # cron job parameters
     enable_batch_job_polling: bool = False
     poll_running_llm_batches_interval_seconds: int = 5 * 60
+
+    # LangFuse observability settings (for distributed tracing)
+    langfuse_enabled: bool = Field(False, env="MIRIX_LANGFUSE_ENABLED")
+    langfuse_public_key: Optional[str] = Field(None, env="MIRIX_LANGFUSE_PUBLIC_KEY")
+    langfuse_secret_key: Optional[str] = Field(None, env="MIRIX_LANGFUSE_SECRET_KEY")
+    langfuse_host: str = Field("https://cloud.langfuse.com", env="MIRIX_LANGFUSE_HOST")
+    langfuse_flush_interval: float = Field(
+        1.0, env="MIRIX_LANGFUSE_FLUSH_INTERVAL"
+    )  # seconds
+    langfuse_flush_at: int = Field(
+        512, env="MIRIX_LANGFUSE_FLUSH_AT"
+    )  # spans per batch
+    langfuse_debug: bool = Field(False, env="MIRIX_LANGFUSE_DEBUG")
+    langfuse_flush_timeout: float = Field(
+        10.0, env="MIRIX_LANGFUSE_FLUSH_TIMEOUT"
+    )  # seconds
+    # Environment identifier for filtering traces in shared Langfuse projects
+    # Common values: "dev", "e2e", "qal", "prf", "prod"
+    # Must match regex: ^(?!langfuse)[a-z0-9-_]+$ with max 40 chars
+    langfuse_environment: str = Field("dev", env="MIRIX_LANGFUSE_ENVIRONMENT")
 
     # JWT settings for dashboard authentication
     jwt_secret_key: Optional[str] = Field(None, env="MIRIX_JWT_SECRET_KEY")

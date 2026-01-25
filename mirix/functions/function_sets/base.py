@@ -72,7 +72,7 @@ def conversation_search(
     # original: start=page * count
     messages = self.message_manager.list_user_messages_for_agent(
         agent_id=self.agent_state.id,
-        actor=self.user,
+        actor=self.actor,
         query_text=query,
         limit=count,
     )
@@ -112,6 +112,9 @@ def search_in_memory(
         str: Query result string
     """
 
+    if not self.user:
+        raise ValueError("Can not search in memory. User is not set")
+
     if (
         memory_type == "resource"
         and search_field == "content"
@@ -132,6 +135,21 @@ def search_in_memory(
     if memory_type == "all":
         search_field = "null"
 
+    # Pre-compute embedding once if using embedding search (to avoid redundant embeddings)
+    embedded_text = None
+    if search_method == "embedding" and query:
+        from mirix.embeddings import embedding_model
+        import numpy as np
+        from mirix.constants import MAX_EMBEDDING_DIM
+        
+        embedded_text = embedding_model(self.agent_state.embedding_config).get_text_embedding(query)
+        # Pad for episodic memory which requires MAX_EMBEDDING_DIM
+        embedded_text_padded = np.pad(
+            np.array(embedded_text),
+            (0, MAX_EMBEDDING_DIM - len(embedded_text)),
+            mode="constant"
+        ).tolist()
+
     if memory_type == "core":
         # It means the model is an idiot, but we still return the results:
         return self.agent_state.memory.compile(), len(
@@ -140,9 +158,10 @@ def search_in_memory(
 
     if memory_type == "episodic" or memory_type == "all":
         episodic_memory = self.episodic_memory_manager.list_episodic_memory(
-            actor=self.user,
+            user=self.user,
             agent_state=self.agent_state,
             query=query,
+            embedded_text=embedded_text_padded if search_method == "embedding" and query else None,
             search_field=search_field if search_field != "null" else "summary",
             search_method=search_method,
             limit=10,
@@ -165,12 +184,15 @@ def search_in_memory(
 
     if memory_type == "resource" or memory_type == "all":
         resource_memories = self.resource_memory_manager.list_resources(
-            actor=self.user,
+            user=self.user,
             agent_state=self.agent_state,
             query=query,
-            search_field=search_field
-            if search_field != "null"
-            else ("summary" if search_method == "embedding" else "content"),
+            embedded_text=embedded_text if search_method == "embedding" and query else None,
+            search_field=(
+                search_field
+                if search_field != "null"
+                else ("summary" if search_method == "embedding" else "content")
+            ),
             search_method=search_method,
             limit=10,
             timezone_str=timezone_str,
@@ -190,9 +212,10 @@ def search_in_memory(
 
     if memory_type == "procedural" or memory_type == "all":
         procedural_memories = self.procedural_memory_manager.list_procedures(
-            actor=self.user,
+            user=self.user,
             agent_state=self.agent_state,
             query=query,
+            embedded_text=embedded_text if search_method == "embedding" and query else None,
             search_field=search_field if search_field != "null" else "summary",
             search_method=search_method,
             limit=10,
@@ -213,9 +236,10 @@ def search_in_memory(
 
     if memory_type == "knowledge_vault" or memory_type == "all":
         knowledge_vault_memories = self.knowledge_vault_manager.list_knowledge(
-            actor=self.user,
+            user=self.user,
             agent_state=self.agent_state,
             query=query,
+            embedded_text=embedded_text if search_method == "embedding" and query else None,
             search_field=search_field if search_field != "null" else "caption",
             search_method=search_method,
             limit=10,
@@ -240,9 +264,10 @@ def search_in_memory(
 
     if memory_type == "semantic" or memory_type == "all":
         semantic_memories = self.semantic_memory_manager.list_semantic_items(
-            actor=self.user,
+            user=self.user,
             agent_state=self.agent_state,
             query=query,
+            embedded_text=embedded_text if search_method == "embedding" and query else None,
             search_field=search_field if search_field != "null" else "summary",
             search_method=search_method,
             limit=10,
@@ -294,6 +319,9 @@ def list_memory_within_timerange(
 
     start_time = convert_timezone_to_utc(start_time, timezone_str)
     end_time = convert_timezone_to_utc(end_time, timezone_str)
+
+    if not self.user:
+        raise ValueError("Can not list memory within timerange. User is not set")
 
     if memory_type == "episodic" or memory_type == "all":
         episodic_memory = (
