@@ -8,6 +8,8 @@ import datetime as dt
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
+from sqlalchemy import select
+
 from mirix.log import get_logger
 from mirix.orm.errors import NoResultFound
 from mirix.orm.raw_memory import RawMemory
@@ -238,13 +240,27 @@ class RawMemoryManager:
         )
 
         with self.session_maker() as session:
-            # Fetch the existing memory
+            # Fetch the existing memory with row-level lock (SELECT FOR UPDATE)
+            # This prevents race conditions when multiple agents append/merge concurrently
+            stmt = (
+                select(RawMemory)
+                .where(RawMemory.id == memory_id)
+                .with_for_update()
+            )
+
+            result = session.execute(stmt)
             try:
-                raw_memory = RawMemory.read(
-                    db_session=session, identifier=memory_id, actor=actor
-                )
+                raw_memory = result.scalar_one()
             except NoResultFound:
                 raise ValueError(f"Raw memory {memory_id} not found")
+
+            # Perform access control check (replaces RawMemory.read's built-in check)
+            if actor and raw_memory.organization_id != actor.organization_id:
+                raise ValueError(
+                    f"Access denied: memory {memory_id} belongs to "
+                    f"organization {raw_memory.organization_id}, "
+                    f"actor belongs to {actor.organization_id}"
+                )
 
             # Update context
             if new_context is not None:

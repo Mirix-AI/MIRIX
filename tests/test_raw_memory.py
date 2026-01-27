@@ -886,3 +886,184 @@ def test_api_get_nonexistent_memory(api_client, test_user):
     assert response.status_code == 404
     print("\n[OK] GET nonexistent memory returns 404 as expected")
 
+
+# =================================================================
+# CONCURRENCY TESTS
+# =================================================================
+
+
+def test_raw_memory_concurrent_append(
+    raw_memory_manager, test_actor, test_user
+):
+    """
+    Test that concurrent appends don't lose updates.
+
+    This test verifies that the SELECT FOR UPDATE locking prevents
+    race conditions when multiple threads/agents append to the same
+    raw memory simultaneously.
+    """
+    import threading
+
+    # Create a raw memory
+    sample_data = RawMemoryItemCreate(
+        context="Initial context",
+        filter_tags={"scope": "CARE", "test": "concurrency"},
+        user_id=test_user.id,
+        organization_id=test_actor.organization_id,
+    )
+
+    created = raw_memory_manager.create_raw_memory(
+        raw_memory=sample_data,
+        actor=test_actor,
+        client_id=test_actor.id,
+        user_id=test_user.id,
+        use_cache=False,
+    )
+
+    memory_id = created.id
+    print(f"\n[Concurrency Test] Created memory {memory_id}")
+
+    # Track which updates succeeded
+    results = {"thread_1": False, "thread_2": False, "errors": []}
+
+    def append_context(thread_name: str, context_text: str):
+        """Helper function to append context in a thread."""
+        try:
+            raw_memory_manager.update_raw_memory(
+                memory_id=memory_id,
+                new_context=context_text,
+                actor=test_actor,
+                context_update_mode="append",
+            )
+            results[thread_name] = True
+            print(f"[{thread_name}] Successfully appended: {context_text}")
+        except Exception as e:
+            results["errors"].append(f"{thread_name}: {e}")
+            print(f"[{thread_name}] ERROR: {e}")
+
+    # Create two threads that will append concurrently
+    thread1 = threading.Thread(
+        target=append_context, args=("thread_1", "Update from thread 1")
+    )
+    thread2 = threading.Thread(
+        target=append_context, args=("thread_2", "Update from thread 2")
+    )
+
+    # Start both threads simultaneously
+    thread1.start()
+    thread2.start()
+
+    # Wait for both to complete
+    thread1.join()
+    thread2.join()
+
+    # Verify both updates succeeded
+    assert results["thread_1"], "Thread 1 update failed"
+    assert results["thread_2"], "Thread 2 update failed"
+    assert len(results["errors"]) == 0, f"Errors occurred: {results['errors']}"
+
+    # Retrieve the final state
+    final_memory = raw_memory_manager.get_raw_memory_by_id(
+        memory_id=memory_id, user=test_user
+    )
+
+    assert final_memory is not None
+    final_context = final_memory.context
+
+    # Verify BOTH updates are present in the final context
+    assert "Initial context" in final_context, "Initial context missing"
+    assert "Update from thread 1" in final_context, "Thread 1 update lost!"
+    assert "Update from thread 2" in final_context, "Thread 2 update lost!"
+
+    print(f"\n[OK] Concurrent appends preserved both updates")
+    print(f"Final context length: {len(final_context)} chars")
+    print(f"Final context:\n{final_context}")
+
+
+def test_raw_memory_concurrent_tag_merge(
+    raw_memory_manager, test_actor, test_user
+):
+    """
+    Test that concurrent filter_tags merges don't lose updates.
+
+    Similar to append test but for tag merging operations.
+    """
+    import threading
+
+    # Create a raw memory with initial tags
+    sample_data = RawMemoryItemCreate(
+        context="Context for tag merge test",
+        filter_tags={"scope": "CARE", "initial_tag": "value0"},
+        user_id=test_user.id,
+        organization_id=test_actor.organization_id,
+    )
+
+    created = raw_memory_manager.create_raw_memory(
+        raw_memory=sample_data,
+        actor=test_actor,
+        client_id=test_actor.id,
+        user_id=test_user.id,
+        use_cache=False,
+    )
+
+    memory_id = created.id
+    print(f"\n[Tag Merge Test] Created memory {memory_id}")
+
+    # Track results
+    results = {"thread_1": False, "thread_2": False, "errors": []}
+
+    def merge_tags(thread_name: str, new_tags: dict):
+        """Helper function to merge tags in a thread."""
+        try:
+            raw_memory_manager.update_raw_memory(
+                memory_id=memory_id,
+                new_filter_tags=new_tags,
+                actor=test_actor,
+                tags_merge_mode="merge",
+            )
+            results[thread_name] = True
+            print(f"[{thread_name}] Successfully merged tags: {new_tags}")
+        except Exception as e:
+            results["errors"].append(f"{thread_name}: {e}")
+            print(f"[{thread_name}] ERROR: {e}")
+
+    # Create two threads that will merge tags concurrently
+    thread1 = threading.Thread(
+        target=merge_tags, args=("thread_1", {"tag1": "from_thread_1"})
+    )
+    thread2 = threading.Thread(
+        target=merge_tags, args=("thread_2", {"tag2": "from_thread_2"})
+    )
+
+    # Start both threads simultaneously
+    thread1.start()
+    thread2.start()
+
+    # Wait for both to complete
+    thread1.join()
+    thread2.join()
+
+    # Verify both updates succeeded
+    assert results["thread_1"], "Thread 1 update failed"
+    assert results["thread_2"], "Thread 2 update failed"
+    assert len(results["errors"]) == 0, f"Errors occurred: {results['errors']}"
+
+    # Retrieve the final state
+    final_memory = raw_memory_manager.get_raw_memory_by_id(
+        memory_id=memory_id, user=test_user
+    )
+
+    assert final_memory is not None
+    final_tags = final_memory.filter_tags
+
+    # Verify BOTH tag updates are present
+    assert final_tags is not None
+    assert "scope" in final_tags, "Original scope tag missing"
+    assert "initial_tag" in final_tags, "Initial tag missing"
+    assert "tag1" in final_tags, "Thread 1 tag lost!"
+    assert "tag2" in final_tags, "Thread 2 tag lost!"
+    assert final_tags["tag1"] == "from_thread_1"
+    assert final_tags["tag2"] == "from_thread_2"
+
+    print(f"\n[OK] Concurrent tag merges preserved both updates")
+    print(f"Final tags: {final_tags}")
