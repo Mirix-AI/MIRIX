@@ -89,6 +89,7 @@ from mirix.services.organization_manager import OrganizationManager
 from mirix.services.per_agent_lock_manager import PerAgentLockManager
 from mirix.services.procedural_memory_manager import ProceduralMemoryManager
 from mirix.services.provider_manager import ProviderManager
+from mirix.services.raw_memory_manager import RawMemoryManager
 from mirix.services.resource_memory_manager import ResourceMemoryManager
 from mirix.services.semantic_memory_manager import SemanticMemoryManager
 from mirix.services.step_manager import StepManager
@@ -528,6 +529,7 @@ class SyncServer(Server):
         self.knowledge_vault_manager = KnowledgeVaultManager()
         self.episodic_memory_manager = EpisodicMemoryManager()
         self.procedural_memory_manager = ProceduralMemoryManager()
+        self.raw_memory_manager = RawMemoryManager()
         self.resource_memory_manager = ResourceMemoryManager()
         self.semantic_memory_manager = SemanticMemoryManager()
 

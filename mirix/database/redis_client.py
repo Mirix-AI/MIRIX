@@ -53,6 +53,7 @@ class RedisMemoryClient:
     PROCEDURAL_PREFIX = "procedural:"
     RESOURCE_PREFIX = "resource:"
     KNOWLEDGE_PREFIX = "knowledge:"
+    RAW_MEMORY_PREFIX = "raw_memory:"
     ORGANIZATION_PREFIX = "org:"
     USER_PREFIX = "user:"
     CLIENT_PREFIX = "client:"
