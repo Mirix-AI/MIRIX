@@ -8,9 +8,11 @@ import datetime as dt
 from datetime import datetime
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import JSON, DateTime, Index, String, Text, text
+from sqlalchemy import JSON, Column, DateTime, Index, String, Text, text
 from sqlalchemy.orm import Mapped, declared_attr, mapped_column, relationship
 
+from mirix.constants import MAX_EMBEDDING_DIM
+from mirix.orm.custom_columns import CommonVector, EmbeddingConfigColumn
 from mirix.orm.mixins import OrganizationMixin, UserMixin
 from mirix.orm.sqlalchemy_base import SqlalchemyBase
 from mirix.schemas.raw_memory import RawMemoryItem as PydanticRawMemoryItem
@@ -67,6 +69,18 @@ class RawMemory(SqlalchemyBase, OrganizationMixin, UserMixin):
         },
         doc="Last modification info including timestamp and operation type",
     )
+
+    embedding_config: Mapped[Optional[dict]] = mapped_column(
+        EmbeddingConfigColumn, nullable=True, doc="Embedding configuration"
+    )
+
+    # Vector embedding field based on database type
+    if settings.mirix_pg_uri_no_default:
+        from pgvector.sqlalchemy import Vector
+
+        context_embedding = mapped_column(Vector(MAX_EMBEDDING_DIM), nullable=True)
+    else:
+        context_embedding = Column(CommonVector, nullable=True)
 
     # Timestamps
     occurred_at: Mapped[datetime] = mapped_column(

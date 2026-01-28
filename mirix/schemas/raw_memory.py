@@ -4,11 +4,12 @@ Pydantic schemas for raw task memory.
 Raw memories store unprocessed task context without LLM extraction.
 """
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from mirix.client.utils import get_utc_time
+from mirix.schemas.embedding_config import EmbeddingConfig
 from mirix.schemas.mirix_base import MirixBase
 
 
@@ -59,6 +60,30 @@ class RawMemoryItem(RawMemoryItemBase):
         description="Last modification info including timestamp and operation type",
     )
 
+    context_embedding: Optional[List[float]] = Field(
+        None, description="The embedding of the context"
+    )
+    embedding_config: Optional[EmbeddingConfig] = Field(
+        None, description="The embedding configuration used for this memory"
+    )
+
+    @field_validator("context_embedding")
+    @classmethod
+    def pad_embeddings(cls, embedding: List[float]) -> List[float]:
+        """Pad embeddings to MAX_EMBEDDING_DIM."""
+        import numpy as np
+        from mirix.constants import MAX_EMBEDDING_DIM
+
+        if embedding and len(embedding) != MAX_EMBEDDING_DIM:
+            np_embedding = np.array(embedding)
+            padded_embedding = np.pad(
+                np_embedding,
+                (0, MAX_EMBEDDING_DIM - np_embedding.shape[0]),
+                mode="constant",
+            )
+            return padded_embedding.tolist()
+        return embedding
+
     # Timestamps
     occurred_at: datetime = Field(
         default_factory=get_utc_time,
@@ -83,6 +108,8 @@ class RawMemoryItemCreate(RawMemoryItemBase):
         organization_id: Organization ID
         occurred_at: When the event occurred (defaults to now if omitted)
         id: Unique identifier (server generates UUIDv7 if omitted)
+        context_embedding: Optional embedding of the context (computed by manager)
+        embedding_config: Optional embedding configuration used
     """
 
     user_id: str = Field(..., description="User ID")
@@ -95,6 +122,31 @@ class RawMemoryItemCreate(RawMemoryItemBase):
         None,
         description="Unique identifier (server generates if omitted)",
     )
+    
+    # Embedding fields (set by manager during creation)
+    context_embedding: Optional[List[float]] = Field(
+        None, description="The embedding of the context"
+    )
+    embedding_config: Optional[EmbeddingConfig] = Field(
+        None, description="The embedding configuration used for this memory"
+    )
+
+    @field_validator("context_embedding")
+    @classmethod
+    def pad_embeddings(cls, embedding: List[float]) -> List[float]:
+        """Pad embeddings to MAX_EMBEDDING_DIM."""
+        import numpy as np
+        from mirix.constants import MAX_EMBEDDING_DIM
+
+        if embedding and len(embedding) != MAX_EMBEDDING_DIM:
+            np_embedding = np.array(embedding)
+            padded_embedding = np.pad(
+                np_embedding,
+                (0, MAX_EMBEDDING_DIM - np_embedding.shape[0]),
+                mode="constant",
+            )
+            return padded_embedding.tolist()
+        return embedding
 
 
 class RawMemoryItemUpdate(MirixBase):
@@ -117,6 +169,14 @@ class RawMemoryItemUpdate(MirixBase):
     filter_tags: Optional[Dict[str, Any]] = Field(
         None,
         description="New or updated filter tags",
+    )
+    context_embedding: Optional[List[float]] = Field(
+        None,
+        description="The embedding of the context (regenerated on context update)",
+    )
+    embedding_config: Optional[EmbeddingConfig] = Field(
+        None,
+        description="The embedding configuration",
     )
     context_update_type: str = Field(
         "replace",
