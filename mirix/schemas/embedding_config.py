@@ -83,11 +83,11 @@ class EmbeddingConfig(BaseModel):
                 embedding_dim=1536,
                 embedding_chunk_size=8191,
             )
-        elif model_name == "text-embedding-004" or (
+        elif model_name == "gemini-embedding-001" or model_name == "text-embedding-004" or (
             not model_name and provider == "google_ai"
         ):
             return cls(
-                embedding_model="text-embedding-004",
+                embedding_model="gemini-embedding-001",
                 embedding_endpoint_type="google_ai",
                 embedding_endpoint="https://generativelanguage.googleapis.com",
                 embedding_dim=768,

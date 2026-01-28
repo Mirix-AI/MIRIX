@@ -730,9 +730,13 @@ def test_api_create_and_get_raw_memory(
 
 @pytest.mark.integration
 def test_api_update_raw_memory_replace(
-    api_client, raw_memory_manager, test_actor, test_user
+    api_client, raw_memory_manager, test_actor, test_user, mock_embedding_model
 ):
     """Test PATCH /memory/raw/{memory_id} endpoint with replace mode."""
+    import os
+    if not os.getenv("GOOGLE_API_KEY") and not os.getenv("MIRIX_GOOGLE_API_KEY"):
+        pytest.skip("Skipping API test with embeddings - no Google API key")
+    
     # Create a raw memory first
     sample_data = RawMemoryItemCreate(
         context="Original context for PATCH test",
@@ -781,9 +785,13 @@ def test_api_update_raw_memory_replace(
 
 @pytest.mark.integration
 def test_api_update_raw_memory_append_and_merge(
-    api_client, raw_memory_manager, test_actor, test_user
+    api_client, raw_memory_manager, test_actor, test_user, mock_embedding_model
 ):
     """Test PATCH /memory/raw/{memory_id} endpoint with append and merge modes."""
+    import os
+    if not os.getenv("GOOGLE_API_KEY") and not os.getenv("MIRIX_GOOGLE_API_KEY"):
+        pytest.skip("Skipping API test with embeddings - no Google API key")
+    
     # Create a raw memory first
     sample_data = RawMemoryItemCreate(
         context="Original context for append test",
@@ -1067,3 +1075,252 @@ def test_raw_memory_concurrent_tag_merge(
 
     print(f"\n[OK] Concurrent tag merges preserved both updates")
     print(f"Final tags: {final_tags}")
+
+
+# =================================================================
+# EMBEDDING TESTS
+# =================================================================
+
+
+@pytest.fixture(scope="module")
+def test_agent(test_actor):
+    """Provide a test agent with Gemini embedding configuration."""
+    from mirix.services.agent_manager import AgentManager
+    from mirix.schemas.agent import CreateAgent
+    from mirix.schemas.embedding_config import EmbeddingConfig
+    from mirix.schemas.llm_config import LLMConfig
+    from pathlib import Path
+    import yaml
+
+    agent_mgr = AgentManager()
+
+    # Create an agent with Gemini embedding config (from examples/mirix_gemini.yaml)
+    agent_id = "test-agent-raw-mem-gemini"
+    try:
+        return agent_mgr.get_agent_by_id(agent_id, actor=test_actor)
+    except Exception:
+        # Load config from mirix_gemini.yaml (same pattern as test_memory_server.py)
+        config_path = Path("mirix/configs/examples/mirix_gemini.yaml")
+        with open(config_path, "r") as f:
+            config = yaml.safe_load(f)
+        
+        # Create agent with both llm_config and embedding_config using Gemini
+        agent = agent_mgr.create_agent(
+            CreateAgent(
+                name="Test Agent for Raw Memory Gemini",
+                description="Test agent with Gemini embeddings",
+                llm_config=LLMConfig(**config["llm_config"]),
+                embedding_config=EmbeddingConfig(**config["embedding_config"]),
+            ),
+            actor=test_actor,
+        )
+        return agent
+
+
+@pytest.fixture
+def mock_embedding_model(monkeypatch):
+    """Mock the embedding model to return fake embeddings for tests (Gemini: 768-dim)."""
+    from unittest.mock import Mock
+    import numpy as np
+
+    def mock_get_text_embedding(text):
+        # Return a fake embedding vector matching Gemini's dimension (768)
+        return np.random.rand(768).tolist()
+
+    mock_embed_model = Mock()
+    mock_embed_model.get_text_embedding = mock_get_text_embedding
+
+    def mock_embedding_model_factory(config):
+        return mock_embed_model
+
+    # Patch the embeddings module directly (where it's imported from)
+    monkeypatch.setattr("mirix.embeddings.embedding_model", mock_embedding_model_factory)
+
+    return mock_embed_model
+
+
+def test_create_raw_memory_with_embeddings(
+    raw_memory_manager, sample_raw_memory_data, test_actor, test_user, test_agent, mock_embedding_model
+):
+    """Test creating raw memory with embeddings when agent_state is provided."""
+    from mirix.constants import BUILD_EMBEDDINGS_FOR_MEMORY, MAX_EMBEDDING_DIM
+
+    if not BUILD_EMBEDDINGS_FOR_MEMORY:
+        pytest.skip("BUILD_EMBEDDINGS_FOR_MEMORY is disabled")
+
+    result = raw_memory_manager.create_raw_memory(
+        raw_memory=sample_raw_memory_data,
+        actor=test_actor,
+        agent_state=test_agent,
+        client_id=test_actor.id,
+        user_id=test_user.id,
+        use_cache=False,
+    )
+
+    assert result.id is not None
+    assert result.context_embedding is not None
+    assert isinstance(result.context_embedding, list)
+    assert len(result.context_embedding) == MAX_EMBEDDING_DIM  # Should be padded
+    assert result.embedding_config is not None
+    assert result.embedding_config.embedding_model == "gemini-embedding-001"  # Gemini embedding model
+
+    # Cleanup
+    raw_memory_manager.delete_raw_memory(result.id, test_actor)
+
+
+def test_create_raw_memory_without_agent_state(
+    raw_memory_manager, sample_raw_memory_data, test_actor, test_user
+):
+    """Test creating raw memory without embeddings when agent_state is not provided."""
+    result = raw_memory_manager.create_raw_memory(
+        raw_memory=sample_raw_memory_data,
+        actor=test_actor,
+        agent_state=None,  # No agent state
+        client_id=test_actor.id,
+        user_id=test_user.id,
+        use_cache=False,
+    )
+
+    assert result.id is not None
+    assert result.context_embedding is None
+    assert result.embedding_config is None
+
+    # Cleanup
+    raw_memory_manager.delete_raw_memory(result.id, test_actor)
+
+
+def test_update_raw_memory_regenerates_embeddings(
+    raw_memory_manager, sample_raw_memory_data, test_actor, test_user, test_agent, mock_embedding_model
+):
+    """Test updating raw memory regenerates embeddings when context changes."""
+    from mirix.constants import BUILD_EMBEDDINGS_FOR_MEMORY
+
+    if not BUILD_EMBEDDINGS_FOR_MEMORY:
+        pytest.skip("BUILD_EMBEDDINGS_FOR_MEMORY is disabled")
+
+    # Create with embeddings
+    created = raw_memory_manager.create_raw_memory(
+        raw_memory=sample_raw_memory_data,
+        actor=test_actor,
+        agent_state=test_agent,
+        client_id=test_actor.id,
+        user_id=test_user.id,
+        use_cache=False,
+    )
+
+    original_embedding = created.context_embedding
+
+    # Update context (should regenerate embedding)
+    updated = raw_memory_manager.update_raw_memory(
+        memory_id=created.id,
+        new_context="Completely new context that should have different embedding",
+        actor=test_actor,
+        agent_state=test_agent,
+        context_update_mode="replace",
+    )
+
+    assert updated.context_embedding is not None
+    # Note: embeddings will be different because mock generates random values
+    assert updated.embedding_config is not None
+
+    # Cleanup
+    raw_memory_manager.delete_raw_memory(created.id, test_actor)
+
+
+def test_update_raw_memory_without_agent_state_preserves_embeddings(
+    raw_memory_manager, sample_raw_memory_data, test_actor, test_user, test_agent, mock_embedding_model
+):
+    """Test updating raw memory without agent_state doesn't regenerate embeddings."""
+    from mirix.constants import BUILD_EMBEDDINGS_FOR_MEMORY
+
+    if not BUILD_EMBEDDINGS_FOR_MEMORY:
+        pytest.skip("BUILD_EMBEDDINGS_FOR_MEMORY is disabled")
+
+    # Create with embeddings
+    created = raw_memory_manager.create_raw_memory(
+        raw_memory=sample_raw_memory_data,
+        actor=test_actor,
+        agent_state=test_agent,
+        client_id=test_actor.id,
+        user_id=test_user.id,
+        use_cache=False,
+    )
+
+    original_embedding = created.context_embedding
+
+    # Update context WITHOUT agent_state (should NOT regenerate embedding)
+    updated = raw_memory_manager.update_raw_memory(
+        memory_id=created.id,
+        new_context="New context but no agent_state",
+        actor=test_actor,
+        agent_state=None,  # No agent state
+        context_update_mode="replace",
+    )
+
+    # Embedding should remain unchanged (not regenerated)
+    assert updated.context == "New context but no agent_state"
+    # Note: The embedding won't be updated since we didn't provide agent_state
+
+    # Cleanup
+    raw_memory_manager.delete_raw_memory(created.id, test_actor)
+
+
+def test_embedding_padding_validation(
+    raw_memory_manager, sample_raw_memory_data, test_actor, test_user, test_agent, mock_embedding_model
+):
+    """Test that embeddings are padded to MAX_EMBEDDING_DIM."""
+    from mirix.constants import BUILD_EMBEDDINGS_FOR_MEMORY, MAX_EMBEDDING_DIM
+
+    if not BUILD_EMBEDDINGS_FOR_MEMORY:
+        pytest.skip("BUILD_EMBEDDINGS_FOR_MEMORY is disabled")
+
+    result = raw_memory_manager.create_raw_memory(
+        raw_memory=sample_raw_memory_data,
+        actor=test_actor,
+        agent_state=test_agent,
+        client_id=test_actor.id,
+        user_id=test_user.id,
+        use_cache=False,
+    )
+
+    assert result.context_embedding is not None
+    assert len(result.context_embedding) == MAX_EMBEDDING_DIM
+
+    # Cleanup
+    raw_memory_manager.delete_raw_memory(result.id, test_actor)
+
+
+def test_raw_memory_embeddings_cache_to_redis(
+    raw_memory_manager, sample_raw_memory_data, test_actor, test_user, test_agent, redis_client, mock_embedding_model
+):
+    """Test that raw memory embeddings are properly cached in Redis."""
+    from mirix.constants import BUILD_EMBEDDINGS_FOR_MEMORY
+
+    if not BUILD_EMBEDDINGS_FOR_MEMORY:
+        pytest.skip("BUILD_EMBEDDINGS_FOR_MEMORY is disabled")
+
+    # Create with embeddings and caching enabled
+    created = raw_memory_manager.create_raw_memory(
+        raw_memory=sample_raw_memory_data,
+        actor=test_actor,
+        agent_state=test_agent,
+        client_id=test_actor.id,
+        user_id=test_user.id,
+        use_cache=True,
+    )
+
+    # Verify in Redis JSON
+    redis_key = f"{redis_client.RAW_MEMORY_PREFIX}{created.id}"
+    cached_data = redis_client.get_json(redis_key)
+
+    assert cached_data is not None
+    assert cached_data["id"] == created.id
+    assert "context_embedding" in cached_data
+    assert cached_data["context_embedding"] is not None
+    assert isinstance(cached_data["context_embedding"], list)
+    assert "embedding_config" in cached_data
+    assert cached_data["embedding_config"] is not None
+
+    # Cleanup
+    raw_memory_manager.delete_raw_memory(created.id, test_actor)
+

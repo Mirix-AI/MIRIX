@@ -10,9 +10,11 @@ from typing import Any, Dict, Optional
 
 from sqlalchemy import select
 
+from mirix.constants import BUILD_EMBEDDINGS_FOR_MEMORY
 from mirix.log import get_logger
 from mirix.orm.errors import NoResultFound
 from mirix.orm.raw_memory import RawMemory
+from mirix.schemas.agent import AgentState
 from mirix.schemas.client import Client as PydanticClient
 from mirix.schemas.raw_memory import (
     RawMemoryItem as PydanticRawMemoryItem,
@@ -43,6 +45,7 @@ class RawMemoryManager:
         self,
         raw_memory: PydanticRawMemoryItemCreate,
         actor: PydanticClient,
+        agent_state: Optional[AgentState] = None,
         client_id: Optional[str] = None,
         user_id: Optional[str] = None,
         use_cache: bool = True,
@@ -53,6 +56,7 @@ class RawMemoryManager:
         Args:
             raw_memory: The raw memory data to create
             actor: Client performing the operation (for audit trail)
+            agent_state: Agent state containing embedding configuration (optional)
             client_id: Client application identifier (defaults to actor.id)
             user_id: End-user identifier (defaults to admin user)
             use_cache: If True, cache in Redis. If False, skip caching.
@@ -92,6 +96,27 @@ class RawMemoryManager:
             user_id,
             raw_memory.filter_tags,
         )
+
+        # Conditionally calculate embeddings based on BUILD_EMBEDDINGS_FOR_MEMORY flag
+        if BUILD_EMBEDDINGS_FOR_MEMORY and agent_state is not None:
+            try:
+                from mirix.embeddings import embedding_model
+
+                embed_model = embedding_model(agent_state.embedding_config)
+                context_embedding = embed_model.get_text_embedding(raw_memory.context)
+
+                # Pad embeddings using Pydantic validator
+                raw_memory.context_embedding = PydanticRawMemoryItemCreate.pad_embeddings(
+                    context_embedding
+                )
+                raw_memory.embedding_config = agent_state.embedding_config
+            except Exception as e:
+                logger.warning("Failed to generate embeddings for raw memory creation: %s", e)
+                raw_memory.context_embedding = None
+                raw_memory.embedding_config = None
+        else:
+            raw_memory.context_embedding = None
+            raw_memory.embedding_config = None
 
         # Convert the Pydantic model into a dict
         raw_memory_dict = raw_memory.model_dump()
@@ -212,6 +237,7 @@ class RawMemoryManager:
         new_context: Optional[str] = None,
         new_filter_tags: Optional[Dict[str, Any]] = None,
         actor: Optional[PydanticClient] = None,
+        agent_state: Optional[AgentState] = None,
         context_update_mode: str = "replace",
         tags_merge_mode: str = "replace",
     ) -> PydanticRawMemoryItem:
@@ -223,6 +249,7 @@ class RawMemoryManager:
             new_context: New context text
             new_filter_tags: New or updated filter tags
             actor: Client performing the update (for access control and audit)
+            agent_state: Agent state containing embedding configuration (optional)
             context_update_mode: How to handle context updates ("append" or "replace")
             tags_merge_mode: How to handle filter_tags updates ("merge" or "replace")
 
@@ -286,6 +313,25 @@ class RawMemoryManager:
                 else:  # replace
                     raw_memory.filter_tags = new_filter_tags
                     logger.debug("Replaced filter_tags for memory %s", memory_id)
+
+            # Regenerate embeddings if context changed and agent_state provided
+            if (
+                BUILD_EMBEDDINGS_FOR_MEMORY
+                and agent_state is not None
+                and new_context is not None
+            ):
+                try:
+                    from mirix.embeddings import embedding_model
+
+                    embed_model = embedding_model(agent_state.embedding_config)
+                    context_embedding = embed_model.get_text_embedding(raw_memory.context)
+
+                    raw_memory.context_embedding = PydanticRawMemoryItem.pad_embeddings(
+                        context_embedding
+                    )
+                    raw_memory.embedding_config = agent_state.embedding_config
+                except Exception as e:
+                    logger.warning("Failed to regenerate embeddings for raw memory update: %s", e)
 
             # Update last_modify and timestamp
             raw_memory.updated_at = datetime.now(timezone.utc)

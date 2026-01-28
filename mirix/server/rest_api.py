@@ -4169,12 +4169,20 @@ async def update_raw_memory(
     if not user:
         raise HTTPException(status_code=404, detail=f"User {user_id} not found")
     
+    # Get agent_state for embedding generation
+    agents = server.agent_manager.list_agents(actor=client, limit=1)
+    agent_state = agents[0] if agents else None
+
+    if not agent_state:
+        logger.warning("No agents found for client %s, embeddings will not be generated", client.id)
+    
     try:
         updated_memory = server.raw_memory_manager.update_raw_memory(
             memory_id=memory_id,
             new_context=request.context,
             new_filter_tags=request.filter_tags,
             actor=client,
+            agent_state=agent_state,
             context_update_mode=request.context_update_type,
             tags_merge_mode=request.tags_update_type,
         )
