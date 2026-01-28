@@ -38,6 +38,7 @@ from mirix.schemas.message import Message, MessageCreate
 from mirix.schemas.mirix_response import MirixResponse
 from mirix.schemas.organization import Organization
 from mirix.schemas.procedural_memory import ProceduralMemoryItemUpdate
+from mirix.schemas.raw_memory import RawMemoryItem, RawMemoryItemUpdate
 from mirix.schemas.resource_memory import ResourceMemoryItemUpdate
 from mirix.schemas.sandbox_config import (
     E2BSandboxConfig,
@@ -4062,6 +4063,264 @@ async def delete_procedural_memory(
         }
     except Exception as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+
+# ============================================================================
+# Raw Memory Endpoints
+# ============================================================================
+
+
+@router.get("/memory/raw/{memory_id}")
+async def get_raw_memory_handler(
+    memory_id: str,
+    user_id: Optional[str] = None,
+    authorization: Optional[str] = Header(None),
+    http_request: Request = None,
+):
+    """
+    Fetch a single raw memory by ID.
+    
+    **Accepts both JWT (dashboard) and Client API Key (programmatic).**
+    """
+    # Authenticate with either JWT or API key
+    client, auth_type = get_client_from_jwt_or_api_key(authorization, http_request)
+    response = await get_raw_memory(memory_id, user_id, client)
+    return response
+
+async def get_raw_memory(
+    memory_id: str,
+    user_id: Optional[str] = None,
+    client: Client = None,
+):
+    """
+    Fetch a single raw memory by ID.
+    
+    Raw memories are unprocessed task context stored for task sharing use cases,
+    with a 14-day TTL.
+    """  
+    server = get_server()
+    
+    # If user_id is not provided, use the admin user for this client
+    if not user_id:
+        from mirix.services.admin_user_manager import ClientAuthManager
+        user_id = ClientAuthManager.get_admin_user_id_for_client(client.id)
+        logger.debug("No user_id provided, using admin user: %s", user_id)
+    
+    # Get user
+    user = server.user_manager.get_user_by_id(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail=f"User {user_id} not found")
+    
+    try:
+        from mirix.orm.errors import NoResultFound
+        
+        memory = server.raw_memory_manager.get_raw_memory_by_id(memory_id, user)
+        return {
+            "success": True,
+            "memory": memory.model_dump(mode="json"),
+        }
+    except NoResultFound as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error fetching raw memory {memory_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
+
+
+@router.patch("/memory/raw/{memory_id}")
+async def update_raw_memory_handler(
+    memory_id: str,
+    request: RawMemoryItemUpdate,
+    user_id: Optional[str] = None,
+    authorization: Optional[str] = Header(None),
+    http_request: Request = None,
+):
+    """
+    Update an existing raw memory.
+    
+    **Accepts both JWT (dashboard) and Client API Key (programmatic).**
+    """
+    # Authenticate with either JWT or API key
+    client, auth_type = get_client_from_jwt_or_api_key(authorization, http_request)
+    response = await update_raw_memory(memory_id, request, user_id, client)
+    return response
+
+async def update_raw_memory(
+    memory_id: str,
+    request: RawMemoryItemUpdate,
+    user_id: Optional[str] = None,
+    client: Client = None,
+):
+    """
+    Update an existing raw memory.
+    
+    Updates the context and/or filter_tags fields of the memory.
+    Supports append/replace modes for both context and tags.
+    """
+    server = get_server()
+    
+    # If user_id is not provided, use the admin user for this client
+    if not user_id:
+        from mirix.services.admin_user_manager import ClientAuthManager
+        user_id = ClientAuthManager.get_admin_user_id_for_client(client.id)
+        logger.debug("No user_id provided, using admin user: %s", user_id)
+    
+    # Get user
+    user = server.user_manager.get_user_by_id(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail=f"User {user_id} not found")
+    
+    try:
+        updated_memory = server.raw_memory_manager.update_raw_memory(
+            memory_id=memory_id,
+            new_context=request.context,
+            new_filter_tags=request.filter_tags,
+            actor=client,
+            context_update_mode=request.context_update_type,
+            tags_merge_mode=request.tags_update_type,
+        )
+        return {
+            "success": True,
+            "message": f"Raw memory {memory_id} updated",
+            "memory": {
+                "id": updated_memory.id,
+                "context": updated_memory.context,
+                "filter_tags": updated_memory.filter_tags,
+                "updated_at": updated_memory.updated_at.isoformat(),
+            }
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error updating raw memory {memory_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
+
+
+@router.delete("/memory/raw/{memory_id}")
+async def delete_raw_memory_handler(
+    memory_id: str,
+    authorization: Optional[str] = Header(None),
+    http_request: Request = None,
+):
+    """
+    Delete a raw memory by ID.
+    
+    **Accepts both JWT (dashboard) and Client API Key (programmatic).**
+    """
+    # Authenticate with either JWT or API key
+    client, auth_type = get_client_from_jwt_or_api_key(authorization, http_request)
+    response = await delete_raw_memory(memory_id, client)
+    return response
+
+async def delete_raw_memory(
+    memory_id: str,
+    client: Client = None,
+):
+    """
+    Delete a raw memory by ID.
+    
+    This performs a hard delete and removes the memory from both PostgreSQL
+    and Redis cache.
+    """
+    server = get_server()
+    
+    try:
+        deleted = server.raw_memory_manager.delete_raw_memory(memory_id, client)
+        if deleted:
+            return {
+                "success": True,
+                "message": f"Raw memory {memory_id} deleted",
+            }
+        else:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Raw memory {memory_id} not found"
+            )
+    except Exception as e:
+        logger.error(f"Error deleting raw memory {memory_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
+
+
+@router.post("/memory/raw/cleanup")
+async def cleanup_raw_memories_handler(
+    days_threshold: int = Query(14, ge=1, le=365, description="Delete memories older than this many days"),
+    authorization: Optional[str] = Header(None),
+    http_request: Request = None,
+):
+    """
+    Manually trigger the raw memory cleanup job to delete stale memories.
+    
+    **Accepts both JWT (dashboard) and Client API Key (programmatic).**
+    
+    This endpoint allows manual execution of the cleanup job that
+    deletes raw memories older than the specified threshold (based on updated_at).
+    Normally this job runs nightly via cron/scheduler, but this endpoint allows
+    on-demand execution for maintenance or testing purposes.
+    
+    Args:
+        days_threshold: Number of days after which memories are considered stale.
+                       Must be between 1 and 365 days (default: 14)
+    
+    Returns:
+        Dict with deletion statistics including deleted_count, error_count, and cutoff_date
+        
+    Example:
+        POST /memory/raw/cleanup?days_threshold=7
+        
+        Response:
+        {
+            "success": true,
+            "deleted_count": 42,
+            "error_count": 0,
+            "cutoff_date": "2026-01-20T10:30:00+00:00",
+            "days_threshold": 7,
+            "message": "Deleted 42 stale raw memories (older than 7 days)"
+        }
+    """
+    # Authenticate with either JWT or API key
+    client, auth_type = get_client_from_jwt_or_api_key(authorization, http_request)
+
+    logger.info(
+        "Manual cleanup job triggered by client %s (auth: %s) with threshold: %d days",
+        client.id, auth_type, days_threshold
+    )
+
+    response = await cleanup_raw_memories(days_threshold, client)
+    return response
+
+async def cleanup_raw_memories(
+    days_threshold: int = Query(14, ge=1, le=365, description="Delete memories older than this many days"),
+    client: Client = None,
+):
+    """
+    Manually trigger the raw memory cleanup job to delete stale memories.
+    
+    **Accepts both JWT (dashboard) and Client API Key (programmatic).**
+    """
+    # Import the cleanup function
+    from mirix.jobs.cleanup_raw_memories import delete_stale_raw_memories
+    
+    try:
+        # Run the cleanup job
+        result = delete_stale_raw_memories(days_threshold=days_threshold)
+        
+        # Add success message to result
+        result["message"] = (
+            f"Deleted {result['deleted_count']} stale raw memories "
+            f"(older than {days_threshold} days)"
+        )
+        
+        logger.info(
+            "Cleanup job completed: deleted %d, errors %d",
+            result["deleted_count"], result["error_count"]
+        )
+        
+        return result
+    except Exception as e:
+        logger.error("Cleanup job failed: %s", e)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Cleanup job failed: {str(e)}"
+        )
 
 
 class UpdateResourceMemoryRequest(BaseModel):
