@@ -1022,7 +1022,7 @@ def trigger_memory_update(
 
             logger = logging.getLogger(__name__)
             logger.info(
-                f"🏷️  Creating {memory_type} agent with filter_tags={filter_tags}, client_id={actor.id if actor else None}, user_id={user.id if user else None}, occurred_at={occurred_at}"
+                f"Creating {memory_type} agent with filter_tags={filter_tags}, client_id={actor.id if actor else None}, user_id={user.id if user else None}, occurred_at={occurred_at}"
             )
 
             memory_agent = agent_class(

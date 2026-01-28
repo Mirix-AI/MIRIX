@@ -405,7 +405,7 @@ try:
 
     redis_client = initialize_redis_client()
     if redis_client:
-        logger.info("✅ Redis integration enabled")
+        logger.info("Redis integration enabled")
     else:
         logger.info("Redis integration disabled or unavailable")
 except Exception as e:
@@ -445,16 +445,16 @@ except Exception as e:
 # 3. Clean up queue manager resources
 #
 # This approach:
-# ✅ Avoids signal handler complexity
-# ✅ No asyncio.CancelledError issues
-# ✅ Works with uvicorn's event loop
-# ✅ Compatible with Kubernetes/Docker (SIGTERM handling)
-# ✅ Ctrl+C works properly (SIGINT handling)
+# Avoids signal handler complexity
+# No asyncio.CancelledError issues
+# Works with uvicorn's event loop
+# Compatible with Kubernetes/Docker (SIGTERM handling)
+# Ctrl+C works properly (SIGINT handling)
 #
 # The cleanup is registered in rest_api.py's lifespan context manager.
 
 logger.info(
-    "✅ Shutdown handling via FastAPI lifespan (no custom signal handlers needed)"
+    "Shutdown handling via FastAPI lifespan (no custom signal handlers needed)"
 )
 
 
@@ -708,7 +708,7 @@ class SyncServer(Server):
                 )
             elif agent_state.agent_type == AgentType.meta_memory_agent:
                 logger.info(
-                    "🏷️  Loading MetaMemoryAgent with filter_tags=%s, client_id=%s, user_id=%s",
+                    "Loading MetaMemoryAgent with filter_tags=%s, client_id=%s, user_id=%s",
                     filter_tags,
                     actor.id,
                     user.id if user else None,

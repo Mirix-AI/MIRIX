@@ -28,7 +28,7 @@ def convert_base64_to_audio_segment(voice_file_b64):
 
         return audio_segment
     except Exception as e:
-        logger.error("❌ Error converting voice data to AudioSegment: %s", str(e))
+        logger.error("Error converting voice data to AudioSegment: %s", str(e))
         return None
 
 
@@ -95,12 +95,12 @@ def process_voice_files(voice_items):
                             return combined_transcription
 
                         except sr.UnknownValueError:
-                            logger.error("❌ Could not understand combined audio")
+                            logger.error("Could not understand combined audio")
                             return None
 
                         except sr.RequestError as e:
                             logger.error(
-                                "⚠️ Google Speech Recognition failed for combined audio: %s", str(e)
+                                "Google Speech Recognition failed for combined audio: %s", str(e)
                             )
                             # Fallback to offline methods if Google fails
                             try:
@@ -112,12 +112,12 @@ def process_voice_files(voice_items):
                                     f"[{first_timestamp}] {transcription}"
                                 )
                                 logger.error(
-                                    "✅ Sphinx transcribed combined audio: '%s'", transcription[:100] + ('...' if len(transcription) > 100 else '')
+                                    "Sphinx transcribed combined audio: '%s'", transcription[:100] + ('...' if len(transcription) > 100 else '')
                                 )
                                 return combined_transcription
                             except Exception:
                                 logger.error(
-                                    "❌ All recognition methods failed for combined audio"
+                                    "All recognition methods failed for combined audio"
                                 )
                                 return None
 
@@ -126,21 +126,21 @@ def process_voice_files(voice_items):
                     if temp_audio_file and os.path.exists(temp_audio_file):
                         try:
                             os.unlink(temp_audio_file)
-                            logger.debug("🗑️ Deleted temporary audio file: %s", temp_audio_file)
+                            logger.debug("Deleted temporary audio file: %s", temp_audio_file)
                         except Exception as cleanup_error:
                             logger.error(
-                                "⚠️ Failed to delete temporary audio file %s: %s", temp_audio_file, str(cleanup_error)
+                                "Failed to delete temporary audio file %s: %s", temp_audio_file, str(cleanup_error)
                             )
 
             except Exception as e:
-                logger.error("💥 Error in concatenation and transcription: %s", str(e))
+                logger.error("Error in concatenation and transcription: %s", str(e))
                 return None
         else:
-            logger.debug("❌ No valid audio segments to process")
+            logger.debug("No valid audio segments to process")
             return None
 
     except Exception as e:
-        logger.exception("💥 Critical error in voice processing: %s", str(e))
+        logger.exception("Critical error in voice processing: %s", str(e))
         return None
 
     finally:
@@ -150,8 +150,8 @@ def process_voice_files(voice_items):
             if os.path.exists(temp_file):
                 try:
                     os.unlink(temp_file)
-                    logger.debug("🗑️ Deleted temp voice file: %s", temp_file)
+                    logger.debug("Deleted temp voice file: %s", temp_file)
                 except Exception as cleanup_error:
                     logger.debug(
-                        "⚠️ Failed to delete temp voice file %s: %s", temp_file, str(cleanup_error)
+                        "Failed to delete temp voice file %s: %s", temp_file, str(cleanup_error)
                     )

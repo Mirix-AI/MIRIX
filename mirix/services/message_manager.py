@@ -177,7 +177,7 @@ class MessageManager:
 
             for key, value in update_data.items():
                 setattr(message, key, value)
-            message.update_with_redis(db_session=session, actor=actor)  # ⭐ Update PostgreSQL + Redis
+            message.update_with_redis(db_session=session, actor=actor)  # Update PostgreSQL + Redis
 
             return message.to_pydantic()
 

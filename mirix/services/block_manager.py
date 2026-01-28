@@ -53,15 +53,15 @@ class BlockManager:
         else:
             with self.session_maker() as session:
                 data = block.model_dump(exclude_none=True)
-                # ✅ Use explicit user_id parameter (not actor.id which is client_id)
+                # Use explicit user_id parameter (not actor.id which is client_id)
                 final_user_id = user.id if user else None
                 logger.debug(
                     f"Creating block with user_id={final_user_id}, agent_id={agent_id}, org_id={actor.organization_id}"
                 )
                 block = BlockModel(**data, organization_id=actor.organization_id, user_id=final_user_id, agent_id=agent_id)
-                block.create_with_redis(session, actor=actor)  # ⭐ Use Redis integration
+                block.create_with_redis(session, actor=actor)  # Use Redis integration
                 logger.debug(
-                    f"✅ Block {block.id} created with user_id={block.user_id}, agent_id={block.agent_id}"
+                    f"Block {block.id} created with user_id={block.user_id}, agent_id={block.agent_id}"
                 )
             return block.to_pydantic()
 
@@ -91,7 +91,7 @@ class BlockManager:
                     # Clean up the reverse mapping
                     redis_client.delete(reverse_key)
 
-                    logger.debug("✅ Invalidated %s agent caches for block %s", len(agent_ids), block_id)
+                    logger.debug("Invalidated %s agent caches for block %s", len(agent_ids), block_id)
         except Exception as e:
             # Log but don't fail the operation if cache invalidation fails
             logger.warning("Failed to invalidate agent caches for block %s: %s", block_id, e)
@@ -125,9 +125,9 @@ class BlockManager:
             if user is not None:
                 block.user_id = user.id
 
-            block.update_with_redis(db_session=session, actor=actor)  # ⭐ Use Redis integration
+            block.update_with_redis(db_session=session, actor=actor)  # Use Redis integration
 
-            # ⭐ Invalidate agent caches that reference this block
+            # Invalidate agent caches that reference this block
             self._invalidate_agent_caches_for_block(block_id)
 
             return block.to_pydantic()
@@ -144,7 +144,7 @@ class BlockManager:
                 redis_key = f"{redis_client.BLOCK_PREFIX}{block_id}"
                 redis_client.delete(redis_key)
 
-            # ⭐ Invalidate agent caches that reference this block
+            # Invalidate agent caches that reference this block
             self._invalidate_agent_caches_for_block(block_id)
 
             block.hard_delete(db_session=session, actor=actor)
@@ -194,7 +194,7 @@ class BlockManager:
                 db_session=session, cursor=cursor, limit=limit, **filters
             )
 
-            # ✅ NEW: If no blocks found and auto-create is enabled, copy from default user
+            # NEW: If no blocks found and auto-create is enabled, copy from default user
             if not blocks and auto_create_from_default and agent_id:
                 logger.debug(
                     "No blocks found for user %s, agent %s. Creating from default user template.",
@@ -235,7 +235,7 @@ class BlockManager:
         from mirix.services.user_manager import UserManager
         from mirix.utils import generate_unique_short_id
 
-        # ✅ NEW: Get the organization-specific default user
+        # NEW: Get the organization-specific default user
         # This ensures we copy blocks from the correct template within the same organization
         user_manager = UserManager()
         try:
@@ -310,7 +310,7 @@ class BlockManager:
                     label=template_block.label,
                     value=template_block.value,  # Copy the value from template
                     limit=template_block.limit,
-                    user_id=target_user.id,  # ✅ Associate with target user
+                    user_id=target_user.id,  # Associate with target user
                     agent_id=agent_id,
                     organization_id=organization_id,
                     created_by_id=target_user.id,  # User "created" their own blocks
@@ -357,7 +357,7 @@ class BlockManager:
                 continue
 
         logger.info(
-            "✅ Created %d blocks for user %s from default user template (agent=%s)",
+            "Created %d blocks for user %s from default user template (agent=%s)",
             len(new_blocks),
             target_user.id,
             agent_id

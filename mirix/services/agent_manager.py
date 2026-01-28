@@ -93,7 +93,7 @@ class AgentManager:
             # Potential stale write detected
             time_diff = (db_updated_at - loaded_at).total_seconds()
             logger.warning(
-                "⚠️  Potential stale agent write detected: agent=%s, "
+                "Potential stale agent write detected: agent=%s, "
                 "db_updated_at=%s, loaded_at=%s, diff=%.2fs",
                 agent_id,
                 db_updated_at.isoformat(),
@@ -211,7 +211,7 @@ class AgentManager:
         if not meta_agent_create.llm_config or not meta_agent_create.embedding_config:
             raise ValueError("llm_config and embedding_config are required")
 
-        # ✅ NEW: Get or create organization-specific default user for block templates
+        # NEW: Get or create organization-specific default user for block templates
         user_manager = UserManager()
 
         if user_id:
@@ -358,7 +358,7 @@ class AgentManager:
                 f"Created sub-agent: {agent_name} with id: {agent_state.id}, parent_id: {meta_agent_state.id}"
             )
 
-            # ✅ FIX: Process agent-specific initialization (e.g., blocks for core_memory_agent)
+            # FIX: Process agent-specific initialization (e.g., blocks for core_memory_agent)
             # This handles any agent configuration provided in the meta_agent creation request
             if "blocks" in agent_config:
                 # Create memory blocks for this agent (typically core_memory_agent)
@@ -371,14 +371,14 @@ class AgentManager:
                             label=block["label"],
                         ),
                         actor=actor,
-                        agent_id=agent_state.id,  # ✅ Use child agent's ID, not parent's
-                        user=user,  # ✅ Pass user for block creation
+                        agent_id=agent_state.id,  # Use child agent's ID, not parent's
+                        user=user,  # Pass user for block creation
                     )
                 logger.debug(
                     f"Created {len(memory_block_configs)} memory blocks for {agent_name} (agent_id: {agent_state.id})"
                 )
 
-                # ✅ Ensure blocks are committed to database before proceeding
+                # Ensure blocks are committed to database before proceeding
                 # This is critical for template block copying to work correctly
                 logger.debug(
                     f"Flushing database session to ensure blocks are committed for agent {agent_state.id}"
@@ -825,7 +825,7 @@ class AgentManager:
             _process_relationship(
                 session, new_agent, "tools", ToolModel, tool_ids, replace=True
             )
-            new_agent.create_with_redis(session, actor=actor)  # ⭐ Auto-caches to Redis
+            new_agent.create_with_redis(session, actor=actor)  # Auto-caches to Redis
 
             # Invalidate parent cache if this is a child agent
             if parent_id:
@@ -983,7 +983,7 @@ class AgentManager:
                 )
 
             # Commit and refresh the agent, update Redis cache
-            agent.update_with_redis(session, actor=actor)  # ⭐ Updates Redis cache
+            agent.update_with_redis(session, actor=actor)  # Updates Redis cache
 
             # Invalidate parent caches if parent_id changed or agent has a parent
             if old_parent_id:
@@ -1028,7 +1028,7 @@ class AgentManager:
                 parent_key = f"{redis_client.AGENT_PREFIX}{parent_id}"
                 redis_client.delete(parent_key)
                 logger.debug(
-                    "✅ Invalidated parent agent %s cache due to child %s change",
+                    "Invalidated parent agent %s cache due to child %s change",
                     parent_id,
                     child_agent_id,
                 )
@@ -1077,7 +1077,7 @@ class AgentManager:
                 # Redis not available, fall back to PostgreSQL
                 return self._get_children_from_db(parent_ids, session, actor)
 
-            # ⭐ Step 1: Fetch parent agents from Redis to get children_ids
+            # Step 1: Fetch parent agents from Redis to get children_ids
             pipe = redis_client.client.pipeline()
             for parent_id in parent_ids:
                 pipe.hgetall(f"{redis_client.AGENT_PREFIX}{parent_id}")
@@ -1101,7 +1101,7 @@ class AgentManager:
                 # No children IDs found, return empty
                 return children_by_parent
 
-            # ⭐ Step 2: Fetch all child agents from Redis using pipeline
+            # Step 2: Fetch all child agents from Redis using pipeline
             pipe = redis_client.client.pipeline()
             for child_id in all_children_ids:
                 pipe.hgetall(f"{redis_client.AGENT_PREFIX}{child_id}")
@@ -1149,7 +1149,7 @@ class AgentManager:
                         else child_data["mcp_tools"]
                     )
 
-                # ⭐ Reconstruct tools from Redis
+                # Reconstruct tools from Redis
                 tools = []
                 if "tool_ids" in child_data and child_data["tool_ids"]:
                     tool_ids = (
@@ -1180,7 +1180,7 @@ class AgentManager:
                 child_data["tools"] = tools
                 child_data.pop("tool_ids", None)
 
-                # ⭐ Reconstruct memory from blocks
+                # Reconstruct memory from blocks
                 blocks = []
                 prompt_template = ""
 
@@ -1225,7 +1225,7 @@ class AgentManager:
                 )
                 return self._get_children_from_db(parent_ids, session, actor)
 
-            # ⭐ Step 3: Group children by parent_id
+            # Step 3: Group children by parent_id
             for parent_id, children_ids in parent_to_children_ids.items():
                 children_by_parent[parent_id] = [
                     children_cache[child_id]
@@ -1234,7 +1234,7 @@ class AgentManager:
                 ]
 
             logger.debug(
-                "✅ Reconstructed children for %s parent agents from Redis cache",
+                "Reconstructed children for %s parent agents from Redis cache",
                 len(children_by_parent),
             )
             return children_by_parent
@@ -1334,7 +1334,7 @@ class AgentManager:
                     return None  # Fall back to PostgreSQL for consistency
 
             logger.debug(
-                "✅ Retrieved %s children for parent %s from Redis cache",
+                "Retrieved %s children for parent %s from Redis cache",
                 len(children),
                 parent_id,
             )
@@ -1387,7 +1387,7 @@ class AgentManager:
                         )
 
             logger.debug(
-                "✅ Cached children_ids for %s parent agents",
+                "Cached children_ids for %s parent agents",
                 len([a for a in agent_states if a.children]),
             )
         except Exception as e:
@@ -1414,11 +1414,11 @@ class AgentManager:
         When parent_id is provided, tries to use Redis cache via parent's children_ids first,
         then falls back to PostgreSQL if cache miss.
         """
-        # ⭐ Optimization: Use Redis cache for list_agents(parent_id=X)
+        # Optimization: Use Redis cache for list_agents(parent_id=X)
         if parent_id is not None:
             cached_children = self._get_children_from_redis(parent_id, actor)
             if cached_children is not None:
-                logger.debug("✅ Redis cache HIT for children of parent %s", parent_id)
+                logger.debug("Redis cache HIT for children of parent %s", parent_id)
                 return cached_children
             # Cache miss - fall through to PostgreSQL query
             logger.debug(
@@ -1457,7 +1457,7 @@ class AgentManager:
                 for agent_state in agent_states:
                     agent_state.children = children_by_parent.get(agent_state.id, [])
 
-                # ⭐ Cache children_ids for future list_agents(parent_id=X) calls
+                # Cache children_ids for future list_agents(parent_id=X) calls
                 self._cache_children_ids_for_parents(agent_states)
 
             return agent_states
@@ -1482,7 +1482,7 @@ class AgentManager:
                 redis_key = f"{redis_client.AGENT_PREFIX}{agent_id}"
                 cached_data = redis_client.get_hash(redis_key)
                 if cached_data:
-                    logger.debug("✅ Redis cache HIT for agent %s", agent_id)
+                    logger.debug("Redis cache HIT for agent %s", agent_id)
 
                     # Deserialize JSON fields
                     if "message_ids" in cached_data:
@@ -1516,7 +1516,7 @@ class AgentManager:
                             else cached_data["mcp_tools"]
                         )
 
-                    # ⭐ Retrieve tools from Redis using pipeline (denormalized tools_agents)
+                    # Retrieve tools from Redis using pipeline (denormalized tools_agents)
                     tools = []
                     if "tool_ids" in cached_data and cached_data["tool_ids"]:
                         tool_ids = (
@@ -1550,7 +1550,7 @@ class AgentManager:
                     cached_data["tools"] = tools
                     cached_data.pop("tool_ids", None)  # Remove denormalized field
 
-                    # ⭐ Reconstruct memory from block IDs
+                    # Reconstruct memory from block IDs
                     from mirix.schemas.block import Block as PydanticBlock
                     from mirix.schemas.memory import Memory as PydanticMemory
 
@@ -1586,7 +1586,7 @@ class AgentManager:
                                 blocks.append(PydanticBlock(**block_data))
 
                         logger.debug(
-                            "✅ Reconstructed memory with %s blocks for agent %s",
+                            "Reconstructed memory with %s blocks for agent %s",
                             len(blocks),
                             agent_id,
                         )

@@ -41,7 +41,7 @@ class OrganizationManager:
                 redis_key = f"{redis_client.ORGANIZATION_PREFIX}{org_id}"
                 cached_data = redis_client.get_hash(redis_key)
                 if cached_data:
-                    logger.debug("✅ Redis cache HIT for organization %s", org_id)
+                    logger.debug("Redis cache HIT for organization %s", org_id)
                     return PydanticOrganization(**cached_data)
         except Exception as e:
             # Log but continue to PostgreSQL on Redis error
@@ -89,7 +89,7 @@ class OrganizationManager:
                 org_data["name"] = create_random_username()
             
             org = OrganizationModel(**org_data)
-            org.create_with_redis(session, actor=None)  # ⭐ Auto-caches to Redis
+            org.create_with_redis(session, actor=None)  # Auto-caches to Redis
             return org.to_pydantic()
 
     @enforce_types
@@ -108,7 +108,7 @@ class OrganizationManager:
             org = OrganizationModel.read(db_session=session, identifier=org_id)
             if name:
                 org.name = name
-            org.update_with_redis(session, actor=None)  # ⭐ Updates Redis cache
+            org.update_with_redis(session, actor=None)  # Updates Redis cache
             return org.to_pydantic()
 
     @enforce_types

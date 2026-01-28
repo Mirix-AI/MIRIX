@@ -91,7 +91,7 @@ class CLIInterface(AgentInterface):
 
     @staticmethod
     def system_message(msg: str, msg_obj: Optional[Message] = None):
-        fstr = f"{Fore.MAGENTA}{Style.BRIGHT}🖥️ [system] {Fore.MAGENTA}{msg}{Style.RESET_ALL}"
+        fstr = f"{Fore.MAGENTA}{Style.BRIGHT}[system] {Fore.MAGENTA}{msg}{Style.RESET_ALL}"
         if STRIP_UI:
             fstr = "{msg}"
         print(fstr.format(msg=msg))
@@ -121,7 +121,7 @@ class CLIInterface(AgentInterface):
 
         if isinstance(msg, str):
             if raw:
-                printd_user_message("🧑", msg)
+                printd_user_message("", msg)
                 return
             else:
                 try:
@@ -130,27 +130,27 @@ class CLIInterface(AgentInterface):
                     printd(
                         f"{CLI_WARNING_PREFIX}failed to parse user message into json"
                     )
-                    printd_user_message("🧑", msg)
+                    printd_user_message("", msg)
                     return
         if msg_json["type"] == "user_message":
             if dump:
-                print_user_message("🧑", msg_json["message"])
+                print_user_message("", msg_json["message"])
                 return
             msg_json.pop("type")
-            printd_user_message("🧑", msg_json)
+            printd_user_message("", msg_json)
         elif msg_json["type"] == "contine_chaining":
             if debug:
                 msg_json.pop("type")
-                printd_user_message("💓", msg_json)
+                printd_user_message("", msg_json)
             elif dump:
-                print_user_message("💓", msg_json)
+                print_user_message("", msg_json)
                 return
 
         elif msg_json["type"] == "system_message":
             msg_json.pop("type")
-            printd_user_message("🖥️", msg_json)
+            printd_user_message("", msg_json)
         else:
-            printd_user_message("🧑", msg_json)
+            printd_user_message("", msg_json)
 
     @staticmethod
     def function_message(
@@ -158,10 +158,10 @@ class CLIInterface(AgentInterface):
     ):
         def print_function_message(icon, msg, color=Fore.RED, printf=print):
             if STRIP_UI:
-                printf(f"⚡{icon} [function] {msg}")
+                printf(f"{icon} [function] {msg}")
             else:
                 printf(
-                    f"{color}{Style.BRIGHT}⚡{icon} [function] {color}{msg}{Style.RESET_ALL}"
+                    f"{color}{Style.BRIGHT}{icon} [function] {color}{msg}{Style.RESET_ALL}"
                 )
 
         def printd_function_message(icon, msg, color=Fore.RED):
@@ -174,9 +174,9 @@ class CLIInterface(AgentInterface):
             return
 
         if msg.startswith("Success"):
-            printd_function_message("🟢", msg)
+            printd_function_message("", msg)
         elif msg.startswith("Error: "):
-            printd_function_message("🔴", msg)
+            printd_function_message("", msg)
         elif msg.startswith("Ran "):
             # NOTE: ignore 'ran' messages that come post-execution
             return

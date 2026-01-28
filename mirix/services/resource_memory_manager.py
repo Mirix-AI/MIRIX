@@ -383,7 +383,7 @@ class ResourceMemoryManager:
                 redis_key = f"{redis_client.RESOURCE_PREFIX}{item_id}"
                 cached_data = redis_client.get_json(redis_key)
                 if cached_data:
-                    logger.debug("✅ Redis cache HIT for resource memory %s", item_id)
+                    logger.debug("Redis cache HIT for resource memory %s", item_id)
                     return PydanticResourceMemoryItem(**cached_data)
         except Exception as e:
             logger.warning("Redis cache read failed for resource memory %s: %s", item_id, e)
@@ -509,7 +509,7 @@ class ResourceMemoryManager:
                 if k not in ["id", "updated_at"]:  # Exclude updated_at - handled by update() method
                     setattr(item, k, v)
             # updated_at is automatically set to current UTC time by item.update()
-            item.update_with_redis(session, actor=actor)  # ⭐ Updates Redis JSON cache
+            item.update_with_redis(session, actor=actor)  # Updates Redis JSON cache
             return item.to_pydantic()
 
     @enforce_types
@@ -583,7 +583,7 @@ class ResourceMemoryManager:
         # Extract organization_id from user for multi-tenant isolation
         organization_id = user.organization_id
 
-        # ⭐ Try Redis Search first (if cache enabled and Redis is available)
+        # Try Redis Search first (if cache enabled and Redis is available)
         from mirix.database.redis_client import get_redis_client
 
         query = query.strip() if query else ""
@@ -602,7 +602,7 @@ class ResourceMemoryManager:
                         filter_tags=filter_tags
                     )
                     if results:
-                        logger.debug("✅ Redis cache HIT: returned %d resource items", len(results))
+                        logger.debug("Redis cache HIT: returned %d resource items", len(results))
                         # Clean Redis-specific fields before Pydantic validation
                         results = redis_client.clean_redis_fields(results)
                         return [PydanticResourceMemoryItem(**item) for item in results]
@@ -626,7 +626,7 @@ class ResourceMemoryManager:
                         filter_tags=filter_tags
                     )
                     if results:
-                        logger.debug("✅ Redis vector search HIT: found %d resource items", len(results))
+                        logger.debug("Redis vector search HIT: found %d resource items", len(results))
                         # Clean Redis-specific fields before Pydantic validation
                         results = redis_client.clean_redis_fields(results)
                         return [PydanticResourceMemoryItem(**item) for item in results]
@@ -644,7 +644,7 @@ class ResourceMemoryManager:
                         filter_tags=filter_tags
                     )
                     if results:
-                        logger.debug("✅ Redis text search HIT: found %d resource items", len(results))
+                        logger.debug("Redis text search HIT: found %d resource items", len(results))
                         # Clean Redis-specific fields before Pydantic validation
                         results = redis_client.clean_redis_fields(results)
                         return [PydanticResourceMemoryItem(**item) for item in results]
@@ -654,9 +654,9 @@ class ResourceMemoryManager:
 
         # Log when bypassing cache or Redis unavailable
         if not use_cache:
-            logger.debug("⏭️  Bypassing Redis cache (use_cache=False), querying PostgreSQL directly for resource memory")
+            logger.debug("Bypassing Redis cache (use_cache=False), querying PostgreSQL directly for resource memory")
         elif not redis_client:
-            logger.debug("⚠️  Redis unavailable, querying PostgreSQL directly for resource memory")
+            logger.debug("Redis unavailable, querying PostgreSQL directly for resource memory")
 
         with self.session_maker() as session:
             if query == "":
@@ -1130,7 +1130,7 @@ class ResourceMemoryManager:
                         filter_tags=filter_tags,
                     )
                     if results:
-                        logger.debug("✅ Redis: %d resource memories for org %s", len(results), organization_id)
+                        logger.debug("Redis: %d resource memories for org %s", len(results), organization_id)
                         results = redis_client.clean_redis_fields(results)
                         return [PydanticResourceMemoryItem(**item) for item in results]
 
@@ -1161,7 +1161,7 @@ class ResourceMemoryManager:
                         filter_tags=filter_tags,
                     )
                     if results:
-                        logger.debug("✅ Redis vector: %d results for org %s", len(results), organization_id)
+                        logger.debug("Redis vector: %d results for org %s", len(results), organization_id)
                         results = redis_client.clean_redis_fields(results)
                         return [PydanticResourceMemoryItem(**item) for item in results]
 
@@ -1177,7 +1177,7 @@ class ResourceMemoryManager:
                         filter_tags=filter_tags,
                     )
                     if results:
-                        logger.debug("✅ Redis text: %d results for org %s", len(results), organization_id)
+                        logger.debug("Redis text: %d results for org %s", len(results), organization_id)
                         results = redis_client.clean_redis_fields(results)
                         return [PydanticResourceMemoryItem(**item) for item in results]
 
@@ -1185,7 +1185,7 @@ class ResourceMemoryManager:
                 logger.warning("Redis search failed: %s", e)
 
         # PostgreSQL fallback
-        logger.debug("⚠️ PostgreSQL fallback for org %s", organization_id)
+        logger.debug("PostgreSQL fallback for org %s", organization_id)
 
         with self.session_maker() as session:
             # Return full ResourceMemoryItem objects, not individual columns

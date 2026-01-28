@@ -155,7 +155,7 @@ class RawMemoryManager:
                 if cached_data:
                     # Cache HIT - return from Redis
                     logger.debug(
-                        "✅ Redis cache HIT for raw memory %s", memory_id
+                        "Redis cache HIT for raw memory %s", memory_id
                     )
                     return PydanticRawMemoryItem(**cached_data)
         except Exception as e:
