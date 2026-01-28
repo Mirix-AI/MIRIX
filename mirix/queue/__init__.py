@@ -140,16 +140,14 @@ def process_external_message(raw_message: bytes) -> None:
         logger.error("No workers available after initialization - this should not happen!")
         raise RuntimeError("Failed to create queue workers during initialization")
     
-    worker = workers[0]  # Use first worker
+    worker = workers[0]
     
-    # Parse message with format auto-detection (same as internal consumer)
+    # Deserialize message using configured format
     from mirix.queue.config import KAFKA_SERIALIZATION_FORMAT
     from mirix.queue.queue_util import deserialize_queue_message
     
-    # Use shared deserializer utility (DRY)
     queue_message = deserialize_queue_message(raw_message, format=KAFKA_SERIALIZATION_FORMAT)
     
-    # Log for debugging
     logger.debug(
         "Processing external message (%s format): agent_id=%s, user_id=%s",
         KAFKA_SERIALIZATION_FORMAT,
@@ -157,7 +155,7 @@ def process_external_message(raw_message: bytes) -> None:
         queue_message.user_id if queue_message.HasField("user_id") else "None",
     )
     
-    # Process through MIRIX (delegates to worker.process_external_message() from PR #35)
+    # Delegate to worker for processing
     worker.process_external_message(queue_message)
 
 

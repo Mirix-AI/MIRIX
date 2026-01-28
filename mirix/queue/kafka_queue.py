@@ -86,7 +86,7 @@ class KafkaQueue(QueueInterface):
         self.topic = topic
         self.serialization_format = serialization_format.lower()
 
-        # Use shared serialization/deserialization utilities (DRY)
+        # Configure message serialization format
         value_serializer = lambda msg: serialize_queue_message(msg, format=self.serialization_format)
         value_deserializer = lambda data: deserialize_queue_message(data, format=self.serialization_format)
         

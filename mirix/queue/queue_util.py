@@ -20,7 +20,7 @@ from mirix.observability import add_trace_to_queue_message
 logger = logging.getLogger(__name__)
 
 
-# Serialization/Deserialization utilities (DRY for kafka_queue and external message processing)
+# Queue message serialization utilities
 
 def serialize_queue_message(message: QueueMessage, format: str = "protobuf") -> bytes:
     """
