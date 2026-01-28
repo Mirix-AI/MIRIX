@@ -98,7 +98,7 @@ def process_external_message(raw_message: bytes) -> None:
     providing a clean abstraction layer for external applications like ECMS.
     
     Args:
-        raw_message: Raw protobuf bytes from Kafka or event bus
+        raw_message: Raw message bytes from Kafka or event bus (JSON or protobuf format)
         
     Raises:
         ValueError: If message parsing fails
@@ -113,14 +113,16 @@ def process_external_message(raw_message: bytes) -> None:
     Note:
         - Queue is auto-initialized if not already initialized (with server instance)
         - Set MIRIX_QUEUE_AUTO_START_WORKERS=false to disable internal Kafka consumer
+        - Format auto-detection uses KAFKA_SERIALIZATION_FORMAT (json/protobuf)
         - This function is thread-safe and can be called from multiple threads
         - The Kafka producer remains functional for enqueueing messages via save()
         
     Configuration:
-        To use with external consumers (Numaflow, etc.), set environment variable:
+        To use with external consumers (Numaflow, etc.), set environment variables:
         
         >>> import os
         >>> os.environ["MIRIX_QUEUE_AUTO_START_WORKERS"] = "false"
+        >>> os.environ["KAFKA_SERIALIZATION_FORMAT"] = "json"  # or "protobuf"
         >>> # Queue will be auto-initialized on first call to process_external_message()
     """
     # Auto-initialize queue with server if not already initialized
@@ -140,16 +142,29 @@ def process_external_message(raw_message: bytes) -> None:
     
     worker = workers[0]  # Use first worker
     
-    # Parse protobuf
+    # Parse message with format auto-detection (same as internal consumer)
+    from mirix.queue.config import KAFKA_SERIALIZATION_FORMAT
+    
     queue_message = QueueMessage()
     try:
-        queue_message.ParseFromString(raw_message)
+        if KAFKA_SERIALIZATION_FORMAT == "json":
+            # JSON deserialization
+            import json
+            from google.protobuf.json_format import ParseDict
+            message_dict = json.loads(raw_message.decode("utf-8"))
+            queue_message = ParseDict(message_dict, QueueMessage())
+        else:
+            # Protobuf deserialization (default)
+            queue_message.ParseFromString(raw_message)
     except Exception as e:
-        raise ValueError(f"Failed to parse message as QueueMessage protobuf: {e}") from e
+        raise ValueError(
+            f"Failed to parse message as QueueMessage ({KAFKA_SERIALIZATION_FORMAT} format): {e}"
+        ) from e
     
     # Log for debugging
     logger.debug(
-        "Processing external message: agent_id=%s, user_id=%s",
+        "Processing external message (%s format): agent_id=%s, user_id=%s",
+        KAFKA_SERIALIZATION_FORMAT,
         queue_message.agent_id,
         queue_message.user_id if queue_message.HasField("user_id") else "None",
     )
