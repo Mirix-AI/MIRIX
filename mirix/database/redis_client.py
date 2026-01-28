@@ -113,7 +113,7 @@ class RedisMemoryClient:
             
             # Log configuration
             logger.info(
-                "✅ Redis connection pool initialized: %s (max_connections=%d, "
+                "Redis connection pool initialized: %s (max_connections=%d, "
                 "socket_timeout=%ds, keepalive=%s)",
                 self._mask_uri(redis_uri),
                 max_connections,
@@ -194,7 +194,7 @@ class RedisMemoryClient:
             info = self.get_connection_info()
             if info:
                 logger.info(
-                    "📊 Redis connections: %d/%d (%.1f%%) | Pool max: %d | Version: %s",
+                    "Redis connections: %d/%d (%.1f%%) | Pool max: %d | Version: %s",
                     info.get('server_connected_clients', 0),
                     info.get('server_max_clients', 10000),
                     info.get('usage_percent', 0),
@@ -205,7 +205,7 @@ class RedisMemoryClient:
                 # Warn if usage is high
                 if info.get('usage_percent', 0) > 80:
                     logger.warning(
-                        "⚠️  Redis connection usage high: %.1f%% (%d/%d)",
+                        "Redis connection usage high: %.1f%% (%d/%d)",
                         info.get('usage_percent', 0),
                         info.get('server_connected_clients', 0),
                         info.get('server_max_clients', 10000)
@@ -269,7 +269,7 @@ class RedisMemoryClient:
                 schema,
                 definition=IndexDefinition(
                     prefix=[self.BLOCK_PREFIX],
-                    index_type=IndexType.HASH  # ⭐ Hash type for simple data
+                    index_type=IndexType.HASH  # Hash type for simple data
                 )
             )
             logger.info("Created HASH index: %s", self.BLOCK_INDEX)
@@ -305,7 +305,7 @@ class RedisMemoryClient:
                 schema,
                 definition=IndexDefinition(
                     prefix=[self.MESSAGE_PREFIX],
-                    index_type=IndexType.HASH  # ⭐ Hash type
+                    index_type=IndexType.HASH  # Hash type
                 )
             )
             logger.info("Created HASH index: %s", self.MESSAGE_INDEX)
@@ -610,7 +610,7 @@ class RedisMemoryClient:
                 TagField("$.filter_tags.scope", as_name="filter_tags_scope"),  # Explicit scope field for fast filtering
                 TextField("$.filter_tags.*", as_name="filter_tags"),  # Filter tags for flexible filtering
                 
-                # ⭐ Vector fields for embeddings (32KB total)
+                # Vector fields for embeddings (32KB total)
                 VectorField(
                     "$.details_embedding",
                     "FLAT",
@@ -637,7 +637,7 @@ class RedisMemoryClient:
                 schema,
                 definition=IndexDefinition(
                     prefix=[self.EPISODIC_PREFIX],
-                    index_type=IndexType.JSON  # ⭐ JSON type for complex data
+                    index_type=IndexType.JSON  # JSON type for complex data
                 )
             )
             logger.info("Created JSON+VECTOR index: %s (2 vectors)", self.EPISODIC_INDEX)
@@ -671,7 +671,7 @@ class RedisMemoryClient:
                 TagField("$.filter_tags.scope", as_name="filter_tags_scope"),  # Explicit scope field
                 TextField("$.filter_tags.*", as_name="filter_tags"),  # Filter tags for flexible filtering
                 
-                # ⭐ Three vector fields for comprehensive search (48KB total!)
+                # Three vector fields for comprehensive search (48KB total!)
                 VectorField(
                     "$.name_embedding",
                     "FLAT",
@@ -740,7 +740,7 @@ class RedisMemoryClient:
                 TagField("$.filter_tags.scope", as_name="filter_tags_scope"),  # Explicit scope field
                 TextField("$.filter_tags.*", as_name="filter_tags"),  # Filter tags for flexible filtering
                 
-                # ⭐ Two vector fields (32KB total)
+                # Two vector fields (32KB total)
                 VectorField(
                     "$.summary_embedding",
                     "FLAT",
@@ -800,7 +800,7 @@ class RedisMemoryClient:
                 TagField("$.filter_tags.scope", as_name="filter_tags_scope"),  # Explicit scope field
                 TextField("$.filter_tags.*", as_name="filter_tags"),  # Filter tags
                 
-                # ⭐ One vector field (16KB)
+                # One vector field (16KB)
                 VectorField(
                     "$.summary_embedding",
                     "FLAT",
@@ -848,7 +848,7 @@ class RedisMemoryClient:
                 TagField("$.filter_tags.scope", as_name="filter_tags_scope"),  # Explicit scope field
                 TextField("$.filter_tags.*", as_name="filter_tags"),  # Filter tags
                 
-                # ⭐ One vector field (16KB)
+                # One vector field (16KB)
                 VectorField(
                     "$.caption_embedding",
                     "FLAT",
@@ -1626,7 +1626,7 @@ class RedisMemoryClient:
         """
         Remove Redis-specific fields before Pydantic validation.
         
-        ⚠️ SECURITY: We keep Pydantic's extra="forbid" for API validation security.
+        SECURITY: We keep Pydantic's extra="forbid" for API validation security.
         This helper strips Redis-internal fields (_ts timestamps, search metadata) that
         would otherwise cause validation errors, while preserving strict validation for
         user input.

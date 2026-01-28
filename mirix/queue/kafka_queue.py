@@ -61,7 +61,7 @@ class KafkaQueue(QueueInterface):
             (We should change it though.)
         """
         logger.info(
-            "🔧 Initializing Kafka queue: servers=%s, topic=%s, group=%s, format=%s, security=%s",
+            "Initializing Kafka queue: servers=%s, topic=%s, group=%s, format=%s, security=%s",
             bootstrap_servers,
             topic,
             group_id,
@@ -69,7 +69,7 @@ class KafkaQueue(QueueInterface):
             security_protocol,
         )
         logger.info(
-            "🔧 Kafka consumer config: auto_offset_reset=%s, consumer_timeout_ms=%d, max_poll_interval_ms=%d, session_timeout_ms=%d",
+            "Kafka consumer config: auto_offset_reset=%s, consumer_timeout_ms=%d, max_poll_interval_ms=%d, session_timeout_ms=%d",
             auto_offset_reset,
             consumer_timeout_ms,
             max_poll_interval_ms,
@@ -193,7 +193,7 @@ class KafkaQueue(QueueInterface):
         )
 
         logger.info(
-            "✅ Kafka consumer configured: auto_offset_reset=%s, max_poll_interval=%dms (%.1f min), session_timeout=%dms, consumer_timeout=%dms",
+            "Kafka consumer configured: auto_offset_reset=%s, max_poll_interval=%dms (%.1f min), session_timeout=%dms, consumer_timeout=%dms",
             auto_offset_reset,
             max_poll_interval_ms,
             max_poll_interval_ms / 60000,

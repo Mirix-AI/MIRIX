@@ -393,7 +393,7 @@ class QueueWorker:
             else ""
         )
         logger.info(
-            "🎯 Queue worker thread ENTERED _consume_messages()%s", partition_info
+            "Queue worker thread ENTERED _consume_messages()%s", partition_info
         )
         logger.info(
             "   _running=%s, _server=%s", self._running, self._server is not None
@@ -460,7 +460,7 @@ class QueueWorker:
             else "QueueWorker"
         )
         logger.info(
-            "📝 Creating daemon thread for message consumption%s...", partition_info
+            "Creating daemon thread for message consumption%s...", partition_info
         )
         self._thread = threading.Thread(
             target=self._consume_messages, daemon=True, name=thread_name

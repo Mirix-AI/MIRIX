@@ -101,7 +101,7 @@ def initialize_langfuse(force: bool = False) -> Optional["Langfuse"]:
             try:
                 _langfuse_client.flush()
                 logger.info(
-                    f"✅ LangFuse observability initialized and verified successfully (environment: {environment})"
+                    f"LangFuse observability initialized and verified successfully (environment: {environment})"
                 )
             except Exception as health_error:
                 logger.warning(

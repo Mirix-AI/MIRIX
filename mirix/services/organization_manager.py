@@ -89,7 +89,7 @@ class OrganizationManager:
                 org_data["name"] = create_random_username()
             
             org = OrganizationModel(**org_data)
-            org.create_with_redis(session, actor=None)  # ⭐ Auto-caches to Redis
+            org.create_with_redis(session, actor=None)  # Auto-caches to Redis
             return org.to_pydantic()
 
     @enforce_types
@@ -108,7 +108,7 @@ class OrganizationManager:
             org = OrganizationModel.read(db_session=session, identifier=org_id)
             if name:
                 org.name = name
-            org.update_with_redis(session, actor=None)  # ⭐ Updates Redis cache
+            org.update_with_redis(session, actor=None)  # Updates Redis cache
             return org.to_pydantic()
 
     @enforce_types

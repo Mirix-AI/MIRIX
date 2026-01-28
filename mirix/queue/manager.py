@@ -57,7 +57,7 @@ class QueueManager:
         """
         if self._initialized:
             logger.warning(
-                "⚠️ Queue manager already initialized - skipping duplicate initialization"
+                "Queue manager already initialized - skipping duplicate initialization"
             )
             worker_count = len(self._workers)
             running_count = sum(1 for w in self._workers if w._running)
@@ -83,7 +83,7 @@ class QueueManager:
 
         partition_mode = "round-robin" if self._round_robin else "hash"
         logger.info(
-            "🚀 Initializing queue manager: type=%s, num_workers=%d, partitioning=%s, server=%s",
+            "Initializing queue manager: type=%s, num_workers=%d, partitioning=%s, server=%s",
             config.QUEUE_TYPE,
             self._num_workers,
             partition_mode,
@@ -133,7 +133,7 @@ class QueueManager:
             )
 
             logger.info(
-                f"🔍 Worker status: running={running_count}/{len(self._workers)}, threads_alive={alive_count}/{len(self._workers)}"
+                f"Worker status: running={running_count}/{len(self._workers)}, threads_alive={alive_count}/{len(self._workers)}"
             )
 
             if running_count != len(self._workers) or alive_count != len(self._workers):
@@ -142,11 +142,11 @@ class QueueManager:
                 logger.error(f"   Threads alive: {alive_count}/{len(self._workers)}")
             else:
                 logger.info(
-                    "✅ All %d queue worker(s) started successfully!", len(self._workers)
+                    "All %d queue worker(s) started successfully!", len(self._workers)
                 )
         else:
             logger.info(
-                "⏸️  Workers created but NOT started (AUTO_START_WORKERS=false) - "
+                "Workers created but NOT started (AUTO_START_WORKERS=false) - "
                 "Use process_external_message() to process messages from external consumer"
             )
 
@@ -204,7 +204,7 @@ class QueueManager:
                 # Use partitioned queue for multiple workers
                 mode = "round-robin" if self._round_robin else "hash"
                 logger.info(
-                    "📦 Using PartitionedMemoryQueue with %d partitions, mode=%s",
+                    "Using PartitionedMemoryQueue with %d partitions, mode=%s",
                     self._num_workers,
                     mode,
                 )

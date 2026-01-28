@@ -76,7 +76,7 @@ class UserManager:
             if client_id:
                 user_data["client_id"] = client_id
             new_user = UserModel(**user_data)
-            new_user.create_with_redis(session, actor=None)  # ⭐ Auto-caches to Redis
+            new_user.create_with_redis(session, actor=None)  # Auto-caches to Redis
             return new_user.to_pydantic()
 
     @enforce_types
@@ -94,7 +94,7 @@ class UserManager:
                 setattr(existing_user, key, value)
 
             # Commit the updated user and update cache
-            existing_user.update_with_redis(session, actor=None)  # ⭐ Updates Redis cache
+            existing_user.update_with_redis(session, actor=None)  # Updates Redis cache
             return existing_user.to_pydantic()
 
     @enforce_types
@@ -108,7 +108,7 @@ class UserManager:
             existing_user.timezone = timezone_str
 
             # Commit the updated user and update cache
-            existing_user.update_with_redis(session, actor=None)  # ⭐ Updates Redis cache
+            existing_user.update_with_redis(session, actor=None)  # Updates Redis cache
             return existing_user.to_pydantic()
 
     @enforce_types
@@ -122,7 +122,7 @@ class UserManager:
             existing_user.status = status
 
             # Commit the updated user and update cache
-            existing_user.update_with_redis(session, actor=None)  # ⭐ Updates Redis cache
+            existing_user.update_with_redis(session, actor=None)  # Updates Redis cache
             return existing_user.to_pydantic()
 
     @enforce_types
@@ -223,7 +223,7 @@ class UserManager:
                         redis_client.delete(user_key)
 
                     logger.info(
-                        "✅ User %s and all associated records soft deleted: "
+                        "User %s and all associated records soft deleted: "
                         "%d episodic, %d semantic, %d procedural, %d resource, %d knowledge_vault, %d messages, %d blocks",
                         user_id, episodic_count, semantic_count, procedural_count,
                         resource_count, knowledge_count, message_count, block_count
@@ -341,7 +341,7 @@ class UserManager:
                     logger.debug("Invalidated %d agent caches due to user deletion", invalidated_count)
 
             logger.info(
-                "✅ Bulk deleted all memories for user %s: "
+                "Bulk deleted all memories for user %s: "
                 "%d episodic, %d semantic, %d procedural, %d resource, %d knowledge_vault, %d messages, %d blocks "
                 "(user record preserved)",
                 user_id, episodic_count, semantic_count, procedural_count,

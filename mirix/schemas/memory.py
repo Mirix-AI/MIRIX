@@ -119,9 +119,9 @@ class Memory(BaseModel, validate_assignment=True):
         "{% set percentage = ((block.value|length / block.limit) * 100)|int %}"
         "{% set status = '' %}"
         "{% if percentage >= 90 %}"
-        "{% set status = ' ⚠️ NEARLY FULL - USE core_memory_rewrite TO CONDENSE' %}"
+        "{% set status = ' WARNING: NEARLY FULL - USE core_memory_rewrite TO CONDENSE' %}"
         "{% elif percentage >= 75 %}"
-        "{% set status = ' ⚡ Getting Full - Consider Rewriting Soon' %}"
+        "{% set status = ' Getting Full - Consider Rewriting Soon' %}"
         "{% endif %}"
         '<{{ block.label }} characters="{{ block.value|length }}/{{ block.limit }}" ({{ percentage }}% full){{ status }}>\n'
         "{{ block.value|line_numbers }}\n"

@@ -381,7 +381,7 @@ class ClientManager:
                     logger.debug("Updated %d agents in Redis cache (is_deleted=true)", len(agent_ids))
 
                     logger.info(
-                        "✅ Client %s and all associated records soft deleted: "
+                        "Client %s and all associated records soft deleted: "
                         "%d episodic, %d semantic, %d procedural, %d resource, %d knowledge_vault, %d messages",
                         client_id, episodic_count, semantic_count, procedural_count,
                         resource_count, knowledge_count, message_count
@@ -531,7 +531,7 @@ class ClientManager:
                 logger.debug("Invalidated %d agent caches", len(agent_ids))
 
             logger.info(
-                "✅ Bulk deleted all memories for client %s: "
+                "Bulk deleted all memories for client %s: "
                 "%d episodic, %d semantic, %d procedural, %d resource, %d knowledge_vault, %d messages, %d blocks "
                 "(client, agents, tools preserved)",
                 client_id, episodic_count, semantic_count, procedural_count,

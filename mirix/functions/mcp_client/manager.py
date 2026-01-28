@@ -314,7 +314,7 @@ class MCPClientManager:
                     continue
 
             logger.debug(
-                f"🏁 MCP Restoration Complete: {restored_count} successful, {failed_count} failed"
+                f"MCP Restoration Complete: {restored_count} successful, {failed_count} failed"
             )
 
         except Exception as e:

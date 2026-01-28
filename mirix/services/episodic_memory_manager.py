@@ -154,7 +154,7 @@ class EpisodicMemoryManager:
                 if cached_data:
                     # Cache HIT - return from Redis
                     logger.debug(
-                        "✅ Redis cache HIT for episodic memory %s", episodic_memory_id
+                        "Redis cache HIT for episodic memory %s", episodic_memory_id
                     )
                     return PydanticEpisodicEvent(**cached_data)
         except Exception as e:
@@ -758,7 +758,7 @@ class EpisodicMemoryManager:
         # Extract organization_id from user for multi-tenant isolation
         organization_id = user.organization_id
 
-        # ⭐ Try Redis Search first (if cache enabled and Redis is available)
+        # Try Redis Search first (if cache enabled and Redis is available)
         from mirix.database.redis_client import get_redis_client
 
         redis_client = get_redis_client()
@@ -779,7 +779,7 @@ class EpisodicMemoryManager:
                     )
                     if results:
                         logger.debug(
-                            "✅ Redis cache HIT: returned %d recent episodic events",
+                            "Redis cache HIT: returned %d recent episodic events",
                             len(results),
                         )
                         # Clean Redis-specific fields before Pydantic validation
@@ -825,7 +825,7 @@ class EpisodicMemoryManager:
                     )
                     if results:
                         logger.debug(
-                            "✅ Redis vector search HIT: found %d episodic events",
+                            "Redis vector search HIT: found %d episodic events",
                             len(results),
                         )
                         # Clean Redis-specific fields before Pydantic validation
@@ -850,7 +850,7 @@ class EpisodicMemoryManager:
                     )
                     if results:
                         logger.debug(
-                            "✅ Redis text search HIT: found %d episodic events",
+                            "Redis text search HIT: found %d episodic events",
                             len(results),
                         )
                         # Clean Redis-specific fields before Pydantic validation
@@ -867,11 +867,11 @@ class EpisodicMemoryManager:
         # Log when bypassing cache or Redis unavailable
         if not use_cache:
             logger.debug(
-                "⏭️  Bypassing Redis cache (use_cache=False), querying PostgreSQL directly for episodic memory"
+                "Bypassing Redis cache (use_cache=False), querying PostgreSQL directly for episodic memory"
             )
         elif not redis_client:
             logger.debug(
-                "⚠️  Redis unavailable, querying PostgreSQL directly for episodic memory"
+                "Redis unavailable, querying PostgreSQL directly for episodic memory"
             )
 
         # Original PostgreSQL implementation (unchanged - serves as fallback)
@@ -1427,7 +1427,7 @@ class EpisodicMemoryManager:
 
             selected_event.update_with_redis(
                 session, actor=actor
-            )  # ⭐ Updates Redis JSON cache
+            )  # Updates Redis JSON cache
             return selected_event.to_pydantic()
 
     def _parse_embedding_field(self, embedding_value):
@@ -1555,7 +1555,7 @@ class EpisodicMemoryManager:
                     )
                     if results:
                         logger.debug(
-                            "✅ Redis cache HIT: returned %d recent episodic events for org %s",
+                            "Redis cache HIT: returned %d recent episodic events for org %s",
                             len(results),
                             organization_id,
                         )
@@ -1600,7 +1600,7 @@ class EpisodicMemoryManager:
                     )
                     if results:
                         logger.debug(
-                            "✅ Redis vector search HIT: %d results for org %s",
+                            "Redis vector search HIT: %d results for org %s",
                             len(results),
                             organization_id,
                         )
@@ -1622,7 +1622,7 @@ class EpisodicMemoryManager:
                     )
                     if results:
                         logger.debug(
-                            "✅ Redis text search HIT: %d results for org %s",
+                            "Redis text search HIT: %d results for org %s",
                             len(results),
                             organization_id,
                         )
@@ -1634,7 +1634,7 @@ class EpisodicMemoryManager:
 
         # Fallback to PostgreSQL
         logger.debug(
-            "⚠️ Redis cache MISS or disabled - falling back to PostgreSQL for org %s",
+            "Redis cache MISS or disabled - falling back to PostgreSQL for org %s",
             organization_id,
         )
 

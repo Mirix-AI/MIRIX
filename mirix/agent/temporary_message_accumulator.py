@@ -114,13 +114,13 @@ class TemporaryMessageAccumulator:
                         audio_segment.append(converted_segment)
                     else:
                         self.logger.error(
-                            f"❌ Error converting voice chunk {i + 1}/{len(full_message['voice_files'])} to AudioSegment"
+                            f"Error converting voice chunk {i + 1}/{len(full_message['voice_files'])} to AudioSegment"
                         )
                         continue
                 audio_segment = None if len(audio_segment) == 0 else audio_segment
                 if audio_segment:
                     self.logger.info(
-                        f"✅ Successfully processed {len(audio_segment)} voice segments"
+                        f"Successfully processed {len(audio_segment)} voice segments"
                     )
                 else:
                     self.logger.info("No voice segments were successfully processed")

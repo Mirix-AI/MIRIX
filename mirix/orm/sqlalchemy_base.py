@@ -859,7 +859,7 @@ class SqlalchemyBase(CommonSqlalchemyMetaMixins, Base):
             if not table_name:
                 return
             
-            # ⭐ HASH-BASED CACHING (blocks and messages - NO embeddings)
+            # HASH-BASED CACHING (blocks and messages - NO embeddings)
             if table_name == "block":
                 redis_key = f"{redis_client.BLOCK_PREFIX}{self.id}"
                 if operation == "delete":
@@ -880,7 +880,7 @@ class SqlalchemyBase(CommonSqlalchemyMetaMixins, Base):
                     redis_client.set_hash(redis_key, data, ttl=settings.redis_ttl_messages)
                 return
             
-            # ⭐ ORGANIZATION CACHING (Hash-based)
+            # ORGANIZATION CACHING (Hash-based)
             if table_name == "organizations":
                 redis_key = f"{redis_client.ORGANIZATION_PREFIX}{self.id}"
                 if operation == "delete":
@@ -891,7 +891,7 @@ class SqlalchemyBase(CommonSqlalchemyMetaMixins, Base):
                     redis_client.set_hash(redis_key, data, ttl=settings.redis_ttl_organizations)
                 return
             
-            # ⭐ USER CACHING (Hash-based)
+            # USER CACHING (Hash-based)
             if table_name == "users":
                 redis_key = f"{redis_client.USER_PREFIX}{self.id}"
                 if operation == "delete":
@@ -902,7 +902,7 @@ class SqlalchemyBase(CommonSqlalchemyMetaMixins, Base):
                     redis_client.set_hash(redis_key, data, ttl=settings.redis_ttl_users)
                 return
             
-            # ⭐ AGENT CACHING (Hash-based, with denormalized tool_ids)
+            # AGENT CACHING (Hash-based, with denormalized tool_ids)
             if table_name == "agents":
                 import json
                 redis_key = f"{redis_client.AGENT_PREFIX}{self.id}"
@@ -925,7 +925,7 @@ class SqlalchemyBase(CommonSqlalchemyMetaMixins, Base):
                     
                     # model_dump(mode='json') already converts datetime to ISO format strings
                     
-                    # ⭐ Denormalize tools_agents: Cache tools separately, store tool_ids with agent
+                    # Denormalize tools_agents: Cache tools separately, store tool_ids with agent
                     if 'tools' in data and data['tools']:
                         tool_ids = [tool.id if hasattr(tool, 'id') else tool['id'] for tool in data['tools']]
                         data['tool_ids'] = json.dumps(tool_ids)
@@ -945,7 +945,7 @@ class SqlalchemyBase(CommonSqlalchemyMetaMixins, Base):
                             
                             redis_client.set_hash(tool_key, tool_data, ttl=settings.redis_ttl_tools)
                     
-                    # ⭐ Denormalize memory: Store block IDs for reconstruction
+                    # Denormalize memory: Store block IDs for reconstruction
                     if 'memory' in data and data['memory']:
                         memory_obj = data['memory']
                         if isinstance(memory_obj, dict) and 'blocks' in memory_obj:
@@ -954,19 +954,19 @@ class SqlalchemyBase(CommonSqlalchemyMetaMixins, Base):
                             data['memory_block_ids'] = json.dumps(block_ids)
                             data['memory_prompt_template'] = memory_obj.get('prompt_template', '')
                             
-                            # ⭐ Maintain reverse mapping: block -> agents (for cache invalidation)
+                            # Maintain reverse mapping: block -> agents (for cache invalidation)
                             for block_id in block_ids:
                                 reverse_key = f"{redis_client.BLOCK_PREFIX}{block_id}:agents"
                                 redis_client.client.sadd(reverse_key, self.id)
                                 redis_client.client.expire(reverse_key, settings.redis_ttl_agents)
                     
-                    # ⭐ Denormalize children: Store child agent IDs for reconstruction (list_agents only)
+                    # Denormalize children: Store child agent IDs for reconstruction (list_agents only)
                     if 'children' in data and data['children']:
                         children_ids = [child.id if hasattr(child, 'id') else child['id'] 
                                        for child in data['children']]
                         data['children_ids'] = json.dumps(children_ids)
                         
-                        # ⭐ Maintain reverse mapping: child -> parent (for cache invalidation)
+                        # Maintain reverse mapping: child -> parent (for cache invalidation)
                         for child_id in children_ids:
                             reverse_key = f"{redis_client.AGENT_PREFIX}{child_id}:parent"
                             redis_client.client.set(reverse_key, self.id)
@@ -980,7 +980,7 @@ class SqlalchemyBase(CommonSqlalchemyMetaMixins, Base):
                     redis_client.set_hash(redis_key, data, ttl=settings.redis_ttl_agents)
                 return
             
-            # ⭐ TOOL CACHING (Hash-based)
+            # TOOL CACHING (Hash-based)
             if table_name == "tools":
                 import json
                 redis_key = f"{redis_client.TOOL_PREFIX}{self.id}"
@@ -1000,7 +1000,7 @@ class SqlalchemyBase(CommonSqlalchemyMetaMixins, Base):
                     redis_client.set_hash(redis_key, data, ttl=settings.redis_ttl_tools)
                 return
             
-            # ⭐ JSON-BASED CACHING (memory tables with embeddings)
+            # JSON-BASED CACHING (memory tables with embeddings)
             memory_tables = {
                 "episodic_memory": redis_client.EPISODIC_PREFIX,
                 "semantic_memory": redis_client.SEMANTIC_PREFIX,
@@ -1020,7 +1020,7 @@ class SqlalchemyBase(CommonSqlalchemyMetaMixins, Base):
                     data = self.to_pydantic().model_dump(mode='json')
                     # model_dump(mode='json') converts datetime to ISO format strings
                     
-                    # ⭐ ADD NUMERIC TIMESTAMP FIELDS FOR REDIS SEARCH SORTING
+                    # ADD NUMERIC TIMESTAMP FIELDS FOR REDIS SEARCH SORTING
                     # RediSearch needs numeric fields to sort by (not ISO strings)
                     if hasattr(self, 'created_at') and self.created_at:
                         data['created_at_ts'] = self.created_at.timestamp()
