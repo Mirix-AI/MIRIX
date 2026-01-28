@@ -528,7 +528,7 @@ class ClientManager:
                 for agent_id in agent_ids:
                     agent_key = f"{redis_client.AGENT_PREFIX}{agent_id}"
                     redis_client.delete(agent_key)
-                logger.debug("✅ Invalidated %d agent caches", len(agent_ids))
+                logger.debug("Invalidated %d agent caches", len(agent_ids))
 
             logger.info(
                 "✅ Bulk deleted all memories for client %s: "
@@ -556,7 +556,7 @@ class ClientManager:
                 redis_key = f"{redis_client.CLIENT_PREFIX}{client_id}"
                 cached_data = redis_client.get_hash(redis_key)
                 if cached_data:
-                    logger.debug("✅ Redis cache HIT for client %s", client_id)
+                    logger.debug("Redis cache HIT for client %s", client_id)
                     return PydanticClient(**cached_data)
         except Exception as e:
             # Log but continue to PostgreSQL on Redis error

@@ -41,7 +41,7 @@ class OrganizationManager:
                 redis_key = f"{redis_client.ORGANIZATION_PREFIX}{org_id}"
                 cached_data = redis_client.get_hash(redis_key)
                 if cached_data:
-                    logger.debug("✅ Redis cache HIT for organization %s", org_id)
+                    logger.debug("Redis cache HIT for organization %s", org_id)
                     return PydanticOrganization(**cached_data)
         except Exception as e:
             # Log but continue to PostgreSQL on Redis error

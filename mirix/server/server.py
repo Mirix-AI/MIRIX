@@ -405,7 +405,7 @@ try:
 
     redis_client = initialize_redis_client()
     if redis_client:
-        logger.info("✅ Redis integration enabled")
+        logger.info("Redis integration enabled")
     else:
         logger.info("Redis integration disabled or unavailable")
 except Exception as e:

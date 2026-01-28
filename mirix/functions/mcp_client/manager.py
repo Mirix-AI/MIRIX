@@ -302,10 +302,10 @@ class MCPClientManager:
                         f"🔗 Attempting to restore {server_name} ({server_type.value})..."
                     )
                     if self._add_server_without_persistence(config):
-                        logger.debug("✅ Restored MCP connection: %s", server_name)
+                        logger.debug("Restored MCP connection: %s", server_name)
                         restored_count += 1
                     else:
-                        logger.debug("❌ Failed to restore MCP connection: %s", server_name)
+                        logger.debug("Failed to restore MCP connection: %s", server_name)
                         failed_count += 1
 
                 except Exception as e:

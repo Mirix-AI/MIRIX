@@ -233,7 +233,7 @@ class RedisMemoryClient:
             self._create_resource_index()
             self._create_knowledge_index()
             
-            logger.info("✅ All Redis indexes created successfully")
+            logger.info("All Redis indexes created successfully")
         except Exception as e:
             logger.error("Failed to create some indexes: %s", e)
             # Don't raise - allow system to continue without indexes
@@ -272,7 +272,7 @@ class RedisMemoryClient:
                     index_type=IndexType.HASH  # ⭐ Hash type for simple data
                 )
             )
-            logger.info("✅ Created HASH index: %s", self.BLOCK_INDEX)
+            logger.info("Created HASH index: %s", self.BLOCK_INDEX)
             
         except Exception as e:
             logger.warning("Failed to create block index: %s", e)
@@ -308,7 +308,7 @@ class RedisMemoryClient:
                     index_type=IndexType.HASH  # ⭐ Hash type
                 )
             )
-            logger.info("✅ Created HASH index: %s", self.MESSAGE_INDEX)
+            logger.info("Created HASH index: %s", self.MESSAGE_INDEX)
             
         except Exception as e:
             logger.warning("Failed to create message index: %s", e)
@@ -339,7 +339,7 @@ class RedisMemoryClient:
                     index_type=IndexType.HASH
                 )
             )
-            logger.info("✅ Created HASH index: %s", self.ORGANIZATION_INDEX)
+            logger.info("Created HASH index: %s", self.ORGANIZATION_INDEX)
             
         except Exception as e:
             logger.warning("Failed to create organization index: %s", e)
@@ -375,7 +375,7 @@ class RedisMemoryClient:
                     index_type=IndexType.HASH
                 )
             )
-            logger.info("✅ Created HASH index: %s", self.USER_INDEX)
+            logger.info("Created HASH index: %s", self.USER_INDEX)
             
         except Exception as e:
             logger.warning("Failed to create user index: %s", e)
@@ -413,7 +413,7 @@ class RedisMemoryClient:
                     index_type=IndexType.HASH
                 )
             )
-            logger.info("✅ Created HASH index: %s", self.AGENT_INDEX)
+            logger.info("Created HASH index: %s", self.AGENT_INDEX)
             
         except Exception as e:
             logger.warning("Failed to create agent index: %s", e)
@@ -451,7 +451,7 @@ class RedisMemoryClient:
                     index_type=IndexType.HASH
                 )
             )
-            logger.info("✅ Created HASH index: %s", self.TOOL_INDEX)
+            logger.info("Created HASH index: %s", self.TOOL_INDEX)
             
         except Exception as e:
             logger.warning("Failed to create tool index: %s", e)
@@ -478,7 +478,7 @@ class RedisMemoryClient:
             if ttl:
                 self.client.expire(key, ttl)
             
-            logger.debug("✅ Stored Hash: %s (%d fields)", key, len(flattened))
+            logger.debug("Stored Hash: %s (%d fields)", key, len(flattened))
             return True
         except Exception as e:
             logger.error("Failed to set hash for %s: %s", key, e)
@@ -501,7 +501,7 @@ class RedisMemoryClient:
             
             # Convert back to proper types
             result = self._unflatten_dict(data)
-            logger.debug("✅ Retrieved Hash: %s", key)
+            logger.debug("Retrieved Hash: %s", key)
             return result
         except Exception as e:
             logger.error("Failed to get hash for %s: %s", key, e)
@@ -526,7 +526,7 @@ class RedisMemoryClient:
             self.client.hset(key, field, str(value))
             if ttl:
                 self.client.expire(key, ttl)
-            logger.debug("✅ Updated Hash field: %s.%s", key, field)
+            logger.debug("Updated Hash field: %s.%s", key, field)
             return True
         except Exception as e:
             logger.error("Failed to update hash field %s in %s: %s", field, key, e)
@@ -640,7 +640,7 @@ class RedisMemoryClient:
                     index_type=IndexType.JSON  # ⭐ JSON type for complex data
                 )
             )
-            logger.info("✅ Created JSON+VECTOR index: %s (2 vectors)", self.EPISODIC_INDEX)
+            logger.info("Created JSON+VECTOR index: %s (2 vectors)", self.EPISODIC_INDEX)
             
         except Exception as e:
             logger.warning("Failed to create episodic index: %s", e)
@@ -711,7 +711,7 @@ class RedisMemoryClient:
                     index_type=IndexType.JSON
                 )
             )
-            logger.info("✅ Created JSON+VECTOR index: %s (3 vectors, 48KB!)", self.SEMANTIC_INDEX)
+            logger.info("Created JSON+VECTOR index: %s (3 vectors, 48KB!)", self.SEMANTIC_INDEX)
             
         except Exception as e:
             logger.warning("Failed to create semantic index: %s", e)
@@ -770,7 +770,7 @@ class RedisMemoryClient:
                     index_type=IndexType.JSON
                 )
             )
-            logger.info("✅ Created JSON+VECTOR index: %s (2 vectors)", self.PROCEDURAL_INDEX)
+            logger.info("Created JSON+VECTOR index: %s (2 vectors)", self.PROCEDURAL_INDEX)
             
         except Exception as e:
             logger.warning("Failed to create procedural index: %s", e)
@@ -820,7 +820,7 @@ class RedisMemoryClient:
                     index_type=IndexType.JSON
                 )
             )
-            logger.info("✅ Created JSON+VECTOR index: %s (1 vector)", self.RESOURCE_INDEX)
+            logger.info("Created JSON+VECTOR index: %s (1 vector)", self.RESOURCE_INDEX)
             
         except Exception as e:
             logger.warning("Failed to create resource index: %s", e)
@@ -868,7 +868,7 @@ class RedisMemoryClient:
                     index_type=IndexType.JSON
                 )
             )
-            logger.info("✅ Created JSON+VECTOR index: %s (1 vector)", self.KNOWLEDGE_INDEX)
+            logger.info("Created JSON+VECTOR index: %s (1 vector)", self.KNOWLEDGE_INDEX)
             
         except Exception as e:
             logger.warning("Failed to create knowledge index: %s", e)
@@ -892,7 +892,7 @@ class RedisMemoryClient:
             if ttl:
                 self.client.expire(key, ttl)
             
-            logger.debug("✅ Stored JSON: %s", key)
+            logger.debug("Stored JSON: %s", key)
             return True
         except Exception as e:
             logger.error("Failed to set JSON for %s: %s", key, e)
@@ -913,7 +913,7 @@ class RedisMemoryClient:
             if data is None:
                 return None
             
-            logger.debug("✅ Retrieved JSON: %s", key)
+            logger.debug("Retrieved JSON: %s", key)
             return data
         except Exception as e:
             logger.error("Failed to get JSON for %s: %s", key, e)
@@ -923,7 +923,7 @@ class RedisMemoryClient:
         """Delete a key from Redis."""
         try:
             self.client.delete(key)
-            logger.debug("✅ Deleted key: %s", key)
+            logger.debug("Deleted key: %s", key)
             return True
         except Exception as e:
             logger.error("Failed to delete key %s: %s", key, e)
@@ -1091,7 +1091,7 @@ class RedisMemoryClient:
                             doc_dict[key] = value
                     documents.append(doc_dict)
             
-            logger.debug("✅ Redis text search: found %d results in %s", len(documents), index_name)
+            logger.debug("Redis text search: found %d results in %s", len(documents), index_name)
             return documents
         
         except Exception as e:
@@ -1222,7 +1222,7 @@ class RedisMemoryClient:
                 
                 documents.append(doc_dict)
             
-            logger.debug("✅ Redis vector search: found %d results in %s", len(documents), index_name)
+            logger.debug("Redis vector search: found %d results in %s", len(documents), index_name)
             return documents
         
         except Exception as e:
@@ -1332,7 +1332,7 @@ class RedisMemoryClient:
                             doc_dict[key] = value
                     documents.append(doc_dict)
             
-            logger.debug("✅ Redis recent search: found %d results in %s", len(documents), index_name)
+            logger.debug("Redis recent search: found %d results in %s", len(documents), index_name)
             return documents
         
         except Exception as e:
@@ -1704,7 +1704,7 @@ def initialize_redis_client() -> Optional[RedisMemoryClient]:
         # Log connection pool info
         _redis_client.log_connection_stats()
         
-        logger.info("✅ Redis client initialized successfully with optimized connection pool")
+        logger.info("Redis client initialized successfully with optimized connection pool")
         return _redis_client
         
     except Exception as e:

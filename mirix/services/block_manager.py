@@ -91,7 +91,7 @@ class BlockManager:
                     # Clean up the reverse mapping
                     redis_client.delete(reverse_key)
 
-                    logger.debug("✅ Invalidated %s agent caches for block %s", len(agent_ids), block_id)
+                    logger.debug("Invalidated %s agent caches for block %s", len(agent_ids), block_id)
         except Exception as e:
             # Log but don't fail the operation if cache invalidation fails
             logger.warning("Failed to invalidate agent caches for block %s: %s", block_id, e)

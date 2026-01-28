@@ -338,7 +338,7 @@ class UserManager:
                     if cursor == 0:
                         break
                 if invalidated_count > 0:
-                    logger.debug("✅ Invalidated %d agent caches due to user deletion", invalidated_count)
+                    logger.debug("Invalidated %d agent caches due to user deletion", invalidated_count)
 
             logger.info(
                 "✅ Bulk deleted all memories for user %s: "
@@ -366,7 +366,7 @@ class UserManager:
                 redis_key = f"{redis_client.USER_PREFIX}{user_id}"
                 cached_data = redis_client.get_hash(redis_key)
                 if cached_data:
-                    logger.debug("✅ Redis cache HIT for user %s", user_id)
+                    logger.debug("Redis cache HIT for user %s", user_id)
                     return PydanticUser(**cached_data)
         except Exception as e:
             # Log but continue to PostgreSQL on Redis error
@@ -456,7 +456,7 @@ class UserManager:
                 client_id=client_id,  # Optional - which client created this user
             )
             user.create(session)
-            logger.info("✅ Created default template user %s for organization %s", default_user_id, org_id)
+            logger.info("Created default template user %s for organization %s", default_user_id, org_id)
             return user.to_pydantic()
 
     @enforce_types

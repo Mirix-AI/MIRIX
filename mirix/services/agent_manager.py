@@ -1418,7 +1418,7 @@ class AgentManager:
         if parent_id is not None:
             cached_children = self._get_children_from_redis(parent_id, actor)
             if cached_children is not None:
-                logger.debug("✅ Redis cache HIT for children of parent %s", parent_id)
+                logger.debug("Redis cache HIT for children of parent %s", parent_id)
                 return cached_children
             # Cache miss - fall through to PostgreSQL query
             logger.debug(
@@ -1482,7 +1482,7 @@ class AgentManager:
                 redis_key = f"{redis_client.AGENT_PREFIX}{agent_id}"
                 cached_data = redis_client.get_hash(redis_key)
                 if cached_data:
-                    logger.debug("✅ Redis cache HIT for agent %s", agent_id)
+                    logger.debug("Redis cache HIT for agent %s", agent_id)
 
                     # Deserialize JSON fields
                     if "message_ids" in cached_data:

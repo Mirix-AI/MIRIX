@@ -123,7 +123,7 @@ class TemporaryMessageAccumulator:
                         f"✅ Successfully processed {len(audio_segment)} voice segments"
                     )
                 else:
-                    self.logger.info("❌ No voice segments were successfully processed")
+                    self.logger.info("No voice segments were successfully processed")
             else:
                 audio_segment = None
 

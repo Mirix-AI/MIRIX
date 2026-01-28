@@ -104,9 +104,9 @@ async def cleanup():
         logger.info("Flushing LangFuse traces...")
         flush_success = flush_langfuse(timeout=10.0)  # Increased timeout for graceful shutdown
         if flush_success:
-            logger.info("✅ LangFuse traces flushed successfully")
+            logger.info("LangFuse traces flushed successfully")
         else:
-            logger.warning("⚠️ LangFuse trace flush completed with warnings")
+            logger.warning("LangFuse trace flush completed with warnings")
         shutdown_langfuse()
         logger.info("LangFuse observability shut down")
     except Exception as e:

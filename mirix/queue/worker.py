@@ -441,7 +441,7 @@ class QueueWorker:
     def start(self) -> None:
         """Start the background worker thread"""
         if self._running:
-            logger.warning("⚠️ Queue worker already running")
+            logger.warning("Queue worker already running")
             return  # Already running
 
         partition_info = (
@@ -449,7 +449,7 @@ class QueueWorker:
             if self._partition_id is not None
             else ""
         )
-        logger.info("🚀 Starting queue worker thread%s...", partition_info)
+        logger.info("Starting queue worker thread%s...", partition_info)
         self._running = True
 
         # Create and start daemon thread
@@ -465,13 +465,13 @@ class QueueWorker:
         self._thread = threading.Thread(
             target=self._consume_messages, daemon=True, name=thread_name
         )
-        logger.info("✅ Thread created: %s", self._thread)
+        logger.info("Thread created: %s", self._thread)
 
-        logger.info("▶️  Starting thread...")
+        logger.info("Starting thread...")
         self._thread.start()
-        logger.info("✅ Thread.start() called, is_alive=%s", self._thread.is_alive())
+        logger.info("Thread.start() called, is_alive=%s", self._thread.is_alive())
 
-        logger.info("✅ Queue worker thread%s started successfully", partition_info)
+        logger.info("Queue worker thread%s started successfully", partition_info)
 
     def stop(self, close_queue: bool = True) -> None:
         """

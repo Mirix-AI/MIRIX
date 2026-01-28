@@ -93,9 +93,9 @@ class QueueManager:
         self._server = server
 
         # Create appropriate queue based on configuration
-        logger.info("📝 Creating queue instance...")
+        logger.info("Creating queue instance...")
         self._queue = self._create_queue()
-        logger.info(f"✅ Queue created: type={type(self._queue).__name__}")
+        logger.info(f"Queue created: type={type(self._queue).__name__}")
 
         # Create and start background workers
         self._workers = []
@@ -110,17 +110,17 @@ class QueueManager:
                     self._queue, server=self._server, partition_id=partition_id
                 )
                 self._workers.append(worker)
-                logger.debug("✅ Worker %d created", partition_id)
+                logger.debug("Worker %d created", partition_id)
         else:
             # Single worker (default behavior)
             logger.info("👷 Creating single background worker...")
             worker = QueueWorker(self._queue, server=self._server)
             self._workers.append(worker)
-            logger.debug("✅ Worker created")
+            logger.debug("Worker created")
 
         # Start all workers (unless AUTO_START_WORKERS is disabled)
         if config.AUTO_START_WORKERS:
-            logger.info("▶️  Starting %d background worker thread(s)...", len(self._workers))
+            logger.info("Starting %d background worker thread(s)...", len(self._workers))
             for worker in self._workers:
                 worker.start()
 
@@ -137,7 +137,7 @@ class QueueManager:
             )
 
             if running_count != len(self._workers) or alive_count != len(self._workers):
-                logger.error("❌ CRITICAL: Some queue workers failed to start!")
+                logger.error("CRITICAL: Some queue workers failed to start!")
                 logger.error(f"   Workers running: {running_count}/{len(self._workers)}")
                 logger.error(f"   Threads alive: {alive_count}/{len(self._workers)}")
             else:
@@ -154,7 +154,7 @@ class QueueManager:
         atexit.register(self.cleanup)
 
         self._initialized = True
-        logger.info("✅ Queue manager initialized successfully")
+        logger.info("Queue manager initialized successfully")
 
     def _create_queue(self) -> QueueInterface:
         """
