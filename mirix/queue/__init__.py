@@ -144,22 +144,10 @@ def process_external_message(raw_message: bytes) -> None:
     
     # Parse message with format auto-detection (same as internal consumer)
     from mirix.queue.config import KAFKA_SERIALIZATION_FORMAT
+    from mirix.queue.queue_util import deserialize_queue_message
     
-    queue_message = QueueMessage()
-    try:
-        if KAFKA_SERIALIZATION_FORMAT == "json":
-            # JSON deserialization
-            import json
-            from google.protobuf.json_format import ParseDict
-            message_dict = json.loads(raw_message.decode("utf-8"))
-            queue_message = ParseDict(message_dict, QueueMessage())
-        else:
-            # Protobuf deserialization (default)
-            queue_message.ParseFromString(raw_message)
-    except Exception as e:
-        raise ValueError(
-            f"Failed to parse message as QueueMessage ({KAFKA_SERIALIZATION_FORMAT} format): {e}"
-        ) from e
+    # Use shared deserializer utility (DRY)
+    queue_message = deserialize_queue_message(raw_message, format=KAFKA_SERIALIZATION_FORMAT)
     
     # Log for debugging
     logger.debug(

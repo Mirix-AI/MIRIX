@@ -4,14 +4,12 @@ Requires kafka-python and protobuf libraries to be installed
 Supports both Protocol Buffers and JSON serialization
 """
 
-import json
 import logging
 from typing import Optional
 
-from google.protobuf.json_format import MessageToDict, ParseDict
-
 from mirix.queue.message_pb2 import QueueMessage
 from mirix.queue.queue_interface import QueueInterface
+from mirix.queue.queue_util import serialize_queue_message, deserialize_queue_message
 
 logger = logging.getLogger(__name__)
 
@@ -88,71 +86,11 @@ class KafkaQueue(QueueInterface):
         self.topic = topic
         self.serialization_format = serialization_format.lower()
 
-        # Protobuf serializer: Convert QueueMessage to bytes
-        def protobuf_serializer(message: QueueMessage) -> bytes:
-            """
-            Serialize QueueMessage to Protocol Buffer format
-
-            Args:
-                message: QueueMessage protobuf to serialize
-
-            Returns:
-                Serialized protobuf bytes
-            """
-            return message.SerializeToString()
-
-        # Protobuf deserializer: Convert bytes to QueueMessage
-        def protobuf_deserializer(serialized_msg: bytes) -> QueueMessage:
-            """
-            Deserialize Protocol Buffer message to QueueMessage
-
-            Args:
-                serialized_msg: Serialized protobuf bytes
-
-            Returns:
-                QueueMessage protobuf object
-            """
-            msg = QueueMessage()
-            msg.ParseFromString(serialized_msg)
-            return msg
-
-        # JSON serializer: Convert QueueMessage to JSON bytes
-        def json_serializer(message: QueueMessage) -> bytes:
-            """
-            Serialize QueueMessage to JSON format
-
-            Args:
-                message: QueueMessage protobuf to serialize
-
-            Returns:
-                JSON bytes
-            """
-            message_dict = MessageToDict(message, preserving_proto_field_name=True)
-            return json.dumps(message_dict).encode("utf-8")
-
-        # JSON deserializer: Convert JSON bytes to QueueMessage
-        def json_deserializer(serialized_msg: bytes) -> QueueMessage:
-            """
-            Deserialize JSON message to QueueMessage
-
-            Args:
-                serialized_msg: JSON bytes
-
-            Returns:
-                QueueMessage protobuf object
-            """
-            message_dict = json.loads(serialized_msg.decode("utf-8"))
-            return ParseDict(message_dict, QueueMessage())
-
-        # Select serializer/deserializer based on format
-        if self.serialization_format == "json":
-            value_serializer = json_serializer
-            value_deserializer = json_deserializer
-            logger.info("Using JSON serialization for Kafka messages")
-        else:
-            value_serializer = protobuf_serializer
-            value_deserializer = protobuf_deserializer
-            logger.info("Using Protobuf serialization for Kafka messages")
+        # Use shared serialization/deserialization utilities (DRY)
+        value_serializer = lambda msg: serialize_queue_message(msg, format=self.serialization_format)
+        value_deserializer = lambda data: deserialize_queue_message(data, format=self.serialization_format)
+        
+        logger.info("Using %s serialization for Kafka messages", self.serialization_format.upper())
 
         # Build Kafka producer/consumer config with optional SSL
         kafka_config = {
