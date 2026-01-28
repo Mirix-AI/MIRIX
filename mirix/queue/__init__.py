@@ -101,7 +101,6 @@ def process_external_message(raw_message: bytes) -> None:
         raw_message: Raw protobuf bytes from Kafka or event bus
         
     Raises:
-        RuntimeError: If queue not initialized. Call initialize_queue() first.
         ValueError: If message parsing fails
         
     Example:
@@ -112,7 +111,7 @@ def process_external_message(raw_message: bytes) -> None:
         >>>     process_external_message(raw_bytes)
     
     Note:
-        - Queue must be initialized first via initialize_queue()
+        - Queue is auto-initialized if not already initialized (with server instance)
         - Set MIRIX_QUEUE_AUTO_START_WORKERS=false to disable internal Kafka consumer
         - This function is thread-safe and can be called from multiple threads
         - The Kafka producer remains functional for enqueueing messages via save()
@@ -122,20 +121,22 @@ def process_external_message(raw_message: bytes) -> None:
         
         >>> import os
         >>> os.environ["MIRIX_QUEUE_AUTO_START_WORKERS"] = "false"
-        >>> # Then initialize normally - workers created but not started
-        >>> initialize_queue(server)
+        >>> # Queue will be auto-initialized on first call to process_external_message()
     """
+    # Auto-initialize queue with server if not already initialized
     if not _manager.is_initialized:
-        raise RuntimeError(
-            "Queue not initialized. Call initialize_queue() before processing external messages."
-        )
+        logger.info("Queue not initialized, auto-initializing with server for external message processing")
+        # Import here to avoid circular dependency
+        from mirix.server.server import SyncServer
+        server = SyncServer()
+        _manager.initialize(server=server)
+        logger.info("Queue initialized with server instance")
     
     # Get the worker (created but not started if AUTO_START_WORKERS=false)
     workers = _manager._workers
     if not workers:
-        raise RuntimeError(
-            "No workers available. Ensure initialize_queue() was called successfully."
-        )
+        logger.error("No workers available after initialization - this should not happen!")
+        raise RuntimeError("Failed to create queue workers during initialization")
     
     worker = workers[0]  # Use first worker
     
