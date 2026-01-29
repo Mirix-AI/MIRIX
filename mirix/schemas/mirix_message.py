@@ -187,9 +187,7 @@ class ToolCallMessage(MirixMessage):
         kwargs["exclude_none"] = True
         data = super().model_dump(*args, **kwargs)
         if isinstance(data["tool_call"], dict):
-            data["tool_call"] = {
-                k: v for k, v in data["tool_call"].items() if v is not None
-            }
+            data["tool_call"] = {k: v for k, v in data["tool_call"].items() if v is not None}
         return data
 
     class Config:

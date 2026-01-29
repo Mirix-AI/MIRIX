@@ -52,9 +52,7 @@ class EpisodicEvent(SqlalchemyBase, OrganizationMixin, UserMixin):
     )
 
     # When did this event occur? (You can store creation time or an explicit event time.)
-    occurred_at: Mapped[datetime] = mapped_column(
-        DateTime, doc="Timestamp when the event occurred or was recorded"
-    )
+    occurred_at: Mapped[datetime] = mapped_column(DateTime, doc="Timestamp when the event occurred or was recorded")
 
     # When was this event last modified and what operation?
     last_modify: Mapped[dict] = mapped_column(
@@ -68,9 +66,7 @@ class EpisodicEvent(SqlalchemyBase, OrganizationMixin, UserMixin):
     )
 
     # Who or what triggered this event (e.g., 'user', 'assistant', 'system', etc.)
-    actor: Mapped[str] = mapped_column(
-        String, doc="Identifies the actor/source of this event"
-    )
+    actor: Mapped[str] = mapped_column(String, doc="Identifies the actor/source of this event")
 
     event_type: Mapped[str] = mapped_column(
         String,
@@ -86,10 +82,7 @@ class EpisodicEvent(SqlalchemyBase, OrganizationMixin, UserMixin):
 
     # NEW: Filter tags for flexible filtering and categorization
     filter_tags: Mapped[Optional[dict]] = mapped_column(
-        JSON,
-        nullable=True,
-        default=None,
-        doc="Custom filter tags for filtering and categorization"
+        JSON, nullable=True, default=None, doc="Custom filter tags for filtering and categorization"
     )
 
     embedding_config: Mapped[Optional[dict]] = mapped_column(
@@ -114,68 +107,78 @@ class EpisodicEvent(SqlalchemyBase, OrganizationMixin, UserMixin):
             None,
             [
                 # PostgreSQL full-text search indexes
-                Index(
-                    "ix_episodic_memory_summary_fts",
-                    text("to_tsvector('english', summary)"),
-                    postgresql_using="gin",
-                    postgresql_where=text("summary IS NOT NULL"),
-                )
-                if settings.mirix_pg_uri_no_default
-                else None,
-                Index(
-                    "ix_episodic_memory_details_fts",
-                    text("to_tsvector('english', details)"),
-                    postgresql_using="gin",
-                    postgresql_where=text("details IS NOT NULL"),
-                )
-                if settings.mirix_pg_uri_no_default
-                else None,
-                Index(
-                    "ix_episodic_memory_combined_fts",
-                    text(
-                        "to_tsvector('english', coalesce(summary, '') || ' ' || coalesce(details, ''))"
-                    ),
-                    postgresql_using="gin",
-                )
-                if settings.mirix_pg_uri_no_default
-                else None,
+                (
+                    Index(
+                        "ix_episodic_memory_summary_fts",
+                        text("to_tsvector('english', summary)"),
+                        postgresql_using="gin",
+                        postgresql_where=text("summary IS NOT NULL"),
+                    )
+                    if settings.mirix_pg_uri_no_default
+                    else None
+                ),
+                (
+                    Index(
+                        "ix_episodic_memory_details_fts",
+                        text("to_tsvector('english', details)"),
+                        postgresql_using="gin",
+                        postgresql_where=text("details IS NOT NULL"),
+                    )
+                    if settings.mirix_pg_uri_no_default
+                    else None
+                ),
+                (
+                    Index(
+                        "ix_episodic_memory_combined_fts",
+                        text("to_tsvector('english', coalesce(summary, '') || ' ' || coalesce(details, ''))"),
+                        postgresql_using="gin",
+                    )
+                    if settings.mirix_pg_uri_no_default
+                    else None
+                ),
                 # Organization-level query optimization indexes
-                Index("ix_episodic_memory_organization_id", "organization_id")
-                if settings.mirix_pg_uri_no_default
-                else None,
-                Index(
-                    "ix_episodic_memory_org_occurred_at",
-                    "organization_id",
-                    "occurred_at",
-                    postgresql_using="btree",
-                )
-                if settings.mirix_pg_uri_no_default
-                else None,
-                Index(
-                    "ix_episodic_memory_filter_tags_gin",
-                    text("(filter_tags::jsonb)"),
-                    postgresql_using="gin",
-                )
-                if settings.mirix_pg_uri_no_default
-                else None,
-                Index(
-                    "ix_episodic_memory_org_filter_scope",
-                    "organization_id",
-                    text("((filter_tags->>'scope')::text)"),
-                    postgresql_using="btree",
-                )
-                if settings.mirix_pg_uri_no_default
-                else None,
+                (
+                    Index("ix_episodic_memory_organization_id", "organization_id")
+                    if settings.mirix_pg_uri_no_default
+                    else None
+                ),
+                (
+                    Index(
+                        "ix_episodic_memory_org_occurred_at",
+                        "organization_id",
+                        "occurred_at",
+                        postgresql_using="btree",
+                    )
+                    if settings.mirix_pg_uri_no_default
+                    else None
+                ),
+                (
+                    Index(
+                        "ix_episodic_memory_filter_tags_gin",
+                        text("(filter_tags::jsonb)"),
+                        postgresql_using="gin",
+                    )
+                    if settings.mirix_pg_uri_no_default
+                    else None
+                ),
+                (
+                    Index(
+                        "ix_episodic_memory_org_filter_scope",
+                        "organization_id",
+                        text("((filter_tags->>'scope')::text)"),
+                        postgresql_using="btree",
+                    )
+                    if settings.mirix_pg_uri_no_default
+                    else None
+                ),
                 # Standard indexes for SQLite (FTS5 virtual table handled separately)
-                Index("ix_episodic_memory_summary_sqlite", "summary")
-                if not settings.mirix_pg_uri_no_default
-                else None,
-                Index("ix_episodic_memory_details_sqlite", "details")
-                if not settings.mirix_pg_uri_no_default
-                else None,
-                Index("ix_episodic_memory_organization_id_sqlite", "organization_id")
-                if not settings.mirix_pg_uri_no_default
-                else None,
+                Index("ix_episodic_memory_summary_sqlite", "summary") if not settings.mirix_pg_uri_no_default else None,
+                Index("ix_episodic_memory_details_sqlite", "details") if not settings.mirix_pg_uri_no_default else None,
+                (
+                    Index("ix_episodic_memory_organization_id_sqlite", "organization_id")
+                    if not settings.mirix_pg_uri_no_default
+                    else None
+                ),
             ],
         )
     )
@@ -193,9 +196,7 @@ class EpisodicEvent(SqlalchemyBase, OrganizationMixin, UserMixin):
         Relationship to the Organization that owns this event.
         Matches back_populates on the 'EpisodicEvent' relationship in Organization.
         """
-        return relationship(
-            "Organization", back_populates="episodic_memory", lazy="selectin"
-        )
+        return relationship("Organization", back_populates="episodic_memory", lazy="selectin")
 
     @declared_attr
     def user(cls) -> Mapped["User"]:

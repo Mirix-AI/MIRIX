@@ -38,19 +38,17 @@ class ClientApiKey(ClientApiKeyBase):
     status: str = Field("active", description="Status: active, revoked, expired")
     permission: str = Field("all", description="Permission level: all, restricted, read_only")
     user_id: Optional[str] = Field(None, description="User ID this API key is associated with")
-    
+
     created_at: Optional[datetime] = Field(
         default_factory=get_utc_time, description="The creation date of the API key."
     )
-    updated_at: Optional[datetime] = Field(
-        default_factory=get_utc_time, description="The update date of the API key."
-    )
+    updated_at: Optional[datetime] = Field(default_factory=get_utc_time, description="The update date of the API key.")
     is_deleted: bool = Field(False, description="Whether this API key is deleted or not.")
 
 
 class ClientApiKeyCreate(ClientApiKeyBase):
     """Schema for creating a new client API key."""
-    
+
     id: Optional[str] = Field(None, description="The unique identifier of the API key.")
     client_id: str = Field(..., description="The client this API key belongs to")
     organization_id: str = Field(..., description="The organization id")
@@ -63,8 +61,7 @@ class ClientApiKeyCreate(ClientApiKeyBase):
 
 class ClientApiKeyUpdate(ClientApiKeyBase):
     """Schema for updating a client API key."""
-    
+
     id: str = Field(..., description="The id of the API key to update.")
     name: Optional[str] = Field(None, description="The new name of the API key.")
     status: Optional[str] = Field(None, description="The new status of the API key.")
-

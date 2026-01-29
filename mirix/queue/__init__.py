@@ -92,34 +92,34 @@ def save(message: QueueMessage) -> None:
 def process_external_message(raw_message: bytes) -> None:
     """
     Process a message consumed by an external system (e.g., Numaflow, custom Kafka consumer).
-    
+
     This is the primary high-level API for integrating with external Kafka consumers or event
     processing systems. It handles all internal details of deserialization and processing,
     providing a clean abstraction layer for external applications like ECMS.
-    
+
     Args:
         raw_message: Raw message bytes from Kafka or event bus (JSON or protobuf format)
-        
+
     Raises:
         ValueError: If message parsing fails
-        
+
     Example:
         >>> # In your Numaflow handler or external consumer
         >>> from mirix.queue import process_external_message
-        >>> 
+        >>>
         >>> def handle_kafka_message(raw_bytes: bytes):
         >>>     process_external_message(raw_bytes)
-    
+
     Note:
         - Queue is auto-initialized if not already initialized (with server instance)
         - Set MIRIX_QUEUE_AUTO_START_WORKERS=false to disable internal Kafka consumer
         - Format auto-detection uses KAFKA_SERIALIZATION_FORMAT (json/protobuf)
         - This function is thread-safe and can be called from multiple threads
         - The Kafka producer remains functional for enqueueing messages via save()
-        
+
     Configuration:
         To use with external consumers (Numaflow, etc.), set environment variables:
-        
+
         >>> import os
         >>> os.environ["MIRIX_QUEUE_AUTO_START_WORKERS"] = "false"
         >>> os.environ["KAFKA_SERIALIZATION_FORMAT"] = "json"  # or "protobuf"
@@ -130,31 +130,32 @@ def process_external_message(raw_message: bytes) -> None:
         logger.info("Queue not initialized, auto-initializing with server for external message processing")
         # Import here to avoid circular dependency
         from mirix.server.server import SyncServer
+
         server = SyncServer()
         _manager.initialize(server=server)
         logger.info("Queue initialized with server instance")
-    
+
     # Get the worker (created but not started if AUTO_START_WORKERS=false)
     workers = _manager._workers
     if not workers:
         logger.error("No workers available after initialization - this should not happen!")
         raise RuntimeError("Failed to create queue workers during initialization")
-    
+
     worker = workers[0]
-    
+
     # Deserialize message using configured format
     from mirix.queue.config import KAFKA_SERIALIZATION_FORMAT
     from mirix.queue.queue_util import deserialize_queue_message
-    
+
     queue_message = deserialize_queue_message(raw_message, format=KAFKA_SERIALIZATION_FORMAT)
-    
+
     logger.debug(
         "Processing external message (%s format): agent_id=%s, user_id=%s",
         KAFKA_SERIALIZATION_FORMAT,
         queue_message.agent_id,
         queue_message.user_id if queue_message.HasField("user_id") else "None",
     )
-    
+
     # Delegate to worker for processing
     worker.process_external_message(queue_message)
 

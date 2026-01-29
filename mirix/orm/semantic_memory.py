@@ -9,9 +9,7 @@ from mirix.constants import MAX_EMBEDDING_DIM
 from mirix.orm.custom_columns import CommonVector, EmbeddingConfigColumn
 from mirix.orm.mixins import OrganizationMixin, UserMixin
 from mirix.orm.sqlalchemy_base import SqlalchemyBase
-from mirix.schemas.semantic_memory import (
-    SemanticMemoryItem as PydanticSemanticMemoryItem,
-)
+from mirix.schemas.semantic_memory import SemanticMemoryItem as PydanticSemanticMemoryItem
 from mirix.settings import settings
 
 if TYPE_CHECKING:
@@ -39,9 +37,7 @@ class SemanticMemoryItem(SqlalchemyBase, OrganizationMixin, UserMixin):
     __pydantic_model__ = PydanticSemanticMemoryItem
 
     # Primary key
-    id: Mapped[str] = mapped_column(
-        String, primary_key=True, doc="Unique ID for this semantic memory entry"
-    )
+    id: Mapped[str] = mapped_column(String, primary_key=True, doc="Unique ID for this semantic memory entry")
 
     # Foreign key to agent
     agent_id: Mapped[Optional[str]] = mapped_column(
@@ -60,19 +56,13 @@ class SemanticMemoryItem(SqlalchemyBase, OrganizationMixin, UserMixin):
     )
 
     # The name of the concept or the object
-    name: Mapped[str] = mapped_column(
-        String, doc="The title or main concept for the knowledge entry"
-    )
+    name: Mapped[str] = mapped_column(String, doc="The title or main concept for the knowledge entry")
 
     # A concise summary of the concept
-    summary: Mapped[str] = mapped_column(
-        String, doc="A concise summary of the concept or the object."
-    )
+    summary: Mapped[str] = mapped_column(String, doc="A concise summary of the concept or the object.")
 
     # Detailed explanation or extended context about the concept
-    details: Mapped[str] = mapped_column(
-        String, doc="Detailed explanation or additional context for the concept"
-    )
+    details: Mapped[str] = mapped_column(String, doc="Detailed explanation or additional context for the concept")
 
     # Reference or source of the general knowledge (e.g., book, article, or movie)
     source: Mapped[str] = mapped_column(
@@ -82,10 +72,7 @@ class SemanticMemoryItem(SqlalchemyBase, OrganizationMixin, UserMixin):
 
     # NEW: Filter tags for flexible filtering and categorization
     filter_tags: Mapped[Optional[dict]] = mapped_column(
-        JSON,
-        nullable=True,
-        default=None,
-        doc="Custom filter tags for filtering and categorization"
+        JSON, nullable=True, default=None, doc="Custom filter tags for filtering and categorization"
     )
 
     # When was this item last modified and what operation?
@@ -129,36 +116,46 @@ class SemanticMemoryItem(SqlalchemyBase, OrganizationMixin, UserMixin):
             None,
             [
                 # Organization-level query optimization indexes
-                Index("ix_semantic_memory_organization_id", "organization_id")
-                if settings.mirix_pg_uri_no_default
-                else None,
-                Index(
-                    "ix_semantic_memory_org_created_at",
-                    "organization_id",
-                    "created_at",
-                    postgresql_using="btree",
-                )
-                if settings.mirix_pg_uri_no_default
-                else None,
-                Index(
-                    "ix_semantic_memory_filter_tags_gin",
-                    text("(filter_tags::jsonb)"),
-                    postgresql_using="gin",
-                )
-                if settings.mirix_pg_uri_no_default
-                else None,
-                Index(
-                    "ix_semantic_memory_org_filter_scope",
-                    "organization_id",
-                    text("((filter_tags->>'scope')::text)"),
-                    postgresql_using="btree",
-                )
-                if settings.mirix_pg_uri_no_default
-                else None,
+                (
+                    Index("ix_semantic_memory_organization_id", "organization_id")
+                    if settings.mirix_pg_uri_no_default
+                    else None
+                ),
+                (
+                    Index(
+                        "ix_semantic_memory_org_created_at",
+                        "organization_id",
+                        "created_at",
+                        postgresql_using="btree",
+                    )
+                    if settings.mirix_pg_uri_no_default
+                    else None
+                ),
+                (
+                    Index(
+                        "ix_semantic_memory_filter_tags_gin",
+                        text("(filter_tags::jsonb)"),
+                        postgresql_using="gin",
+                    )
+                    if settings.mirix_pg_uri_no_default
+                    else None
+                ),
+                (
+                    Index(
+                        "ix_semantic_memory_org_filter_scope",
+                        "organization_id",
+                        text("((filter_tags->>'scope')::text)"),
+                        postgresql_using="btree",
+                    )
+                    if settings.mirix_pg_uri_no_default
+                    else None
+                ),
                 # SQLite indexes
-                Index("ix_semantic_memory_organization_id_sqlite", "organization_id")
-                if not settings.mirix_pg_uri_no_default
-                else None,
+                (
+                    Index("ix_semantic_memory_organization_id_sqlite", "organization_id")
+                    if not settings.mirix_pg_uri_no_default
+                    else None
+                ),
             ],
         )
     )
@@ -176,9 +173,7 @@ class SemanticMemoryItem(SqlalchemyBase, OrganizationMixin, UserMixin):
         Relationship to organization, mirroring existing patterns.
         Adjust 'back_populates' to match the collection name in your `Organization` model.
         """
-        return relationship(
-            "Organization", back_populates="semantic_memory", lazy="selectin"
-        )
+        return relationship("Organization", back_populates="semantic_memory", lazy="selectin")
 
     @declared_attr
     def user(cls) -> Mapped["User"]:

@@ -52,9 +52,7 @@ def derive_openai_json_schema(source_code: str, name: Optional[str] = None) -> d
         except ValueError as e:
             raise MirixToolCreateError(f"Value error in schema generation: {str(e)}")
         except Exception as e:
-            raise MirixToolCreateError(
-                f"Unexpected error in schema generation: {str(e)}"
-            )
+            raise MirixToolCreateError(f"Unexpected error in schema generation: {str(e)}")
 
     except Exception as e:
         import traceback
@@ -92,9 +90,7 @@ def get_function_from_module(module_name: str, function_name: str):
     except ModuleNotFoundError:
         raise ModuleNotFoundError(f"Module '{module_name}' not found.")
     except AttributeError:
-        raise AttributeError(
-            f"Function '{function_name}' not found in module '{module_name}'."
-        )
+        raise AttributeError(f"Function '{function_name}' not found in module '{module_name}'.")
 
 
 def get_json_schema_from_module(module_name: str, function_name: str) -> dict:
@@ -122,9 +118,7 @@ def get_json_schema_from_module(module_name: str, function_name: str) -> dict:
 
         # Check if it's a user-defined function
         if not (inspect.isfunction(attr) and attr.__module__ == module.__name__):
-            raise ValueError(
-                f"'{function_name}' is not a user-defined function in module '{module_name}'"
-            )
+            raise ValueError(f"'{function_name}' is not a user-defined function in module '{module_name}'")
 
         # Generate schema (assuming a `generate_schema` function exists)
         generated_schema = generate_schema(attr)
@@ -134,9 +128,7 @@ def get_json_schema_from_module(module_name: str, function_name: str) -> dict:
     except ModuleNotFoundError:
         raise ModuleNotFoundError(f"Module '{module_name}' not found.")
     except AttributeError:
-        raise AttributeError(
-            f"Function '{function_name}' not found in module '{module_name}'."
-        )
+        raise AttributeError(f"Function '{function_name}' not found in module '{module_name}'.")
 
 
 def _get_module_source(module: ModuleType) -> str:
@@ -151,9 +143,7 @@ def _get_module_source(module: ModuleType) -> str:
         # For function_sets modules, extract the file name
         if module_name.startswith("mirix.functions.function_sets."):
             file_name = module_name.split(".")[-1] + ".py"
-            bundled_path = os.path.join(
-                sys._MEIPASS, "mirix", "functions", "function_sets", file_name
-            )
+            bundled_path = os.path.join(sys._MEIPASS, "mirix", "functions", "function_sets", file_name)
 
             try:
                 with open(bundled_path, "r", encoding="utf-8") as f:

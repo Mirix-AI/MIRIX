@@ -9,7 +9,7 @@ from typing import Optional
 
 from mirix.queue.message_pb2 import QueueMessage
 from mirix.queue.queue_interface import QueueInterface
-from mirix.queue.queue_util import serialize_queue_message, deserialize_queue_message
+from mirix.queue.queue_util import deserialize_queue_message, serialize_queue_message
 
 logger = logging.getLogger(__name__)
 
@@ -79,8 +79,7 @@ class KafkaQueue(QueueInterface):
         except ImportError:
             logger.error("kafka-python not installed")
             raise ImportError(
-                "kafka-python is required for Kafka support. "
-                "Install it with: pip install queue-sample[kafka]"
+                "kafka-python is required for Kafka support. " "Install it with: pip install queue-sample[kafka]"
             )
 
         self.topic = topic
@@ -89,7 +88,7 @@ class KafkaQueue(QueueInterface):
         # Configure message serialization format
         value_serializer = lambda msg: serialize_queue_message(msg, format=self.serialization_format)
         value_deserializer = lambda data: deserialize_queue_message(data, format=self.serialization_format)
-        
+
         logger.info("Using %s serialization for Kafka messages", self.serialization_format.upper())
 
         # Build Kafka producer/consumer config with optional SSL
@@ -174,9 +173,7 @@ class KafkaQueue(QueueInterface):
         )
         future.get(timeout=10)  # Wait up to 10 seconds for confirmation
 
-        logger.debug(
-            "Message sent to Kafka successfully with partition key: %s", partition_key
-        )
+        logger.debug("Message sent to Kafka successfully with partition key: %s", partition_key)
 
     def get(self, timeout: Optional[float] = None) -> QueueMessage:
         """
@@ -195,9 +192,7 @@ class KafkaQueue(QueueInterface):
 
         # Poll for messages
         for message in self.consumer:
-            logger.debug(
-                "Retrieved message from Kafka: agent_id=%s", message.value.agent_id
-            )
+            logger.debug("Retrieved message from Kafka: agent_id=%s", message.value.agent_id)
             return message.value
 
         # If no message received, raise exception (similar to queue.Empty)

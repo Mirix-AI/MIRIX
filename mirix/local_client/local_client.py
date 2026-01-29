@@ -89,7 +89,7 @@ def create_client():
 class LocalClient(AbstractClient):
     """
     A local client for Mirix, which corresponds to a single client.
-    
+
     Each LocalClient instance represents a client within an organization,
     and manages its own set of agents, tools, and memory.
 
@@ -165,9 +165,7 @@ class LocalClient(AbstractClient):
 
         self.user = self.server.user_manager.get_user_or_default(self.user_id)
         self.organization = self.server.get_organization_or_default(self.org_id)
-        self.client = self.server.client_manager.get_client_or_default(
-            self.client_id, self.org_id
-        )
+        self.client = self.server.client_manager.get_client_or_default(self.client_id, self.org_id)
 
         # get images directory from settings and ensure it exists
         # Can be customized via MIRIX_IMAGES_DIR environment variable
@@ -180,9 +178,7 @@ class LocalClient(AbstractClient):
         """Generate a unique hash for file content to avoid duplicates."""
         return hashlib.sha256(content).hexdigest()[:16]
 
-    def _save_image_from_base64(
-        self, base64_data: str, detail: str = "auto"
-    ) -> FileMetadata:
+    def _save_image_from_base64(self, base64_data: str, detail: str = "auto") -> FileMetadata:
         """Save an image from base64 data and return FileMetadata."""
         try:
             # Parse the data URL format: data:image/jpeg;base64,{data}
@@ -256,9 +252,7 @@ class LocalClient(AbstractClient):
             return file_metadata
 
         except Exception as e:
-            raise ValueError(
-                f"Failed to download and save image from URL {url}: {str(e)}"
-            )
+            raise ValueError(f"Failed to download and save image from URL {url}: {str(e)}")
 
     def _save_image_from_file_uri(self, file_uri: str) -> FileMetadata:
         """Copy an image from file URI and return FileMetadata."""
@@ -400,9 +394,7 @@ class LocalClient(AbstractClient):
         }
         return file_type_map.get(file_extension, "application/octet-stream")
 
-    def _create_file_metadata_from_url(
-        self, url: str, detail: str = "auto"
-    ) -> FileMetadata:
+    def _create_file_metadata_from_url(self, url: str, detail: str = "auto") -> FileMetadata:
         """Create FileMetadata from URL without downloading the image.
 
         The URL is stored in the source_url field, not file_path, to clearly
@@ -471,9 +463,7 @@ class LocalClient(AbstractClient):
             parent_id=parent_id,
         )
 
-    def agent_exists(
-        self, agent_id: Optional[str] = None, agent_name: Optional[str] = None
-    ) -> bool:
+    def agent_exists(self, agent_id: Optional[str] = None, agent_name: Optional[str] = None) -> bool:
         """
         Check if an agent exists
 
@@ -546,7 +536,7 @@ class LocalClient(AbstractClient):
             tool_names += BASE_TOOLS
         if include_meta_memory_tools:
             tool_names += META_MEMORY_TOOLS
-        
+
         # Get tool IDs for tools that exist (some may not be created yet)
         for tool_name in tool_names:
             tool = self.server.tool_manager.get_tool_by_name(
@@ -557,16 +547,12 @@ class LocalClient(AbstractClient):
                 tool_ids.append(tool.id)
 
         # check if default configs are provided
-        assert (
-            embedding_config or self._default_embedding_config
-        ), "Embedding config must be provided"
+        assert embedding_config or self._default_embedding_config, "Embedding config must be provided"
         assert llm_config or self._default_llm_config, "LLM config must be provided"
 
         # TODO: This should not happen here, we need to have clear separation between create/add blocks
         for block in memory.get_blocks():
-            self.server.block_manager.create_or_update_block(
-                block, actor=self.client, user=self.user
-            )
+            self.server.block_manager.create_or_update_block(block, actor=self.client, user=self.user)
 
         # Also get any existing block_ids passed in
         block_ids = block_ids or []
@@ -584,9 +570,7 @@ class LocalClient(AbstractClient):
             "system": system,
             "agent_type": agent_type,
             "llm_config": llm_config if llm_config else self._default_llm_config,
-            "embedding_config": (
-                embedding_config if embedding_config else self._default_embedding_config
-            ),
+            "embedding_config": (embedding_config if embedding_config else self._default_embedding_config),
             "initial_message_sequence": initial_message_sequence,
             "tags": tags,
         }
@@ -601,14 +585,10 @@ class LocalClient(AbstractClient):
         )
 
         # TODO: get full agent state
-        return self.server.agent_manager.get_agent_by_id(
-            agent_state.id, actor=self.client
-        )
+        return self.server.agent_manager.get_agent_by_id(agent_state.id, actor=self.client)
 
     def create_user(self, user_id: str, user_name: str) -> PydanticUser:
-        return self.server.user_manager.create_user(
-            UserCreate(id=user_id, name=user_name)
-        )
+        return self.server.user_manager.create_user(UserCreate(id=user_id, name=user_name))
 
     def create_meta_agent(self, config: dict):
         """Create a MetaAgent for memory management operations.
@@ -711,7 +691,7 @@ class LocalClient(AbstractClient):
             AgentState: Updated agent state
         """
         from mirix.schemas.agent import UpdateAgent
-        
+
         # Build update object with only provided fields
         update_data = {}
         if name is not None:
@@ -730,7 +710,7 @@ class LocalClient(AbstractClient):
             update_data["embedding_config"] = embedding_config
         if message_ids is not None:
             update_data["message_ids"] = message_ids
-        
+
         agent_update = UpdateAgent(**update_data)
         return self.server.agent_manager.update_agent(
             agent_id=agent_id,
@@ -835,9 +815,7 @@ class LocalClient(AbstractClient):
     def get_core_memory(self, agent_id: str) -> Memory:
         return self.get_in_context_memory(agent_id)
 
-    def update_in_context_memory(
-        self, agent_id: str, section: str, value: Union[List[str], str]
-    ) -> Memory:
+    def update_in_context_memory(self, agent_id: str, section: str, value: Union[List[str], str]) -> Memory:
         """
         Update the in-context memory of an agent
 
@@ -914,9 +892,7 @@ class LocalClient(AbstractClient):
 
     # agent interactions
 
-    def construct_system_message(
-        self, agent_id: str, message: str, user_id: str
-    ) -> str:
+    def construct_system_message(self, agent_id: str, message: str, user_id: str) -> str:
         """
         Construct a system message from a message.
         """
@@ -926,9 +902,7 @@ class LocalClient(AbstractClient):
             actor=self.client,
         )
 
-    def extract_memory_for_system_prompt(
-        self, agent_id: str, message: str, user_id: str
-    ) -> str:
+    def extract_memory_for_system_prompt(self, agent_id: str, message: str, user_id: str) -> str:
         """
         Extract memory for system prompt from a message.
         """
@@ -956,21 +930,20 @@ class LocalClient(AbstractClient):
             response (MirixResponse): Response from the agent
         """
         self.interface.clear()
-        
+
         # Determine which user to use
         target_user = None
         if user_id is not None:
             target_user = self.server.user_manager.get_user_by_id(user_id)
             if target_user is None:
                 from mirix.log import get_logger
+
                 logger = get_logger(__name__)
-                logger.warning(
-                    f"User {user_id} not found, falling back to LocalClient's default user {self.user_id}"
-                )
+                logger.warning(f"User {user_id} not found, falling back to LocalClient's default user {self.user_id}")
                 target_user = self.user
         else:
             target_user = self.user
-        
+
         usage = self.server.send_messages(
             actor=self.client,
             agent_id=agent_id,
@@ -1027,9 +1000,7 @@ class LocalClient(AbstractClient):
 
         if isinstance(message, str):
             content = [TextContent(text=message)]
-            input_messages = [
-                MessageCreate(role=MessageRole(role), content=content, name=name)
-            ]
+            input_messages = [MessageCreate(role=MessageRole(role), content=content, name=name)]
         elif isinstance(message, list):
 
             def convert_message(m):
@@ -1084,9 +1055,7 @@ class LocalClient(AbstractClient):
                     else:
                         # Handle as general file (e.g., PDF, DOC, etc.)
                         file_metadata = self._save_file_from_path(file_path)
-                        return FileContent(
-                            type=MessageContentType.file_uri, file_id=file_metadata.id
-                        )
+                        return FileContent(type=MessageContentType.file_uri, file_id=file_metadata.id)
 
                 elif m["type"] == "google_cloud_file_uri":
                     # Google Cloud file URI
@@ -1122,9 +1091,7 @@ class LocalClient(AbstractClient):
                     raise ValueError(f"Unknown message type: {m['type']}")
 
             content = [convert_message(m) for m in message]
-            input_messages = [
-                MessageCreate(role=MessageRole(role), content=content, name=name)
-            ]
+            input_messages = [MessageCreate(role=MessageRole(role), content=content, name=name)]
             if extra_messages is not None:
                 extra_messages = [
                     MessageCreate(
@@ -1146,10 +1113,9 @@ class LocalClient(AbstractClient):
             if target_user is None:
                 # User doesn't exist, fall back to default
                 from mirix.log import get_logger
+
                 logger = get_logger(__name__)
-                logger.warning(
-                    f"User {user_id} not found, falling back to LocalClient's default user {self.user_id}"
-                )
+                logger.warning(f"User {user_id} not found, falling back to LocalClient's default user {self.user_id}")
                 target_user = self.user
         else:
             # Use LocalClient's default user
@@ -1173,12 +1139,7 @@ class LocalClient(AbstractClient):
 
         return MirixResponse(messages=mirix_messages, usage=usage)
 
-    def user_message(
-        self, 
-        agent_id: str, 
-        message: str, 
-        user_id: Optional[str] = None  # End-user ID
-    ) -> MirixResponse:
+    def user_message(self, agent_id: str, message: str, user_id: Optional[str] = None) -> MirixResponse:  # End-user ID
         """
         Send a message to an agent as a user
 
@@ -1191,12 +1152,7 @@ class LocalClient(AbstractClient):
             response (MirixResponse): Response from the agent
         """
         self.interface.clear()
-        return self.send_message(
-            role="user", 
-            agent_id=agent_id, 
-            message=message, 
-            user_id=user_id  # Pass user_id
-        )
+        return self.send_message(role="user", agent_id=agent_id, message=message, user_id=user_id)  # Pass user_id
 
     def run_command(self, agent_id: str, command: str) -> MirixResponse:
         """
@@ -1211,9 +1167,7 @@ class LocalClient(AbstractClient):
 
         """
         self.interface.clear()
-        usage = self.server.run_command(
-            user_id=self.user_id, agent_id=agent_id, command=command
-        )
+        usage = self.server.run_command(user_id=self.user_id, agent_id=agent_id, command=command)
 
         # NOTE: messages/usage may be empty, depending on the command
         return MirixResponse(messages=self.interface.to_list(), usage=usage)
@@ -1360,11 +1314,7 @@ class LocalClient(AbstractClient):
             persona (Persona): Persona block
         """
         assert id, "Persona ID must be provided"
-        return Persona(
-            **self.server.block_manager.get_block_by_id(
-                id, user=self.user
-            ).model_dump()
-        )
+        return Persona(**self.server.block_manager.get_block_by_id(id, user=self.user).model_dump())
 
     def get_human(self, id: str) -> Human:
         """
@@ -1377,11 +1327,7 @@ class LocalClient(AbstractClient):
             human (Human): Human block
         """
         assert id, "Human ID must be provided"
-        return Human(
-            **self.server.block_manager.get_block_by_id(
-                id, user=self.user
-            ).model_dump()
-        )
+        return Human(**self.server.block_manager.get_block_by_id(id, user=self.user).model_dump())
 
     def get_persona_id(self, name: str) -> str:
         """
@@ -1586,9 +1532,7 @@ class LocalClient(AbstractClient):
         }
 
         # Filter out any None values from the dictionary
-        update_data = {
-            key: value for key, value in update_data.items() if value is not None
-        }
+        update_data = {key: value for key, value in update_data.items() if value is not None}
 
         return self.server.tool_manager.update_tool_by_id(
             tool_id=id,
@@ -1596,9 +1540,7 @@ class LocalClient(AbstractClient):
             actor=self.client,
         )
 
-    def list_tools(
-        self, cursor: Optional[str] = None, limit: Optional[int] = 50
-    ) -> List[Tool]:
+    def list_tools(self, cursor: Optional[str] = None, limit: Optional[int] = 50) -> List[Tool]:
         """
         List available tools for the user.
 
@@ -1621,9 +1563,7 @@ class LocalClient(AbstractClient):
         Returns:
             tool (Tool): Tool
         """
-        return self.server.tool_manager.get_tool_by_id(
-            id, actor=self.client
-        )
+        return self.server.tool_manager.get_tool_by_id(id, actor=self.client)
 
     def delete_tool(self, id: str):
         """
@@ -1632,9 +1572,7 @@ class LocalClient(AbstractClient):
         Args:
             id (str): ID of the tool
         """
-        return self.server.tool_manager.delete_tool_by_id(
-            id, actor=self.client
-        )
+        return self.server.tool_manager.delete_tool_by_id(id, actor=self.client)
 
     def get_tool_id(self, name: str) -> Optional[str]:
         """
@@ -1646,16 +1584,12 @@ class LocalClient(AbstractClient):
         Returns:
             id (str): ID of the tool (`None` if not found)
         """
-        tool = self.server.tool_manager.get_tool_by_name(
-            tool_name=name, actor=self.client
-        )
+        tool = self.server.tool_manager.get_tool_by_name(tool_name=name, actor=self.client)
         return tool.id if tool else None
 
     # recall memory
 
-    def get_messages(
-        self, agent_id: str, cursor: Optional[str] = None, limit: Optional[int] = 1000
-    ) -> List[Message]:
+    def get_messages(self, agent_id: str, cursor: Optional[str] = None, limit: Optional[int] = 1000) -> List[Message]:
         """
         Get messages from an agent with pagination.
 
@@ -1677,9 +1611,7 @@ class LocalClient(AbstractClient):
             reverse=True,
         )
 
-    def list_blocks(
-        self, label: Optional[str] = None, templates_only: Optional[bool] = True
-    ) -> List[Block]:
+    def list_blocks(self, label: Optional[str] = None, templates_only: Optional[bool] = True) -> List[Block]:
         """
         List available blocks
 
@@ -1714,19 +1646,17 @@ class LocalClient(AbstractClient):
             block (Block): Created block
         """
         from mirix.constants import CORE_MEMORY_BLOCK_CHAR_LIMIT
-        
+
         # Use default limit if not provided
         if limit is None:
             limit = CORE_MEMORY_BLOCK_CHAR_LIMIT
-            
+
         block = Block(
             label=label,
             value=value,
             limit=limit,
         )
-        return self.server.block_manager.create_or_update_block(
-            block, actor=self.client, user=self.user
-        )
+        return self.server.block_manager.create_or_update_block(block, actor=self.client, user=self.user)
 
     def get_block(self, block_id: str) -> Block:
         """
@@ -1738,9 +1668,7 @@ class LocalClient(AbstractClient):
         Returns:
             block (Block): Block
         """
-        return self.server.block_manager.get_block_by_id(
-            block_id, user=self.user
-        )
+        return self.server.block_manager.get_block_by_id(block_id, user=self.user)
 
     def delete_block(self, id: str) -> Block:
         """
@@ -1752,9 +1680,7 @@ class LocalClient(AbstractClient):
         Returns:
             block (Block): Deleted block
         """
-        return self.server.block_manager.delete_block(
-            id, actor=self.client
-        )
+        return self.server.block_manager.delete_block(id, actor=self.client)
 
     def set_default_llm_config(self, llm_config: LLMConfig):
         """
@@ -1793,23 +1719,15 @@ class LocalClient(AbstractClient):
         return self.server.list_embedding_models()
 
     def create_org(self, name: Optional[str] = None) -> Organization:
-        return self.server.organization_manager.create_organization(
-            pydantic_org=Organization(name=name)
-        )
+        return self.server.organization_manager.create_organization(pydantic_org=Organization(name=name))
 
-    def list_orgs(
-        self, cursor: Optional[str] = None, limit: Optional[int] = 50
-    ) -> List[Organization]:
-        return self.server.organization_manager.list_organizations(
-            cursor=cursor, limit=limit
-        )
+    def list_orgs(self, cursor: Optional[str] = None, limit: Optional[int] = 50) -> List[Organization]:
+        return self.server.organization_manager.list_organizations(cursor=cursor, limit=limit)
 
     def delete_org(self, org_id: str) -> Organization:
         return self.server.organization_manager.delete_organization_by_id(org_id=org_id)
 
-    def create_sandbox_config(
-        self, config: Union[LocalSandboxConfig, E2BSandboxConfig]
-    ) -> SandboxConfig:
+    def create_sandbox_config(self, config: Union[LocalSandboxConfig, E2BSandboxConfig]) -> SandboxConfig:
         """
         Create a new sandbox configuration.
         """
@@ -1843,9 +1761,7 @@ class LocalClient(AbstractClient):
             actor=self.client,
         )
 
-    def list_sandbox_configs(
-        self, limit: int = 50, cursor: Optional[str] = None
-    ) -> List[SandboxConfig]:
+    def list_sandbox_configs(self, limit: int = 50, cursor: Optional[str] = None) -> List[SandboxConfig]:
         """
         List all sandbox configurations.
         """
@@ -1865,9 +1781,7 @@ class LocalClient(AbstractClient):
         """
         Create a new environment variable for a sandbox configuration.
         """
-        env_var_create = SandboxEnvironmentVariableCreate(
-            key=key, value=value, description=description
-        )
+        env_var_create = SandboxEnvironmentVariableCreate(key=key, value=value, description=description)
         return self.server.sandbox_config_manager.create_sandbox_env_var(
             env_var_create=env_var_create,
             sandbox_config_id=sandbox_config_id,
@@ -1884,9 +1798,7 @@ class LocalClient(AbstractClient):
         """
         Update an existing environment variable.
         """
-        env_var_update = SandboxEnvironmentVariableUpdate(
-            key=key, value=value, description=description
-        )
+        env_var_update = SandboxEnvironmentVariableUpdate(key=key, value=value, description=description)
         return self.server.sandbox_config_manager.update_sandbox_env_var(
             env_var_id=env_var_id,
             env_var_update=env_var_update,
@@ -1916,9 +1828,7 @@ class LocalClient(AbstractClient):
         )
 
     # file management methods
-    def save_file(
-        self, file_path: str, source_id: Optional[str] = None
-    ) -> FileMetadata:
+    def save_file(self, file_path: str, source_id: Optional[str] = None) -> FileMetadata:
         """
         Save a file to the file manager and return its metadata.
 
@@ -1933,9 +1843,7 @@ class LocalClient(AbstractClient):
             file_path=file_path, organization_id=self.org_id, source_id=source_id
         )
 
-    def list_files(
-        self, cursor: Optional[str] = None, limit: Optional[int] = 50
-    ) -> List[FileMetadata]:
+    def list_files(self, cursor: Optional[str] = None, limit: Optional[int] = 50) -> List[FileMetadata]:
         """
         List files for the current organization.
 
@@ -1946,9 +1854,7 @@ class LocalClient(AbstractClient):
         Returns:
             List[FileMetadata]: List of file metadata
         """
-        return self.file_manager.get_files_by_organization_id(
-            organization_id=self.org_id, cursor=cursor, limit=limit
-        )
+        return self.file_manager.get_files_by_organization_id(organization_id=self.org_id, cursor=cursor, limit=limit)
 
     def get_file(self, file_id: str) -> FileMetadata:
         """
@@ -1981,9 +1887,7 @@ class LocalClient(AbstractClient):
         Returns:
             List[FileMetadata]: List of matching files
         """
-        return self.file_manager.search_files_by_name(
-            file_name=name_pattern, organization_id=self.org_id
-        )
+        return self.file_manager.search_files_by_name(file_name=name_pattern, organization_id=self.org_id)
 
     def get_file_stats(self) -> dict:
         """
@@ -1994,9 +1898,7 @@ class LocalClient(AbstractClient):
         """
         return self.file_manager.get_file_stats(organization_id=self.org_id)
 
-    def update_agent_memory_block_label(
-        self, agent_id: str, current_label: str, new_label: str
-    ) -> Memory:
+    def update_agent_memory_block_label(self, agent_id: str, current_label: str, new_label: str) -> Memory:
         """Rename a block in the agent's core memory
 
         Args:
@@ -2011,9 +1913,7 @@ class LocalClient(AbstractClient):
         return self.update_block(block.id, label=new_label)
 
     # TODO: remove this
-    def add_agent_memory_block(
-        self, agent_id: str, create_block: CreateBlock
-    ) -> Memory:
+    def add_agent_memory_block(self, agent_id: str, create_block: CreateBlock) -> Memory:
         """
         Create and link a memory block to an agent's core memory
 
@@ -2025,9 +1925,7 @@ class LocalClient(AbstractClient):
             memory (Memory): The updated memory
         """
         block_req = Block(**create_block.model_dump())
-        block = self.server.block_manager.create_or_update_block(
-            actor=self.client, block=block_req, user=self.user
-        )
+        block = self.server.block_manager.create_or_update_block(actor=self.client, block=block_req, user=self.user)
         # Link the block to the agent
         agent = self.server.agent_manager.attach_block(
             agent_id=agent_id,
@@ -2219,22 +2117,10 @@ class LocalClient(AbstractClient):
         # Import here to avoid circular imports
 
         # Validate inputs
-        if (
-            memory_type == "resource"
-            and search_field == "content"
-            and search_method == "embedding"
-        ):
-            raise ValueError(
-                "embedding is not supported for resource memory's 'content' field."
-            )
-        if (
-            memory_type == "knowledge_vault"
-            and search_field == "secret_value"
-            and search_method == "embedding"
-        ):
-            raise ValueError(
-                "embedding is not supported for knowledge_vault memory's 'secret_value' field."
-            )
+        if memory_type == "resource" and search_field == "content" and search_method == "embedding":
+            raise ValueError("embedding is not supported for resource memory's 'content' field.")
+        if memory_type == "knowledge_vault" and search_field == "secret_value" and search_method == "embedding":
+            raise ValueError("embedding is not supported for knowledge_vault memory's 'secret_value' field.")
 
         # Get the agent to access its memory managers
         agent_state = self.server.agent_manager.get_agent_by_id(
@@ -2248,16 +2134,15 @@ class LocalClient(AbstractClient):
         # Pre-compute embedding once if using embedding search (to avoid redundant embeddings)
         embedded_text = None
         if search_method == "embedding" and query:
-            from mirix.embeddings import embedding_model
             import numpy as np
+
             from mirix.constants import MAX_EMBEDDING_DIM
-            
+            from mirix.embeddings import embedding_model
+
             embedded_text = embedding_model(agent_state.embedding_config).get_text_embedding(query)
             # Pad for episodic memory which requires MAX_EMBEDDING_DIM
             embedded_text_padded = np.pad(
-                np.array(embedded_text),
-                (0, MAX_EMBEDDING_DIM - len(embedded_text)),
-                mode="constant"
+                np.array(embedded_text), (0, MAX_EMBEDDING_DIM - len(embedded_text)), mode="constant"
             ).tolist()
         else:
             embedded_text_padded = None  # Ensure it's None if not embedding search
@@ -2360,17 +2245,15 @@ class LocalClient(AbstractClient):
 
         # Search knowledge vault
         if memory_type == "knowledge_vault" or memory_type == "all":
-            knowledge_vault_memories = (
-                self.server.knowledge_vault_manager.list_knowledge(
-                    user=self.user,
-                    agent_state=agent_state,
-                    query=query,
-                    embedded_text=embedded_text if search_method == "embedding" and query else None,
-                    search_field=search_field if search_field != "null" else "caption",
-                    search_method=search_method,
-                    limit=limit,
-                    timezone_str=timezone_str,
-                )
+            knowledge_vault_memories = self.server.knowledge_vault_manager.list_knowledge(
+                user=self.user,
+                agent_state=agent_state,
+                query=query,
+                embedded_text=embedded_text if search_method == "embedding" and query else None,
+                search_field=search_field if search_field != "null" else "caption",
+                search_method=search_method,
+                limit=limit,
+                timezone_str=timezone_str,
             )
             formatted_results_knowledge_vault = [
                 {

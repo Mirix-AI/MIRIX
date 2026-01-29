@@ -9,9 +9,7 @@ from mirix.constants import MAX_EMBEDDING_DIM
 from mirix.orm.custom_columns import CommonVector, EmbeddingConfigColumn
 from mirix.orm.mixins import OrganizationMixin, UserMixin
 from mirix.orm.sqlalchemy_base import SqlalchemyBase
-from mirix.schemas.resource_memory import (
-    ResourceMemoryItem as PydanticResourceMemoryItem,
-)
+from mirix.schemas.resource_memory import ResourceMemoryItem as PydanticResourceMemoryItem
 from mirix.settings import settings
 
 if TYPE_CHECKING:
@@ -56,29 +54,20 @@ class ResourceMemoryItem(SqlalchemyBase, OrganizationMixin, UserMixin):
         doc="ID of the client application that created this item",
     )
 
-    title: Mapped[str] = mapped_column(
-        String, doc="Short name or title of the resource"
-    )
+    title: Mapped[str] = mapped_column(String, doc="Short name or title of the resource")
 
-    summary: Mapped[str] = mapped_column(
-        String, doc="Brief description or summary of the resource"
-    )
+    summary: Mapped[str] = mapped_column(String, doc="Brief description or summary of the resource")
 
     resource_type: Mapped[str] = mapped_column(
         String,
         doc="Type or format of the resource (e.g. 'doc', 'markdown', 'pdf_text')",
     )
 
-    content: Mapped[str] = mapped_column(
-        String, doc="Full text or partial content of this resource"
-    )
+    content: Mapped[str] = mapped_column(String, doc="Full text or partial content of this resource")
 
     # NEW: Filter tags for flexible filtering and categorization
     filter_tags: Mapped[Optional[dict]] = mapped_column(
-        JSON,
-        nullable=True,
-        default=None,
-        doc="Custom filter tags for filtering and categorization"
+        JSON, nullable=True, default=None, doc="Custom filter tags for filtering and categorization"
     )
 
     # When was this item last modified and what operation?
@@ -110,36 +99,46 @@ class ResourceMemoryItem(SqlalchemyBase, OrganizationMixin, UserMixin):
             None,
             [
                 # Organization-level query optimization indexes
-                Index("ix_resource_memory_organization_id", "organization_id")
-                if settings.mirix_pg_uri_no_default
-                else None,
-                Index(
-                    "ix_resource_memory_org_created_at",
-                    "organization_id",
-                    "created_at",
-                    postgresql_using="btree",
-                )
-                if settings.mirix_pg_uri_no_default
-                else None,
-                Index(
-                    "ix_resource_memory_filter_tags_gin",
-                    text("(filter_tags::jsonb)"),
-                    postgresql_using="gin",
-                )
-                if settings.mirix_pg_uri_no_default
-                else None,
-                Index(
-                    "ix_resource_memory_org_filter_scope",
-                    "organization_id",
-                    text("((filter_tags->>'scope')::text)"),
-                    postgresql_using="btree",
-                )
-                if settings.mirix_pg_uri_no_default
-                else None,
+                (
+                    Index("ix_resource_memory_organization_id", "organization_id")
+                    if settings.mirix_pg_uri_no_default
+                    else None
+                ),
+                (
+                    Index(
+                        "ix_resource_memory_org_created_at",
+                        "organization_id",
+                        "created_at",
+                        postgresql_using="btree",
+                    )
+                    if settings.mirix_pg_uri_no_default
+                    else None
+                ),
+                (
+                    Index(
+                        "ix_resource_memory_filter_tags_gin",
+                        text("(filter_tags::jsonb)"),
+                        postgresql_using="gin",
+                    )
+                    if settings.mirix_pg_uri_no_default
+                    else None
+                ),
+                (
+                    Index(
+                        "ix_resource_memory_org_filter_scope",
+                        "organization_id",
+                        text("((filter_tags->>'scope')::text)"),
+                        postgresql_using="btree",
+                    )
+                    if settings.mirix_pg_uri_no_default
+                    else None
+                ),
                 # SQLite indexes
-                Index("ix_resource_memory_organization_id_sqlite", "organization_id")
-                if not settings.mirix_pg_uri_no_default
-                else None,
+                (
+                    Index("ix_resource_memory_organization_id_sqlite", "organization_id")
+                    if not settings.mirix_pg_uri_no_default
+                    else None
+                ),
             ],
         )
     )
@@ -156,9 +155,7 @@ class ResourceMemoryItem(SqlalchemyBase, OrganizationMixin, UserMixin):
         """
         Relationship to organization (mirroring your existing patterns).
         """
-        return relationship(
-            "Organization", back_populates="resource_memory", lazy="selectin"
-        )
+        return relationship("Organization", back_populates="resource_memory", lazy="selectin")
 
     @declared_attr
     def user(cls) -> Mapped["User"]:

@@ -4,9 +4,7 @@ from mirix.agent import Agent, AgentState
 from mirix.utils import convert_timezone_to_utc
 
 
-def send_message(
-    self: "Agent", agent_state: "AgentState", message: str
-) -> Optional[str]:
+def send_message(self: "Agent", agent_state: "AgentState", message: str) -> Optional[str]:
     """
     Sends a message to the human user. Meanwhile, whenever this function is called, the agent needs to include the `topic` of the current focus. It can be the same as before, it can also be updated when the agent is focusing on something different.
 
@@ -23,7 +21,9 @@ def send_message(
 
 
 def send_intermediate_message(
-    self: "Agent", agent_state: "AgentState", message: str, 
+    self: "Agent",
+    agent_state: "AgentState",
+    message: str,
     # topic: str = None
 ) -> Optional[str]:
     """
@@ -42,9 +42,7 @@ def send_intermediate_message(
     return None
 
 
-def conversation_search(
-    self: "Agent", query: str, page: Optional[int] = 0
-) -> Optional[str]:
+def conversation_search(self: "Agent", query: str, page: Optional[int] = 0) -> Optional[str]:
     """
     Search prior conversation history using case-insensitive string matching.
 
@@ -81,9 +79,7 @@ def conversation_search(
     if len(messages) == 0:
         results_str = "No results found."
     else:
-        results_pref = (
-            f"Showing {len(messages)} of {total} results (page {page}/{num_pages}):"
-        )
+        results_pref = f"Showing {len(messages)} of {total} results (page {page}/{num_pages}):"
         results_formatted = [message.text for message in messages]
         results_str = f"{results_pref} {json_dumps(results_formatted)}"
     return results_str
@@ -115,22 +111,10 @@ def search_in_memory(
     if not self.user:
         raise ValueError("Can not search in memory. User is not set")
 
-    if (
-        memory_type == "resource"
-        and search_field == "content"
-        and search_method == "embedding"
-    ):
-        raise ValueError(
-            "embedding is not supported for resource memory's 'content' field."
-        )
-    if (
-        memory_type == "knowledge_vault"
-        and search_field == "secret_value"
-        and search_method == "embedding"
-    ):
-        raise ValueError(
-            "embedding is not supported for knowledge_vault memory's 'secret_value' field."
-        )
+    if memory_type == "resource" and search_field == "content" and search_method == "embedding":
+        raise ValueError("embedding is not supported for resource memory's 'content' field.")
+    if memory_type == "knowledge_vault" and search_field == "secret_value" and search_method == "embedding":
+        raise ValueError("embedding is not supported for knowledge_vault memory's 'secret_value' field.")
 
     if memory_type == "all":
         search_field = "null"
@@ -138,23 +122,20 @@ def search_in_memory(
     # Pre-compute embedding once if using embedding search (to avoid redundant embeddings)
     embedded_text = None
     if search_method == "embedding" and query:
-        from mirix.embeddings import embedding_model
         import numpy as np
+
         from mirix.constants import MAX_EMBEDDING_DIM
-        
+        from mirix.embeddings import embedding_model
+
         embedded_text = embedding_model(self.agent_state.embedding_config).get_text_embedding(query)
         # Pad for episodic memory which requires MAX_EMBEDDING_DIM
         embedded_text_padded = np.pad(
-            np.array(embedded_text),
-            (0, MAX_EMBEDDING_DIM - len(embedded_text)),
-            mode="constant"
+            np.array(embedded_text), (0, MAX_EMBEDDING_DIM - len(embedded_text)), mode="constant"
         ).tolist()
 
     if memory_type == "core":
         # It means the model is an idiot, but we still return the results:
-        return self.agent_state.memory.compile(), len(
-            self.agent_state.memory.list_block_labels()
-        )
+        return self.agent_state.memory.compile(), len(self.agent_state.memory.list_block_labels())
 
     if memory_type == "episodic" or memory_type == "all":
         episodic_memory = self.episodic_memory_manager.list_episodic_memory(
@@ -189,9 +170,7 @@ def search_in_memory(
             query=query,
             embedded_text=embedded_text if search_method == "embedding" and query else None,
             search_field=(
-                search_field
-                if search_field != "null"
-                else ("summary" if search_method == "embedding" else "content")
+                search_field if search_field != "null" else ("summary" if search_method == "embedding" else "content")
             ),
             search_method=search_method,
             limit=10,
@@ -258,9 +237,7 @@ def search_in_memory(
             for x in knowledge_vault_memories
         ]
         if memory_type == "knowledge_vault":
-            return formatted_results_knowledge_vault, len(
-                formatted_results_knowledge_vault
-            )
+            return formatted_results_knowledge_vault, len(formatted_results_knowledge_vault)
 
     if memory_type == "semantic" or memory_type == "all":
         semantic_memories = self.semantic_memory_manager.list_semantic_items(
@@ -324,14 +301,12 @@ def list_memory_within_timerange(
         raise ValueError("Can not list memory within timerange. User is not set")
 
     if memory_type == "episodic" or memory_type == "all":
-        episodic_memory = (
-            self.episodic_memory_manager.list_episodic_memory_around_timestamp(
-                user=self.user,
-                agent_state=self.agent_state,
-                start_time=start_time,
-                end_time=end_time,
-                timezone_str=timezone_str,
-            )
+        episodic_memory = self.episodic_memory_manager.list_episodic_memory_around_timestamp(
+            user=self.user,
+            agent_state=self.agent_state,
+            start_time=start_time,
+            end_time=end_time,
+            timezone_str=timezone_str,
         )
         formatted_results_from_episodic = [
             {
@@ -350,9 +325,7 @@ def list_memory_within_timerange(
             elif len(formatted_results_from_episodic) > 50:
                 return "Too many results found. Please narrow down your search."
             else:
-                return formatted_results_from_episodic, len(
-                    formatted_results_from_episodic
-                )
+                return formatted_results_from_episodic, len(formatted_results_from_episodic)
 
     # currently only episodic memory is supported
     return None

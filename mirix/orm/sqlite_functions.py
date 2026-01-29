@@ -50,9 +50,7 @@ def convert_array(text):
         return None
 
 
-def verify_embedding_dimension(
-    embedding: np.ndarray, expected_dim: int = MAX_EMBEDDING_DIM
-) -> bool:
+def verify_embedding_dimension(embedding: np.ndarray, expected_dim: int = MAX_EMBEDDING_DIM) -> bool:
     """
     Verifies that an embedding has the expected dimension
 
@@ -102,9 +100,7 @@ def validate_and_transform_embedding(
 
     # Validate dimension
     if vec.shape[0] != expected_dim:
-        raise ValueError(
-            f"Invalid embedding dimension: got {vec.shape[0]}, expected {expected_dim}"
-        )
+        raise ValueError(f"Invalid embedding dimension: got {vec.shape[0]}, expected {expected_dim}")
 
     return vec
 

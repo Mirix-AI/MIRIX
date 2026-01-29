@@ -51,9 +51,7 @@ def ensure_organization():
     try:
         org_mgr.get_organization_by_id(TEST_QUEUE_ORG_ID)
     except Exception:
-        org_mgr.create_organization(
-            PydanticOrganization(id=TEST_QUEUE_ORG_ID, name="Test Queue Org")
-        )
+        org_mgr.create_organization(PydanticOrganization(id=TEST_QUEUE_ORG_ID, name="Test Queue Org"))
     return TEST_QUEUE_ORG_ID
 
 
@@ -62,11 +60,7 @@ def mock_server():
     """Create a mock SyncServer instance"""
     server = Mock()
     server.send_messages = Mock(
-        return_value=Mock(
-            model_dump=Mock(
-                return_value={"completion_tokens": 100, "prompt_tokens": 50}
-            )
-        )
+        return_value=Mock(model_dump=Mock(return_value={"completion_tokens": 100, "prompt_tokens": 50}))
     )
     return server
 
@@ -284,9 +278,7 @@ class TestPartitionedMemoryQueue:
 
     def test_different_users_can_route_to_different_partitions(self, sample_client):
         """Test that different user_ids can go to different partitions"""
-        queue = PartitionedMemoryQueue(
-            num_partitions=100
-        )  # Many partitions to increase spread
+        queue = PartitionedMemoryQueue(num_partitions=100)  # Many partitions to increase spread
 
         # Create messages for many different users
         user_ids = [f"user-{i}" for i in range(50)]
@@ -453,9 +445,7 @@ class TestQueueWorker:
         worker._process_message(sample_queue_message)
         # No error should be raised
 
-    def test_worker_process_message_with_server(
-        self, mock_server, sample_queue_message
-    ):
+    def test_worker_process_message_with_server(self, mock_server, sample_queue_message):
         """Test processing message with server available"""
         queue = MemoryQueue()
         worker = QueueWorker(queue, server=mock_server)
@@ -471,9 +461,7 @@ class TestQueueWorker:
         assert call_args.kwargs["agent_id"] == sample_queue_message.agent_id
         assert len(call_args.kwargs["input_messages"]) > 0
 
-    def test_worker_message_processing_integration(
-        self, mock_server, sample_queue_message
-    ):
+    def test_worker_message_processing_integration(self, mock_server, sample_queue_message):
         """Test end-to-end message processing"""
         queue = MemoryQueue()
         worker = QueueWorker(queue, server=mock_server)
@@ -635,9 +623,7 @@ class TestMultiWorkerManager:
 
         manager.cleanup()
 
-    def test_manager_workers_have_unique_partition_ids(
-        self, configure_workers, mock_server
-    ):
+    def test_manager_workers_have_unique_partition_ids(self, configure_workers, mock_server):
         """Test each worker is assigned a unique partition_id"""
         manager = configure_workers(num_workers=4)
         manager.initialize(server=mock_server)
@@ -873,9 +859,7 @@ class TestQueueUtil:
         manager = clean_manager
         manager.initialize()
 
-        put_messages(
-            actor=sample_client, agent_id="agent-789", input_messages=sample_messages
-        )
+        put_messages(actor=sample_client, agent_id="agent-789", input_messages=sample_messages)
 
         # Retrieve and verify
         msg = manager._queue.get(timeout=1.0)
@@ -886,9 +870,7 @@ class TestQueueUtil:
         # Cleanup
         manager.cleanup()
 
-    def test_put_messages_with_options(
-        self, clean_manager, sample_client, sample_messages
-    ):
+    def test_put_messages_with_options(self, clean_manager, sample_client, sample_messages):
         """Test put_messages with optional parameters"""
         manager = clean_manager
         manager.initialize()
@@ -991,9 +973,7 @@ class TestQueueInit:
 class TestQueueIntegration:
     """Integration tests for the complete queue system"""
 
-    def test_end_to_end_message_flow(
-        self, clean_manager, mock_server, sample_client, sample_messages
-    ):
+    def test_end_to_end_message_flow(self, clean_manager, mock_server, sample_client, sample_messages):
         """Test complete message flow from enqueue to processing"""
         manager = clean_manager
 
@@ -1020,9 +1000,7 @@ class TestQueueIntegration:
         # Cleanup
         manager.cleanup()
 
-    def test_multiple_messages_processing(
-        self, clean_manager, mock_server, sample_client, sample_messages
-    ):
+    def test_multiple_messages_processing(self, clean_manager, mock_server, sample_client, sample_messages):
         """Test processing multiple messages"""
         manager = clean_manager
         initialize_queue(mock_server)
@@ -1044,9 +1022,7 @@ class TestQueueIntegration:
         # Cleanup
         manager.cleanup()
 
-    def test_worker_handles_processing_errors(
-        self, clean_manager, sample_client, sample_messages
-    ):
+    def test_worker_handles_processing_errors(self, clean_manager, sample_client, sample_messages):
         """Test that worker handles errors gracefully"""
         manager = clean_manager
 
@@ -1057,9 +1033,7 @@ class TestQueueIntegration:
         initialize_queue(error_server)
 
         # Enqueue message
-        put_messages(
-            actor=sample_client, agent_id="agent-error", input_messages=sample_messages
-        )
+        put_messages(actor=sample_client, agent_id="agent-error", input_messages=sample_messages)
 
         # Wait for processing attempt
         time.sleep(1.5)

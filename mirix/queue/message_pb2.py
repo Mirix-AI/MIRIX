@@ -9,48 +9,43 @@ from google.protobuf import descriptor_pool as _descriptor_pool
 from google.protobuf import runtime_version as _runtime_version
 from google.protobuf import symbol_database as _symbol_database
 from google.protobuf.internal import builder as _builder
-_runtime_version.ValidateProtobufRuntimeVersion(
-    _runtime_version.Domain.PUBLIC,
-    5,
-    27,
-    2,
-    '',
-    'message.proto'
-)
+
+_runtime_version.ValidateProtobufRuntimeVersion(_runtime_version.Domain.PUBLIC, 5, 27, 2, "", "message.proto")
 # @@protoc_insertion_point(imports)
 
 _sym_db = _symbol_database.Default()
 
 
-from google.protobuf import timestamp_pb2 as google_dot_protobuf_dot_timestamp__pb2
 from google.protobuf import struct_pb2 as google_dot_protobuf_dot_struct__pb2
+from google.protobuf import timestamp_pb2 as google_dot_protobuf_dot_timestamp__pb2
 
-
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\rmessage.proto\x12\x05mirix\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1cgoogle/protobuf/struct.proto\"\xb6\x04\n\x0cQueueMessage\x12\x1a\n\x05\x61\x63tor\x18\x01 \x01(\x0b\x32\x0b.mirix.User\x12\x10\n\x08\x61gent_id\x18\x02 \x01(\t\x12,\n\x0einput_messages\x18\x03 \x03(\x0b\x32\x14.mirix.MessageCreate\x12\x15\n\x08\x63haining\x18\x04 \x01(\x08H\x00\x88\x01\x01\x12\x14\n\x07user_id\x18\x05 \x01(\tH\x01\x88\x01\x01\x12\x14\n\x07verbose\x18\x06 \x01(\x08H\x02\x88\x01\x01\x12,\n\x0b\x66ilter_tags\x18\x07 \x01(\x0b\x32\x17.google.protobuf.Struct\x12\x16\n\tuse_cache\x18\x08 \x01(\x08H\x03\x88\x01\x01\x12\x18\n\x0boccurred_at\x18\t \x01(\tH\x04\x88\x01\x01\x12\x1e\n\x11langfuse_trace_id\x18\n \x01(\tH\x05\x88\x01\x01\x12$\n\x17langfuse_observation_id\x18\x0b \x01(\tH\x06\x88\x01\x01\x12 \n\x13langfuse_session_id\x18\x0c \x01(\tH\x07\x88\x01\x01\x12\x1d\n\x10langfuse_user_id\x18\r \x01(\tH\x08\x88\x01\x01\x42\x0b\n\t_chainingB\n\n\x08_user_idB\n\n\x08_verboseB\x0c\n\n_use_cacheB\x0e\n\x0c_occurred_atB\x14\n\x12_langfuse_trace_idB\x1a\n\x18_langfuse_observation_idB\x16\n\x14_langfuse_session_idB\x13\n\x11_langfuse_user_id\"\xcf\x01\n\x04User\x12\n\n\x02id\x18\x01 \x01(\t\x12\x17\n\x0forganization_id\x18\x02 \x01(\t\x12\x0c\n\x04name\x18\x03 \x01(\t\x12\x0e\n\x06status\x18\x04 \x01(\t\x12\x10\n\x08timezone\x18\x05 \x01(\t\x12.\n\ncreated_at\x18\x06 \x01(\x0b\x32\x1a.google.protobuf.Timestamp\x12.\n\nupdated_at\x18\x07 \x01(\x0b\x32\x1a.google.protobuf.Timestamp\x12\x12\n\nis_deleted\x18\x08 \x01(\x08\"\xd9\x02\n\rMessageCreate\x12\'\n\x04role\x18\x01 \x01(\x0e\x32\x19.mirix.MessageCreate.Role\x12\x16\n\x0ctext_content\x18\x02 \x01(\tH\x00\x12\x37\n\x12structured_content\x18\x03 \x01(\x0b\x32\x19.mirix.MessageContentListH\x00\x12\x11\n\x04name\x18\x04 \x01(\tH\x01\x88\x01\x01\x12\x11\n\x04otid\x18\x05 \x01(\tH\x02\x88\x01\x01\x12\x16\n\tsender_id\x18\x06 \x01(\tH\x03\x88\x01\x01\x12\x15\n\x08group_id\x18\x07 \x01(\tH\x04\x88\x01\x01\"<\n\x04Role\x12\x14\n\x10ROLE_UNSPECIFIED\x10\x00\x12\r\n\tROLE_USER\x10\x01\x12\x0f\n\x0bROLE_SYSTEM\x10\x02\x42\x0e\n\x0c\x63ontent_typeB\x07\n\x05_nameB\x07\n\x05_otidB\x0c\n\n_sender_idB\x0b\n\t_group_id\">\n\x12MessageContentList\x12(\n\x05parts\x18\x01 \x03(\x0b\x32\x19.mirix.MessageContentPart\"\xbc\x01\n\x12MessageContentPart\x12\"\n\x04text\x18\x01 \x01(\x0b\x32\x12.mirix.TextContentH\x00\x12$\n\x05image\x18\x02 \x01(\x0b\x32\x13.mirix.ImageContentH\x00\x12\"\n\x04\x66ile\x18\x03 \x01(\x0b\x32\x12.mirix.FileContentH\x00\x12-\n\ncloud_file\x18\x04 \x01(\x0b\x32\x17.mirix.CloudFileContentH\x00\x42\t\n\x07\x63ontent\"\x1b\n\x0bTextContent\x12\x0c\n\x04text\x18\x01 \x01(\t\"@\n\x0cImageContent\x12\x10\n\x08image_id\x18\x01 \x01(\t\x12\x13\n\x06\x64\x65tail\x18\x02 \x01(\tH\x00\x88\x01\x01\x42\t\n\x07_detail\"\x1e\n\x0b\x46ileContent\x12\x0f\n\x07\x66ile_id\x18\x01 \x01(\t\"*\n\x10\x43loudFileContent\x12\x16\n\x0e\x63loud_file_uri\x18\x01 \x01(\tb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(
+    b'\n\rmessage.proto\x12\x05mirix\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1cgoogle/protobuf/struct.proto"\xb6\x04\n\x0cQueueMessage\x12\x1a\n\x05\x61\x63tor\x18\x01 \x01(\x0b\x32\x0b.mirix.User\x12\x10\n\x08\x61gent_id\x18\x02 \x01(\t\x12,\n\x0einput_messages\x18\x03 \x03(\x0b\x32\x14.mirix.MessageCreate\x12\x15\n\x08\x63haining\x18\x04 \x01(\x08H\x00\x88\x01\x01\x12\x14\n\x07user_id\x18\x05 \x01(\tH\x01\x88\x01\x01\x12\x14\n\x07verbose\x18\x06 \x01(\x08H\x02\x88\x01\x01\x12,\n\x0b\x66ilter_tags\x18\x07 \x01(\x0b\x32\x17.google.protobuf.Struct\x12\x16\n\tuse_cache\x18\x08 \x01(\x08H\x03\x88\x01\x01\x12\x18\n\x0boccurred_at\x18\t \x01(\tH\x04\x88\x01\x01\x12\x1e\n\x11langfuse_trace_id\x18\n \x01(\tH\x05\x88\x01\x01\x12$\n\x17langfuse_observation_id\x18\x0b \x01(\tH\x06\x88\x01\x01\x12 \n\x13langfuse_session_id\x18\x0c \x01(\tH\x07\x88\x01\x01\x12\x1d\n\x10langfuse_user_id\x18\r \x01(\tH\x08\x88\x01\x01\x42\x0b\n\t_chainingB\n\n\x08_user_idB\n\n\x08_verboseB\x0c\n\n_use_cacheB\x0e\n\x0c_occurred_atB\x14\n\x12_langfuse_trace_idB\x1a\n\x18_langfuse_observation_idB\x16\n\x14_langfuse_session_idB\x13\n\x11_langfuse_user_id"\xcf\x01\n\x04User\x12\n\n\x02id\x18\x01 \x01(\t\x12\x17\n\x0forganization_id\x18\x02 \x01(\t\x12\x0c\n\x04name\x18\x03 \x01(\t\x12\x0e\n\x06status\x18\x04 \x01(\t\x12\x10\n\x08timezone\x18\x05 \x01(\t\x12.\n\ncreated_at\x18\x06 \x01(\x0b\x32\x1a.google.protobuf.Timestamp\x12.\n\nupdated_at\x18\x07 \x01(\x0b\x32\x1a.google.protobuf.Timestamp\x12\x12\n\nis_deleted\x18\x08 \x01(\x08"\xd9\x02\n\rMessageCreate\x12\'\n\x04role\x18\x01 \x01(\x0e\x32\x19.mirix.MessageCreate.Role\x12\x16\n\x0ctext_content\x18\x02 \x01(\tH\x00\x12\x37\n\x12structured_content\x18\x03 \x01(\x0b\x32\x19.mirix.MessageContentListH\x00\x12\x11\n\x04name\x18\x04 \x01(\tH\x01\x88\x01\x01\x12\x11\n\x04otid\x18\x05 \x01(\tH\x02\x88\x01\x01\x12\x16\n\tsender_id\x18\x06 \x01(\tH\x03\x88\x01\x01\x12\x15\n\x08group_id\x18\x07 \x01(\tH\x04\x88\x01\x01"<\n\x04Role\x12\x14\n\x10ROLE_UNSPECIFIED\x10\x00\x12\r\n\tROLE_USER\x10\x01\x12\x0f\n\x0bROLE_SYSTEM\x10\x02\x42\x0e\n\x0c\x63ontent_typeB\x07\n\x05_nameB\x07\n\x05_otidB\x0c\n\n_sender_idB\x0b\n\t_group_id">\n\x12MessageContentList\x12(\n\x05parts\x18\x01 \x03(\x0b\x32\x19.mirix.MessageContentPart"\xbc\x01\n\x12MessageContentPart\x12"\n\x04text\x18\x01 \x01(\x0b\x32\x12.mirix.TextContentH\x00\x12$\n\x05image\x18\x02 \x01(\x0b\x32\x13.mirix.ImageContentH\x00\x12"\n\x04\x66ile\x18\x03 \x01(\x0b\x32\x12.mirix.FileContentH\x00\x12-\n\ncloud_file\x18\x04 \x01(\x0b\x32\x17.mirix.CloudFileContentH\x00\x42\t\n\x07\x63ontent"\x1b\n\x0bTextContent\x12\x0c\n\x04text\x18\x01 \x01(\t"@\n\x0cImageContent\x12\x10\n\x08image_id\x18\x01 \x01(\t\x12\x13\n\x06\x64\x65tail\x18\x02 \x01(\tH\x00\x88\x01\x01\x42\t\n\x07_detail"\x1e\n\x0b\x46ileContent\x12\x0f\n\x07\x66ile_id\x18\x01 \x01(\t"*\n\x10\x43loudFileContent\x12\x16\n\x0e\x63loud_file_uri\x18\x01 \x01(\tb\x06proto3'
+)
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
-_builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'message_pb2', _globals)
+_builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, "message_pb2", _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
-  DESCRIPTOR._loaded_options = None
-  _globals['_QUEUEMESSAGE']._serialized_start=88
-  _globals['_QUEUEMESSAGE']._serialized_end=654
-  _globals['_USER']._serialized_start=657
-  _globals['_USER']._serialized_end=864
-  _globals['_MESSAGECREATE']._serialized_start=867
-  _globals['_MESSAGECREATE']._serialized_end=1212
-  _globals['_MESSAGECREATE_ROLE']._serialized_start=1091
-  _globals['_MESSAGECREATE_ROLE']._serialized_end=1151
-  _globals['_MESSAGECONTENTLIST']._serialized_start=1214
-  _globals['_MESSAGECONTENTLIST']._serialized_end=1276
-  _globals['_MESSAGECONTENTPART']._serialized_start=1279
-  _globals['_MESSAGECONTENTPART']._serialized_end=1467
-  _globals['_TEXTCONTENT']._serialized_start=1469
-  _globals['_TEXTCONTENT']._serialized_end=1496
-  _globals['_IMAGECONTENT']._serialized_start=1498
-  _globals['_IMAGECONTENT']._serialized_end=1562
-  _globals['_FILECONTENT']._serialized_start=1564
-  _globals['_FILECONTENT']._serialized_end=1594
-  _globals['_CLOUDFILECONTENT']._serialized_start=1596
-  _globals['_CLOUDFILECONTENT']._serialized_end=1638
+    DESCRIPTOR._loaded_options = None
+    _globals["_QUEUEMESSAGE"]._serialized_start = 88
+    _globals["_QUEUEMESSAGE"]._serialized_end = 654
+    _globals["_USER"]._serialized_start = 657
+    _globals["_USER"]._serialized_end = 864
+    _globals["_MESSAGECREATE"]._serialized_start = 867
+    _globals["_MESSAGECREATE"]._serialized_end = 1212
+    _globals["_MESSAGECREATE_ROLE"]._serialized_start = 1091
+    _globals["_MESSAGECREATE_ROLE"]._serialized_end = 1151
+    _globals["_MESSAGECONTENTLIST"]._serialized_start = 1214
+    _globals["_MESSAGECONTENTLIST"]._serialized_end = 1276
+    _globals["_MESSAGECONTENTPART"]._serialized_start = 1279
+    _globals["_MESSAGECONTENTPART"]._serialized_end = 1467
+    _globals["_TEXTCONTENT"]._serialized_start = 1469
+    _globals["_TEXTCONTENT"]._serialized_end = 1496
+    _globals["_IMAGECONTENT"]._serialized_start = 1498
+    _globals["_IMAGECONTENT"]._serialized_end = 1562
+    _globals["_FILECONTENT"]._serialized_start = 1564
+    _globals["_FILECONTENT"]._serialized_end = 1594
+    _globals["_CLOUDFILECONTENT"]._serialized_start = 1596
+    _globals["_CLOUDFILECONTENT"]._serialized_end = 1638
 # @@protoc_insertion_point(module_scope)

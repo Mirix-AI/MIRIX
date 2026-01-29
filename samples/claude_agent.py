@@ -38,9 +38,7 @@ def build_system_prompt(mirix_agent=None, user_id=None, conversation_buffer=""):
 
     # Add Mirix memory context if available
     if mirix_agent and user_id and conversation_buffer:
-        memory_context = mirix_agent.extract_memory_for_system_prompt(
-            conversation_buffer, user_id
-        )
+        memory_context = mirix_agent.extract_memory_for_system_prompt(conversation_buffer, user_id)
         memory_context = memory_context
         if memory_context:
             system_prompt += "Relevant Memory Context:\n" + memory_context
@@ -133,9 +131,7 @@ async def run_agent():
                     )
                     combined_conversation = ""
                     for user_msg, assistant_msg in conversation_history:
-                        combined_conversation += (
-                            f"[User] {user_msg}\n\n[Assistant] {assistant_msg}\n\n"
-                        )
+                        combined_conversation += f"[User] {user_msg}\n\n[Assistant] {assistant_msg}\n\n"
 
                     system_prompt = build_system_prompt(
                         mirix_agent=mirix_agent,
@@ -185,12 +181,8 @@ async def run_agent():
 
                     # Combine recent conversations for Mirix
                     combined_conversation = ""
-                    for user_msg, assistant_msg in conversation_history[
-                        -MEMORY_UPDATE_INTERVAL:
-                    ]:
-                        combined_conversation += (
-                            f"[User] {user_msg}\n\n[Assistant] {assistant_msg}\n\n"
-                        )
+                    for user_msg, assistant_msg in conversation_history[-MEMORY_UPDATE_INTERVAL:]:
+                        combined_conversation += f"[User] {user_msg}\n\n[Assistant] {assistant_msg}\n\n"
 
                     # Send to Mirix (non-blocking - runs in background)
                     asyncio.create_task(

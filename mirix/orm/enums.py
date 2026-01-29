@@ -18,6 +18,6 @@ class ToolSourceType(str, Enum):
 
 class AccessType(str, Enum):
     """Defines the access scope for ORM operations"""
-    
+
     ORGANIZATION = "organization"
     USER = "user"

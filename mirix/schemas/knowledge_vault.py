@@ -15,13 +15,9 @@ class KnowledgeVaultItemBase(MirixBase):
     """
 
     __id_prefix__ = "kv_item"
-    entry_type: str = Field(
-        ..., description="Category (e.g., 'credential', 'bookmark', 'api_key')"
-    )
+    entry_type: str = Field(..., description="Category (e.g., 'credential', 'bookmark', 'api_key')")
     source: str = Field(..., description="Information on who/where it was provided")
-    sensitivity: str = Field(
-        ..., description="Data sensitivity level ('low', 'medium', 'high')"
-    )
+    sensitivity: str = Field(..., description="Data sensitivity level ('low', 'medium', 'high')")
     secret_value: str = Field(..., description="The actual credential or data value")
     caption: str = Field(
         ...,
@@ -39,25 +35,15 @@ class KnowledgeVaultItem(KnowledgeVaultItemBase):
         updated_at (Optional[datetime]): Last update timestamp.
     """
 
-    id: Optional[str] = Field(
-        None, description="Unique identifier for the knowledge vault item"
-    )
-    agent_id: Optional[str] = Field(
-        None, description="The id of the agent this knowledge vault item belongs to"
-    )
-    client_id: Optional[str] = Field(
-        None, description="The id of the client application that created this item"
-    )
-    user_id: str = Field(
-        ..., description="The id of the user who generated the knowledge vault item"
-    )
+    id: Optional[str] = Field(None, description="Unique identifier for the knowledge vault item")
+    agent_id: Optional[str] = Field(None, description="The id of the agent this knowledge vault item belongs to")
+    client_id: Optional[str] = Field(None, description="The id of the client application that created this item")
+    user_id: str = Field(..., description="The id of the user who generated the knowledge vault item")
     created_at: datetime = Field(
         default_factory=get_utc_time,
         description="The creation date of the knowledge vault item",
     )
-    updated_at: Optional[datetime] = Field(
-        None, description="The last update date of the knowledge vault item"
-    )
+    updated_at: Optional[datetime] = Field(None, description="The last update date of the knowledge vault item")
     last_modify: Dict[str, Any] = Field(
         default_factory=lambda: {
             "timestamp": get_utc_time().isoformat(),
@@ -65,43 +51,29 @@ class KnowledgeVaultItem(KnowledgeVaultItemBase):
         },
         description="Last modification info including timestamp and operation type",
     )
-    organization_id: str = Field(
-        ..., description="The unique identifier of the organization"
-    )
-    caption_embedding: Optional[List[float]] = Field(
-        None, description="The embedding of the summary"
-    )
+    organization_id: str = Field(..., description="The unique identifier of the organization")
+    caption_embedding: Optional[List[float]] = Field(None, description="The embedding of the summary")
     embedding_config: Optional[EmbeddingConfig] = Field(
         None, description="The embedding configuration used by the event"
     )
-    
+
     # NEW: Filter tags for flexible filtering and categorization
     filter_tags: Optional[Dict[str, Any]] = Field(
         default=None,
         description="Custom filter tags for filtering and categorization",
         examples=[
-            {
-                "project_id": "proj-abc",
-                "session_id": "sess-xyz",
-                "tags": ["important", "work"],
-                "priority": "high"
-            }
-        ]
+            {"project_id": "proj-abc", "session_id": "sess-xyz", "tags": ["important", "work"], "priority": "high"}
+        ],
     )
 
-    # need to validate both details_embedding and summary_embedding to ensure they are the same size    
+    # need to validate both details_embedding and summary_embedding to ensure they are the same size
     # NEW: Filter tags for flexible filtering and categorization
     filter_tags: Optional[Dict[str, Any]] = Field(
         default=None,
         description="Custom filter tags for filtering and categorization",
         examples=[
-            {
-                "project_id": "proj-abc",
-                "session_id": "sess-xyz",
-                "tags": ["important", "work"],
-                "priority": "high"
-            }
-        ]
+            {"project_id": "proj-abc", "session_id": "sess-xyz", "tags": ["important", "work"], "priority": "high"}
+        ],
     )
 
     @field_validator("caption_embedding")
@@ -139,42 +111,26 @@ class KnowledgeVaultItemUpdate(MirixBase):
     """
 
     id: str = Field(..., description="Unique ID for this knowledge vault entry")
-    agent_id: Optional[str] = Field(
-        None, description="The id of the agent this knowledge vault item belongs to"
-    )
-    entry_type: Optional[str] = Field(
-        None, description="Category (e.g., 'credential', 'bookmark', 'api_key')"
-    )
-    source: Optional[str] = Field(
-        None, description="Information on who/where it was provided"
-    )
-    sensitivity: Optional[str] = Field(
-        None, description="Data sensitivity level ('low', 'medium', 'high')"
-    )
-    secret_value: Optional[str] = Field(
-        None, description="The actual credential or data value"
-    )
-    organization_id: Optional[str] = Field(
-        None, description="The unique identifier of the organization"
-    )
-    updated_at: datetime = Field(
-        default_factory=get_utc_time, description="The update date"
-    )
+    agent_id: Optional[str] = Field(None, description="The id of the agent this knowledge vault item belongs to")
+    entry_type: Optional[str] = Field(None, description="Category (e.g., 'credential', 'bookmark', 'api_key')")
+    source: Optional[str] = Field(None, description="Information on who/where it was provided")
+    sensitivity: Optional[str] = Field(None, description="Data sensitivity level ('low', 'medium', 'high')")
+    secret_value: Optional[str] = Field(None, description="The actual credential or data value")
+    organization_id: Optional[str] = Field(None, description="The unique identifier of the organization")
+    updated_at: datetime = Field(default_factory=get_utc_time, description="The update date")
     last_modify: Optional[Dict[str, Any]] = Field(
         None,
         description="Last modification info including timestamp and operation type",
     )
-    caption_embedding: Optional[List[float]] = Field(
-        None, description="The embedding of the summary"
-    )
+    caption_embedding: Optional[List[float]] = Field(None, description="The embedding of the summary")
     embedding_config: Optional[EmbeddingConfig] = Field(
         None, description="The embedding configuration used by the event"
     )
 
-
     filter_tags: Optional[Dict[str, Any]] = Field(
         None, description="Custom filter tags for filtering and categorization"
     )
+
 
 class KnowledgeVaultItemResponse(KnowledgeVaultItem):
     """

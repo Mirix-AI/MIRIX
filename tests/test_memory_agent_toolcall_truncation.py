@@ -4,14 +4,16 @@ from unittest.mock import MagicMock
 from mirix.agent.agent import Agent
 from mirix.schemas.agent import AgentState, AgentType
 from mirix.schemas.client import Client
+from mirix.schemas.enums import ToolType
 from mirix.schemas.message import Message
 from mirix.schemas.openai.chat_completion_response import (
     FunctionCall,
-    Message as ChatCompletionMessage,
+)
+from mirix.schemas.openai.chat_completion_response import Message as ChatCompletionMessage
+from mirix.schemas.openai.chat_completion_response import (
     ToolCall,
 )
 from mirix.schemas.tool import Tool
-from mirix.schemas.enums import ToolType
 
 
 def make_client(id="client-1", org_id="org-1"):
@@ -110,5 +112,3 @@ def test_memory_agent_truncates_extra_tool_calls_and_executes_only_first():
     )
 
     assert executed == ["semantic_memory_update"]
-
-

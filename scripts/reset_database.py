@@ -114,10 +114,7 @@ def detect_database_type() -> str:
         return "postgresql"
 
     if SETTINGS_AVAILABLE and settings:
-        if (
-            hasattr(settings, "mirix_pg_uri_no_default")
-            and settings.mirix_pg_uri_no_default
-        ):
+        if hasattr(settings, "mirix_pg_uri_no_default") and settings.mirix_pg_uri_no_default:
             return "postgresql"
 
     # Check other environment variables
@@ -129,9 +126,7 @@ def detect_database_type() -> str:
     if sqlite_path.exists():
         return "sqlite"
 
-    raise ValueError(
-        "Could not auto-detect database type. Please specify 'postgresql' or 'sqlite'"
-    )
+    raise ValueError("Could not auto-detect database type. Please specify 'postgresql' or 'sqlite'")
 
 
 def run_command(cmd: list, check: bool = True) -> subprocess.CompletedProcess:
@@ -147,9 +142,7 @@ def run_command(cmd: list, check: bool = True) -> subprocess.CompletedProcess:
         return e
 
 
-def reset_postgresql(
-    host: str = None, port: str = None, user: str = None, database: str = None
-):
+def reset_postgresql(host: str = None, port: str = None, user: str = None, database: str = None):
     """Reset PostgreSQL database."""
     conn = get_pg_connection_details()
 
@@ -163,9 +156,7 @@ def reset_postgresql(
     if database:
         conn["database"] = database
 
-    log_info(
-        f"Resetting PostgreSQL database: {conn['database']} on {conn['host']}:{conn['port']}"
-    )
+    log_info(f"Resetting PostgreSQL database: {conn['database']} on {conn['host']}:{conn['port']}")
 
     # Check if database exists
     check_cmd = [
@@ -291,9 +282,7 @@ def reset_postgresql(
             if create_result2.returncode == 0:
                 log_success(f"Created fresh database: {conn['database']}")
             else:
-                log_warning(
-                    "Database creation still failed, falling back to table truncation..."
-                )
+                log_warning("Database creation still failed, falling back to table truncation...")
                 # Continue to table truncation logic below
                 pass
         else:
@@ -304,9 +293,7 @@ def reset_postgresql(
 
     # If we successfully created the database, enable extensions and return
     if create_result.returncode == 0 or (
-        create_result.returncode != 0
-        and "create_result2" in locals()
-        and create_result2.returncode == 0
+        create_result.returncode != 0 and "create_result2" in locals() and create_result2.returncode == 0
     ):
         # Enable pgvector extension (requires superuser)
         import getpass
@@ -329,9 +316,7 @@ def reset_postgresql(
             run_command(extension_cmd, check=False)
             log_success("Enabled pgvector extension")
         except Exception:
-            log_warning(
-                "Could not enable pgvector extension (may need superuser privileges)"
-            )
+            log_warning("Could not enable pgvector extension (may need superuser privileges)")
             log_info(
                 f"You can manually run: psql -U {superuser} -d {conn['database']} -c 'CREATE EXTENSION IF NOT EXISTS vector;'"
             )

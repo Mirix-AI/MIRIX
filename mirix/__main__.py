@@ -10,9 +10,7 @@ import sys
 def main():
     """Main entry point for module-level commands."""
     parser = argparse.ArgumentParser(description="Mirix CLI Tools")
-    parser.add_argument(
-        "subcommand", choices=["db-maintenance"], help="Subcommand to run"
-    )
+    parser.add_argument("subcommand", choices=["db-maintenance"], help="Subcommand to run")
     parser.add_argument("args", nargs="*", help="Arguments for the subcommand")
 
     args, unknown = parser.parse_known_args()

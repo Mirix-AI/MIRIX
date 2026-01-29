@@ -66,12 +66,8 @@ class Tool(BaseTool):
     tags: List[str] = Field([], description="Metadata tags.")
 
     # code
-    source_code: Optional[str] = Field(
-        None, description="The source code of the function."
-    )
-    json_schema: Optional[Dict] = Field(
-        None, description="The JSON schema of the function."
-    )
+    source_code: Optional[str] = Field(None, description="The source code of the function.")
+    json_schema: Optional[Dict] = Field(None, description="The JSON schema of the function.")
 
     # tool configuration
     return_char_limit: int = Field(
@@ -80,12 +76,8 @@ class Tool(BaseTool):
     )
 
     # metadata fields
-    created_by_id: Optional[str] = Field(
-        None, description="The id of the user that made this Tool."
-    )
-    last_updated_by_id: Optional[str] = Field(
-        None, description="The id of the user that made this Tool."
-    )
+    created_by_id: Optional[str] = Field(None, description="The id of the user that made this Tool.")
+    last_updated_by_id: Optional[str] = Field(None, description="The id of the user that made this Tool.")
 
     @model_validator(mode="after")
     def populate_missing_fields(self):
@@ -96,17 +88,13 @@ class Tool(BaseTool):
         if self.tool_type == ToolType.CUSTOM:
             # If it's a custom tool, we need to ensure source_code is present
             if not self.source_code:
-                raise ValueError(
-                    f"Custom tool with id={self.id} is missing source_code field."
-                )
+                raise ValueError(f"Custom tool with id={self.id} is missing source_code field.")
 
             # Always derive json_schema for freshest possible json_schema
             # TODO: Instead of checking the tag, we should having `COMPOSIO` as a specific ToolType
             # TODO: We skip this for Composio bc composio json schemas are derived differently
             if COMPOSIO_TOOL_TAG_NAME not in self.tags and _FUNCTION_UTILS_AVAILABLE:
-                self.json_schema = derive_openai_json_schema(
-                    source_code=self.source_code
-                )
+                self.json_schema = derive_openai_json_schema(source_code=self.source_code)
             elif COMPOSIO_TOOL_TAG_NAME not in self.tags and not self.json_schema:
                 raise ValueError(
                     "Custom tool is missing json_schema and schema helpers are not available in the client-only build."
@@ -116,9 +104,7 @@ class Tool(BaseTool):
             # But only if it's not already provided (e.g., from server)
             if not self.json_schema:
                 if not self.name:
-                    raise ValueError(
-                        f"MIRIX_CORE tool with id={self.id} requires 'name' field to generate schema"
-                    )
+                    raise ValueError(f"MIRIX_CORE tool with id={self.id} requires 'name' field to generate schema")
                 if get_json_schema_from_module:
                     self.json_schema = get_json_schema_from_module(
                         module_name=MIRIX_CORE_TOOL_MODULE_NAME,
@@ -146,9 +132,7 @@ class Tool(BaseTool):
         elif self.tool_type in {ToolType.MIRIX_EXTRA}:
             if not self.json_schema:
                 if not self.name:
-                    raise ValueError(
-                        f"MIRIX_EXTRA tool with id={self.id} requires 'name' field to generate schema"
-                    )
+                    raise ValueError(f"MIRIX_EXTRA tool with id={self.id} requires 'name' field to generate schema")
                 if get_json_schema_from_module:
                     self.json_schema = get_json_schema_from_module(
                         module_name=MIRIX_EXTRA_TOOL_MODULE_NAME,
@@ -270,17 +254,13 @@ class ToolUpdate(MirixBase):
     description: Optional[str] = Field(None, description="The description of the tool.")
     name: Optional[str] = Field(None, description="The name of the function.")
     tags: Optional[List[str]] = Field(None, description="Metadata tags.")
-    source_code: Optional[str] = Field(
-        None, description="The source code of the function."
-    )
+    source_code: Optional[str] = Field(None, description="The source code of the function.")
     source_type: Optional[str] = Field(None, description="The type of the source code.")
     json_schema: Optional[Dict] = Field(
         None,
         description="The JSON schema of the function (auto-generated from source_code if not provided)",
     )
-    return_char_limit: Optional[int] = Field(
-        None, description="The maximum number of characters in the response."
-    )
+    return_char_limit: Optional[int] = Field(None, description="The maximum number of characters in the response.")
 
     class Config:
         extra = "ignore"  # Allows extra fields without validation errors
@@ -290,8 +270,6 @@ class ToolUpdate(MirixBase):
 class ToolRunFromSource(MirixBase):
     source_code: str = Field(..., description="The source code of the function.")
     args: Dict[str, Any] = Field(..., description="The arguments to pass to the tool.")
-    env_vars: Dict[str, str] = Field(
-        None, description="The environment variables to pass to the tool."
-    )
+    env_vars: Dict[str, str] = Field(None, description="The environment variables to pass to the tool.")
     name: Optional[str] = Field(None, description="The name of the tool to run.")
     source_type: Optional[str] = Field(None, description="The type of the source code.")

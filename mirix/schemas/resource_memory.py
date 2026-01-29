@@ -3,10 +3,10 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import Field, field_validator
 
+from mirix.client.utils import get_utc_time
 from mirix.constants import MAX_EMBEDDING_DIM
 from mirix.schemas.embedding_config import EmbeddingConfig
 from mirix.schemas.mirix_base import MirixBase
-from mirix.client.utils import get_utc_time
 
 
 class ResourceMemoryItemBase(MirixBase):
@@ -16,15 +16,9 @@ class ResourceMemoryItemBase(MirixBase):
 
     __id_prefix__ = "res_item"
     title: str = Field(..., description="Short name/title of the resource")
-    summary: str = Field(
-        ..., description="Short description or summary of the resource"
-    )
-    resource_type: str = Field(
-        ..., description="File type or format (e.g. 'doc', 'markdown', 'pdf_text')"
-    )
-    content: str = Field(
-        ..., description="Full or partial text content of the resource"
-    )
+    summary: str = Field(..., description="Short description or summary of the resource")
+    resource_type: str = Field(..., description="File type or format (e.g. 'doc', 'markdown', 'pdf_text')")
+    content: str = Field(..., description="Full or partial text content of the resource")
 
 
 class ResourceMemoryItem(ResourceMemoryItemBase):
@@ -32,21 +26,11 @@ class ResourceMemoryItem(ResourceMemoryItemBase):
     Full schema for resource memory items with DB fields.
     """
 
-    id: Optional[str] = Field(
-        None, description="Unique identifier for the resource memory item"
-    )
-    agent_id: Optional[str] = Field(
-        None, description="The id of the agent this resource memory item belongs to"
-    )
-    client_id: Optional[str] = Field(
-        None, description="The id of the client application that created this item"
-    )
-    user_id: str = Field(
-        ..., description="The id of the user who generated the resource"
-    )
-    created_at: datetime = Field(
-        default_factory=get_utc_time, description="Creation timestamp"
-    )
+    id: Optional[str] = Field(None, description="Unique identifier for the resource memory item")
+    agent_id: Optional[str] = Field(None, description="The id of the agent this resource memory item belongs to")
+    client_id: Optional[str] = Field(None, description="The id of the client application that created this item")
+    user_id: str = Field(..., description="The id of the user who generated the resource")
+    created_at: datetime = Field(default_factory=get_utc_time, description="Creation timestamp")
     updated_at: Optional[datetime] = Field(None, description="Last update timestamp")
     last_modify: Dict[str, Any] = Field(
         default_factory=lambda: {
@@ -55,28 +39,19 @@ class ResourceMemoryItem(ResourceMemoryItemBase):
         },
         description="Last modification info including timestamp and operation type",
     )
-    organization_id: str = Field(
-        ..., description="The unique identifier of the organization"
-    )
-    summary_embedding: Optional[List[float]] = Field(
-        None, description="The embedding of the summary"
-    )
+    organization_id: str = Field(..., description="The unique identifier of the organization")
+    summary_embedding: Optional[List[float]] = Field(None, description="The embedding of the summary")
     embedding_config: Optional[EmbeddingConfig] = Field(
         None, description="The embedding configuration used by the event"
     )
-    
+
     # NEW: Filter tags for flexible filtering and categorization
     filter_tags: Optional[Dict[str, Any]] = Field(
         default=None,
         description="Custom filter tags for filtering and categorization",
         examples=[
-            {
-                "project_id": "proj-abc",
-                "session_id": "sess-xyz",
-                "tags": ["important", "work"],
-                "priority": "high"
-            }
-        ]
+            {"project_id": "proj-abc", "session_id": "sess-xyz", "tags": ["important", "work"], "priority": "high"}
+        ],
     )
 
     @field_validator("summary_embedding")
@@ -100,36 +75,26 @@ class ResourceMemoryItemUpdate(MirixBase):
     """Schema for updating an existing resource memory item."""
 
     id: str = Field(..., description="Unique ID for this resource memory entry")
-    agent_id: Optional[str] = Field(
-        None, description="The id of the agent this resource memory item belongs to"
-    )
+    agent_id: Optional[str] = Field(None, description="The id of the agent this resource memory item belongs to")
     title: Optional[str] = Field(None, description="Short name/title of the resource")
-    summary: Optional[str] = Field(
-        None, description="Short description or summary of the resource"
-    )
-    resource_type: Optional[str] = Field(
-        None, description="File type/format (e.g. 'doc', 'markdown')"
-    )
+    summary: Optional[str] = Field(None, description="Short description or summary of the resource")
+    resource_type: Optional[str] = Field(None, description="File type/format (e.g. 'doc', 'markdown')")
     content: Optional[str] = Field(None, description="Full or partial text content")
     organization_id: Optional[str] = Field(None, description="The organization ID")
-    updated_at: datetime = Field(
-        default_factory=get_utc_time, description="Update timestamp"
-    )
+    updated_at: datetime = Field(default_factory=get_utc_time, description="Update timestamp")
     last_modify: Optional[Dict[str, Any]] = Field(
         None,
         description="Last modification info including timestamp and operation type",
     )
-    summary_embedding: Optional[List[float]] = Field(
-        None, description="The embedding of the summary"
-    )
+    summary_embedding: Optional[List[float]] = Field(None, description="The embedding of the summary")
     embedding_config: Optional[EmbeddingConfig] = Field(
         None, description="The embedding configuration used by the event"
     )
 
-
     filter_tags: Optional[Dict[str, Any]] = Field(
         None, description="Custom filter tags for filtering and categorization"
     )
+
 
 class ResourceMemoryItemResponse(ResourceMemoryItem):
     """Response schema for resource memory item with additional fields if needed."""

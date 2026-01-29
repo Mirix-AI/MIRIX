@@ -3,6 +3,7 @@ Pydantic schemas for raw task memory.
 
 Raw memories store unprocessed task context without LLM extraction.
 """
+
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -41,7 +42,7 @@ class RawMemoryItem(RawMemoryItemBase):
 
     Represents a complete raw memory record with all database fields including
     timestamps, relationships, and metadata.
-    
+
     Note: Audit fields (_created_by_id, _last_update_by_id) are tracked internally
     in the ORM layer but not exposed in the API response schema, consistent with
     other MIRIX memory types.
@@ -60,9 +61,7 @@ class RawMemoryItem(RawMemoryItemBase):
         description="Last modification info including timestamp and operation type",
     )
 
-    context_embedding: Optional[List[float]] = Field(
-        None, description="The embedding of the context"
-    )
+    context_embedding: Optional[List[float]] = Field(None, description="The embedding of the context")
     embedding_config: Optional[EmbeddingConfig] = Field(
         None, description="The embedding configuration used for this memory"
     )
@@ -72,6 +71,7 @@ class RawMemoryItem(RawMemoryItemBase):
     def pad_embeddings(cls, embedding: List[float]) -> List[float]:
         """Pad embeddings to MAX_EMBEDDING_DIM."""
         import numpy as np
+
         from mirix.constants import MAX_EMBEDDING_DIM
 
         if embedding and len(embedding) != MAX_EMBEDDING_DIM:
@@ -122,11 +122,9 @@ class RawMemoryItemCreate(RawMemoryItemBase):
         None,
         description="Unique identifier (server generates if omitted)",
     )
-    
+
     # Embedding fields (set by manager during creation)
-    context_embedding: Optional[List[float]] = Field(
-        None, description="The embedding of the context"
-    )
+    context_embedding: Optional[List[float]] = Field(None, description="The embedding of the context")
     embedding_config: Optional[EmbeddingConfig] = Field(
         None, description="The embedding configuration used for this memory"
     )
@@ -136,6 +134,7 @@ class RawMemoryItemCreate(RawMemoryItemBase):
     def pad_embeddings(cls, embedding: List[float]) -> List[float]:
         """Pad embeddings to MAX_EMBEDDING_DIM."""
         import numpy as np
+
         from mirix.constants import MAX_EMBEDDING_DIM
 
         if embedding and len(embedding) != MAX_EMBEDDING_DIM:
@@ -193,24 +192,14 @@ class RawMemoryItemUpdate(MirixBase):
 class TimeRangeFilter(BaseModel):
     """Time range filter for searching raw memories."""
 
-    created_at_gte: Optional[datetime] = Field(
-        None, description="Filter memories created at or after this time"
-    )
-    created_at_lte: Optional[datetime] = Field(
-        None, description="Filter memories created at or before this time"
-    )
-    occurred_at_gte: Optional[datetime] = Field(
-        None, description="Filter memories that occurred at or after this time"
-    )
+    created_at_gte: Optional[datetime] = Field(None, description="Filter memories created at or after this time")
+    created_at_lte: Optional[datetime] = Field(None, description="Filter memories created at or before this time")
+    occurred_at_gte: Optional[datetime] = Field(None, description="Filter memories that occurred at or after this time")
     occurred_at_lte: Optional[datetime] = Field(
         None, description="Filter memories that occurred at or before this time"
     )
-    updated_at_gte: Optional[datetime] = Field(
-        None, description="Filter memories updated at or after this time"
-    )
-    updated_at_lte: Optional[datetime] = Field(
-        None, description="Filter memories updated at or before this time"
-    )
+    updated_at_gte: Optional[datetime] = Field(None, description="Filter memories updated at or after this time")
+    updated_at_lte: Optional[datetime] = Field(None, description="Filter memories updated at or before this time")
 
 
 class SearchRawMemoryRequest(BaseModel):
@@ -231,9 +220,7 @@ class SearchRawMemoryRequest(BaseModel):
     time_range: Optional[TimeRangeFilter] = Field(
         None, description="Time range filters for created_at, occurred_at, or updated_at"
     )
-    limit: int = Field(
-        10, ge=1, le=100, description="Maximum number of results to return (default: 10, max: 100)"
-    )
+    limit: int = Field(10, ge=1, le=100, description="Maximum number of results to return (default: 10, max: 100)")
 
 
 class SearchRawMemoryResponse(BaseModel):

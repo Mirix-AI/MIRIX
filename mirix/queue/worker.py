@@ -78,23 +78,13 @@ class QueueWorker:
 
         return Client(
             id=proto_user.id,
-            organization_id=(
-                proto_user.organization_id if proto_user.organization_id else None
-            ),
+            organization_id=(proto_user.organization_id if proto_user.organization_id else None),
             name=proto_user.name,
             status=proto_user.status,
             scope="",  # Default scope
             # Client doesn't have timezone field - it's only for User
-            created_at=(
-                proto_user.created_at.ToDatetime()
-                if proto_user.HasField("created_at")
-                else datetime.now()
-            ),
-            updated_at=(
-                proto_user.updated_at.ToDatetime()
-                if proto_user.HasField("updated_at")
-                else datetime.now()
-            ),
+            created_at=(proto_user.created_at.ToDatetime() if proto_user.HasField("created_at") else datetime.now()),
+            updated_at=(proto_user.updated_at.ToDatetime() if proto_user.HasField("updated_at") else datetime.now()),
             is_deleted=proto_user.is_deleted,
         )
 
@@ -147,35 +137,35 @@ class QueueWorker:
     def process_external_message(self, message: QueueMessage) -> None:
         """
         Process a message that was consumed by an external Kafka consumer.
-        
+
         This allows you to use your own custom Kafka consumer logic while still
         leveraging MIRIX's message processing capabilities. This is useful when:
         - You need custom Kafka consumer configuration not exposed by MIRIX
         - You want to use a different Kafka client library
         - You're integrating with existing event processing infrastructure
-        
+
         Args:
             message: QueueMessage protobuf that was already consumed from Kafka
-            
+
         Example:
             ```python
             # Create worker without starting internal consumer
             worker = QueueWorker(queue=None, server=server)
             worker.set_server(server)
-            
+
             # Your custom Kafka consumer
             from kafka import KafkaConsumer
             consumer = KafkaConsumer('my-topic', ...)
-            
+
             for kafka_msg in consumer:
                 # Deserialize to QueueMessage protobuf
                 queue_message = QueueMessage()
                 queue_message.ParseFromString(kafka_msg.value)
-                
+
                 # Process via MIRIX worker
                 worker.process_external_message(queue_message)
             ```
-        
+
         Note:
             - This method is thread-safe and can be called from multiple threads
             - When using this method, you typically don't call worker.start()
@@ -217,26 +207,16 @@ class QueueWorker:
             langfuse = get_langfuse_client()
             trace_context = get_trace_context()
             trace_id = trace_context.get("trace_id") if trace_context else None
-            parent_span_id = (
-                trace_context.get("observation_id") if trace_context else None
-            )
-            logger.debug(
-                f"Queue worker trace context: trace_id={trace_id}, "
-                f"parent_span_id={parent_span_id}"
-            )
+            parent_span_id = trace_context.get("observation_id") if trace_context else None
+            logger.debug(f"Queue worker trace context: trace_id={trace_id}, " f"parent_span_id={parent_span_id}")
             # Validate actor exists before processing
             if not message.HasField("actor") or not message.actor.id:
-                raise ValueError(
-                    f"Queue message for agent {message.agent_id} missing required actor information"
-                )
+                raise ValueError(f"Queue message for agent {message.agent_id} missing required actor information")
 
             # Convert protobuf to Pydantic Client (actor for write operations)
             actor = self._convert_proto_user_to_pydantic(message.actor)
 
-            input_messages = [
-                self._convert_proto_message_to_pydantic(msg)
-                for msg in message.input_messages
-            ]
+            input_messages = [self._convert_proto_message_to_pydantic(msg) for msg in message.input_messages]
 
             # Extract optional parameters
             chaining = message.chaining if message.HasField("chaining") else True
@@ -299,9 +279,7 @@ class QueueWorker:
             use_cache = message.use_cache if message.HasField("use_cache") else True
 
             # Extract occurred_at
-            occurred_at = (
-                message.occurred_at if message.HasField("occurred_at") else None
-            )
+            occurred_at = message.occurred_at if message.HasField("occurred_at") else None
 
             # Log the processing
             logger.info(
@@ -387,29 +365,17 @@ class QueueWorker:
         Main worker loop - continuously consume and process messages
         Runs in a separate thread
         """
-        partition_info = (
-            f", partition={self._partition_id}"
-            if self._partition_id is not None
-            else ""
-        )
-        logger.info(
-            "Queue worker thread ENTERED _consume_messages()%s", partition_info
-        )
-        logger.info(
-            "   _running=%s, _server=%s", self._running, self._server is not None
-        )
+        partition_info = f", partition={self._partition_id}" if self._partition_id is not None else ""
+        logger.info("Queue worker thread ENTERED _consume_messages()%s", partition_info)
+        logger.info("   _running=%s, _server=%s", self._running, self._server is not None)
 
         while self._running:
             try:
                 # Get message from queue (with timeout to allow graceful shutdown)
                 # Use partition-specific get if partition_id is set and queue supports it
                 message: QueueMessage
-                if self._partition_id is not None and hasattr(
-                    self.queue, "get_from_partition"
-                ):
-                    message = self.queue.get_from_partition(
-                        self._partition_id, timeout=1.0
-                    )
+                if self._partition_id is not None and hasattr(self.queue, "get_from_partition"):
+                    message = self.queue.get_from_partition(self._partition_id, timeout=1.0)
                 else:
                     message = self.queue.get(timeout=1.0)
 
@@ -431,9 +397,7 @@ class QueueWorker:
                 if type(e).__name__ in ["Empty", "StopIteration"]:
                     continue
                 else:
-                    logger.error(
-                        "Error in message consumption loop: %s", e, exc_info=True
-                    )
+                    logger.error("Error in message consumption loop: %s", e, exc_info=True)
 
         # Note: No logging here to avoid errors during shutdown
         # when logging system may already be closed
@@ -444,27 +408,15 @@ class QueueWorker:
             logger.warning("Queue worker already running")
             return  # Already running
 
-        partition_info = (
-            f" (partition {self._partition_id})"
-            if self._partition_id is not None
-            else ""
-        )
+        partition_info = f" (partition {self._partition_id})" if self._partition_id is not None else ""
         logger.info("Starting queue worker thread%s...", partition_info)
         self._running = True
 
         # Create and start daemon thread
         # Daemon threads automatically stop when the main program exits
-        thread_name = (
-            f"QueueWorker-{self._partition_id}"
-            if self._partition_id is not None
-            else "QueueWorker"
-        )
-        logger.info(
-            "Creating daemon thread for message consumption%s...", partition_info
-        )
-        self._thread = threading.Thread(
-            target=self._consume_messages, daemon=True, name=thread_name
-        )
+        thread_name = f"QueueWorker-{self._partition_id}" if self._partition_id is not None else "QueueWorker"
+        logger.info("Creating daemon thread for message consumption%s...", partition_info)
+        self._thread = threading.Thread(target=self._consume_messages, daemon=True, name=thread_name)
         logger.info("Thread created: %s", self._thread)
 
         logger.info("Starting thread...")

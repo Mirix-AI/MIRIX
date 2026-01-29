@@ -70,23 +70,16 @@ def summarize_messages(
     summary_prompt = SUMMARY_PROMPT_SYSTEM
     summary_input = _format_summary_history(message_sequence_to_summarize)
     summary_input_tkns = count_tokens(summary_input)
-    if (
-        summary_input_tkns
-        > summarizer_settings.memory_warning_threshold * context_window
-    ):
+    if summary_input_tkns > summarizer_settings.memory_warning_threshold * context_window:
         trunc_ratio = (
-            summarizer_settings.memory_warning_threshold
-            * context_window
-            / summary_input_tkns
+            summarizer_settings.memory_warning_threshold * context_window / summary_input_tkns
         ) * 0.8  # For good measure...
         cutoff = int(len(message_sequence_to_summarize) * trunc_ratio)
         summary_input = str(
             [
                 summarize_messages(
                     agent_state,
-                    message_sequence_to_summarize=message_sequence_to_summarize[
-                        :cutoff
-                    ],
+                    message_sequence_to_summarize=message_sequence_to_summarize[:cutoff],
                 )
             ]
             + message_sequence_to_summarize[cutoff:]

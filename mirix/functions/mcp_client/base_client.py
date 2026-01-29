@@ -46,21 +46,15 @@ class BaseMCPClient(ABC):
         asyncio.set_event_loop(self.loop)
 
         try:
-            success = self._initialize_connection(
-                self.server_config, timeout=connect_timeout
-            )
+            success = self._initialize_connection(self.server_config, timeout=connect_timeout)
 
             if success:
                 try:
                     self.loop.run_until_complete(
-                        asyncio.wait_for(
-                            self.session.initialize(), timeout=initialize_timeout
-                        )
+                        asyncio.wait_for(self.session.initialize(), timeout=initialize_timeout)
                     )
                     self.initialized = True
-                    logger.info(
-                        f"Successfully connected to MCP server: {self.server_config.server_name}"
-                    )
+                    logger.info(f"Successfully connected to MCP server: {self.server_config.server_name}")
                 except asyncio.TimeoutError:
                     raise MCPTimeoutError(
                         "initializing session",
@@ -68,19 +62,13 @@ class BaseMCPClient(ABC):
                         initialize_timeout,
                     )
             else:
-                raise MCPConnectionError(
-                    self.server_config.server_name, "Failed to establish connection"
-                )
+                raise MCPConnectionError(self.server_config.server_name, "Failed to establish connection")
         except Exception as e:
-            logger.error(
-                f"Failed to connect to MCP server {self.server_config.server_name}: {str(e)}"
-            )
+            logger.error(f"Failed to connect to MCP server {self.server_config.server_name}: {str(e)}")
             raise
 
     @abstractmethod
-    def _initialize_connection(
-        self, server_config: BaseServerConfig, timeout: float
-    ) -> bool:
+    def _initialize_connection(self, server_config: BaseServerConfig, timeout: float) -> bool:
         """Initialize the connection - implemented by subclasses"""
         raise NotImplementedError("Subclasses must implement _initialize_connection")
 
@@ -89,17 +77,11 @@ class BaseMCPClient(ABC):
         self._check_initialized()
 
         try:
-            response = self.loop.run_until_complete(
-                asyncio.wait_for(self.session.list_tools(), timeout=timeout)
-            )
+            response = self.loop.run_until_complete(asyncio.wait_for(self.session.list_tools(), timeout=timeout))
             return response.tools
         except asyncio.TimeoutError:
-            logger.error(
-                f"Timed out while listing tools for MCP server {self.server_config.server_name}"
-            )
-            raise MCPTimeoutError(
-                "listing tools", self.server_config.server_name, timeout
-            )
+            logger.error(f"Timed out while listing tools for MCP server {self.server_config.server_name}")
+            raise MCPTimeoutError("listing tools", self.server_config.server_name, timeout)
 
     def execute_tool(
         self,
@@ -119,9 +101,7 @@ class BaseMCPClient(ABC):
         def _do_execute() -> Tuple[str, bool]:
             try:
                 result = self.loop.run_until_complete(
-                    asyncio.wait_for(
-                        self.session.call_tool(tool_name, tool_args), timeout=timeout
-                    )
+                    asyncio.wait_for(self.session.call_tool(tool_name, tool_args), timeout=timeout)
                 )
 
                 # Parse the content from the result
@@ -208,9 +188,7 @@ class BaseMCPClient(ABC):
                 self.loop.close()
             logger.info("Cleaned up MCP client for %s", self.server_config.server_name)
         except Exception as e:
-            logger.warning(
-                f"Error during cleanup for {self.server_config.server_name}: {e}"
-            )
+            logger.warning(f"Error during cleanup for {self.server_config.server_name}: {e}")
 
 
 class BaseAsyncMCPClient(ABC):
@@ -227,30 +205,20 @@ class BaseAsyncMCPClient(ABC):
     async def connect_to_server(self, timeout: float = DEFAULT_CONNECT_TIMEOUT):
         """Asynchronously connect to the MCP server"""
         try:
-            success = await self._initialize_connection(
-                self.server_config, timeout=timeout
-            )
+            success = await self._initialize_connection(self.server_config, timeout=timeout)
 
             if success:
                 await self.session.initialize()
                 self.initialized = True
-                logger.info(
-                    f"Successfully connected to MCP server: {self.server_config.server_name}"
-                )
+                logger.info(f"Successfully connected to MCP server: {self.server_config.server_name}")
             else:
-                raise MCPConnectionError(
-                    self.server_config.server_name, "Failed to establish connection"
-                )
+                raise MCPConnectionError(self.server_config.server_name, "Failed to establish connection")
         except Exception as e:
-            logger.error(
-                f"Failed to connect to MCP server {self.server_config.server_name}: {str(e)}"
-            )
+            logger.error(f"Failed to connect to MCP server {self.server_config.server_name}: {str(e)}")
             raise
 
     @abstractmethod
-    async def _initialize_connection(
-        self, server_config: BaseServerConfig, timeout: float
-    ) -> bool:
+    async def _initialize_connection(self, server_config: BaseServerConfig, timeout: float) -> bool:
         """Asynchronously initialize the connection"""
         raise NotImplementedError("Subclasses must implement _initialize_connection")
 
@@ -260,9 +228,7 @@ class BaseAsyncMCPClient(ABC):
         response = await self.session.list_tools()
         return response.tools
 
-    async def execute_tool(
-        self, tool_name: str, tool_args: Dict[str, Any]
-    ) -> Tuple[str, bool]:
+    async def execute_tool(self, tool_name: str, tool_args: Dict[str, Any]) -> Tuple[str, bool]:
         """Asynchronously execute a tool"""
         self._check_initialized()
 
@@ -346,10 +312,6 @@ class BaseAsyncMCPClient(ABC):
                 else:
                     cleanup_func()
             self.initialized = False
-            logger.info(
-                f"Cleaned up async MCP client for {self.server_config.server_name}"
-            )
+            logger.info(f"Cleaned up async MCP client for {self.server_config.server_name}")
         except Exception as e:
-            logger.warning(
-                f"Error during async cleanup for {self.server_config.server_name}: {e}"
-            )
+            logger.warning(f"Error during async cleanup for {self.server_config.server_name}: {e}")

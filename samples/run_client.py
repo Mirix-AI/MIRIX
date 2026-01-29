@@ -15,9 +15,7 @@ from pathlib import Path
 from mirix import MirixClient
 
 # Configure logging
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 # stay in the source code root directory
@@ -28,9 +26,10 @@ logger = logging.getLogger(__name__)
 # export MIRIX_API_KEY=your_api_key_here # for windows it should be: $env:MIRIX_API_KEY = "sk-your-key-here"
 # then run python samples/run_client.py
 
+
 def print_memories(memories):
     """Print retrieved memories in a formatted way.
-    
+
     Args:
         memories: Dictionary containing retrieved memories from retrieve_with_conversation
     """
@@ -42,17 +41,17 @@ def print_memories(memories):
         print(f"  📅 Date range applied:")
         print(f"     Start: {date_range.get('start')}")
         print(f"     End: {date_range.get('end')}")
-    
+
     if memories.get("memories"):
         for memory_type, data in memories["memories"].items():
             if data and data.get("total_count", 0) > 0:
                 print(f"\n  {'=' * 60}")
                 print(f"  {memory_type.upper()} MEMORY (Total: {data['total_count']})")
                 print(f"  {'=' * 60}")
-                
+
                 # Debug: Check what keys are in the data
                 items = data.get("items", [])
-                
+
                 # Episodic memory uses 'recent' and 'relevant' keys instead of 'items'
                 if not items and memory_type == "episodic":
                     # Combine both recent and relevant episodic memories
@@ -62,59 +61,61 @@ def print_memories(memories):
                     seen_ids = set()
                     items = []
                     for item in recent + relevant:
-                        if item.get('id') not in seen_ids:
+                        if item.get("id") not in seen_ids:
                             items.append(item)
-                            seen_ids.add(item.get('id'))
-                
+                            seen_ids.add(item.get("id"))
+
                 # Some other memory types may also use 'recent' as fallback
                 if not items and "recent" in data:
                     items = data.get("recent", [])
-                
+
                 # Debug: If still no items but total_count > 0, log the issue
                 if not items and data.get("total_count", 0) > 0:
                     print(f"  ⚠️  DEBUG: No items found despite total_count={data['total_count']}")
                     print(f"      Available keys in data: {list(data.keys())}")
                     if data.keys():
                         for key in data.keys():
-                            if key not in ['total_count', 'items', 'recent']:
-                                print(f"      {key}: {type(data[key])} (length: {len(data[key]) if isinstance(data[key], (list, dict)) else 'N/A'})")
+                            if key not in ["total_count", "items", "recent"]:
+                                print(
+                                    f"      {key}: {type(data[key])} (length: {len(data[key]) if isinstance(data[key], (list, dict)) else 'N/A'})"
+                                )
                     print()
-                
+
                 if memory_type == "core":
                     # Core memory: blocks with label and value
                     for i, item in enumerate(items, 1):
                         print(f"  [{i}] {item.get('label', 'N/A')}: {item.get('value', 'N/A')}")
                     print()
-                
+
                 elif memory_type == "episodic":
                     # Episodic memory: event with full details
                     for i, item in enumerate(items, 1):
-                        summary = item.get('summary', 'N/A')
+                        summary = item.get("summary", "N/A")
                         # API returns 'timestamp' not 'occurred_at'
-                        occurred = item.get('timestamp', item.get('occurred_at', 'N/A'))
-                        event_type = item.get('event_type', 'N/A')
-                        details = item.get('details', '')
-                        actor = item.get('actor', 'N/A')
-                        
+                        occurred = item.get("timestamp", item.get("occurred_at", "N/A"))
+                        event_type = item.get("event_type", "N/A")
+                        details = item.get("details", "")
+                        actor = item.get("actor", "N/A")
+
                         print(f"  [{i}] {summary}")
                         print(f"      Time: {occurred}")
-                        if event_type != 'N/A':
+                        if event_type != "N/A":
                             print(f"      Type: {event_type}")
-                        if actor != 'N/A':
+                        if actor != "N/A":
                             print(f"      Actor: {actor}")
                         if details:
                             print(f"      Details: {details}")
                         print()
-                
+
                 elif memory_type == "procedural":
                     # Procedural memory: procedure with summary (API doesn't return full details)
                     for i, item in enumerate(items, 1):
                         # API returns 'summary' not 'description'
-                        summary = item.get('summary', item.get('description', 'N/A'))
-                        entry_type = item.get('entry_type', 'N/A')
+                        summary = item.get("summary", item.get("description", "N/A"))
+                        entry_type = item.get("entry_type", "N/A")
                         # API doesn't return 'steps' in retrieve endpoint (only id, entry_type, summary)
-                        steps = item.get('steps', [])
-                        
+                        steps = item.get("steps", [])
+
                         print(f"  [{i}] [{entry_type}] {summary}")
                         if steps:
                             print(f"      Steps ({len(steps)}):")
@@ -123,65 +124,65 @@ def print_memories(memories):
                         else:
                             print("      Steps: Not included in response (use search API for full details)")
                         print()
-                
+
                 elif memory_type == "semantic":
                     # Semantic memory: concept with name and summary
                     for i, item in enumerate(items, 1):
-                        name = item.get('name', 'N/A')
-                        summary = item.get('summary', 'N/A')
-                        source = item.get('source', 'N/A')
-                        details = item.get('details', '')
-                        
+                        name = item.get("name", "N/A")
+                        summary = item.get("summary", "N/A")
+                        source = item.get("source", "N/A")
+                        details = item.get("details", "")
+
                         print(f"  [{i}] {name}")
                         print(f"      Summary: {summary}")
                         if details:
                             print(f"      Details: {details}")
                         print(f"      Source: {source}")
                         print()
-                
+
                 elif memory_type == "resource":
                     # Resource memory: document summary (API doesn't return content in retrieve endpoint)
                     for i, item in enumerate(items, 1):
-                        title = item.get('title', 'N/A')
-                        res_type = item.get('resource_type', 'N/A')
-                        summary = item.get('summary', 'N/A')
+                        title = item.get("title", "N/A")
+                        res_type = item.get("resource_type", "N/A")
+                        summary = item.get("summary", "N/A")
                         # API doesn't return 'content' in retrieve endpoint (only id, title, summary, resource_type)
-                        content = item.get('content', '')
-                        
+                        content = item.get("content", "")
+
                         print(f"  [{i}] [{res_type}] {title}")
                         print(f"      Summary: {summary}")
-                        
+
                         if content:
                             content_len = len(content)
                             print(f"      Content Length: {content_len} characters")
-                            preview = content[:200].replace('\n', ' ')
+                            preview = content[:200].replace("\n", " ")
                             if len(content) > 200:
                                 preview += "..."
                             print(f"      Preview: {preview}")
                         else:
                             print("      Content: Not included in response (use search API for full details)")
                         print()
-                
+
                 elif memory_type == "knowledge_vault":
                     # Knowledge vault: API only returns id and caption in retrieve endpoint
                     for i, item in enumerate(items, 1):
-                        caption = item.get('caption', 'N/A')
+                        caption = item.get("caption", "N/A")
                         # API doesn't return entry_type, source, sensitivity in retrieve endpoint
-                        entry_type = item.get('entry_type', 'N/A')
-                        source = item.get('source', 'N/A')
-                        sensitivity = item.get('sensitivity', 'N/A')
-                        
+                        entry_type = item.get("entry_type", "N/A")
+                        source = item.get("source", "N/A")
+                        sensitivity = item.get("sensitivity", "N/A")
+
                         print(f"  [{i}] {caption}")
-                        if entry_type != 'N/A':
+                        if entry_type != "N/A":
                             print(f"      Type: {entry_type}")
-                        if source != 'N/A':
+                        if source != "N/A":
                             print(f"      Source: {source}")
-                        if sensitivity != 'N/A':
+                        if sensitivity != "N/A":
                             print(f"      Sensitivity: {sensitivity}")
                         # Don't print secret_value for security
                         print("      Secret: [REDACTED for security]")
                         print()
-                
+
                 else:
                     # Fallback for unknown types
                     for i, item in enumerate(items, 1):
@@ -192,24 +193,22 @@ def print_memories(memories):
 
 def convert_search_results_to_memory_format(search_results):
     """Convert search API results to retrieve_with_conversation format.
-    
+
     Args:
         search_results: Dictionary from client.search() with flat 'results' list
-        
+
     Returns:
         Dictionary in the format expected by print_memories()
     """
     # Initialize the structure
-    converted = {
-        "memories": {}
-    }
-    
+    converted = {"memories": {}}
+
     # Get the flat results list
     results = search_results.get("results", [])
-    
+
     if not results:
         return converted
-    
+
     # Group results by memory_type
     memory_types = {}
     for result in results:
@@ -217,20 +216,17 @@ def convert_search_results_to_memory_format(search_results):
         if mem_type not in memory_types:
             memory_types[mem_type] = []
         memory_types[mem_type].append(result)
-    
+
     # Convert to the nested format
     for mem_type, items in memory_types.items():
-        converted["memories"][mem_type] = {
-            "total_count": len(items),
-            "items": items
-        }
-    
+        converted["memories"][mem_type] = {"total_count": len(items), "items": items}
+
     return converted
 
 
 def test_retrieve_with_conversation(client, user_id):
     """Test the retrieve_with_conversation API.
-    
+
     Args:
         client: MirixClient instance
         user_id: User ID for the retrieval
@@ -238,21 +234,18 @@ def test_retrieve_with_conversation(client, user_id):
     print("Step 4: Retrieving memories with conversation context...")
     print("-" * 70)
     try:
-        filter_tags = {} #{"expert_id": "expert-234"}
+        filter_tags = {}  # {"expert_id": "expert-234"}
 
         memories = client.retrieve_with_conversation(
             user_id=user_id,
             messages=[
                 {
                     "role": "user",
-                    "content": [{
-                        "type": "text",
-                        "text": "What did we discuss on QuickBooks in last 4 days?"
-                    }]
+                    "content": [{"type": "text", "text": "What did we discuss on QuickBooks in last 4 days?"}],
                 }
             ],
             limit=10,  # Retrieve up to 10 items per memory type
-            filter_tags = filter_tags
+            filter_tags=filter_tags,
         )
 
         print("[OK] Retrieved memories successfully")
@@ -260,13 +253,14 @@ def test_retrieve_with_conversation(client, user_id):
     except Exception as e:
         print(f"[ERROR] Error retrieving memories: {e}")
         import traceback
+
         traceback.print_exc()
     print()
 
 
 def test_search(client, user_id):
     """Test the search API.
-    
+
     Args:
         client: MirixClient instance
         user_id: User ID for the search
@@ -280,8 +274,8 @@ def test_search(client, user_id):
             query="support",
             memory_type="all",
             search_method="bm25",
-            #similarity_threshold=0.50,
-            limit=30
+            # similarity_threshold=0.50,
+            limit=30,
         )
 
         print(f"[OK] Search completed: {results.get('success', False)}")
@@ -290,24 +284,25 @@ def test_search(client, user_id):
         print(f"  Search Method: {results.get('search_method', 'N/A')}")
         print(f"  Total Results: {results.get('count', 0)}")
         print()
-        
+
         # Convert search results to memory format and use print_memories
         if results.get("count", 0) > 0:
             converted_memories = convert_search_results_to_memory_format(results)
             print_memories(converted_memories)
         else:
             print("  No results found")
-            
+
     except Exception as e:
         print(f"[ERROR] Error searching memories: {e}")
         import traceback
+
         traceback.print_exc()
     print()
 
 
 def test_search_all_users(client):
     """Test the search_all_users API to search across all users in the organization.
-    
+
     Args:
         client: MirixClient instance
         client_id: Client ID for organization and scope filtering
@@ -322,7 +317,7 @@ def test_search_all_users(client):
             search_method="embedding",
             limit=20,  # Total results across all users
             client_id=client.client_id,
-            similarity_threshold=0.25
+            similarity_threshold=0.25,
         )
 
         print(f"[OK] Cross-user search completed: {results.get('success', False)}")
@@ -333,28 +328,29 @@ def test_search_all_users(client):
         print(f"  Client Scope: {results.get('client_scope', 'N/A')}")
         print(f"  Total Results: {results.get('count', 0)}")
         print()
-        
+
         # Convert search results to memory format and use print_memories
         if results.get("count", 0) > 0:
             converted_memories = convert_search_results_to_memory_format(results)
-            
+
             # Print header with user context
             print("  🔍 Results from multiple users (filtered by client scope):")
             print()
-            
+
             print_memories(converted_memories)
         else:
             print("  No results found across all users")
-            
+
     except Exception as e:
         print(f"[ERROR] Error searching memories across all users: {e}")
         import traceback
+
         traceback.print_exc()
     print()
 
 
 def main():
-    
+
     # Resolve config path relative to project root
     # Get the directory where this script is located (samples/)
     script_dir = Path(__file__).parent
@@ -362,18 +358,18 @@ def main():
     project_root = script_dir.parent
     # Build path to config file
     config_path = project_root / "mirix" / "configs" / "examples" / "mirix_gemini.yaml"
-    
+
     # Verify the config file exists
     if not config_path.exists():
         raise FileNotFoundError(f"Config file not found: {config_path}")
-    
+
     # Create MirixClient (connects to server via REST API)
-    client_id = 'sales-loader-client' #'demo-client-app'  # Identifies the client application
-    user_id = 'caring cathy' #'demo-user'  # Identifies the end-user within the client app
-    org_id = 'demo-org'
-    
+    client_id = "sales-loader-client"  #'demo-client-app'  # Identifies the client application
+    user_id = "caring cathy"  #'demo-user'  # Identifies the end-user within the client app
+    org_id = "demo-org"
+
     client = MirixClient(
-        #api_key=api_key,
+        # api_key=api_key,
         client_id="sales-loader-client",
         client_scope="Sales",
         org_id="demo-org",
@@ -385,7 +381,7 @@ def main():
         # Alternative: config_path=str(project_root / "mirix/configs/examples/mirix_openai.yaml"),
         update_agents=False,
     )
-    
+
     """
     result = client.add(
        user_id=user_id,  # Optional - uses admin user if None
@@ -419,10 +415,10 @@ def main():
     test_retrieve_with_conversation(client, user_id)
 
     # 5. Example: Search memories using BM25
-    #test_search(client, user_id)
+    # test_search(client, user_id)
 
     # 6. Example: Search across all users in organization
-    #test_search_all_users(client)
+    # test_search_all_users(client)
 
     # 7. Example: Retrieve by topic
     # print("Step 5: Retrieving by topic...")
@@ -458,16 +454,16 @@ def main():
     #    )
     #    print(f"[OK] Search completed: {results.get('success', False)}")
     #    print(f"  Found {results.get('count', 0)} total results across all memory types")
-        
-        # Display sample results
+
+    # Display sample results
     #    if results.get("results"):
     #        print(f"  Sample results:")
     #        for i, item in enumerate(results["results"][:3], 1):
     #            mem_type = item.get("memory_type", "unknown").upper()
     #            summary = item.get("summary", item.get("caption", item.get("name", "N/A")))
     #            print(f"    {i}. [{mem_type}] {summary[:60]}...")
-        
-        # Example 2: Search only episodic memories
+
+    # Example 2: Search only episodic memories
     #    print("\n  Searching only episodic memories in details field...")
     #    episodic_results = client.search(
     #        user_id=user_id,

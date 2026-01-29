@@ -25,8 +25,6 @@ class BlocksAgents(Base):
     )
 
     # unique agent + block label
-    agent_id: Mapped[str] = mapped_column(
-        String, ForeignKey("agents.id"), primary_key=True
-    )
+    agent_id: Mapped[str] = mapped_column(String, ForeignKey("agents.id"), primary_key=True)
     block_id: Mapped[str] = mapped_column(String, primary_key=True)
     block_label: Mapped[str] = mapped_column(String, primary_key=True)

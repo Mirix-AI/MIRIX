@@ -4,6 +4,7 @@ Manager class for raw memory CRUD operations.
 Raw memories are unprocessed task context stored for task sharing use cases,
 with a 14-day TTL enforced by nightly cleanup jobs.
 """
+
 import base64
 import datetime as dt
 import json
@@ -18,10 +19,8 @@ from mirix.orm.errors import NoResultFound
 from mirix.orm.raw_memory import RawMemory
 from mirix.schemas.agent import AgentState
 from mirix.schemas.client import Client as PydanticClient
-from mirix.schemas.raw_memory import (
-    RawMemoryItem as PydanticRawMemoryItem,
-    RawMemoryItemCreate as PydanticRawMemoryItemCreate,
-)
+from mirix.schemas.raw_memory import RawMemoryItem as PydanticRawMemoryItem
+from mirix.schemas.raw_memory import RawMemoryItemCreate as PydanticRawMemoryItemCreate
 from mirix.schemas.user import User as PydanticUser
 from mirix.settings import settings
 from mirix.utils import enforce_types
@@ -69,9 +68,7 @@ class RawMemoryManager:
         # Backward compatibility: if client_id not provided, use actor.id as fallback
         if client_id is None:
             client_id = actor.id
-            logger.warning(
-                "client_id not provided to create_raw_memory, using actor.id as fallback"
-            )
+            logger.warning("client_id not provided to create_raw_memory, using actor.id as fallback")
 
         # user_id should be explicitly provided for proper multi-user isolation
         # Fallback to admin user if not provided
@@ -79,17 +76,13 @@ class RawMemoryManager:
             from mirix.services.user_manager import UserManager
 
             user_id = UserManager.ADMIN_USER_ID
-            logger.warning(
-                "user_id not provided to create_raw_memory, using ADMIN_USER_ID as fallback"
-            )
+            logger.warning("user_id not provided to create_raw_memory, using ADMIN_USER_ID as fallback")
 
         # Ensure ID is set before model_dump
         if not raw_memory.id:
             from mirix.utils import generate_unique_short_id
 
-            raw_memory.id = generate_unique_short_id(
-                self.session_maker, RawMemory, "raw_mem"
-            )
+            raw_memory.id = generate_unique_short_id(self.session_maker, RawMemory, "raw_mem")
 
         logger.debug(
             "Creating raw memory: id=%s, client_id=%s, user_id=%s, filter_tags=%s",
@@ -108,9 +101,7 @@ class RawMemoryManager:
                 context_embedding = embed_model.get_text_embedding(raw_memory.context)
 
                 # Pad embeddings using Pydantic validator
-                raw_memory.context_embedding = PydanticRawMemoryItemCreate.pad_embeddings(
-                    context_embedding
-                )
+                raw_memory.context_embedding = PydanticRawMemoryItemCreate.pad_embeddings(context_embedding)
                 raw_memory.embedding_config = agent_state.embedding_config
             except Exception as e:
                 logger.warning("Failed to generate embeddings for raw memory creation: %s", e)
@@ -144,9 +135,7 @@ class RawMemoryManager:
         # Create the raw memory item (with conditional Redis caching)
         with self.session_maker() as session:
             raw_memory_item = RawMemory(**raw_memory_dict)
-            raw_memory_item.create_with_redis(
-                session, actor=actor, use_cache=use_cache
-            )
+            raw_memory_item.create_with_redis(session, actor=actor, use_cache=use_cache)
 
             logger.info("Raw memory created: id=%s", raw_memory_item.id)
             return raw_memory_item.to_pydantic()
@@ -181,9 +170,7 @@ class RawMemoryManager:
                 cached_data = redis_client.get_json(redis_key)
                 if cached_data:
                     # Cache HIT - return from Redis
-                    logger.debug(
-                        "Redis cache HIT for raw memory %s", memory_id
-                    )
+                    logger.debug("Redis cache HIT for raw memory %s", memory_id)
                     return PydanticRawMemoryItem(**cached_data)
         except Exception as e:
             # Log but continue to PostgreSQL on Redis error
@@ -203,18 +190,14 @@ class RawMemoryManager:
                     name="system-client",
                 )
 
-                raw_memory_item = RawMemory.read(
-                    db_session=session, identifier=memory_id, actor=actor
-                )
+                raw_memory_item = RawMemory.read(db_session=session, identifier=memory_id, actor=actor)
                 pydantic_memory = raw_memory_item.to_pydantic()
 
                 # Populate Redis cache for next time
                 try:
                     if redis_client:
                         data = pydantic_memory.model_dump(mode="json")
-                        redis_client.set_json(
-                            redis_key, data, ttl=settings.redis_ttl_default
-                        )
+                        redis_client.set_json(redis_key, data, ttl=settings.redis_ttl_default)
                         logger.debug(
                             "Populated Redis cache for raw memory %s",
                             memory_id,
@@ -228,9 +211,7 @@ class RawMemoryManager:
 
                 return pydantic_memory
             except NoResultFound:
-                raise NoResultFound(
-                    f"Raw memory record with id {memory_id} not found."
-                )
+                raise NoResultFound(f"Raw memory record with id {memory_id} not found.")
 
     @enforce_types
     def update_raw_memory(
@@ -271,11 +252,7 @@ class RawMemoryManager:
         with self.session_maker() as session:
             # Fetch the existing memory with row-level lock (SELECT FOR UPDATE)
             # This prevents race conditions when multiple agents append/merge concurrently
-            stmt = (
-                select(RawMemory)
-                .where(RawMemory.id == memory_id)
-                .with_for_update()
-            )
+            stmt = select(RawMemory).where(RawMemory.id == memory_id).with_for_update()
 
             result = session.execute(stmt)
             try:
@@ -294,9 +271,7 @@ class RawMemoryManager:
             # Update context
             if new_context is not None:
                 if context_update_mode == "append":
-                    raw_memory.context = (
-                        f"{raw_memory.context}\n\n{new_context}"
-                    )
+                    raw_memory.context = f"{raw_memory.context}\n\n{new_context}"
                     logger.debug("Appended to context for memory %s", memory_id)
                 else:  # replace
                     raw_memory.context = new_context
@@ -317,20 +292,14 @@ class RawMemoryManager:
                     logger.debug("Replaced filter_tags for memory %s", memory_id)
 
             # Regenerate embeddings if context changed and agent_state provided
-            if (
-                BUILD_EMBEDDINGS_FOR_MEMORY
-                and agent_state is not None
-                and new_context is not None
-            ):
+            if BUILD_EMBEDDINGS_FOR_MEMORY and agent_state is not None and new_context is not None:
                 try:
                     from mirix.embeddings import embedding_model
 
                     embed_model = embedding_model(agent_state.embedding_config)
                     context_embedding = embed_model.get_text_embedding(raw_memory.context)
 
-                    raw_memory.context_embedding = PydanticRawMemoryItem.pad_embeddings(
-                        context_embedding
-                    )
+                    raw_memory.context_embedding = PydanticRawMemoryItem.pad_embeddings(context_embedding)
                     raw_memory.embedding_config = agent_state.embedding_config
                 except Exception as e:
                     logger.warning("Failed to regenerate embeddings for raw memory update: %s", e)
@@ -354,9 +323,7 @@ class RawMemoryManager:
                 if redis_client:
                     redis_key = f"{redis_client.RAW_MEMORY_PREFIX}{memory_id}"
                     redis_client.delete(redis_key)
-                    logger.debug(
-                        "Invalidated Redis cache for memory %s", memory_id
-                    )
+                    logger.debug("Invalidated Redis cache for memory %s", memory_id)
             except Exception as e:
                 logger.warning(
                     "Failed to invalidate Redis cache for memory %s: %s",
@@ -387,9 +354,7 @@ class RawMemoryManager:
 
         with self.session_maker() as session:
             try:
-                raw_memory = RawMemory.read(
-                    db_session=session, identifier=memory_id, actor=actor
-                )
+                raw_memory = RawMemory.read(db_session=session, identifier=memory_id, actor=actor)
                 session.delete(raw_memory)
                 session.commit()
 
@@ -399,9 +364,7 @@ class RawMemoryManager:
 
                     redis_client = get_redis_client()
                     if redis_client:
-                        redis_key = (
-                            f"{redis_client.RAW_MEMORY_PREFIX}{memory_id}"
-                        )
+                        redis_key = f"{redis_client.RAW_MEMORY_PREFIX}{memory_id}"
                         redis_client.delete(redis_key)
                         logger.debug(
                             "Invalidated Redis cache for deleted memory %s",
@@ -417,9 +380,7 @@ class RawMemoryManager:
                 logger.info("Raw memory deleted: id=%s", memory_id)
                 return True
             except NoResultFound:
-                logger.warning(
-                    "Raw memory not found for deletion: id=%s", memory_id
-                )
+                logger.warning("Raw memory not found for deletion: id=%s", memory_id)
                 return False
 
     @enforce_types
@@ -452,13 +413,11 @@ class RawMemoryManager:
         # Parse sort string
         ascending = not sort.startswith("-")
         sort_field_name = sort.lstrip("-")
-        
+
         # Validate sort field
         valid_sort_fields = {"updated_at", "created_at", "occurred_at"}
         if sort_field_name not in valid_sort_fields:
-            raise ValueError(
-                f"Invalid sort field: {sort_field_name}. Must be one of {valid_sort_fields}"
-            )
+            raise ValueError(f"Invalid sort field: {sort_field_name}. Must be one of {valid_sort_fields}")
 
         # Decode cursor if provided
         decoded_cursor = None
@@ -467,11 +426,11 @@ class RawMemoryManager:
                 decoded_bytes = base64.b64decode(cursor.encode())
                 decoded_str = decoded_bytes.decode()
                 decoded_cursor = json.loads(decoded_str)
-                
+
                 # Validate cursor has required fields
                 if sort_field_name not in decoded_cursor or "id" not in decoded_cursor:
                     raise ValueError("Invalid cursor format: missing required fields")
-                    
+
                 # Parse datetime from cursor and strip timezone for DB comparison
                 cursor_sort_value = datetime.fromisoformat(decoded_cursor[sort_field_name])
                 if cursor_sort_value.tzinfo:
@@ -482,9 +441,7 @@ class RawMemoryManager:
 
         with self.session_maker() as session:
             # Base query filtering by organization_id
-            base_query = select(RawMemory).where(
-                RawMemory.organization_id == user.organization_id
-            )
+            base_query = select(RawMemory).where(RawMemory.organization_id == user.organization_id)
 
             # Apply filter_tags (AND filter on top-level keys)
             if filter_tags:
@@ -493,44 +450,28 @@ class RawMemoryManager:
                         # Scope matching: input value must be in memory's scope field
                         base_query = base_query.where(
                             or_(
-                                func.lower(RawMemory.filter_tags[key].as_string()).contains(
-                                    str(value).lower()
-                                ),
+                                func.lower(RawMemory.filter_tags[key].as_string()).contains(str(value).lower()),
                                 RawMemory.filter_tags[key].as_string() == str(value),
                             )
                         )
                     else:
                         # Other keys: exact match
-                        base_query = base_query.where(
-                            RawMemory.filter_tags[key].as_string() == str(value)
-                        )
+                        base_query = base_query.where(RawMemory.filter_tags[key].as_string() == str(value))
 
             # Apply time range filtering
             if time_range:
                 if time_range.get("created_at_gte"):
-                    base_query = base_query.where(
-                        RawMemory.created_at >= time_range["created_at_gte"]
-                    )
+                    base_query = base_query.where(RawMemory.created_at >= time_range["created_at_gte"])
                 if time_range.get("created_at_lte"):
-                    base_query = base_query.where(
-                        RawMemory.created_at <= time_range["created_at_lte"]
-                    )
+                    base_query = base_query.where(RawMemory.created_at <= time_range["created_at_lte"])
                 if time_range.get("occurred_at_gte"):
-                    base_query = base_query.where(
-                        RawMemory.occurred_at >= time_range["occurred_at_gte"]
-                    )
+                    base_query = base_query.where(RawMemory.occurred_at >= time_range["occurred_at_gte"])
                 if time_range.get("occurred_at_lte"):
-                    base_query = base_query.where(
-                        RawMemory.occurred_at <= time_range["occurred_at_lte"]
-                    )
+                    base_query = base_query.where(RawMemory.occurred_at <= time_range["occurred_at_lte"])
                 if time_range.get("updated_at_gte"):
-                    base_query = base_query.where(
-                        RawMemory.updated_at >= time_range["updated_at_gte"]
-                    )
+                    base_query = base_query.where(RawMemory.updated_at >= time_range["updated_at_gte"])
                 if time_range.get("updated_at_lte"):
-                    base_query = base_query.where(
-                        RawMemory.updated_at <= time_range["updated_at_lte"]
-                    )
+                    base_query = base_query.where(RawMemory.updated_at <= time_range["updated_at_lte"])
 
             # Apply cursor pagination
             if decoded_cursor:

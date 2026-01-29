@@ -38,6 +38,7 @@ def parse_json(string) -> dict:
 
     try:
         from json_repair import repair_json
+
         string = repair_json(string)
         result = json_loads(string)
         return result

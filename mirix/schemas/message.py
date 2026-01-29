@@ -63,19 +63,14 @@ class MessageCreate(BaseModel):
         json_schema_extra=get_mirix_message_content_union_str_json_schema(),
     )
     name: Optional[str] = Field(None, description="The name of the participant.")
-    otid: Optional[str] = Field(
-        None, description="The offline threading id associated with this message"
-    )
+    otid: Optional[str] = Field(None, description="The offline threading id associated with this message")
     sender_id: Optional[str] = Field(
         None,
         description="The id of the sender of the message, can be an identity id or agent id",
     )
-    group_id: Optional[str] = Field(
-        None, description="The multi-agent group that the message was sent in"
-    )
+    group_id: Optional[str] = Field(None, description="The multi-agent group that the message was sent in")
     filter_tags: Optional[Dict[str, Any]] = Field(
-        None,
-        description="Optional tags for filtering and categorizing this message and related memories"
+        None, description="Optional tags for filtering and categorizing this message and related memories"
     )
 
     def model_dump(self, to_orm: bool = False, **kwargs) -> Dict[str, Any]:
@@ -89,9 +84,7 @@ class MessageCreate(BaseModel):
 class MessageUpdate(BaseModel):
     """Request to update a message"""
 
-    role: Optional[MessageRole] = Field(
-        None, description="The role of the participant."
-    )
+    role: Optional[MessageRole] = Field(None, description="The role of the participant.")
     content: Optional[Union[str, List[MirixMessageContentUnion]]] = Field(
         None,
         description="The content of the message.",
@@ -105,9 +98,7 @@ class MessageUpdate(BaseModel):
     name: Optional[str] = Field(None, description="The name of the participant.")
     # NOTE: we probably shouldn't allow updating the created_at field, right?
     # created_at: Optional[datetime] = Field(None, description="The time the message was created.")
-    tool_calls: Optional[List[OpenAIToolCall,]] = Field(
-        None, description="The list of tool calls requested."
-    )
+    tool_calls: Optional[List[OpenAIToolCall,]] = Field(None, description="The list of tool calls requested.")
     tool_call_id: Optional[str] = Field(None, description="The id of the tool call.")
 
     def model_dump(self, to_orm: bool = False, **kwargs) -> Dict[str, Any]:
@@ -137,26 +128,14 @@ class Message(BaseMessage):
     """
 
     id: str = BaseMessage.generate_id_field()
-    organization_id: Optional[str] = Field(
-        None, description="The unique identifier of the organization."
-    )
-    user_id: Optional[str] = Field(
-        None, description="The unique identifier of the user."
-    )
-    client_id: Optional[str] = Field(
-        None, description="The unique identifier of the client application."
-    )
-    agent_id: Optional[str] = Field(
-        None, description="The unique identifier of the agent."
-    )
-    model: Optional[str] = Field(
-        None, description="The model used to make the function call."
-    )
+    organization_id: Optional[str] = Field(None, description="The unique identifier of the organization.")
+    user_id: Optional[str] = Field(None, description="The unique identifier of the user.")
+    client_id: Optional[str] = Field(None, description="The unique identifier of the client application.")
+    agent_id: Optional[str] = Field(None, description="The unique identifier of the agent.")
+    model: Optional[str] = Field(None, description="The model used to make the function call.")
     # Basic OpenAI-style fields
     role: MessageRole = Field(..., description="The role of the participant.")
-    content: Optional[List[MirixMessageContentUnion]] = Field(
-        None, description="The content of the message."
-    )
+    content: Optional[List[MirixMessageContentUnion]] = Field(None, description="The content of the message.")
     # NOTE: in OpenAI, this field is only used for roles 'user', 'assistant', and 'function' (now deprecated). 'tool' does not use it.
     name: Optional[str] = Field(
         None,
@@ -166,22 +145,14 @@ class Message(BaseMessage):
         None,
         description="The list of tool calls requested. Only applicable for role assistant.",
     )
-    tool_call_id: Optional[str] = Field(
-        None, description="The ID of the tool call. Only applicable for role tool."
-    )
+    tool_call_id: Optional[str] = Field(None, description="The ID of the tool call. Only applicable for role tool.")
     # Extras
-    step_id: Optional[str] = Field(
-        None, description="The id of the step that this message was created in."
-    )
-    otid: Optional[str] = Field(
-        None, description="The offline threading id associated with this message"
-    )
+    step_id: Optional[str] = Field(None, description="The id of the step that this message was created in.")
+    otid: Optional[str] = Field(None, description="The offline threading id associated with this message")
     tool_returns: Optional[List[ToolReturn]] = Field(
         None, description="Tool execution return information for prior tool calls"
     )
-    group_id: Optional[str] = Field(
-        None, description="The multi-agent group that the message was sent in"
-    )
+    group_id: Optional[str] = Field(None, description="The multi-agent group that the message was sent in")
     sender_id: Optional[str] = Field(
         None,
         description="The id of the sender of the message, can be an identity id or agent id",
@@ -191,19 +162,14 @@ class Message(BaseMessage):
         default_factory=get_utc_time,
         description="The timestamp when the object was created.",
     )
-    
+
     # NEW: Filter tags for flexible filtering and categorization
     filter_tags: Optional[Dict[str, Any]] = Field(
         default=None,
         description="Custom filter tags for filtering and categorization",
         examples=[
-            {
-                "project_id": "proj-abc",
-                "session_id": "sess-xyz",
-                "tags": ["important", "work"],
-                "priority": "high"
-            }
-        ]
+            {"project_id": "proj-abc", "session_id": "sess-xyz", "tags": ["important", "work"], "priority": "high"}
+        ],
     )
 
     @field_validator("role")
@@ -252,9 +218,7 @@ class Message(BaseMessage):
                     and assistant_message_tool_name
                     in [
                         tool_call.function.name
-                        for tool_call in assistant_messages_by_tool_call[
-                            message.tool_call_id
-                        ].tool_calls
+                        for tool_call in assistant_messages_by_tool_call[message.tool_call_id].tool_calls
                     ]
                 ):
                     message_ids_to_remove.append(message.id)
@@ -343,9 +307,7 @@ class Message(BaseMessage):
                                 )
                             )
                         else:
-                            warnings.warn(
-                                f"Unrecognized content part in assistant message: {content_part}"
-                            )
+                            warnings.warn(f"Unrecognized content part in assistant message: {content_part}")
 
             if self.tool_calls is not None:
                 # This is type FunctionCall
@@ -353,10 +315,7 @@ class Message(BaseMessage):
                     otid = Message.generate_otid_from_id(self.id, len(messages))
                     # If we're supporting using assistant message,
                     # then we want to treat certain function calls as a special case
-                    if (
-                        use_assistant_message
-                        and tool_call.function.name == assistant_message_tool_name
-                    ):
+                    if use_assistant_message and tool_call.function.name == assistant_message_tool_name:
                         # We need to unpack the actual message contents from the function call
                         try:
                             func_args = parse_json(tool_call.function.arguments)
@@ -400,16 +359,10 @@ class Message(BaseMessage):
             #         "message": response_string,
             #         "time": formatted_time,
             #     }
-            if (
-                self.content
-                and len(self.content) == 1
-                and isinstance(self.content[0], TextContent)
-            ):
+            if self.content and len(self.content) == 1 and isinstance(self.content[0], TextContent):
                 text_content = self.content[0].text
             else:
-                raise ValueError(
-                    f"Invalid tool return (no text object on message): {self.content}"
-                )
+                raise ValueError(f"Invalid tool return (no text object on message): {self.content}")
 
             try:
                 function_return = parse_json(text_content)
@@ -430,9 +383,7 @@ class Message(BaseMessage):
                     id=self.id,
                     date=self.created_at,
                     tool_return=text_content,
-                    status=self.tool_returns[0].status
-                    if self.tool_returns
-                    else status_enum,
+                    status=self.tool_returns[0].status if self.tool_returns else status_enum,
                     tool_call_id=self.tool_call_id,
                     stdout=self.tool_returns[0].stdout if self.tool_returns else None,
                     stderr=self.tool_returns[0].stderr if self.tool_returns else None,
@@ -443,11 +394,7 @@ class Message(BaseMessage):
             )
         elif self.role == MessageRole.user:
             # This is type UserMessage
-            if (
-                self.content
-                and len(self.content) == 1
-                and isinstance(self.content[0], TextContent)
-            ):
+            if self.content and len(self.content) == 1 and isinstance(self.content[0], TextContent):
                 text_content = self.content[0].text
             elif self.content and len(self.content) > 1:
                 text_content = ""
@@ -459,13 +406,9 @@ class Message(BaseMessage):
                     elif isinstance(content, FileContent):
                         text_content += "<file>" + content.file_id + "</file>"
                     elif isinstance(content, CloudFileContent):
-                        text_content += (
-                            "<cloud_file>" + content.cloud_file_uri + "</cloud_file>"
-                        )
+                        text_content += "<cloud_file>" + content.cloud_file_uri + "</cloud_file>"
             else:
-                raise ValueError(
-                    f"Invalid user message (no text object on message): {self.content}"
-                )
+                raise ValueError(f"Invalid user message (no text object on message): {self.content}")
 
             message_str = unpack_message(text_content)
             messages.append(
@@ -480,16 +423,10 @@ class Message(BaseMessage):
             )
         elif self.role == MessageRole.system:
             # This is type SystemMessage
-            if (
-                self.content
-                and len(self.content) == 1
-                and isinstance(self.content[0], TextContent)
-            ):
+            if self.content and len(self.content) == 1 and isinstance(self.content[0], TextContent):
                 text_content = self.content[0].text
             else:
-                raise ValueError(
-                    f"Invalid system message (no text object on system): {self.content}"
-                )
+                raise ValueError(f"Invalid system message (no text object on system): {self.content}")
 
             messages.append(
                 SystemMessage(
@@ -530,24 +467,12 @@ class Message(BaseMessage):
         assert "content" in openai_message_dict, openai_message_dict
 
         # TODO(caren) implicit support for only non-parts/list content types
-        if (
-            openai_message_dict["content"] is not None
-            and type(openai_message_dict["content"]) is not str
-        ):
-            raise ValueError(
-                f"Invalid content type: {type(openai_message_dict['content'])}"
-            )
-        content = (
-            [TextContent(text=openai_message_dict["content"])]
-            if openai_message_dict["content"]
-            else []
-        )
+        if openai_message_dict["content"] is not None and type(openai_message_dict["content"]) is not str:
+            raise ValueError(f"Invalid content type: {type(openai_message_dict['content'])}")
+        content = [TextContent(text=openai_message_dict["content"])] if openai_message_dict["content"] else []
 
         # TODO(caren) bad assumption here that "reasoning_content" always comes before "redacted_reasoning_content"
-        if (
-            "reasoning_content" in openai_message_dict
-            and openai_message_dict["reasoning_content"]
-        ):
+        if "reasoning_content" in openai_message_dict and openai_message_dict["reasoning_content"]:
             content.append(
                 ReasoningContent(
                     reasoning=openai_message_dict["reasoning_content"],
@@ -559,15 +484,14 @@ class Message(BaseMessage):
                     ),
                 ),
             )
-        if (
-            "redacted_reasoning_content" in openai_message_dict
-            and openai_message_dict["redacted_reasoning_content"]
-        ):
+        if "redacted_reasoning_content" in openai_message_dict and openai_message_dict["redacted_reasoning_content"]:
             content.append(
                 RedactedReasoningContent(
-                    data=openai_message_dict["redacted_reasoning_content"]
-                    if "redacted_reasoning_content" in openai_message_dict
-                    else None,
+                    data=(
+                        openai_message_dict["redacted_reasoning_content"]
+                        if "redacted_reasoning_content" in openai_message_dict
+                        else None
+                    ),
                 ),
             )
 
@@ -586,12 +510,8 @@ class Message(BaseMessage):
                     role=MessageRole.tool,  # NOTE
                     content=content,
                     name=name,
-                    tool_calls=openai_message_dict["tool_calls"]
-                    if "tool_calls" in openai_message_dict
-                    else None,
-                    tool_call_id=openai_message_dict["tool_call_id"]
-                    if "tool_call_id" in openai_message_dict
-                    else None,
+                    tool_calls=openai_message_dict["tool_calls"] if "tool_calls" in openai_message_dict else None,
+                    tool_call_id=openai_message_dict["tool_call_id"] if "tool_call_id" in openai_message_dict else None,
                     created_at=created_at,
                     id=str(id),
                     tool_returns=tool_returns,
@@ -605,21 +525,14 @@ class Message(BaseMessage):
                     role=MessageRole.tool,  # NOTE
                     content=content,
                     name=name,
-                    tool_calls=openai_message_dict["tool_calls"]
-                    if "tool_calls" in openai_message_dict
-                    else None,
-                    tool_call_id=openai_message_dict["tool_call_id"]
-                    if "tool_call_id" in openai_message_dict
-                    else None,
+                    tool_calls=openai_message_dict["tool_calls"] if "tool_calls" in openai_message_dict else None,
+                    tool_call_id=openai_message_dict["tool_call_id"] if "tool_call_id" in openai_message_dict else None,
                     created_at=created_at,
                     tool_returns=tool_returns,
                     group_id=group_id,
                 )
 
-        elif (
-            "function_call" in openai_message_dict
-            and openai_message_dict["function_call"] is not None
-        ):
+        elif "function_call" in openai_message_dict and openai_message_dict["function_call"] is not None:
             if not allow_functions_style:
                 raise DeprecationWarning(openai_message_dict)
             assert openai_message_dict["role"] == "assistant", openai_message_dict
@@ -629,9 +542,7 @@ class Message(BaseMessage):
             # NOTE: this does not conventionally include a tool_call_id (ToolCall.id), it's on the caster to provide it
             tool_calls = [
                 OpenAIToolCall(
-                    id=openai_message_dict[
-                        "tool_call_id"
-                    ],  # NOTE: unconventional source, not to spec
+                    id=openai_message_dict["tool_call_id"],  # NOTE: unconventional source, not to spec
                     type="function",
                     function=OpenAIFunction(
                         name=openai_message_dict["function_call"]["name"],
@@ -662,9 +573,7 @@ class Message(BaseMessage):
                     # standard fields expected in an OpenAI ChatCompletion message object
                     role=MessageRole(openai_message_dict["role"]),
                     content=content,
-                    name=openai_message_dict["name"]
-                    if "name" in openai_message_dict
-                    else None,
+                    name=openai_message_dict["name"] if "name" in openai_message_dict else None,
                     tool_calls=tool_calls,
                     tool_call_id=None,  # NOTE: None, since this field is only non-null for role=='tool'
                     created_at=created_at,
@@ -676,19 +585,13 @@ class Message(BaseMessage):
             # Basic sanity check
             if openai_message_dict["role"] == "tool":
                 assert (
-                    "tool_call_id" in openai_message_dict
-                    and openai_message_dict["tool_call_id"] is not None
+                    "tool_call_id" in openai_message_dict and openai_message_dict["tool_call_id"] is not None
                 ), openai_message_dict
             else:
                 if "tool_call_id" in openai_message_dict:
-                    assert openai_message_dict["tool_call_id"] is None, (
-                        openai_message_dict
-                    )
+                    assert openai_message_dict["tool_call_id"] is None, openai_message_dict
 
-            if (
-                "tool_calls" in openai_message_dict
-                and openai_message_dict["tool_calls"] is not None
-            ):
+            if "tool_calls" in openai_message_dict and openai_message_dict["tool_calls"] is not None:
                 assert openai_message_dict["role"] == "assistant", openai_message_dict
 
                 tool_calls = [
@@ -718,13 +621,9 @@ class Message(BaseMessage):
                     # standard fields expected in an OpenAI ChatCompletion message object
                     role=MessageRole(openai_message_dict["role"]),
                     content=content,
-                    name=openai_message_dict["name"]
-                    if "name" in openai_message_dict
-                    else name,
+                    name=openai_message_dict["name"] if "name" in openai_message_dict else name,
                     tool_calls=tool_calls,
-                    tool_call_id=openai_message_dict["tool_call_id"]
-                    if "tool_call_id" in openai_message_dict
-                    else None,
+                    tool_call_id=openai_message_dict["tool_call_id"] if "tool_call_id" in openai_message_dict else None,
                     created_at=created_at,
                     id=str(id),
                     tool_returns=tool_returns,
@@ -737,21 +636,15 @@ class Message(BaseMessage):
                     # standard fields expected in an OpenAI ChatCompletion message object
                     role=MessageRole(openai_message_dict["role"]),
                     content=content,
-                    name=openai_message_dict["name"]
-                    if "name" in openai_message_dict
-                    else name,
+                    name=openai_message_dict["name"] if "name" in openai_message_dict else name,
                     tool_calls=tool_calls,
-                    tool_call_id=openai_message_dict["tool_call_id"]
-                    if "tool_call_id" in openai_message_dict
-                    else None,
+                    tool_call_id=openai_message_dict["tool_call_id"] if "tool_call_id" in openai_message_dict else None,
                     created_at=created_at,
                     tool_returns=tool_returns,
                     group_id=group_id,
                 )
 
-    def to_openai_dict_search_results(
-        self, max_tool_id_length: int = TOOL_CALL_ID_MAX_LEN
-    ) -> dict:
+    def to_openai_dict_search_results(self, max_tool_id_length: int = TOOL_CALL_ID_MAX_LEN) -> dict:
         result_json = self.to_openai_dict()
         search_result_json = {
             "timestamp": self.created_at,
@@ -770,11 +663,7 @@ class Message(BaseMessage):
         # TODO change to pydantic casting, eg `return SystemMessageModel(self)`
         # If we only have one content part and it's text, treat it as COT
         parse_content_parts = False
-        if (
-            self.content
-            and len(self.content) == 1
-            and isinstance(self.content[0], TextContent)
-        ):
+        if self.content and len(self.content) == 1 and isinstance(self.content[0], TextContent):
             content = self.content[0].text
         # Otherwise, check if we have TextContent and multiple other parts
         elif self.content and len(self.content) > 1:
@@ -852,23 +741,17 @@ class Message(BaseMessage):
             }
 
             if self.tool_calls is not None:
-                openai_message["tool_calls"] = [
-                    tool_call.model_dump() for tool_call in self.tool_calls
-                ]
+                openai_message["tool_calls"] = [tool_call.model_dump() for tool_call in self.tool_calls]
                 if max_tool_id_length:
                     for tool_call_dict in openai_message["tool_calls"]:
                         tool_call_dict["id"] = tool_call_dict["id"][:max_tool_id_length]
 
         elif self.role == "tool":
-            assert all([v is not None for v in [self.role, self.tool_call_id]]), vars(
-                self
-            )
+            assert all([v is not None for v in [self.role, self.tool_call_id]]), vars(self)
             openai_message = {
                 "content": content,
                 "role": self.role,
-                "tool_call_id": self.tool_call_id[:max_tool_id_length]
-                if max_tool_id_length
-                else self.tool_call_id,
+                "tool_call_id": self.tool_call_id[:max_tool_id_length] if max_tool_id_length else self.tool_call_id,
             }
 
         else:
@@ -879,9 +762,7 @@ class Message(BaseMessage):
                 if isinstance(content, ReasoningContent):
                     openai_message["reasoning_content"] = content.reasoning
                     if content.signature:
-                        openai_message["reasoning_content_signature"] = (
-                            content.signature
-                        )
+                        openai_message["reasoning_content_signature"] = content.signature
                 if isinstance(content, RedactedReasoningContent):
                     openai_message["redacted_reasoning_content"] = content.data
 
@@ -900,11 +781,7 @@ class Message(BaseMessage):
         """
 
         # Check for COT
-        if (
-            self.content
-            and len(self.content) == 1
-            and isinstance(self.content[0], TextContent)
-        ):
+        if self.content and len(self.content) == 1 and isinstance(self.content[0], TextContent):
             content = self.content[0].text
         elif self.content and len(self.content) > 1:
             assert self.role == "user"
@@ -919,9 +796,7 @@ class Message(BaseMessage):
                         }
                     )
                 elif isinstance(content_part, ImageContent):
-                    content.append(
-                        {"type": "image_url", "image_id": content_part.image_id}
-                    )
+                    content.append({"type": "image_url", "image_id": content_part.image_id})
                 elif isinstance(content_part, FileContent):
                     content.append(
                         {
@@ -953,9 +828,7 @@ class Message(BaseMessage):
             assert all([v is not None for v in [content, self.role]]), vars(self)
             # Two options here, we would use system.package_system_message,
             # or use a more Anthropic-specific packaging ie xml tags
-            user_system_event = add_xml_tag(
-                string=f"SYSTEM ALERT: {content}", xml_tag="event"
-            )
+            user_system_event = add_xml_tag(string=f"SYSTEM ALERT: {content}", xml_tag="event")
             anthropic_message = {
                 "content": user_system_event,
                 "role": "user",
@@ -996,9 +869,7 @@ class Message(BaseMessage):
                 content.append(
                     {
                         "type": "text",
-                        "text": add_xml_tag(
-                            string=content, xml_tag=inner_thoughts_xml_tag
-                        ),
+                        "text": add_xml_tag(string=content, xml_tag=inner_thoughts_xml_tag),
                     }
                 )
             # Tool calling
@@ -1021,9 +892,7 @@ class Message(BaseMessage):
 
         elif self.role == "tool":
             # NOTE: Anthropic uses role "user" for "tool" responses
-            assert all([v is not None for v in [self.role, self.tool_call_id]]), vars(
-                self
-            )
+            assert all([v is not None for v in [self.role, self.tool_call_id]]), vars(self)
             anthropic_message = {
                 "role": "user",  # NOTE: diff
                 "content": [
@@ -1048,11 +917,7 @@ class Message(BaseMessage):
         # type Content: https://ai.google.dev/api/rest/v1/Content / https://ai.google.dev/api/rest/v1beta/Content
         #     parts[]: Part
         #     role: str ('user' or 'model')
-        if (
-            self.content
-            and len(self.content) == 1
-            and isinstance(self.content[0], TextContent)
-        ):
+        if self.content and len(self.content) == 1 and isinstance(self.content[0], TextContent):
             text_content = self.content[0].text
             contents = [{"text": text_content}]
         elif self.content:
@@ -1121,10 +986,8 @@ class Message(BaseMessage):
                         # NOTE: Google AI wants actual JSON objects, not strings
                         function_args = parse_json(function_args)
                     except Exception:
-                        raise UserWarning(
-                            f"Failed to parse JSON function args: {function_args}"
-                        )
-                    
+                        raise UserWarning(f"Failed to parse JSON function args: {function_args}")
+
                     parts.append(
                         {
                             "functionCall": {
@@ -1140,14 +1003,10 @@ class Message(BaseMessage):
 
         elif self.role == "tool":
             # NOTE: Significantly different tool calling format, more similar to function calling format
-            assert all([v is not None for v in [self.role, self.tool_call_id]]), vars(
-                self
-            )
+            assert all([v is not None for v in [self.role, self.tool_call_id]]), vars(self)
 
             if self.name is None:
-                warnings.warn(
-                    "Couldn't find function name on tool call, defaulting to tool ID instead."
-                )
+                warnings.warn("Couldn't find function name on tool call, defaulting to tool ID instead.")
                 function_name = self.tool_call_id
             else:
                 function_name = self.name
@@ -1209,11 +1068,7 @@ class Message(BaseMessage):
 
         # TODO: update this prompt style once guidance from Cohere on
         # embedded function calls in multi-turn conversation become more clear
-        if (
-            self.content
-            and len(self.content) == 1
-            and isinstance(self.content[0], TextContent)
-        ):
+        if self.content and len(self.content) == 1 and isinstance(self.content[0], TextContent):
             text_content = self.content[0].text
         else:
             text_content = None
@@ -1222,9 +1077,7 @@ class Message(BaseMessage):
             The chat_history parameter should not be used for SYSTEM messages in most cases.
             Instead, to add a SYSTEM role message at the beginning of a conversation, the preamble parameter should be used.
             """
-            raise UserWarning(
-                "role 'system' messages should go in 'preamble' field for Cohere API"
-            )
+            raise UserWarning("role 'system' messages should go in 'preamble' field for Cohere API")
 
         elif self.role == "user":
             assert all([v is not None for v in [text_content, self.role]]), vars(self)
@@ -1252,9 +1105,7 @@ class Message(BaseMessage):
                 for tc in self.tool_calls:
                     function_name = tc.function["name"]
                     function_args = parse_json(tc.function["arguments"])
-                    function_args_str = ",".join(
-                        [f"{k}={v}" for k, v in function_args.items()]
-                    )
+                    function_args_str = ",".join([f"{k}={v}" for k, v in function_args.items()])
                     function_call_text = f"{function_name}({function_args_str})"
                     cohere_message.append(
                         {
@@ -1284,9 +1135,7 @@ class Message(BaseMessage):
                 raise ValueError("Message does not have content nor tool_calls")
 
         elif self.role == "tool":
-            assert all([v is not None for v in [self.role, self.tool_call_id]]), vars(
-                self
-            )
+            assert all([v is not None for v in [self.role, self.tool_call_id]]), vars(self)
             function_response_text = text_content
             cohere_message = [
                 {
@@ -1319,12 +1168,8 @@ class Message(BaseMessage):
 
 
 class ToolReturn(BaseModel):
-    status: Literal["success", "error"] = Field(
-        ..., description="The status of the tool call"
-    )
+    status: Literal["success", "error"] = Field(..., description="The status of the tool call")
     stdout: Optional[List[str]] = Field(
         None, description="Captured stdout (e.g. prints, logs) from the tool invocation"
     )
-    stderr: Optional[List[str]] = Field(
-        None, description="Captured stderr from the tool invocation"
-    )
+    stderr: Optional[List[str]] = Field(None, description="Captured stderr from the tool invocation")

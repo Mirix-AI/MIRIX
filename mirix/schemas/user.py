@@ -50,12 +50,8 @@ class User(UserBase):
     status: str = Field("active", description="Whether the user is active or not.")
     timezone: str = Field(..., description="The timezone of the user.")
     is_admin: bool = Field(False, description="Whether this is an admin user for the client.")
-    created_at: Optional[datetime] = Field(
-        default_factory=get_utc_time, description="The creation date of the user."
-    )
-    updated_at: Optional[datetime] = Field(
-        default_factory=get_utc_time, description="The update date of the user."
-    )
+    created_at: Optional[datetime] = Field(default_factory=get_utc_time, description="The creation date of the user.")
+    updated_at: Optional[datetime] = Field(default_factory=get_utc_time, description="The update date of the user.")
     is_deleted: bool = Field(False, description="Whether this user is deleted or not.")
 
 
@@ -72,6 +68,4 @@ class UserUpdate(UserBase):
     name: Optional[str] = Field(None, description="The new name of the user.")
     status: Optional[str] = Field(None, description="The new status of the user.")
     timezone: Optional[str] = Field(None, description="The new timezone of the user.")
-    organization_id: Optional[str] = Field(
-        None, description="The new organization id of the user."
-    )
+    organization_id: Optional[str] = Field(None, description="The new organization id of the user.")

@@ -41,9 +41,7 @@ def chatbot(state: State):
     user_id = state["user_id"]
 
     try:
-        system_message = mirix_agent.construct_system_message(
-            messages[-1].content, user_id=user_id
-        )
+        system_message = mirix_agent.construct_system_message(messages[-1].content, user_id=user_id)
 
         full_messages = [system_message] + messages
 
@@ -51,9 +49,7 @@ def chatbot(state: State):
 
         # Store the interaction with Mirix
         try:
-            interaction = (
-                f"User: {messages[-1].content}\n\nAssistant: {response.content}"
-            )
+            interaction = f"User: {messages[-1].content}\n\nAssistant: {response.content}"
             mirix_agent.add(interaction, user_id=user_id)
         except Exception as e:
             print(f"Error saving memory: {e}")

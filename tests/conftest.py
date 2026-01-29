@@ -6,14 +6,14 @@ authenticate against the REST API without passing X-Client-ID.
 """
 
 import os
+
 import pytest
 
+from mirix.schemas.client import Client as PydanticClient
+from mirix.schemas.organization import Organization as PydanticOrganization
 from mirix.security.api_keys import generate_api_key
 from mirix.services.client_manager import ClientManager
 from mirix.services.organization_manager import OrganizationManager
-from mirix.schemas.client import Client as PydanticClient
-from mirix.schemas.organization import Organization as PydanticOrganization
-
 
 TEST_ORG_ID = "demo-org"
 TEST_CLIENT_ID = "demo-client-id"
@@ -24,9 +24,7 @@ def _ensure_org(org_mgr: OrganizationManager, org_id: str, org_name: str):
     try:
         org_mgr.get_organization_by_id(org_id)
     except Exception:
-        org_mgr.create_organization(
-            PydanticOrganization(id=org_id, name=org_name)
-        )
+        org_mgr.create_organization(PydanticOrganization(id=org_id, name=org_name))
 
 
 def _issue_key(client_id: str, org_id: str, client_mgr: ClientManager) -> str:

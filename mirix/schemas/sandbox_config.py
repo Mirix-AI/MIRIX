@@ -23,15 +23,9 @@ class SandboxRunResult(BaseModel):
         None,
         description="Captured stdout (e.g. prints, logs) from the function invocation",
     )
-    stderr: Optional[List[str]] = Field(
-        None, description="Captured stderr from the function invocation"
-    )
-    status: Literal["success", "error"] = Field(
-        ..., description="The status of the tool execution and return object"
-    )
-    sandbox_config_fingerprint: str = Field(
-        None, description="The fingerprint of the config for the sandbox"
-    )
+    stderr: Optional[List[str]] = Field(None, description="Captured stderr from the function invocation")
+    status: Literal["success", "error"] = Field(..., description="The status of the tool execution and return object")
+    sandbox_config_fingerprint: str = Field(None, description="The fingerprint of the config for the sandbox")
 
 
 class LocalSandboxConfig(BaseModel):
@@ -52,9 +46,7 @@ class LocalSandboxConfig(BaseModel):
 
 class E2BSandboxConfig(BaseModel):
     timeout: int = Field(5 * 60, description="Time limit for the sandbox (in seconds).")
-    template: Optional[str] = Field(
-        None, description="The E2B template id (docker image)."
-    )
+    template: Optional[str] = Field(None, description="The E2B template id (docker image).")
     pip_requirements: Optional[List[str]] = Field(
         None, description="A list of pip packages to install on the E2B Sandbox"
     )
@@ -86,9 +78,7 @@ class SandboxConfig(SandboxConfigBase):
         None,
         description="The unique identifier of the organization associated with the sandbox.",
     )
-    config: Dict = Field(
-        default_factory=lambda: {}, description="The JSON sandbox settings data."
-    )
+    config: Dict = Field(default_factory=lambda: {}, description="The JSON sandbox settings data.")
 
     def get_e2b_config(self) -> E2BSandboxConfig:
         return E2BSandboxConfig(**self.config)
@@ -117,9 +107,7 @@ class SandboxConfig(SandboxConfigBase):
 
 
 class SandboxConfigCreate(MirixBase):
-    config: Union[LocalSandboxConfig, E2BSandboxConfig] = Field(
-        ..., description="The configuration for the sandbox."
-    )
+    config: Union[LocalSandboxConfig, E2BSandboxConfig] = Field(..., description="The configuration for the sandbox.")
 
 
 class SandboxConfigUpdate(MirixBase):

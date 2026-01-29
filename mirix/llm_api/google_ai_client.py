@@ -46,9 +46,7 @@ class GoogleAIClient(LLMClientBase):
 
         # Check for database-stored API key first, fall back to model_settings
         override_key = ProviderManager().get_gemini_override_key()
-        api_key = (
-            str(override_key) if override_key else str(model_settings.gemini_api_key)
-        )
+        api_key = str(override_key) if override_key else str(model_settings.gemini_api_key)
 
         url, headers = get_gemini_endpoint_and_headers(
             base_url=str(self.llm_config.model_endpoint),
@@ -91,16 +89,12 @@ class GoogleAIClient(LLMClientBase):
         # Only add thinkingConfig for models that support it
         # gemini-2.0-flash and gemini-1.5-pro don't support thinking
         if not ("2.0" in llm_config.model or "1.5" in llm_config.model):
-            generation_config["thinkingConfig"] = {
-                "thinkingBudget": 1024
-            }  # TODO: put into llm_config
+            generation_config["thinkingConfig"] = {"thinkingBudget": 1024}  # TODO: put into llm_config
 
         contents = self.combine_tool_responses(contents)
 
         request_data = {
-            "contents": self.fill_image_content_in_messages(
-                contents, existing_file_uris=existing_file_uris
-            ),
+            "contents": self.fill_image_content_in_messages(contents, existing_file_uris=existing_file_uris),
             "tools": tools,
             "generation_config": generation_config,
         }
@@ -134,9 +128,7 @@ class GoogleAIClient(LLMClientBase):
 
                 if is_multiple_tool_call:
                     # need to combine the next len(message['parts]) into one:
-                    messages_for_function_responses = contents[
-                        idx + 1 : idx + len(message["parts"]) + 1
-                    ]
+                    messages_for_function_responses = contents[idx + 1 : idx + len(message["parts"]) + 1]
                     new_contents.append({"role": "function", "parts": []})
                     for msg_for_func_res in messages_for_function_responses:
                         assert (
@@ -149,9 +141,7 @@ class GoogleAIClient(LLMClientBase):
             idx += 1
         return new_contents
 
-    def fill_image_content_in_messages(
-        self, google_ai_message_list, existing_file_uris: Optional[List[str]] = None
-    ):
+    def fill_image_content_in_messages(self, google_ai_message_list, existing_file_uris: Optional[List[str]] = None):
         """
         Converts image URIs in the message to base64 format.
         """
@@ -172,9 +162,7 @@ class GoogleAIClient(LLMClientBase):
                 new_message_list.append(message)
                 continue
 
-            assert isinstance(message["parts"], list), (
-                f"Expected list of parts, got {type(message['parts'])}"
-            )
+            assert isinstance(message["parts"], list), f"Expected list of parts, got {type(message['parts'])}"
 
             has_image = False
             message_parts = []
@@ -182,10 +170,7 @@ class GoogleAIClient(LLMClientBase):
                 if "text" in part:
                     message_parts.append(part)
                 elif "image_id" in part:
-                    if (
-                        LOAD_IMAGE_CONTENT_FOR_LAST_MESSAGE_ONLY
-                        and image_content_loaded
-                    ):
+                    if LOAD_IMAGE_CONTENT_FOR_LAST_MESSAGE_ONLY and image_content_loaded:
                         message_parts.append(
                             {
                                 "text": "[System Message] There was an image here but now the image has been deleted to save space."
@@ -193,9 +178,7 @@ class GoogleAIClient(LLMClientBase):
                         )
                     else:
                         message_parts.append({"text": f"<image {global_image_idx}>"})
-                        file = self.file_manager.get_file_metadata_by_id(
-                            part["image_id"]
-                        )
+                        file = self.file_manager.get_file_metadata_by_id(part["image_id"])
                         if file.source_url is not None:
                             # For Google AI, we need to convert URL to base64
                             import requests
@@ -203,9 +186,7 @@ class GoogleAIClient(LLMClientBase):
                             response = requests.get(file.source_url)
                             import base64
 
-                            base64_data = base64.b64encode(response.content).decode(
-                                "utf-8"
-                            )
+                            base64_data = base64.b64encode(response.content).decode("utf-8")
                             # Determine mime type from URL or default to jpeg
                             mime_type = file.file_type
                             message_parts.append(
@@ -222,9 +203,7 @@ class GoogleAIClient(LLMClientBase):
 
                             mime_type = file.file_type
                             with open(file.file_path, "rb") as img_file:
-                                base64_data = base64.b64encode(img_file.read()).decode(
-                                    "utf-8"
-                                )
+                                base64_data = base64.b64encode(img_file.read()).decode("utf-8")
                             message_parts.append(
                                 {
                                     "inline_data": {
@@ -234,19 +213,12 @@ class GoogleAIClient(LLMClientBase):
                                 }
                             )
                         else:
-                            raise ValueError(
-                                f"File with id {part['image_id']} has neither source_url nor file_path"
-                            )
+                            raise ValueError(f"File with id {part['image_id']} has neither source_url nor file_path")
                         global_image_idx += 1
                         has_image = True
                 elif "cloud_file_uri" in part:
-                    file = self.file_manager.get_file_metadata_by_id(
-                        part["cloud_file_uri"]
-                    )
-                    if (
-                        existing_file_uris is not None
-                        and file.google_cloud_url not in existing_file_uris
-                    ):
+                    file = self.file_manager.get_file_metadata_by_id(part["cloud_file_uri"])
+                    if existing_file_uris is not None and file.google_cloud_url not in existing_file_uris:
                         message_parts.append(
                             {
                                 "text": "[System Message] There was an image here but now the image has been deleted to save space."
@@ -312,7 +284,7 @@ class GoogleAIClient(LLMClientBase):
             for candidate in response_data["candidates"]:
                 content = candidate["content"]
 
-                if 'role' not in content:
+                if "role" not in content:
                     raise ValueError("Empty response from Google AI API")
 
                 role = content["role"]
@@ -322,10 +294,7 @@ class GoogleAIClient(LLMClientBase):
 
                 for response_message in parts:
                     # Convert the actual message style to OpenAI style
-                    if (
-                        "functionCall" in response_message
-                        and response_message["functionCall"] is not None
-                    ):
+                    if "functionCall" in response_message and response_message["functionCall"] is not None:
                         function_call = response_message["functionCall"]
                         assert isinstance(function_call, dict), function_call
                         function_name = function_call["name"]
@@ -343,9 +312,7 @@ class GoogleAIClient(LLMClientBase):
                                     type="function",
                                     function=FunctionCall(
                                         name=function_name,
-                                        arguments=clean_json_string_extra_backslash(
-                                            json_dumps(function_args)
-                                        ),
+                                        arguments=clean_json_string_extra_backslash(json_dumps(function_args)),
                                     ),
                                 )
                             ],
@@ -378,9 +345,7 @@ class GoogleAIClient(LLMClientBase):
                     elif finish_reason == "RECITATION":
                         openai_finish_reason = "content_filter"
                     else:
-                        raise ValueError(
-                            f"Unrecognized finish reason in Google AI response: {finish_reason}"
-                        )
+                        raise ValueError(f"Unrecognized finish reason in Google AI response: {finish_reason}")
 
                     choices.append(
                         Choice(
@@ -404,9 +369,7 @@ class GoogleAIClient(LLMClientBase):
                         f"promptTokenCount not found in usageMetadata:\n{json.dumps(usage_data, indent=2)}"
                     )
                 if "totalTokenCount" not in usage_data:
-                    raise ValueError(
-                        f"totalTokenCount not found in usageMetadata:\n{json.dumps(usage_data, indent=2)}"
-                    )
+                    raise ValueError(f"totalTokenCount not found in usageMetadata:\n{json.dumps(usage_data, indent=2)}")
                 if "candidatesTokenCount" not in usage_data:
                     raise ValueError(
                         f"candidatesTokenCount not found in usageMetadata:\n{json.dumps(usage_data, indent=2)}"
@@ -423,12 +386,10 @@ class GoogleAIClient(LLMClientBase):
                 )
             else:
                 # Count it ourselves
-                assert input_messages is not None, (
-                    "Didn't get UsageMetadata from the API response, so input_messages is required"
-                )
-                prompt_tokens = count_tokens(
-                    json_dumps(input_messages)
-                )  # NOTE: this is a very rough approximation
+                assert (
+                    input_messages is not None
+                ), "Didn't get UsageMetadata from the API response, so input_messages is required"
+                prompt_tokens = count_tokens(json_dumps(input_messages))  # NOTE: this is a very rough approximation
                 completion_tokens = count_tokens(
                     json_dumps(openai_response_message.model_dump())
                 )  # NOTE: this is also approximate
@@ -519,11 +480,7 @@ class GoogleAIClient(LLMClientBase):
         """
         dummy_yield_message = {
             "role": "model",
-            "parts": [
-                {
-                    "text": f"{NON_USER_MSG_PREFIX}Function call returned, waiting for user response."
-                }
-            ],
+            "parts": [{"text": f"{NON_USER_MSG_PREFIX}Function call returned, waiting for user response."}],
         }
         messages_with_padding = []
         for i, message in enumerate(messages):
@@ -568,14 +525,10 @@ def get_gemini_endpoint_and_headers(
     return url, headers
 
 
-def google_ai_get_model_list(
-    base_url: str, api_key: str, key_in_header: bool = True
-) -> List[dict]:
+def google_ai_get_model_list(base_url: str, api_key: str, key_in_header: bool = True) -> List[dict]:
     from mirix.utils import printd
 
-    url, headers = get_gemini_endpoint_and_headers(
-        base_url, None, api_key, key_in_header
-    )
+    url, headers = get_gemini_endpoint_and_headers(base_url, None, api_key, key_in_header)
 
     try:
         response = requests.get(url, headers=headers)
@@ -606,14 +559,10 @@ def google_ai_get_model_list(
         raise e
 
 
-def google_ai_get_model_details(
-    base_url: str, api_key: str, model: str, key_in_header: bool = True
-) -> List[dict]:
+def google_ai_get_model_details(base_url: str, api_key: str, model: str, key_in_header: bool = True) -> List[dict]:
     from mirix.utils import printd
 
-    url, headers = get_gemini_endpoint_and_headers(
-        base_url, model, api_key, key_in_header
-    )
+    url, headers = get_gemini_endpoint_and_headers(base_url, model, api_key, key_in_header)
 
     try:
         response = requests.get(url, headers=headers)
@@ -645,9 +594,7 @@ def google_ai_get_model_details(
         raise e
 
 
-def google_ai_get_model_context_window(
-    base_url: str, api_key: str, model: str, key_in_header: bool = True
-) -> int:
+def google_ai_get_model_context_window(base_url: str, api_key: str, model: str, key_in_header: bool = True) -> int:
     model_details = google_ai_get_model_details(
         base_url=base_url, api_key=api_key, model=model, key_in_header=key_in_header
     )

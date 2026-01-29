@@ -9,9 +9,7 @@ from mirix.constants import MAX_EMBEDDING_DIM
 from mirix.orm.custom_columns import CommonVector, EmbeddingConfigColumn
 from mirix.orm.mixins import OrganizationMixin, UserMixin
 from mirix.orm.sqlalchemy_base import SqlalchemyBase
-from mirix.schemas.knowledge_vault import (
-    KnowledgeVaultItem as PydanticKnowledgeVaultItem,
-)
+from mirix.schemas.knowledge_vault import KnowledgeVaultItem as PydanticKnowledgeVaultItem
 from mirix.settings import settings
 
 if TYPE_CHECKING:
@@ -71,26 +69,17 @@ class KnowledgeVaultItem(SqlalchemyBase, OrganizationMixin, UserMixin):
     )
 
     # Sensitivity level
-    sensitivity: Mapped[str] = mapped_column(
-        String, doc="Data sensitivity (e.g. 'low', 'medium', 'high')"
-    )
+    sensitivity: Mapped[str] = mapped_column(String, doc="Data sensitivity (e.g. 'low', 'medium', 'high')")
 
     # Actual data or secret, e.g. password, API token
-    secret_value: Mapped[str] = mapped_column(
-        String, doc="The actual credential or data value"
-    )
+    secret_value: Mapped[str] = mapped_column(String, doc="The actual credential or data value")
 
     # Description or notes about the entry
-    caption: Mapped[str] = mapped_column(
-        String, doc="Description or notes about the entry"
-    )
+    caption: Mapped[str] = mapped_column(String, doc="Description or notes about the entry")
 
     # NEW: Filter tags for flexible filtering and categorization
     filter_tags: Mapped[Optional[dict]] = mapped_column(
-        JSON,
-        nullable=True,
-        default=None,
-        doc="Custom filter tags for filtering and categorization"
+        JSON, nullable=True, default=None, doc="Custom filter tags for filtering and categorization"
     )
 
     # When was this item last modified and what operation?
@@ -122,36 +111,46 @@ class KnowledgeVaultItem(SqlalchemyBase, OrganizationMixin, UserMixin):
             None,
             [
                 # Organization-level query optimization indexes
-                Index("ix_knowledge_vault_organization_id", "organization_id")
-                if settings.mirix_pg_uri_no_default
-                else None,
-                Index(
-                    "ix_knowledge_vault_org_created_at",
-                    "organization_id",
-                    "created_at",
-                    postgresql_using="btree",
-                )
-                if settings.mirix_pg_uri_no_default
-                else None,
-                Index(
-                    "ix_knowledge_vault_filter_tags_gin",
-                    text("(filter_tags::jsonb)"),
-                    postgresql_using="gin",
-                )
-                if settings.mirix_pg_uri_no_default
-                else None,
-                Index(
-                    "ix_knowledge_vault_org_filter_scope",
-                    "organization_id",
-                    text("((filter_tags->>'scope')::text)"),
-                    postgresql_using="btree",
-                )
-                if settings.mirix_pg_uri_no_default
-                else None,
+                (
+                    Index("ix_knowledge_vault_organization_id", "organization_id")
+                    if settings.mirix_pg_uri_no_default
+                    else None
+                ),
+                (
+                    Index(
+                        "ix_knowledge_vault_org_created_at",
+                        "organization_id",
+                        "created_at",
+                        postgresql_using="btree",
+                    )
+                    if settings.mirix_pg_uri_no_default
+                    else None
+                ),
+                (
+                    Index(
+                        "ix_knowledge_vault_filter_tags_gin",
+                        text("(filter_tags::jsonb)"),
+                        postgresql_using="gin",
+                    )
+                    if settings.mirix_pg_uri_no_default
+                    else None
+                ),
+                (
+                    Index(
+                        "ix_knowledge_vault_org_filter_scope",
+                        "organization_id",
+                        text("((filter_tags->>'scope')::text)"),
+                        postgresql_using="btree",
+                    )
+                    if settings.mirix_pg_uri_no_default
+                    else None
+                ),
                 # SQLite indexes
-                Index("ix_knowledge_vault_organization_id_sqlite", "organization_id")
-                if not settings.mirix_pg_uri_no_default
-                else None,
+                (
+                    Index("ix_knowledge_vault_organization_id_sqlite", "organization_id")
+                    if not settings.mirix_pg_uri_no_default
+                    else None
+                ),
             ],
         )
     )
@@ -169,9 +168,7 @@ class KnowledgeVaultItem(SqlalchemyBase, OrganizationMixin, UserMixin):
         Relationship to organization (mirroring your existing patterns).
         Adjust 'back_populates' to match the collection name in your `Organization` model.
         """
-        return relationship(
-            "Organization", back_populates="knowledge_vault", lazy="selectin"
-        )
+        return relationship("Organization", back_populates="knowledge_vault", lazy="selectin")
 
     @declared_attr
     def user(cls) -> Mapped["User"]:

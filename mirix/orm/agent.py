@@ -33,22 +33,16 @@ class Agent(SqlalchemyBase, OrganizationMixin):
     # agent generates its own id
     # TODO: We want to migrate all the ORM models to do this, so we will need to move this to the SqlalchemyBase
     # TODO: Some still rely on the Pydantic object to do this
-    id: Mapped[str] = mapped_column(
-        String, primary_key=True, default=lambda: f"agent-{uuid.uuid4()}"
-    )
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: f"agent-{uuid.uuid4()}")
 
     # Descriptor fields
-    agent_type: Mapped[Optional[AgentType]] = mapped_column(
-        String, nullable=True, doc="The type of Agent"
-    )
+    agent_type: Mapped[Optional[AgentType]] = mapped_column(String, nullable=True, doc="The type of Agent")
     name: Mapped[Optional[str]] = mapped_column(
         String,
         nullable=True,
         doc="a human-readable identifier for an agent, non-unique.",
     )
-    description: Mapped[Optional[str]] = mapped_column(
-        String, nullable=True, doc="The description of the agent."
-    )
+    description: Mapped[Optional[str]] = mapped_column(String, nullable=True, doc="The description of the agent.")
     parent_id: Mapped[Optional[str]] = mapped_column(
         String,
         nullable=True,
@@ -56,9 +50,7 @@ class Agent(SqlalchemyBase, OrganizationMixin):
     )
 
     # System prompt
-    system: Mapped[Optional[str]] = mapped_column(
-        String, nullable=True, doc="The system prompt used by the agent."
-    )
+    system: Mapped[Optional[str]] = mapped_column(String, nullable=True, doc="The system prompt used by the agent.")
 
     message_ids: Mapped[Optional[List[str]]] = mapped_column(
         JSON, nullable=True, doc="List of message IDs in in-context memory."
@@ -75,9 +67,7 @@ class Agent(SqlalchemyBase, OrganizationMixin):
     )
 
     # Tool rules
-    tool_rules: Mapped[Optional[List[ToolRule]]] = mapped_column(
-        ToolRulesColumn, doc="the tool rules for this agent."
-    )
+    tool_rules: Mapped[Optional[List[ToolRule]]] = mapped_column(ToolRulesColumn, doc="the tool rules for this agent.")
 
     # MCP tools - list of connected MCP server names
     mcp_tools: Mapped[Optional[List[str]]] = mapped_column(
@@ -87,15 +77,9 @@ class Agent(SqlalchemyBase, OrganizationMixin):
     )
 
     # relationships
-    organization: Mapped["Organization"] = relationship(
-        "Organization", back_populates="agents"
-    )
-    tools: Mapped[List["Tool"]] = relationship(
-        "Tool", secondary="tools_agents", lazy="selectin", passive_deletes=True
-    )
-    core_memory: Mapped[List["Block"]] = relationship(
-        "Block", back_populates="agent", lazy="selectin"
-    )
+    organization: Mapped["Organization"] = relationship("Organization", back_populates="agents")
+    tools: Mapped[List["Tool"]] = relationship("Tool", secondary="tools_agents", lazy="selectin", passive_deletes=True)
+    core_memory: Mapped[List["Block"]] = relationship("Block", back_populates="agent", lazy="selectin")
     messages: Mapped[List["Message"]] = relationship(
         "Message",
         back_populates="agent",

@@ -19,27 +19,27 @@ logger = logging.getLogger(__name__)
 def load_config(config_path: str) -> Dict[str, Any]:
     """
     Load configuration from a YAML file.
-    
+
     Args:
         config_path: Path to the YAML configuration file
-        
+
     Returns:
         Dict containing the configuration
-        
+
     Example:
         >>> config = load_config("mirix/configs/mirix.yaml")
         >>> client = MirixClient(org_id="demo-org")
         >>> client.initialize_meta_agent(config=config)
     """
     import yaml
-    
+
     config_file = Path(config_path)
     if not config_file.exists():
         raise FileNotFoundError(f"Config file not found: {config_path}")
-    
+
     with open(config_file, "r") as f:
         config = yaml.safe_load(f)
-    
+
     return config
 
 
@@ -97,6 +97,7 @@ class Mirix:
             config_path = Path(config_path)
             if config_path.exists():
                 import yaml
+
                 with open(config_path, "r") as f:
                     config_data = yaml.safe_load(f)
                     system_prompts_folder = config_data.get("system_prompts_folder")
@@ -165,15 +166,10 @@ class Mirix:
             memory_agent.add("John likes pizza")
             memory_agent.add("Meeting at 3pm", metadata={"type": "appointment"})
         """
-        response = self._client.send_message(
-            agent_id=self._meta_agent.id,
-            role="user",
-            message=content,
-            **kwargs
-        )
+        response = self._client.send_message(agent_id=self._meta_agent.id, role="user", message=content, **kwargs)
 
         # Extract the response text from MirixResponse
-        if hasattr(response, 'messages') and response.messages:
+        if hasattr(response, "messages") and response.messages:
             # Get last assistant message
             for msg in reversed(response.messages):
                 if msg.role == "assistant":
@@ -200,20 +196,14 @@ class Mirix:
         """
         Construct a system message from a message.
         """
-        return self._client.construct_system_message(
-            agent_id=self._meta_agent.id,
-            message=message,
-            user_id=user_id
-        )
+        return self._client.construct_system_message(agent_id=self._meta_agent.id, message=message, user_id=user_id)
 
     def extract_memory_for_system_prompt(self, message: str, user_id: str) -> str:
         """
         Extract memory for system prompt from a message.
         """
         return self._client.extract_memory_for_system_prompt(
-            agent_id=self._meta_agent.id,
-            message=message,
-            user_id=user_id
+            agent_id=self._meta_agent.id, message=message, user_id=user_id
         )
 
     def get_user_by_name(self, user_name: str):
@@ -267,9 +257,7 @@ class Mirix:
             "note": "After removing the database file, you must restart your application and create a new agent instance.",
         }
 
-    def clear_conversation_history(
-        self, user_id: Optional[str] = None
-    ) -> Dict[str, Any]:
+    def clear_conversation_history(self, user_id: Optional[str] = None) -> Dict[str, Any]:
         """
         Clear conversation history while preserving memories.
 
@@ -303,11 +291,9 @@ class Mirix:
                     agent_id=self._meta_agent.id,
                     actor=self._client.client,
                 )
-                current_messages = (
-                    self._client.server.agent_manager.get_in_context_messages(
-                        agent_state=agent_state,
-                        actor=self._client.client,
-                    )
+                current_messages = self._client.server.agent_manager.get_in_context_messages(
+                    agent_state=agent_state,
+                    actor=self._client.client,
                 )
                 messages_count = len(current_messages)
 
@@ -327,9 +313,7 @@ class Mirix:
                 }
             else:
                 # Get the user object by ID
-                target_user = self._client.server.user_manager.get_user_by_id(
-                    user_id
-                )
+                target_user = self._client.server.user_manager.get_user_by_id(user_id)
                 if not target_user:
                     return {
                         "success": False,
@@ -343,20 +327,14 @@ class Mirix:
                     agent_id=self._meta_agent.id,
                     actor=self._client.client,
                 )
-                current_messages = (
-                    self._client.server.agent_manager.get_in_context_messages(
-                        agent_state=agent_state,
-                        actor=self._client.client,
-                        user=target_user,
-                    )
+                current_messages = self._client.server.agent_manager.get_in_context_messages(
+                    agent_state=agent_state,
+                    actor=self._client.client,
+                    user=target_user,
                 )
                 # Count messages belonging to this user (excluding system messages)
                 user_messages_count = len(
-                    [
-                        msg
-                        for msg in current_messages
-                        if msg.role != "system" and msg.user_id == target_user.id
-                    ]
+                    [msg for msg in current_messages if msg.role != "system" and msg.user_id == target_user.id]
                 )
 
                 # Clear conversation history using the agent manager reset_messages method
@@ -397,7 +375,7 @@ class Mirix:
         return {
             "success": False,
             "error": "Save functionality not yet implemented in client-based SDK. Please backup the database directly.",
-            "path": path or "N/A"
+            "path": path or "N/A",
         }
 
     def load(self, path: str) -> Dict[str, Any]:
@@ -418,7 +396,7 @@ class Mirix:
         """
         return {
             "success": False,
-            "error": "Load functionality not yet implemented in client-based SDK. Please restore the database directly."
+            "error": "Load functionality not yet implemented in client-based SDK. Please restore the database directly.",
         }
 
     def _reload_model_settings(self):
@@ -467,11 +445,7 @@ class Mirix:
             organization_id = OrganizationManager.DEFAULT_ORG_ID
 
         return self._client.server.user_manager.create_user(
-            pydantic_user=UserCreate(
-                name=user_name,
-                timezone=timezone,
-                organization_id=organization_id
-            )
+            pydantic_user=UserCreate(name=user_name, timezone=timezone, organization_id=organization_id)
         )
 
     def __call__(self, message: str) -> Dict[str, Any]:
@@ -527,9 +501,7 @@ class Mirix:
         tool_manager = ToolManager()
 
         # Check if tool name already exists
-        existing_tool = tool_manager.get_tool_by_name(
-            tool_name=name, actor=self._client.client
-        )
+        existing_tool = tool_manager.get_tool_by_name(tool_name=name, actor=self._client.client)
 
         if existing_tool:
             created_tool = existing_tool
@@ -540,16 +512,12 @@ class Mirix:
                 tags = ["user_defined"]
 
             # Construct complete source code with docstring
-            complete_source_code = self._build_complete_source_code(
-                source_code, description, args_info, returns_info
-            )
+            complete_source_code = self._build_complete_source_code(source_code, description, args_info, returns_info)
 
             # Generate JSON schema from the complete source code
             from mirix.functions.functions import derive_openai_json_schema
 
-            json_schema = derive_openai_json_schema(
-                source_code=complete_source_code, name=name
-            )
+            json_schema = derive_openai_json_schema(source_code=complete_source_code, name=name)
 
             # Create the tool object
             pydantic_tool = PydanticTool(
@@ -563,9 +531,7 @@ class Mirix:
             )
 
             # Use the tool manager's create_or_update_tool method
-            created_tool = tool_manager.create_or_update_tool(
-                pydantic_tool=pydantic_tool, actor=self._client.client
-            )
+            created_tool = tool_manager.create_or_update_tool(pydantic_tool=pydantic_tool, actor=self._client.client)
 
         # Apply tool to all existing agents if requested
         if apply_to_agents:
@@ -606,9 +572,7 @@ class Mirix:
                 "name": created_tool.name,
                 "description": created_tool.description,
                 "tags": created_tool.tags,
-                "tool_type": created_tool.tool_type.value
-                if created_tool.tool_type
-                else None,
+                "tool_type": created_tool.tool_type.value if created_tool.tool_type else None,
             },
         }
 
@@ -677,9 +641,7 @@ class Mirix:
         try:
             # Find the target user
             if user_id:
-                target_user = self._client.server.user_manager.get_user_by_id(
-                    user_id
-                )
+                target_user = self._client.server.user_manager.get_user_by_id(user_id)
                 if not target_user:
                     return {
                         "success": False,
@@ -688,12 +650,8 @@ class Mirix:
             else:
                 # Find the current active user
                 users = self._client.server.user_manager.list_users()
-                active_user = next(
-                    (user for user in users if user.status == "active"), None
-                )
-                target_user = (
-                    active_user if active_user else (users[0] if users else None)
-                )
+                active_user = next((user for user in users if user.status == "active"), None)
+                target_user = active_user if active_user else (users[0] if users else None)
 
             if not target_user:
                 return {"success": False, "error": "No user found"}
@@ -728,9 +686,7 @@ class Mirix:
                 for event in events:
                     memories["episodic"].append(
                         {
-                            "timestamp": event.occurred_at.isoformat()
-                            if event.occurred_at
-                            else None,
+                            "timestamp": event.occurred_at.isoformat() if event.occurred_at else None,
                             "summary": event.summary,
                             "details": event.details,
                             "event_type": event.event_type,
@@ -802,22 +758,12 @@ class Mirix:
                         try:
                             steps = json.loads(steps)
                             # Extract just the instruction text for simpler display
-                            if (
-                                isinstance(steps, list)
-                                and steps
-                                and isinstance(steps[0], dict)
-                            ):
-                                steps = [
-                                    step.get("instruction", str(step)) for step in steps
-                                ]
+                            if isinstance(steps, list) and steps and isinstance(steps[0], dict):
+                                steps = [step.get("instruction", str(step)) for step in steps]
                         except (json.JSONDecodeError, KeyError, TypeError):
                             # If parsing fails, keep as string and split by common delimiters
                             if isinstance(steps, str):
-                                steps = [
-                                    s.strip()
-                                    for s in steps.replace("\n", "|").split("|")
-                                    if s.strip()
-                                ]
+                                steps = [s.strip() for s in steps.replace("\n", "|").split("|") if s.strip()]
                             else:
                                 steps = []
 
@@ -859,14 +805,8 @@ class Mirix:
                             "filename": resource.title,
                             "type": resource.resource_type,
                             "summary": resource.summary
-                            or (
-                                resource.content[:200] + "..."
-                                if len(resource.content) > 200
-                                else resource.content
-                            ),
-                            "last_accessed": resource.updated_at.isoformat()
-                            if resource.updated_at
-                            else None,
+                            or (resource.content[:200] + "..." if len(resource.content) > 200 else resource.content),
+                            "last_accessed": resource.updated_at.isoformat() if resource.updated_at else None,
                         }
                     )
             except Exception:
@@ -876,12 +816,8 @@ class Mirix:
             try:
                 core_memory = Memory(
                     blocks=[
-                        self._client.server.block_manager.get_block_by_id(
-                            block.id, actor=target_user
-                        )
-                        for block in self._client.server.block_manager.get_blocks(
-                            actor=target_user
-                        )
+                        self._client.server.block_manager.get_block_by_id(block.id, actor=target_user)
+                        for block in self._client.server.block_manager.get_blocks(actor=target_user)
                     ]
                 )
 
@@ -889,11 +825,7 @@ class Mirix:
                 total_characters = 0
 
                 for block in core_memory.blocks:
-                    if (
-                        block.value
-                        and block.value.strip()
-                        and block.label.lower() != "persona"
-                    ):
+                    if block.value and block.value.strip() and block.label.lower() != "persona":
                         block_chars = len(block.value)
                         total_characters += block_chars
 
@@ -912,9 +844,7 @@ class Mirix:
 
             # Get credentials memory
             try:
-                knowledge_vault_manager = (
-                    self._client.server.knowledge_vault_manager
-                )
+                knowledge_vault_manager = self._client.server.knowledge_vault_manager
                 # Find knowledge vault agent from meta agent's children
                 knowledge_vault_memory_agent = None
                 for agent in child_agents:
@@ -940,9 +870,7 @@ class Mirix:
                             "entry_type": item.entry_type,
                             "source": item.source,
                             "sensitivity": item.sensitivity,
-                            "content": "••••••••••••"
-                            if item.sensitivity == "high"
-                            else item.secret_value,
+                            "content": "••••••••••••" if item.sensitivity == "high" else item.secret_value,
                         }
                     )
             except Exception:
@@ -966,9 +894,7 @@ class Mirix:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    def update_core_memory(
-        self, label: str, text: str, user_id: Optional[str] = None
-    ) -> Dict[str, Any]:
+    def update_core_memory(self, label: str, text: str, user_id: Optional[str] = None) -> Dict[str, Any]:
         """
         Update a specific core memory block with new text.
 
@@ -1005,9 +931,7 @@ class Mirix:
         try:
             # If user_id is provided, get the specific user
             if user_id:
-                target_user = self._client.server.user_manager.get_user_by_id(
-                    user_id
-                )
+                target_user = self._client.server.user_manager.get_user_by_id(user_id)
                 if not target_user:
                     return {
                         "success": False,
@@ -1018,11 +942,7 @@ class Mirix:
                 target_user = self._client.user
 
             # Update core memory using the client's update_in_context_memory method
-            self._client.update_in_context_memory(
-                agent_id=self._meta_agent.id,
-                section=label,
-                value=text
-            )
+            self._client.update_in_context_memory(agent_id=self._meta_agent.id, section=label, value=text)
 
             return {
                 "success": True,

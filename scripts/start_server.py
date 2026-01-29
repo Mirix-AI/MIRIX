@@ -28,48 +28,48 @@ def main():
         description="Start the Mirix REST API server",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    
+
     parser.add_argument(
         "--host",
         default="0.0.0.0",
         help="Host to bind to (default: 0.0.0.0)",
     )
-    
+
     parser.add_argument(
         "--port",
         type=int,
         default=8531,
         help="Port to bind to (default: 8531)",
     )
-    
+
     parser.add_argument(
         "--reload",
         action="store_true",
         help="Enable auto-reload for development",
     )
-    
+
     parser.add_argument(
         "--workers",
         type=int,
         default=1,
         help="Number of worker processes (default: 1)",
     )
-    
+
     parser.add_argument(
         "--log-level",
         default="info",
         choices=["critical", "error", "warning", "info", "debug", "trace"],
         help="Log level (default: info)",
     )
-    
+
     parser.add_argument(
         "--production",
         action="store_true",
         help="Run in production mode with multiple workers (requires gunicorn)",
     )
-    
+
     args = parser.parse_args()
-    
+
     # Check if running in production mode
     if args.production:
         try:
@@ -78,14 +78,14 @@ def main():
             print("Error: gunicorn is required for production mode")
             print("Install it with: pip install gunicorn")
             sys.exit(1)
-        
+
         print("Starting Mirix server in PRODUCTION mode...")
         print(f"  Host: {args.host}")
         print(f"  Port: {args.port}")
         print(f"  Workers: {args.workers}")
         print(f"  Log level: {args.log_level}")
         print()
-        
+
         # Run with gunicorn
         os.system(
             f"gunicorn mirix.server.rest_api:app "
@@ -103,7 +103,7 @@ def main():
             print("Error: uvicorn is required")
             print("Install it with: pip install uvicorn")
             sys.exit(1)
-        
+
         print("Starting Mirix server in DEVELOPMENT mode...")
         print(f"  Host: {args.host}")
         print(f"  Port: {args.port}")
@@ -120,7 +120,7 @@ def main():
         print()
         print("Press CTRL+C to stop the server")
         print()
-        
+
         uvicorn.run(
             "mirix.server.rest_api:app",
             host=args.host,
