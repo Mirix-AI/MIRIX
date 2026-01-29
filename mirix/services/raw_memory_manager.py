@@ -4,11 +4,13 @@ Manager class for raw memory CRUD operations.
 Raw memories are unprocessed task context stored for task sharing use cases,
 with a 14-day TTL enforced by nightly cleanup jobs.
 """
+import base64
 import datetime as dt
+import json
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
-from sqlalchemy import select
+from sqlalchemy import and_, desc, func, or_, select
 
 from mirix.constants import BUILD_EMBEDDINGS_FOR_MEMORY
 from mirix.log import get_logger
@@ -419,3 +421,174 @@ class RawMemoryManager:
                     "Raw memory not found for deletion: id=%s", memory_id
                 )
                 return False
+
+    @enforce_types
+    def search_raw_memories(
+        self,
+        user: PydanticUser,
+        filter_tags: Optional[Dict[str, Any]] = None,
+        sort: str = "-updated_at",
+        cursor: Optional[str] = None,
+        time_range: Optional[Dict[str, Optional[datetime]]] = None,
+        limit: int = 10,
+    ) -> Tuple[List[PydanticRawMemoryItem], Optional[str]]:
+        """
+        Search raw memories with filtering, sorting, cursor-based pagination, and time range filtering.
+
+        Args:
+            user: User to search memories for (used for organization_id filtering)
+            filter_tags: AND filter on top-level keys (scope is handled separately)
+            sort: Sort field and direction (updated_at, -updated_at, created_at, -created_at, occurred_at, -occurred_at)
+            cursor: Opaque Base64-encoded cursor for pagination
+            time_range: Dict with keys like created_at_gte, created_at_lte, etc.
+            limit: Maximum number of results (max 100, default 10)
+
+        Returns:
+            Tuple of (items, next_cursor) where next_cursor is Base64-encoded JSON or None
+        """
+        # Enforce limit max
+        limit = min(limit, 100)
+
+        # Parse sort string
+        ascending = not sort.startswith("-")
+        sort_field_name = sort.lstrip("-")
+        
+        # Validate sort field
+        valid_sort_fields = {"updated_at", "created_at", "occurred_at"}
+        if sort_field_name not in valid_sort_fields:
+            raise ValueError(
+                f"Invalid sort field: {sort_field_name}. Must be one of {valid_sort_fields}"
+            )
+
+        # Decode cursor if provided
+        decoded_cursor = None
+        if cursor:
+            try:
+                decoded_bytes = base64.b64decode(cursor.encode())
+                decoded_str = decoded_bytes.decode()
+                decoded_cursor = json.loads(decoded_str)
+                
+                # Validate cursor has required fields
+                if sort_field_name not in decoded_cursor or "id" not in decoded_cursor:
+                    raise ValueError("Invalid cursor format: missing required fields")
+                    
+                # Parse datetime from cursor and strip timezone for DB comparison
+                cursor_sort_value = datetime.fromisoformat(decoded_cursor[sort_field_name])
+                if cursor_sort_value.tzinfo:
+                    cursor_sort_value = cursor_sort_value.replace(tzinfo=None)
+                cursor_id = decoded_cursor["id"]
+            except (ValueError, KeyError, json.JSONDecodeError, UnicodeDecodeError) as e:
+                raise ValueError(f"Invalid cursor format: {e}")
+
+        with self.session_maker() as session:
+            # Base query filtering by organization_id
+            base_query = select(RawMemory).where(
+                RawMemory.organization_id == user.organization_id
+            )
+
+            # Apply filter_tags (AND filter on top-level keys)
+            if filter_tags:
+                for key, value in filter_tags.items():
+                    if key == "scope":
+                        # Scope matching: input value must be in memory's scope field
+                        base_query = base_query.where(
+                            or_(
+                                func.lower(RawMemory.filter_tags[key].as_string()).contains(
+                                    str(value).lower()
+                                ),
+                                RawMemory.filter_tags[key].as_string() == str(value),
+                            )
+                        )
+                    else:
+                        # Other keys: exact match
+                        base_query = base_query.where(
+                            RawMemory.filter_tags[key].as_string() == str(value)
+                        )
+
+            # Apply time range filtering
+            if time_range:
+                if time_range.get("created_at_gte"):
+                    base_query = base_query.where(
+                        RawMemory.created_at >= time_range["created_at_gte"]
+                    )
+                if time_range.get("created_at_lte"):
+                    base_query = base_query.where(
+                        RawMemory.created_at <= time_range["created_at_lte"]
+                    )
+                if time_range.get("occurred_at_gte"):
+                    base_query = base_query.where(
+                        RawMemory.occurred_at >= time_range["occurred_at_gte"]
+                    )
+                if time_range.get("occurred_at_lte"):
+                    base_query = base_query.where(
+                        RawMemory.occurred_at <= time_range["occurred_at_lte"]
+                    )
+                if time_range.get("updated_at_gte"):
+                    base_query = base_query.where(
+                        RawMemory.updated_at >= time_range["updated_at_gte"]
+                    )
+                if time_range.get("updated_at_lte"):
+                    base_query = base_query.where(
+                        RawMemory.updated_at <= time_range["updated_at_lte"]
+                    )
+
+            # Apply cursor pagination
+            if decoded_cursor:
+                sort_field = getattr(RawMemory, sort_field_name)
+                if ascending:
+                    # Get items where sort_field > cursor.sort_field OR
+                    # (sort_field == cursor.sort_field AND id > cursor.id)
+                    base_query = base_query.where(
+                        or_(
+                            sort_field > cursor_sort_value,
+                            and_(
+                                sort_field == cursor_sort_value,
+                                RawMemory.id > cursor_id,
+                            ),
+                        )
+                    )
+                else:
+                    # Get items where sort_field < cursor.sort_field OR
+                    # (sort_field == cursor.sort_field AND id < cursor.id)
+                    base_query = base_query.where(
+                        or_(
+                            sort_field < cursor_sort_value,
+                            and_(
+                                sort_field == cursor_sort_value,
+                                RawMemory.id < cursor_id,
+                            ),
+                        )
+                    )
+
+            # Apply sorting
+            sort_field = getattr(RawMemory, sort_field_name)
+            if ascending:
+                base_query = base_query.order_by(sort_field, RawMemory.id)
+            else:
+                base_query = base_query.order_by(desc(sort_field), desc(RawMemory.id))
+
+            # Apply limit (fetch one extra to check if there are more results)
+            base_query = base_query.limit(limit + 1)
+
+            # Execute query
+            result = session.execute(base_query)
+            items = result.scalars().all()
+
+            # Determine if there are more results and get next cursor
+            has_more = len(items) > limit
+            if has_more:
+                items = items[:limit]  # Remove the extra item
+
+            # Encode next cursor if there are more results
+            next_cursor = None
+            if has_more and items:
+                last_item = items[-1]
+                sort_field_value = getattr(last_item, sort_field_name)
+                cursor_data = {
+                    sort_field_name: sort_field_value.isoformat(),
+                    "id": last_item.id,
+                }
+                cursor_json = json.dumps(cursor_data)
+                next_cursor = base64.b64encode(cursor_json.encode()).decode()
+
+            return [item.to_pydantic() for item in items], next_cursor

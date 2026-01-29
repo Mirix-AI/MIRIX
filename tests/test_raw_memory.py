@@ -635,7 +635,8 @@ def server_check():
     except (requests.ConnectionError, requests.Timeout):
         pass
 
-    pytest.exit(
+    # Skip tests that require server instead of exiting (allows other tests to run)
+    pytest.skip(
         "\n"
         + "=" * 70
         + "\n"
@@ -643,7 +644,10 @@ def server_check():
         "Integration tests require a manually started server:\n"
         "  Terminal 1: python scripts/start_server.py --port 8000\n"
         "  Terminal 2: pytest tests/test_raw_memory.py -v -m integration\n\n"
-        "See tests/README.md for details.\n" + "=" * 70
+        "See tests/README.md for details.\n"
+        + "=" * 70
+        + "\n"
+        "Skipping API tests that require server. Manager-level tests will still run."
     )
 
 
@@ -653,11 +657,34 @@ def api_client(server_check, test_actor):
     import requests
     from mirix.security.api_keys import generate_api_key
     from mirix.services.client_manager import ClientManager
+    from mirix.services.admin_user_manager import ClientAuthManager
+    from mirix.services.user_manager import UserManager
+    from mirix.schemas.user import User as PydanticUser
+    from mirix.orm.errors import NoResultFound
 
     # Generate and set API key for test client
     client_mgr = ClientManager()
     api_key = generate_api_key()
     client_mgr.set_client_api_key(test_actor.id, api_key)
+
+    # Ensure admin user exists for this client
+    user_mgr = UserManager()
+    admin_user_id = ClientAuthManager.get_admin_user_id_for_client(test_actor.id)
+    try:
+        user_mgr.get_user_by_id(admin_user_id)
+    except NoResultFound:
+        # Create admin user if it doesn't exist
+        user_mgr.create_user(
+            PydanticUser(
+                id=admin_user_id,
+                name="Admin",
+                status="active",
+                timezone="UTC",
+                organization_id=test_actor.organization_id,
+                is_admin=True,
+            ),
+            client_id=test_actor.id,
+        )
 
     class APIClient:
         def __init__(self, base_url, api_key):
@@ -668,6 +695,12 @@ def api_client(server_check, test_actor):
         def get(self, path, **kwargs):
             kwargs.setdefault("timeout", 10)
             return requests.get(
+                f"{self.base_url}{path}", headers=self.headers, **kwargs
+            )
+
+        def post(self, path, **kwargs):
+            kwargs.setdefault("timeout", 10)
+            return requests.post(
                 f"{self.base_url}{path}", headers=self.headers, **kwargs
             )
 
@@ -1086,11 +1119,16 @@ def test_raw_memory_concurrent_tag_merge(
 def test_agent(test_actor):
     """Provide a test agent with Gemini embedding configuration."""
     from mirix.services.agent_manager import AgentManager
+    from mirix.services.user_manager import UserManager
     from mirix.schemas.agent import CreateAgent
     from mirix.schemas.embedding_config import EmbeddingConfig
     from mirix.schemas.llm_config import LLMConfig
     from pathlib import Path
     import yaml
+
+    # Ensure admin user exists (required for agent creation messages)
+    user_mgr = UserManager()
+    user_mgr.get_admin_user()  # Creates admin user if it doesn't exist
 
     agent_mgr = AgentManager()
 
@@ -1323,4 +1361,659 @@ def test_raw_memory_embeddings_cache_to_redis(
 
     # Cleanup
     raw_memory_manager.delete_raw_memory(created.id, test_actor)
+
+
+# =================================================================
+# SEARCH TESTS
+# =================================================================
+
+
+def test_search_raw_memories_filter_tags_multiple_keys(
+    raw_memory_manager, test_actor, test_user
+):
+    """Test filter_tags with multiple keys (AND filtering)."""
+    # Create memories with different filter_tags
+    mem1 = raw_memory_manager.create_raw_memory(
+        raw_memory=RawMemoryItemCreate(
+            context="Memory 1",
+            filter_tags={"scope": test_actor.scope, "priority": "high", "source": "iep"},
+            user_id=test_user.id,
+            organization_id=test_actor.organization_id,
+            occurred_at=None,
+            id=None,
+            context_embedding=None,
+            embedding_config=None,
+        ),
+        actor=test_actor,
+        client_id=test_actor.id,
+        user_id=test_user.id,
+        use_cache=False,
+    )
+
+    mem2 = raw_memory_manager.create_raw_memory(
+        raw_memory=RawMemoryItemCreate(
+            context="Memory 2",
+            filter_tags={"scope": test_actor.scope, "priority": "high", "source": "manual"},
+            user_id=test_user.id,
+            organization_id=test_actor.organization_id,
+            occurred_at=None,
+            id=None,
+            context_embedding=None,
+            embedding_config=None,
+        ),
+        actor=test_actor,
+        client_id=test_actor.id,
+        user_id=test_user.id,
+        use_cache=False,
+    )
+
+    mem3 = raw_memory_manager.create_raw_memory(
+        raw_memory=RawMemoryItemCreate(
+            context="Memory 3",
+            filter_tags={"scope": test_actor.scope, "priority": "low", "source": "iep"},
+            user_id=test_user.id,
+            organization_id=test_actor.organization_id,
+            occurred_at=None,
+            id=None,
+            context_embedding=None,
+            embedding_config=None,
+        ),
+        actor=test_actor,
+        client_id=test_actor.id,
+        user_id=test_user.id,
+        use_cache=False,
+    )
+
+    # Search with multiple filter_tags (AND filtering)
+    results, cursor = raw_memory_manager.search_raw_memories(
+        user=test_user,
+        filter_tags={"priority": "high", "source": "iep"},
+        limit=10,
+    )
+
+    # Should only return mem1 (matches both priority=high AND source=iep)
+    assert len(results) == 1
+    assert results[0].id == mem1.id
+
+    # Cleanup
+    raw_memory_manager.delete_raw_memory(mem1.id, test_actor)
+    raw_memory_manager.delete_raw_memory(mem2.id, test_actor)
+    raw_memory_manager.delete_raw_memory(mem3.id, test_actor)
+
+
+def test_search_raw_memories_sorting_all_fields(
+    raw_memory_manager, test_actor, test_user
+):
+    """Test sorting in both directions for all three fields."""
+    from datetime import timedelta
+
+    base_time = datetime.now(UTC)
+    
+    # Create memories with different timestamps
+    mem1 = raw_memory_manager.create_raw_memory(
+        raw_memory=RawMemoryItemCreate(
+            context="Memory 1",
+            filter_tags={"scope": test_actor.scope},
+            user_id=test_user.id,
+            organization_id=test_actor.organization_id,
+            occurred_at=base_time - timedelta(days=3),
+            id=None,
+            context_embedding=None,
+            embedding_config=None,
+        ),
+        actor=test_actor,
+        client_id=test_actor.id,
+        user_id=test_user.id,
+        use_cache=False,
+    )
+
+    mem2 = raw_memory_manager.create_raw_memory(
+        raw_memory=RawMemoryItemCreate(
+            context="Memory 2",
+            filter_tags={"scope": test_actor.scope},
+            user_id=test_user.id,
+            organization_id=test_actor.organization_id,
+            occurred_at=base_time - timedelta(days=1),
+            id=None,
+            context_embedding=None,
+            embedding_config=None,
+        ),
+        actor=test_actor,
+        client_id=test_actor.id,
+        user_id=test_user.id,
+        use_cache=False,
+    )
+
+    # Test ascending sort by updated_at
+    results, _ = raw_memory_manager.search_raw_memories(
+        user=test_user,
+        filter_tags={"scope": test_actor.scope},
+        sort="updated_at",
+        limit=10,
+    )
+    assert len(results) >= 2
+    # Should be ascending (older first)
+    assert results[0].updated_at <= results[1].updated_at
+
+    # Test descending sort by updated_at
+    results, _ = raw_memory_manager.search_raw_memories(
+        user=test_user,
+        filter_tags={"scope": test_actor.scope},
+        sort="-updated_at",
+        limit=10,
+    )
+    assert len(results) >= 2
+    # Should be descending (newer first)
+    assert results[0].updated_at >= results[1].updated_at
+
+    # Test sorting by created_at
+    results, _ = raw_memory_manager.search_raw_memories(
+        user=test_user,
+        filter_tags={"scope": test_actor.scope},
+        sort="-created_at",
+        limit=10,
+    )
+    assert len(results) >= 2
+    assert results[0].created_at >= results[1].created_at
+
+    # Test sorting by occurred_at
+    results, _ = raw_memory_manager.search_raw_memories(
+        user=test_user,
+        filter_tags={"scope": test_actor.scope},
+        sort="-occurred_at",
+        limit=10,
+    )
+    assert len(results) >= 2
+    assert results[0].occurred_at >= results[1].occurred_at
+
+    # Cleanup
+    raw_memory_manager.delete_raw_memory(mem1.id, test_actor)
+    raw_memory_manager.delete_raw_memory(mem2.id, test_actor)
+
+
+def test_search_raw_memories_cursor_pagination(
+    raw_memory_manager, test_actor, test_user
+):
+    """Test cursor pagination across multiple pages."""
+    # Create multiple memories
+    memories = []
+    for i in range(5):
+        mem = raw_memory_manager.create_raw_memory(
+            raw_memory=RawMemoryItemCreate(
+                context=f"Memory {i}",
+                filter_tags={"scope": test_actor.scope},
+                user_id=test_user.id,
+                organization_id=test_actor.organization_id,
+                occurred_at=None,
+                id=None,
+                context_embedding=None,
+                embedding_config=None,
+            ),
+            actor=test_actor,
+            client_id=test_actor.id,
+            user_id=test_user.id,
+            use_cache=False,
+        )
+        memories.append(mem)
+        # Small delay to ensure different timestamps
+        import time
+        time.sleep(0.01)
+
+    # First page (limit=2)
+    results1, cursor1 = raw_memory_manager.search_raw_memories(
+        user=test_user,
+        filter_tags={"scope": test_actor.scope},
+        sort="-updated_at",
+        limit=2,
+    )
+    assert len(results1) == 2
+    assert cursor1 is not None  # Should have next cursor
+
+    # Second page using cursor
+    results2, cursor2 = raw_memory_manager.search_raw_memories(
+        user=test_user,
+        filter_tags={"scope": test_actor.scope},
+        sort="-updated_at",
+        cursor=cursor1,
+        limit=2,
+    )
+    assert len(results2) == 2
+    assert results1[0].id != results2[0].id  # Different items
+    assert results1[1].id != results2[0].id  # No duplicates
+
+    # Third page
+    results3, cursor3 = raw_memory_manager.search_raw_memories(
+        user=test_user,
+        filter_tags={"scope": test_actor.scope},
+        sort="-updated_at",
+        cursor=cursor2,
+        limit=2,
+    )
+    assert len(results3) == 1  # Last item
+    assert cursor3 is None  # No more pages
+
+    # Cleanup
+    for mem in memories:
+        raw_memory_manager.delete_raw_memory(mem.id, test_actor)
+
+
+def test_search_raw_memories_cursor_different_sort_fields(
+    raw_memory_manager, test_actor, test_user
+):
+    """Test cursor with different sort fields."""
+    from datetime import timedelta
+
+    base_time = datetime.now(UTC)
+    
+    # Create memories with different occurred_at times
+    mem1 = raw_memory_manager.create_raw_memory(
+        raw_memory=RawMemoryItemCreate(
+            context="Memory 1",
+            filter_tags={"scope": test_actor.scope},
+            user_id=test_user.id,
+            organization_id=test_actor.organization_id,
+            occurred_at=base_time - timedelta(days=2),
+            id=None,
+            context_embedding=None,
+            embedding_config=None,
+        ),
+        actor=test_actor,
+        client_id=test_actor.id,
+        user_id=test_user.id,
+        use_cache=False,
+    )
+
+    mem2 = raw_memory_manager.create_raw_memory(
+        raw_memory=RawMemoryItemCreate(
+            context="Memory 2",
+            filter_tags={"scope": test_actor.scope},
+            user_id=test_user.id,
+            organization_id=test_actor.organization_id,
+            occurred_at=base_time - timedelta(days=1),
+            id=None,
+            context_embedding=None,
+            embedding_config=None,
+        ),
+        actor=test_actor,
+        client_id=test_actor.id,
+        user_id=test_user.id,
+        use_cache=False,
+    )
+
+    # Get cursor with occurred_at sort
+    results1, cursor1 = raw_memory_manager.search_raw_memories(
+        user=test_user,
+        filter_tags={"scope": test_actor.scope},
+        sort="-occurred_at",
+        limit=1,
+    )
+    assert cursor1 is not None
+
+    # Use cursor with same sort field
+    results2, _ = raw_memory_manager.search_raw_memories(
+        user=test_user,
+        filter_tags={"scope": test_actor.scope},
+        sort="-occurred_at",
+        cursor=cursor1,
+        limit=1,
+    )
+    assert len(results2) == 1
+    assert results2[0].id != results1[0].id
+
+    # Cleanup
+    raw_memory_manager.delete_raw_memory(mem1.id, test_actor)
+    raw_memory_manager.delete_raw_memory(mem2.id, test_actor)
+
+
+def test_search_raw_memories_time_range_filtering(
+    raw_memory_manager, test_actor, test_user
+):
+    """Test time range filtering with various combinations."""
+    from datetime import timedelta
+
+    base_time = datetime.now(UTC)
+    
+    # Create memories at different times
+    mem1 = raw_memory_manager.create_raw_memory(
+        raw_memory=RawMemoryItemCreate(
+            context="Memory 1",
+            filter_tags={"scope": test_actor.scope},
+            user_id=test_user.id,
+            organization_id=test_actor.organization_id,
+            occurred_at=base_time - timedelta(days=5),
+            id=None,
+            context_embedding=None,
+            embedding_config=None,
+        ),
+        actor=test_actor,
+        client_id=test_actor.id,
+        user_id=test_user.id,
+        use_cache=False,
+    )
+
+    mem2 = raw_memory_manager.create_raw_memory(
+        raw_memory=RawMemoryItemCreate(
+            context="Memory 2",
+            filter_tags={"scope": test_actor.scope},
+            user_id=test_user.id,
+            organization_id=test_actor.organization_id,
+            occurred_at=base_time - timedelta(days=2),
+            id=None,
+            context_embedding=None,
+            embedding_config=None,
+        ),
+        actor=test_actor,
+        client_id=test_actor.id,
+        user_id=test_user.id,
+        use_cache=False,
+    )
+
+    mem3 = raw_memory_manager.create_raw_memory(
+        raw_memory=RawMemoryItemCreate(
+            context="Memory 3",
+            filter_tags={"scope": test_actor.scope},
+            user_id=test_user.id,
+            organization_id=test_actor.organization_id,
+            occurred_at=base_time - timedelta(days=1),
+            id=None,
+            context_embedding=None,
+            embedding_config=None,
+        ),
+        actor=test_actor,
+        client_id=test_actor.id,
+        user_id=test_user.id,
+        use_cache=False,
+    )
+
+    # Test occurred_at range filtering
+    time_range = {
+        "occurred_at_gte": (base_time - timedelta(days=3)).replace(tzinfo=None),
+        "occurred_at_lte": (base_time - timedelta(days=0)).replace(tzinfo=None),
+    }
+    results, _ = raw_memory_manager.search_raw_memories(
+        user=test_user,
+        filter_tags={"scope": test_actor.scope},
+        time_range=time_range,
+        limit=10,
+    )
+    # Should return mem2 and mem3 (within range)
+    result_ids = {r.id for r in results}
+    assert mem2.id in result_ids
+    assert mem3.id in result_ids
+    assert mem1.id not in result_ids
+
+    # Test updated_at range filtering
+    time_range = {
+        "updated_at_gte": (base_time - timedelta(days=3)).replace(tzinfo=None),
+    }
+    results, _ = raw_memory_manager.search_raw_memories(
+        user=test_user,
+        filter_tags={"scope": test_actor.scope},
+        time_range=time_range,
+        limit=10,
+    )
+    assert len(results) >= 2
+
+    # Cleanup
+    raw_memory_manager.delete_raw_memory(mem1.id, test_actor)
+    raw_memory_manager.delete_raw_memory(mem2.id, test_actor)
+    raw_memory_manager.delete_raw_memory(mem3.id, test_actor)
+
+
+def test_search_raw_memories_limit_enforcement(
+    raw_memory_manager, test_actor, test_user
+):
+    """Test limit enforcement (max 100)."""
+    # Create many memories
+    memories = []
+    for i in range(5):
+        mem = raw_memory_manager.create_raw_memory(
+            raw_memory=RawMemoryItemCreate(
+                context=f"Memory {i}",
+                filter_tags={"scope": test_actor.scope},
+                user_id=test_user.id,
+                organization_id=test_actor.organization_id,
+                occurred_at=None,
+                id=None,
+                context_embedding=None,
+                embedding_config=None,
+            ),
+            actor=test_actor,
+            client_id=test_actor.id,
+            user_id=test_user.id,
+            use_cache=False,
+        )
+        memories.append(mem)
+
+    # Test limit=2
+    results, _ = raw_memory_manager.search_raw_memories(
+        user=test_user,
+        filter_tags={"scope": test_actor.scope},
+        limit=2,
+    )
+    assert len(results) == 2
+
+    # Test limit > 100 (should be capped at 100)
+    results, _ = raw_memory_manager.search_raw_memories(
+        user=test_user,
+        filter_tags={"scope": test_actor.scope},
+        limit=200,
+    )
+    assert len(results) <= 100
+
+    # Cleanup
+    for mem in memories:
+        raw_memory_manager.delete_raw_memory(mem.id, test_actor)
+
+
+def test_search_raw_memories_scope_handling(
+    raw_memory_manager, test_actor, test_user
+):
+    """Test scope handling (ignore provided scope, always use client scope)."""
+    # Create memory with client scope
+    mem = raw_memory_manager.create_raw_memory(
+        raw_memory=RawMemoryItemCreate(
+            context="Memory with scope",
+            filter_tags={"scope": test_actor.scope, "priority": "high"},
+            user_id=test_user.id,
+            organization_id=test_actor.organization_id,
+            occurred_at=None,
+            id=None,
+            context_embedding=None,
+            embedding_config=None,
+        ),
+        actor=test_actor,
+        client_id=test_actor.id,
+        user_id=test_user.id,
+        use_cache=False,
+    )
+
+    # Search with scope in filter_tags - should find it
+    results, _ = raw_memory_manager.search_raw_memories(
+        user=test_user,
+        filter_tags={"scope": test_actor.scope, "priority": "high"},
+        limit=10,
+    )
+    assert len(results) >= 1
+    assert any(r.id == mem.id for r in results)
+
+    # Cleanup
+    raw_memory_manager.delete_raw_memory(mem.id, test_actor)
+
+
+def test_search_raw_memories_invalid_cursor(
+    raw_memory_manager, test_actor, test_user
+):
+    """Test invalid cursor format (should handle gracefully)."""
+    # Test invalid base64
+    with pytest.raises(ValueError, match="Invalid cursor format"):
+        raw_memory_manager.search_raw_memories(
+            user=test_user,
+            filter_tags={"scope": test_actor.scope},
+            cursor="not-valid-base64!!!",
+            limit=10,
+        )
+
+    # Test invalid JSON in cursor
+    import base64
+    invalid_json = base64.b64encode(b"not json").decode()
+    with pytest.raises(ValueError, match="Invalid cursor format"):
+        raw_memory_manager.search_raw_memories(
+            user=test_user,
+            filter_tags={"scope": test_actor.scope},
+            cursor=invalid_json,
+            limit=10,
+        )
+
+    # Test cursor missing required fields
+    import json
+    incomplete_cursor = base64.b64encode(
+        json.dumps({"id": "test"}).encode()
+    ).decode()
+    with pytest.raises(ValueError, match="Invalid cursor format"):
+        raw_memory_manager.search_raw_memories(
+            user=test_user,
+            filter_tags={"scope": test_actor.scope},
+            sort="-updated_at",
+            cursor=incomplete_cursor,
+            limit=10,
+        )
+
+
+@pytest.mark.integration
+def test_api_search_raw_memories_endpoint(
+    api_client, raw_memory_manager, test_actor, test_user
+):
+    """Test the POST /memory/search_raw endpoint."""
+    # Create test memories
+    mem1 = raw_memory_manager.create_raw_memory(
+        raw_memory=RawMemoryItemCreate(
+            context="API test memory 1",
+            filter_tags={"scope": test_actor.scope, "priority": "high"},
+            user_id=test_user.id,
+            organization_id=test_actor.organization_id,
+            occurred_at=None,
+            id=None,
+            context_embedding=None,
+            embedding_config=None,
+        ),
+        actor=test_actor,
+        client_id=test_actor.id,
+        user_id=test_user.id,
+        use_cache=False,
+    )
+
+    mem2 = raw_memory_manager.create_raw_memory(
+        raw_memory=RawMemoryItemCreate(
+            context="API test memory 2",
+            filter_tags={"scope": test_actor.scope, "priority": "low"},
+            user_id=test_user.id,
+            organization_id=test_actor.organization_id,
+            occurred_at=None,
+            id=None,
+            context_embedding=None,
+            embedding_config=None,
+        ),
+        actor=test_actor,
+        client_id=test_actor.id,
+        user_id=test_user.id,
+        use_cache=False,
+    )
+
+    # Test search endpoint
+    response = api_client.post(
+        "/memory/search_raw",
+        json={
+            "filter_tags": {"priority": "high"},
+            "sort": "-updated_at",
+            "limit": 10,
+        },
+        params={"user_id": test_user.id},
+    )
+
+    assert response.status_code == 200, f"Search failed: {response.text}"
+    data = response.json()
+    assert "items" in data
+    assert "cursor" in data
+    assert "count" in data
+    assert data["count"] >= 1
+    assert any(item["id"] == mem1.id for item in data["items"])
+
+    # Test with cursor pagination
+    if data["cursor"]:
+        response2 = api_client.post(
+            "/memory/search_raw",
+            json={
+                "filter_tags": {"priority": "high"},
+                "sort": "-updated_at",
+                "cursor": data["cursor"],
+                "limit": 10,
+            },
+            params={"user_id": test_user.id},
+        )
+        assert response2.status_code == 200
+        data2 = response2.json()
+        assert data2["count"] >= 0
+        # Should not have duplicates
+        ids1 = {item["id"] for item in data["items"]}
+        ids2 = {item["id"] for item in data2["items"]}
+        assert ids1.isdisjoint(ids2)
+
+    # Test invalid sort
+    response = api_client.post(
+        "/memory/search_raw",
+        json={"sort": "invalid_sort", "limit": 10},
+        params={"user_id": test_user.id},
+    )
+    assert response.status_code == 400
+
+    # Test invalid limit (Pydantic validation returns 422)
+    response = api_client.post(
+        "/memory/search_raw",
+        json={"limit": 200},  # Over max
+        params={"user_id": test_user.id},
+    )
+    assert response.status_code == 422
+
+    # Cleanup
+    raw_memory_manager.delete_raw_memory(mem1.id, test_actor)
+    raw_memory_manager.delete_raw_memory(mem2.id, test_actor)
+
+
+@pytest.mark.integration
+def test_api_search_raw_memories_without_user_id(
+    api_client, raw_memory_manager, test_actor, test_user
+):
+    """Test search endpoint without user_id (should use admin user)."""
+    # Create memory
+    mem = raw_memory_manager.create_raw_memory(
+        raw_memory=RawMemoryItemCreate(
+            context="Admin user test",
+            filter_tags={"scope": test_actor.scope},
+            user_id=test_user.id,
+            organization_id=test_actor.organization_id,
+            occurred_at=None,
+            id=None,
+            context_embedding=None,
+            embedding_config=None,
+        ),
+        actor=test_actor,
+        client_id=test_actor.id,
+        user_id=test_user.id,
+        use_cache=False,
+    )
+
+    # Test without user_id parameter (should use admin user)
+    response = api_client.post(
+        "/memory/search_raw",
+        json={"limit": 10},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert "items" in data
+    assert "count" in data
+
+    # Cleanup
+    raw_memory_manager.delete_raw_memory(mem.id, test_actor)
 

@@ -6,7 +6,7 @@ Raw memories store unprocessed task context without LLM extraction.
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from pydantic import Field, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 from mirix.client.utils import get_utc_time
 from mirix.schemas.embedding_config import EmbeddingConfig
@@ -188,3 +188,60 @@ class RawMemoryItemUpdate(MirixBase):
         pattern="^(merge|replace)$",
         description="How to handle filter_tags updates: 'merge' combines with existing, 'replace' overwrites",
     )
+
+
+class TimeRangeFilter(BaseModel):
+    """Time range filter for searching raw memories."""
+
+    created_at_gte: Optional[datetime] = Field(
+        None, description="Filter memories created at or after this time"
+    )
+    created_at_lte: Optional[datetime] = Field(
+        None, description="Filter memories created at or before this time"
+    )
+    occurred_at_gte: Optional[datetime] = Field(
+        None, description="Filter memories that occurred at or after this time"
+    )
+    occurred_at_lte: Optional[datetime] = Field(
+        None, description="Filter memories that occurred at or before this time"
+    )
+    updated_at_gte: Optional[datetime] = Field(
+        None, description="Filter memories updated at or after this time"
+    )
+    updated_at_lte: Optional[datetime] = Field(
+        None, description="Filter memories updated at or before this time"
+    )
+
+
+class SearchRawMemoryRequest(BaseModel):
+    """Request model for searching raw memories."""
+
+    filter_tags: Optional[Dict[str, Any]] = Field(
+        None,
+        description="AND filter on top-level keys. Scope is automatically set based on authenticated client.",
+    )
+    sort: str = Field(
+        "-updated_at",
+        description="Sort field and direction. Options: updated_at, -updated_at, created_at, -created_at, occurred_at, -occurred_at",
+    )
+    cursor: Optional[str] = Field(
+        None,
+        description="Opaque Base64-encoded cursor for pagination (contains sort field value + ID)",
+    )
+    time_range: Optional[TimeRangeFilter] = Field(
+        None, description="Time range filters for created_at, occurred_at, or updated_at"
+    )
+    limit: int = Field(
+        10, ge=1, le=100, description="Maximum number of results to return (default: 10, max: 100)"
+    )
+
+
+class SearchRawMemoryResponse(BaseModel):
+    """Response model for searching raw memories."""
+
+    items: List[RawMemoryItem] = Field(..., description="List of matching raw memories")
+    cursor: Optional[str] = Field(
+        None,
+        description="Next opaque cursor for pagination (Base64-encoded JSON with sort field value + ID of last item). Null if no more pages.",
+    )
+    count: int = Field(..., description="Number of items returned")

@@ -38,7 +38,12 @@ from mirix.schemas.message import Message, MessageCreate
 from mirix.schemas.mirix_response import MirixResponse
 from mirix.schemas.organization import Organization
 from mirix.schemas.procedural_memory import ProceduralMemoryItemUpdate
-from mirix.schemas.raw_memory import RawMemoryItem, RawMemoryItemUpdate
+from mirix.schemas.raw_memory import (
+    RawMemoryItem,
+    RawMemoryItemUpdate,
+    SearchRawMemoryRequest,
+    SearchRawMemoryResponse,
+)
 from mirix.schemas.resource_memory import ResourceMemoryItemUpdate
 from mirix.schemas.sandbox_config import (
     E2BSandboxConfig,
@@ -101,8 +106,11 @@ async def cleanup():
     # Flush LangFuse traces before shutdown
     try:
         from mirix.observability import flush_langfuse, shutdown_langfuse
+
         logger.info("Flushing LangFuse traces...")
-        flush_success = flush_langfuse(timeout=10.0)  # Increased timeout for graceful shutdown
+        flush_success = flush_langfuse(
+            timeout=10.0
+        )  # Increased timeout for graceful shutdown
         if flush_success:
             logger.info("LangFuse traces flushed successfully")
         else:
@@ -310,7 +318,9 @@ async def inject_client_org_headers(request: Request, call_next):
             headers.append((b"x-org-id", org_id.encode()))
             request.scope["headers"] = headers
         except HTTPException as exc:
-            return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+            return JSONResponse(
+                status_code=exc.status_code, content={"detail": exc.detail}
+            )
 
     return await call_next(request)
 
@@ -327,12 +337,12 @@ def get_client_and_org(
 ) -> tuple[str, str]:
     """
     Get client_id and org_id from headers or use defaults.
-    
+
     Returns:
         tuple[str, str]: (client_id, org_id)
     """
     server = get_server()
-    
+
     if x_api_key:
         # get_client_by_api_key already verifies the API key hash internally
         client = server.client_manager.get_client_by_api_key(x_api_key)
@@ -350,7 +360,7 @@ def get_client_and_org(
             status_code=401,
             detail="X-API-Key header is required for this endpoint",
         )
-    
+
     return client_id, org_id
 
 
@@ -359,7 +369,7 @@ def extract_topics_and_temporal_info(
 ) -> tuple[Optional[str], Optional[str]]:
     """
     Extract topics AND temporal expressions from a list of messages using LLM.
-    
+
     This function analyzes messages to extract both semantic topics and temporal
     expressions (like "today", "yesterday", "last week") for more accurate memory retrieval.
 
@@ -377,15 +387,24 @@ def extract_topics_and_temporal_info(
             # Convert from OpenAI format to internal format
             new_messages = []
             for msg in messages:
-                new_messages.append({'type': "text", "text": "[USER]" if msg["role"] == "user" else "[ASSISTANT]"})
+                new_messages.append(
+                    {
+                        "type": "text",
+                        "text": "[USER]" if msg["role"] == "user" else "[ASSISTANT]",
+                    }
+                )
                 new_messages.extend(msg["content"])
             messages = new_messages
 
         temporary_messages = convert_message_to_mirix_message(messages)
         temporary_messages = [
             prepare_input_message_create(
-                msg, agent_id="topic_extraction", wrap_user_message=False, wrap_system_message=True
-            ) for msg in temporary_messages
+                msg,
+                agent_id="topic_extraction",
+                wrap_user_message=False,
+                wrap_system_message=True,
+            )
+            for msg in temporary_messages
         ]
 
         # Add instruction message for topic and temporal extraction
@@ -393,10 +412,10 @@ def extract_topics_and_temporal_info(
             prepare_input_message_create(
                 MessageCreate(
                     role=MessageRole.user,
-                    content='The above are the inputs from the user. Please extract:\n'
-                            '1. Topic(s): Brief description of what the user is focusing on. If multiple topics, separate with ";"\n'
-                            '2. Temporal expression: Any time-related phrases like "today", "yesterday", "last week", "this month", etc.\n'
-                            'Call the function `update_topic_and_time` with both extracted values. If no temporal expression is found, leave it empty.',
+                    content="The above are the inputs from the user. Please extract:\n"
+                    '1. Topic(s): Brief description of what the user is focusing on. If multiple topics, separate with ";"\n'
+                    '2. Temporal expression: Any time-related phrases like "today", "yesterday", "last week", "this month", etc.\n'
+                    "Call the function `update_topic_and_time` with both extracted values. If no temporal expression is found, leave it empty.",
                 ),
                 agent_id="topic_extraction",
                 wrap_user_message=False,
@@ -432,7 +451,7 @@ def extract_topics_and_temporal_info(
                         "temporal_expression": {
                             "type": "string",
                             "description": 'Any temporal/time-related expression found in the input (e.g., "today", "yesterday", "last week", "this month"). Leave empty if no temporal expression found.',
-                        }
+                        },
                     },
                     "required": ["topic"],  # temporal_expression is optional
                 },
@@ -449,7 +468,7 @@ def extract_topics_and_temporal_info(
                 stream=False,
                 force_tool_call="update_topic_and_time",
             )
-            
+
             # Extract topics and temporal expression from the response
             for choice in response.choices:
                 if (
@@ -465,10 +484,14 @@ def extract_topics_and_temporal_info(
                         temporal_expr = function_args.get("temporal_expression", "")
                         # Clean up empty strings
                         temporal_expr = temporal_expr.strip() if temporal_expr else None
-                        logger.debug("Extracted topics: %s, temporal: %s", topics, temporal_expr)
+                        logger.debug(
+                            "Extracted topics: %s, temporal: %s", topics, temporal_expr
+                        )
                         return topics, temporal_expr
                     except (json.JSONDecodeError, KeyError) as parse_error:
-                        logger.warning("Failed to parse extraction response: %s", parse_error)
+                        logger.warning(
+                            "Failed to parse extraction response: %s", parse_error
+                        )
                         continue
 
     except Exception as e:
@@ -477,10 +500,12 @@ def extract_topics_and_temporal_info(
     return None, None
 
 
-def extract_topics_from_messages(messages: List[Dict[str, Any]], llm_config: LLMConfig) -> Optional[str]:
+def extract_topics_from_messages(
+    messages: List[Dict[str, Any]], llm_config: LLMConfig
+) -> Optional[str]:
     """
     Extract topics from a list of messages using LLM.
-    
+
     This is a legacy function maintained for backward compatibility.
     New code should use extract_topics_and_temporal_info() for enhanced functionality.
 
@@ -524,7 +549,9 @@ def _flatten_messages_to_plain_text(messages: List[Dict[str, Any]]) -> str:
     return "\n".join(transcript_parts)
 
 
-def extract_topics_with_local_model(messages: List[Dict[str, Any]], model_name: str) -> Optional[str]:
+def extract_topics_with_local_model(
+    messages: List[Dict[str, Any]], model_name: str
+) -> Optional[str]:
     """
     Extract topics using a locally hosted Ollama model via the /api/chat endpoint.
 
@@ -579,10 +606,14 @@ def extract_topics_with_local_model(messages: List[Dict[str, Any]], model_name: 
         response.raise_for_status()
         response_data = response.json()
     except requests.RequestException as exc:
-        logger.error("Failed to extract topics with local model %s: %s", model_name, exc)
+        logger.error(
+            "Failed to extract topics with local model %s: %s", model_name, exc
+        )
         return None
 
-    message_payload = response_data.get("message") if isinstance(response_data, dict) else None
+    message_payload = (
+        response_data.get("message") if isinstance(response_data, dict) else None
+    )
     text_response: Optional[str] = None
     if isinstance(message_payload, dict):
         text_response = message_payload.get("content")
@@ -649,9 +680,9 @@ async def list_agents(
     server = get_server()
     client_id, org_id = get_client_and_org(x_client_id, x_org_id)
     client = server.client_manager.get_client_by_id(client_id)
-    
+
     tags_list = tags.split(",") if tags else None
-    
+
     return server.agent_manager.list_agents(
         actor=client,
         tags=tags_list,
@@ -736,17 +767,16 @@ async def get_agent(
 ):
     """Get an agent by ID."""
     from mirix.orm.errors import NoResultFound
-    
+
     server = get_server()
     client_id, org_id = get_client_and_org(x_client_id, x_org_id)
     client = server.client_manager.get_client_by_id(client_id)
-    
+
     try:
         return server.agent_manager.get_agent_by_id(agent_id, actor=client)
     except NoResultFound as e:
         raise HTTPException(
-            status_code=404,
-            detail=f"Agent {agent_id} not found or not accessible"
+            status_code=404, detail=f"Agent {agent_id} not found or not accessible"
         )
 
 
@@ -781,7 +811,7 @@ class UpdateAgentRequest(BaseModel):
 
 class UpdateSystemPromptRequest(BaseModel):
     """Request model for updating an agent's system prompt."""
-    
+
     system_prompt: str = Field(..., description="The new system prompt")
 
 
@@ -810,10 +840,10 @@ async def update_agent_system_prompt_by_name(
 ):
     """
     Update an agent's system prompt by agent name.
-    
-    This endpoint accepts an agent name (e.g., "episodic", "semantic", "core", 
+
+    This endpoint accepts an agent name (e.g., "episodic", "semantic", "core",
     "meta_memory_agent") and resolves it to the agent_id for the authenticated client.
-    
+
     The full agent name pattern is typically:
     - "meta_memory_agent" (the parent meta agent)
     - "meta_memory_agent_episodic_memory_agent" → short name: "episodic"
@@ -823,14 +853,14 @@ async def update_agent_system_prompt_by_name(
     - "meta_memory_agent_resource_memory_agent" → short name: "resource"
     - "meta_memory_agent_knowledge_vault_memory_agent" → short name: "knowledge_vault"
     - "meta_memory_agent_reflexion_agent" → short name: "reflexion"
-    
+
     Args:
         agent_name: Short name or full name of the agent
         request: UpdateSystemPromptRequest with the new system prompt
-        
+
     Returns:
         AgentState: The updated agent state
-        
+
     Example:
         PATCH /agents/by-name/episodic/system
         {
@@ -840,19 +870,21 @@ async def update_agent_system_prompt_by_name(
     server = get_server()
     client_id, org_id = get_client_and_org(x_client_id, x_org_id)
     client = server.client_manager.get_client_by_id(client_id)
-    
+
     # List all top-level agents for this client
     top_level_agents = server.agent_manager.list_agents(actor=client, limit=1000)
-    
+
     # Also get sub-agents (children of meta agent)
     all_agents = list(top_level_agents)
     for agent in top_level_agents:
         if agent.name == "meta_memory_agent":
             # Get sub-agents
-            sub_agents = server.agent_manager.list_agents(actor=client, parent_id=agent.id, limit=1000)
+            sub_agents = server.agent_manager.list_agents(
+                actor=client, parent_id=agent.id, limit=1000
+            )
             all_agents.extend(sub_agents)
             break
-    
+
     # Try to find the agent by name
     # First try exact match with full name
     matching_agent = None
@@ -860,18 +892,22 @@ async def update_agent_system_prompt_by_name(
         if agent.name == agent_name:
             matching_agent = agent
             break
-    
+
     # If not found, try short name match (e.g., "episodic" → "meta_memory_agent_episodic_memory_agent")
     if not matching_agent:
         for agent in all_agents:
             # Extract short name from full name
             # e.g., "meta_memory_agent_episodic_memory_agent" → "episodic"
             if agent.name and "meta_memory_agent_" in agent.name:
-                short_name = agent.name.replace("meta_memory_agent_", "").replace("_memory_agent", "").replace("_agent", "")
+                short_name = (
+                    agent.name.replace("meta_memory_agent_", "")
+                    .replace("_memory_agent", "")
+                    .replace("_agent", "")
+                )
                 if short_name == agent_name:
                     matching_agent = agent
                     break
-    
+
     # If still not found, raise error with helpful message
     if not matching_agent:
         # Build helpful error message with available agents
@@ -879,33 +915,36 @@ async def update_agent_system_prompt_by_name(
         for agent in all_agents:
             full_name = agent.name
             if "meta_memory_agent_" in full_name and full_name != "meta_memory_agent":
-                short_name = full_name.replace("meta_memory_agent_", "").replace("_memory_agent", "").replace("_agent", "")
+                short_name = (
+                    full_name.replace("meta_memory_agent_", "")
+                    .replace("_memory_agent", "")
+                    .replace("_agent", "")
+                )
                 available_agents.append(f"'{short_name}' (full: {full_name})")
             else:
                 available_agents.append(f"'{full_name}'")
-        
+
         available_list = ", ".join(available_agents[:5])  # Show first 5
         if len(available_agents) > 5:
             available_list += f", and {len(available_agents) - 5} more"
-        
-        error_detail = f"Agent with name '{agent_name}' not found for client {client_id}. "
+
+        error_detail = (
+            f"Agent with name '{agent_name}' not found for client {client_id}. "
+        )
         if available_agents:
             error_detail += f"Available agents: {available_list}"
         else:
-            error_detail += "No agents found for this client. Please initialize agents first."
-        
-        raise HTTPException(
-            status_code=404,
-            detail=error_detail
-        )
-    
+            error_detail += (
+                "No agents found for this client. Please initialize agents first."
+            )
+
+        raise HTTPException(status_code=404, detail=error_detail)
+
     # Call the update_agent_system_prompt endpoint logic
     updated_agent = server.agent_manager.update_system_prompt(
-        agent_id=matching_agent.id,
-        system_prompt=request.system_prompt,
-        actor=client
+        agent_id=matching_agent.id, system_prompt=request.system_prompt, actor=client
     )
-    
+
     return updated_agent
 
 
@@ -918,10 +957,10 @@ async def update_agent_system_prompt(
 ):
     """
     Update an agent's system prompt by agent ID.
-    
+
     This endpoint updates the agent's system prompt and triggers a rebuild
     of the system message in the agent's message history.
-    
+
     The update process:
     1. Updates the agent.system field in PostgreSQL
     2. Updates the agent.system field in Redis cache
@@ -931,10 +970,10 @@ async def update_agent_system_prompt(
     Args:
         agent_id: ID of the agent to update (e.g., "agent-123")
         request: UpdateSystemPromptRequest with the new system prompt
-    
+
     Returns:
         AgentState: The updated agent state
-        
+
     Example:
         PATCH /agents/agent-123/system
         {
@@ -944,20 +983,20 @@ async def update_agent_system_prompt(
     server = get_server()
     client_id, org_id = get_client_and_org(x_client_id, x_org_id)
     client = server.client_manager.get_client_by_id(client_id)
-    
+
     updated_agent = server.agent_manager.update_system_prompt(
-        agent_id=agent_id,
-        system_prompt=request.system_prompt,
-        actor=client
+        agent_id=agent_id, system_prompt=request.system_prompt, actor=client
     )
-    
+
     return updated_agent
+
 
 # ============================================================================
 # Memory Endpoints
 # ============================================================================
 class SendMessageRequest(BaseModel):
     """Request to send a message to an agent."""
+
     message: str
     role: str
     user_id: Optional[str] = None  # End-user ID for message attribution
@@ -976,19 +1015,19 @@ async def send_message_to_agent(
     x_org_id: Optional[str] = Header(None),
 ):
     """Send a message to an agent and get a response.
-    
+
     This endpoint allows sending a single message to an agent for immediate processing.
     The message is processed synchronously through the queue system.
-    
+
     Args:
         agent_id: The ID of the agent to send the message to
         request: The message request containing text, role, user_id, and optional filter_tags
         x_client_id: Client ID from header (identifies the client application)
         x_org_id: Organization ID from header
-    
+
     Returns:
         MirixResponse: The agent's response including messages and usage statistics
-        
+
     Note:
         If user_id is not provided in the request, messages will be associated with
         the default user (DEFAULT_USER_ID).
@@ -1234,7 +1273,7 @@ async def create_or_get_organization(
     """
     Create organization if it doesn't exist, or get existing one.
     This endpoint doesn't require authentication as it's used during client initialization.
-    
+
     If org_id is not provided, a random ID will be generated.
     If org_id is provided, it will be used as-is (no prefix constraint).
     """
@@ -1247,6 +1286,7 @@ async def create_or_get_organization(
     else:
         # Generate a random org ID
         import uuid
+
         org_id = f"org-{uuid.uuid4().hex[:8]}"
 
     try:
@@ -1258,10 +1298,7 @@ async def create_or_get_organization(
         pass
 
     # Create new organization if it doesn't exist
-    org_create = OrganizationCreate(
-        id=org_id,
-        name=request.name or org_id
-    )
+    org_create = OrganizationCreate(id=org_id, name=request.name or org_id)
     org = server.organization_manager.create_organization(
         pydantic_org=Organization(**org_create.model_dump())
     )
@@ -1300,20 +1337,20 @@ async def create_or_get_user(
 ):
     """
     Create user if it doesn't exist, or get existing one.
-    
+
     **Accepts both JWT (dashboard) and Client API Key (programmatic access).**
-    
+
     The user will be associated with the authenticated client.
     The organization is determined from the API key or JWT token.
     If user_id is not provided, a random ID will be generated.
     """
     server = get_server()
-    
+
     # Accept JWT or injected headers (from API key middleware)
     client, auth_type = get_client_from_jwt_or_api_key(authorization, http_request)
     if not client:
         raise HTTPException(status_code=404, detail="Client not found")
-    
+
     # Extract client_id and org_id from client object
     client_id = client.id
     org_id = client.organization_id or server.organization_manager.DEFAULT_ORG_ID
@@ -1324,6 +1361,7 @@ async def create_or_get_user(
     else:
         # Generate a random user ID
         import uuid
+
         user_id = f"user-{uuid.uuid4().hex[:8]}"
 
     try:
@@ -1343,10 +1381,10 @@ async def create_or_get_user(
             name=request.name or user_id,
             organization_id=org_id,
             timezone=server.user_manager.DEFAULT_TIME_ZONE,
-            status="active"
+            status="active",
         ),
         client_id=client_id,  # Associate user with client
-        )
+    )
     logger.debug("Created new user: %s for client: %s", user_id, client_id)
     return user
 
@@ -1355,10 +1393,10 @@ async def create_or_get_user(
 async def delete_user(user_id: str):
     """
     Soft delete a user by ID.
-    
+
     This marks the user and all associated records as deleted by setting is_deleted=True.
     The records remain in the database but are filtered out from queries.
-    
+
     Associated records that are soft deleted:
     - Episodic memories for this user
     - Semantic memories for this user
@@ -1369,7 +1407,7 @@ async def delete_user(user_id: str):
     - Blocks for this user
     """
     server = get_server()
-    
+
     try:
         server.user_manager.delete_user_by_id(user_id)
         return {"message": f"User {user_id} soft deleted successfully"}
@@ -1378,8 +1416,7 @@ async def delete_user(user_id: str):
         # Provide a better error message if user not found or already deleted
         if "not found" in error_msg.lower() or "no result" in error_msg.lower():
             raise HTTPException(
-                status_code=404, 
-                detail=f"User {user_id} not found or already deleted"
+                status_code=404, detail=f"User {user_id} not found or already deleted"
             )
         raise HTTPException(status_code=500, detail=error_msg)
 
@@ -1388,10 +1425,10 @@ async def delete_user(user_id: str):
 async def delete_user_memories(user_id: str):
     """
     Hard delete all memories, messages, and blocks for a user.
-    
+
     This permanently removes data records while preserving the user record.
     Use this for data cleanup/purging without affecting the user account itself.
-    
+
     Records that are PERMANENTLY DELETED:
     - Episodic memories for this user
     - Semantic memories for this user
@@ -1400,19 +1437,19 @@ async def delete_user_memories(user_id: str):
     - Knowledge vault items for this user
     - Messages for this user
     - Blocks for this user
-    
+
     Records that are PRESERVED:
     - User record
-    
+
     Warning: This operation is irreversible. Deleted data cannot be recovered.
     """
     server = get_server()
-    
+
     try:
         server.user_manager.delete_memories_by_user_id(user_id)
         return {
             "message": f"All memories for user {user_id} hard deleted successfully",
-            "preserved": ["user"]
+            "preserved": ["user"],
         }
     except Exception as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -1426,15 +1463,15 @@ async def list_users(
 ):
     """
     List all users for the authenticated client.
-    
+
     **Requires JWT authentication (dashboard only).**
     """
     # Require admin JWT authentication
     client_payload = get_current_admin(authorization)
     client_id = client_payload["sub"]
-    
+
     server = get_server()
-    
+
     users = server.user_manager.list_users(
         cursor=cursor,
         limit=limit,
@@ -1450,6 +1487,7 @@ async def list_users(
 
 class CreateOrGetClientRequest(BaseModel):
     """Request model for creating or getting a client."""
+
     client_id: Optional[str] = None
     name: Optional[str] = None
     org_id: Optional[str] = None
@@ -1464,7 +1502,7 @@ async def create_or_get_client(
 ):
     """
     Create client if it doesn't exist, or get existing one.
-    
+
     If client_id is not provided, a random ID will be generated.
     If fail_if_exists is True, return 409 if client already exists.
     """
@@ -1475,25 +1513,25 @@ async def create_or_get_client(
         client_id = request.client_id
     else:
         import uuid
+
         client_id = f"client-{uuid.uuid4().hex[:8]}"
 
     org_id = request.org_id or server.organization_manager.DEFAULT_ORG_ID
-    
+
     try:
         # Try to get existing client
         client = server.client_manager.get_client_by_id(client_id)
-        
+
         if client:
             if fail_if_exists:
                 raise HTTPException(
                     status_code=409,
-                    detail=f"Client with id '{client_id}' already exists"
+                    detail=f"Client with id '{client_id}' already exists",
                 )
             else:
                 logger.debug("Client already exists: %s", client_id)
                 return JSONResponse(
-                    status_code=200,
-                    content=client.model_dump(mode='json')
+                    status_code=200, content=client.model_dump(mode="json")
                 )
     except Exception as e:
         if fail_if_exists and "already exists" in str(e):
@@ -1507,14 +1545,11 @@ async def create_or_get_client(
             name=request.name or client_id,
             organization_id=org_id,
             status=request.status or "active",
-            scope=request.scope or "read_write"
+            scope=request.scope or "read_write",
         )
     )
     logger.info("Created new client: %s", client_id)
-    return JSONResponse(
-        status_code=201,
-        content=client.model_dump(mode='json')
-    )
+    return JSONResponse(status_code=201, content=client.model_dump(mode="json"))
 
 
 @router.get("/clients", response_model=List[Client])
@@ -1526,19 +1561,17 @@ async def list_clients(
 ):
     """
     List all clients with optional pagination.
-    
+
     **Requires JWT authentication (dashboard only).**
     """
     # Require admin JWT authentication for listing clients
     get_current_admin(authorization)
-    
+
     server = get_server()
     org_id = x_org_id or server.organization_manager.DEFAULT_ORG_ID
-    
+
     clients = server.client_manager.list_clients(
-        cursor=cursor,
-        limit=limit,
-        organization_id=org_id
+        cursor=cursor, limit=limit, organization_id=org_id
     )
     return clients
 
@@ -1550,18 +1583,18 @@ async def get_client(
 ):
     """
     Get a specific client by ID.
-    
+
     **Requires JWT authentication (dashboard only).**
     """
     # Require admin JWT authentication
     get_current_admin(authorization)
-    
+
     server = get_server()
     client = server.client_manager.get_client_by_id(client_id)
-    
+
     if not client:
         raise HTTPException(status_code=404, detail=f"Client {client_id} not found")
-    
+
     return client
 
 
@@ -1574,10 +1607,10 @@ async def update_client(
     Update a client's properties.
     """
     server = get_server()
-    
+
     # Ensure the client_id in the path matches the update object
     update.id = client_id
-    
+
     try:
         updated_client = server.client_manager.update_client(update)
         return updated_client
@@ -1589,20 +1622,20 @@ async def update_client(
 async def delete_client(client_id: str):
     """
     Soft delete a client by ID.
-    
+
     This marks the client and all associated records (agents, tools, blocks) as deleted
     by setting is_deleted=True. The records remain in the database but are filtered
     out from queries.
-    
+
     Associated records that are soft deleted:
     - Agents created by this client
     - Tools created by this client
     - Blocks created by this client
-    
+
     Memory records (episodic, semantic, etc.) remain but are filtered by client.is_deleted.
     """
     server = get_server()
-    
+
     try:
         server.client_manager.delete_client_by_id(client_id)
         return {"message": f"Client {client_id} soft deleted successfully"}
@@ -1611,8 +1644,8 @@ async def delete_client(client_id: str):
         # Provide a better error message if client not found or already deleted
         if "not found" in error_msg.lower() or "no result" in error_msg.lower():
             raise HTTPException(
-                status_code=404, 
-                detail=f"Client {client_id} not found or already deleted"
+                status_code=404,
+                detail=f"Client {client_id} not found or already deleted",
             )
         raise HTTPException(status_code=500, detail=error_msg)
 
@@ -1621,10 +1654,10 @@ async def delete_client(client_id: str):
 async def delete_client_memories(client_id: str):
     """
     Hard delete all memories, messages, and blocks for a client.
-    
+
     This permanently removes data records while preserving the client configuration.
     Use this for data cleanup/purging without affecting the client, agents, or tools.
-    
+
     Records that are PERMANENTLY DELETED:
     - Episodic memories for this client
     - Semantic memories for this client
@@ -1633,21 +1666,21 @@ async def delete_client_memories(client_id: str):
     - Knowledge vault items for this client
     - Messages for this client
     - Blocks created by this client
-    
+
     Records that are PRESERVED:
     - Client record
     - Agents created by this client
     - Tools created by this client
-    
+
     Warning: This operation is irreversible. Deleted data cannot be recovered.
     """
     server = get_server()
-    
+
     try:
         server.client_manager.delete_memories_by_client_id(client_id)
         return {
             "message": f"All memories for client {client_id} hard deleted successfully",
-            "preserved": ["client", "agents", "tools"]
+            "preserved": ["client", "agents", "tools"],
         }
     except Exception as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -1660,13 +1693,19 @@ async def delete_client_memories(client_id: str):
 
 class CreateApiKeyRequest(BaseModel):
     """Request model for creating an API key."""
+
     name: Optional[str] = Field(None, description="Optional name/label for the API key")
-    permission: Optional[str] = Field("all", description="Permission level: all, restricted, read_only")
-    user_id: Optional[str] = Field(None, description="User ID this API key is associated with")
+    permission: Optional[str] = Field(
+        "all", description="Permission level: all, restricted, read_only"
+    )
+    user_id: Optional[str] = Field(
+        None, description="User ID this API key is associated with"
+    )
 
 
 class CreateApiKeyResponse(BaseModel):
     """Response model for API key creation - includes the raw API key (only shown once)."""
+
     id: str
     client_id: str
     name: Optional[str]
@@ -1684,39 +1723,39 @@ async def create_client_api_key(
 ):
     """
     Create a new API key for a client.
-    
+
     **Requires JWT authentication (dashboard only).**
-    
+
     The raw API key is only returned once at creation time. Store it securely.
     Subsequent requests will only show the key ID, not the raw key.
-    
+
     Returns:
         CreateApiKeyResponse with the raw API key (only shown once)
     """
     # Require admin JWT authentication
     get_current_admin(authorization)
-    
+
     from mirix.security.api_keys import generate_api_key
-    
+
     server = get_server()
-    
+
     # Verify client exists
     client = server.client_manager.get_client_by_id(client_id)
     if not client:
         raise HTTPException(status_code=404, detail=f"Client {client_id} not found")
-    
+
     # Generate new API key
     raw_api_key = generate_api_key()
-    
+
     # Create API key record (stores hashed version)
     api_key_record = server.client_manager.create_client_api_key(
         client_id=client_id,
         api_key=raw_api_key,
         name=request.name,
         permission=request.permission or "all",
-        user_id=request.user_id
+        user_id=request.user_id,
     )
-    
+
     return CreateApiKeyResponse(
         id=api_key_record.id,
         client_id=api_key_record.client_id,
@@ -1724,12 +1763,13 @@ async def create_client_api_key(
         api_key=raw_api_key,  # Return raw key only at creation
         status=api_key_record.status,
         permission=api_key_record.permission,
-        created_at=api_key_record.created_at
+        created_at=api_key_record.created_at,
     )
 
 
 class ApiKeyInfo(BaseModel):
     """API key information (without the raw key)."""
+
     id: str
     client_id: str
     name: Optional[str]
@@ -1744,31 +1784,31 @@ async def list_client_api_keys(
 ):
     """
     List all API keys for a client.
-    
+
     **Requires JWT authentication (dashboard only).**
-    
+
     Note: The raw API key values are never returned after creation.
     Only metadata (id, name, status, created_at) is shown.
     """
     # Require admin JWT authentication
     get_current_admin(authorization)
-    
+
     server = get_server()
-    
+
     # Verify client exists
     client = server.client_manager.get_client_by_id(client_id)
     if not client:
         raise HTTPException(status_code=404, detail=f"Client {client_id} not found")
-    
+
     api_keys = server.client_manager.list_client_api_keys(client_id)
-    
+
     return [
         ApiKeyInfo(
             id=key.id,
             client_id=key.client_id,
             name=key.name,
             status=key.status,
-            created_at=key.created_at
+            created_at=key.created_at,
         )
         for key in api_keys
     ]
@@ -1782,22 +1822,22 @@ async def delete_client_api_key(
 ):
     """
     Delete an API key permanently.
-    
+
     **Requires JWT authentication (dashboard only).**
-    
+
     This permanently removes the API key from the database.
     Any applications using this key will immediately stop working.
     """
     # Require admin JWT authentication
     get_current_admin(authorization)
-    
+
     server = get_server()
-    
+
     # Verify client exists
     client = server.client_manager.get_client_by_id(client_id)
     if not client:
         raise HTTPException(status_code=404, detail=f"Client {client_id} not found")
-    
+
     try:
         server.client_manager.delete_client_api_key(api_key_id)
         return {
@@ -1829,7 +1869,7 @@ async def initialize_meta_agent(
 ):
     """
     Initialize a meta agent with configuration.
-    
+
     This creates a meta memory agent that manages specialized memory agents.
     """
     server = get_server()
@@ -1858,7 +1898,9 @@ async def initialize_meta_agent(
     # list_agents now automatically filters by client (organization_id + _created_by_id)
     existing_meta_agents = server.agent_manager.list_agents(actor=client, limit=1000)
 
-    assert len(existing_meta_agents) <= 1, "Only one meta agent can be created per client"
+    assert (
+        len(existing_meta_agents) <= 1
+    ), "Only one meta agent can be created per client"
 
     if len(existing_meta_agents) == 1:
         meta_agent = existing_meta_agents[0]
@@ -1868,22 +1910,33 @@ async def initialize_meta_agent(
             from mirix.schemas.agent import UpdateMetaAgent
 
             # DEBUG: Log what we're passing to update_meta_agent
-            logger.debug("[INIT META AGENT] create_params for UpdateMetaAgent: %s", create_params)
-            logger.debug("[INIT META AGENT] 'agents' in create_params: %s", 'agents' in create_params)
-            if 'agents' in create_params:
-                logger.debug("[INIT META AGENT] agents list: %s", create_params['agents'])
+            logger.debug(
+                "[INIT META AGENT] create_params for UpdateMetaAgent: %s", create_params
+            )
+            logger.debug(
+                "[INIT META AGENT] 'agents' in create_params: %s",
+                "agents" in create_params,
+            )
+            if "agents" in create_params:
+                logger.debug(
+                    "[INIT META AGENT] agents list: %s", create_params["agents"]
+                )
 
             # Update the existing meta agent
             meta_agent = server.agent_manager.update_meta_agent(
                 meta_agent_id=meta_agent.id,
                 meta_agent_update=UpdateMetaAgent(**create_params),
-                actor=client
+                actor=client,
             )
     else:
         from mirix.schemas.agent import CreateMetaAgent
-        meta_agent = server.agent_manager.create_meta_agent(meta_agent_create=CreateMetaAgent(**create_params), actor=client)
+
+        meta_agent = server.agent_manager.create_meta_agent(
+            meta_agent_create=CreateMetaAgent(**create_params), actor=client
+        )
 
     return meta_agent
+
 
 class AddMemoryRequest(BaseModel):
     """Request model for adding memory."""
@@ -1895,7 +1948,9 @@ class AddMemoryRequest(BaseModel):
     verbose: bool = False
     filter_tags: Optional[Dict[str, Any]] = None
     use_cache: bool = True  # Control Redis cache behavior
-    occurred_at: Optional[str] = None  # Optional ISO 8601 timestamp string for episodic memory
+    occurred_at: Optional[str] = (
+        None  # Optional ISO 8601 timestamp string for episodic memory
+    )
 
 
 @router.post("/memory/add")
@@ -1907,7 +1962,7 @@ async def add_memory(
 ):
     """
     Add conversation turns to memory (async via queue).
-    
+
     Messages are queued for asynchronous processing by queue workers.
     Processing happens in the background, allowing for fast API response times.
     """
@@ -1919,6 +1974,7 @@ async def add_memory(
     if client is None:
         logger.warning("Client %s not found, creating default client", client_id)
         from mirix.services.client_manager import ClientManager
+
         if client_id == ClientManager.DEFAULT_CLIENT_ID:
             # Create the default client
             client = server.client_manager.create_default_client(org_id)
@@ -1926,17 +1982,20 @@ async def add_memory(
             # Client ID was provided but doesn't exist - error
             raise HTTPException(
                 status_code=404,
-                detail=f"Client {client_id} not found. Please create the client first."
+                detail=f"Client {client_id} not found. Please create the client first.",
             )
 
     # Get the meta agent by ID
     # TODO: need to check if we really need to check if the meta_agent exists here
-    meta_agent = server.agent_manager.get_agent_by_id(request.meta_agent_id, actor=client)
+    meta_agent = server.agent_manager.get_agent_by_id(
+        request.meta_agent_id, actor=client
+    )
 
     # If user_id is not provided, use the admin user for this client
     user_id = request.user_id
     if not user_id:
         from mirix.services.admin_user_manager import ClientAuthManager
+
         user_id = ClientAuthManager.get_admin_user_id_for_client(client.id)
         logger.debug("No user_id provided, using admin user: %s", user_id)
 
@@ -1949,13 +2008,18 @@ async def add_memory(
         # We need to convert the message to the format in "content"
         new_message = []
         for msg in message:
-            new_message.append({'type': "text", "text": "[USER]" if msg["role"] == "user" else "[ASSISTANT]"})
+            new_message.append(
+                {
+                    "type": "text",
+                    "text": "[USER]" if msg["role"] == "user" else "[ASSISTANT]",
+                }
+            )
 
             # Handle both string and list content
             content = msg["content"]
             if isinstance(content, str):
                 # Content is a string - convert to proper format
-                new_message.append({'type': "text", "text": content})
+                new_message.append({"type": "text", "text": content})
             elif isinstance(content, list):
                 # Content is already a list - extend as before
                 new_message.extend(content)
@@ -2008,12 +2072,21 @@ class RetrieveMemoryRequest(BaseModel):
     user_id: Optional[str] = None  # Optional - uses admin user if not provided
     messages: List[Dict[str, Any]]
     limit: int = 10  # Maximum number of items to retrieve per memory type
-    local_model_for_retrieval: Optional[str] = None  # Optional local Ollama model for topic extraction
-    filter_tags: Optional[Dict[str, Any]] = None  # Optional filter tags for filtering results
+    local_model_for_retrieval: Optional[str] = (
+        None  # Optional local Ollama model for topic extraction
+    )
+    filter_tags: Optional[Dict[str, Any]] = (
+        None  # Optional filter tags for filtering results
+    )
     use_cache: bool = True  # Control Redis cache behavior
     # NEW: Optional date range for temporal filtering (ISO 8601 format)
-    start_date: Optional[str] = None  # e.g., "2025-11-19T00:00:00" or "2025-11-19T00:00:00+00:00"
-    end_date: Optional[str] = None    # e.g., "2025-11-19T23:59:59" or "2025-11-19T23:59:59+00:00"
+    start_date: Optional[str] = (
+        None  # e.g., "2025-11-19T00:00:00" or "2025-11-19T00:00:00+00:00"
+    )
+    end_date: Optional[str] = (
+        None  # e.g., "2025-11-19T23:59:59" or "2025-11-19T23:59:59+00:00"
+    )
+
 
 def retrieve_memories_by_keywords(
     server: SyncServer,
@@ -2029,7 +2102,7 @@ def retrieve_memories_by_keywords(
 ) -> dict:
     """
     Helper function to retrieve memories based on keywords using BM25 search.
-    
+
     Args:
         server: The Mirix server instance
         client: The authenticated client application (for authorization)
@@ -2052,7 +2125,7 @@ def retrieve_memories_by_keywords(
         logger.info(
             "Temporal filtering enabled for episodic memories: start=%s, end=%s",
             start_date.isoformat() if start_date else None,
-            end_date.isoformat() if end_date else None
+            end_date.isoformat() if end_date else None,
         )
 
     # Get timezone from user record (if exists)
@@ -2076,7 +2149,7 @@ def retrieve_memories_by_keywords(
             filter_tags=filter_tags,
             use_cache=use_cache,
             start_date=start_date,  # NEW: Temporal filtering
-            end_date=end_date,      # NEW: Temporal filtering
+            end_date=end_date,  # NEW: Temporal filtering
         )
 
         # Get relevant episodic memories based on keywords with temporal filter
@@ -2091,8 +2164,8 @@ def retrieve_memories_by_keywords(
                 limit=limit,
                 timezone_str=timezone_str,
                 filter_tags=filter_tags,  # Include filter_tags for consistency
-                start_date=start_date,    # NEW: Temporal filtering
-                end_date=end_date,        # NEW: Temporal filtering
+                start_date=start_date,  # NEW: Temporal filtering
+                end_date=end_date,  # NEW: Temporal filtering
             )
 
         memories["episodic"] = {
@@ -2100,7 +2173,9 @@ def retrieve_memories_by_keywords(
             "recent": [
                 {
                     "id": event.id,
-                    "timestamp": event.occurred_at.isoformat() if event.occurred_at else None,
+                    "timestamp": (
+                        event.occurred_at.isoformat() if event.occurred_at else None
+                    ),
                     "summary": event.summary,
                     "details": event.details,
                 }
@@ -2109,7 +2184,9 @@ def retrieve_memories_by_keywords(
             "relevant": [
                 {
                     "id": event.id,
-                    "timestamp": event.occurred_at.isoformat() if event.occurred_at else None,
+                    "timestamp": (
+                        event.occurred_at.isoformat() if event.occurred_at else None
+                    ),
                     "summary": event.summary,
                     "details": event.details,
                 }
@@ -2289,6 +2366,7 @@ async def retrieve_memory_with_conversation(
     user_id = request.user_id
     if not user_id:
         from mirix.services.admin_user_manager import ClientAuthManager
+
         user_id = ClientAuthManager.get_admin_user_id_for_client(client.id)
         logger.debug("No user_id provided, using admin user: %s", user_id)
 
@@ -2323,7 +2401,10 @@ async def retrieve_memory_with_conversation(
     for msg in request.messages:
         if isinstance(msg, dict) and "content" in msg:
             for content_item in msg.get("content", []):
-                if isinstance(content_item, dict) and content_item.get("text", "").strip():
+                if (
+                    isinstance(content_item, dict)
+                    and content_item.get("text", "").strip()
+                ):
                     has_content = True
                     break
             if has_content:
@@ -2348,7 +2429,9 @@ async def retrieve_memory_with_conversation(
 
         if topics is None:
             # NEW: Extract both topics and temporal expression
-            topics, temporal_expr = extract_topics_and_temporal_info(request.messages, llm_config)
+            topics, temporal_expr = extract_topics_and_temporal_info(
+                request.messages, llm_config
+            )
 
         logger.debug("Extracted topics: %s, temporal: %s", topics, temporal_expr)
         key_words = topics if topics else ""
@@ -2366,9 +2449,13 @@ async def retrieve_memory_with_conversation(
         # Use explicit date range from request
         try:
             if request.start_date:
-                start_date = datetime.fromisoformat(request.start_date.replace('Z', '+00:00'))
+                start_date = datetime.fromisoformat(
+                    request.start_date.replace("Z", "+00:00")
+                )
             if request.end_date:
-                end_date = datetime.fromisoformat(request.end_date.replace('Z', '+00:00'))
+                end_date = datetime.fromisoformat(
+                    request.end_date.replace("Z", "+00:00")
+                )
             logger.debug("Using explicit date range: %s to %s", start_date, end_date)
         except ValueError as e:
             logger.warning("Invalid date format in request: %s", e)
@@ -2380,6 +2467,7 @@ async def retrieve_memory_with_conversation(
         try:
             user = server.user_manager.get_user_by_id(user_id)
             import pytz
+
             user_tz = pytz.timezone(user.timezone)
             reference_time = datetime.now(user_tz)
         except Exception:
@@ -2397,7 +2485,9 @@ async def retrieve_memory_with_conversation(
                 end_date = end_date.replace(tzinfo=None)
             logger.info(
                 "Parsed temporal expression '%s' to range: %s to %s (timezone-naive for DB comparison)",
-                temporal_expr, start_date, end_date
+                temporal_expr,
+                start_date,
+                end_date,
             )
 
     # Retrieve memories with temporal filtering
@@ -2411,17 +2501,21 @@ async def retrieve_memory_with_conversation(
         filter_tags=filter_tags,
         use_cache=request.use_cache,
         start_date=start_date,  # NEW: Temporal filtering
-        end_date=end_date,      # NEW: Temporal filtering
+        end_date=end_date,  # NEW: Temporal filtering
     )
 
     return {
         "success": True,
         "topics": topics,
         "temporal_expression": temporal_expr,  # NEW: Return extracted temporal info
-        "date_range": {  # NEW: Return applied date range
-            "start": start_date.isoformat() if start_date else None,
-            "end": end_date.isoformat() if end_date else None,
-        } if (start_date or end_date) else None,
+        "date_range": (
+            {  # NEW: Return applied date range
+                "start": start_date.isoformat() if start_date else None,
+                "end": end_date.isoformat() if end_date else None,
+            }
+            if (start_date or end_date)
+            else None
+        ),
         "memories": memories,
     }
 
@@ -2439,7 +2533,7 @@ async def retrieve_memory_with_topic(
 ):
     """
     Retrieve relevant memories based on a topic using BM25 search.
-    
+
     Args:
         user_id: The user ID to retrieve memories for (uses admin user if not provided)
         topic: The topic/keywords to search for
@@ -2454,6 +2548,7 @@ async def retrieve_memory_with_topic(
     # If user_id is not provided, use the admin user for this client
     if not user_id:
         from mirix.services.admin_user_manager import ClientAuthManager
+
         user_id = ClientAuthManager.get_admin_user_id_for_client(client.id)
         logger.debug("No user_id provided, using admin user: %s", user_id)
 
@@ -2509,18 +2604,16 @@ async def retrieve_memory_with_topic(
 
 
 def _precompute_embedding_for_search(
-    search_method: str,
-    query: str,
-    agent_state: AgentState
+    search_method: str, query: str, agent_state: AgentState
 ) -> tuple[Optional[List[float]], Optional[List[float]]]:
     """
     Pre-compute embedding once for memory search to avoid redundant API calls.
-    
+
     Args:
         search_method: The search method ('embedding', 'bm25', or 'string_match')
         query: The search query text
         agent_state: Agent state containing embedding configuration
-    
+
     Returns:
         Tuple of (embedded_text, embedded_text_padded):
         - embedded_text: The raw embedding vector (for most memory types)
@@ -2529,21 +2622,24 @@ def _precompute_embedding_for_search(
     """
     if search_method != "embedding" or not query:
         return None, None
-    
-    from mirix.embeddings import embedding_model
+
     import numpy as np
+
     from mirix.constants import MAX_EMBEDDING_DIM
-    
+    from mirix.embeddings import embedding_model
+
     # Compute embedding once
-    embedded_text = embedding_model(agent_state.embedding_config).get_text_embedding(query)
-    
+    embedded_text = embedding_model(agent_state.embedding_config).get_text_embedding(
+        query
+    )
+
     # Pad for episodic memory which requires MAX_EMBEDDING_DIM
     embedded_text_padded = np.pad(
         np.array(embedded_text),
         (0, MAX_EMBEDDING_DIM - len(embedded_text)),
-        mode="constant"
+        mode="constant",
     ).tolist()
-    
+
     return embedded_text, embedded_text_padded
 
 
@@ -2567,11 +2663,11 @@ async def search_memory(
     """
     Search for memories using various search methods with optional temporal filtering.
     Similar to the search_in_memory tool function.
-    
+
     Args:
         user_id: The user ID to retrieve memories for (uses admin user if not provided)
         query: The search query string
-        memory_type: Type of memory to search. Options: "episodic", "resource", "procedural", 
+        memory_type: Type of memory to search. Options: "episodic", "resource", "procedural",
                     "knowledge_vault", "semantic", "all" (default: "all")
         search_field: Field to search in. Options vary by memory type:
                      - episodic: "summary", "details"
@@ -2615,6 +2711,7 @@ async def search_memory(
     # If user_id is not provided, use the admin user for this client
     if not user_id:
         from mirix.services.admin_user_manager import ClientAuthManager
+
         user_id = ClientAuthManager.get_admin_user_id_for_client(client.id)
         logger.debug("No user_id provided, using admin user: %s", user_id)
 
@@ -2666,7 +2763,9 @@ async def search_memory(
 
     if start_date:
         try:
-            parsed_start_date = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
+            parsed_start_date = datetime.fromisoformat(
+                start_date.replace("Z", "+00:00")
+            )
             # Strip timezone for DB comparison (DB stores naive datetimes)
             if parsed_start_date.tzinfo:
                 parsed_start_date = parsed_start_date.replace(tzinfo=None)
@@ -2675,7 +2774,7 @@ async def search_memory(
 
     if end_date:
         try:
-            parsed_end_date = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
+            parsed_end_date = datetime.fromisoformat(end_date.replace("Z", "+00:00"))
             # Strip timezone for DB comparison
             if parsed_end_date.tzinfo:
                 parsed_end_date = parsed_end_date.replace(tzinfo=None)
@@ -2683,7 +2782,11 @@ async def search_memory(
             logger.warning("Invalid end_date format: %s", e)
 
     # Validate search parameters
-    if memory_type == "resource" and search_field == "content" and search_method == "embedding":
+    if (
+        memory_type == "resource"
+        and search_field == "content"
+        and search_method == "embedding"
+    ):
         return {
             "success": False,
             "error": "embedding is not supported for resource memory's 'content' field.",
@@ -2692,7 +2795,11 @@ async def search_memory(
             "count": 0,
         }
 
-    if memory_type == "knowledge_vault" and search_field == "secret_value" and search_method == "embedding":
+    if (
+        memory_type == "knowledge_vault"
+        and search_field == "secret_value"
+        and search_method == "embedding"
+    ):
         return {
             "success": False,
             "error": "embedding is not supported for knowledge_vault memory's 'secret_value' field.",
@@ -2715,7 +2822,7 @@ async def search_memory(
     # If searching all memory types, run searches concurrently for better performance
     if memory_type == "all":
         import asyncio
-        
+
         # Define async wrappers for each manager call
         async def search_episodic():
             try:
@@ -2724,7 +2831,11 @@ async def search_memory(
                     agent_state=agent_state,
                     user=user,
                     query=query,
-                    embedded_text=embedded_text_padded if search_method == "embedding" and query else None,
+                    embedded_text=(
+                        embedded_text_padded
+                        if search_method == "embedding" and query
+                        else None
+                    ),
                     search_field=search_field if search_field != "null" else "summary",
                     search_method=search_method,
                     limit=limit,
@@ -2734,19 +2845,24 @@ async def search_memory(
                     end_date=parsed_end_date,
                     similarity_threshold=similarity_threshold,
                 )
-                return [{
-                    "memory_type": "episodic",
-                    "id": x.id,
-                    "timestamp": x.occurred_at.isoformat() if x.occurred_at else None,
-                    "event_type": x.event_type,
-                    "actor": x.actor,
-                    "summary": x.summary,
-                    "details": x.details,
-                } for x in memories]
+                return [
+                    {
+                        "memory_type": "episodic",
+                        "id": x.id,
+                        "timestamp": (
+                            x.occurred_at.isoformat() if x.occurred_at else None
+                        ),
+                        "event_type": x.event_type,
+                        "actor": x.actor,
+                        "summary": x.summary,
+                        "details": x.details,
+                    }
+                    for x in memories
+                ]
             except Exception as e:
                 logger.error("Error searching episodic memories: %s", e)
                 return []
-        
+
         async def search_resource():
             try:
                 memories = await asyncio.to_thread(
@@ -2754,26 +2870,37 @@ async def search_memory(
                     agent_state=agent_state,
                     user=user,
                     query=query,
-                    embedded_text=embedded_text if search_method == "embedding" and query else None,
-                    search_field=search_field if search_field != "null" else ("summary" if search_method == "embedding" else "content"),
+                    embedded_text=(
+                        embedded_text
+                        if search_method == "embedding" and query
+                        else None
+                    ),
+                    search_field=(
+                        search_field
+                        if search_field != "null"
+                        else ("summary" if search_method == "embedding" else "content")
+                    ),
                     search_method=search_method,
                     limit=limit,
                     timezone_str=timezone_str,
                     filter_tags=parsed_filter_tags,
                     similarity_threshold=similarity_threshold,
                 )
-                return [{
-                    "memory_type": "resource",
-                    "id": x.id,
-                    "resource_type": x.resource_type,
-                    "title": x.title,
-                    "summary": x.summary,
-                    "content": x.content[:200] if x.content else None,
-                } for x in memories]
+                return [
+                    {
+                        "memory_type": "resource",
+                        "id": x.id,
+                        "resource_type": x.resource_type,
+                        "title": x.title,
+                        "summary": x.summary,
+                        "content": x.content[:200] if x.content else None,
+                    }
+                    for x in memories
+                ]
             except Exception as e:
                 logger.error("Error searching resource memories: %s", e)
                 return []
-        
+
         async def search_procedural():
             try:
                 memories = await asyncio.to_thread(
@@ -2781,7 +2908,11 @@ async def search_memory(
                     agent_state=agent_state,
                     user=user,
                     query=query,
-                    embedded_text=embedded_text if search_method == "embedding" and query else None,
+                    embedded_text=(
+                        embedded_text
+                        if search_method == "embedding" and query
+                        else None
+                    ),
                     search_field=search_field if search_field != "null" else "summary",
                     search_method=search_method,
                     limit=limit,
@@ -2789,17 +2920,20 @@ async def search_memory(
                     filter_tags=parsed_filter_tags,
                     similarity_threshold=similarity_threshold,
                 )
-                return [{
-                    "memory_type": "procedural",
-                    "id": x.id,
-                    "entry_type": x.entry_type,
-                    "summary": x.summary,
-                    "steps": x.steps,
-                } for x in memories]
+                return [
+                    {
+                        "memory_type": "procedural",
+                        "id": x.id,
+                        "entry_type": x.entry_type,
+                        "summary": x.summary,
+                        "steps": x.steps,
+                    }
+                    for x in memories
+                ]
             except Exception as e:
                 logger.error("Error searching procedural memories: %s", e)
                 return []
-        
+
         async def search_knowledge():
             try:
                 memories = await asyncio.to_thread(
@@ -2807,7 +2941,11 @@ async def search_memory(
                     agent_state=agent_state,
                     user=user,
                     query=query,
-                    embedded_text=embedded_text if search_method == "embedding" and query else None,
+                    embedded_text=(
+                        embedded_text
+                        if search_method == "embedding" and query
+                        else None
+                    ),
                     search_field=search_field if search_field != "null" else "caption",
                     search_method=search_method,
                     limit=limit,
@@ -2815,19 +2953,22 @@ async def search_memory(
                     filter_tags=parsed_filter_tags,
                     similarity_threshold=similarity_threshold,
                 )
-                return [{
-                    "memory_type": "knowledge_vault",
-                    "id": x.id,
-                    "entry_type": x.entry_type,
-                    "source": x.source,
-                    "sensitivity": x.sensitivity,
-                    "secret_value": x.secret_value,
-                    "caption": x.caption,
-                } for x in memories]
+                return [
+                    {
+                        "memory_type": "knowledge_vault",
+                        "id": x.id,
+                        "entry_type": x.entry_type,
+                        "source": x.source,
+                        "sensitivity": x.sensitivity,
+                        "secret_value": x.secret_value,
+                        "caption": x.caption,
+                    }
+                    for x in memories
+                ]
             except Exception as e:
                 logger.error("Error searching knowledge vault: %s", e)
                 return []
-        
+
         async def search_semantic():
             try:
                 memories = await asyncio.to_thread(
@@ -2835,7 +2976,11 @@ async def search_memory(
                     agent_state=agent_state,
                     user=user,
                     query=query,
-                    embedded_text=embedded_text if search_method == "embedding" and query else None,
+                    embedded_text=(
+                        embedded_text
+                        if search_method == "embedding" and query
+                        else None
+                    ),
                     search_field=search_field if search_field != "null" else "summary",
                     search_method=search_method,
                     limit=limit,
@@ -2843,16 +2988,19 @@ async def search_memory(
                     filter_tags=parsed_filter_tags,
                     similarity_threshold=similarity_threshold,
                 )
-                return [{
-                    "memory_type": "semantic",
-                    "id": x.id,
-                    "summary": x.summary,
-                    "details": x.details,
-                } for x in memories]
+                return [
+                    {
+                        "memory_type": "semantic",
+                        "id": x.id,
+                        "summary": x.summary,
+                        "details": x.details,
+                    }
+                    for x in memories
+                ]
             except Exception as e:
                 logger.error("Error searching semantic memories: %s", e)
                 return []
-        
+
         # Run all searches concurrently
         results = await asyncio.gather(
             search_episodic(),
@@ -2861,11 +3009,11 @@ async def search_memory(
             search_knowledge(),
             search_semantic(),
         )
-        
+
         # Flatten results
         for result_list in results:
             all_results.extend(result_list)
-    
+
     # Single memory type searches (run serially as before)
     elif memory_type == "episodic":
         try:
@@ -2873,7 +3021,11 @@ async def search_memory(
                 agent_state=agent_state,
                 user=user,
                 query=query,
-                embedded_text=embedded_text_padded if search_method == "embedding" and query else None,
+                embedded_text=(
+                    embedded_text_padded
+                    if search_method == "embedding" and query
+                    else None
+                ),
                 search_field=search_field if search_field != "null" else "summary",
                 search_method=search_method,
                 limit=limit,
@@ -2883,18 +3035,22 @@ async def search_memory(
                 end_date=parsed_end_date,
                 similarity_threshold=similarity_threshold,
             )
-            all_results.extend([
-                {
-                    "memory_type": "episodic",
-                    "id": x.id,
-                    "timestamp": x.occurred_at.isoformat() if x.occurred_at else None,
-                    "event_type": x.event_type,
-                    "actor": x.actor,
-                    "summary": x.summary,
-                    "details": x.details,
-                }
-                for x in episodic_memories
-            ])
+            all_results.extend(
+                [
+                    {
+                        "memory_type": "episodic",
+                        "id": x.id,
+                        "timestamp": (
+                            x.occurred_at.isoformat() if x.occurred_at else None
+                        ),
+                        "event_type": x.event_type,
+                        "actor": x.actor,
+                        "summary": x.summary,
+                        "details": x.details,
+                    }
+                    for x in episodic_memories
+                ]
+            )
         except Exception as e:
             logger.error("Error searching episodic memories: %s", e)
 
@@ -2905,25 +3061,35 @@ async def search_memory(
                 agent_state=agent_state,
                 user=user,
                 query=query,
-                embedded_text=embedded_text if search_method == "embedding" and query else None,
-                search_field=search_field if search_field != "null" else ("summary" if search_method == "embedding" else "content"),
+                embedded_text=(
+                    embedded_text if search_method == "embedding" and query else None
+                ),
+                search_field=(
+                    search_field
+                    if search_field != "null"
+                    else ("summary" if search_method == "embedding" else "content")
+                ),
                 search_method=search_method,
                 limit=limit,
                 timezone_str=timezone_str,
                 filter_tags=parsed_filter_tags,
                 similarity_threshold=similarity_threshold,
             )
-            all_results.extend([
-                {
-                    "memory_type": "resource",
-                    "id": x.id,
-                    "resource_type": x.resource_type,
-                    "title": x.title,
-                    "summary": x.summary,
-                    "content": x.content[:200] if x.content else None,  # Truncate content for response
-                }
-                for x in resource_memories
-            ])
+            all_results.extend(
+                [
+                    {
+                        "memory_type": "resource",
+                        "id": x.id,
+                        "resource_type": x.resource_type,
+                        "title": x.title,
+                        "summary": x.summary,
+                        "content": (
+                            x.content[:200] if x.content else None
+                        ),  # Truncate content for response
+                    }
+                    for x in resource_memories
+                ]
+            )
         except Exception as e:
             logger.error("Error searching resource memories: %s", e)
 
@@ -2934,7 +3100,9 @@ async def search_memory(
                 agent_state=agent_state,
                 user=user,
                 query=query,
-                embedded_text=embedded_text if search_method == "embedding" and query else None,
+                embedded_text=(
+                    embedded_text if search_method == "embedding" and query else None
+                ),
                 search_field=search_field if search_field != "null" else "summary",
                 search_method=search_method,
                 limit=limit,
@@ -2942,16 +3110,18 @@ async def search_memory(
                 filter_tags=parsed_filter_tags,
                 similarity_threshold=similarity_threshold,
             )
-            all_results.extend([
-                {
-                    "memory_type": "procedural",
-                    "id": x.id,
-                    "entry_type": x.entry_type,
-                    "summary": x.summary,
-                    "steps": x.steps,
-                }
-                for x in procedural_memories
-            ])
+            all_results.extend(
+                [
+                    {
+                        "memory_type": "procedural",
+                        "id": x.id,
+                        "entry_type": x.entry_type,
+                        "summary": x.summary,
+                        "steps": x.steps,
+                    }
+                    for x in procedural_memories
+                ]
+            )
         except Exception as e:
             logger.error("Error searching procedural memories: %s", e)
 
@@ -2962,7 +3132,9 @@ async def search_memory(
                 agent_state=agent_state,
                 user=user,
                 query=query,
-                embedded_text=embedded_text if search_method == "embedding" and query else None,
+                embedded_text=(
+                    embedded_text if search_method == "embedding" and query else None
+                ),
                 search_field=search_field if search_field != "null" else "caption",
                 search_method=search_method,
                 limit=limit,
@@ -2970,18 +3142,20 @@ async def search_memory(
                 filter_tags=parsed_filter_tags,
                 similarity_threshold=similarity_threshold,
             )
-            all_results.extend([
-                {
-                    "memory_type": "knowledge_vault",
-                    "id": x.id,
-                    "entry_type": x.entry_type,
-                    "source": x.source,
-                    "sensitivity": x.sensitivity,
-                    "secret_value": x.secret_value,
-                    "caption": x.caption,
-                }
-                for x in knowledge_vault_memories
-            ])
+            all_results.extend(
+                [
+                    {
+                        "memory_type": "knowledge_vault",
+                        "id": x.id,
+                        "entry_type": x.entry_type,
+                        "source": x.source,
+                        "sensitivity": x.sensitivity,
+                        "secret_value": x.secret_value,
+                        "caption": x.caption,
+                    }
+                    for x in knowledge_vault_memories
+                ]
+            )
         except Exception as e:
             logger.error("Error searching knowledge vault: %s", e)
 
@@ -2992,7 +3166,9 @@ async def search_memory(
                 agent_state=agent_state,
                 user=user,
                 query=query,
-                embedded_text=embedded_text if search_method == "embedding" and query else None,
+                embedded_text=(
+                    embedded_text if search_method == "embedding" and query else None
+                ),
                 search_field=search_field if search_field != "null" else "summary",
                 search_method=search_method,
                 limit=limit,
@@ -3000,17 +3176,19 @@ async def search_memory(
                 filter_tags=parsed_filter_tags,
                 similarity_threshold=similarity_threshold,
             )
-            all_results.extend([
-                {
-                    "memory_type": "semantic",
-                    "id": x.id,
-                    "name": x.name,
-                    "summary": x.summary,
-                    "details": x.details,
-                    "source": x.source,
-                }
-                for x in semantic_memories
-            ])
+            all_results.extend(
+                [
+                    {
+                        "memory_type": "semantic",
+                        "id": x.id,
+                        "name": x.name,
+                        "summary": x.summary,
+                        "details": x.details,
+                        "source": x.source,
+                    }
+                    for x in semantic_memories
+                ]
+            )
         except Exception as e:
             logger.error("Error searching semantic memories: %s", e)
 
@@ -3020,10 +3198,14 @@ async def search_memory(
         "memory_type": memory_type,
         "search_field": search_field,
         "search_method": search_method,
-        "date_range": {
-            "start": parsed_start_date.isoformat() if parsed_start_date else None,
-            "end": parsed_end_date.isoformat() if parsed_end_date else None,
-        } if (parsed_start_date or parsed_end_date) else None,
+        "date_range": (
+            {
+                "start": parsed_start_date.isoformat() if parsed_start_date else None,
+                "end": parsed_end_date.isoformat() if parsed_end_date else None,
+            }
+            if (parsed_start_date or parsed_end_date)
+            else None
+        ),
         "results": all_results,
         "count": len(all_results),
     }
@@ -3049,14 +3231,14 @@ async def search_memory_all_users(
     """
     Search for memories across ALL users in the organization with optional temporal filtering.
     Automatically filters by client scope using filter_tags.
-    
+
     Organization resolution priority:
     1. If client_id provided: use that client's organization_id
     2. Else: use org_id from query param or x_org_id header
-    
+
     Args:
         query: The search query string
-        memory_type: Type of memory to search. Options: "episodic", "resource", 
+        memory_type: Type of memory to search. Options: "episodic", "resource",
                     "procedural", "knowledge_vault", "semantic", "all" (default: "all")
         search_field: Field to search in. Options vary by memory type
         search_method: Search method. Options: "bm25" (default), "embedding"
@@ -3080,7 +3262,8 @@ async def search_memory_all_users(
         effective_org_id = client.organization_id  # Use CLIENT's org_id
         logger.info(
             "Using provided client_id=%s with its organization_id=%s",
-            effective_client_id, effective_org_id
+            effective_client_id,
+            effective_org_id,
         )
     else:
         # Fall back to headers
@@ -3090,7 +3273,8 @@ async def search_memory_all_users(
         effective_org_id = org_id or header_org_id
         logger.info(
             "Using client_id=%s from header with org_id=%s",
-            effective_client_id, effective_org_id
+            effective_client_id,
+            effective_org_id,
         )
 
     # Parse filter_tags if provided, otherwise create new dict
@@ -3099,8 +3283,7 @@ async def search_memory_all_users(
             filter_tags_dict = json.loads(filter_tags)
         except json.JSONDecodeError:
             raise HTTPException(
-                status_code=400,
-                detail="Invalid filter_tags JSON format"
+                status_code=400, detail="Invalid filter_tags JSON format"
             )
     else:
         filter_tags_dict = {}
@@ -3111,7 +3294,11 @@ async def search_memory_all_users(
 
     logger.info(
         "Cross-user search: client=%s, org=%s, client_scope=%s, filter_tags=%s, similarity_threshold=%s",
-        effective_client_id, effective_org_id, client.scope, filter_tags_dict, similarity_threshold
+        effective_client_id,
+        effective_org_id,
+        client.scope,
+        filter_tags_dict,
+        similarity_threshold,
     )
 
     # Parse temporal filtering parameters
@@ -3120,7 +3307,9 @@ async def search_memory_all_users(
 
     if start_date:
         try:
-            parsed_start_date = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
+            parsed_start_date = datetime.fromisoformat(
+                start_date.replace("Z", "+00:00")
+            )
             # Strip timezone for DB comparison (DB stores naive datetimes)
             if parsed_start_date.tzinfo:
                 parsed_start_date = parsed_start_date.replace(tzinfo=None)
@@ -3129,7 +3318,7 @@ async def search_memory_all_users(
 
     if end_date:
         try:
-            parsed_end_date = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
+            parsed_end_date = datetime.fromisoformat(end_date.replace("Z", "+00:00"))
             # Strip timezone for DB comparison
             if parsed_end_date.tzinfo:
                 parsed_end_date = parsed_end_date.replace(tzinfo=None)
@@ -3150,7 +3339,11 @@ async def search_memory_all_users(
     agent_state = all_agents[0]
 
     # Validate search parameters
-    if memory_type == "resource" and search_field == "content" and search_method == "embedding":
+    if (
+        memory_type == "resource"
+        and search_field == "content"
+        and search_method == "embedding"
+    ):
         return {
             "success": False,
             "error": "embedding is not supported for resource memory's 'content' field.",
@@ -3159,7 +3352,11 @@ async def search_memory_all_users(
             "count": 0,
         }
 
-    if memory_type == "knowledge_vault" and search_field == "secret_value" and search_method == "embedding":
+    if (
+        memory_type == "knowledge_vault"
+        and search_field == "secret_value"
+        and search_method == "embedding"
+    ):
         return {
             "success": False,
             "error": "embedding is not supported for knowledge_vault memory's 'secret_value' field.",
@@ -3182,7 +3379,7 @@ async def search_memory_all_users(
     # If searching all memory types, run searches concurrently for better performance
     if memory_type == "all":
         import asyncio
-        
+
         # Define async wrappers for each manager call
         async def search_episodic():
             try:
@@ -3191,7 +3388,11 @@ async def search_memory_all_users(
                     agent_state=agent_state,
                     organization_id=effective_org_id,
                     query=query,
-                    embedded_text=embedded_text_padded if search_method == "embedding" and query else None,
+                    embedded_text=(
+                        embedded_text_padded
+                        if search_method == "embedding" and query
+                        else None
+                    ),
                     search_field=search_field if search_field != "null" else "summary",
                     search_method=search_method,
                     limit=limit,
@@ -3201,20 +3402,25 @@ async def search_memory_all_users(
                     end_date=parsed_end_date,
                     similarity_threshold=similarity_threshold,
                 )
-                return [{
-                    "memory_type": "episodic",
-                    "id": x.id,
-                    "timestamp": x.occurred_at.isoformat() if x.occurred_at else None,
-                    "event_type": x.event_type,
-                    "actor": x.actor,
-                    "summary": x.summary,
-                    "details": x.details,
-                    "user_id": str(x.user_id),
-                } for x in memories]
+                return [
+                    {
+                        "memory_type": "episodic",
+                        "id": x.id,
+                        "timestamp": (
+                            x.occurred_at.isoformat() if x.occurred_at else None
+                        ),
+                        "event_type": x.event_type,
+                        "actor": x.actor,
+                        "summary": x.summary,
+                        "details": x.details,
+                        "user_id": str(x.user_id),
+                    }
+                    for x in memories
+                ]
             except Exception as e:
                 logger.error("Error searching episodic memories across org: %s", e)
                 return []
-        
+
         async def search_resource():
             try:
                 memories = await asyncio.to_thread(
@@ -3222,27 +3428,38 @@ async def search_memory_all_users(
                     agent_state=agent_state,
                     organization_id=effective_org_id,
                     query=query,
-                    embedded_text=embedded_text if search_method == "embedding" and query else None,
-                    search_field=search_field if search_field != "null" else ("summary" if search_method == "embedding" else "content"),
+                    embedded_text=(
+                        embedded_text
+                        if search_method == "embedding" and query
+                        else None
+                    ),
+                    search_field=(
+                        search_field
+                        if search_field != "null"
+                        else ("summary" if search_method == "embedding" else "content")
+                    ),
                     search_method=search_method,
                     limit=limit,
                     timezone_str="UTC",
                     filter_tags=filter_tags_dict,
                     similarity_threshold=similarity_threshold,
                 )
-                return [{
-                    "memory_type": "resource",
-                    "id": x.id,
-                    "resource_type": x.resource_type,
-                    "title": x.title,
-                    "summary": x.summary,
-                    "content": x.content[:200] if x.content else None,
-                    "user_id": str(x.user_id),
-                } for x in memories]
+                return [
+                    {
+                        "memory_type": "resource",
+                        "id": x.id,
+                        "resource_type": x.resource_type,
+                        "title": x.title,
+                        "summary": x.summary,
+                        "content": x.content[:200] if x.content else None,
+                        "user_id": str(x.user_id),
+                    }
+                    for x in memories
+                ]
             except Exception as e:
                 logger.error("Error searching resource memories across org: %s", e)
                 return []
-        
+
         async def search_procedural():
             try:
                 memories = await asyncio.to_thread(
@@ -3250,7 +3467,11 @@ async def search_memory_all_users(
                     agent_state=agent_state,
                     organization_id=effective_org_id,
                     query=query,
-                    embedded_text=embedded_text if search_method == "embedding" and query else None,
+                    embedded_text=(
+                        embedded_text
+                        if search_method == "embedding" and query
+                        else None
+                    ),
                     search_field=search_field if search_field != "null" else "summary",
                     search_method=search_method,
                     limit=limit,
@@ -3258,18 +3479,21 @@ async def search_memory_all_users(
                     filter_tags=filter_tags_dict,
                     similarity_threshold=similarity_threshold,
                 )
-                return [{
-                    "memory_type": "procedural",
-                    "id": x.id,
-                    "entry_type": x.entry_type,
-                    "summary": x.summary,
-                    "steps": x.steps,
-                    "user_id": str(x.user_id),
-                } for x in memories]
+                return [
+                    {
+                        "memory_type": "procedural",
+                        "id": x.id,
+                        "entry_type": x.entry_type,
+                        "summary": x.summary,
+                        "steps": x.steps,
+                        "user_id": str(x.user_id),
+                    }
+                    for x in memories
+                ]
             except Exception as e:
                 logger.error("Error searching procedural memories across org: %s", e)
                 return []
-        
+
         async def search_knowledge():
             try:
                 memories = await asyncio.to_thread(
@@ -3277,7 +3501,11 @@ async def search_memory_all_users(
                     agent_state=agent_state,
                     organization_id=effective_org_id,
                     query=query,
-                    embedded_text=embedded_text if search_method == "embedding" and query else None,
+                    embedded_text=(
+                        embedded_text
+                        if search_method == "embedding" and query
+                        else None
+                    ),
                     search_field=search_field if search_field != "null" else "caption",
                     search_method=search_method,
                     limit=limit,
@@ -3285,20 +3513,23 @@ async def search_memory_all_users(
                     filter_tags=filter_tags_dict,
                     similarity_threshold=similarity_threshold,
                 )
-                return [{
-                    "memory_type": "knowledge_vault",
-                    "id": x.id,
-                    "entry_type": x.entry_type,
-                    "source": x.source,
-                    "sensitivity": x.sensitivity,
-                    "secret_value": x.secret_value,
-                    "caption": x.caption,
-                    "user_id": str(x.user_id),
-                } for x in memories]
+                return [
+                    {
+                        "memory_type": "knowledge_vault",
+                        "id": x.id,
+                        "entry_type": x.entry_type,
+                        "source": x.source,
+                        "sensitivity": x.sensitivity,
+                        "secret_value": x.secret_value,
+                        "caption": x.caption,
+                        "user_id": str(x.user_id),
+                    }
+                    for x in memories
+                ]
             except Exception as e:
                 logger.error("Error searching knowledge vault across org: %s", e)
                 return []
-        
+
         async def search_semantic():
             try:
                 memories = await asyncio.to_thread(
@@ -3306,7 +3537,11 @@ async def search_memory_all_users(
                     agent_state=agent_state,
                     organization_id=effective_org_id,
                     query=query,
-                    embedded_text=embedded_text if search_method == "embedding" and query else None,
+                    embedded_text=(
+                        embedded_text
+                        if search_method == "embedding" and query
+                        else None
+                    ),
                     search_field=search_field if search_field != "null" else "summary",
                     search_method=search_method,
                     limit=limit,
@@ -3314,17 +3549,20 @@ async def search_memory_all_users(
                     filter_tags=filter_tags_dict,
                     similarity_threshold=similarity_threshold,
                 )
-                return [{
-                    "memory_type": "semantic",
-                    "id": x.id,
-                    "summary": x.summary,
-                    "details": x.details,
-                    "user_id": str(x.user_id),
-                } for x in memories]
+                return [
+                    {
+                        "memory_type": "semantic",
+                        "id": x.id,
+                        "summary": x.summary,
+                        "details": x.details,
+                        "user_id": str(x.user_id),
+                    }
+                    for x in memories
+                ]
             except Exception as e:
                 logger.error("Error searching semantic memories across org: %s", e)
                 return []
-        
+
         # Run all searches concurrently
         results = await asyncio.gather(
             search_episodic(),
@@ -3333,41 +3571,51 @@ async def search_memory_all_users(
             search_knowledge(),
             search_semantic(),
         )
-        
+
         # Flatten results
         for result_list in results:
             all_results.extend(result_list)
-    
+
     # Single memory type searches (run serially as before)
     elif memory_type == "episodic":
         try:
-            episodic_memories = server.episodic_memory_manager.list_episodic_memory_by_org(
-                agent_state=agent_state,
-                organization_id=effective_org_id,
-                query=query,
-                embedded_text=embedded_text_padded if search_method == "embedding" and query else None,
-                search_field=search_field if search_field != "null" else "summary",
-                search_method=search_method,
-                limit=limit,
-                timezone_str="UTC",
-                filter_tags=filter_tags_dict,
-                start_date=parsed_start_date,
-                end_date=parsed_end_date,
-                similarity_threshold=similarity_threshold,
+            episodic_memories = (
+                server.episodic_memory_manager.list_episodic_memory_by_org(
+                    agent_state=agent_state,
+                    organization_id=effective_org_id,
+                    query=query,
+                    embedded_text=(
+                        embedded_text_padded
+                        if search_method == "embedding" and query
+                        else None
+                    ),
+                    search_field=search_field if search_field != "null" else "summary",
+                    search_method=search_method,
+                    limit=limit,
+                    timezone_str="UTC",
+                    filter_tags=filter_tags_dict,
+                    start_date=parsed_start_date,
+                    end_date=parsed_end_date,
+                    similarity_threshold=similarity_threshold,
+                )
             )
-            all_results.extend([
-                {
-                    "memory_type": "episodic",
-                    "user_id": x.user_id,
-                    "id": x.id,
-                    "timestamp": x.occurred_at.isoformat() if x.occurred_at else None,
-                    "event_type": x.event_type,
-                    "actor": x.actor,
-                    "summary": x.summary,
-                    "details": x.details,
-                }
-                for x in episodic_memories
-            ])
+            all_results.extend(
+                [
+                    {
+                        "memory_type": "episodic",
+                        "user_id": x.user_id,
+                        "id": x.id,
+                        "timestamp": (
+                            x.occurred_at.isoformat() if x.occurred_at else None
+                        ),
+                        "event_type": x.event_type,
+                        "actor": x.actor,
+                        "summary": x.summary,
+                        "details": x.details,
+                    }
+                    for x in episodic_memories
+                ]
+            )
         except Exception as e:
             logger.error("Error searching episodic memories across organization: %s", e)
 
@@ -3378,116 +3626,150 @@ async def search_memory_all_users(
                 agent_state=agent_state,
                 organization_id=effective_org_id,
                 query=query,
-                embedded_text=embedded_text if search_method == "embedding" and query else None,
-                search_field=search_field if search_field != "null" else ("summary" if search_method == "embedding" else "content"),
+                embedded_text=(
+                    embedded_text if search_method == "embedding" and query else None
+                ),
+                search_field=(
+                    search_field
+                    if search_field != "null"
+                    else ("summary" if search_method == "embedding" else "content")
+                ),
                 search_method=search_method,
                 limit=limit,
                 timezone_str="UTC",
                 filter_tags=filter_tags_dict,
                 similarity_threshold=similarity_threshold,
             )
-            all_results.extend([
-                {
-                    "memory_type": "resource",
-                    "user_id": x.user_id,
-                    "id": x.id,
-                    "resource_type": x.resource_type,
-                    "title": x.title,
-                    "summary": x.summary,
-                    "content": x.content[:200] if x.content else None,
-                }
-                for x in resource_memories
-            ])
+            all_results.extend(
+                [
+                    {
+                        "memory_type": "resource",
+                        "user_id": x.user_id,
+                        "id": x.id,
+                        "resource_type": x.resource_type,
+                        "title": x.title,
+                        "summary": x.summary,
+                        "content": x.content[:200] if x.content else None,
+                    }
+                    for x in resource_memories
+                ]
+            )
         except Exception as e:
             logger.error("Error searching resource memories across organization: %s", e)
 
     # Search procedural memories across organization
     elif memory_type == "procedural":
         try:
-            procedural_memories = server.procedural_memory_manager.list_procedures_by_org(
-                agent_state=agent_state,
-                organization_id=effective_org_id,
-                query=query,
-                embedded_text=embedded_text if search_method == "embedding" and query else None,
-                search_field=search_field if search_field != "null" else "summary",
-                search_method=search_method,
-                limit=limit,
-                timezone_str="UTC",
-                filter_tags=filter_tags_dict,
-                similarity_threshold=similarity_threshold,
+            procedural_memories = (
+                server.procedural_memory_manager.list_procedures_by_org(
+                    agent_state=agent_state,
+                    organization_id=effective_org_id,
+                    query=query,
+                    embedded_text=(
+                        embedded_text
+                        if search_method == "embedding" and query
+                        else None
+                    ),
+                    search_field=search_field if search_field != "null" else "summary",
+                    search_method=search_method,
+                    limit=limit,
+                    timezone_str="UTC",
+                    filter_tags=filter_tags_dict,
+                    similarity_threshold=similarity_threshold,
+                )
             )
-            all_results.extend([
-                {
-                    "memory_type": "procedural",
-                    "user_id": x.user_id,
-                    "id": x.id,
-                    "entry_type": x.entry_type,
-                    "summary": x.summary,
-                    "steps": x.steps,
-                }
-                for x in procedural_memories
-            ])
+            all_results.extend(
+                [
+                    {
+                        "memory_type": "procedural",
+                        "user_id": x.user_id,
+                        "id": x.id,
+                        "entry_type": x.entry_type,
+                        "summary": x.summary,
+                        "steps": x.steps,
+                    }
+                    for x in procedural_memories
+                ]
+            )
         except Exception as e:
-            logger.error("Error searching procedural memories across organization: %s", e)
+            logger.error(
+                "Error searching procedural memories across organization: %s", e
+            )
 
     # Search knowledge vault across organization
     elif memory_type == "knowledge_vault":
         try:
-            knowledge_vault_memories = server.knowledge_vault_manager.list_knowledge_by_org(
-                agent_state=agent_state,
-                organization_id=effective_org_id,
-                query=query,
-                embedded_text=embedded_text if search_method == "embedding" and query else None,
-                search_field=search_field if search_field != "null" else "caption",
-                search_method=search_method,
-                limit=limit,
-                timezone_str="UTC",
-                filter_tags=filter_tags_dict,
-                similarity_threshold=similarity_threshold,
+            knowledge_vault_memories = (
+                server.knowledge_vault_manager.list_knowledge_by_org(
+                    agent_state=agent_state,
+                    organization_id=effective_org_id,
+                    query=query,
+                    embedded_text=(
+                        embedded_text
+                        if search_method == "embedding" and query
+                        else None
+                    ),
+                    search_field=search_field if search_field != "null" else "caption",
+                    search_method=search_method,
+                    limit=limit,
+                    timezone_str="UTC",
+                    filter_tags=filter_tags_dict,
+                    similarity_threshold=similarity_threshold,
+                )
             )
-            all_results.extend([
-                {
-                    "memory_type": "knowledge_vault",
-                    "user_id": x.user_id,
-                    "id": x.id,
-                    "entry_type": x.entry_type,
-                    "source": x.source,
-                    "sensitivity": x.sensitivity,
-                    "secret_value": x.secret_value,
-                    "caption": x.caption,
-                }
-                for x in knowledge_vault_memories
-            ])
+            all_results.extend(
+                [
+                    {
+                        "memory_type": "knowledge_vault",
+                        "user_id": x.user_id,
+                        "id": x.id,
+                        "entry_type": x.entry_type,
+                        "source": x.source,
+                        "sensitivity": x.sensitivity,
+                        "secret_value": x.secret_value,
+                        "caption": x.caption,
+                    }
+                    for x in knowledge_vault_memories
+                ]
+            )
         except Exception as e:
             logger.error("Error searching knowledge vault across organization: %s", e)
 
     # Search semantic memories across organization
     elif memory_type == "semantic":
         try:
-            semantic_memories = server.semantic_memory_manager.list_semantic_items_by_org(
-                agent_state=agent_state,
-                organization_id=effective_org_id,
-                query=query,
-                embedded_text=embedded_text if search_method == "embedding" and query else None,
-                search_field=search_field if search_field != "null" else "summary",
-                search_method=search_method,
-                limit=limit,
-                timezone_str="UTC",
-                filter_tags=filter_tags_dict,
-                similarity_threshold=similarity_threshold,
+            semantic_memories = (
+                server.semantic_memory_manager.list_semantic_items_by_org(
+                    agent_state=agent_state,
+                    organization_id=effective_org_id,
+                    query=query,
+                    embedded_text=(
+                        embedded_text
+                        if search_method == "embedding" and query
+                        else None
+                    ),
+                    search_field=search_field if search_field != "null" else "summary",
+                    search_method=search_method,
+                    limit=limit,
+                    timezone_str="UTC",
+                    filter_tags=filter_tags_dict,
+                    similarity_threshold=similarity_threshold,
+                )
             )
-            all_results.extend([
-                {
-                    "memory_type": "semantic",
-                    "user_id": x.user_id,
-                    "id": x.id,
-                    "name": x.name,
-                    "summary": x.summary,
-                    "details": x.details,
-                    "source": x.source,
-                }
-                for x in semantic_memories
-            ])
+            all_results.extend(
+                [
+                    {
+                        "memory_type": "semantic",
+                        "user_id": x.user_id,
+                        "id": x.id,
+                        "name": x.name,
+                        "summary": x.summary,
+                        "details": x.details,
+                        "source": x.source,
+                    }
+                    for x in semantic_memories
+                ]
+            )
         except Exception as e:
             logger.error("Error searching semantic memories across organization: %s", e)
 
@@ -3497,10 +3779,14 @@ async def search_memory_all_users(
         "memory_type": memory_type,
         "search_field": search_field,
         "search_method": search_method,
-        "date_range": {
-            "start": parsed_start_date.isoformat() if parsed_start_date else None,
-            "end": parsed_end_date.isoformat() if parsed_end_date else None,
-        } if (parsed_start_date or parsed_end_date) else None,
+        "date_range": (
+            {
+                "start": parsed_start_date.isoformat() if parsed_start_date else None,
+                "end": parsed_end_date.isoformat() if parsed_end_date else None,
+            }
+            if (parsed_start_date or parsed_end_date)
+            else None
+        ),
         "results": all_results,
         "count": len(all_results),
         "client_id": effective_client_id,
@@ -3551,6 +3837,7 @@ async def list_memory_components(
     # Default to the admin user for this client
     if not user_id:
         from mirix.services.admin_user_manager import ClientAuthManager
+
         user_id = ClientAuthManager.get_admin_user_id_for_client(client.id)
         logger.debug("No user_id provided, using admin user: %s", user_id)
 
@@ -3578,17 +3865,29 @@ async def list_memory_components(
             timezone_str=timezone_str,
         )
         memories["episodic"] = {
-            "total_count": server.episodic_memory_manager.get_total_number_of_items(user=user),
+            "total_count": server.episodic_memory_manager.get_total_number_of_items(
+                user=user
+            ),
             "items": [
                 {
                     "id": item.id,
-                    "occurred_at": item.occurred_at.isoformat() if item.occurred_at else None,
+                    "occurred_at": (
+                        item.occurred_at.isoformat() if item.occurred_at else None
+                    ),
                     "event_type": item.event_type,
                     "actor": item.actor,
                     "summary": item.summary,
                     "details": item.details,
-                    "created_at": item.created_at.isoformat() if getattr(item, "created_at", None) else None,
-                    "updated_at": item.updated_at.isoformat() if getattr(item, "updated_at", None) else None,
+                    "created_at": (
+                        item.created_at.isoformat()
+                        if getattr(item, "created_at", None)
+                        else None
+                    ),
+                    "updated_at": (
+                        item.updated_at.isoformat()
+                        if getattr(item, "updated_at", None)
+                        else None
+                    ),
                 }
                 for item in episodic_items
             ],
@@ -3605,7 +3904,9 @@ async def list_memory_components(
             timezone_str=timezone_str,
         )
         memories["semantic"] = {
-            "total_count": server.semantic_memory_manager.get_total_number_of_items(user=user),
+            "total_count": server.semantic_memory_manager.get_total_number_of_items(
+                user=user
+            ),
             "items": [
                 {
                     "id": item.id,
@@ -3613,8 +3914,16 @@ async def list_memory_components(
                     "summary": item.summary,
                     "details": item.details,
                     "source": item.source,
-                    "created_at": item.created_at.isoformat() if getattr(item, "created_at", None) else None,
-                    "updated_at": item.updated_at.isoformat() if getattr(item, "updated_at", None) else None,
+                    "created_at": (
+                        item.created_at.isoformat()
+                        if getattr(item, "created_at", None)
+                        else None
+                    ),
+                    "updated_at": (
+                        item.updated_at.isoformat()
+                        if getattr(item, "updated_at", None)
+                        else None
+                    ),
                 }
                 for item in semantic_items
             ],
@@ -3631,15 +3940,25 @@ async def list_memory_components(
             timezone_str=timezone_str,
         )
         memories["procedural"] = {
-            "total_count": server.procedural_memory_manager.get_total_number_of_items(user=user),
+            "total_count": server.procedural_memory_manager.get_total_number_of_items(
+                user=user
+            ),
             "items": [
                 {
                     "id": item.id,
                     "entry_type": item.entry_type,
                     "summary": item.summary,
                     "steps": item.steps,
-                    "created_at": item.created_at.isoformat() if getattr(item, "created_at", None) else None,
-                    "updated_at": item.updated_at.isoformat() if getattr(item, "updated_at", None) else None,
+                    "created_at": (
+                        item.created_at.isoformat()
+                        if getattr(item, "created_at", None)
+                        else None
+                    ),
+                    "updated_at": (
+                        item.updated_at.isoformat()
+                        if getattr(item, "updated_at", None)
+                        else None
+                    ),
                 }
                 for item in procedural_items
             ],
@@ -3656,7 +3975,9 @@ async def list_memory_components(
             timezone_str=timezone_str,
         )
         memories["resource"] = {
-            "total_count": server.resource_memory_manager.get_total_number_of_items(user=user),
+            "total_count": server.resource_memory_manager.get_total_number_of_items(
+                user=user
+            ),
             "items": [
                 {
                     "id": item.id,
@@ -3664,8 +3985,16 @@ async def list_memory_components(
                     "title": item.title,
                     "summary": item.summary,
                     "content": item.content,
-                    "created_at": item.created_at.isoformat() if getattr(item, "created_at", None) else None,
-                    "updated_at": item.updated_at.isoformat() if getattr(item, "updated_at", None) else None,
+                    "created_at": (
+                        item.created_at.isoformat()
+                        if getattr(item, "created_at", None)
+                        else None
+                    ),
+                    "updated_at": (
+                        item.updated_at.isoformat()
+                        if getattr(item, "updated_at", None)
+                        else None
+                    ),
                 }
                 for item in resource_items
             ],
@@ -3682,7 +4011,9 @@ async def list_memory_components(
             timezone_str=timezone_str,
         )
         memories["knowledge_vault"] = {
-            "total_count": server.knowledge_vault_manager.get_total_number_of_items(user=user),
+            "total_count": server.knowledge_vault_manager.get_total_number_of_items(
+                user=user
+            ),
             "items": [
                 {
                     "id": item.id,
@@ -3691,8 +4022,16 @@ async def list_memory_components(
                     "sensitivity": item.sensitivity,
                     "secret_value": item.secret_value,
                     "caption": item.caption,
-                    "created_at": item.created_at.isoformat() if getattr(item, "created_at", None) else None,
-                    "updated_at": item.updated_at.isoformat() if getattr(item, "updated_at", None) else None,
+                    "created_at": (
+                        item.created_at.isoformat()
+                        if getattr(item, "created_at", None)
+                        else None
+                    ),
+                    "updated_at": (
+                        item.updated_at.isoformat()
+                        if getattr(item, "updated_at", None)
+                        else None
+                    ),
                 }
                 for item in knowledge_items
             ],
@@ -3762,20 +4101,20 @@ def get_client_from_jwt_or_api_key(
 ) -> tuple:
     """
     Authenticate using either JWT token (dashboard) or Client API Key (programmatic).
-    
+
     Args:
         authorization: Bearer JWT token from Authorization header
         request: FastAPI request to inspect injected headers (from X-API-Key middleware)
-        
+
     Returns:
         tuple: (client, auth_type) where auth_type is "jwt" or "api_key"
         Both authentication methods return a valid client object.
-        
+
     Raises:
         HTTPException: If neither auth method is provided or valid
     """
     server = get_server()
-    
+
     # Try JWT first (dashboard)
     if authorization:
         try:
@@ -3784,11 +4123,13 @@ def get_client_from_jwt_or_api_key(
             client_id = admin_payload["sub"]
             client = server.client_manager.get_client_by_id(client_id)
             if not client:
-                raise HTTPException(status_code=404, detail=f"Client {client_id} not found")
+                raise HTTPException(
+                    status_code=404, detail=f"Client {client_id} not found"
+                )
             return client, "jwt"
         except HTTPException:
             pass  # Try API key next
-    
+
     # Try injected client headers (programmatic access via middleware)
     if request:
         client_id = request.headers.get("x-client-id")
@@ -3797,9 +4138,11 @@ def get_client_from_jwt_or_api_key(
             client_id, org_id = get_client_and_org(client_id, org_id)
             client = server.client_manager.get_client_by_id(client_id)
             if not client:
-                raise HTTPException(status_code=404, detail=f"Client {client_id} not found")
+                raise HTTPException(
+                    status_code=404, detail=f"Client {client_id} not found"
+                )
             return client, "api_key"
-    
+
     raise HTTPException(
         status_code=401,
         detail="Authentication required. Provide either Authorization (Bearer JWT) or X-API-Key header.",
@@ -3808,6 +4151,7 @@ def get_client_from_jwt_or_api_key(
 
 class UpdateEpisodicMemoryRequest(BaseModel):
     """Request model for updating an episodic memory."""
+
     summary: Optional[str] = None
     details: Optional[str] = None
 
@@ -3822,27 +4166,28 @@ async def update_episodic_memory(
 ):
     """
     Update an episodic memory by ID.
-    
+
     **Accepts both JWT (dashboard) and Client API Key (programmatic).**
-    
+
     Updates the summary and/or details fields of the memory.
     """
     # Authenticate with either JWT or API key
     client, auth_type = get_client_from_jwt_or_api_key(authorization, http_request)
-    
+
     server = get_server()
-    
+
     # If user_id is not provided, use the admin user for this client
     if not user_id:
         from mirix.services.admin_user_manager import ClientAuthManager
+
         user_id = ClientAuthManager.get_admin_user_id_for_client(client.id)
         logger.debug("No user_id provided, using admin user: %s", user_id)
-    
+
     # Get user
     user = server.user_manager.get_user_by_id(user_id)
     if not user:
         raise HTTPException(status_code=404, detail=f"User {user_id} not found")
-    
+
     try:
         updated_memory = server.episodic_memory_manager.update_event(
             event_id=memory_id,
@@ -3858,7 +4203,7 @@ async def update_episodic_memory(
                 "id": updated_memory.id,
                 "summary": updated_memory.summary,
                 "details": updated_memory.details,
-            }
+            },
         }
     except Exception as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -3872,25 +4217,23 @@ async def delete_episodic_memory(
 ):
     """
     Delete an episodic memory by ID.
-    
+
     **Accepts both JWT (dashboard) and Client API Key (programmatic).**
     """
     client, auth_type = get_client_from_jwt_or_api_key(authorization, http_request)
-    
+
     server = get_server()
-    
+
     try:
         server.episodic_memory_manager.delete_event_by_id(memory_id, actor=client)
-        return {
-            "success": True,
-            "message": f"Episodic memory {memory_id} deleted"
-        }
+        return {"success": True, "message": f"Episodic memory {memory_id} deleted"}
     except Exception as e:
         raise HTTPException(status_code=404, detail=str(e))
 
 
 class UpdateSemanticMemoryRequest(BaseModel):
     """Request model for updating a semantic memory."""
+
     name: Optional[str] = None
     summary: Optional[str] = None
     details: Optional[str] = None
@@ -3906,7 +4249,7 @@ async def update_semantic_memory(
 ):
     """
     Update a semantic memory by ID.
-    
+
     **Accepts both JWT (dashboard) and Client API Key (programmatic).**
     """
     # Authenticate with either JWT or API key
@@ -3917,6 +4260,7 @@ async def update_semantic_memory(
     # If user_id is not provided, use the admin user for this client
     if not user_id:
         from mirix.services.admin_user_manager import ClientAuthManager
+
         user_id = ClientAuthManager.get_admin_user_id_for_client(client.id)
         logger.debug("No user_id provided, using admin user: %s", user_id)
 
@@ -3947,7 +4291,7 @@ async def update_semantic_memory(
                 "name": updated_memory.name,
                 "summary": updated_memory.summary,
                 "details": updated_memory.details,
-            }
+            },
         }
     except Exception as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -3961,25 +4305,25 @@ async def delete_semantic_memory(
 ):
     """
     Delete a semantic memory by ID.
-    
+
     **Accepts both JWT (dashboard) and Client API Key (programmatic).**
     """
     client, auth_type = get_client_from_jwt_or_api_key(authorization, http_request)
-    
+
     server = get_server()
-    
+
     try:
-        server.semantic_memory_manager.delete_semantic_item_by_id(memory_id, actor=client)
-        return {
-            "success": True,
-            "message": f"Semantic memory {memory_id} deleted"
-        }
+        server.semantic_memory_manager.delete_semantic_item_by_id(
+            memory_id, actor=client
+        )
+        return {"success": True, "message": f"Semantic memory {memory_id} deleted"}
     except Exception as e:
         raise HTTPException(status_code=404, detail=str(e))
 
 
 class UpdateProceduralMemoryRequest(BaseModel):
     """Request model for updating a procedural memory."""
+
     summary: Optional[str] = None
     steps: Optional[List[str]] = None
 
@@ -3994,7 +4338,7 @@ async def update_procedural_memory(
 ):
     """
     Update a procedural memory by ID.
-    
+
     **Accepts both JWT (dashboard) and Client API Key (programmatic).**
     """
     # Authenticate with either JWT or API key
@@ -4005,6 +4349,7 @@ async def update_procedural_memory(
     # If user_id is not provided, use the admin user for this client
     if not user_id:
         from mirix.services.admin_user_manager import ClientAuthManager
+
         user_id = ClientAuthManager.get_admin_user_id_for_client(client.id)
         logger.debug("No user_id provided, using admin user: %s", user_id)
 
@@ -4034,7 +4379,7 @@ async def update_procedural_memory(
                 "id": updated_memory.id,
                 "summary": updated_memory.summary,
                 "steps": updated_memory.steps,
-            }
+            },
         }
     except Exception as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -4048,19 +4393,16 @@ async def delete_procedural_memory(
 ):
     """
     Delete a procedural memory by ID.
-    
+
     **Accepts both JWT (dashboard) and Client API Key (programmatic).**
     """
     client, auth_type = get_client_from_jwt_or_api_key(authorization, http_request)
-    
+
     server = get_server()
-    
+
     try:
         server.procedural_memory_manager.delete_procedure_by_id(memory_id, actor=client)
-        return {
-            "success": True,
-            "message": f"Procedural memory {memory_id} deleted"
-        }
+        return {"success": True, "message": f"Procedural memory {memory_id} deleted"}
     except Exception as e:
         raise HTTPException(status_code=404, detail=str(e))
 
@@ -4079,13 +4421,14 @@ async def get_raw_memory_handler(
 ):
     """
     Fetch a single raw memory by ID.
-    
+
     **Accepts both JWT (dashboard) and Client API Key (programmatic).**
     """
     # Authenticate with either JWT or API key
     client, auth_type = get_client_from_jwt_or_api_key(authorization, http_request)
     response = await get_raw_memory(memory_id, user_id, client)
     return response
+
 
 async def get_raw_memory(
     memory_id: str,
@@ -4094,26 +4437,27 @@ async def get_raw_memory(
 ):
     """
     Fetch a single raw memory by ID.
-    
+
     Raw memories are unprocessed task context stored for task sharing use cases,
     with a 14-day TTL.
-    """  
+    """
     server = get_server()
-    
+
     # If user_id is not provided, use the admin user for this client
     if not user_id:
         from mirix.services.admin_user_manager import ClientAuthManager
+
         user_id = ClientAuthManager.get_admin_user_id_for_client(client.id)
         logger.debug("No user_id provided, using admin user: %s", user_id)
-    
+
     # Get user
     user = server.user_manager.get_user_by_id(user_id)
     if not user:
         raise HTTPException(status_code=404, detail=f"User {user_id} not found")
-    
+
     try:
         from mirix.orm.errors import NoResultFound
-        
+
         memory = server.raw_memory_manager.get_raw_memory_by_id(memory_id, user)
         return {
             "success": True,
@@ -4136,13 +4480,14 @@ async def update_raw_memory_handler(
 ):
     """
     Update an existing raw memory.
-    
+
     **Accepts both JWT (dashboard) and Client API Key (programmatic).**
     """
     # Authenticate with either JWT or API key
     client, auth_type = get_client_from_jwt_or_api_key(authorization, http_request)
     response = await update_raw_memory(memory_id, request, user_id, client)
     return response
+
 
 async def update_raw_memory(
     memory_id: str,
@@ -4152,30 +4497,33 @@ async def update_raw_memory(
 ):
     """
     Update an existing raw memory.
-    
+
     Updates the context and/or filter_tags fields of the memory.
     Supports append/replace modes for both context and tags.
     """
     server = get_server()
-    
+
     # If user_id is not provided, use the admin user for this client
     if not user_id:
         from mirix.services.admin_user_manager import ClientAuthManager
+
         user_id = ClientAuthManager.get_admin_user_id_for_client(client.id)
         logger.debug("No user_id provided, using admin user: %s", user_id)
-    
+
     # Get user
     user = server.user_manager.get_user_by_id(user_id)
     if not user:
         raise HTTPException(status_code=404, detail=f"User {user_id} not found")
-    
+
     # Get agent_state for embedding generation
     agents = server.agent_manager.list_agents(actor=client, limit=1)
     agent_state = agents[0] if agents else None
 
     if not agent_state:
-        logger.warning("No agents found for client %s, embeddings will not be generated", client.id)
-    
+        logger.warning(
+            "No agents found for client %s, embeddings will not be generated", client.id
+        )
+
     try:
         updated_memory = server.raw_memory_manager.update_raw_memory(
             memory_id=memory_id,
@@ -4194,7 +4542,7 @@ async def update_raw_memory(
                 "context": updated_memory.context,
                 "filter_tags": updated_memory.filter_tags,
                 "updated_at": updated_memory.updated_at.isoformat(),
-            }
+            },
         }
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -4211,7 +4559,7 @@ async def delete_raw_memory_handler(
 ):
     """
     Delete a raw memory by ID.
-    
+
     **Accepts both JWT (dashboard) and Client API Key (programmatic).**
     """
     # Authenticate with either JWT or API key
@@ -4219,18 +4567,19 @@ async def delete_raw_memory_handler(
     response = await delete_raw_memory(memory_id, client)
     return response
 
+
 async def delete_raw_memory(
     memory_id: str,
     client: Client = None,
 ):
     """
     Delete a raw memory by ID.
-    
+
     This performs a hard delete and removes the memory from both PostgreSQL
     and Redis cache.
     """
     server = get_server()
-    
+
     try:
         deleted = server.raw_memory_manager.delete_raw_memory(memory_id, client)
         if deleted:
@@ -4240,40 +4589,204 @@ async def delete_raw_memory(
             }
         else:
             raise HTTPException(
-                status_code=404,
-                detail=f"Raw memory {memory_id} not found"
+                status_code=404, detail=f"Raw memory {memory_id} not found"
             )
     except Exception as e:
         logger.error(f"Error deleting raw memory {memory_id}: {e}")
         raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
 
 
+@router.post("/memory/search_raw")
+async def search_raw_memory_handler(
+    request: SearchRawMemoryRequest,
+    user_id: Optional[str] = None,
+    authorization: Optional[str] = Header(None),
+    http_request: Request = None,
+):
+    """
+    Search raw memories with filtering, sorting, and pagination.
+
+    **Accepts both JWT (dashboard) and Client API Key (programmatic).**
+    """
+    # Authenticate with either JWT or API key
+    client, auth_type = get_client_from_jwt_or_api_key(authorization, http_request)
+    response = await search_raw_memory(request, user_id, client)
+    return response
+
+
+async def search_raw_memory(
+    request: SearchRawMemoryRequest,
+    user_id: Optional[str] = None,
+    client: Client = None,
+):
+    """
+    Search raw memories with filtering, sorting, cursor-based pagination, and time range filtering.
+    """
+    server = get_server()
+
+    # Ensure client is provided
+    if not client:
+        raise HTTPException(
+            status_code=401, detail="Authentication required. Client not found."
+        )
+
+    # If user_id is not provided, use the admin user for this client
+    if not user_id:
+        from mirix.services.admin_user_manager import ClientAuthManager
+
+        user_id = ClientAuthManager.get_admin_user_id_for_client(client.id)
+        logger.debug("No user_id provided, using admin user: %s", user_id)
+
+    # Get user
+    try:
+        user = server.user_manager.get_user_by_id(user_id)
+    except Exception as e:
+        from mirix.orm.errors import NoResultFound
+
+        if isinstance(e, NoResultFound):
+            raise HTTPException(status_code=404, detail=f"User {user_id} not found")
+        # Re-raise other exceptions
+        raise
+
+    # Process filter_tags: always set scope to client scope (overwrites any user-provided scope)
+    filter_tags = (
+        dict[str, Any](request.filter_tags) if request.filter_tags is not None else {}
+    )
+    filter_tags["scope"] = client.scope
+
+    # Parse time_range from request, converting to UTC and stripping timezone for DB comparison
+    time_range_dict = None
+    if request.time_range:
+
+        def to_utc_stripped(dt_val: Optional[datetime]) -> Optional[datetime]:
+            """Convert datetime to UTC and strip timezone for DB comparison.
+
+            The database stores naive datetimes assumed to be in UTC.
+            """
+            if not dt_val:
+                return None
+            if dt_val.tzinfo:
+                # Convert to UTC first, then strip timezone
+                from datetime import timezone as dt_timezone
+
+                dt_val = dt_val.astimezone(dt_timezone.utc)
+                return dt_val.replace(tzinfo=None)
+            # Already naive - assume it's UTC
+            return dt_val
+
+        time_range_dict = {}
+        if request.time_range.created_at_gte:
+            time_range_dict["created_at_gte"] = to_utc_stripped(
+                request.time_range.created_at_gte
+            )
+        if request.time_range.created_at_lte:
+            time_range_dict["created_at_lte"] = to_utc_stripped(
+                request.time_range.created_at_lte
+            )
+        if request.time_range.occurred_at_gte:
+            time_range_dict["occurred_at_gte"] = to_utc_stripped(
+                request.time_range.occurred_at_gte
+            )
+        if request.time_range.occurred_at_lte:
+            time_range_dict["occurred_at_lte"] = to_utc_stripped(
+                request.time_range.occurred_at_lte
+            )
+        if request.time_range.updated_at_gte:
+            time_range_dict["updated_at_gte"] = to_utc_stripped(
+                request.time_range.updated_at_gte
+            )
+        if request.time_range.updated_at_lte:
+            time_range_dict["updated_at_lte"] = to_utc_stripped(
+                request.time_range.updated_at_lte
+            )
+
+        if time_range_dict.get("created_at_gte") and time_range_dict.get(
+            "created_at_lte"
+        ):
+            if time_range_dict["created_at_gte"] > time_range_dict["created_at_lte"]:
+                raise HTTPException(
+                    status_code=400, detail="created_at_gte must be <= created_at_lte"
+                )
+        if time_range_dict.get("occurred_at_gte") and time_range_dict.get(
+            "occurred_at_lte"
+        ):
+            if time_range_dict["occurred_at_gte"] > time_range_dict["occurred_at_lte"]:
+                raise HTTPException(
+                    status_code=400, detail="occurred_at_gte must be <= occurred_at_lte"
+                )
+        if time_range_dict.get("updated_at_gte") and time_range_dict.get(
+            "updated_at_lte"
+        ):
+            if time_range_dict["updated_at_gte"] > time_range_dict["updated_at_lte"]:
+                raise HTTPException(
+                    status_code=400, detail="updated_at_gte must be <= updated_at_lte"
+                )
+
+    # Validate sort string
+    valid_sorts = {
+        "updated_at",
+        "-updated_at",
+        "created_at",
+        "-created_at",
+        "occurred_at",
+        "-occurred_at",
+    }
+    if request.sort not in valid_sorts:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid sort: {request.sort}. Must be one of {valid_sorts}",
+        )
+
+    try:
+        items, next_cursor = server.raw_memory_manager.search_raw_memories(
+            user=user,
+            filter_tags=filter_tags,
+            sort=request.sort,
+            cursor=request.cursor,
+            time_range=time_range_dict,
+            limit=request.limit,
+        )
+
+        return SearchRawMemoryResponse(
+            items=items,
+            cursor=next_cursor,
+            count=len(items),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error searching raw memories: {e}")
+        raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
+
+
 @router.post("/memory/raw/cleanup")
 async def cleanup_raw_memories_handler(
-    days_threshold: int = Query(14, ge=1, le=365, description="Delete memories older than this many days"),
+    days_threshold: int = Query(
+        14, ge=1, le=365, description="Delete memories older than this many days"
+    ),
     authorization: Optional[str] = Header(None),
     http_request: Request = None,
 ):
     """
     Manually trigger the raw memory cleanup job to delete stale memories.
-    
+
     **Accepts both JWT (dashboard) and Client API Key (programmatic).**
-    
+
     This endpoint allows manual execution of the cleanup job that
     deletes raw memories older than the specified threshold (based on updated_at).
     Normally this job runs nightly via cron/scheduler, but this endpoint allows
     on-demand execution for maintenance or testing purposes.
-    
+
     Args:
         days_threshold: Number of days after which memories are considered stale.
                        Must be between 1 and 365 days (default: 14)
-    
+
     Returns:
         Dict with deletion statistics including deleted_count, error_count, and cutoff_date
-        
+
     Example:
         POST /memory/raw/cleanup?days_threshold=7
-        
+
         Response:
         {
             "success": true,
@@ -4289,50 +4802,54 @@ async def cleanup_raw_memories_handler(
 
     logger.info(
         "Manual cleanup job triggered by client %s (auth: %s) with threshold: %d days",
-        client.id, auth_type, days_threshold
+        client.id,
+        auth_type,
+        days_threshold,
     )
 
     response = await cleanup_raw_memories(days_threshold, client)
     return response
 
+
 async def cleanup_raw_memories(
-    days_threshold: int = Query(14, ge=1, le=365, description="Delete memories older than this many days"),
+    days_threshold: int = Query(
+        14, ge=1, le=365, description="Delete memories older than this many days"
+    ),
     client: Client = None,
 ):
     """
     Manually trigger the raw memory cleanup job to delete stale memories.
-    
+
     **Accepts both JWT (dashboard) and Client API Key (programmatic).**
     """
     # Import the cleanup function
     from mirix.jobs.cleanup_raw_memories import delete_stale_raw_memories
-    
+
     try:
         # Run the cleanup job
         result = delete_stale_raw_memories(days_threshold=days_threshold)
-        
+
         # Add success message to result
         result["message"] = (
             f"Deleted {result['deleted_count']} stale raw memories "
             f"(older than {days_threshold} days)"
         )
-        
+
         logger.info(
             "Cleanup job completed: deleted %d, errors %d",
-            result["deleted_count"], result["error_count"]
+            result["deleted_count"],
+            result["error_count"],
         )
-        
+
         return result
     except Exception as e:
         logger.error("Cleanup job failed: %s", e)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Cleanup job failed: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Cleanup job failed: {str(e)}")
 
 
 class UpdateResourceMemoryRequest(BaseModel):
     """Request model for updating a resource memory."""
+
     title: Optional[str] = None
     summary: Optional[str] = None
     content: Optional[str] = None
@@ -4348,7 +4865,7 @@ async def update_resource_memory(
 ):
     """
     Update a resource memory by ID.
-    
+
     **Accepts both JWT (dashboard) and Client API Key (programmatic).**
     """
     # Authenticate with either JWT or API key
@@ -4359,6 +4876,7 @@ async def update_resource_memory(
     # If user_id is not provided, use the admin user for this client
     if not user_id:
         from mirix.services.admin_user_manager import ClientAuthManager
+
         user_id = ClientAuthManager.get_admin_user_id_for_client(client.id)
         logger.debug("No user_id provided, using admin user: %s", user_id)
 
@@ -4388,7 +4906,7 @@ async def update_resource_memory(
                 "id": updated_memory.id,
                 "title": updated_memory.title,
                 "summary": updated_memory.summary,
-            }
+            },
         }
     except Exception as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -4402,19 +4920,16 @@ async def delete_resource_memory(
 ):
     """
     Delete a resource memory by ID.
-    
+
     **Accepts both JWT (dashboard) and Client API Key (programmatic).**
     """
     client, auth_type = get_client_from_jwt_or_api_key(authorization, http_request)
-    
+
     server = get_server()
-    
+
     try:
         server.resource_memory_manager.delete_resource_by_id(memory_id, actor=client)
-        return {
-            "success": True,
-            "message": f"Resource memory {memory_id} deleted"
-        }
+        return {"success": True, "message": f"Resource memory {memory_id} deleted"}
     except Exception as e:
         raise HTTPException(status_code=404, detail=str(e))
 
@@ -4427,19 +4942,16 @@ async def delete_knowledge_vault_memory(
 ):
     """
     Delete a knowledge vault item by ID.
-    
+
     **Accepts both JWT (dashboard) and Client API Key (programmatic).**
     """
     client, auth_type = get_client_from_jwt_or_api_key(authorization, http_request)
-    
+
     server = get_server()
-    
+
     try:
         server.knowledge_vault_manager.delete_knowledge_by_id(memory_id, actor=client)
-        return {
-            "success": True,
-            "message": f"Knowledge vault item {memory_id} deleted"
-        }
+        return {"success": True, "message": f"Knowledge vault item {memory_id} deleted"}
     except Exception as e:
         raise HTTPException(status_code=404, detail=str(e))
 
@@ -4451,12 +4963,14 @@ async def delete_knowledge_vault_memory(
 
 class DashboardLoginRequest(BaseModel):
     """Request model for dashboard login."""
+
     email: str = Field(..., description="Client email")
     password: str = Field(..., description="Client password")
 
 
 class DashboardRegisterRequest(BaseModel):
     """Request model for dashboard registration."""
+
     name: str = Field(..., max_length=100, description="Client name")
     email: str = Field(..., description="Email address for login")
     password: str = Field(..., description="Password for login")
@@ -4464,6 +4978,7 @@ class DashboardRegisterRequest(BaseModel):
 
 class DashboardClientResponse(BaseModel):
     """Response model for dashboard client (excludes sensitive data)."""
+
     id: str
     name: str
     email: Optional[str]
@@ -4476,6 +4991,7 @@ class DashboardClientResponse(BaseModel):
 
 class TokenResponse(BaseModel):
     """Response model for authentication token."""
+
     access_token: str
     token_type: str = "bearer"
     expires_in: int
@@ -4485,13 +5001,13 @@ class TokenResponse(BaseModel):
 def get_current_admin(authorization: Optional[str] = Header(None)) -> dict:
     """
     Dependency to get the current authenticated client from JWT token.
-    
+
     Args:
         authorization: Bearer token from Authorization header
-        
+
     Returns:
         Decoded JWT payload with client info
-        
+
     Raises:
         HTTPException: If token is invalid or missing
     """
@@ -4501,7 +5017,7 @@ def get_current_admin(authorization: Optional[str] = Header(None)) -> dict:
             detail="Authorization header required",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    
+
     # Extract token from "Bearer <token>"
     parts = authorization.split()
     if len(parts) != 2 or parts[0].lower() != "bearer":
@@ -4510,11 +5026,11 @@ def get_current_admin(authorization: Optional[str] = Header(None)) -> dict:
             detail="Invalid authorization header format. Use: Bearer <token>",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    
+
     token = parts[1]
-    
+
     from mirix.services.admin_user_manager import ClientAuthManager
-    
+
     payload = ClientAuthManager.decode_access_token(token)
     if not payload:
         raise HTTPException(
@@ -4522,31 +5038,32 @@ def get_current_admin(authorization: Optional[str] = Header(None)) -> dict:
             detail="Invalid or expired token",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    
+
     return payload
 
 
 def require_scope(required_scopes: List[str]):
     """
     Dependency factory to require specific client scopes.
-    
+
     Args:
         required_scopes: List of allowed scopes
-        
+
     Returns:
         Dependency function that validates scope
     """
+
     def scope_checker(client_payload: dict = None):
         if client_payload is None:
             raise HTTPException(status_code=401, detail="Not authenticated")
-        
+
         if client_payload.get("scope") not in required_scopes:
             raise HTTPException(
                 status_code=403,
-                detail=f"Insufficient permissions. Required scopes: {required_scopes}"
+                detail=f"Insufficient permissions. Required scopes: {required_scopes}",
             )
         return client_payload
-    
+
     return scope_checker
 
 
@@ -4554,22 +5071,22 @@ def require_scope(required_scopes: List[str]):
 async def dashboard_register(request: DashboardRegisterRequest):
     """
     Register a new client with dashboard access.
-    
+
     - First registration: Creates an admin client (no auth required)
     - Subsequent registrations: May require authentication (future feature)
-    
+
     For the first client, no authentication is needed (bootstrap).
     """
     from mirix.services.admin_user_manager import ClientAuthManager
-    
+
     auth_manager = ClientAuthManager()
-    
+
     # Check if this is the first dashboard user (bootstrap mode)
     is_first = auth_manager.is_first_dashboard_user()
-    
+
     if is_first:
         logger.info("Creating first dashboard client (bootstrap mode)")
-    
+
     try:
         # Create client with dashboard credentials
         client = auth_manager.register_client_for_dashboard(
@@ -4578,10 +5095,10 @@ async def dashboard_register(request: DashboardRegisterRequest):
             password=request.password,
             scope="admin",  # First/dashboard users get admin scope
         )
-        
+
         # Generate token
         access_token = ClientAuthManager.create_access_token(client)
-        
+
         return TokenResponse(
             access_token=access_token,
             token_type="bearer",
@@ -4594,8 +5111,8 @@ async def dashboard_register(request: DashboardRegisterRequest):
                 status=client.status,
                 admin_user_id=ClientAuthManager.get_admin_user_id_for_client(client.id),
                 created_at=client.created_at,
-                last_login=client.last_login
-            )
+                last_login=client.last_login,
+            ),
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -4607,27 +5124,22 @@ async def dashboard_login(request: DashboardLoginRequest):
     Authenticate client for dashboard and return JWT token.
     """
     from mirix.services.admin_user_manager import ClientAuthManager
-    
+
     auth_manager = ClientAuthManager()
-    
-    client, access_token, auth_status = auth_manager.authenticate(request.email, request.password)
-    
+
+    client, access_token, auth_status = auth_manager.authenticate(
+        request.email, request.password
+    )
+
     if auth_status == "not_found":
         raise HTTPException(
-            status_code=404,
-            detail="Account does not exist. Please create an account."
+            status_code=404, detail="Account does not exist. Please create an account."
         )
     if auth_status == "wrong_password":
-        raise HTTPException(
-            status_code=401,
-            detail="Incorrect password"
-        )
+        raise HTTPException(status_code=401, detail="Incorrect password")
     if auth_status != "ok" or not client or not access_token:
-        raise HTTPException(
-            status_code=401,
-            detail="Invalid email or password"
-        )
-    
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+
     return TokenResponse(
         access_token=access_token,
         token_type="bearer",
@@ -4640,8 +5152,8 @@ async def dashboard_login(request: DashboardLoginRequest):
             status=client.status,
             admin_user_id=ClientAuthManager.get_admin_user_id_for_client(client.id),
             created_at=client.created_at,
-            last_login=client.last_login
-        )
+            last_login=client.last_login,
+        ),
     )
 
 
@@ -4651,15 +5163,15 @@ async def dashboard_get_current_client(authorization: Optional[str] = Header(Non
     Get current authenticated client.
     """
     client_payload = get_current_admin(authorization)
-    
+
     from mirix.services.admin_user_manager import ClientAuthManager
-    
+
     auth_manager = ClientAuthManager()
     client = auth_manager.get_client_by_id(client_payload["sub"])
-    
+
     if not client:
         raise HTTPException(status_code=404, detail="Client not found")
-    
+
     return DashboardClientResponse(
         id=client.id,
         name=client.name,
@@ -4668,7 +5180,7 @@ async def dashboard_get_current_client(authorization: Optional[str] = Header(Non
         status=client.status,
         admin_user_id=ClientAuthManager.get_admin_user_id_for_client(client.id),
         created_at=client.created_at,
-        last_login=client.last_login
+        last_login=client.last_login,
     )
 
 
@@ -4682,21 +5194,20 @@ async def list_dashboard_clients(
     List all clients with dashboard access. Requires admin scope.
     """
     client_payload = get_current_admin(authorization)
-    
+
     # Check scope - only admin can list dashboard clients
     if client_payload.get("scope") != "admin":
         raise HTTPException(
-            status_code=403,
-            detail="Only admin clients can list dashboard clients"
+            status_code=403, detail="Only admin clients can list dashboard clients"
         )
-    
+
     from mirix.services.admin_user_manager import ClientAuthManager
-    
+
     auth_manager = ClientAuthManager()
     clients = auth_manager.list_dashboard_clients(cursor=cursor, limit=limit)
-    
+
     from mirix.services.admin_user_manager import ClientAuthManager
-    
+
     return [
         DashboardClientResponse(
             id=c.id,
@@ -4706,7 +5217,7 @@ async def list_dashboard_clients(
             status=c.status,
             admin_user_id=ClientAuthManager.get_admin_user_id_for_client(c.id),
             created_at=c.created_at,
-            last_login=c.last_login
+            last_login=c.last_login,
         )
         for c in clients
     ]
@@ -4714,6 +5225,7 @@ async def list_dashboard_clients(
 
 class PasswordChangeRequest(BaseModel):
     """Request model for password change."""
+
     current_password: str = Field(..., description="Current password")
     new_password: str = Field(..., min_length=8, description="New password")
 
@@ -4727,23 +5239,20 @@ async def dashboard_change_password(
     Change the current client's dashboard password.
     """
     client_payload = get_current_admin(authorization)
-    
+
     from mirix.services.admin_user_manager import ClientAuthManager
-    
+
     auth_manager = ClientAuthManager()
-    
+
     success = auth_manager.change_password(
         client_id=client_payload["sub"],
         current_password=request.current_password,
-        new_password=request.new_password
+        new_password=request.new_password,
     )
-    
+
     if not success:
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid current password"
-        )
-    
+        raise HTTPException(status_code=400, detail="Invalid current password")
+
     return {"message": "Password changed successfully"}
 
 
@@ -4751,18 +5260,22 @@ async def dashboard_change_password(
 async def dashboard_check_setup():
     """
     Check if dashboard setup is complete (any dashboard clients exist).
-    
+
     This endpoint is public and used by the dashboard to determine
     whether to show the registration or login page.
     """
     from mirix.services.admin_user_manager import ClientAuthManager
-    
+
     auth_manager = ClientAuthManager()
     is_first = auth_manager.is_first_dashboard_user()
-    
+
     return {
         "setup_required": is_first,
-        "message": "No dashboard users exist. Please create the first account." if is_first else "Dashboard setup complete."
+        "message": (
+            "No dashboard users exist. Please create the first account."
+            if is_first
+            else "Dashboard setup complete."
+        ),
     }
 
 
