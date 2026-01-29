@@ -1,7 +1,7 @@
 from mirix.orm.step import Step as StepModel
+from mirix.schemas.client import Client as PydanticClient
 from mirix.schemas.openai.chat_completion_response import UsageStatistics
 from mirix.schemas.step import Step as PydanticStep
-from mirix.schemas.client import Client as PydanticClient
 from mirix.utils import enforce_types
 
 

@@ -32,16 +32,11 @@ def _convert_to_structured_output_helper(property: dict) -> dict:
 
     if param_type == "object":
         if "properties" not in property:
-            raise ValueError(
-                f"Property {property} of type object is missing properties"
-            )
+            raise ValueError(f"Property {property} of type object is missing properties")
         properties = property["properties"]
         property_dict = {
             "type": "object",
-            "properties": {
-                k: _convert_to_structured_output_helper(v)
-                for k, v in properties.items()
-            },
+            "properties": {k: _convert_to_structured_output_helper(v) for k, v in properties.items()},
             "additionalProperties": False,
             "required": list(properties.keys()),
         }
@@ -70,16 +65,12 @@ def _convert_to_structured_output_helper(property: dict) -> dict:
         return property_dict
 
 
-def convert_to_structured_output(
-    openai_function: dict, allow_optional: bool = False
-) -> dict:
+def convert_to_structured_output(openai_function: dict, allow_optional: bool = False) -> dict:
     """Convert function call objects to structured output objects
 
     See: https://platform.openai.com/docs/guides/structured-outputs/supported-schemas
     """
-    description = (
-        openai_function["description"] if "description" in openai_function else ""
-    )
+    description = openai_function["description"] if "description" in openai_function else ""
 
     structured_output = {
         "name": openai_function["name"],
@@ -104,16 +95,11 @@ def convert_to_structured_output(
         if param_type == "object":
             if "properties" not in details:
                 # Structured outputs requires the properties on dicts be specified ahead of time
-                raise ValueError(
-                    f"Property {param} of type object is missing properties"
-                )
+                raise ValueError(f"Property {param} of type object is missing properties")
             structured_output["parameters"]["properties"][param] = {
                 "type": "object",
                 "description": description,
-                "properties": {
-                    k: _convert_to_structured_output_helper(v)
-                    for k, v in details["properties"].items()
-                },
+                "properties": {k: _convert_to_structured_output_helper(v) for k, v in details["properties"].items()},
                 "additionalProperties": False,
                 "required": list(details["properties"].keys()),
             }
@@ -132,15 +118,11 @@ def convert_to_structured_output(
             }
 
         if "enum" in details:
-            structured_output["parameters"]["properties"][param]["enum"] = details[
-                "enum"
-            ]
+            structured_output["parameters"]["properties"][param]["enum"] = details["enum"]
 
     if not allow_optional:
         # Add all properties to required list
-        structured_output["parameters"]["required"] = list(
-            structured_output["parameters"]["properties"].keys()
-        )
+        structured_output["parameters"]["required"] = list(structured_output["parameters"]["properties"].keys())
 
     else:
         # See what parameters exist that aren't required
@@ -154,9 +136,7 @@ def convert_to_structured_output(
     return structured_output
 
 
-def make_post_request(
-    url: str, headers: dict[str, str], data: dict[str, Any]
-) -> dict[str, Any]:
+def make_post_request(url: str, headers: dict[str, str], data: dict[str, Any]) -> dict[str, Any]:
     printd(f"Sending request to {url}")
     try:
         response = requests.post(url, headers=headers, json=data)
@@ -238,9 +218,7 @@ def calculate_summarizer_cutoff(
         desired_token_count_to_summarize = int(
             sum(token_counts) * (1 - summarizer_settings.desired_memory_token_pressure)
         )
-        logger.debug(
-            f"desired_token_count_to_summarize={desired_token_count_to_summarize}"
-        )
+        logger.debug(f"desired_token_count_to_summarize={desired_token_count_to_summarize}")
 
         tokens_so_far = 0
         cutoff = 0
@@ -251,18 +229,12 @@ def calculate_summarizer_cutoff(
             cutoff = i
             tokens_so_far += token_counts[i]
 
-            if (
-                msg["role"] not in ["user", "tool", "function"]
-                and tokens_so_far >= desired_token_count_to_summarize
-            ):
+            if msg["role"] not in ["user", "tool", "function"] and tokens_so_far >= desired_token_count_to_summarize:
                 # The intent of this code is to break on an assistant message boundary,
                 # so that we don't summarize in the middle of a back and forth turn.
                 # Break if the role is NOT a user or tool/function and tokens_so_far is enough
                 break
-            elif (
-                len(in_context_messages) - cutoff - 1
-                <= summarizer_settings.keep_last_n_messages
-            ):
+            elif len(in_context_messages) - cutoff - 1 <= summarizer_settings.keep_last_n_messages:
                 # Also break if we reached the `keep_last_n_messages` threshold
                 # NOTE: This may be on a user, tool, or function in theory
                 logger.warning(
@@ -303,38 +275,25 @@ def is_context_overflow_error(
 
     # Based on python requests + OpenAI REST API (/v1)
     elif isinstance(exception, requests.exceptions.HTTPError):
-        if (
-            exception.response is not None
-            and "application/json" in exception.response.headers.get("Content-Type", "")
-        ):
+        if exception.response is not None and "application/json" in exception.response.headers.get("Content-Type", ""):
             try:
                 error_details = exception.response.json()
                 if "error" not in error_details:
-                    printd(
-                        f"HTTPError occurred, but couldn't find error field: {error_details}"
-                    )
+                    printd(f"HTTPError occurred, but couldn't find error field: {error_details}")
                     return False
                 else:
                     error_details = error_details["error"]
 
                 # Check for the specific error code
                 if error_details.get("code") == "context_length_exceeded":
-                    printd(
-                        f"HTTPError occurred, caught error code {error_details.get('code')}"
-                    )
+                    printd(f"HTTPError occurred, caught error code {error_details.get('code')}")
                     return True
                 # Soft-check for "maximum context length" inside of the message
-                elif error_details.get(
-                    "message"
-                ) and "maximum context length" in error_details.get("message"):
-                    printd(
-                        f"HTTPError occurred, found '{match_string}' in error message contents ({error_details})"
-                    )
+                elif error_details.get("message") and "maximum context length" in error_details.get("message"):
+                    printd(f"HTTPError occurred, found '{match_string}' in error message contents ({error_details})")
                     return True
                 else:
-                    printd(
-                        f"HTTPError occurred, but unknown error message: {error_details}"
-                    )
+                    printd(f"HTTPError occurred, but unknown error message: {error_details}")
                     return False
             except ValueError:
                 # JSON decoding failed

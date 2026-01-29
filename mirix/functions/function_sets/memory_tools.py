@@ -38,9 +38,7 @@ def core_memory_append(
     """
     # check if the content starts with something like "Line n:" (here n is a number) using regex
     if re.match(r"^Line \d+:", content):
-        raise ValueError(
-            "You should not include 'Line n:' (here n is a number) in the content."
-        )
+        raise ValueError("You should not include 'Line n:' (here n is a number) in the content.")
 
     # Get the current block and its limit
     current_block = agent_state.memory.get_block(label)
@@ -117,26 +115,18 @@ def episodic_memory_insert(self: "Agent", items: List[EpisodicEventForLLM]):
     Returns:
         Optional[str]: None is always returned as this function does not produce a response.
     """
-    agent_id = (
-        self.agent_state.parent_id
-        if self.agent_state.parent_id is not None
-        else self.agent_state.id
-    )
+    agent_id = self.agent_state.parent_id if self.agent_state.parent_id is not None else self.agent_state.id
 
     # Get filter_tags, use_cache, client_id, user_id, and occurred_at from agent instance
     filter_tags = getattr(self, "filter_tags", None)
     use_cache = getattr(self, "use_cache", True)
     client_id = getattr(self, "client_id", None)
     user_id = getattr(self, "user_id", None)
-    occurred_at_override = getattr(
-        self, "occurred_at", None
-    )  # Optional timestamp override from API
+    occurred_at_override = getattr(self, "occurred_at", None)  # Optional timestamp override from API
 
     for item in items:
         # Use occurred_at_override if provided, otherwise use LLM-extracted timestamp
-        timestamp = (
-            occurred_at_override if occurred_at_override else item["occurred_at"]
-        )
+        timestamp = occurred_at_override if occurred_at_override else item["occurred_at"]
 
         # Convert string to datetime if needed
         if isinstance(timestamp, str):
@@ -202,9 +192,7 @@ def episodic_memory_merge(
     return response
 
 
-def episodic_memory_replace(
-    self: "Agent", event_ids: List[str], new_items: List[EpisodicEventForLLM]
-):
+def episodic_memory_replace(self: "Agent", event_ids: List[str], new_items: List[EpisodicEventForLLM]):
     """
     The tool to replace or delete items in the episodic memory. To replace the memory, set the event_ids to be the ids of the events that needs to be replaced and new_items as the updated events. Note that the number of new items does not need to be the same as the number of event_ids as it is not a one-to-one mapping. To delete the memory, set the event_ids to be the ids of the events that needs to be deleted and new_items as an empty list. To insert new events, use episodic_memory_insert function.
 
@@ -212,20 +200,14 @@ def episodic_memory_replace(
         event_ids (str): The ids of the episodic events to be deleted (or replaced).
         new_items (array): List of new episodic memory items to insert. If this is an empty list, then it means that the items are being deleted.
     """
-    agent_id = (
-        self.agent_state.parent_id
-        if self.agent_state.parent_id is not None
-        else self.agent_state.id
-    )
+    agent_id = self.agent_state.parent_id if self.agent_state.parent_id is not None else self.agent_state.id
 
     # Get filter_tags, use_cache, client_id, user_id, and occurred_at from agent instance
     filter_tags = getattr(self, "filter_tags", None)
     use_cache = getattr(self, "use_cache", True)
     client_id = getattr(self, "client_id", None)
     user_id = getattr(self, "user_id", None)
-    occurred_at_override = getattr(
-        self, "occurred_at", None
-    )  # Optional timestamp override from API
+    occurred_at_override = getattr(self, "occurred_at", None)  # Optional timestamp override from API
 
     if self.user is None:
         raise ValueError("User is required to access episodic memory")
@@ -242,9 +224,7 @@ def episodic_memory_replace(
 
     for new_item in new_items:
         # Use occurred_at_override if provided, otherwise use LLM-extracted timestamp
-        timestamp = (
-            occurred_at_override if occurred_at_override else new_item["occurred_at"]
-        )
+        timestamp = occurred_at_override if occurred_at_override else new_item["occurred_at"]
 
         # Convert string to datetime if needed
         if isinstance(timestamp, str):
@@ -268,9 +248,7 @@ def episodic_memory_replace(
         )
 
 
-def check_episodic_memory(
-    self: "Agent", event_ids: List[str], timezone_str: str
-) -> List[EpisodicEventForLLM]:
+def check_episodic_memory(self: "Agent", event_ids: List[str], timezone_str: str) -> List[EpisodicEventForLLM]:
     """
     The tool to check the episodic memory. This function will return the episodic events with the given event_ids.
 
@@ -284,9 +262,7 @@ def check_episodic_memory(
         raise ValueError("User is required to check episodic memory")
 
     episodic_memory = [
-        self.episodic_memory_manager.get_episodic_memory_by_id(
-            event_id, user=self.user, timezone_str=timezone_str
-        )
+        self.episodic_memory_manager.get_episodic_memory_by_id(event_id, user=self.user, timezone_str=timezone_str)
         for event_id in event_ids
     ]
 
@@ -317,11 +293,7 @@ def resource_memory_insert(self: "Agent", items: List[ResourceMemoryItemBase]):
     """
     # No imports needed - using agent instance attributes
 
-    agent_id = (
-        self.agent_state.parent_id
-        if self.agent_state.parent_id is not None
-        else self.agent_state.id
-    )
+    agent_id = self.agent_state.parent_id if self.agent_state.parent_id is not None else self.agent_state.id
 
     # Get filter_tags, use_cache, client_id, and user_id from agent instance
     filter_tags = getattr(self, "filter_tags", None)
@@ -385,9 +357,7 @@ def resource_memory_insert(self: "Agent", items: List[ResourceMemoryItemBase]):
         return "No resources were inserted."
 
 
-def resource_memory_update(
-    self: "Agent", old_ids: List[str], new_items: List[ResourceMemoryItemBase]
-):
+def resource_memory_update(self: "Agent", old_ids: List[str], new_items: List[ResourceMemoryItemBase]):
     """
     The tool to update and delete items in the resource memory. To update the memory, set the old_ids to be the ids of the items that needs to be updated and new_items as the updated items. Note that the number of new items does not need to be the same as the number of old ids as it is not a one-to-one mapping. To delete the memory, set the old_ids to be the ids of the items that needs to be deleted and new_items as an empty list.
 
@@ -395,11 +365,7 @@ def resource_memory_update(
         old_ids (array): List of ids of the items to be deleted (or updated).
         new_items (array): List of new resource memory items to insert. If this is an empty list, then it means that the items are being deleted.
     """
-    agent_id = (
-        self.agent_state.parent_id
-        if self.agent_state.parent_id is not None
-        else self.agent_state.id
-    )
+    agent_id = self.agent_state.parent_id if self.agent_state.parent_id is not None else self.agent_state.id
 
     # Get filter_tags, use_cache, client_id, and user_id from agent instance
     filter_tags = getattr(self, "filter_tags", None)
@@ -408,9 +374,7 @@ def resource_memory_update(
     user_id = getattr(self, "user_id", None)
 
     for old_id in old_ids:
-        self.resource_memory_manager.delete_resource_by_id(
-            resource_id=old_id, actor=self.actor
-        )
+        self.resource_memory_manager.delete_resource_by_id(resource_id=old_id, actor=self.actor)
 
     for item in new_items:
         self.resource_memory_manager.insert_resource(
@@ -438,11 +402,7 @@ def procedural_memory_insert(self: "Agent", items: List[ProceduralMemoryItemBase
     Returns:
         Optional[str]: Message about insertion results including any duplicates detected.
     """
-    agent_id = (
-        self.agent_state.parent_id
-        if self.agent_state.parent_id is not None
-        else self.agent_state.id
-    )
+    agent_id = self.agent_state.parent_id if self.agent_state.parent_id is not None else self.agent_state.id
 
     # Get filter_tags, use_cache, client_id, and user_id from agent instance
     filter_tags = getattr(self, "filter_tags", None)
@@ -501,9 +461,7 @@ def procedural_memory_insert(self: "Agent", items: List[ProceduralMemoryItemBase
         return "No procedures were inserted."
 
 
-def procedural_memory_update(
-    self: "Agent", old_ids: List[str], new_items: List[ProceduralMemoryItemBase]
-):
+def procedural_memory_update(self: "Agent", old_ids: List[str], new_items: List[ProceduralMemoryItemBase]):
     """
     The tool to update/delete items in the procedural memory. To update the memory, set the old_ids to be the ids of the items that needs to be updated and new_items as the updated items. Note that the number of new items does not need to be the same as the number of old ids as it is not a one-to-one mapping. To delete the memory, set the old_ids to be the ids of the items that needs to be deleted and new_items as an empty list.
 
@@ -514,11 +472,7 @@ def procedural_memory_update(
     Returns:
         Optional[str]: None is always returned as this function does not produce a response.
     """
-    agent_id = (
-        self.agent_state.parent_id
-        if self.agent_state.parent_id is not None
-        else self.agent_state.id
-    )
+    agent_id = self.agent_state.parent_id if self.agent_state.parent_id is not None else self.agent_state.id
 
     # Get filter_tags, use_cache, client_id, and user_id from agent instance
     filter_tags = getattr(self, "filter_tags", None)
@@ -527,9 +481,7 @@ def procedural_memory_update(
     user_id = getattr(self, "user_id", None)
 
     for old_id in old_ids:
-        self.procedural_memory_manager.delete_procedure_by_id(
-            procedure_id=old_id, actor=self.actor
-        )
+        self.procedural_memory_manager.delete_procedure_by_id(procedure_id=old_id, actor=self.actor)
 
     for item in new_items:
         self.procedural_memory_manager.insert_procedure(
@@ -589,11 +541,7 @@ def semantic_memory_insert(self: "Agent", items: List[SemanticMemoryItemBase]):
     Returns:
         Optional[str]: Message about insertion results including any duplicates detected.
     """
-    agent_id = (
-        self.agent_state.parent_id
-        if self.agent_state.parent_id is not None
-        else self.agent_state.id
-    )
+    agent_id = self.agent_state.parent_id if self.agent_state.parent_id is not None else self.agent_state.id
 
     # Get filter_tags, use_cache, client_id, and user_id from agent instance
     filter_tags = getattr(self, "filter_tags", None)
@@ -672,11 +620,7 @@ def semantic_memory_update(
     Returns:
         Optional[str]: None is always returned as this function does not produce a response.
     """
-    agent_id = (
-        self.agent_state.parent_id
-        if self.agent_state.parent_id is not None
-        else self.agent_state.id
-    )
+    agent_id = self.agent_state.parent_id if self.agent_state.parent_id is not None else self.agent_state.id
 
     # Get filter_tags, use_cache, client_id, and user_id from agent instance
     filter_tags = getattr(self, "filter_tags", None)
@@ -685,9 +629,7 @@ def semantic_memory_update(
     user_id = getattr(self, "user_id", None)
 
     for old_id in old_semantic_item_ids:
-        self.semantic_memory_manager.delete_semantic_item_by_id(
-            semantic_memory_id=old_id, actor=self.actor
-        )
+        self.semantic_memory_manager.delete_semantic_item_by_id(semantic_memory_id=old_id, actor=self.actor)
 
     new_ids = []
     for item in new_items:
@@ -724,11 +666,7 @@ def knowledge_vault_insert(self: "Agent", items: List[KnowledgeVaultItemBase]):
     Returns:
         Optional[str]: Message about insertion results including any duplicates detected.
     """
-    agent_id = (
-        self.agent_state.parent_id
-        if self.agent_state.parent_id is not None
-        else self.agent_state.id
-    )
+    agent_id = self.agent_state.parent_id if self.agent_state.parent_id is not None else self.agent_state.id
 
     # Get filter_tags, use_cache, client_id, and user_id from agent instance
     filter_tags = getattr(self, "filter_tags", None)
@@ -793,9 +731,7 @@ def knowledge_vault_insert(self: "Agent", items: List[KnowledgeVaultItemBase]):
         return "No knowledge vault items were inserted."
 
 
-def knowledge_vault_update(
-    self: "Agent", old_ids: List[str], new_items: List[KnowledgeVaultItemBase]
-):
+def knowledge_vault_update(self: "Agent", old_ids: List[str], new_items: List[KnowledgeVaultItemBase]):
     """
     The tool to update/delete items in the knowledge vault. To update the knowledge_vault, set the old_ids to be the ids of the items that needs to be updated and new_items as the updated items. Note that the number of new items does not need to be the same as the number of old ids as it is not a one-to-one mapping. To delete the memory, set the old_ids to be the ids of the items that needs to be deleted and new_items as an empty list.
 
@@ -806,11 +742,7 @@ def knowledge_vault_update(
     Returns:
         Optional[str]: None is always returned as this function does not produce a response
     """
-    agent_id = (
-        self.agent_state.parent_id
-        if self.agent_state.parent_id is not None
-        else self.agent_state.id
-    )
+    agent_id = self.agent_state.parent_id if self.agent_state.parent_id is not None else self.agent_state.id
 
     # Get filter_tags, use_cache, client_id, and user_id from agent instance
     filter_tags = getattr(self, "filter_tags", None)
@@ -819,9 +751,7 @@ def knowledge_vault_update(
     user_id = getattr(self, "user_id", None)
 
     for old_id in old_ids:
-        self.knowledge_vault_manager.delete_knowledge_by_id(
-            knowledge_vault_item_id=old_id, actor=self.actor
-        )
+        self.knowledge_vault_manager.delete_knowledge_by_id(knowledge_vault_item_id=old_id, actor=self.actor)
 
     for item in new_items:
         self.knowledge_vault_manager.insert_knowledge(
@@ -861,9 +791,7 @@ def trigger_memory_update_with_instruction(
 
     # Validate that user_message is a dictionary
     if not isinstance(user_message, dict):
-        raise TypeError(
-            f"user_message must be a dictionary, got {type(user_message).__name__}: {user_message}"
-        )
+        raise TypeError(f"user_message must be a dictionary, got {type(user_message).__name__}: {user_message}")
 
     # Fallback to sequential processing for backward compatibility
     response = ""
@@ -903,18 +831,12 @@ def trigger_memory_update_with_instruction(
         existing_file_uris=user_message["existing_file_uris"],
         retrieved_memories=user_message.get("retrieved_memories", None),
     )
-    response += (
-        "[System Message] Agent "
-        + matching_agent.name
-        + " has been triggered to update the memory.\n"
-    )
+    response += "[System Message] Agent " + matching_agent.name + " has been triggered to update the memory.\n"
 
     return response.strip()
 
 
-def trigger_memory_update(
-    self: "Agent", user_message: object, memory_types: List[str]
-) -> Optional[str]:
+def trigger_memory_update(self: "Agent", user_message: object, memory_types: List[str]) -> Optional[str]:
     """
     Choose which memory to update. This function will trigger another memory agent which is specifically in charge of handling the corresponding memory to update its memory. Trigger all necessary memory updates at once. Put the explanations in the `internal_monologue` field.
 
@@ -936,9 +858,7 @@ def trigger_memory_update(
 
     # Validate that user_message is a dictionary
     if not isinstance(user_message, dict):
-        raise TypeError(
-            f"user_message must be a dictionary, got {type(user_message).__name__}: {user_message}"
-        )
+        raise TypeError(f"user_message must be a dictionary, got {type(user_message).__name__}: {user_message}")
 
     # De-duplicate memory types while preserving order.
     # The MetaMemoryAgent (LLM) can occasionally emit duplicates (e.g., ["semantic", "semantic"]).
@@ -970,14 +890,10 @@ def trigger_memory_update(
             )
 
     # Get child agents
-    child_agent_states = self.agent_manager.list_agents(
-        parent_id=self.agent_state.id, actor=self.actor
-    )
+    child_agent_states = self.agent_manager.list_agents(parent_id=self.agent_state.id, actor=self.actor)
 
     # Map agent types to agent states
-    agent_type_to_state = {
-        agent_state.agent_type: agent_state for agent_state in child_agent_states
-    }
+    agent_type_to_state = {agent_state.agent_type: agent_state for agent_state in child_agent_states}
 
     # Capture trace context from main thread BEFORE spawning worker threads
     # ContextVars don't automatically propagate to ThreadPoolExecutor workers
@@ -1008,15 +924,11 @@ def trigger_memory_update(
             # Deep copy filter_tags to ensure complete isolation between child agents
             parent_filter_tags = getattr(self, "filter_tags", None)
             # Don't use 'or {}' because empty dict {} is valid and different from None
-            filter_tags = (
-                deepcopy(parent_filter_tags) if parent_filter_tags is not None else None
-            )
+            filter_tags = deepcopy(parent_filter_tags) if parent_filter_tags is not None else None
             use_cache = getattr(self, "use_cache", True)
             actor = getattr(self, "actor", None)
             user = getattr(self, "user", None)
-            occurred_at = getattr(
-                self, "occurred_at", None
-            )  # Get occurred_at from parent agent
+            occurred_at = getattr(self, "occurred_at", None)  # Get occurred_at from parent agent
 
             import logging
 
@@ -1075,14 +987,8 @@ def trigger_memory_update(
             # actor is needed for write operations, user is needed for read operations
 
             # Wrap child agent execution in a LangFuse span for hierarchical tracing
-            trace_id = (
-                parent_trace_context.get("trace_id") if parent_trace_context else None
-            )
-            parent_span_id = (
-                parent_trace_context.get("observation_id")
-                if parent_trace_context
-                else None
-            )
+            trace_id = parent_trace_context.get("trace_id") if parent_trace_context else None
+            parent_span_id = parent_trace_context.get("observation_id") if parent_trace_context else None
             if langfuse and trace_id:
                 from typing import cast
 
@@ -1163,13 +1069,9 @@ def trigger_memory_update(
             try:
                 responses[index] = future.result()
             except Exception as exc:
-                raise RuntimeError(
-                    f"Failed to trigger memory update for '{memory_type}'"
-                ) from exc
+                raise RuntimeError(f"Failed to trigger memory update for '{memory_type}'") from exc
 
-    ordered_responses = [
-        responses[i] for i in range(len(memory_types)) if i in responses
-    ]
+    ordered_responses = [responses[i] for i in range(len(memory_types)) if i in responses]
     return "".join(ordered_responses).strip()
 
 

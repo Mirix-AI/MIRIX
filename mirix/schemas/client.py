@@ -1,6 +1,6 @@
+import uuid
 from datetime import datetime
 from typing import List, Optional
-import uuid
 
 from pydantic import Field
 
@@ -43,18 +43,14 @@ class Client(ClientBase):
     name: str = Field(..., description="The name of the client application.")
     status: str = Field("active", description="Whether the client is active or not.")
     scope: str = Field("read_write", description="Scope of client.")
-    
+
     # Dashboard authentication fields
     email: Optional[str] = Field(None, description="Email address for dashboard login.")
     password_hash: Optional[str] = Field(None, description="Hashed password for dashboard login.")
     last_login: Optional[datetime] = Field(None, description="Last dashboard login time.")
 
-    created_at: Optional[datetime] = Field(
-        default_factory=get_utc_time, description="The creation date of the client."
-    )
-    updated_at: Optional[datetime] = Field(
-        default_factory=get_utc_time, description="The update date of the client."
-    )
+    created_at: Optional[datetime] = Field(default_factory=get_utc_time, description="The creation date of the client.")
+    updated_at: Optional[datetime] = Field(default_factory=get_utc_time, description="The update date of the client.")
     is_deleted: bool = Field(False, description="Whether this client is deleted or not.")
 
 
@@ -71,7 +67,4 @@ class ClientUpdate(ClientBase):
     name: Optional[str] = Field(None, description="The new name of the client.")
     status: Optional[str] = Field(None, description="The new status of the client.")
     scope: Optional[str] = Field(None, description="The new scope of the client.")
-    organization_id: Optional[str] = Field(
-        None, description="The new organization id of the client."
-    )
-
+    organization_id: Optional[str] = Field(None, description="The new organization id of the client.")

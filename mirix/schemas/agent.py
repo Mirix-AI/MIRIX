@@ -58,9 +58,7 @@ class AgentState(OrmMetadataBase, validate_assignment=True):
     id: str = Field(..., description="The id of the agent. Assigned by the database.")
     name: str = Field(..., description="The name of the agent.")
     # tool rules
-    tool_rules: Optional[List[ToolRule]] = Field(
-        default=None, description="The list of tool rules."
-    )
+    tool_rules: Optional[List[ToolRule]] = Field(default=None, description="The list of tool rules.")
 
     # in-context memory
     message_ids: Optional[List[str]] = Field(
@@ -75,12 +73,8 @@ class AgentState(OrmMetadataBase, validate_assignment=True):
     agent_type: AgentType = Field(..., description="The type of agent.")
 
     # llm information
-    llm_config: LLMConfig = Field(
-        ..., description="The LLM configuration used by the agent."
-    )
-    embedding_config: EmbeddingConfig = Field(
-        ..., description="The embedding configuration used by the agent."
-    )
+    llm_config: LLMConfig = Field(..., description="The LLM configuration used by the agent.")
+    embedding_config: EmbeddingConfig = Field(..., description="The embedding configuration used by the agent.")
 
     # This is an object representing the in-process state of a running `Agent`
     # Field in this object can be theoretically edited by tools, and will be persisted by the ORM
@@ -89,12 +83,8 @@ class AgentState(OrmMetadataBase, validate_assignment=True):
         description="The unique identifier of the organization associated with the agent.",
     )
 
-    description: Optional[str] = Field(
-        None, description="The description of the agent."
-    )
-    parent_id: Optional[str] = Field(
-        None, description="The parent agent ID (for sub-agents in a meta-agent)."
-    )
+    description: Optional[str] = Field(None, description="The description of the agent.")
+    parent_id: Optional[str] = Field(None, description="The parent agent ID (for sub-agents in a meta-agent).")
     children: Optional[List["AgentState"]] = Field(
         default=None, description="Child agents (sub-agents) if this is a parent agent."
     )
@@ -140,21 +130,11 @@ class CreateAgent(BaseModel, validate_assignment=True):  #
     )
     # TODO: This is a legacy field and should be removed ASAP to force `tool_ids` usage
     tools: Optional[List[str]] = Field(None, description="The tools used by the agent.")
-    tool_ids: Optional[List[str]] = Field(
-        None, description="The ids of the tools used by the agent."
-    )
-    tool_rules: Optional[List[ToolRule]] = Field(
-        None, description="The tool rules governing the agent."
-    )
-    system: Optional[str] = Field(
-        None, description="The system prompt used by the agent."
-    )
-    agent_type: AgentType = Field(
-        default_factory=lambda: AgentType.chat_agent, description="The type of agent."
-    )
-    llm_config: Optional[LLMConfig] = Field(
-        None, description="The LLM configuration used by the agent."
-    )
+    tool_ids: Optional[List[str]] = Field(None, description="The ids of the tools used by the agent.")
+    tool_rules: Optional[List[ToolRule]] = Field(None, description="The tool rules governing the agent.")
+    system: Optional[str] = Field(None, description="The system prompt used by the agent.")
+    agent_type: AgentType = Field(default_factory=lambda: AgentType.chat_agent, description="The type of agent.")
+    llm_config: Optional[LLMConfig] = Field(None, description="The LLM configuration used by the agent.")
     embedding_config: Optional[EmbeddingConfig] = Field(
         None, description="The embedding configuration used by the agent."
     )
@@ -172,9 +152,7 @@ class CreateAgent(BaseModel, validate_assignment=True):  #
         False,
         description="If true, attaches the Mirix multi-agent tools (e.g. sending a message to another agent).",
     )
-    parent_id: Optional[str] = Field(
-        None, description="The parent agent ID (for sub-agents in a meta-agent)."
-    )
+    parent_id: Optional[str] = Field(None, description="The parent agent ID (for sub-agents in a meta-agent).")
     model: Optional[str] = Field(
         None,
         description="The LLM configuration handle used by the agent, specified in the format "
@@ -184,20 +162,14 @@ class CreateAgent(BaseModel, validate_assignment=True):  #
         None,
         description="The embedding configuration handle used by the agent, specified in the format provider/model-name.",
     )
-    context_window_limit: Optional[int] = Field(
-        None, description="The context window limit used by the agent."
-    )
+    context_window_limit: Optional[int] = Field(None, description="The context window limit used by the agent.")
     embedding_chunk_size: Optional[int] = Field(
         DEFAULT_EMBEDDING_CHUNK_SIZE,
         description="The embedding chunk size used by the agent.",
     )
-    from_template: Optional[str] = Field(
-        None, description="The template id used to configure the agent"
-    )
+    from_template: Optional[str] = Field(None, description="The template id used to configure the agent")
     template: bool = Field(False, description="Whether the agent is a template")
-    project: Optional[str] = Field(
-        None, description="The project slug that the agent will be associated with."
-    )
+    project: Optional[str] = Field(None, description="The project slug that the agent will be associated with.")
     tool_exec_environment_variables: Optional[Dict[str, str]] = Field(
         None,
         description="The environment variables for tool execution specific to this agent.",
@@ -205,9 +177,7 @@ class CreateAgent(BaseModel, validate_assignment=True):  #
     memory_variables: Optional[Dict[str, str]] = Field(
         None, description="The variables that should be set for the agent."
     )
-    mcp_tools: Optional[List[str]] = Field(
-        None, description="List of MCP server names to connect to this agent."
-    )
+    mcp_tools: Optional[List[str]] = Field(None, description="List of MCP server names to connect to this agent.")
 
     @field_validator("name")
     @classmethod
@@ -242,9 +212,7 @@ class CreateAgent(BaseModel, validate_assignment=True):  #
 
         provider_name, model_name = model.split("/", 1)
         if not provider_name or not model_name:
-            raise ValueError(
-                "The llm config handle should be in the format provider/model-name"
-            )
+            raise ValueError("The llm config handle should be in the format provider/model-name")
 
         return model
 
@@ -256,45 +224,27 @@ class CreateAgent(BaseModel, validate_assignment=True):  #
 
         provider_name, embedding_name = embedding.split("/", 1)
         if not provider_name or not embedding_name:
-            raise ValueError(
-                "The embedding config handle should be in the format provider/model-name"
-            )
+            raise ValueError("The embedding config handle should be in the format provider/model-name")
 
         return embedding
 
 
 class UpdateAgent(BaseModel):
     name: Optional[str] = Field(None, description="The name of the agent.")
-    tool_ids: Optional[List[str]] = Field(
-        None, description="The ids of the tools used by the agent."
-    )
-    block_ids: Optional[List[str]] = Field(
-        None, description="The ids of the blocks used by the agent."
-    )
-    system: Optional[str] = Field(
-        None, description="The system prompt used by the agent."
-    )
-    tool_rules: Optional[List[ToolRule]] = Field(
-        None, description="The tool rules governing the agent."
-    )
-    llm_config: Optional[LLMConfig] = Field(
-        None, description="The LLM configuration used by the agent."
-    )
+    tool_ids: Optional[List[str]] = Field(None, description="The ids of the tools used by the agent.")
+    block_ids: Optional[List[str]] = Field(None, description="The ids of the blocks used by the agent.")
+    system: Optional[str] = Field(None, description="The system prompt used by the agent.")
+    tool_rules: Optional[List[ToolRule]] = Field(None, description="The tool rules governing the agent.")
+    llm_config: Optional[LLMConfig] = Field(None, description="The LLM configuration used by the agent.")
     embedding_config: Optional[EmbeddingConfig] = Field(
         None, description="The embedding configuration used by the agent."
     )
     message_ids: Optional[List[str]] = Field(
         None, description="The ids of the messages in the agent's in-context memory."
     )
-    description: Optional[str] = Field(
-        None, description="The description of the agent."
-    )
-    parent_id: Optional[str] = Field(
-        None, description="The parent agent ID (for sub-agents in a meta-agent)."
-    )
-    mcp_tools: Optional[List[str]] = Field(
-        None, description="List of MCP server names to connect to this agent."
-    )
+    description: Optional[str] = Field(None, description="The description of the agent.")
+    parent_id: Optional[str] = Field(None, description="The parent agent ID (for sub-agents in a meta-agent).")
+    mcp_tools: Optional[List[str]] = Field(None, description="List of MCP server names to connect to this agent.")
 
     class Config:
         extra = "ignore"  # Ignores extra fields
@@ -364,35 +314,23 @@ class UpdateMetaAgent(BaseModel):
 
 
 class AgentStepResponse(BaseModel):
-    messages: List[Message] = Field(
-        ..., description="The messages generated during the agent's step."
-    )
+    messages: List[Message] = Field(..., description="The messages generated during the agent's step.")
     continue_chaining: bool = Field(
         ...,
         description="Whether the agent requested a contine_chaining (i.e. follow-up execution).",
     )
-    function_failed: bool = Field(
-        ..., description="Whether the agent step ended because a function call failed."
-    )
+    function_failed: bool = Field(..., description="Whether the agent step ended because a function call failed.")
     in_context_memory_warning: bool = Field(
         ...,
         description="Whether the agent step ended because the in-context memory is near its limit.",
     )
-    usage: UsageStatistics = Field(
-        ..., description="Usage statistics of the LLM call during the agent's step."
-    )
-    traj: Optional[dict] = Field(
-        None, description="Action, Observation, State at the current step"
-    )
+    usage: UsageStatistics = Field(..., description="Usage statistics of the LLM call during the agent's step.")
+    traj: Optional[dict] = Field(None, description="Action, Observation, State at the current step")
 
 
 class AgentStepState(BaseModel):
-    step_number: int = Field(
-        ..., description="The current step number in the agent loop"
-    )
-    tool_rules_solver: ToolRulesSolver = Field(
-        ..., description="The current state of the ToolRulesSolver"
-    )
+    step_number: int = Field(..., description="The current step number in the agent loop")
+    tool_rules_solver: ToolRulesSolver = Field(..., description="The current state of the ToolRulesSolver")
 
 
 def get_prompt_template_for_agent_type(agent_type: Optional[AgentType] = None):

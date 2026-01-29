@@ -4,6 +4,7 @@ ORM model for raw (unprocessed) task memories.
 Raw memories store task context without LLM extraction, intended for
 task sharing use cases with a 14-day TTL.
 """
+
 import datetime as dt
 from datetime import datetime
 from typing import TYPE_CHECKING, Optional
@@ -117,39 +118,45 @@ class RawMemory(SqlalchemyBase, OrganizationMixin, UserMixin):
             None,
             [
                 # PostgreSQL indexes
-                Index("ix_raw_memory_organization_id", "organization_id")
-                if settings.mirix_pg_uri_no_default
-                else None,
-                Index(
-                    "ix_raw_memory_org_updated_at",
-                    "organization_id",
-                    "updated_at",
-                    postgresql_using="btree",
-                )
-                if settings.mirix_pg_uri_no_default
-                else None,
-                Index(
-                    "ix_raw_memory_filter_tags_gin",
-                    text("(filter_tags::jsonb)"),
-                    postgresql_using="gin",
-                )
-                if settings.mirix_pg_uri_no_default
-                else None,
-                Index(
-                    "ix_raw_memory_org_filter_scope",
-                    "organization_id",
-                    text("((filter_tags->>'scope')::text)"),
-                    postgresql_using="btree",
-                )
-                if settings.mirix_pg_uri_no_default
-                else None,
+                Index("ix_raw_memory_organization_id", "organization_id") if settings.mirix_pg_uri_no_default else None,
+                (
+                    Index(
+                        "ix_raw_memory_org_updated_at",
+                        "organization_id",
+                        "updated_at",
+                        postgresql_using="btree",
+                    )
+                    if settings.mirix_pg_uri_no_default
+                    else None
+                ),
+                (
+                    Index(
+                        "ix_raw_memory_filter_tags_gin",
+                        text("(filter_tags::jsonb)"),
+                        postgresql_using="gin",
+                    )
+                    if settings.mirix_pg_uri_no_default
+                    else None
+                ),
+                (
+                    Index(
+                        "ix_raw_memory_org_filter_scope",
+                        "organization_id",
+                        text("((filter_tags->>'scope')::text)"),
+                        postgresql_using="btree",
+                    )
+                    if settings.mirix_pg_uri_no_default
+                    else None
+                ),
                 # SQLite fallback indexes
-                Index(
-                    "ix_raw_memory_organization_id_sqlite",
-                    "organization_id",
-                )
-                if not settings.mirix_pg_uri_no_default
-                else None,
+                (
+                    Index(
+                        "ix_raw_memory_organization_id_sqlite",
+                        "organization_id",
+                    )
+                    if not settings.mirix_pg_uri_no_default
+                    else None
+                ),
             ],
         )
     )

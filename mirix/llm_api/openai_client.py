@@ -23,11 +23,13 @@ from mirix.llm_api.llm_client_base import LLMClientBase
 from mirix.log import get_logger
 from mirix.schemas.llm_config import LLMConfig
 from mirix.schemas.message import Message as PydanticMessage
-from mirix.schemas.openai.chat_completion_request import ChatCompletionRequest
 from mirix.schemas.openai.chat_completion_request import (
-    FunctionCall as ToolFunctionChoiceFunctionCall,
+    ChatCompletionRequest,
 )
-from mirix.schemas.openai.chat_completion_request import FunctionSchema
+from mirix.schemas.openai.chat_completion_request import FunctionCall as ToolFunctionChoiceFunctionCall
+from mirix.schemas.openai.chat_completion_request import (
+    FunctionSchema,
+)
 from mirix.schemas.openai.chat_completion_request import Tool as OpenAITool
 from mirix.schemas.openai.chat_completion_request import (
     ToolFunctionChoice,
@@ -72,11 +74,7 @@ class OpenAIClient(LLMClientBase):
         else:
             # Check for database-stored API key first, fall back to model_settings and environment
             override_key = ProviderManager().get_openai_override_key()
-            api_key = (
-                override_key
-                or model_settings.openai_api_key
-                or os.environ.get("OPENAI_API_KEY")
-            )
+            api_key = override_key or model_settings.openai_api_key or os.environ.get("OPENAI_API_KEY")
             # supposedly the openai python client requires a dummy API key
             api_key = api_key or "DUMMY_API_KEY"
 
@@ -97,9 +95,7 @@ class OpenAIClient(LLMClientBase):
                     )
                     headers.update(auth_headers)
                 except Exception as e:
-                    logger.error(
-                        f"Failed to get auth headers from provider '{self.llm_config.auth_provider}': {e}"
-                    )
+                    logger.error(f"Failed to get auth headers from provider '{self.llm_config.auth_provider}': {e}")
                     # Continue without auth headers rather than failing the request
             else:
                 logger.warning(
@@ -125,9 +121,7 @@ class OpenAIClient(LLMClientBase):
         Constructs a request object in the expected data format for the OpenAI API.
         """
 
-        use_developer_message = llm_config.model.startswith(
-            "o1"
-        ) or llm_config.model.startswith(
+        use_developer_message = llm_config.model.startswith("o1") or llm_config.model.startswith(
             "o3"
         )  # o-series models
 
@@ -143,9 +137,7 @@ class OpenAIClient(LLMClientBase):
         if llm_config.model:
             model = llm_config.model
         else:
-            logger.warning(
-                f"Model type not set in llm_config: {llm_config.model_dump_json(indent=4)}"
-            )
+            logger.warning(f"Model type not set in llm_config: {llm_config.model_dump_json(indent=4)}")
             model = None
 
         # force function calling for reliability, see https://platform.openai.com/docs/api-reference/chat/create#chat-create-tool_choice
@@ -167,11 +159,7 @@ class OpenAIClient(LLMClientBase):
         data = ChatCompletionRequest(
             model=model,
             messages=self.fill_image_content_in_messages(openai_message_list),
-            tools=(
-                [OpenAITool(type="function", function=f) for f in tools]
-                if tools
-                else None
-            ),
+            tools=([OpenAITool(type="function", function=f) for f in tools] if tools else None),
             tool_choice=tool_choice,
             user=str(),
             max_completion_tokens=llm_config.max_tokens,
@@ -182,14 +170,10 @@ class OpenAIClient(LLMClientBase):
             # Convert to structured output style (which has 'strict' and no optionals)
             for tool in data.tools:
                 try:
-                    structured_output_version = convert_to_structured_output(
-                        tool.function.model_dump()
-                    )
+                    structured_output_version = convert_to_structured_output(tool.function.model_dump())
                     tool.function = FunctionSchema(**structured_output_version)
                 except ValueError as e:
-                    logger.warning(
-                        f"Failed to convert tool function to structured output, tool={tool}, error={e}"
-                    )
+                    logger.warning(f"Failed to convert tool function to structured output, tool={tool}, error={e}")
 
         else:
             # When there are no tools, delete tool_choice entirely from the request
@@ -225,10 +209,7 @@ class OpenAIClient(LLMClientBase):
             message_content = []
             for m in message.content:
                 if m["type"] == "image_url":
-                    if (
-                        LOAD_IMAGE_CONTENT_FOR_LAST_MESSAGE_ONLY
-                        and image_content_loaded
-                    ):
+                    if LOAD_IMAGE_CONTENT_FOR_LAST_MESSAGE_ONLY and image_content_loaded:
                         message_content.append(
                             {
                                 "type": "text",
@@ -265,19 +246,13 @@ class OpenAIClient(LLMClientBase):
                                 }
                             )
                         else:
-                            raise ValueError(
-                                f"File {file.file_path} has no source_url or file_path"
-                            )
+                            raise ValueError(f"File {file.file_path} has no source_url or file_path")
                         global_image_idx += 1
                         has_image = True
                 elif m["type"] == "google_cloud_file_uri":
-                    file = self.file_manager.get_file_metadata_by_id(
-                        m["cloud_file_uri"]
-                    )
+                    file = self.file_manager.get_file_metadata_by_id(m["cloud_file_uri"])
                     try:
-                        local_path = self.cloud_file_mapping_manager.get_local_file(
-                            file.google_cloud_url
-                        )
+                        local_path = self.cloud_file_mapping_manager.get_local_file(file.google_cloud_url)
                     except Exception:
                         local_path = None
 
@@ -297,9 +272,7 @@ class OpenAIClient(LLMClientBase):
                         )
 
                 elif m["type"] == "file_uri":
-                    raise NotImplementedError(
-                        "File URI is currently not supported for OpenAI"
-                    )
+                    raise NotImplementedError("File URI is currently not supported for OpenAI")
                 else:
                     message_content.append(m)
             message.content = message_content
@@ -319,9 +292,7 @@ class OpenAIClient(LLMClientBase):
         Performs underlying synchronous request to OpenAI API and returns raw response dict.
         """
         client_kwargs = self._prepare_client_kwargs()
-        logger.debug(
-            f"OpenAI Request - Making request to {client_kwargs.get('base_url')}"
-        )
+        logger.debug(f"OpenAI Request - Making request to {client_kwargs.get('base_url')}")
         logger.debug(
             f"OpenAI Request - Model: {request_data.get('model')}, Max tokens: {request_data.get('max_completion_tokens')}, Temperature: {request_data.get('temperature')}"
         )
@@ -349,9 +320,7 @@ class OpenAIClient(LLMClientBase):
     def convert_response_to_chat_completion(
         self,
         response_data: dict,
-        input_messages: List[
-            PydanticMessage
-        ],  # Included for consistency, maybe used later
+        input_messages: List[PydanticMessage],  # Included for consistency, maybe used later
     ) -> ChatCompletionResponse:
         """
         Converts raw OpenAI response dict into the ChatCompletionResponse Pydantic model.
@@ -367,21 +336,17 @@ class OpenAIClient(LLMClientBase):
         Performs underlying streaming request to OpenAI and returns the stream iterator.
         """
         client = OpenAI(**self._prepare_client_kwargs())
-        response_stream: Stream[ChatCompletionChunk] = client.chat.completions.create(
-            **request_data, stream=True
-        )
+        response_stream: Stream[ChatCompletionChunk] = client.chat.completions.create(**request_data, stream=True)
         return response_stream
 
-    async def stream_async(
-        self, request_data: dict
-    ) -> AsyncStream[ChatCompletionChunk]:
+    async def stream_async(self, request_data: dict) -> AsyncStream[ChatCompletionChunk]:
         """
         Performs underlying asynchronous streaming request to OpenAI and returns the async stream iterator.
         """
         client_kwargs = self._prepare_client_kwargs()
         client = AsyncOpenAI(**client_kwargs)
-        response_stream: AsyncStream[ChatCompletionChunk] = (
-            await client.chat.completions.create(**request_data, stream=True)
+        response_stream: AsyncStream[ChatCompletionChunk] = await client.chat.completions.create(
+            **request_data, stream=True
         )
         return response_stream
 
@@ -398,9 +363,7 @@ class OpenAIClient(LLMClientBase):
             )
 
         if isinstance(e, openai.RateLimitError):
-            logger.warning(
-                "[OpenAI] Rate limited (429). Consider backoff. Error: %s", e
-            )
+            logger.warning("[OpenAI] Rate limited (429). Consider backoff. Error: %s", e)
             return LLMRateLimitError(
                 message=f"Rate limited by OpenAI: {str(e)}",
                 code=ErrorCode.RATE_LIMIT_EXCEEDED,
@@ -419,9 +382,7 @@ class OpenAIClient(LLMClientBase):
             )
 
         if isinstance(e, openai.AuthenticationError):
-            logger.error(
-                f"[OpenAI] Authentication error (401): {str(e)}"
-            )  # More severe log level
+            logger.error(f"[OpenAI] Authentication error (401): {str(e)}")  # More severe log level
             return LLMAuthenticationError(
                 message=f"Authentication failed with OpenAI: {str(e)}",
                 code=ErrorCode.UNAUTHENTICATED,
@@ -429,9 +390,7 @@ class OpenAIClient(LLMClientBase):
             )
 
         if isinstance(e, openai.PermissionDeniedError):
-            logger.error(
-                f"[OpenAI] Permission denied (403): {str(e)}"
-            )  # More severe log level
+            logger.error(f"[OpenAI] Permission denied (403): {str(e)}")  # More severe log level
             return LLMPermissionDeniedError(
                 message=f"Permission denied by OpenAI: {str(e)}",
                 code=ErrorCode.PERMISSION_DENIED,
@@ -460,9 +419,7 @@ class OpenAIClient(LLMClientBase):
         # This is a somewhat non-standard error code, but some openai compatible wrapper endpoints use
         # it.
         if isinstance(e, openai.APIStatusError) and e.status_code == 424:
-            logger.warning(
-                "[OpenAI] Dependency timeout. Consider backoff. (424): %s", str(e)
-            )
+            logger.warning("[OpenAI] Dependency timeout. Consider backoff. (424): %s", str(e))
             return LLMServerError(
                 message=f"External service dependency timeout: {str(e)}",
                 code=ErrorCode.DEPENDENCY_TIMEOUT,

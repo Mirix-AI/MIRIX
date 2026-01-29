@@ -51,13 +51,9 @@ class LLMConfig(BaseModel):
         "deepseek",
         "xai",
     ] = Field(..., description="The endpoint type for the model.")
-    model_endpoint: Optional[str] = Field(
-        None, description="The endpoint for the model."
-    )
+    model_endpoint: Optional[str] = Field(None, description="The endpoint for the model.")
     model_wrapper: Optional[str] = Field(None, description="The wrapper for the model.")
-    context_window: int = Field(
-        ..., description="The context window size for the model."
-    )
+    context_window: int = Field(..., description="The context window size for the model.")
     handle: Optional[str] = Field(
         None,
         description="The handle for this config, in the format provider/model-name.",
@@ -104,9 +100,7 @@ class LLMConfig(BaseModel):
         None,
         description="The Azure endpoint for the model (e.g., 'https://your-resource.openai.azure.com/')",
     )
-    azure_deployment: Optional[str] = Field(
-        None, description="The Azure deployment name for the model"
-    )
+    azure_deployment: Optional[str] = Field(None, description="The Azure deployment name for the model")
 
     # FIXME hack to silence pydantic protected namespace warning
     model_config = ConfigDict(protected_namespaces=())
@@ -114,10 +108,7 @@ class LLMConfig(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def set_default_enable_reasoner(cls, values):
-        if any(
-            openai_reasoner_model in values.get("model", "")
-            for openai_reasoner_model in ["o3-mini", "o1"]
-        ):
+        if any(openai_reasoner_model in values.get("model", "") for openai_reasoner_model in ["o3-mini", "o1"]):
             values["enable_reasoner"] = True
         return values
 
@@ -125,20 +116,11 @@ class LLMConfig(BaseModel):
     def issue_warning_for_reasoning_constraints(self) -> "LLMConfig":
         if self.enable_reasoner:
             if self.max_reasoning_tokens is None:
-                logger.warning(
-                    "max_reasoning_tokens must be set when enable_reasoner is True"
-                )
-            if (
-                self.max_tokens is not None
-                and self.max_reasoning_tokens >= self.max_tokens
-            ):
-                logger.warning(
-                    "max_tokens must be greater than max_reasoning_tokens (thinking budget)"
-                )
+                logger.warning("max_reasoning_tokens must be set when enable_reasoner is True")
+            if self.max_tokens is not None and self.max_reasoning_tokens >= self.max_tokens:
+                logger.warning("max_tokens must be greater than max_reasoning_tokens (thinking budget)")
         elif self.max_reasoning_tokens and not self.enable_reasoner:
-            logger.warning(
-                "model will not use reasoning unless enable_reasoner is set to True"
-            )
+            logger.warning("model will not use reasoning unless enable_reasoner is set to True")
 
         return self
 
@@ -180,10 +162,6 @@ class LLMConfig(BaseModel):
     def pretty_print(self) -> str:
         return (
             f"{self.model}"
-            + (
-                f" [type={self.model_endpoint_type}]"
-                if self.model_endpoint_type
-                else ""
-            )
+            + (f" [type={self.model_endpoint_type}]" if self.model_endpoint_type else "")
             + (f" [ip={self.model_endpoint}]" if self.model_endpoint else "")
         )

@@ -108,9 +108,7 @@ class CLIInterface(AgentInterface):
             if STRIP_UI:
                 printf(f"{icon} {msg}")
             else:
-                printf(
-                    f"{Fore.GREEN}{Style.BRIGHT}{icon} {Fore.GREEN}{msg}{Style.RESET_ALL}"
-                )
+                printf(f"{Fore.GREEN}{Style.BRIGHT}{icon} {Fore.GREEN}{msg}{Style.RESET_ALL}")
 
         def printd_user_message(icon, msg):
             return print_user_message(icon, msg)
@@ -127,9 +125,7 @@ class CLIInterface(AgentInterface):
                 try:
                     msg_json = json_loads(msg)
                 except (ValueError, TypeError):
-                    printd(
-                        f"{CLI_WARNING_PREFIX}failed to parse user message into json"
-                    )
+                    printd(f"{CLI_WARNING_PREFIX}failed to parse user message into json")
                     printd_user_message("", msg)
                     return
         if msg_json["type"] == "user_message":
@@ -153,21 +149,15 @@ class CLIInterface(AgentInterface):
             printd_user_message("", msg_json)
 
     @staticmethod
-    def function_message(
-        msg: str, msg_obj: Optional[Message] = None, debug: bool = DEBUG
-    ):
+    def function_message(msg: str, msg_obj: Optional[Message] = None, debug: bool = DEBUG):
         def print_function_message(icon, msg, color=Fore.RED, printf=print):
             if STRIP_UI:
                 printf(f"{icon} [function] {msg}")
             else:
-                printf(
-                    f"{color}{Style.BRIGHT}{icon} [function] {color}{msg}{Style.RESET_ALL}"
-                )
+                printf(f"{color}{Style.BRIGHT}{icon} [function] {color}{msg}{Style.RESET_ALL}")
 
         def printd_function_message(icon, msg, color=Fore.RED):
-            return print_function_message(
-                icon, msg, color, printf=(print if debug else printd)
-            )
+            return print_function_message(icon, msg, color, printf=(print if debug else printd))
 
         if isinstance(msg, dict):
             printd_function_message("", msg)
@@ -197,13 +187,9 @@ class CLIInterface(AgentInterface):
                             "archival_memory_insert",
                             "core_memory_append",
                         ]:
-                            print_function_message(
-                                "🧠", f"updating memory with {function_name}"
-                            )
+                            print_function_message("🧠", f"updating memory with {function_name}")
                         elif function_name == "archival_memory_search":
-                            print_function_message(
-                                "🧠", f"searching memory with {function_name}"
-                            )
+                            print_function_message("🧠", f"searching memory with {function_name}")
                         try:
                             msg_dict = eval(function_args)
                             if function_name == "archival_memory_search":
@@ -217,14 +203,10 @@ class CLIInterface(AgentInterface):
                                 if STRIP_UI:
                                     print(output)
                                 else:
-                                    print(
-                                        f"{Style.BRIGHT}{Fore.RED}{output}{Style.RESET_ALL}"
-                                    )
+                                    print(f"{Style.BRIGHT}{Fore.RED}{output}{Style.RESET_ALL}")
                             else:
                                 if STRIP_UI:
-                                    print(
-                                        f"\t {msg_dict['old_content']}\n\t→ {msg_dict['new_content']}"
-                                    )
+                                    print(f"\t {msg_dict['old_content']}\n\t→ {msg_dict['new_content']}")
                                 else:
                                     print(
                                         f"{Style.BRIGHT}\t{Fore.RED} {msg_dict['old_content']}\n\t{Fore.GREEN}→ {msg_dict['new_content']}{Style.RESET_ALL}"
@@ -236,9 +218,7 @@ class CLIInterface(AgentInterface):
                         "conversation_search",
                         "conversation_search_date",
                     ]:
-                        print_function_message(
-                            "🧠", f"searching memory with {function_name}"
-                        )
+                        print_function_message("🧠", f"searching memory with {function_name}")
                         try:
                             msg_dict = eval(function_args)
                             output = f"\tquery: {msg_dict['query']}, page: {msg_dict['page']}"
@@ -260,9 +240,7 @@ class CLIInterface(AgentInterface):
                 else:
                     printd_function_message("", str(msg), color=Fore.RED)
             except Exception:
-                print(
-                    f"{CLI_WARNING_PREFIX}did not recognize function message {type(msg)} {msg}"
-                )
+                print(f"{CLI_WARNING_PREFIX}did not recognize function message {type(msg)} {msg}")
                 printd_function_message("", msg)
 
     @staticmethod
@@ -350,9 +328,7 @@ class QueuingInterface(AgentInterface):
         self.buffer = queue.Queue()
         self.debug = debug
 
-    def _queue_push(
-        self, message_api: Union[str, dict], message_obj: Union[Message, None]
-    ):
+    def _queue_push(self, message_api: Union[str, dict], message_obj: Union[Message, None]):
         """Wrapper around self.buffer.queue.put() that ensures the types are safe
 
         Data will be in the format: {
@@ -472,9 +448,7 @@ class QueuingInterface(AgentInterface):
 
     def user_message(self, msg: str, msg_obj: Optional[Message] = None):
         """Handle reception of a user message"""
-        assert msg_obj is not None, (
-            "QueuingInterface requires msg_obj references for metadata"
-        )
+        assert msg_obj is not None, "QueuingInterface requires msg_obj references for metadata"
         if self.debug:
             print(msg)
             print(vars(msg_obj))
@@ -482,9 +456,7 @@ class QueuingInterface(AgentInterface):
 
     def internal_monologue(self, msg: str, msg_obj: Optional[Message] = None) -> None:
         """Handle the agent's internal monologue"""
-        assert msg_obj is not None, (
-            "QueuingInterface requires msg_obj references for metadata"
-        )
+        assert msg_obj is not None, "QueuingInterface requires msg_obj references for metadata"
         if self.debug:
             print(msg)
             print(vars(msg_obj))
@@ -534,9 +506,7 @@ class QueuingInterface(AgentInterface):
     ) -> None:
         """Handle the agent calling a function"""
         # TODO handle 'function' messages that indicate the start of a function call
-        assert msg_obj is not None, (
-            "QueuingInterface requires msg_obj references for metadata"
-        )
+        assert msg_obj is not None, "QueuingInterface requires msg_obj references for metadata"
 
         if self.debug:
             print(msg)

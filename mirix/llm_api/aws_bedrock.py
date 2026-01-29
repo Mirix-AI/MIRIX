@@ -3,22 +3,21 @@ from typing import Any, Dict, List
 
 from anthropic import AnthropicBedrock
 
+from mirix.log import get_logger
 from mirix.settings import model_settings
 
-from mirix.log import get_logger
-
 logger = get_logger(__name__)
+
 
 def has_valid_aws_credentials() -> bool:
     """
     Check if AWS credentials are properly configured.
     """
     valid_aws_credentials = (
-        os.getenv("AWS_ACCESS_KEY_ID")
-        and os.getenv("AWS_SECRET_ACCESS_KEY")
-        and os.getenv("AWS_REGION")
+        os.getenv("AWS_ACCESS_KEY_ID") and os.getenv("AWS_SECRET_ACCESS_KEY") and os.getenv("AWS_REGION")
     )
     return valid_aws_credentials
+
 
 def get_bedrock_client():
     """
@@ -42,6 +41,7 @@ def get_bedrock_client():
     )
     return bedrock
 
+
 def bedrock_get_model_list(region_name: str) -> List[dict]:
     """
     Get list of available models from Bedrock.
@@ -64,6 +64,7 @@ def bedrock_get_model_list(region_name: str) -> List[dict]:
         logger.error("Error getting model list: %s", str(e))
         raise e
 
+
 def bedrock_get_model_details(region_name: str, model_id: str) -> Dict[str, Any]:
     """
     Get details for a specific model from Bedrock.
@@ -79,6 +80,7 @@ def bedrock_get_model_details(region_name: str, model_id: str) -> Dict[str, Any]
         logger.error("Error getting model details: %s", str(e))
         raise e
 
+
 def bedrock_get_model_context_window(model_id: str) -> int:
     """
     Get context window size for a specific model.
@@ -93,6 +95,7 @@ def bedrock_get_model_context_window(model_id: str) -> int:
         "anthropic.claude-3-sonnet-20240229-v1:0": 200000,
     }
     return context_windows.get(model_id, 200000)  # default to 100k if unknown
+
 
 """
 {

@@ -1,9 +1,9 @@
 from typing import List, Optional
 
 from mirix.orm.provider import Provider as ProviderModel
+from mirix.schemas.client import Client as PydanticClient
 from mirix.schemas.providers import Provider as PydanticProvider
 from mirix.schemas.providers import ProviderUpdate
-from mirix.schemas.client import Client as PydanticClient
 from mirix.utils import enforce_types
 
 
@@ -14,9 +14,7 @@ class ProviderManager:
         self.session_maker = db_context
 
     @enforce_types
-    def insert_provider(
-        self, name: str, api_key: str, organization_id: str, actor: PydanticClient
-    ) -> PydanticProvider:
+    def insert_provider(self, name: str, api_key: str, organization_id: str, actor: PydanticClient) -> PydanticProvider:
         """Insert a new provider into the database."""
         self.create_provider(
             PydanticProvider(
@@ -28,14 +26,10 @@ class ProviderManager:
         )
 
     @enforce_types
-    def upsert_provider(
-        self, name: str, api_key: str, organization_id: str, actor: PydanticClient
-    ) -> PydanticProvider:
+    def upsert_provider(self, name: str, api_key: str, organization_id: str, actor: PydanticClient) -> PydanticProvider:
         """Insert or update a provider in the database. Updates if exists, creates if not."""
         # Check if provider already exists for this organization
-        existing_providers = [
-            p for p in self.list_providers(actor=actor) if p.name == name
-        ]
+        existing_providers = [p for p in self.list_providers(actor=actor) if p.name == name]
 
         if existing_providers:
             # Update existing provider
@@ -54,9 +48,7 @@ class ProviderManager:
             )
 
     @enforce_types
-    def create_provider(
-        self, provider: PydanticProvider, actor: PydanticClient
-    ) -> PydanticProvider:
+    def create_provider(self, provider: PydanticProvider, actor: PydanticClient) -> PydanticProvider:
         """Create a new provider if it doesn't already exist."""
         with self.session_maker() as session:
             # Assign the organization id based on the actor
@@ -76,14 +68,10 @@ class ProviderManager:
         """Update provider details."""
         with self.session_maker() as session:
             # Retrieve the existing provider by ID
-            existing_provider = ProviderModel.read(
-                db_session=session, identifier=provider_id, actor=actor
-            )
+            existing_provider = ProviderModel.read(db_session=session, identifier=provider_id, actor=actor)
 
             # Update only the fields that are provided in ProviderUpdate
-            update_data = provider_update.model_dump(
-                exclude_unset=True, exclude_none=True
-            )
+            update_data = provider_update.model_dump(exclude_unset=True, exclude_none=True)
             for key, value in update_data.items():
                 setattr(existing_provider, key, value)
 
@@ -96,9 +84,7 @@ class ProviderManager:
         """Delete a provider."""
         with self.session_maker() as session:
             # Clear api key field
-            existing_provider = ProviderModel.read(
-                db_session=session, identifier=provider_id, actor=actor
-            )
+            existing_provider = ProviderModel.read(db_session=session, identifier=provider_id, actor=actor)
             existing_provider.api_key = None
             existing_provider.update(session, actor=actor)
 
@@ -127,11 +113,7 @@ class ProviderManager:
     @enforce_types
     def get_anthropic_override_provider_id(self) -> Optional[str]:
         """Helper function to fetch custom anthropic provider id for v0 BYOK feature"""
-        anthropic_provider = [
-            provider
-            for provider in self.list_providers()
-            if provider.name == "anthropic"
-        ]
+        anthropic_provider = [provider for provider in self.list_providers() if provider.name == "anthropic"]
         if len(anthropic_provider) != 0:
             return anthropic_provider[0].id
         return None
@@ -139,11 +121,7 @@ class ProviderManager:
     @enforce_types
     def get_anthropic_override_key(self) -> Optional[str]:
         """Helper function to fetch custom anthropic key for v0 BYOK feature"""
-        anthropic_provider = [
-            provider
-            for provider in self.list_providers()
-            if provider.name == "anthropic"
-        ]
+        anthropic_provider = [provider for provider in self.list_providers() if provider.name == "anthropic"]
         if len(anthropic_provider) != 0:
             return anthropic_provider[0].api_key
         return None
@@ -151,11 +129,7 @@ class ProviderManager:
     @enforce_types
     def get_gemini_override_provider_id(self) -> Optional[str]:
         """Helper function to fetch custom gemini provider id for v0 BYOK feature"""
-        gemini_provider = [
-            provider
-            for provider in self.list_providers()
-            if provider.name == "google_ai"
-        ]
+        gemini_provider = [provider for provider in self.list_providers() if provider.name == "google_ai"]
         if len(gemini_provider) != 0:
             return gemini_provider[0].id
         return None
@@ -163,11 +137,7 @@ class ProviderManager:
     @enforce_types
     def get_gemini_override_key(self) -> Optional[str]:
         """Helper function to fetch custom gemini key for v0 BYOK feature"""
-        gemini_provider = [
-            provider
-            for provider in self.list_providers()
-            if provider.name == "google_ai"
-        ]
+        gemini_provider = [provider for provider in self.list_providers() if provider.name == "google_ai"]
         if len(gemini_provider) != 0:
             return gemini_provider[0].api_key
         return None
@@ -175,9 +145,7 @@ class ProviderManager:
     @enforce_types
     def get_openai_override_provider_id(self) -> Optional[str]:
         """Helper function to fetch custom openai provider id for v0 BYOK feature"""
-        openai_provider = [
-            provider for provider in self.list_providers() if provider.name == "openai"
-        ]
+        openai_provider = [provider for provider in self.list_providers() if provider.name == "openai"]
         if len(openai_provider) != 0:
             return openai_provider[0].id
         return None
@@ -185,9 +153,7 @@ class ProviderManager:
     @enforce_types
     def get_openai_override_key(self) -> Optional[str]:
         """Helper function to fetch custom openai key for v0 BYOK feature"""
-        openai_provider = [
-            provider for provider in self.list_providers() if provider.name == "openai"
-        ]
+        openai_provider = [provider for provider in self.list_providers() if provider.name == "openai"]
         if len(openai_provider) != 0:
             return openai_provider[0].api_key
         return None
@@ -195,11 +161,7 @@ class ProviderManager:
     @enforce_types
     def get_azure_openai_override_provider_id(self) -> Optional[str]:
         """Helper function to fetch custom azure openai provider id for v0 BYOK feature"""
-        azure_openai_provider = [
-            provider
-            for provider in self.list_providers()
-            if provider.name == "azure_openai"
-        ]
+        azure_openai_provider = [provider for provider in self.list_providers() if provider.name == "azure_openai"]
         if len(azure_openai_provider) != 0:
             return azure_openai_provider[0].id
         return None
@@ -207,11 +169,7 @@ class ProviderManager:
     @enforce_types
     def get_azure_openai_override_key(self) -> Optional[str]:
         """Helper function to fetch custom azure openai key for v0 BYOK feature"""
-        azure_openai_provider = [
-            provider
-            for provider in self.list_providers()
-            if provider.name == "azure_openai"
-        ]
+        azure_openai_provider = [provider for provider in self.list_providers() if provider.name == "azure_openai"]
         if len(azure_openai_provider) != 0:
             return azure_openai_provider[0].api_key
         return None

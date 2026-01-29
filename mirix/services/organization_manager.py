@@ -33,10 +33,10 @@ class OrganizationManager:
         try:
             from mirix.database.redis_client import get_redis_client
             from mirix.log import get_logger
-            
+
             logger = get_logger(__name__)
             redis_client = get_redis_client()
-            
+
             if redis_client:
                 redis_key = f"{redis_client.ORGANIZATION_PREFIX}{org_id}"
                 cached_data = redis_client.get_hash(redis_key)
@@ -46,31 +46,31 @@ class OrganizationManager:
         except Exception as e:
             # Log but continue to PostgreSQL on Redis error
             from mirix.log import get_logger
+
             logger = get_logger(__name__)
             logger.warning("Redis cache read failed for organization %s: %s", org_id, e)
-        
+
         # Cache MISS or Redis unavailable - fetch from PostgreSQL
         with self.session_maker() as session:
             organization = OrganizationModel.read(db_session=session, identifier=org_id)
             pydantic_org = organization.to_pydantic()
-            
+
             # Populate Redis cache for next time
             try:
                 if redis_client:
                     from mirix.settings import settings
-                    data = pydantic_org.model_dump(mode='json')
+
+                    data = pydantic_org.model_dump(mode="json")
                     # model_dump(mode='json') already converts datetime to ISO format strings
                     redis_client.set_hash(redis_key, data, ttl=settings.redis_ttl_organizations)
                     logger.debug("Populated Redis cache for organization %s", org_id)
             except Exception as e:
                 logger.warning("Failed to populate Redis cache for organization %s: %s", org_id, e)
-            
+
             return pydantic_org
 
     @enforce_types
-    def create_organization(
-        self, pydantic_org: PydanticOrganization
-    ) -> PydanticOrganization:
+    def create_organization(self, pydantic_org: PydanticOrganization) -> PydanticOrganization:
         """Create a new organization."""
         try:
             org = self.get_organization_by_id(pydantic_org.id)
@@ -79,15 +79,13 @@ class OrganizationManager:
             return self._create_organization(pydantic_org=pydantic_org)
 
     @enforce_types
-    def _create_organization(
-        self, pydantic_org: PydanticOrganization
-    ) -> PydanticOrganization:
+    def _create_organization(self, pydantic_org: PydanticOrganization) -> PydanticOrganization:
         with self.session_maker() as session:
             # Generate a random name if none provided
             org_data = pydantic_org.model_dump()
             if org_data.get("name") is None:
                 org_data["name"] = create_random_username()
-            
+
             org = OrganizationModel(**org_data)
             org.create_with_redis(session, actor=None)  # Auto-caches to Redis
             return org.to_pydantic()
@@ -95,14 +93,10 @@ class OrganizationManager:
     @enforce_types
     def create_default_organization(self) -> PydanticOrganization:
         """Create the default organization."""
-        return self.create_organization(
-            PydanticOrganization(name=self.DEFAULT_ORG_NAME, id=self.DEFAULT_ORG_ID)
-        )
+        return self.create_organization(PydanticOrganization(name=self.DEFAULT_ORG_NAME, id=self.DEFAULT_ORG_ID))
 
     @enforce_types
-    def update_organization_name_using_id(
-        self, org_id: str, name: Optional[str] = None
-    ) -> PydanticOrganization:
+    def update_organization_name_using_id(self, org_id: str, name: Optional[str] = None) -> PydanticOrganization:
         """Update an organization (with Redis cache invalidation)."""
         with self.session_maker() as session:
             org = OrganizationModel.read(db_session=session, identifier=org_id)
@@ -116,12 +110,12 @@ class OrganizationManager:
         """Delete an organization (removes from Redis cache)."""
         with self.session_maker() as session:
             organization = OrganizationModel.read(db_session=session, identifier=org_id)
-            
+
             # Remove from Redis cache before hard delete
             try:
                 from mirix.database.redis_client import get_redis_client
                 from mirix.log import get_logger
-                
+
                 logger = get_logger(__name__)
                 redis_client = get_redis_client()
                 if redis_client:
@@ -130,18 +124,15 @@ class OrganizationManager:
                     logger.debug("Removed organization %s from Redis cache", org_id)
             except Exception as e:
                 from mirix.log import get_logger
+
                 logger = get_logger(__name__)
                 logger.warning("Failed to remove organization %s from Redis cache: %s", org_id, e)
-            
+
             organization.hard_delete(session)
 
     @enforce_types
-    def list_organizations(
-        self, cursor: Optional[str] = None, limit: Optional[int] = 50
-    ) -> List[PydanticOrganization]:
+    def list_organizations(self, cursor: Optional[str] = None, limit: Optional[int] = 50) -> List[PydanticOrganization]:
         """List organizations with pagination based on cursor (org_id) and limit."""
         with self.session_maker() as session:
-            results = OrganizationModel.list(
-                db_session=session, cursor=cursor, limit=limit
-            )
+            results = OrganizationModel.list(db_session=session, cursor=cursor, limit=limit)
             return [org.to_pydantic() for org in results]

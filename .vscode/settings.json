@@ -1,0 +1,46 @@
+{
+  // IMPORTANT: Workspace settings override user settings automatically in VS Code/Cursor
+  // These settings ensure consistent formatting across all team members
+  
+  // Python formatter settings - Black
+  "python.formatting.provider": "black",
+  "python.formatting.blackArgs": [
+    "--line-length=120"
+  ],
+  
+  // Format on save - REQUIRED for consistency
+  "editor.formatOnSave": true,
+  "editor.codeActionsOnSave": {
+    "source.organizeImports": "explicit"
+  },
+  
+  // Python linting - mypy
+  "python.linting.enabled": true,
+  "python.linting.mypyEnabled": true,
+  "python.linting.mypyArgs": [
+    "--config-file=pyproject.toml"
+  ],
+  
+  // File associations - Python files use Black
+  "[python]": {
+    "editor.defaultFormatter": "ms-python.black-formatter",
+    "editor.formatOnSave": true,
+    "editor.rulers": [120],
+    "editor.tabSize": 4,
+    "editor.insertSpaces": true
+  },
+  
+  // Global editor settings
+  "editor.trimAutoWhitespace": true,
+  "files.insertFinalNewline": true,
+  "files.trimTrailingWhitespace": true,
+  "files.eol": "\n",
+  
+  // Exclude patterns from file explorer
+  "files.exclude": {
+    "**/__pycache__": true,
+    "**/*.pyc": true,
+    "**/.mypy_cache": true,
+    "**/.pytest_cache": true
+  }
+}

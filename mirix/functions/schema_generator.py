@@ -31,9 +31,7 @@ def type_to_json_schema_type(py_type) -> dict:
     if is_optional(py_type):
         # Assert that Optional has only one type argument
         type_args = get_args(py_type)
-        assert optional_length(py_type) == 1, (
-            f"Optional type must have exactly one type argument, but got {py_type}"
-        )
+        assert optional_length(py_type) == 1, f"Optional type must have exactly one type argument, but got {py_type}"
 
         # Extract and map the inner type
         return type_to_json_schema_type(type_args[0])
@@ -117,9 +115,7 @@ def type_to_json_schema_type(py_type) -> dict:
         None: "null",
     }
     if py_type not in type_map:
-        raise ValueError(
-            f"Python type {py_type} has no corresponding JSON schema type - full map: {type_map}"
-        )
+        raise ValueError(f"Python type {py_type} has no corresponding JSON schema type - full map: {type_map}")
     else:
         return {"type": type_map[py_type]}
 
@@ -132,15 +128,11 @@ def pydantic_model_to_open_ai(model: Type[BaseModel]) -> dict:
     docstring = parse(model.__doc__ or "")
     parameters = {k: v for k, v in schema.items() if k not in ("title", "description")}
     for param in docstring.params:
-        if (name := param.arg_name) in parameters["properties"] and (
-            description := param.description
-        ):
+        if (name := param.arg_name) in parameters["properties"] and (description := param.description):
             if "description" not in parameters["properties"][name]:
                 parameters["properties"][name]["description"] = description
 
-    parameters["required"] = sorted(
-        k for k, v in parameters["properties"].items() if "default" not in v
-    )
+    parameters["required"] = sorted(k for k, v in parameters["properties"].items() if "default" not in v)
 
     if "description" not in schema:
         if docstring.short_description:
@@ -312,9 +304,7 @@ def pydantic_model_to_json_schema(model: Type[BaseModel]) -> dict:
                 try:
                     if "items" in prop:  # Handle arrays
                         if "description" not in prop:
-                            raise ValueError(
-                                f"Property {prop} lacks a 'description' key"
-                            )
+                            raise ValueError(f"Property {prop} lacks a 'description' key")
                         properties[name] = {
                             "type": "array",
                             "items": clean_schema(prop["items"], full_schema),
@@ -323,9 +313,7 @@ def pydantic_model_to_json_schema(model: Type[BaseModel]) -> dict:
                     else:
                         properties[name] = clean_property(prop)
                 except Exception as e:
-                    raise ValueError(
-                        f"Error processing property '{name}': {prop}. Error: {e}"
-                    )
+                    raise ValueError(f"Error processing property '{name}': {prop}. Error: {e}")
 
             pydantic_model_schema_dict = {
                 "type": "object",
@@ -340,11 +328,7 @@ def pydantic_model_to_json_schema(model: Type[BaseModel]) -> dict:
         # Handle primitive types
         # If it's a simple type definition without description (like {'type': 'string'}),
         # return it as-is since it doesn't need cleaning
-        if (
-            "description" not in schema_part
-            and len(schema_part) == 1
-            and "type" in schema_part
-        ):
+        if "description" not in schema_part and len(schema_part) == 1 and "type" in schema_part:
             return schema_part
         return clean_property(schema_part)
 
@@ -352,9 +336,7 @@ def pydantic_model_to_json_schema(model: Type[BaseModel]) -> dict:
     return response
 
 
-def generate_schema(
-    function, name: Optional[str] = None, description: Optional[str] = None
-) -> dict:
+def generate_schema(function, name: Optional[str] = None, description: Optional[str] = None) -> dict:
     # Get the signature of the function
     sig = inspect.signature(function)
 
@@ -364,9 +346,7 @@ def generate_schema(
     # Prepare the schema dictionary
     schema = {
         "name": function.__name__ if name is None else name,
-        "description": docstring.short_description
-        if description is None
-        else description,
+        "description": docstring.short_description if description is None else description,
         "parameters": {"type": "object", "properties": {}, "required": []},
     }
 
@@ -385,14 +365,10 @@ def generate_schema(
 
         # Assert that the parameter has a type annotation
         if param.annotation == inspect.Parameter.empty:
-            raise TypeError(
-                f"Parameter '{param.name}' in function '{function.__name__}' lacks a type annotation"
-            )
+            raise TypeError(f"Parameter '{param.name}' in function '{function.__name__}' lacks a type annotation")
 
         # Find the parameter's description in the docstring
-        param_doc = next(
-            (d for d in docstring.params if d.arg_name == param.name), None
-        )
+        param_doc = next((d for d in docstring.params if d.arg_name == param.name), None)
 
         # Assert that the parameter has a description
         if not param_doc or not param_doc.description:
@@ -403,21 +379,14 @@ def generate_schema(
         # If the parameter is a pydantic model, we need to unpack the Pydantic model type into a JSON schema object
         # if inspect.isclass(param.annotation) and issubclass(param.annotation, BaseModel):
         if (
-            (
-                inspect.isclass(param.annotation)
-                or inspect.isclass(get_origin(param.annotation) or param.annotation)
-            )
+            (inspect.isclass(param.annotation) or inspect.isclass(get_origin(param.annotation) or param.annotation))
             and not get_origin(param.annotation)
             and issubclass(param.annotation, BaseModel)
         ):
             # print("Generating schema for pydantic model:", param.annotation)
             # Extract the properties from the pydantic model
-            schema["parameters"]["properties"][param.name] = (
-                pydantic_model_to_json_schema(param.annotation)
-            )
-            schema["parameters"]["properties"][param.name]["description"] = (
-                param_doc.description
-            )
+            schema["parameters"]["properties"][param.name] = pydantic_model_to_json_schema(param.annotation)
+            schema["parameters"]["properties"][param.name]["description"] = param_doc.description
 
         # Otherwise, we convert the Python typing to JSON schema types
         # NOTE: important - if a dict or list, the internal type can be a Pydantic model itself
@@ -426,9 +395,7 @@ def generate_schema(
             # print("Generating schema for non-pydantic model:", param.annotation)
             # Grab the description for the parameter from the extended docstring
             # If it doesn't exist, we should raise an error
-            param_doc = next(
-                (d for d in docstring.params if d.arg_name == param.name), None
-            )
+            param_doc = next((d for d in docstring.params if d.arg_name == param.name), None)
 
             if not param_doc:
                 raise ValueError(
@@ -456,18 +423,14 @@ def generate_schema(
                 schema["parameters"]["properties"][param.name] = param_generated_schema
 
         # If the parameter doesn't have a default value, it is required (so we need to add it to the required list)
-        if param.default == inspect.Parameter.empty and not is_optional(
-            param.annotation
-        ):
+        if param.default == inspect.Parameter.empty and not is_optional(param.annotation):
             schema["parameters"]["required"].append(param.name)
 
         # TODO what's going on here?
         # If the parameter is a list of strings we need to hard cast to "string" instead of `str`
         if get_origin(param.annotation) is list:
             if get_args(param.annotation)[0] is str:
-                schema["parameters"]["properties"][param.name]["items"] = {
-                    "type": "string"
-                }
+                schema["parameters"]["properties"][param.name]["items"] = {"type": "string"}
 
         # TODO is this not duplicating the other append directly above?
         if param.annotation == inspect.Parameter.empty:

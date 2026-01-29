@@ -15,13 +15,9 @@ class ProceduralMemoryItemBase(MirixBase):
     """
 
     __id_prefix__ = "proc_item"
-    entry_type: str = Field(
-        ..., description="Category (e.g., 'workflow', 'guide', 'script')"
-    )
+    entry_type: str = Field(..., description="Category (e.g., 'workflow', 'guide', 'script')")
     summary: str = Field(..., description="Short descriptive text about the procedure")
-    steps: List[str] = Field(
-        ..., description="Step-by-step instructions as a list of strings"
-    )
+    steps: List[str] = Field(..., description="Step-by-step instructions as a list of strings")
 
 
 class ProceduralMemoryItem(ProceduralMemoryItemBase):
@@ -29,21 +25,11 @@ class ProceduralMemoryItem(ProceduralMemoryItemBase):
     Full procedural memory item schema, with database-related fields.
     """
 
-    id: Optional[str] = Field(
-        None, description="Unique identifier for the procedural memory item"
-    )
-    agent_id: Optional[str] = Field(
-        None, description="The id of the agent this procedural memory item belongs to"
-    )
-    client_id: Optional[str] = Field(
-        None, description="The id of the client application that created this item"
-    )
-    user_id: str = Field(
-        ..., description="The id of the user who generated the procedure"
-    )
-    created_at: datetime = Field(
-        default_factory=get_utc_time, description="Creation timestamp"
-    )
+    id: Optional[str] = Field(None, description="Unique identifier for the procedural memory item")
+    agent_id: Optional[str] = Field(None, description="The id of the agent this procedural memory item belongs to")
+    client_id: Optional[str] = Field(None, description="The id of the client application that created this item")
+    user_id: str = Field(..., description="The id of the user who generated the procedure")
+    created_at: datetime = Field(default_factory=get_utc_time, description="Creation timestamp")
     updated_at: Optional[datetime] = Field(None, description="Last update timestamp")
     last_modify: Dict[str, Any] = Field(
         default_factory=lambda: {
@@ -52,46 +38,30 @@ class ProceduralMemoryItem(ProceduralMemoryItemBase):
         },
         description="Last modification info including timestamp and operation type",
     )
-    organization_id: str = Field(
-        ..., description="The unique identifier of the organization"
-    )
-    summary_embedding: Optional[List[float]] = Field(
-        None, description="The embedding of the summary"
-    )
-    steps_embedding: Optional[List[float]] = Field(
-        None, description="The embedding of the steps"
-    )
+    organization_id: str = Field(..., description="The unique identifier of the organization")
+    summary_embedding: Optional[List[float]] = Field(None, description="The embedding of the summary")
+    steps_embedding: Optional[List[float]] = Field(None, description="The embedding of the steps")
     embedding_config: Optional[EmbeddingConfig] = Field(
         None, description="The embedding configuration used by the event"
     )
-    
+
     # NEW: Filter tags for flexible filtering and categorization
     filter_tags: Optional[Dict[str, Any]] = Field(
         default=None,
         description="Custom filter tags for filtering and categorization",
         examples=[
-            {
-                "project_id": "proj-abc",
-                "session_id": "sess-xyz",
-                "tags": ["important", "work"],
-                "priority": "high"
-            }
-        ]
+            {"project_id": "proj-abc", "session_id": "sess-xyz", "tags": ["important", "work"], "priority": "high"}
+        ],
     )
 
-    # need to validate both steps_embedding and summary_embedding to ensure they are the same size    
+    # need to validate both steps_embedding and summary_embedding to ensure they are the same size
     # NEW: Filter tags for flexible filtering and categorization
     filter_tags: Optional[Dict[str, Any]] = Field(
         default=None,
         description="Custom filter tags for filtering and categorization",
         examples=[
-            {
-                "project_id": "proj-abc",
-                "session_id": "sess-xyz",
-                "tags": ["important", "work"],
-                "priority": "high"
-            }
-        ]
+            {"project_id": "proj-abc", "session_id": "sess-xyz", "tags": ["important", "work"], "priority": "high"}
+        ],
     )
 
     @field_validator("summary_embedding", "steps_embedding")
@@ -115,38 +85,26 @@ class ProceduralMemoryItemUpdate(MirixBase):
     """Schema for updating an existing procedural memory item."""
 
     id: str = Field(..., description="Unique ID for this procedural memory entry")
-    agent_id: Optional[str] = Field(
-        None, description="The id of the agent this procedural memory item belongs to"
-    )
-    entry_type: Optional[str] = Field(
-        None, description="Category (e.g., 'workflow', 'guide', 'script')"
-    )
+    agent_id: Optional[str] = Field(None, description="The id of the agent this procedural memory item belongs to")
+    entry_type: Optional[str] = Field(None, description="Category (e.g., 'workflow', 'guide', 'script')")
     summary: Optional[str] = Field(None, description="Short descriptive text")
-    steps: Optional[List[str]] = Field(
-        None, description="Step-by-step instructions as a list of strings"
-    )
+    steps: Optional[List[str]] = Field(None, description="Step-by-step instructions as a list of strings")
     organization_id: Optional[str] = Field(None, description="The organization ID")
-    updated_at: datetime = Field(
-        default_factory=get_utc_time, description="Update timestamp"
-    )
+    updated_at: datetime = Field(default_factory=get_utc_time, description="Update timestamp")
     last_modify: Optional[Dict[str, Any]] = Field(
         None,
         description="Last modification info including timestamp and operation type",
     )
-    steps_embedding: Optional[List[float]] = Field(
-        None, description="The embedding of the event"
-    )
-    summary_embedding: Optional[List[float]] = Field(
-        None, description="The embedding of the summary"
-    )
+    steps_embedding: Optional[List[float]] = Field(None, description="The embedding of the event")
+    summary_embedding: Optional[List[float]] = Field(None, description="The embedding of the summary")
     embedding_config: Optional[EmbeddingConfig] = Field(
         None, description="The embedding configuration used by the event"
     )
 
-
     filter_tags: Optional[Dict[str, Any]] = Field(
         None, description="Custom filter tags for filtering and categorization"
     )
+
 
 class ProceduralMemoryItemResponse(ProceduralMemoryItem):
     """Response schema for procedural memory item."""

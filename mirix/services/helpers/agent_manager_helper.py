@@ -8,11 +8,11 @@ from mirix.orm.agent import Agent as AgentModel
 from mirix.orm.errors import NoResultFound
 from mirix.prompts import gpt_system
 from mirix.schemas.agent import AgentState, AgentType
+from mirix.schemas.client import Client
 from mirix.schemas.enums import MessageRole
 from mirix.schemas.memory import Memory
 from mirix.schemas.message import Message, MessageCreate
 from mirix.schemas.tool_rule import ToolRule
-from mirix.schemas.client import Client
 from mirix.schemas.user import User
 from mirix.utils import get_local_time
 
@@ -102,9 +102,7 @@ def compile_memory_metadata_block(
     archival_memory_size: int = 0,
 ) -> str:
     # Put the timestamp in the local timezone (mimicking get_local_time())
-    timestamp_str = (
-        memory_edit_timestamp.astimezone().strftime("%Y-%m-%d %I:%M:%S %p %Z%z").strip()
-    )
+    timestamp_str = memory_edit_timestamp.astimezone().strftime("%Y-%m-%d %I:%M:%S %p %Z%z").strip()
 
     # Create a metadata block of info so the agent knows about the metadata of out-of-context memories
     memory_metadata_block = "\n".join(
@@ -172,9 +170,7 @@ def compile_system_message(
         try:
             formatted_prompt = system_prompt.format_map(variables)
         except Exception as e:
-            raise ValueError(
-                f"Failed to format system prompt - {str(e)}. System prompt value:\n{system_prompt}"
-            )
+            raise ValueError(f"Failed to format system prompt - {str(e)}. System prompt value:\n{system_prompt}")
 
     else:
         # TODO support for mustache and jinja2
@@ -254,7 +250,7 @@ def package_initial_message_sequence(
 ) -> List[Message]:
     """
     Package initial messages for an agent.
-    
+
     Args:
         agent_id: The agent ID these messages belong to.
         initial_message_sequence: List of messages to package.

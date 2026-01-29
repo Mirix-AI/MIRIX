@@ -4,10 +4,11 @@ import tempfile
 
 import speech_recognition as sr
 from pydub import AudioSegment
+
 from mirix.log import get_logger
 
-
 logger = get_logger(__name__)
+
 
 def convert_base64_to_audio_segment(voice_file_b64):
     """Convert base64 voice data to AudioSegment using temporary file"""
@@ -65,9 +66,7 @@ def process_voice_files(voice_items):
                 temp_audio_file = None
                 try:
                     # Create temporary WAV file
-                    with tempfile.NamedTemporaryFile(
-                        suffix=".wav", delete=False
-                    ) as temp_file:
+                    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
                         temp_audio_file = temp_file.name
 
                     # Export combined audio to temporary file
@@ -86,12 +85,8 @@ def process_voice_files(voice_items):
                         # Try to recognize speech using Google Speech Recognition
                         try:
                             transcription = recognizer.recognize_google(audio_data)
-                            first_timestamp = (
-                                voice_items[0][0] if voice_items else "unknown"
-                            )
-                            combined_transcription = (
-                                f"[{first_timestamp}] {transcription}"
-                            )
+                            first_timestamp = voice_items[0][0] if voice_items else "unknown"
+                            combined_transcription = f"[{first_timestamp}] {transcription}"
                             return combined_transcription
 
                         except sr.UnknownValueError:
@@ -99,26 +94,19 @@ def process_voice_files(voice_items):
                             return None
 
                         except sr.RequestError as e:
-                            logger.error(
-                                "Google Speech Recognition failed for combined audio: %s", str(e)
-                            )
+                            logger.error("Google Speech Recognition failed for combined audio: %s", str(e))
                             # Fallback to offline methods if Google fails
                             try:
                                 transcription = recognizer.recognize_sphinx(audio_data)
-                                first_timestamp = (
-                                    voice_items[0][0] if voice_items else "unknown"
-                                )
-                                combined_transcription = (
-                                    f"[{first_timestamp}] {transcription}"
-                                )
+                                first_timestamp = voice_items[0][0] if voice_items else "unknown"
+                                combined_transcription = f"[{first_timestamp}] {transcription}"
                                 logger.error(
-                                    "Sphinx transcribed combined audio: '%s'", transcription[:100] + ('...' if len(transcription) > 100 else '')
+                                    "Sphinx transcribed combined audio: '%s'",
+                                    transcription[:100] + ("..." if len(transcription) > 100 else ""),
                                 )
                                 return combined_transcription
                             except Exception:
-                                logger.error(
-                                    "All recognition methods failed for combined audio"
-                                )
+                                logger.error("All recognition methods failed for combined audio")
                                 return None
 
                 finally:
@@ -152,6 +140,4 @@ def process_voice_files(voice_items):
                     os.unlink(temp_file)
                     logger.debug("Deleted temp voice file: %s", temp_file)
                 except Exception as cleanup_error:
-                    logger.debug(
-                        "Failed to delete temp voice file %s: %s", temp_file, str(cleanup_error)
-                    )
+                    logger.debug("Failed to delete temp voice file %s: %s", temp_file, str(cleanup_error))

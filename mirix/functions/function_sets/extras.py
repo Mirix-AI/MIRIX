@@ -119,6 +119,7 @@ logger = get_logger(__name__)
 #     except Exception as e:
 #         return {"error": str(e)}
 
+
 def fetch_and_read_pdf(self, url: str, max_pages: Optional[int] = 10):
     """
     Fetch and read a PDF file from a URL, extracting its text content.
@@ -158,9 +159,7 @@ def fetch_and_read_pdf(self, url: str, max_pages: Optional[int] = 10):
         if "pdf" not in content_type and not url.lower().endswith(".pdf"):
             return f"The URL does not appear to point to a PDF file. Content-Type: {content_type}"
 
-        logger.debug(
-            f"[PDF_READER] PDF fetched successfully, size: {len(response.content)} bytes"
-        )
+        logger.debug(f"[PDF_READER] PDF fetched successfully, size: {len(response.content)} bytes")
 
         # Read the PDF content
         pdf_file = io.BytesIO(response.content)
@@ -169,9 +168,7 @@ def fetch_and_read_pdf(self, url: str, max_pages: Optional[int] = 10):
         num_pages = len(pdf_reader.pages)
         max_pages = min(max_pages or 10, num_pages)
 
-        logger.debug(
-            f"[PDF_READER] PDF has {num_pages} pages, reading first {max_pages} pages"
-        )
+        logger.debug(f"[PDF_READER] PDF has {num_pages} pages, reading first {max_pages} pages")
 
         extracted_text = []
         for page_num in range(max_pages):
@@ -183,9 +180,7 @@ def fetch_and_read_pdf(self, url: str, max_pages: Optional[int] = 10):
                     extracted_text.append(text.strip())
                     extracted_text.append("")  # Empty line for separation
             except Exception as page_error:
-                extracted_text.append(
-                    f"--- Page {page_num + 1} (Error reading page) ---"
-                )
+                extracted_text.append(f"--- Page {page_num + 1} (Error reading page) ---")
                 extracted_text.append(f"Error: {str(page_error)}")
                 extracted_text.append("")
 
@@ -197,8 +192,7 @@ def fetch_and_read_pdf(self, url: str, max_pages: Optional[int] = 10):
         # Limit output length for practical use
         if len(full_text) > 10000:
             full_text = (
-                full_text[:10000]
-                + f"\n\n[Text truncated - showing first 10,000 characters of {len(full_text)} total]"
+                full_text[:10000] + f"\n\n[Text truncated - showing first 10,000 characters of {len(full_text)} total]"
             )
 
         logger.debug("[PDF_READER] Successfully extracted text from %s pages", max_pages)
@@ -207,6 +201,7 @@ def fetch_and_read_pdf(self, url: str, max_pages: Optional[int] = 10):
     except Exception as e:
         logger.debug("[PDF_READER] Error: %s", e)
         return f"Error reading PDF: {str(e)}"
+
 
 def web_search(self, query: str, num_results: Optional[int] = 5):
     """

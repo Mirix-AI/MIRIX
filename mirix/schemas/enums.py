@@ -3,6 +3,7 @@ from enum import Enum
 
 class ToolType(str, Enum):
     """Types of tools in Mirix"""
+
     CUSTOM = "custom"
     MIRIX_CORE = "mirix_core"
     MIRIX_CODER_CORE = "mirix_coder_core"

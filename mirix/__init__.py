@@ -32,9 +32,7 @@ from mirix.schemas.memory import Memory as Memory
 from mirix.schemas.memory import RecallMemorySummary as RecallMemorySummary
 from mirix.schemas.message import Message as Message
 from mirix.schemas.mirix_message import MirixMessage as MirixMessage
-from mirix.schemas.openai.chat_completion_response import (
-    UsageStatistics as UsageStatistics,
-)
+from mirix.schemas.openai.chat_completion_response import UsageStatistics as UsageStatistics
 from mirix.schemas.organization import Organization as Organization
 from mirix.schemas.tool import Tool as Tool
 from mirix.schemas.usage import MirixUsageStatistics as MirixUsageStatistics

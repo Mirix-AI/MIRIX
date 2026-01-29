@@ -207,18 +207,14 @@ CORE_MEMORY_HUMAN_CHAR_LIMIT: int = 5000
 MAX_PAUSE_HEARTBEATS = 360  # in min
 
 MESSAGE_CHATGPT_FUNCTION_MODEL = "gpt-3.5-turbo"
-MESSAGE_CHATGPT_FUNCTION_SYSTEM_MESSAGE = (
-    "You are a helpful assistant. Keep your responses short and concise."
-)
+MESSAGE_CHATGPT_FUNCTION_SYSTEM_MESSAGE = "You are a helpful assistant. Keep your responses short and concise."
 
 #### Functions related
 
 # REQ_HEARTBEAT_MESSAGE = f"{NON_USER_MSG_PREFIX}continue_chaining == true"
 REQ_HEARTBEAT_MESSAGE = f"{NON_USER_MSG_PREFIX}Function called using continue_chaining=true, returning control"
 # FUNC_FAILED_HEARTBEAT_MESSAGE = f"{NON_USER_MSG_PREFIX}Function call failed"
-FUNC_FAILED_HEARTBEAT_MESSAGE = (
-    f"{NON_USER_MSG_PREFIX}Function call failed, returning control"
-)
+FUNC_FAILED_HEARTBEAT_MESSAGE = f"{NON_USER_MSG_PREFIX}Function call failed, returning control"
 
 
 RETRIEVAL_QUERY_DEFAULT_PAGE_SIZE = 5
@@ -233,24 +229,22 @@ INNER_THOUGHTS_KWARG_DESCRIPTION = "Deep inner monologue private to you only."
 INNER_THOUGHTS_CLI_SYMBOL = "💭"
 ASSISTANT_MESSAGE_CLI_SYMBOL = "🤖"
 
-CLEAR_HISTORY_AFTER_MEMORY_UPDATE = os.getenv(
-    "CLEAR_HISTORY_AFTER_MEMORY_UPDATE", "true"
-).lower() in ("true", "1", "yes")
-CALL_MEMORY_AGENT_IN_PARALLEL = os.getenv(
-    "CALL_MEMORY_AGENT_IN_PARALLEL", "false"
-).lower() in ("true", "1", "yes")
-CHAINING_FOR_MEMORY_UPDATE = os.getenv(
-    "CHAINING_FOR_MEMORY_UPDATE", "false"
-).lower() in ("true", "1", "yes")
+CLEAR_HISTORY_AFTER_MEMORY_UPDATE = os.getenv("CLEAR_HISTORY_AFTER_MEMORY_UPDATE", "true").lower() in (
+    "true",
+    "1",
+    "yes",
+)
+CALL_MEMORY_AGENT_IN_PARALLEL = os.getenv("CALL_MEMORY_AGENT_IN_PARALLEL", "false").lower() in ("true", "1", "yes")
+CHAINING_FOR_MEMORY_UPDATE = os.getenv("CHAINING_FOR_MEMORY_UPDATE", "false").lower() in ("true", "1", "yes")
 CHAINING_FOR_META_AGENT = os.getenv("CHAINING_FOR_META_AGENT", "true").lower() in (
     "true",
     "1",
     "yes",
 )
 
-LOAD_IMAGE_CONTENT_FOR_LAST_MESSAGE_ONLY = os.getenv(
-    "LOAD_IMAGE_CONTENT_FOR_LAST_MESSAGE_ONLY", "false"
-).lower() in ("true", "1", "yes")
-BUILD_EMBEDDINGS_FOR_MEMORY = os.getenv(
-    "BUILD_EMBEDDINGS_FOR_MEMORY", "true"
-).lower() in ("true", "1", "yes")
+LOAD_IMAGE_CONTENT_FOR_LAST_MESSAGE_ONLY = os.getenv("LOAD_IMAGE_CONTENT_FOR_LAST_MESSAGE_ONLY", "false").lower() in (
+    "true",
+    "1",
+    "yes",
+)
+BUILD_EMBEDDINGS_FOR_MEMORY = os.getenv("BUILD_EMBEDDINGS_FOR_MEMORY", "true").lower() in ("true", "1", "yes")

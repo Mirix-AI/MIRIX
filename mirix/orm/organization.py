@@ -31,23 +31,15 @@ class Organization(SqlalchemyBase):
     name: Mapped[str] = mapped_column(doc="The display name of the organization.")
 
     # relationships
-    users: Mapped[List["User"]] = relationship(
-        "User", back_populates="organization", cascade="all, delete-orphan"
-    )
+    users: Mapped[List["User"]] = relationship("User", back_populates="organization", cascade="all, delete-orphan")
     clients: Mapped[List["Client"]] = relationship(
         "Client", back_populates="organization", cascade="all, delete-orphan"
     )
-    tools: Mapped[List["Tool"]] = relationship(
-        "Tool", back_populates="organization", cascade="all, delete-orphan"
-    )
-    blocks: Mapped[List["Block"]] = relationship(
-        "Block", back_populates="organization", cascade="all, delete-orphan"
-    )
+    tools: Mapped[List["Tool"]] = relationship("Tool", back_populates="organization", cascade="all, delete-orphan")
+    blocks: Mapped[List["Block"]] = relationship("Block", back_populates="organization", cascade="all, delete-orphan")
 
     # relationships
-    agents: Mapped[List["Agent"]] = relationship(
-        "Agent", back_populates="organization", cascade="all, delete-orphan"
-    )
+    agents: Mapped[List["Agent"]] = relationship("Agent", back_populates="organization", cascade="all, delete-orphan")
     messages: Mapped[List["Message"]] = relationship(
         "Message", back_populates="organization", cascade="all, delete-orphan"
     )

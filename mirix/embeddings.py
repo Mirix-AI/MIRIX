@@ -92,9 +92,7 @@ def traced_embedding_with_retry(
             )
         except Exception as e:
             # Langfuse failed to start observation - execute without tracing
-            logger.error(
-                f"Langfuse failed to start observation. Continuing without tracing: {e}"
-            )
+            logger.error(f"Langfuse failed to start observation. Continuing without tracing: {e}")
             return embedding_func()
 
         # Now execute with tracing - embedding errors propagate normally
@@ -115,9 +113,7 @@ def traced_embedding_with_retry(
                         },
                     )
                 except Exception as e:
-                    logger.error(
-                        f"Failed to update LangFuse trace with success. Continuing without tracing: {e}"
-                    )
+                    logger.error(f"Failed to update LangFuse trace with success. Continuing without tracing: {e}")
                 return result
             except Exception as e:
                 # Update trace with error before re-raising
@@ -133,9 +129,7 @@ def traced_embedding_with_retry(
                         },
                     )
                 except Exception as langfuse_err:
-                    logger.error(
-                        f"Failed to update LangFuse trace with error. Continuing: {langfuse_err}"
-                    )
+                    logger.error(f"Failed to update LangFuse trace with error. Continuing: {langfuse_err}")
                     pass  # Don't let Langfuse errors mask the real error
                 raise  # Re-raise the embedding error
 
@@ -184,16 +178,12 @@ def check_and_split_text(text: str, embedding_model: str) -> List[str]:
         max_length = encoding.max_length
     else:
         # TODO: figure out the real number
-        printd(
-            f"Warning: couldn't find max_length for tokenizer {embedding_model}, using default max_length 8191"
-        )
+        printd(f"Warning: couldn't find max_length for tokenizer {embedding_model}, using default max_length 8191")
         max_length = 8191
 
     # truncate text if too long
     if num_tokens > max_length:
-        logger.debug(
-            f"Warning: text is too long ({num_tokens} tokens), truncating to {max_length} tokens."
-        )
+        logger.debug(f"Warning: text is too long ({num_tokens} tokens), truncating to {max_length} tokens.")
         # Truncate the text
         text = truncate_text(text, max_length, encoding)
 
@@ -249,9 +239,7 @@ class OpenAIEmbeddingWithCustomAuth:
                     f"to inject {len(auth_headers)} header(s)"
                 )
             except Exception as e:
-                logger.error(
-                    f"Failed to get auth headers from provider '{self.config.auth_provider}': {e}"
-                )
+                logger.error(f"Failed to get auth headers from provider '{self.config.auth_provider}': {e}")
                 raise
 
             # Create OpenAI client with auth headers
@@ -339,9 +327,7 @@ class EmbeddingEndpoint:
                 )
         else:
             # unknown response, can't parse
-            raise TypeError(
-                f"Got back an unexpected payload from text embedding function, response=\n{response_json}"
-            )
+            raise TypeError(f"Got back an unexpected payload from text embedding function, response=\n{response_json}")
 
         return embedding
 
@@ -362,19 +348,13 @@ class AzureOpenAIEmbedding:
     def __init__(self, api_endpoint: str, api_key: str, api_version: str, model: str):
         from openai import AzureOpenAI
 
-        self.client = AzureOpenAI(
-            api_key=api_key, api_version=api_version, azure_endpoint=api_endpoint
-        )
+        self.client = AzureOpenAI(api_key=api_key, api_version=api_version, azure_endpoint=api_endpoint)
         self.model = model
 
     def get_text_embedding(self, text: str):
 
         def _do_embedding():
-            return (
-                self.client.embeddings.create(input=[text], model=self.model)
-                .data[0]
-                .embedding
-            )
+            return self.client.embeddings.create(input=[text], model=self.model).data[0].embedding
 
         if is_embedding_tracing_enabled():
             return traced_embedding_with_retry(
@@ -434,9 +414,7 @@ def query_embedding(embedding_model, query_text: str):
     """Generate padded embedding for querying database"""
     query_vec = embedding_model.get_text_embedding(query_text)
     query_vec = np.array(query_vec)
-    query_vec = np.pad(
-        query_vec, (0, MAX_EMBEDDING_DIM - query_vec.shape[0]), mode="constant"
-    ).tolist()
+    query_vec = np.pad(query_vec, (0, MAX_EMBEDDING_DIM - query_vec.shape[0]), mode="constant").tolist()
     return query_vec
 
 
@@ -457,12 +435,8 @@ def embedding_model(config: EmbeddingConfig, user_id: Optional[uuid.UUID] = None
 
         # Use direct OpenAI SDK if auth_provider is configured
         if hasattr(config, "auth_provider") and config.auth_provider:
-            logger.info(
-                f"Using OpenAI embedding with auth provider: {config.auth_provider}"
-            )
-            return OpenAIEmbeddingWithCustomAuth(
-                config=config, auth_provider=config.auth_provider
-            )
+            logger.info(f"Using OpenAI embedding with auth provider: {config.auth_provider}")
+            return OpenAIEmbeddingWithCustomAuth(config=config, auth_provider=config.auth_provider)
 
         # Otherwise use llama_index (backwards compatible)
         from llama_index.embeddings.openai import OpenAIEmbedding

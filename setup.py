@@ -16,6 +16,7 @@ def parse_requirements(filename):
     lineiter = (line.strip() for line in open(filename))
     return [line for line in lineiter if line and not line.startswith("#")]
 
+
 # Filter requirements - exclude some development/system specific packages
 def filter_requirements(requirements):
     """Filter out packages that shouldn't be in install_requires."""
@@ -68,9 +69,7 @@ setup(
         "Source Code": "https://github.com/Mirix-AI/MIRIX",
         "Bug Reports": "https://github.com/Mirix-AI/MIRIX/issues",
     },
-    packages=find_packages(
-        exclude=["tests*", "scripts*", "frontend*", "public_evaluations*"]
-    ),
+    packages=find_packages(exclude=["tests*", "scripts*", "frontend*", "public_evaluations*"]),
     include_package_data=True,
     package_data={
         "mirix": [

@@ -17,26 +17,20 @@ class PGliteConnector:
     """Connector for PGlite database through HTTP bridge"""
 
     def __init__(self):
-        self.bridge_url = os.environ.get(
-            "MIRIX_PGLITE_BRIDGE_URL", "http://localhost:8001"
-        )
+        self.bridge_url = os.environ.get("MIRIX_PGLITE_BRIDGE_URL", "http://localhost:8001")
         self.use_pglite = os.environ.get("MIRIX_USE_PGLITE", "false").lower() == "true"
 
     def _make_request(self, endpoint: str, data: Dict[str, Any]) -> Dict[str, Any]:
         """Make HTTP request to PGlite bridge"""
         try:
-            response = requests.post(
-                f"{self.bridge_url}{endpoint}", json=data, timeout=30
-            )
+            response = requests.post(f"{self.bridge_url}{endpoint}", json=data, timeout=30)
             response.raise_for_status()
             return response.json()
         except Exception as e:
             logger.error("PGlite bridge request failed: %s", e)
             raise
 
-    def execute_query(
-        self, query: str, params: Optional[List[Any]] = None
-    ) -> Dict[str, Any]:
+    def execute_query(self, query: str, params: Optional[List[Any]] = None) -> Dict[str, Any]:
         """Execute a SQL query"""
         if not self.use_pglite:
             raise ValueError("PGlite not enabled")

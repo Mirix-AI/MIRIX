@@ -3,9 +3,7 @@ import uuid
 from sqlalchemy import select
 
 from mirix.orm.cloud_file_mapping import CloudFileMapping
-from mirix.schemas.cloud_file_mapping import (
-    CloudFileMapping as PydanticCloudFileMapping,
-)
+from mirix.schemas.cloud_file_mapping import CloudFileMapping as PydanticCloudFileMapping
 
 
 class CloudFileMappingManager:
@@ -27,9 +25,7 @@ class CloudFileMappingManager:
         with self.session_maker() as session:
             # check if cloud_file_id is already in the database
             try:
-                existing_mapping = CloudFileMapping.read(
-                    session, cloud_file_id=cloud_file_id
-                )
+                existing_mapping = CloudFileMapping.read(session, cloud_file_id=cloud_file_id)
             except Exception:
                 existing_mapping = None
             if existing_mapping:
@@ -42,9 +38,7 @@ class CloudFileMappingManager:
                     )
 
             try:
-                existing_mapping = CloudFileMapping.read(
-                    session, local_file_id=local_file_id
-                )
+                existing_mapping = CloudFileMapping.read(session, local_file_id=local_file_id)
             except Exception:
                 existing_mapping = None
 
@@ -68,13 +62,8 @@ class CloudFileMappingManager:
         # Validate required fields
         required_fields = ["cloud_file_id", "local_file_id"]
         for field in required_fields:
-            if (
-                field not in pydantic_mapping_dict
-                or pydantic_mapping_dict[field] is None
-            ):
-                raise ValueError(
-                    f"Required field '{field}' is missing or None in mapping data"
-                )
+            if field not in pydantic_mapping_dict or pydantic_mapping_dict[field] is None:
+                raise ValueError(f"Required field '{field}' is missing or None in mapping data")
 
         pydantic_mapping_dict.setdefault("id", str(uuid.uuid4()))
 
@@ -117,18 +106,14 @@ class CloudFileMappingManager:
         with self.session_maker() as session:
             if cloud_file_id is not None:
                 try:
-                    mapping = CloudFileMapping.read(
-                        session, cloud_file_id=cloud_file_id
-                    )
+                    mapping = CloudFileMapping.read(session, cloud_file_id=cloud_file_id)
                     mapping.hard_delete(session)
                 except Exception:
                     pass
 
             if local_file_id is not None:
                 try:
-                    mapping = CloudFileMapping.read(
-                        session, local_file_id=local_file_id
-                    )
+                    mapping = CloudFileMapping.read(session, local_file_id=local_file_id)
                     mapping.hard_delete(session)
                 except Exception:
                     pass
@@ -160,16 +145,12 @@ class CloudFileMappingManager:
             mapping = None
             if cloud_file_id is not None:
                 try:
-                    mapping = CloudFileMapping.read(
-                        session, cloud_file_id=cloud_file_id
-                    )
+                    mapping = CloudFileMapping.read(session, cloud_file_id=cloud_file_id)
                 except Exception:
                     pass
             elif local_file_id is not None:
                 try:
-                    mapping = CloudFileMapping.read(
-                        session, local_file_id=local_file_id
-                    )
+                    mapping = CloudFileMapping.read(session, local_file_id=local_file_id)
                 except Exception:
                     pass
             if mapping is None:

@@ -11,15 +11,9 @@ except ImportError:
 
 # Context variables for trace propagation
 # These propagate through async/await boundaries automatically
-current_trace_id: ContextVar[Optional[str]] = ContextVar(
-    "current_trace_id", default=None
-)
-current_observation_id: ContextVar[Optional[str]] = ContextVar(
-    "current_observation_id", default=None
-)
-current_session_id: ContextVar[Optional[str]] = ContextVar(
-    "current_session_id", default=None
-)
+current_trace_id: ContextVar[Optional[str]] = ContextVar("current_trace_id", default=None)
+current_observation_id: ContextVar[Optional[str]] = ContextVar("current_observation_id", default=None)
+current_session_id: ContextVar[Optional[str]] = ContextVar("current_session_id", default=None)
 current_user_id: ContextVar[Optional[str]] = ContextVar("current_user_id", default=None)
 
 

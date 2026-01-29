@@ -58,14 +58,14 @@ from mirix.schemas.mirix_message_content import (
     ImageContent,
     TextContent,
 )
-from mirix.schemas.openai.chat_completion_request import (
-    Tool as ChatCompletionRequestTool,
-)
-from mirix.schemas.openai.chat_completion_response import ChatCompletionResponse
+from mirix.schemas.openai.chat_completion_request import Tool as ChatCompletionRequestTool
 from mirix.schemas.openai.chat_completion_response import (
-    Message as ChatCompletionMessage,
+    ChatCompletionResponse,
 )
-from mirix.schemas.openai.chat_completion_response import UsageStatistics
+from mirix.schemas.openai.chat_completion_response import Message as ChatCompletionMessage
+from mirix.schemas.openai.chat_completion_response import (
+    UsageStatistics,
+)
 from mirix.schemas.tool import Tool
 from mirix.schemas.tool_rule import TerminalToolRule
 from mirix.schemas.usage import MirixUsageStatistics
@@ -159,9 +159,7 @@ class Agent(BaseAgent):
         self.filter_tags = deepcopy(filter_tags) if filter_tags is not None else None
         self.use_cache = use_cache  # Store use_cache for memory operations
         self.user = user  # Store user for end-user tracking
-        self.occurred_at = (
-            None  # Optional timestamp for episodic memory, set by server if provided
-        )
+        self.occurred_at = None  # Optional timestamp for episodic memory, set by server if provided
 
         # Initialize logger early in constructor
         self.logger = logging.getLogger(f"Mirix.Agent.{self.agent_state.name}")
@@ -259,9 +257,7 @@ class Agent(BaseAgent):
                     if response_json.get("message"):
                         return response_json["message"]
                 except (json.JSONDecodeError, KeyError):
-                    raise ValueError(
-                        f"Invalid JSON format in message: {msg.content[0].text}"
-                    )
+                    raise ValueError(f"Invalid JSON format in message: {msg.content[0].text}")
         return None
 
     def update_memory_if_changed(self, new_memory: Memory) -> bool:
@@ -321,10 +317,7 @@ class Agent(BaseAgent):
         """Execute MCP tool using the auto-generated source code."""
         try:
             # Check if this is a Gmail send operation that needs confirmation
-            if (
-                function_name == "gmail_native_gmail_send_email"
-                and request_user_confirmation
-            ):
+            if function_name == "gmail_native_gmail_send_email" and request_user_confirmation:
                 # Prepare email details for confirmation
                 email_details = {
                     "to": function_args.get("to", ""),
@@ -360,9 +353,7 @@ class Agent(BaseAgent):
             func_name = function_name.replace(".", "_").replace("-", "_")
 
             if func_name not in local_namespace:
-                return (
-                    f"Error: Function '{func_name}' not found in MCP tool source code"
-                )
+                return f"Error: Function '{func_name}' not found in MCP tool source code"
 
             # Call the function with the provided arguments, including self and agent_state
             callable_func = local_namespace[func_name]
@@ -426,11 +417,7 @@ class Agent(BaseAgent):
                     "episodic_memory_replace",
                     "list_memory_within_timerange",
                 ]:
-                    key = (
-                        "items"
-                        if function_name == "episodic_memory_insert"
-                        else "new_items"
-                    )
+                    key = "items" if function_name == "episodic_memory_insert" else "new_items"
                     if key in function_args:
                         # Need to change the timezone into UTC timezone
                         for item in function_args[key]:
@@ -448,12 +435,8 @@ class Agent(BaseAgent):
 
                 if target_mirix_tool.tool_type == ToolType.MIRIX_CORE:
                     # base tools are allowed to access the `Agent` object and run on the database
-                    callable_func = get_function_from_module(
-                        MIRIX_CORE_TOOL_MODULE_NAME, function_name
-                    )
-                    function_args["self"] = (
-                        self  # need to attach self to arg since it's dynamically linked
-                    )
+                    callable_func = get_function_from_module(MIRIX_CORE_TOOL_MODULE_NAME, function_name)
+                    function_args["self"] = self  # need to attach self to arg since it's dynamically linked
                     if function_name in ["send_message", "send_intermediate_message"]:
                         agent_state_copy = self.agent_state.__deepcopy__()
                         function_args["agent_state"] = (
@@ -465,14 +448,10 @@ class Agent(BaseAgent):
                     if function_name == "send_intermediate_message":
                         # send intermediate message to the user
                         if display_intermediate_message:
-                            display_intermediate_message(
-                                "response", function_args["message"]
-                            )
+                            display_intermediate_message("response", function_args["message"])
 
                 elif target_mirix_tool.tool_type == ToolType.MIRIX_MEMORY_CORE:
-                    callable_func = get_function_from_module(
-                        MIRIX_MEMORY_TOOL_MODULE_NAME, function_name
-                    )
+                    callable_func = get_function_from_module(MIRIX_MEMORY_TOOL_MODULE_NAME, function_name)
                     if function_name in ["core_memory_append", "core_memory_rewrite"]:
                         agent_state_copy = self.agent_state.__deepcopy__()
                         function_args["agent_state"] = (
@@ -495,12 +474,8 @@ class Agent(BaseAgent):
                         self.update_memory_if_changed(agent_state_copy.memory)
 
                 elif target_mirix_tool.tool_type == ToolType.MIRIX_EXTRA:
-                    callable_func = get_function_from_module(
-                        MIRIX_EXTRA_TOOL_MODULE_NAME, function_name
-                    )
-                    function_args["self"] = (
-                        self  # need to attach self to arg since it's dynamically linked
-                    )
+                    callable_func = get_function_from_module(MIRIX_EXTRA_TOOL_MODULE_NAME, function_name)
+                    function_args["self"] = self  # need to attach self to arg since it's dynamically linked
                     function_response = callable_func(**function_args)
 
                 elif target_mirix_tool.tool_type == ToolType.USER_DEFINED:
@@ -526,9 +501,7 @@ class Agent(BaseAgent):
                     )
 
                 else:
-                    raise ValueError(
-                        f"Tool type {target_mirix_tool.tool_type} not supported"
-                    )
+                    raise ValueError(f"Tool type {target_mirix_tool.tool_type} not supported")
 
             except Exception as e:
                 # Need to catch error here, or else truncation wont happen
@@ -595,12 +568,8 @@ class Agent(BaseAgent):
         function_call: Optional[str] = None,
         first_message: bool = False,
         stream: bool = False,  # TODO move to config?
-        empty_response_retry_limit: Optional[
-            int
-        ] = None,  # Uses settings.llm_retry_limit if None
-        backoff_factor: Optional[
-            float
-        ] = None,  # Uses settings.llm_retry_backoff_factor if None
+        empty_response_retry_limit: Optional[int] = None,  # Uses settings.llm_retry_limit if None
+        backoff_factor: Optional[float] = None,  # Uses settings.llm_retry_backoff_factor if None
         max_delay: Optional[float] = None,  # Uses settings.llm_retry_max_delay if None
         step_count: Optional[int] = None,
         last_function_failed: bool = False,
@@ -633,11 +602,7 @@ class Agent(BaseAgent):
         allowed_functions = (
             agent_state_tool_jsons
             if not allowed_tool_names
-            else [
-                func
-                for func in agent_state_tool_jsons
-                if func["name"] in allowed_tool_names
-            ]
+            else [func for func in agent_state_tool_jsons if func["name"] in allowed_tool_names]
         )
 
         for func in allowed_functions:
@@ -646,9 +611,7 @@ class Agent(BaseAgent):
         # Don't allow a tool to be called if it failed last time
         if last_function_failed and self.tool_rules_solver.tool_call_history:
             allowed_functions = [
-                f
-                for f in allowed_functions
-                if f["name"] != self.tool_rules_solver.tool_call_history[-1]
+                f for f in allowed_functions if f["name"] != self.tool_rules_solver.tool_call_history[-1]
             ]
             if not allowed_functions:
                 return None
@@ -711,13 +674,8 @@ class Agent(BaseAgent):
                     raise ValueError(f"API call returned an empty message: {response}")
 
                 for choice in response.choices:
-                    if (
-                        choice.message.content == ""
-                        and len(choice.message.tool_calls) == 0
-                    ):
-                        raise ValueError(
-                            f"API call returned an empty message: {response}"
-                        )
+                    if choice.message.content == "" and len(choice.message.tool_calls) == 0:
+                        raise ValueError(f"API call returned an empty message: {response}")
 
                 if response.choices[0].finish_reason not in [
                     "stop",
@@ -730,18 +688,14 @@ class Agent(BaseAgent):
                                 "Retries exhausted and no valid response received. Final error: maximum context length exceeded or generated content is too long"
                             )
                         else:
-                            delay = min(
-                                backoff_factor * (2 ** (attempt - 1)), max_delay
-                            )
+                            delay = min(backoff_factor * (2 ** (attempt - 1)), max_delay)
                             printv(
                                 f"[Mirix.Agent.{self.agent_state.name}] WARNING: Attempt {attempt} failed: {response.choices[0].finish_reason}. Retrying in {delay} seconds..."
                             )
                             time.sleep(delay)
                             continue
                     else:
-                        raise ValueError(
-                            f"Bad finish reason from API: {response.choices[0].finish_reason}"
-                        )
+                        raise ValueError(f"Bad finish reason from API: {response.choices[0].finish_reason}")
                 log_telemetry(self.logger, "_handle_ai_response finish")
 
             except ValueError as ve:
@@ -749,18 +703,14 @@ class Agent(BaseAgent):
                 # makes retry logs unhelpful. Always include type + repr for visibility.
                 ve_desc = f"{type(ve).__name__}: {ve!r}"
                 if attempt >= empty_response_retry_limit:
-                    printv(
-                        f"[Mirix.Agent.{self.agent_state.name}] ERROR: Retry limit reached. Final error: {ve_desc}"
-                    )
+                    printv(f"[Mirix.Agent.{self.agent_state.name}] ERROR: Retry limit reached. Final error: {ve_desc}")
                     log_telemetry(self.logger, "_handle_ai_response finish ValueError")
                     # Log traceback once at the final attempt for actionable debugging.
                     self.logger.exception(
                         "[Mirix.Agent.%s] Retry limit reached (ValueError).",
                         self.agent_state.name,
                     )
-                    raise Exception(
-                        f"Retries exhausted and no valid response received. Final error: {ve_desc}"
-                    )
+                    raise Exception(f"Retries exhausted and no valid response received. Final error: {ve_desc}")
                 else:
                     delay = min(backoff_factor * (2 ** (attempt - 1)), max_delay)
                     printv(
@@ -774,17 +724,13 @@ class Agent(BaseAgent):
                 # This is a retryable error
                 ke_desc = f"{type(ke).__name__}: {ke!r}"
                 if attempt >= empty_response_retry_limit:
-                    printv(
-                        f"[Mirix.Agent.{self.agent_state.name}] ERROR: Retry limit reached. Final error: {ke_desc}"
-                    )
+                    printv(f"[Mirix.Agent.{self.agent_state.name}] ERROR: Retry limit reached. Final error: {ke_desc}")
                     log_telemetry(self.logger, "_handle_ai_response finish KeyError")
                     self.logger.exception(
                         "[Mirix.Agent.%s] Retry limit reached (KeyError).",
                         self.agent_state.name,
                     )
-                    raise Exception(
-                        f"Retries exhausted and no valid response received. Final error: {ke_desc}"
-                    )
+                    raise Exception(f"Retries exhausted and no valid response received. Final error: {ke_desc}")
                 else:
                     delay = min(backoff_factor * (2 ** (attempt - 1)), max_delay)
                     printv(
@@ -800,9 +746,7 @@ class Agent(BaseAgent):
                         f"[Mirix.Agent.{self.agent_state.name}] ERROR: Retry limit reached. Final error: {llm_error_desc}"
                     )
                     log_telemetry(self.logger, "_handle_ai_response finish LLMError")
-                    log_telemetry(
-                        self.logger, "_get_ai_reply_last_message_hacking start"
-                    )
+                    log_telemetry(self.logger, "_get_ai_reply_last_message_hacking start")
                     self.logger.exception(
                         "[Mirix.Agent.%s] Retry limit reached (LLMError).",
                         self.agent_state.name,
@@ -838,16 +782,12 @@ class Agent(BaseAgent):
                 tb_str = traceback.format_exc()
                 ae_desc = f"{type(ae).__name__}: {ae!r}\nTraceback:\n{tb_str}"
                 if attempt >= empty_response_retry_limit:
-                    printv(
-                        f"[Mirix.Agent.{self.agent_state.name}] ERROR: Retry limit reached. Final error: {ae_desc}"
-                    )
+                    printv(f"[Mirix.Agent.{self.agent_state.name}] ERROR: Retry limit reached. Final error: {ae_desc}")
                     self.logger.exception(
                         "[Mirix.Agent.%s] Retry limit reached (AssertionError).",
                         self.agent_state.name,
                     )
-                    raise Exception(
-                        f"Retries exhausted and no valid response received. Final error: {ae_desc}"
-                    )
+                    raise Exception(f"Retries exhausted and no valid response received. Final error: {ae_desc}")
                 else:
                     delay = min(backoff_factor * (2 ** (attempt - 1)), max_delay)
                     printv(
@@ -859,16 +799,12 @@ class Agent(BaseAgent):
             except requests.exceptions.HTTPError as he:
                 he_desc = f"{type(he).__name__}: {he!r}"
                 if attempt >= empty_response_retry_limit:
-                    printv(
-                        f"[Mirix.Agent.{self.agent_state.name}] ERROR: Retry limit reached. Final error: {he_desc}"
-                    )
+                    printv(f"[Mirix.Agent.{self.agent_state.name}] ERROR: Retry limit reached. Final error: {he_desc}")
                     self.logger.exception(
                         "[Mirix.Agent.%s] Retry limit reached (HTTPError).",
                         self.agent_state.name,
                     )
-                    raise Exception(
-                        f"Retries exhausted and no valid response received. Final error: {he_desc}"
-                    )
+                    raise Exception(f"Retries exhausted and no valid response received. Final error: {he_desc}")
                 else:
                     delay = min(backoff_factor * (2 ** (attempt - 1)), max_delay)
                     printv(
@@ -878,13 +814,9 @@ class Agent(BaseAgent):
                     continue
 
             except Exception as e:
-                log_telemetry(
-                    self.logger, "_handle_ai_response finish generic Exception"
-                )
+                log_telemetry(self.logger, "_handle_ai_response finish generic Exception")
                 # For non-retryable errors, exit immediately
-                log_telemetry(
-                    self.logger, "_handle_ai_response finish generic Exception"
-                )
+                log_telemetry(self.logger, "_handle_ai_response finish generic Exception")
                 raise e
 
             # check if we are going over the context window: this allows for articifial constraints
@@ -928,16 +860,12 @@ class Agent(BaseAgent):
 
         # Step 2: check if LLM wanted to call a function
         if response_message.function_call or (
-            response_message.tool_calls is not None
-            and len(response_message.tool_calls) > 0
+            response_message.tool_calls is not None and len(response_message.tool_calls) > 0
         ):
             if response_message.function_call:
                 raise DeprecationWarning(response_message)
 
-            assert (
-                response_message.tool_calls is not None
-                and len(response_message.tool_calls) > 0
-            )
+            assert response_message.tool_calls is not None and len(response_message.tool_calls) > 0
 
             # Generate UUIDs for tool calls if needed
             if override_tool_call_id or response_message.function_call:
@@ -972,11 +900,7 @@ class Agent(BaseAgent):
             ):
                 kept = response_message.tool_calls[0]
                 dropped = response_message.tool_calls[1:]
-                dropped_desc = [
-                    f"{tc.function.name}:{tc.id}"
-                    for tc in dropped
-                    if tc and tc.function
-                ]
+                dropped_desc = [f"{tc.function.name}:{tc.id}" for tc in dropped if tc and tc.function]
                 self.logger.warning(
                     "Truncating %d extra tool call(s) for memory agent %s (keeping %s:%s, dropping %s)",
                     len(dropped),
@@ -1002,13 +926,9 @@ class Agent(BaseAgent):
             nonnull_content = False
             if response_message.content:
                 # The content if then internal monologue, not chat
-                self.interface.internal_monologue(
-                    response_message.content, msg_obj=messages[-1]
-                )
+                self.interface.internal_monologue(response_message.content, msg_obj=messages[-1])
                 # Log inner thoughts for debugging and analysis
-                printv(
-                    f"[Mirix.Agent.{self.agent_state.name}] INFO: Inner thoughts: {response_message.content}"
-                )
+                printv(f"[Mirix.Agent.{self.agent_state.name}] INFO: Inner thoughts: {response_message.content}")
                 # Flag to avoid printing a duplicate if inner thoughts get popped from the function call
                 nonnull_content = True
 
@@ -1051,9 +971,7 @@ class Agent(BaseAgent):
                             },
                         )
                     )  # extend conversation with function response
-                    self.interface.function_message(
-                        f"Error: {error_msg}", msg_obj=messages[-1]
-                    )
+                    self.interface.function_message(f"Error: {error_msg}", msg_obj=messages[-1])
                     overall_function_failed = True
                     continue  # Continue with next tool call
 
@@ -1062,7 +980,9 @@ class Agent(BaseAgent):
                     raw_function_args = function_call.arguments
                     function_args = parse_json(raw_function_args)
                 except Exception:
-                    error_msg = f"Error parsing JSON for function '{function_name}' arguments: {function_call.arguments}"
+                    error_msg = (
+                        f"Error parsing JSON for function '{function_name}' arguments: {function_call.arguments}"
+                    )
                     function_response = package_function_response(False, error_msg)
                     messages.append(
                         Message.dict_to_message(
@@ -1076,9 +996,7 @@ class Agent(BaseAgent):
                             },
                         )
                     )  # extend conversation with function response
-                    self.interface.function_message(
-                        f"Error: {error_msg}", msg_obj=messages[-1]
-                    )
+                    self.interface.function_message(f"Error: {error_msg}", msg_obj=messages[-1])
                     overall_function_failed = True
                     continue  # Continue with next tool call
 
@@ -1100,9 +1018,7 @@ class Agent(BaseAgent):
 
                 # The content if then internal monologue, not chat
                 if response_message.content and not nonnull_content:
-                    self.interface.internal_monologue(
-                        response_message.content, msg_obj=messages[-1]
-                    )
+                    self.interface.internal_monologue(response_message.content, msg_obj=messages[-1])
                     printv(
                         f"[Mirix.Agent.{self.agent_state.name}] INFO: Inner thoughts (from function call): {response_message.content}"
                     )
@@ -1112,9 +1028,7 @@ class Agent(BaseAgent):
                 # Failure case 3: function arguments fail validation
                 validation_error = validate_tool_args(function_name, function_args)
                 if validation_error:
-                    function_response = package_function_response(
-                        False, validation_error
-                    )
+                    function_response = package_function_response(False, validation_error)
                     messages.append(
                         Message.dict_to_message(
                             agent_id=self.agent_state.id,
@@ -1127,25 +1041,19 @@ class Agent(BaseAgent):
                             },
                         )
                     )
-                    self.interface.function_message(
-                        f"Validation Error: {validation_error}", msg_obj=messages[-1]
-                    )
+                    self.interface.function_message(f"Validation Error: {validation_error}", msg_obj=messages[-1])
                     overall_function_failed = True
                     continue  # Skip execution, let LLM retry
 
                 # Failure case 5: function failed during execution
                 # NOTE: the msg_obj associated with the "Running " message is the prior assistant message, not the function/tool role message
                 #       this is because the function/tool role message is only created once the function/tool has executed/returned
-                self.interface.function_message(
-                    f"Running {function_name}()", msg_obj=messages[-1]
-                )
+                self.interface.function_message(f"Running {function_name}()", msg_obj=messages[-1])
 
                 try:
                     if display_intermediate_message:
                         # send intermediate message to the user
-                        display_intermediate_message(
-                            "internal_monologue", response_message.content
-                        )
+                        display_intermediate_message("internal_monologue", response_message.content)
 
                     function_response = self.execute_tool_and_persist_state(
                         function_name,
@@ -1155,10 +1063,7 @@ class Agent(BaseAgent):
                         request_user_confirmation=request_user_confirmation,
                     )
 
-                    if (
-                        function_name == "send_message"
-                        or function_name == "finish_memory_update"
-                    ):
+                    if function_name == "send_message" or function_name == "finish_memory_update":
                         assert (
                             tool_call_idx == len(response_message.tool_calls) - 1
                         ), f"{function_name} must be the last tool call"
@@ -1193,9 +1098,7 @@ class Agent(BaseAgent):
                     )
 
                     function_args.pop("self", None)
-                    function_response = package_function_response(
-                        True, function_response_string
-                    )
+                    function_response = package_function_response(True, function_response_string)
                     function_failed = False
 
                 except Exception as e:
@@ -1208,9 +1111,7 @@ class Agent(BaseAgent):
                         exception_message=str(e),
                     )
                     error_msg_user = f"{error_msg}\n{traceback.format_exc()}"
-                    printv(
-                        f"[Mirix.Agent.{self.agent_state.name}] ERROR: {error_msg_user}"
-                    )
+                    printv(f"[Mirix.Agent.{self.agent_state.name}] ERROR: {error_msg_user}")
                     function_response = package_function_response(False, error_msg)
                     self.last_function_response = function_response
                     # TODO: truncate error message somehow
@@ -1226,20 +1127,14 @@ class Agent(BaseAgent):
                             },
                         )
                     )  # extend conversation with function response
-                    self.interface.function_message(
-                        f"Ran {function_name}()", msg_obj=messages[-1]
-                    )
-                    self.interface.function_message(
-                        f"Error: {error_msg}", msg_obj=messages[-1]
-                    )
+                    self.interface.function_message(f"Ran {function_name}()", msg_obj=messages[-1])
+                    self.interface.function_message(f"Error: {error_msg}", msg_obj=messages[-1])
                     overall_function_failed = True
                     continue  # Continue with next tool call
 
                 # Step 4: check if function response is an error
                 if function_response_string.startswith(ERROR_MESSAGE_PREFIX):
-                    function_response = package_function_response(
-                        False, function_response_string
-                    )
+                    function_response = package_function_response(False, function_response_string)
                     # TODO: truncate error message somehow
                     messages.append(
                         Message.dict_to_message(
@@ -1253,12 +1148,8 @@ class Agent(BaseAgent):
                             },
                         )
                     )  # extend conversation with function response
-                    self.interface.function_message(
-                        f"Ran {function_name}()", msg_obj=messages[-1]
-                    )
-                    self.interface.function_message(
-                        f"Error: {function_response_string}", msg_obj=messages[-1]
-                    )
+                    self.interface.function_message(f"Ran {function_name}()", msg_obj=messages[-1])
+                    self.interface.function_message(f"Error: {function_response_string}", msg_obj=messages[-1])
                     overall_function_failed = True
                     continue  # Continue with next tool call
 
@@ -1276,12 +1167,8 @@ class Agent(BaseAgent):
                         },
                     )
                 )  # extend conversation with function response
-                self.interface.function_message(
-                    f"Ran {function_name}()", msg_obj=messages[-1]
-                )
-                self.interface.function_message(
-                    f"Success: {function_response_string}", msg_obj=messages[-1]
-                )
+                self.interface.function_message(f"Ran {function_name}()", msg_obj=messages[-1])
+                self.interface.function_message(f"Success: {function_response_string}", msg_obj=messages[-1])
                 self.last_function_response = function_response
 
                 # Track successfully executed function names
@@ -1296,9 +1183,7 @@ class Agent(BaseAgent):
                 # Clear history for all non-chat agents when:
                 # 1. chaining=False (clear regardless of function calls), OR
                 # 2. finish_memory_update was called (clear when chaining completes)
-                if CLEAR_HISTORY_AFTER_MEMORY_UPDATE and not self.agent_state.is_type(
-                    AgentType.chat_agent
-                ):
+                if CLEAR_HISTORY_AFTER_MEMORY_UPDATE and not self.agent_state.is_type(AgentType.chat_agent):
                     if not chaining:
                         should_clear_history = True
                         self.logger.info(f"should_clear_history=True (chaining=False)")
@@ -1306,9 +1191,7 @@ class Agent(BaseAgent):
                         for func_name in executed_function_names:
                             if func_name == "finish_memory_update":
                                 should_clear_history = True
-                                self.logger.info(
-                                    f"should_clear_history=True (finish_memory_update called)"
-                                )
+                                self.logger.info(f"should_clear_history=True (finish_memory_update called)")
                                 break
                 else:
                     self.logger.debug(
@@ -1342,27 +1225,17 @@ class Agent(BaseAgent):
                         if memory_item:
                             memory_item = memory_item[0]
                             memory_item_str = ""
+                            memory_item_str += "[Episodic Event ID]: " + memory_item.id + "\n"
                             memory_item_str += (
-                                "[Episodic Event ID]: " + memory_item.id + "\n"
+                                "[Event Occurred At]: " + memory_item.occurred_at.strftime("%Y-%m-%d %H:%M:%S") + "\n"
                             )
-                            memory_item_str += (
-                                "[Event Occurred At]: "
-                                + memory_item.occurred_at.strftime("%Y-%m-%d %H:%M:%S")
-                                + "\n"
-                            )
-                            memory_item_str += (
-                                "[Summary]: " + memory_item.summary + "\n"
-                            )
-                            memory_item_str += (
-                                "[Details]: " + memory_item.details + "\n"
-                            )
+                            memory_item_str += "[Summary]: " + memory_item.summary + "\n"
+                            memory_item_str += "[Details]: " + memory_item.details + "\n"
                             memory_item_str += (
                                 "[Last Modified]: "
                                 + memory_item.last_modify["operation"]
                                 + " at "
-                                + memory_item.last_modify["timestamp"].strftime(
-                                    "%Y-%m-%d %H:%M:%S"
-                                )
+                                + memory_item.last_modify["timestamp"].strftime("%Y-%m-%d %H:%M:%S")
                                 + "\n"
                             )
                             memory_item_str = memory_item_str.strip()
@@ -1375,138 +1248,87 @@ class Agent(BaseAgent):
                         if memory_item:
                             memory_item = memory_item[0]
                             memory_item_str = ""
-                            memory_item_str += (
-                                "[Procedural Memory ID]: " + memory_item.id + "\n"
-                            )
-                            memory_item_str += (
-                                "[Entry Type]: " + memory_item.entry_type + "\n"
-                            )
-                            memory_item_str += (
-                                "[Summary]: " + (memory_item.summary or "N/A") + "\n"
-                            )
-                            memory_item_str += (
-                                "[Steps]: " + "; ".join(memory_item.steps) + "\n"
-                            )
+                            memory_item_str += "[Procedural Memory ID]: " + memory_item.id + "\n"
+                            memory_item_str += "[Entry Type]: " + memory_item.entry_type + "\n"
+                            memory_item_str += "[Summary]: " + (memory_item.summary or "N/A") + "\n"
+                            memory_item_str += "[Steps]: " + "; ".join(memory_item.steps) + "\n"
                             memory_item_str += (
                                 "[Last Modified]: "
                                 + memory_item.last_modify["operation"]
                                 + " at "
-                                + memory_item.last_modify["timestamp"].strftime(
-                                    "%Y-%m-%d %H:%M:%S"
-                                )
+                                + memory_item.last_modify["timestamp"].strftime("%Y-%m-%d %H:%M:%S")
                                 + "\n"
                             )
                             memory_item_str = memory_item_str.strip()
 
                     elif self.agent_state.name.endswith("resource_memory_agent"):
-                        memory_item = (
-                            self.resource_memory_manager.get_most_recently_updated_item(
-                                user=self.user,
-                                timezone_str=self.user.timezone,
-                            )
+                        memory_item = self.resource_memory_manager.get_most_recently_updated_item(
+                            user=self.user,
+                            timezone_str=self.user.timezone,
                         )
                         if memory_item:
                             memory_item = memory_item[0]
                             memory_item_str = ""
-                            memory_item_str += (
-                                "[Resource Memory ID]: " + memory_item.id + "\n"
-                            )
+                            memory_item_str += "[Resource Memory ID]: " + memory_item.id + "\n"
                             memory_item_str += "[Title]: " + memory_item.title + "\n"
-                            memory_item_str += (
-                                "[Summary]: " + (memory_item.summary or "N/A") + "\n"
-                            )
-                            memory_item_str += (
-                                "[Resource Type]: " + memory_item.resource_type + "\n"
-                            )
-                            memory_item_str += (
-                                "[Content]: " + memory_item.content + "\n"
-                            )
+                            memory_item_str += "[Summary]: " + (memory_item.summary or "N/A") + "\n"
+                            memory_item_str += "[Resource Type]: " + memory_item.resource_type + "\n"
+                            memory_item_str += "[Content]: " + memory_item.content + "\n"
                             memory_item_str += (
                                 "[Last Modified]: "
                                 + memory_item.last_modify["operation"]
                                 + " at "
-                                + memory_item.last_modify["timestamp"].strftime(
-                                    "%Y-%m-%d %H:%M:%S"
-                                )
+                                + memory_item.last_modify["timestamp"].strftime("%Y-%m-%d %H:%M:%S")
                                 + "\n"
                             )
                             memory_item_str = memory_item_str.strip()
 
                     elif self.agent_state.name.endswith("knowledge_vault_memory_agent"):
-                        memory_item = (
-                            self.knowledge_vault_manager.get_most_recently_updated_item(
-                                user=self.user,
-                                timezone_str=self.user.timezone,
-                            )
+                        memory_item = self.knowledge_vault_manager.get_most_recently_updated_item(
+                            user=self.user,
+                            timezone_str=self.user.timezone,
                         )
 
                         # Check if finish_memory_update was one of the executed functions
-                        if (
-                            "finish_memory_update" in executed_function_names
-                            and memory_item is None
-                        ):
+                        if "finish_memory_update" in executed_function_names and memory_item is None:
                             memory_item_str = "No new knowledge vault items were added."
 
                         if memory_item:
                             memory_item = memory_item[0]
                             memory_item_str = ""
-                            memory_item_str += (
-                                "[Knowledge Vault ID]: " + memory_item.id + "\n"
-                            )
-                            memory_item_str += (
-                                "[Entry Type]: " + memory_item.entry_type + "\n"
-                            )
-                            memory_item_str += (
-                                "[Caption]: " + memory_item.caption + "\n"
-                            )
+                            memory_item_str += "[Knowledge Vault ID]: " + memory_item.id + "\n"
+                            memory_item_str += "[Entry Type]: " + memory_item.entry_type + "\n"
+                            memory_item_str += "[Caption]: " + memory_item.caption + "\n"
                             memory_item_str += "[Source]: " + memory_item.source + "\n"
-                            memory_item_str += (
-                                "[Sensitivity]: " + memory_item.sensitivity + "\n"
-                            )
-                            memory_item_str += (
-                                "[Secret Value]: " + memory_item.secret_value + "\n"
-                            )
+                            memory_item_str += "[Sensitivity]: " + memory_item.sensitivity + "\n"
+                            memory_item_str += "[Secret Value]: " + memory_item.secret_value + "\n"
                             memory_item_str += (
                                 "[Last Modified]: "
                                 + memory_item.last_modify["operation"]
                                 + " at "
-                                + memory_item.last_modify["timestamp"].strftime(
-                                    "%Y-%m-%d %H:%M:%S"
-                                )
+                                + memory_item.last_modify["timestamp"].strftime("%Y-%m-%d %H:%M:%S")
                                 + "\n"
                             )
                             memory_item_str = memory_item_str.strip()
 
                     elif self.agent_state.name.endswith("semantic_memory_agent"):
-                        memory_item = (
-                            self.semantic_memory_manager.get_most_recently_updated_item(
-                                user=self.user,
-                                timezone_str=self.user.timezone,
-                            )
+                        memory_item = self.semantic_memory_manager.get_most_recently_updated_item(
+                            user=self.user,
+                            timezone_str=self.user.timezone,
                         )
                         if memory_item:
                             memory_item = memory_item[0]
                             memory_item_str = ""
-                            memory_item_str += (
-                                "[Semantic Memory ID]: " + memory_item.id + "\n"
-                            )
+                            memory_item_str += "[Semantic Memory ID]: " + memory_item.id + "\n"
                             memory_item_str += "[Name]: " + memory_item.name + "\n"
-                            memory_item_str += (
-                                "[Summary]: " + memory_item.summary + "\n"
-                            )
-                            memory_item_str += (
-                                "[Details]: " + (memory_item.details or "N/A") + "\n"
-                            )
-                            memory_item_str += (
-                                "[Source]: " + (memory_item.source or "N/A") + "\n"
-                            )
+                            memory_item_str += "[Summary]: " + memory_item.summary + "\n"
+                            memory_item_str += "[Details]: " + (memory_item.details or "N/A") + "\n"
+                            memory_item_str += "[Source]: " + (memory_item.source or "N/A") + "\n"
                             memory_item_str += (
                                 "[Last Modified]: "
                                 + memory_item.last_modify["operation"]
                                 + " at "
-                                + memory_item.last_modify["timestamp"].strftime(
-                                    "%Y-%m-%d %H:%M:%S"
-                                )
+                                + memory_item.last_modify["timestamp"].strftime("%Y-%m-%d %H:%M:%S")
                                 + "\n"
                             )
                             memory_item_str = memory_item_str.strip()
@@ -1517,13 +1339,9 @@ class Agent(BaseAgent):
                     # Optionally create a summary message showing last edited memory item
                     if memory_item_str:
                         if self.agent_state.name.endswith("core_memory_agent"):
-                            message_content = (
-                                "Current Full Core Memory:\n\n" + memory_item_str
-                            )
+                            message_content = "Current Full Core Memory:\n\n" + memory_item_str
                         else:
-                            message_content = (
-                                "Last edited memory item:\n\n" + memory_item_str
-                            )
+                            message_content = "Last edited memory item:\n\n" + memory_item_str
 
                         # create a new message
                         new_message = Message.dict_to_message(
@@ -1541,9 +1359,7 @@ class Agent(BaseAgent):
                             actor=self.actor,  # Client for write operations (audit trail)
                             client_id=self.client_id,  # From actor (Client)
                             user_id=(
-                                self.user_id
-                                if self.user_id
-                                else UserManager.ADMIN_USER_ID
+                                self.user_id if self.user_id else UserManager.ADMIN_USER_ID
                             ),  # Fallback to default user
                         )
 
@@ -1569,8 +1385,7 @@ class Agent(BaseAgent):
             # Validate that we have content - LLM returned neither tool_calls nor content
             if not response_message.content:
                 raise ValueError(
-                    f"LLM returned empty response, "
-                    f"no tool_calls and no content. Response: {response_message}"
+                    f"LLM returned empty response, " f"no tool_calls and no content. Response: {response_message}"
                 )
             messages.append(
                 Message.dict_to_message(
@@ -1580,9 +1395,7 @@ class Agent(BaseAgent):
                     openai_message_dict=response_message.model_dump(),
                 )
             )  # extend conversation with assistant's reply
-            self.interface.internal_monologue(
-                response_message.content, msg_obj=messages[-1]
-            )
+            self.interface.internal_monologue(response_message.content, msg_obj=messages[-1])
             # Log inner thoughts for debugging and analysis
             printv(
                 f"[Mirix.Agent.{self.agent_state.name}] INFO: Inner thoughts (no function call): {response_message.content}"
@@ -1590,9 +1403,7 @@ class Agent(BaseAgent):
             continue_chaining = True
             function_failed = False
             if display_intermediate_message:
-                display_intermediate_message(
-                    "internal_monologue", response_message.content
-                )
+                display_intermediate_message("internal_monologue", response_message.content)
 
         # Update ToolRulesSolver state with last called function
         if function_name is not None:
@@ -1607,9 +1418,7 @@ class Agent(BaseAgent):
 
     def step(
         self,
-        input_messages: Union[
-            Message, MessageCreate, List[Union[Message, MessageCreate]]
-        ],
+        input_messages: Union[Message, MessageCreate, List[Union[Message, MessageCreate]]],
         chaining: bool = True,
         max_chaining_steps: Optional[int] = None,
         extra_messages: Optional[List[dict]] = None,
@@ -1638,9 +1447,7 @@ class Agent(BaseAgent):
             if self.agent_state.is_type(AgentType.core_memory_agent):
                 # Load existing blocks for this user
                 # Note: auto_create_from_default=True will create blocks if they don't exist
-                existing_blocks = self.block_manager.get_blocks(
-                    user=self.user, agent_id=self.agent_state.id
-                )
+                existing_blocks = self.block_manager.get_blocks(user=self.user, agent_id=self.agent_state.id)
 
                 # Special handling for core_memory_agent: ensure required blocks exist
                 # This automatically creates blocks on first use for each user
@@ -1652,20 +1459,13 @@ class Agent(BaseAgent):
                     blocks=[
                         b
                         for block in existing_blocks
-                        if (
-                            b := self.block_manager.get_block_by_id(
-                                block.id, user=self.user
-                            )
-                        )
-                        is not None
+                        if (b := self.block_manager.get_block_by_id(block.id, user=self.user)) is not None
                     ]
                 )
 
         max_chaining_steps = max_chaining_steps or MAX_CHAINING_STEPS
 
-        first_input_message = (
-            input_messages[0] if isinstance(input_messages, list) else input_messages
-        )
+        first_input_message = input_messages[0] if isinstance(input_messages, list) else input_messages
 
         # Convert MessageCreate objects to Message objects
         if not isinstance(input_messages, list):
@@ -1703,9 +1503,7 @@ class Agent(BaseAgent):
         step_count = 0
 
         initial_message_count = len(
-            self.agent_manager.get_in_context_messages(
-                agent_state=self.agent_state, actor=self.actor, user=self.user
-            )
+            self.agent_manager.get_in_context_messages(agent_state=self.agent_state, actor=self.actor, user=self.user)
         )
 
         if self.agent_state.is_type(AgentType.reflexion_agent):
@@ -1729,12 +1527,7 @@ class Agent(BaseAgent):
             kwargs["first_message"] = False
             kwargs["step_count"] = step_count
 
-            if (
-                self.agent_state.is_type(
-                    AgentType.meta_memory_agent, AgentType.chat_agent
-                )
-                and step_count == 0
-            ):
+            if self.agent_state.is_type(AgentType.meta_memory_agent, AgentType.chat_agent) and step_count == 0:
                 # When the agent first gets the screenshots, we need to extract the topic to search the query.
                 try:
                     topics = self._extract_topics_from_messages(next_input_message)
@@ -1742,9 +1535,7 @@ class Agent(BaseAgent):
                     if topics is not None:
                         kwargs["topics"] = topics
                     else:
-                        printv(
-                            f"[Mirix.Agent.{self.agent_state.name}] WARNING: No topics extracted from screenshots"
-                        )
+                        printv(f"[Mirix.Agent.{self.agent_state.name}] WARNING: No topics extracted from screenshots")
 
                 except Exception as e:
                     printv(
@@ -1752,10 +1543,7 @@ class Agent(BaseAgent):
                     )
                     pass
 
-            if (
-                self.agent_state.is_type(AgentType.meta_memory_agent)
-                and step_count == 0
-            ):
+            if self.agent_state.is_type(AgentType.meta_memory_agent) and step_count == 0:
                 meta_message = prepare_input_message_create(
                     MessageCreate(
                         role="user",
@@ -1794,9 +1582,7 @@ class Agent(BaseAgent):
 
             # Chain stops
             if not chaining and (not function_failed):
-                printv(
-                    f"[Mirix.Agent.{self.agent_state.name}] INFO: No chaining, stopping after one step"
-                )
+                printv(f"[Mirix.Agent.{self.agent_state.name}] INFO: No chaining, stopping after one step")
                 break
             elif max_chaining_steps is not None and counter == max_chaining_steps:
                 # Add warning message based on agent type
@@ -1895,9 +1681,7 @@ class Agent(BaseAgent):
 
         # Prepare embedding for semantic search
         if key_words != "" and search_method == "embedding":
-            embedded_text = embedding_model(
-                self.agent_state.embedding_config
-            ).get_text_embedding(key_words)
+            embedded_text = embedding_model(self.agent_state.embedding_config).get_text_embedding(key_words)
             embedded_text = np.array(embedded_text)
             embedded_text = np.pad(
                 embedded_text,
@@ -1908,10 +1692,7 @@ class Agent(BaseAgent):
             embedded_text = None
 
         # Retrieve core memory
-        if (
-            self.agent_state.is_type(AgentType.core_memory_agent)
-            or "core" not in retrieved_memories
-        ):
+        if self.agent_state.is_type(AgentType.core_memory_agent) or "core" not in retrieved_memories:
             current_persisted_memory = Memory(
                 blocks=[
                     b
@@ -1919,12 +1700,7 @@ class Agent(BaseAgent):
                         user=self.user,
                         auto_create_from_default=False,  # Don't auto-create here, only in step()
                     )
-                    if (
-                        b := self.block_manager.get_block_by_id(
-                            block.id, user=self.user
-                        )
-                    )
-                    is not None
+                    if (b := self.block_manager.get_block_by_id(block.id, user=self.user)) is not None
                 ]
             )
             core_memory = current_persisted_memory.compile()
@@ -1934,9 +1710,7 @@ class Agent(BaseAgent):
             self.agent_state.is_type(AgentType.knowledge_vault_memory_agent)
             or "knowledge_vault" not in retrieved_memories
         ):
-            if self.agent_state.is_type(
-                AgentType.knowledge_vault_memory_agent, AgentType.reflexion_agent
-            ):
+            if self.agent_state.is_type(AgentType.knowledge_vault_memory_agent, AgentType.reflexion_agent):
                 current_knowledge_vault = self.knowledge_vault_manager.list_knowledge(
                     agent_state=self.agent_state,
                     user=self.user,
@@ -1965,17 +1739,13 @@ class Agent(BaseAgent):
                 for idx, knowledge_vault_item in enumerate(current_knowledge_vault):
                     knowledge_vault_memory += f"[{idx}] Knowledge Vault Item ID: {knowledge_vault_item.id}; Caption: {knowledge_vault_item.caption}\n"
             retrieved_memories["knowledge_vault"] = {
-                "total_number_of_items": self.knowledge_vault_manager.get_total_number_of_items(
-                    user=self.user
-                ),
+                "total_number_of_items": self.knowledge_vault_manager.get_total_number_of_items(user=self.user),
                 "current_count": len(current_knowledge_vault),
                 "text": knowledge_vault_memory,
             }
 
         # Retrieve episodic memory
-        is_owning_agent = self.agent_state.is_type(
-            AgentType.episodic_memory_agent, AgentType.reflexion_agent
-        )
+        is_owning_agent = self.agent_state.is_type(AgentType.episodic_memory_agent, AgentType.reflexion_agent)
         if is_owning_agent or "episodic" not in retrieved_memories:
             current_episodic_memory = self.episodic_memory_manager.list_episodic_memory(
                 agent_state=self.agent_state,
@@ -1993,17 +1763,15 @@ class Agent(BaseAgent):
 
             recent_episodic_memory = episodic_memory.strip()
 
-            most_relevant_episodic_memory = (
-                self.episodic_memory_manager.list_episodic_memory(
-                    agent_state=self.agent_state,
-                    user=self.user,
-                    embedded_text=embedded_text,
-                    query=key_words,
-                    search_field="details",
-                    search_method=search_method,
-                    limit=MAX_RETRIEVAL_LIMIT_IN_SYSTEM,
-                    timezone_str=timezone_str,
-                )
+            most_relevant_episodic_memory = self.episodic_memory_manager.list_episodic_memory(
+                agent_state=self.agent_state,
+                user=self.user,
+                embedded_text=embedded_text,
+                query=key_words,
+                search_field="details",
+                search_method=search_method,
+                limit=MAX_RETRIEVAL_LIMIT_IN_SYSTEM,
+                timezone_str=timezone_str,
             )
             most_relevant_episodic_memory_str = ""
             if len(most_relevant_episodic_memory) > 0:
@@ -2014,9 +1782,7 @@ class Agent(BaseAgent):
                         most_relevant_episodic_memory_str += f"[{idx}] Timestamp: {event.occurred_at.strftime('%Y-%m-%d %H:%M:%S')} - {event.summary}  (Details: {len(event.details)} Characters)\n"
             relevant_episodic_memory = most_relevant_episodic_memory_str.strip()
             retrieved_memories["episodic"] = {
-                "total_number_of_items": self.episodic_memory_manager.get_total_number_of_items(
-                    user=self.user
-                ),
+                "total_number_of_items": self.episodic_memory_manager.get_total_number_of_items(user=self.user),
                 "recent_count": len(current_episodic_memory),
                 "relevant_count": len(most_relevant_episodic_memory),
                 "recent_episodic_memory": recent_episodic_memory,
@@ -2025,9 +1791,7 @@ class Agent(BaseAgent):
 
         # Retrieve resource memory
         # Owning agents need IDs for merge/update operations, so always retrieve fresh
-        is_owning_agent = self.agent_state.is_type(
-            AgentType.resource_memory_agent, AgentType.reflexion_agent
-        )
+        is_owning_agent = self.agent_state.is_type(AgentType.resource_memory_agent, AgentType.reflexion_agent)
         if is_owning_agent or "resource" not in retrieved_memories:
             current_resource_memory = self.resource_memory_manager.list_resources(
                 agent_state=self.agent_state,
@@ -2048,18 +1812,14 @@ class Agent(BaseAgent):
                         resource_memory += f"[{idx}] Resource Title: {resource.title}; Resource Summary: {resource.summary} Resource Type: {resource.resource_type}\n"
             resource_memory = resource_memory.strip()
             retrieved_memories["resource"] = {
-                "total_number_of_items": self.resource_memory_manager.get_total_number_of_items(
-                    user=self.user
-                ),
+                "total_number_of_items": self.resource_memory_manager.get_total_number_of_items(user=self.user),
                 "current_count": len(current_resource_memory),
                 "text": resource_memory,
             }
 
         # Retrieve procedural memory
         # Owning agents need IDs for merge/update operations, so always retrieve fresh
-        is_owning_agent = self.agent_state.is_type(
-            AgentType.procedural_memory_agent, AgentType.reflexion_agent
-        )
+        is_owning_agent = self.agent_state.is_type(AgentType.procedural_memory_agent, AgentType.reflexion_agent)
         if is_owning_agent or "procedural" not in retrieved_memories:
             current_procedural_memory = self.procedural_memory_manager.list_procedures(
                 agent_state=self.agent_state,
@@ -2077,21 +1837,19 @@ class Agent(BaseAgent):
                     if is_owning_agent:
                         procedural_memory += f"[Procedure ID: {procedure.id}] Entry Type: {procedure.entry_type}; Summary: {procedure.summary}\n"
                     else:
-                        procedural_memory += f"[{idx}] Entry Type: {procedure.entry_type}; Summary: {procedure.summary}\n"
+                        procedural_memory += (
+                            f"[{idx}] Entry Type: {procedure.entry_type}; Summary: {procedure.summary}\n"
+                        )
             procedural_memory = procedural_memory.strip()
             retrieved_memories["procedural"] = {
-                "total_number_of_items": self.procedural_memory_manager.get_total_number_of_items(
-                    user=self.user
-                ),
+                "total_number_of_items": self.procedural_memory_manager.get_total_number_of_items(user=self.user),
                 "current_count": len(current_procedural_memory),
                 "text": procedural_memory,
             }
 
         # Retrieve semantic memory
         # Owning agents need IDs for merge/update operations, so always retrieve fresh
-        is_owning_agent = self.agent_state.is_type(
-            AgentType.semantic_memory_agent, AgentType.reflexion_agent
-        )
+        is_owning_agent = self.agent_state.is_type(AgentType.semantic_memory_agent, AgentType.reflexion_agent)
         if is_owning_agent or "semantic" not in retrieved_memories:
             current_semantic_memory = self.semantic_memory_manager.list_semantic_items(
                 agent_state=self.agent_state,
@@ -2109,13 +1867,13 @@ class Agent(BaseAgent):
                     if is_owning_agent:
                         semantic_memory += f"[Semantic Memory ID: {semantic_memory_item.id}] Name: {semantic_memory_item.name}; Summary: {semantic_memory_item.summary}\n"
                     else:
-                        semantic_memory += f"[{idx}] Name: {semantic_memory_item.name}; Summary: {semantic_memory_item.summary}\n"
+                        semantic_memory += (
+                            f"[{idx}] Name: {semantic_memory_item.name}; Summary: {semantic_memory_item.summary}\n"
+                        )
 
             semantic_memory = semantic_memory.strip()
             retrieved_memories["semantic"] = {
-                "total_number_of_items": self.semantic_memory_manager.get_total_number_of_items(
-                    user=self.user
-                ),
+                "total_number_of_items": self.semantic_memory_manager.get_total_number_of_items(user=self.user),
                 "current_count": len(current_semantic_memory),
                 "text": semantic_memory,
             }
@@ -2164,20 +1922,12 @@ These keywords have been used to retrieve relevant memories from the database.
             current_time=current_time,
             keywords=keywords,
             core_memory=core_memory if core_memory else "Empty",
-            episodic_memory=(
-                episodic_memory["recent_episodic_memory"]
-                if episodic_memory
-                else "Empty"
-            ),
+            episodic_memory=(episodic_memory["recent_episodic_memory"] if episodic_memory else "Empty"),
         )
 
         if keywords is not None:
-            episodic_total = (
-                episodic_memory["total_number_of_items"] if episodic_memory else 0
-            )
-            relevant_episodic_text = (
-                episodic_memory["relevant_episodic_memory"] if episodic_memory else ""
-            )
+            episodic_total = episodic_memory["total_number_of_items"] if episodic_memory else 0
+            relevant_episodic_text = episodic_memory["relevant_episodic_memory"] if episodic_memory else ""
             relevant_count = episodic_memory["relevant_count"] if episodic_memory else 0
 
             system_prompt += (
@@ -2187,13 +1937,9 @@ These keywords have been used to retrieve relevant memories from the database.
             )
 
         # Add knowledge vault with counts
-        knowledge_vault_total = (
-            knowledge_vault["total_number_of_items"] if knowledge_vault else 0
-        )
+        knowledge_vault_total = knowledge_vault["total_number_of_items"] if knowledge_vault else 0
         knowledge_vault_text = knowledge_vault["text"] if knowledge_vault else ""
-        knowledge_vault_count = (
-            knowledge_vault["current_count"] if knowledge_vault else 0
-        )
+        knowledge_vault_count = knowledge_vault["current_count"] if knowledge_vault else 0
         system_prompt += (
             f"\n<knowledge_vault> ({knowledge_vault_count} out of {knowledge_vault_total} Items):\n"
             + (knowledge_vault_text if knowledge_vault_text else "Empty")
@@ -2201,9 +1947,7 @@ These keywords have been used to retrieve relevant memories from the database.
         )
 
         # Add semantic memory with counts
-        semantic_total = (
-            semantic_memory["total_number_of_items"] if semantic_memory else 0
-        )
+        semantic_total = semantic_memory["total_number_of_items"] if semantic_memory else 0
         semantic_text = semantic_memory["text"] if semantic_memory else ""
         semantic_count = semantic_memory["current_count"] if semantic_memory else 0
         system_prompt += (
@@ -2213,9 +1957,7 @@ These keywords have been used to retrieve relevant memories from the database.
         )
 
         # Add resource memory with counts
-        resource_total = (
-            resource_memory["total_number_of_items"] if resource_memory else 0
-        )
+        resource_total = resource_memory["total_number_of_items"] if resource_memory else 0
         resource_text = resource_memory["text"] if resource_memory else ""
         resource_count = resource_memory["current_count"] if resource_memory else 0
         system_prompt += (
@@ -2225,13 +1967,9 @@ These keywords have been used to retrieve relevant memories from the database.
         )
 
         # Add procedural memory with counts
-        procedural_total = (
-            procedural_memory["total_number_of_items"] if procedural_memory else 0
-        )
+        procedural_total = procedural_memory["total_number_of_items"] if procedural_memory else 0
         procedural_text = procedural_memory["text"] if procedural_memory else ""
-        procedural_count = (
-            procedural_memory["current_count"] if procedural_memory else 0
-        )
+        procedural_count = procedural_memory["current_count"] if procedural_memory else 0
         system_prompt += (
             f"\n<procedural_memory> ({procedural_count} out of {procedural_total} Items):\n"
             + (procedural_text if procedural_text else "Empty")
@@ -2255,9 +1993,7 @@ These keywords have been used to retrieve relevant memories from the database.
         topics = self._extract_topics_from_message(message)
 
         # Step 2: build memory system prompt with extracted topics
-        memory_system_prompt = self.build_system_prompt(
-            self._retrieve_memories_for_topics(topics)
-        )
+        memory_system_prompt = self.build_system_prompt(self._retrieve_memories_for_topics(topics))
 
         return memory_system_prompt
 
@@ -2370,13 +2106,9 @@ These keywords have been used to retrieve relevant memories from the database.
                     and len(choice.message.tool_calls) > 0
                 ):
                     try:
-                        function_args = json.loads(
-                            choice.message.tool_calls[0].function.arguments
-                        )
+                        function_args = json.loads(choice.message.tool_calls[0].function.arguments)
                         topics = function_args.get("topic")
-                        printv(
-                            f"[Mirix.Agent.{self.agent_state.name}] INFO: Extracted topics: {topics}"
-                        )
+                        printv(f"[Mirix.Agent.{self.agent_state.name}] INFO: Extracted topics: {topics}")
                         return topics
                     except (json.JSONDecodeError, KeyError) as parse_error:
                         printv(
@@ -2385,9 +2117,7 @@ These keywords have been used to retrieve relevant memories from the database.
                         continue
 
         except Exception as e:
-            printv(
-                f"[Mirix.Agent.{self.agent_state.name}] INFO: Error in extracting the topic from the messages: {e}"
-            )
+            printv(f"[Mirix.Agent.{self.agent_state.name}] INFO: Error in extracting the topic from the messages: {e}")
 
         return None
 
@@ -2436,9 +2166,7 @@ These keywords have been used to retrieve relevant memories from the database.
         )
 
         # Build the complete system prompt with memories
-        complete_system_prompt, _ = self.build_system_prompt_with_memories(
-            raw_system=raw_system, topics=topics
-        )
+        complete_system_prompt, _ = self.build_system_prompt_with_memories(raw_system=raw_system, topics=topics)
 
         return complete_system_prompt
 
@@ -2475,9 +2203,7 @@ These keywords have been used to retrieve relevant memories from the database.
                 f"[Mirix.Agent.{self.agent_state.name}] INFO: Starting agent step - step_count: {step_count}, chaining: {chaining}"
             )
             if topics:
-                printv(
-                    f"[Mirix.Agent.{self.agent_state.name}] INFO: Step topics: {topics}"
-                )
+                printv(f"[Mirix.Agent.{self.agent_state.name}] INFO: Step topics: {topics}")
 
             # previous_in_context_messages = self.agent_state.message_ids
             # new_message_ids = self.agent_manager.get_agent_by_id(agent_id=self.agent_state.id, actor=self.user).message_ids
@@ -2491,12 +2217,10 @@ These keywords have been used to retrieve relevant memories from the database.
             raw_system = in_context_messages[0].content[0].text
 
             # Build the complete system prompt with memories
-            complete_system_prompt, retrieved_memories = (
-                self.build_system_prompt_with_memories(
-                    raw_system=raw_system,
-                    topics=topics,
-                    retrieved_memories=retrieved_memories,
-                )
+            complete_system_prompt, retrieved_memories = self.build_system_prompt_with_memories(
+                raw_system=raw_system,
+                topics=topics,
+                retrieved_memories=retrieved_memories,
             )
 
             in_context_messages[0].content[0].text = complete_system_prompt
@@ -2506,9 +2230,7 @@ These keywords have been used to retrieve relevant memories from the database.
                 messages = [messages]
 
             if not all(isinstance(m, Message) for m in messages):
-                raise ValueError(
-                    f"messages should be a Message or a list of Message, got {type(messages)}"
-                )
+                raise ValueError(f"messages should be a Message or a list of Message, got {type(messages)}")
 
             input_message_sequence = in_context_messages + messages
 
@@ -2519,10 +2241,7 @@ These keywords have been used to retrieve relevant memories from the database.
                     + input_message_sequence[initial_message_count:]
                 )
 
-            if (
-                len(input_message_sequence) > 1
-                and input_message_sequence[-1].role != "user"
-            ):
+            if len(input_message_sequence) > 1 and input_message_sequence[-1].role != "user":
                 printv(
                     f"[Mirix.Agent.{self.agent_state.name}] WARNING: {CLI_WARNING_PREFIX}Attempting to run ChatCompletion without user as the last message in the queue"
                 )
@@ -2561,22 +2280,20 @@ These keywords have been used to retrieve relevant memories from the database.
             all_response_messages = []
             for response_choice in response.choices:
                 response_message = response_choice.message
-                tmp_response_messages, continue_chaining, function_failed = (
-                    self._handle_ai_response(
-                        first_input_messge,  # give the last message to the function so that other agents can see this message through funciton_calls
-                        response_message,
-                        existing_file_uris=existing_file_uris,
-                        # TODO this is kind of hacky, find a better way to handle this
-                        # the only time we set up message creation ahead of time is when streaming is on
-                        response_message_id=response.id if stream else None,
-                        force_response=force_response,
-                        retrieved_memories=retrieved_memories,
-                        display_intermediate_message=display_intermediate_message,
-                        request_user_confirmation=request_user_confirmation,
-                        return_memory_types_without_update=return_memory_types_without_update,
-                        message_queue=message_queue,
-                        chaining=chaining,
-                    )
+                tmp_response_messages, continue_chaining, function_failed = self._handle_ai_response(
+                    first_input_messge,  # give the last message to the function so that other agents can see this message through funciton_calls
+                    response_message,
+                    existing_file_uris=existing_file_uris,
+                    # TODO this is kind of hacky, find a better way to handle this
+                    # the only time we set up message creation ahead of time is when streaming is on
+                    response_message_id=response.id if stream else None,
+                    force_response=force_response,
+                    retrieved_memories=retrieved_memories,
+                    display_intermediate_message=display_intermediate_message,
+                    request_user_confirmation=request_user_confirmation,
+                    return_memory_types_without_update=return_memory_types_without_update,
+                    message_queue=message_queue,
+                    chaining=chaining,
                 )
                 all_response_messages.extend(tmp_response_messages)
 
@@ -2586,11 +2303,7 @@ These keywords have been used to retrieve relevant memories from the database.
                 for msg in all_response_messages:
                     if msg.role == "tool" and msg.content:
                         try:
-                            content = (
-                                msg.content[0].text
-                                if isinstance(msg.content, list)
-                                else msg.content
-                            )
+                            content = msg.content[0].text if isinstance(msg.content, list) else msg.content
                             response_data = json.loads(content)
                             if response_data.get("status") == "Failed":
                                 failed_messages.append(f"{msg.name}: {content}")
@@ -2656,9 +2369,7 @@ These keywords have been used to retrieve relevant memories from the database.
                 printv(
                     f"[Mirix.Agent.{self.agent_state.name}] WARNING: Could not find context_window in config, setting to default {LLM_MAX_TOKENS['DEFAULT']}"
                 )
-                printv(
-                    f"[Mirix.Agent.{self.agent_state.name}] DEBUG: Agent state: {self.agent_state}"
-                )
+                printv(f"[Mirix.Agent.{self.agent_state.name}] DEBUG: Agent state: {self.agent_state}")
                 self.agent_state.llm_config.context_window = (
                     LLM_MAX_TOKENS[self.model]
                     if (self.model is not None and self.model in LLM_MAX_TOKENS)
@@ -2686,10 +2397,8 @@ These keywords have been used to retrieve relevant memories from the database.
             )
 
             # Check memory pressure AFTER messages are persisted
-            if (
-                current_total_tokens
-                > summarizer_settings.memory_warning_threshold
-                * int(self.agent_state.llm_config.context_window)
+            if current_total_tokens > summarizer_settings.memory_warning_threshold * int(
+                self.agent_state.llm_config.context_window
             ):
                 printv(
                     f"[Mirix.Agent.{self.agent_state.name}] INFO: Memory pressure detected: last response total_tokens ({current_total_tokens}) > {summarizer_settings.memory_warning_threshold * int(self.agent_state.llm_config.context_window)}"
@@ -2698,9 +2407,7 @@ These keywords have been used to retrieve relevant memories from the database.
                 # Only deliver the alert if we haven't already (this period)
                 if not self.agent_alerted_about_memory_pressure:
                     active_memory_warning = True
-                    self.agent_alerted_about_memory_pressure = (
-                        True  # it's up to the outer loop to handle this
-                    )
+                    self.agent_alerted_about_memory_pressure = True  # it's up to the outer loop to handle this
 
                 # if it is too long then run summarization here.
                 self.summarize_messages_inplace(existing_file_uris=existing_file_uris)
@@ -2724,9 +2431,7 @@ These keywords have been used to retrieve relevant memories from the database.
             )
 
         except Exception as e:
-            printv(
-                f"[Mirix.Agent.{self.agent_state.name}] ERROR: step() failed\nmessages = {messages}\nerror = {e}"
-            )
+            printv(f"[Mirix.Agent.{self.agent_state.name}] ERROR: step() failed\nmessages = {messages}\nerror = {e}")
 
             # If we got a context alert, try trimming the messages length, then try again
             if is_context_overflow_error(e):
@@ -2734,17 +2439,12 @@ These keywords have been used to retrieve relevant memories from the database.
                     agent_state=self.agent_state, actor=self.actor, user=self.user
                 )
 
-                if (
-                    summarize_attempt_count
-                    <= summarizer_settings.max_summarizer_retries
-                ):
+                if summarize_attempt_count <= summarizer_settings.max_summarizer_retries:
                     printv(
                         f"[Mirix.Agent.{self.agent_state.name}] WARNING: context window exceeded with limit {self.agent_state.llm_config.context_window}, attempting to summarize ({summarize_attempt_count}/{summarizer_settings.max_summarizer_retries}"
                     )
                     # A separate API call to run a summarizer
-                    self.summarize_messages_inplace(
-                        existing_file_uris=existing_file_uris
-                    )
+                    self.summarize_messages_inplace(existing_file_uris=existing_file_uris)
 
                     # Try step again
                     return self.inner_step(
@@ -2776,18 +2476,12 @@ These keywords have been used to retrieve relevant memories from the database.
                     printv(
                         f"[Mirix.Agent.{self.agent_state.name}] ERROR: num_in_context_messages: {len(self.agent_state.message_ids)}"
                     )
-                    printv(
-                        f"[Mirix.Agent.{self.agent_state.name}] ERROR: token_counts: {token_counts}"
-                    )
+                    printv(f"[Mirix.Agent.{self.agent_state.name}] ERROR: token_counts: {token_counts}")
                     raise ContextWindowExceededError(
                         err_msg,
                         details={
-                            "num_in_context_messages": len(
-                                self.agent_state.message_ids
-                            ),
-                            "in_context_messages_text": [
-                                m.text for m in in_context_messages
-                            ],
+                            "num_in_context_messages": len(self.agent_state.message_ids),
+                            "in_context_messages_text": [m.text for m in in_context_messages],
                             "token_counts": token_counts,
                         },
                     )
@@ -2815,9 +2509,7 @@ These keywords have been used to retrieve relevant memories from the database.
 
         # Validate JSON via save/load
         user_message = validate_json(user_message_json_str)
-        cleaned_user_message_text, name = strip_name_field_from_user_message(
-            user_message
-        )
+        cleaned_user_message_text, name = strip_name_field_from_user_message(user_message)
 
         # Turn into a dict
         openai_message_dict = {
@@ -2837,9 +2529,7 @@ These keywords have been used to retrieve relevant memories from the database.
 
         return self.inner_step(messages=[user_message], **kwargs)
 
-    def summarize_messages_inplace(
-        self, existing_file_uris: Optional[List[str]] = None
-    ):
+    def summarize_messages_inplace(self, existing_file_uris: Optional[List[str]] = None):
         in_context_messages = self.agent_manager.get_in_context_messages(
             agent_state=self.agent_state, actor=self.actor, user=self.user
         )
@@ -2870,9 +2560,7 @@ These keywords have been used to retrieve relevant memories from the database.
             logger=self.logger,
         )
 
-        message_sequence_to_summarize = in_context_messages[
-            1:cutoff
-        ]  # do NOT get rid of the system message
+        message_sequence_to_summarize = in_context_messages[1:cutoff]  # do NOT get rid of the system message
         self.logger.info(
             f"Attempting to summarize {len(message_sequence_to_summarize)} messages of {len(in_context_messages)}"
         )
@@ -2900,9 +2588,7 @@ These keywords have been used to retrieve relevant memories from the database.
         all_time_message_count = self.message_manager.size(
             agent_id=self.agent_state.id, actor=self.actor, user_id=self.user_id
         )
-        remaining_message_count = (
-            1 + len(in_context_messages) - cutoff
-        )  # System + remaining
+        remaining_message_count = 1 + len(in_context_messages) - cutoff  # System + remaining
         hidden_message_count = all_time_message_count - remaining_message_count
         summary_message_count = len(message_sequence_to_summarize)
         summary_message = package_summarize_message(
@@ -2939,9 +2625,7 @@ These keywords have been used to retrieve relevant memories from the database.
             agent_state=self.agent_state, actor=self.actor, user=self.user
         )
 
-        self.logger.info(
-            f"Ran summarizer, messages length {prior_len} -> {len(curr_in_context_messages)}"
-        )
+        self.logger.info(f"Ran summarizer, messages length {prior_len} -> {len(curr_in_context_messages)}")
         self.logger.info(
             f"Summarizer brought down total token count from {sum(token_counts)} -> {sum(get_token_counts_for_messages(curr_in_context_messages))}"
         )
@@ -2964,9 +2648,7 @@ These keywords have been used to retrieve relevant memories from the database.
     def get_context_window(self) -> ContextWindowOverview:
         """Get the context window of the agent"""
 
-        system_prompt = (
-            self.agent_state.system
-        )  # TODO is this the current system or the initial system?
+        system_prompt = self.agent_state.system  # TODO is this the current system or the initial system?
         num_tokens_system = count_tokens(system_prompt)
         core_memory = self.agent_state.memory.compile()
         num_tokens_core_memory = count_tokens(core_memory)
@@ -2984,8 +2666,7 @@ These keywords have been used to retrieve relevant memories from the database.
             and in_context_messages[1].role == MessageRole.user
             and isinstance(in_context_messages[1].text, str)
             # TODO remove hardcoding
-            and "The following is a summary of the previous "
-            in in_context_messages[1].text
+            and "The following is a summary of the previous " in in_context_messages[1].text
         ):
             # Summary message exists
             assert in_context_messages[1].text is not None
@@ -2993,9 +2674,7 @@ These keywords have been used to retrieve relevant memories from the database.
             num_tokens_summary_memory = count_tokens(in_context_messages[1].text)
             # with a summary message, the real messages start at index 2
             num_tokens_messages = (
-                num_tokens_from_messages(
-                    messages=in_context_messages_openai[2:], model=self.model
-                )
+                num_tokens_from_messages(messages=in_context_messages_openai[2:], model=self.model)
                 if len(in_context_messages_openai) > 2
                 else 0
             )
@@ -3005,9 +2684,7 @@ These keywords have been used to retrieve relevant memories from the database.
             num_tokens_summary_memory = 0
             # with no summary message, the real messages start at index 1
             num_tokens_messages = (
-                num_tokens_from_messages(
-                    messages=in_context_messages_openai[1:], model=self.model
-                )
+                num_tokens_from_messages(messages=in_context_messages_openai[1:], model=self.model)
                 if len(in_context_messages_openai) > 1
                 else 0
             )
@@ -3027,8 +2704,7 @@ These keywords have been used to retrieve relevant memories from the database.
         agent_state_tool_jsons = [t.json_schema for t in self.agent_state.tools]
         if agent_state_tool_jsons:
             available_functions_definitions = [
-                ChatCompletionRequestTool(type="function", function=f)
-                for f in agent_state_tool_jsons
+                ChatCompletionRequestTool(type="function", function=f) for f in agent_state_tool_jsons
             ]
             num_tokens_available_functions_definitions = num_tokens_from_functions(
                 functions=agent_state_tool_jsons, model=self.model
@@ -3079,9 +2755,7 @@ These keywords have been used to retrieve relevant memories from the database.
 def save_agent(agent: Agent):
     """Save agent to metadata store"""
     agent_state = agent.agent_state
-    assert isinstance(
-        agent_state.memory, Memory
-    ), f"Memory is not a Memory object: {type(agent_state.memory)}"
+    assert isinstance(agent_state.memory, Memory), f"Memory is not a Memory object: {type(agent_state.memory)}"
 
     # TODO: move this to agent manager
     # TODO: Completely strip out metadata
@@ -3092,9 +2766,7 @@ def save_agent(agent: Agent):
         # TODO: Add this back in later
         # tool_exec_environment_variables=agent_state.get_agent_env_vars_as_dict(),
     )
-    agent_manager.update_agent(
-        agent_id=agent_state.id, agent_update=update_agent, actor=agent.actor
-    )
+    agent_manager.update_agent(agent_id=agent_state.id, agent_update=update_agent, actor=agent.actor)
 
 
 def strip_name_field_from_user_message(
@@ -3124,9 +2796,7 @@ def validate_json(user_message_text: str) -> str:
         user_message_json_val = json_dumps(user_message_json)
         return user_message_json_val
     except Exception as e:
-        logger.debug(
-            "%scouldn't parse user input message as JSON: %s", CLI_WARNING_PREFIX, e
-        )
+        logger.debug("%scouldn't parse user input message as JSON: %s", CLI_WARNING_PREFIX, e)
         raise e
 
 
@@ -3158,9 +2828,7 @@ def convert_message_to_input_message(message: Message) -> Union[str, List[dict]]
         if isinstance(content_part, TextContent):
             result.append({"type": "text", "text": content_part.text})
         elif isinstance(content_part, ImageContent):
-            result.append(
-                {"type": "database_image_id", "image_id": content_part.image_id}
-            )
+            result.append({"type": "database_image_id", "image_id": content_part.image_id})
         elif isinstance(content_part, FileContent):
             result.append(
                 {

@@ -22,9 +22,7 @@ logger = __import__("logging").getLogger(__name__)
 class StdioMCPClient(BaseMCPClient):
     """MCP client using stdio transport"""
 
-    def _initialize_connection(
-        self, server_config: StdioServerConfig, timeout: float
-    ) -> bool:
+    def _initialize_connection(self, server_config: StdioServerConfig, timeout: float) -> bool:
         """Initialize stdio connection to MCP server"""
         try:
             server_params = StdioServerParameters(
@@ -34,45 +32,27 @@ class StdioMCPClient(BaseMCPClient):
             )
 
             stdio_cm = forked_stdio_client(server_params)
-            stdio_transport = self.loop.run_until_complete(
-                asyncio.wait_for(stdio_cm.__aenter__(), timeout=timeout)
-            )
+            stdio_transport = self.loop.run_until_complete(asyncio.wait_for(stdio_cm.__aenter__(), timeout=timeout))
             self.stdio, self.write = stdio_transport
-            self.cleanup_funcs.append(
-                lambda: self.loop.run_until_complete(
-                    stdio_cm.__aexit__(None, None, None)
-                )
-            )
+            self.cleanup_funcs.append(lambda: self.loop.run_until_complete(stdio_cm.__aexit__(None, None, None)))
 
             session_cm = ClientSession(self.stdio, self.write)
-            self.session = self.loop.run_until_complete(
-                asyncio.wait_for(session_cm.__aenter__(), timeout=timeout)
-            )
-            self.cleanup_funcs.append(
-                lambda: self.loop.run_until_complete(
-                    session_cm.__aexit__(None, None, None)
-                )
-            )
+            self.session = self.loop.run_until_complete(asyncio.wait_for(session_cm.__aenter__(), timeout=timeout))
+            self.cleanup_funcs.append(lambda: self.loop.run_until_complete(session_cm.__aexit__(None, None, None)))
             return True
 
         except asyncio.TimeoutError:
-            logger.error(
-                f"Timed out while establishing stdio connection (timeout={timeout}s)."
-            )
+            logger.error(f"Timed out while establishing stdio connection (timeout={timeout}s).")
             return False
         except Exception as e:
-            logger.exception(
-                f"Exception occurred while initializing stdio client session: {e}"
-            )
+            logger.exception(f"Exception occurred while initializing stdio client session: {e}")
             return False
 
 
 class AsyncStdioMCPClient(BaseAsyncMCPClient):
     """Async MCP client using stdio transport"""
 
-    async def _initialize_connection(
-        self, server_config: StdioServerConfig, timeout: float
-    ) -> bool:
+    async def _initialize_connection(self, server_config: StdioServerConfig, timeout: float) -> bool:
         """Asynchronously initialize stdio connection"""
         try:
             server_params = StdioServerParameters(
@@ -92,9 +72,7 @@ class AsyncStdioMCPClient(BaseAsyncMCPClient):
             return True
 
         except Exception as e:
-            logger.exception(
-                f"Exception occurred while initializing async stdio client session: {e}"
-            )
+            logger.exception(f"Exception occurred while initializing async stdio client session: {e}")
             return False
 
 
@@ -114,9 +92,7 @@ async def forked_stdio_client(server: StdioServerParameters):
             stderr=sys.stderr,
         )
     except OSError as exc:
-        raise RuntimeError(
-            f"Failed to spawn process: {server.command} {server.args}"
-        ) from exc
+        raise RuntimeError(f"Failed to spawn process: {server.command} {server.args}") from exc
 
     async def stdout_reader():
         """Read from process stdout and parse JSON-RPC messages"""
@@ -147,9 +123,7 @@ async def forked_stdio_client(server: StdioServerParameters):
         try:
             async with write_stream_reader:
                 async for message in write_stream_reader:
-                    json_data = message.model_dump_json(
-                        by_alias=True, exclude_none=True
-                    )
+                    json_data = message.model_dump_json(by_alias=True, exclude_none=True)
                     await process.stdin.send(
                         (json_data + "\n").encode(
                             encoding=server.encoding,
@@ -163,9 +137,7 @@ async def forked_stdio_client(server: StdioServerParameters):
         """Monitor process exit and raise error if non-zero exit code"""
         returncode = await process.wait()
         if returncode != 0:
-            raise RuntimeError(
-                f"Subprocess exited with code {returncode}. Command: {server.command} {server.args}"
-            )
+            raise RuntimeError(f"Subprocess exited with code {returncode}. Command: {server.command} {server.args}")
 
     async with anyio.create_task_group() as tg, process:
         tg.start_soon(stdout_reader)

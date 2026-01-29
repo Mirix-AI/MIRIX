@@ -41,24 +41,15 @@ def extract_and_wrap_message_content(
     return TextContent(text=message_content)
 
 
-def prepare_input_message_create(
-    message: MessageCreate, agent_id: str, **kwargs
-) -> Message:
+def prepare_input_message_create(message: MessageCreate, agent_id: str, **kwargs) -> Message:
     """Converts a MessageCreate object into a Message object, applying wrapping if needed."""
     # TODO: This seems like extra boilerplate with little benefit
     assert isinstance(message, MessageCreate)
 
     if isinstance(message.content, list):
-        content = [
-            extract_and_wrap_message_content(role=message.role, content=c, **kwargs)
-            for c in message.content
-        ]
+        content = [extract_and_wrap_message_content(role=message.role, content=c, **kwargs) for c in message.content]
     else:
-        content = [
-            extract_and_wrap_message_content(
-                role=message.role, content=message.content, **kwargs
-            )
-        ]
+        content = [extract_and_wrap_message_content(role=message.role, content=message.content, **kwargs)]
 
     return Message(
         agent_id=agent_id,

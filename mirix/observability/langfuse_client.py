@@ -70,9 +70,7 @@ def initialize_langfuse(force: bool = False) -> Optional["Langfuse"]:
                 return None
 
             environment = settings.langfuse_environment
-            logger.info(
-                f"Initializing LangFuse client (host: {settings.langfuse_host}, environment: {environment})"
-            )
+            logger.info(f"Initializing LangFuse client (host: {settings.langfuse_host}, environment: {environment})")
 
             from langfuse import Langfuse
             from opentelemetry.sdk.trace import TracerProvider
@@ -104,9 +102,7 @@ def initialize_langfuse(force: bool = False) -> Optional["Langfuse"]:
                     f"LangFuse observability initialized and verified successfully (environment: {environment})"
                 )
             except Exception as health_error:
-                logger.warning(
-                    f"LangFuse initialized but health check failed: {health_error}"
-                )
+                logger.warning(f"LangFuse initialized but health check failed: {health_error}")
                 # Continue anyway - will retry on actual use
 
             return _langfuse_client

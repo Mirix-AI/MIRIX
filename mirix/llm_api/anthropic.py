@@ -13,11 +13,13 @@ from mirix.schemas.openai.chat_completion_response import (
     ChatCompletionResponse,
     Choice,
     FunctionCall,
-    ToolCall,
-    UsageStatistics,
 )
 from mirix.schemas.openai.chat_completion_response import (
     Message as ChoiceMessage,  # NOTE: avoid conflict with our own Mirix Message datatype
+)
+from mirix.schemas.openai.chat_completion_response import (
+    ToolCall,
+    UsageStatistics,
 )
 from mirix.settings import model_settings
 from mirix.utils import get_utc_time, smart_urljoin
@@ -48,9 +50,7 @@ MODEL_LIST = [
 DUMMY_FIRST_USER_MESSAGE = "User initializing bootup sequence."
 
 
-def antropic_get_model_context_window(
-    url: str, api_key: Union[str, None], model: str
-) -> int:
+def antropic_get_model_context_window(url: str, api_key: Union[str, None], model: str) -> int:
     for model_dict in anthropic_get_model_list(url=url, api_key=api_key):
         if model_dict["name"] == model:
             return model_dict["context_window"]
@@ -115,8 +115,7 @@ def convert_tools_to_anthropic_format(tools: List[Tool]) -> List[dict]:
         formatted_tool = {
             "name": tool.function.name,
             "description": tool.function.description,
-            "input_schema": tool.function.parameters
-            or {"type": "object", "properties": {}, "required": []},
+            "input_schema": tool.function.parameters or {"type": "object", "properties": {}, "required": []},
         }
         formatted_tools.append(formatted_tool)
 
@@ -323,9 +322,7 @@ def _prepare_anthropic_request(
 ) -> dict:
     """Prepare the request data for Anthropic API format."""
     # convert the tools
-    anthropic_tools = (
-        None if data.tools is None else convert_tools_to_anthropic_format(data.tools)
-    )
+    anthropic_tools = None if data.tools is None else convert_tools_to_anthropic_format(data.tools)
 
     # pydantic -> dict
     data = data.model_dump(exclude_none=True)
@@ -347,9 +344,7 @@ def _prepare_anthropic_request(
             }
 
     # Move 'system' to the top level
-    assert data["messages"][0]["role"] == "system", (
-        f"Expected 'system' role in messages[0]:\n{data['messages'][0]}"
-    )
+    assert data["messages"][0]["role"] == "system", f"Expected 'system' role in messages[0]:\n{data['messages'][0]}"
     data["system"] = data["messages"][0]["content"]
     data["messages"] = data["messages"][1:]
 
@@ -359,20 +354,12 @@ def _prepare_anthropic_request(
             message["content"] = None
 
     # Convert to Anthropic format
-    msg_objs = [
-        Message.dict_to_message(user_id=None, agent_id=None, openai_message_dict=m)
-        for m in data["messages"]
-    ]
-    data["messages"] = [
-        m.to_anthropic_dict(inner_thoughts_xml_tag=inner_thoughts_xml_tag)
-        for m in msg_objs
-    ]
+    msg_objs = [Message.dict_to_message(user_id=None, agent_id=None, openai_message_dict=m) for m in data["messages"]]
+    data["messages"] = [m.to_anthropic_dict(inner_thoughts_xml_tag=inner_thoughts_xml_tag) for m in msg_objs]
 
     # Ensure first message is user
     if data["messages"][0]["role"] != "user":
-        data["messages"] = [
-            {"role": "user", "content": DUMMY_FIRST_USER_MESSAGE}
-        ] + data["messages"]
+        data["messages"] = [{"role": "user", "content": DUMMY_FIRST_USER_MESSAGE}] + data["messages"]
 
     # Handle alternating messages
     data["messages"] = merge_tool_results_into_user_messages(data["messages"])
@@ -443,9 +430,7 @@ def anthropic_chat_completions_request(
         for image_url in image_uris:
             image_media_type = "image/" + image_url.split(".")[-1]
 
-            image_data = base64.standard_b64encode(httpx.get(image_url).content).decode(
-                "utf-8"
-            )
+            image_data = base64.standard_b64encode(httpx.get(image_url).content).decode("utf-8")
             data["messages"][2]["content"].append(
                 {
                     "type": "image",
@@ -472,9 +457,7 @@ def anthropic_chat_completions_request(
             if "http://" in image_url:
                 import httpx
 
-                image_data = base64.standard_b64encode(
-                    httpx.get(image_url).content
-                ).decode("utf-8")
+                image_data = base64.standard_b64encode(httpx.get(image_url).content).decode("utf-8")
             else:
                 with open(image_url, "rb") as image_file:
                     image_data = base64.b64encode(image_file.read()).decode("utf-8")

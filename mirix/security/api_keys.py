@@ -2,8 +2,8 @@
 Utilities for issuing and validating Mirix API keys.
 """
 
-import hmac
 import hashlib
+import hmac
 import secrets
 from typing import Optional
 

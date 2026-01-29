@@ -6,9 +6,9 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from mirix.functions.mcp_client import get_mcp_client_manager
+from mirix.schemas.client import Client as PydanticClient
 from mirix.schemas.enums import ToolType
 from mirix.schemas.tool import Tool as PydanticTool
-from mirix.schemas.client import Client as PydanticClient
 from mirix.services.tool_manager import ToolManager
 from mirix.utils import printd
 
@@ -43,9 +43,7 @@ class MCPToolRegistry:
                         "description": mcp_tool.description,
                         "server_name": server_name,
                         "full_name": f"{server_name}.{mcp_tool.name}",
-                        "schema": mcp_tool.inputSchema
-                        if hasattr(mcp_tool, "inputSchema")
-                        else {},
+                        "schema": mcp_tool.inputSchema if hasattr(mcp_tool, "inputSchema") else {},
                         "mcp_tool": mcp_tool,  # Keep reference to original object
                     }
                     server_tools.append(tool_dict)
@@ -90,9 +88,7 @@ class MCPToolRegistry:
 
                     # Create or update tool in database
                     # Use the same name format as JSON schema (with underscores)
-                    normalized_name = (
-                        tool_info["full_name"].replace(".", "_").replace("-", "_")
-                    )
+                    normalized_name = tool_info["full_name"].replace(".", "_").replace("-", "_")
                     pydantic_tool = PydanticTool(
                         name=normalized_name,
                         description=tool_info["description"],
@@ -103,17 +99,13 @@ class MCPToolRegistry:
                         source_type="python",
                     )
 
-                    registered_tool = self.tool_manager.create_or_update_tool(
-                        pydantic_tool, actor
-                    )
+                    registered_tool = self.tool_manager.create_or_update_tool(pydantic_tool, actor)
                     registered_tools.append(registered_tool)
 
-                    logger.info("Registered MCP tool: %s", tool_info['full_name'])
+                    logger.info("Registered MCP tool: %s", tool_info["full_name"])
 
                 except Exception as e:
-                    logger.error(
-                        f"Failed to register MCP tool {tool_info['full_name']}: {str(e)}"
-                    )
+                    logger.error(f"Failed to register MCP tool {tool_info['full_name']}: {str(e)}")
                     continue
 
         return registered_tools
@@ -153,9 +145,7 @@ class MCPToolRegistry:
             else:
                 args_dict_entries.append(f'        args["{param_name}"] = {param_name}')
 
-        args_dict_str = (
-            "\n".join(args_dict_entries) if args_dict_entries else "        pass"
-        )
+        args_dict_str = "\n".join(args_dict_entries) if args_dict_entries else "        pass"
 
         source_code = f'''def {full_name.replace(".", "_").replace("-", "_")}(
     {param_str}
@@ -198,9 +188,7 @@ class MCPToolRegistry:
         # Convert MCP schema to OpenAI format
         if "schema" in tool_info and "properties" in tool_info["schema"]:
             base_schema["parameters"]["properties"] = tool_info["schema"]["properties"]
-            base_schema["parameters"]["required"] = tool_info["schema"].get(
-                "required", []
-            )
+            base_schema["parameters"]["required"] = tool_info["schema"].get("required", [])
 
         return base_schema
 
@@ -216,9 +204,7 @@ class MCPToolRegistry:
         }
         return type_map.get(json_type, "str")
 
-    def unregister_mcp_tools(
-        self, actor: PydanticClient, server_name: Optional[str] = None
-    ) -> int:
+    def unregister_mcp_tools(self, actor: PydanticClient, server_name: Optional[str] = None) -> int:
         """
         Unregister MCP tools from database
 
@@ -267,9 +253,7 @@ class MCPToolRegistry:
 
         # Get existing MCP tools from database
         existing_tools = self.tool_manager.list_tools(actor)
-        existing_mcp_tools = [
-            t for t in existing_tools if t.tool_type == ToolType.MIRIX_MCP
-        ]
+        existing_mcp_tools = [t for t in existing_tools if t.tool_type == ToolType.MIRIX_MCP]
         existing_tool_names = {t.name for t in existing_mcp_tools}
 
         # Register new tools

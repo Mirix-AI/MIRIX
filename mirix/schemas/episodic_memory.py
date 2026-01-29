@@ -21,9 +21,7 @@ class EpisodicEventBase(MirixBase):
     )
     summary: str = Field(..., description="Short textual summary of the event")
     details: str = Field(..., description="Detailed description or text for the event")
-    actor: str = Field(
-        ..., description="The actor who generated the event (user or assistant)"
-    )
+    actor: str = Field(..., description="The actor who generated the event (user or assistant)")
 
 
 class EpisodicEventForLLM(EpisodicEventBase):
@@ -49,21 +47,13 @@ class EpisodicEvent(EpisodicEventBase):
         updated_at (Optional[datetime]): Last update timestamp
     """
 
-    id: Optional[str] = Field(
-        None, description="Unique identifier for the episodic event"
-    )
+    id: Optional[str] = Field(None, description="Unique identifier for the episodic event")
 
-    agent_id: Optional[str] = Field(
-        None, description="The id of the agent this episodic event belongs to"
-    )
+    agent_id: Optional[str] = Field(None, description="The id of the agent this episodic event belongs to")
 
-    client_id: Optional[str] = Field(
-        None, description="The id of the client application that created this event"
-    )
+    client_id: Optional[str] = Field(None, description="The id of the client application that created this event")
 
-    user_id: str = Field(
-        ..., description="The id of the user who generated the episodic event"
-    )
+    user_id: str = Field(..., description="The id of the user who generated the episodic event")
 
     occurred_at: datetime = Field(
         default_factory=get_utc_time,
@@ -73,9 +63,7 @@ class EpisodicEvent(EpisodicEventBase):
         default_factory=get_utc_time,
         description="Timestamp when this memory record was created",
     )
-    updated_at: Optional[datetime] = Field(
-        None, description="When this memory record was last updated"
-    )
+    updated_at: Optional[datetime] = Field(None, description="When this memory record was last updated")
     last_modify: Dict[str, Any] = Field(
         default_factory=lambda: {
             "timestamp": get_utc_time().isoformat(),
@@ -83,31 +71,20 @@ class EpisodicEvent(EpisodicEventBase):
         },
         description="Last modification info including timestamp and operation type",
     )
-    organization_id: str = Field(
-        ..., description="Unique identifier of the organization"
-    )
-    details_embedding: Optional[List[float]] = Field(
-        None, description="The embedding of the event"
-    )
-    summary_embedding: Optional[List[float]] = Field(
-        None, description="The embedding of the summary"
-    )
+    organization_id: str = Field(..., description="Unique identifier of the organization")
+    details_embedding: Optional[List[float]] = Field(None, description="The embedding of the event")
+    summary_embedding: Optional[List[float]] = Field(None, description="The embedding of the summary")
     embedding_config: Optional[EmbeddingConfig] = Field(
         None, description="The embedding configuration used by the event"
     )
-    
+
     # NEW: Filter tags for flexible filtering and categorization
     filter_tags: Optional[Dict[str, Any]] = Field(
         default=None,
         description="Custom filter tags for filtering and categorization",
         examples=[
-            {
-                "project_id": "proj-abc",
-                "session_id": "sess-xyz",
-                "tags": ["important", "work"],
-                "priority": "high"
-            }
-        ]
+            {"project_id": "proj-abc", "session_id": "sess-xyz", "tags": ["important", "work"], "priority": "high"}
+        ],
     )
 
     # need to validate both details_embedding and summary_embedding to ensure they are the same size
@@ -136,22 +113,12 @@ class EpisodicEventUpdate(MirixBase):
     """
 
     id: str = Field(..., description="Unique ID for this episodic memory record")
-    agent_id: Optional[str] = Field(
-        None, description="The id of the agent this episodic event belongs to"
-    )
+    agent_id: Optional[str] = Field(None, description="The id of the agent this episodic event belongs to")
     event_type: Optional[str] = Field(None, description="Type/category of the event")
-    summary: Optional[str] = Field(
-        None, description="Short textual summary of the event"
-    )
-    details: Optional[str] = Field(
-        None, description="Detailed text describing the event"
-    )
-    organization_id: Optional[str] = Field(
-        None, description="Unique identifier of the organization"
-    )
-    occurred_at: Optional[datetime] = Field(
-        None, description="If the event's time is updated"
-    )
+    summary: Optional[str] = Field(None, description="Short textual summary of the event")
+    details: Optional[str] = Field(None, description="Detailed text describing the event")
+    organization_id: Optional[str] = Field(None, description="Unique identifier of the organization")
+    occurred_at: Optional[datetime] = Field(None, description="If the event's time is updated")
     updated_at: datetime = Field(
         default_factory=get_utc_time,
         description="Timestamp when this memory record was last updated",
@@ -160,12 +127,8 @@ class EpisodicEventUpdate(MirixBase):
         None,
         description="Last modification info including timestamp and operation type",
     )
-    summary_embedding: Optional[List[float]] = Field(
-        None, description="The embedding of the summary"
-    )
-    details_embedding: Optional[List[float]] = Field(
-        None, description="The embedding of the event"
-    )
+    summary_embedding: Optional[List[float]] = Field(None, description="The embedding of the summary")
+    details_embedding: Optional[List[float]] = Field(None, description="The embedding of the event")
     embedding_config: Optional[EmbeddingConfig] = Field(
         None, description="The embedding configuration used by the event"
     )

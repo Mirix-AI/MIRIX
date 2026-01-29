@@ -56,14 +56,10 @@ class QueueManager:
             server: Optional server instance for workers to invoke APIs on
         """
         if self._initialized:
-            logger.warning(
-                "Queue manager already initialized - skipping duplicate initialization"
-            )
+            logger.warning("Queue manager already initialized - skipping duplicate initialization")
             worker_count = len(self._workers)
             running_count = sum(1 for w in self._workers if w._running)
-            logger.info(
-                f"   Current state: workers={worker_count}, running={running_count}"
-            )
+            logger.info(f"   Current state: workers={worker_count}, running={running_count}")
             # Allow updating server if provided
             if server:
                 logger.info("Updating queue manager with server instance")
@@ -102,13 +98,9 @@ class QueueManager:
 
         if self._num_workers > 1 and isinstance(self._queue, PartitionedMemoryQueue):
             # Multiple workers with partitioned queue
-            logger.info(
-                "👷 Creating %d background workers (partitioned)...", self._num_workers
-            )
+            logger.info("👷 Creating %d background workers (partitioned)...", self._num_workers)
             for partition_id in range(self._num_workers):
-                worker = QueueWorker(
-                    self._queue, server=self._server, partition_id=partition_id
-                )
+                worker = QueueWorker(self._queue, server=self._server, partition_id=partition_id)
                 self._workers.append(worker)
                 logger.debug("Worker %d created", partition_id)
         else:
@@ -128,9 +120,7 @@ class QueueManager:
             time.sleep(0.1)
 
             running_count = sum(1 for w in self._workers if w._running)
-            alive_count = sum(
-                1 for w in self._workers if w._thread and w._thread.is_alive()
-            )
+            alive_count = sum(1 for w in self._workers if w._thread and w._thread.is_alive())
 
             logger.info(
                 f"Worker status: running={running_count}/{len(self._workers)}, threads_alive={alive_count}/{len(self._workers)}"
@@ -141,9 +131,7 @@ class QueueManager:
                 logger.error(f"   Workers running: {running_count}/{len(self._workers)}")
                 logger.error(f"   Threads alive: {alive_count}/{len(self._workers)}")
             else:
-                logger.info(
-                    "All %d queue worker(s) started successfully!", len(self._workers)
-                )
+                logger.info("All %d queue worker(s) started successfully!", len(self._workers))
         else:
             logger.info(
                 "Workers created but NOT started (AUTO_START_WORKERS=false) - "
@@ -170,28 +158,29 @@ class QueueManager:
             # Import Kafka queue (lazy import to avoid unnecessary dependency)
             try:
                 from .kafka_queue import KafkaQueue
+
                 # Build kwargs for KafkaQueue
                 kafka_kwargs = {
-                    'bootstrap_servers': config.KAFKA_BOOTSTRAP_SERVERS,
-                    'topic': config.KAFKA_TOPIC,
-                    'group_id': config.KAFKA_GROUP_ID,
-                    'serialization_format': config.KAFKA_SERIALIZATION_FORMAT,
-                    'security_protocol': config.KAFKA_SECURITY_PROTOCOL,
+                    "bootstrap_servers": config.KAFKA_BOOTSTRAP_SERVERS,
+                    "topic": config.KAFKA_TOPIC,
+                    "group_id": config.KAFKA_GROUP_ID,
+                    "serialization_format": config.KAFKA_SERIALIZATION_FORMAT,
+                    "security_protocol": config.KAFKA_SECURITY_PROTOCOL,
                     # Consumer configuration (configurable via env vars)
-                    'auto_offset_reset': config.KAFKA_AUTO_OFFSET_RESET,
-                    'consumer_timeout_ms': config.KAFKA_CONSUMER_TIMEOUT_MS,
-                    'max_poll_interval_ms': config.KAFKA_MAX_POLL_INTERVAL_MS,
-                    'session_timeout_ms': config.KAFKA_SESSION_TIMEOUT_MS,
+                    "auto_offset_reset": config.KAFKA_AUTO_OFFSET_RESET,
+                    "consumer_timeout_ms": config.KAFKA_CONSUMER_TIMEOUT_MS,
+                    "max_poll_interval_ms": config.KAFKA_MAX_POLL_INTERVAL_MS,
+                    "session_timeout_ms": config.KAFKA_SESSION_TIMEOUT_MS,
                 }
-                
+
                 # Add SSL parameters if provided
                 if config.KAFKA_SSL_CAFILE:
-                    kafka_kwargs['ssl_cafile'] = config.KAFKA_SSL_CAFILE
+                    kafka_kwargs["ssl_cafile"] = config.KAFKA_SSL_CAFILE
                 if config.KAFKA_SSL_CERTFILE:
-                    kafka_kwargs['ssl_certfile'] = config.KAFKA_SSL_CERTFILE
+                    kafka_kwargs["ssl_certfile"] = config.KAFKA_SSL_CERTFILE
                 if config.KAFKA_SSL_KEYFILE:
-                    kafka_kwargs['ssl_keyfile'] = config.KAFKA_SSL_KEYFILE
-                
+                    kafka_kwargs["ssl_keyfile"] = config.KAFKA_SSL_KEYFILE
+
                 return KafkaQueue(**kafka_kwargs)
             except ImportError as e:
                 raise ImportError(
@@ -228,10 +217,7 @@ class QueueManager:
         """
         if self._queue is None:
             logger.error("Attempted to save message to uninitialized queue")
-            raise RuntimeError(
-                "Queue not initialized. This should not happen - "
-                "please report this as a bug."
-            )
+            raise RuntimeError("Queue not initialized. This should not happen - " "please report this as a bug.")
 
         logger.debug(
             "Saving message to queue: agent_id=%s, user_id=%s",

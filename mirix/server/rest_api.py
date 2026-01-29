@@ -108,9 +108,7 @@ async def cleanup():
         from mirix.observability import flush_langfuse, shutdown_langfuse
 
         logger.info("Flushing LangFuse traces...")
-        flush_success = flush_langfuse(
-            timeout=10.0
-        )  # Increased timeout for graceful shutdown
+        flush_success = flush_langfuse(timeout=10.0)  # Increased timeout for graceful shutdown
         if flush_success:
             logger.info("LangFuse traces flushed successfully")
         else:
@@ -169,9 +167,7 @@ app.add_middleware(
 from contextvars import ContextVar
 
 # Stores the current request for access by decorators
-_current_request: ContextVar[Optional[Request]] = ContextVar(
-    "current_request", default=None
-)
+_current_request: ContextVar[Optional[Request]] = ContextVar("current_request", default=None)
 
 
 def get_current_request() -> Optional[Request]:
@@ -318,9 +314,7 @@ async def inject_client_org_headers(request: Request, call_next):
             headers.append((b"x-org-id", org_id.encode()))
             request.scope["headers"] = headers
         except HTTPException as exc:
-            return JSONResponse(
-                status_code=exc.status_code, content={"detail": exc.detail}
-            )
+            return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
     return await call_next(request)
 
@@ -477,21 +471,15 @@ def extract_topics_and_temporal_info(
                     and len(choice.message.tool_calls) > 0
                 ):
                     try:
-                        function_args = json.loads(
-                            choice.message.tool_calls[0].function.arguments
-                        )
+                        function_args = json.loads(choice.message.tool_calls[0].function.arguments)
                         topics = function_args.get("topic")
                         temporal_expr = function_args.get("temporal_expression", "")
                         # Clean up empty strings
                         temporal_expr = temporal_expr.strip() if temporal_expr else None
-                        logger.debug(
-                            "Extracted topics: %s, temporal: %s", topics, temporal_expr
-                        )
+                        logger.debug("Extracted topics: %s, temporal: %s", topics, temporal_expr)
                         return topics, temporal_expr
                     except (json.JSONDecodeError, KeyError) as parse_error:
-                        logger.warning(
-                            "Failed to parse extraction response: %s", parse_error
-                        )
+                        logger.warning("Failed to parse extraction response: %s", parse_error)
                         continue
 
     except Exception as e:
@@ -500,9 +488,7 @@ def extract_topics_and_temporal_info(
     return None, None
 
 
-def extract_topics_from_messages(
-    messages: List[Dict[str, Any]], llm_config: LLMConfig
-) -> Optional[str]:
+def extract_topics_from_messages(messages: List[Dict[str, Any]], llm_config: LLMConfig) -> Optional[str]:
     """
     Extract topics from a list of messages using LLM.
 
@@ -549,9 +535,7 @@ def _flatten_messages_to_plain_text(messages: List[Dict[str, Any]]) -> str:
     return "\n".join(transcript_parts)
 
 
-def extract_topics_with_local_model(
-    messages: List[Dict[str, Any]], model_name: str
-) -> Optional[str]:
+def extract_topics_with_local_model(messages: List[Dict[str, Any]], model_name: str) -> Optional[str]:
     """
     Extract topics using a locally hosted Ollama model via the /api/chat endpoint.
 
@@ -606,14 +590,10 @@ def extract_topics_with_local_model(
         response.raise_for_status()
         response_data = response.json()
     except requests.RequestException as exc:
-        logger.error(
-            "Failed to extract topics with local model %s: %s", model_name, exc
-        )
+        logger.error("Failed to extract topics with local model %s: %s", model_name, exc)
         return None
 
-    message_payload = (
-        response_data.get("message") if isinstance(response_data, dict) else None
-    )
+    message_payload = response_data.get("message") if isinstance(response_data, dict) else None
     text_response: Optional[str] = None
     if isinstance(message_payload, dict):
         text_response = message_payload.get("content")
@@ -775,9 +755,7 @@ async def get_agent(
     try:
         return server.agent_manager.get_agent_by_id(agent_id, actor=client)
     except NoResultFound as e:
-        raise HTTPException(
-            status_code=404, detail=f"Agent {agent_id} not found or not accessible"
-        )
+        raise HTTPException(status_code=404, detail=f"Agent {agent_id} not found or not accessible")
 
 
 @router.delete("/agents/{agent_id}")
@@ -879,9 +857,7 @@ async def update_agent_system_prompt_by_name(
     for agent in top_level_agents:
         if agent.name == "meta_memory_agent":
             # Get sub-agents
-            sub_agents = server.agent_manager.list_agents(
-                actor=client, parent_id=agent.id, limit=1000
-            )
+            sub_agents = server.agent_manager.list_agents(actor=client, parent_id=agent.id, limit=1000)
             all_agents.extend(sub_agents)
             break
 
@@ -900,9 +876,7 @@ async def update_agent_system_prompt_by_name(
             # e.g., "meta_memory_agent_episodic_memory_agent" → "episodic"
             if agent.name and "meta_memory_agent_" in agent.name:
                 short_name = (
-                    agent.name.replace("meta_memory_agent_", "")
-                    .replace("_memory_agent", "")
-                    .replace("_agent", "")
+                    agent.name.replace("meta_memory_agent_", "").replace("_memory_agent", "").replace("_agent", "")
                 )
                 if short_name == agent_name:
                     matching_agent = agent
@@ -916,9 +890,7 @@ async def update_agent_system_prompt_by_name(
             full_name = agent.name
             if "meta_memory_agent_" in full_name and full_name != "meta_memory_agent":
                 short_name = (
-                    full_name.replace("meta_memory_agent_", "")
-                    .replace("_memory_agent", "")
-                    .replace("_agent", "")
+                    full_name.replace("meta_memory_agent_", "").replace("_memory_agent", "").replace("_agent", "")
                 )
                 available_agents.append(f"'{short_name}' (full: {full_name})")
             else:
@@ -928,15 +900,11 @@ async def update_agent_system_prompt_by_name(
         if len(available_agents) > 5:
             available_list += f", and {len(available_agents) - 5} more"
 
-        error_detail = (
-            f"Agent with name '{agent_name}' not found for client {client_id}. "
-        )
+        error_detail = f"Agent with name '{agent_name}' not found for client {client_id}. "
         if available_agents:
             error_detail += f"Available agents: {available_list}"
         else:
-            error_detail += (
-                "No agents found for this client. Please initialize agents first."
-            )
+            error_detail += "No agents found for this client. Please initialize agents first."
 
         raise HTTPException(status_code=404, detail=error_detail)
 
@@ -1239,9 +1207,7 @@ async def create_organization(
 ):
     """Create an organization."""
     server = get_server()
-    return server.organization_manager.create_organization(
-        pydantic_org=Organization(name=name)
-    )
+    return server.organization_manager.create_organization(pydantic_org=Organization(name=name))
 
 
 @router.get("/organizations/{org_id}", response_model=Organization)
@@ -1299,9 +1265,7 @@ async def create_or_get_organization(
 
     # Create new organization if it doesn't exist
     org_create = OrganizationCreate(id=org_id, name=request.name or org_id)
-    org = server.organization_manager.create_organization(
-        pydantic_org=Organization(**org_create.model_dump())
-    )
+    org = server.organization_manager.create_organization(pydantic_org=Organization(**org_create.model_dump()))
     logger.debug("Created new organization: %s", org_id)
     return org
 
@@ -1415,9 +1379,7 @@ async def delete_user(user_id: str):
         error_msg = str(e)
         # Provide a better error message if user not found or already deleted
         if "not found" in error_msg.lower() or "no result" in error_msg.lower():
-            raise HTTPException(
-                status_code=404, detail=f"User {user_id} not found or already deleted"
-            )
+            raise HTTPException(status_code=404, detail=f"User {user_id} not found or already deleted")
         raise HTTPException(status_code=500, detail=error_msg)
 
 
@@ -1530,9 +1492,7 @@ async def create_or_get_client(
                 )
             else:
                 logger.debug("Client already exists: %s", client_id)
-                return JSONResponse(
-                    status_code=200, content=client.model_dump(mode="json")
-                )
+                return JSONResponse(status_code=200, content=client.model_dump(mode="json"))
     except Exception as e:
         if fail_if_exists and "already exists" in str(e):
             raise
@@ -1570,9 +1530,7 @@ async def list_clients(
     server = get_server()
     org_id = x_org_id or server.organization_manager.DEFAULT_ORG_ID
 
-    clients = server.client_manager.list_clients(
-        cursor=cursor, limit=limit, organization_id=org_id
-    )
+    clients = server.client_manager.list_clients(cursor=cursor, limit=limit, organization_id=org_id)
     return clients
 
 
@@ -1695,12 +1653,8 @@ class CreateApiKeyRequest(BaseModel):
     """Request model for creating an API key."""
 
     name: Optional[str] = Field(None, description="Optional name/label for the API key")
-    permission: Optional[str] = Field(
-        "all", description="Permission level: all, restricted, read_only"
-    )
-    user_id: Optional[str] = Field(
-        None, description="User ID this API key is associated with"
-    )
+    permission: Optional[str] = Field("all", description="Permission level: all, restricted, read_only")
+    user_id: Optional[str] = Field(None, description="User ID this API key is associated with")
 
 
 class CreateApiKeyResponse(BaseModel):
@@ -1898,9 +1852,7 @@ async def initialize_meta_agent(
     # list_agents now automatically filters by client (organization_id + _created_by_id)
     existing_meta_agents = server.agent_manager.list_agents(actor=client, limit=1000)
 
-    assert (
-        len(existing_meta_agents) <= 1
-    ), "Only one meta agent can be created per client"
+    assert len(existing_meta_agents) <= 1, "Only one meta agent can be created per client"
 
     if len(existing_meta_agents) == 1:
         meta_agent = existing_meta_agents[0]
@@ -1910,17 +1862,13 @@ async def initialize_meta_agent(
             from mirix.schemas.agent import UpdateMetaAgent
 
             # DEBUG: Log what we're passing to update_meta_agent
-            logger.debug(
-                "[INIT META AGENT] create_params for UpdateMetaAgent: %s", create_params
-            )
+            logger.debug("[INIT META AGENT] create_params for UpdateMetaAgent: %s", create_params)
             logger.debug(
                 "[INIT META AGENT] 'agents' in create_params: %s",
                 "agents" in create_params,
             )
             if "agents" in create_params:
-                logger.debug(
-                    "[INIT META AGENT] agents list: %s", create_params["agents"]
-                )
+                logger.debug("[INIT META AGENT] agents list: %s", create_params["agents"])
 
             # Update the existing meta agent
             meta_agent = server.agent_manager.update_meta_agent(
@@ -1948,9 +1896,7 @@ class AddMemoryRequest(BaseModel):
     verbose: bool = False
     filter_tags: Optional[Dict[str, Any]] = None
     use_cache: bool = True  # Control Redis cache behavior
-    occurred_at: Optional[str] = (
-        None  # Optional ISO 8601 timestamp string for episodic memory
-    )
+    occurred_at: Optional[str] = None  # Optional ISO 8601 timestamp string for episodic memory
 
 
 @router.post("/memory/add")
@@ -1987,9 +1933,7 @@ async def add_memory(
 
     # Get the meta agent by ID
     # TODO: need to check if we really need to check if the meta_agent exists here
-    meta_agent = server.agent_manager.get_agent_by_id(
-        request.meta_agent_id, actor=client
-    )
+    meta_agent = server.agent_manager.get_agent_by_id(request.meta_agent_id, actor=client)
 
     # If user_id is not provided, use the admin user for this client
     user_id = request.user_id
@@ -2072,20 +2016,12 @@ class RetrieveMemoryRequest(BaseModel):
     user_id: Optional[str] = None  # Optional - uses admin user if not provided
     messages: List[Dict[str, Any]]
     limit: int = 10  # Maximum number of items to retrieve per memory type
-    local_model_for_retrieval: Optional[str] = (
-        None  # Optional local Ollama model for topic extraction
-    )
-    filter_tags: Optional[Dict[str, Any]] = (
-        None  # Optional filter tags for filtering results
-    )
+    local_model_for_retrieval: Optional[str] = None  # Optional local Ollama model for topic extraction
+    filter_tags: Optional[Dict[str, Any]] = None  # Optional filter tags for filtering results
     use_cache: bool = True  # Control Redis cache behavior
     # NEW: Optional date range for temporal filtering (ISO 8601 format)
-    start_date: Optional[str] = (
-        None  # e.g., "2025-11-19T00:00:00" or "2025-11-19T00:00:00+00:00"
-    )
-    end_date: Optional[str] = (
-        None  # e.g., "2025-11-19T23:59:59" or "2025-11-19T23:59:59+00:00"
-    )
+    start_date: Optional[str] = None  # e.g., "2025-11-19T00:00:00" or "2025-11-19T00:00:00+00:00"
+    end_date: Optional[str] = None  # e.g., "2025-11-19T23:59:59" or "2025-11-19T23:59:59+00:00"
 
 
 def retrieve_memories_by_keywords(
@@ -2173,9 +2109,7 @@ def retrieve_memories_by_keywords(
             "recent": [
                 {
                     "id": event.id,
-                    "timestamp": (
-                        event.occurred_at.isoformat() if event.occurred_at else None
-                    ),
+                    "timestamp": (event.occurred_at.isoformat() if event.occurred_at else None),
                     "summary": event.summary,
                     "details": event.details,
                 }
@@ -2184,9 +2118,7 @@ def retrieve_memories_by_keywords(
             "relevant": [
                 {
                     "id": event.id,
-                    "timestamp": (
-                        event.occurred_at.isoformat() if event.occurred_at else None
-                    ),
+                    "timestamp": (event.occurred_at.isoformat() if event.occurred_at else None),
                     "summary": event.summary,
                     "details": event.details,
                 }
@@ -2401,10 +2333,7 @@ async def retrieve_memory_with_conversation(
     for msg in request.messages:
         if isinstance(msg, dict) and "content" in msg:
             for content_item in msg.get("content", []):
-                if (
-                    isinstance(content_item, dict)
-                    and content_item.get("text", "").strip()
-                ):
+                if isinstance(content_item, dict) and content_item.get("text", "").strip():
                     has_content = True
                     break
             if has_content:
@@ -2429,9 +2358,7 @@ async def retrieve_memory_with_conversation(
 
         if topics is None:
             # NEW: Extract both topics and temporal expression
-            topics, temporal_expr = extract_topics_and_temporal_info(
-                request.messages, llm_config
-            )
+            topics, temporal_expr = extract_topics_and_temporal_info(request.messages, llm_config)
 
         logger.debug("Extracted topics: %s, temporal: %s", topics, temporal_expr)
         key_words = topics if topics else ""
@@ -2449,13 +2376,9 @@ async def retrieve_memory_with_conversation(
         # Use explicit date range from request
         try:
             if request.start_date:
-                start_date = datetime.fromisoformat(
-                    request.start_date.replace("Z", "+00:00")
-                )
+                start_date = datetime.fromisoformat(request.start_date.replace("Z", "+00:00"))
             if request.end_date:
-                end_date = datetime.fromisoformat(
-                    request.end_date.replace("Z", "+00:00")
-                )
+                end_date = datetime.fromisoformat(request.end_date.replace("Z", "+00:00"))
             logger.debug("Using explicit date range: %s to %s", start_date, end_date)
         except ValueError as e:
             logger.warning("Invalid date format in request: %s", e)
@@ -2629,9 +2552,7 @@ def _precompute_embedding_for_search(
     from mirix.embeddings import embedding_model
 
     # Compute embedding once
-    embedded_text = embedding_model(agent_state.embedding_config).get_text_embedding(
-        query
-    )
+    embedded_text = embedding_model(agent_state.embedding_config).get_text_embedding(query)
 
     # Pad for episodic memory which requires MAX_EMBEDDING_DIM
     embedded_text_padded = np.pad(
@@ -2763,9 +2684,7 @@ async def search_memory(
 
     if start_date:
         try:
-            parsed_start_date = datetime.fromisoformat(
-                start_date.replace("Z", "+00:00")
-            )
+            parsed_start_date = datetime.fromisoformat(start_date.replace("Z", "+00:00"))
             # Strip timezone for DB comparison (DB stores naive datetimes)
             if parsed_start_date.tzinfo:
                 parsed_start_date = parsed_start_date.replace(tzinfo=None)
@@ -2782,11 +2701,7 @@ async def search_memory(
             logger.warning("Invalid end_date format: %s", e)
 
     # Validate search parameters
-    if (
-        memory_type == "resource"
-        and search_field == "content"
-        and search_method == "embedding"
-    ):
+    if memory_type == "resource" and search_field == "content" and search_method == "embedding":
         return {
             "success": False,
             "error": "embedding is not supported for resource memory's 'content' field.",
@@ -2795,11 +2710,7 @@ async def search_memory(
             "count": 0,
         }
 
-    if (
-        memory_type == "knowledge_vault"
-        and search_field == "secret_value"
-        and search_method == "embedding"
-    ):
+    if memory_type == "knowledge_vault" and search_field == "secret_value" and search_method == "embedding":
         return {
             "success": False,
             "error": "embedding is not supported for knowledge_vault memory's 'secret_value' field.",
@@ -2812,9 +2723,7 @@ async def search_memory(
         search_field = "null"
 
     # Pre-compute embedding once if using embedding search (to avoid redundant embeddings)
-    embedded_text, embedded_text_padded = _precompute_embedding_for_search(
-        search_method, query, agent_state
-    )
+    embedded_text, embedded_text_padded = _precompute_embedding_for_search(search_method, query, agent_state)
 
     # Collect results from requested memory types
     all_results = []
@@ -2831,11 +2740,7 @@ async def search_memory(
                     agent_state=agent_state,
                     user=user,
                     query=query,
-                    embedded_text=(
-                        embedded_text_padded
-                        if search_method == "embedding" and query
-                        else None
-                    ),
+                    embedded_text=(embedded_text_padded if search_method == "embedding" and query else None),
                     search_field=search_field if search_field != "null" else "summary",
                     search_method=search_method,
                     limit=limit,
@@ -2849,9 +2754,7 @@ async def search_memory(
                     {
                         "memory_type": "episodic",
                         "id": x.id,
-                        "timestamp": (
-                            x.occurred_at.isoformat() if x.occurred_at else None
-                        ),
+                        "timestamp": (x.occurred_at.isoformat() if x.occurred_at else None),
                         "event_type": x.event_type,
                         "actor": x.actor,
                         "summary": x.summary,
@@ -2870,11 +2773,7 @@ async def search_memory(
                     agent_state=agent_state,
                     user=user,
                     query=query,
-                    embedded_text=(
-                        embedded_text
-                        if search_method == "embedding" and query
-                        else None
-                    ),
+                    embedded_text=(embedded_text if search_method == "embedding" and query else None),
                     search_field=(
                         search_field
                         if search_field != "null"
@@ -2908,11 +2807,7 @@ async def search_memory(
                     agent_state=agent_state,
                     user=user,
                     query=query,
-                    embedded_text=(
-                        embedded_text
-                        if search_method == "embedding" and query
-                        else None
-                    ),
+                    embedded_text=(embedded_text if search_method == "embedding" and query else None),
                     search_field=search_field if search_field != "null" else "summary",
                     search_method=search_method,
                     limit=limit,
@@ -2941,11 +2836,7 @@ async def search_memory(
                     agent_state=agent_state,
                     user=user,
                     query=query,
-                    embedded_text=(
-                        embedded_text
-                        if search_method == "embedding" and query
-                        else None
-                    ),
+                    embedded_text=(embedded_text if search_method == "embedding" and query else None),
                     search_field=search_field if search_field != "null" else "caption",
                     search_method=search_method,
                     limit=limit,
@@ -2976,11 +2867,7 @@ async def search_memory(
                     agent_state=agent_state,
                     user=user,
                     query=query,
-                    embedded_text=(
-                        embedded_text
-                        if search_method == "embedding" and query
-                        else None
-                    ),
+                    embedded_text=(embedded_text if search_method == "embedding" and query else None),
                     search_field=search_field if search_field != "null" else "summary",
                     search_method=search_method,
                     limit=limit,
@@ -3021,11 +2908,7 @@ async def search_memory(
                 agent_state=agent_state,
                 user=user,
                 query=query,
-                embedded_text=(
-                    embedded_text_padded
-                    if search_method == "embedding" and query
-                    else None
-                ),
+                embedded_text=(embedded_text_padded if search_method == "embedding" and query else None),
                 search_field=search_field if search_field != "null" else "summary",
                 search_method=search_method,
                 limit=limit,
@@ -3040,9 +2923,7 @@ async def search_memory(
                     {
                         "memory_type": "episodic",
                         "id": x.id,
-                        "timestamp": (
-                            x.occurred_at.isoformat() if x.occurred_at else None
-                        ),
+                        "timestamp": (x.occurred_at.isoformat() if x.occurred_at else None),
                         "event_type": x.event_type,
                         "actor": x.actor,
                         "summary": x.summary,
@@ -3061,9 +2942,7 @@ async def search_memory(
                 agent_state=agent_state,
                 user=user,
                 query=query,
-                embedded_text=(
-                    embedded_text if search_method == "embedding" and query else None
-                ),
+                embedded_text=(embedded_text if search_method == "embedding" and query else None),
                 search_field=(
                     search_field
                     if search_field != "null"
@@ -3083,9 +2962,7 @@ async def search_memory(
                         "resource_type": x.resource_type,
                         "title": x.title,
                         "summary": x.summary,
-                        "content": (
-                            x.content[:200] if x.content else None
-                        ),  # Truncate content for response
+                        "content": (x.content[:200] if x.content else None),  # Truncate content for response
                     }
                     for x in resource_memories
                 ]
@@ -3100,9 +2977,7 @@ async def search_memory(
                 agent_state=agent_state,
                 user=user,
                 query=query,
-                embedded_text=(
-                    embedded_text if search_method == "embedding" and query else None
-                ),
+                embedded_text=(embedded_text if search_method == "embedding" and query else None),
                 search_field=search_field if search_field != "null" else "summary",
                 search_method=search_method,
                 limit=limit,
@@ -3132,9 +3007,7 @@ async def search_memory(
                 agent_state=agent_state,
                 user=user,
                 query=query,
-                embedded_text=(
-                    embedded_text if search_method == "embedding" and query else None
-                ),
+                embedded_text=(embedded_text if search_method == "embedding" and query else None),
                 search_field=search_field if search_field != "null" else "caption",
                 search_method=search_method,
                 limit=limit,
@@ -3166,9 +3039,7 @@ async def search_memory(
                 agent_state=agent_state,
                 user=user,
                 query=query,
-                embedded_text=(
-                    embedded_text if search_method == "embedding" and query else None
-                ),
+                embedded_text=(embedded_text if search_method == "embedding" and query else None),
                 search_field=search_field if search_field != "null" else "summary",
                 search_method=search_method,
                 limit=limit,
@@ -3282,9 +3153,7 @@ async def search_memory_all_users(
         try:
             filter_tags_dict = json.loads(filter_tags)
         except json.JSONDecodeError:
-            raise HTTPException(
-                status_code=400, detail="Invalid filter_tags JSON format"
-            )
+            raise HTTPException(status_code=400, detail="Invalid filter_tags JSON format")
     else:
         filter_tags_dict = {}
 
@@ -3307,9 +3176,7 @@ async def search_memory_all_users(
 
     if start_date:
         try:
-            parsed_start_date = datetime.fromisoformat(
-                start_date.replace("Z", "+00:00")
-            )
+            parsed_start_date = datetime.fromisoformat(start_date.replace("Z", "+00:00"))
             # Strip timezone for DB comparison (DB stores naive datetimes)
             if parsed_start_date.tzinfo:
                 parsed_start_date = parsed_start_date.replace(tzinfo=None)
@@ -3339,11 +3206,7 @@ async def search_memory_all_users(
     agent_state = all_agents[0]
 
     # Validate search parameters
-    if (
-        memory_type == "resource"
-        and search_field == "content"
-        and search_method == "embedding"
-    ):
+    if memory_type == "resource" and search_field == "content" and search_method == "embedding":
         return {
             "success": False,
             "error": "embedding is not supported for resource memory's 'content' field.",
@@ -3352,11 +3215,7 @@ async def search_memory_all_users(
             "count": 0,
         }
 
-    if (
-        memory_type == "knowledge_vault"
-        and search_field == "secret_value"
-        and search_method == "embedding"
-    ):
+    if memory_type == "knowledge_vault" and search_field == "secret_value" and search_method == "embedding":
         return {
             "success": False,
             "error": "embedding is not supported for knowledge_vault memory's 'secret_value' field.",
@@ -3369,9 +3228,7 @@ async def search_memory_all_users(
         search_field = "null"
 
     # Pre-compute embedding once if using embedding search (to avoid redundant embeddings)
-    embedded_text, embedded_text_padded = _precompute_embedding_for_search(
-        search_method, query, agent_state
-    )
+    embedded_text, embedded_text_padded = _precompute_embedding_for_search(search_method, query, agent_state)
 
     # Collect results using organization_id filter
     all_results = []
@@ -3388,11 +3245,7 @@ async def search_memory_all_users(
                     agent_state=agent_state,
                     organization_id=effective_org_id,
                     query=query,
-                    embedded_text=(
-                        embedded_text_padded
-                        if search_method == "embedding" and query
-                        else None
-                    ),
+                    embedded_text=(embedded_text_padded if search_method == "embedding" and query else None),
                     search_field=search_field if search_field != "null" else "summary",
                     search_method=search_method,
                     limit=limit,
@@ -3406,9 +3259,7 @@ async def search_memory_all_users(
                     {
                         "memory_type": "episodic",
                         "id": x.id,
-                        "timestamp": (
-                            x.occurred_at.isoformat() if x.occurred_at else None
-                        ),
+                        "timestamp": (x.occurred_at.isoformat() if x.occurred_at else None),
                         "event_type": x.event_type,
                         "actor": x.actor,
                         "summary": x.summary,
@@ -3428,11 +3279,7 @@ async def search_memory_all_users(
                     agent_state=agent_state,
                     organization_id=effective_org_id,
                     query=query,
-                    embedded_text=(
-                        embedded_text
-                        if search_method == "embedding" and query
-                        else None
-                    ),
+                    embedded_text=(embedded_text if search_method == "embedding" and query else None),
                     search_field=(
                         search_field
                         if search_field != "null"
@@ -3467,11 +3314,7 @@ async def search_memory_all_users(
                     agent_state=agent_state,
                     organization_id=effective_org_id,
                     query=query,
-                    embedded_text=(
-                        embedded_text
-                        if search_method == "embedding" and query
-                        else None
-                    ),
+                    embedded_text=(embedded_text if search_method == "embedding" and query else None),
                     search_field=search_field if search_field != "null" else "summary",
                     search_method=search_method,
                     limit=limit,
@@ -3501,11 +3344,7 @@ async def search_memory_all_users(
                     agent_state=agent_state,
                     organization_id=effective_org_id,
                     query=query,
-                    embedded_text=(
-                        embedded_text
-                        if search_method == "embedding" and query
-                        else None
-                    ),
+                    embedded_text=(embedded_text if search_method == "embedding" and query else None),
                     search_field=search_field if search_field != "null" else "caption",
                     search_method=search_method,
                     limit=limit,
@@ -3537,11 +3376,7 @@ async def search_memory_all_users(
                     agent_state=agent_state,
                     organization_id=effective_org_id,
                     query=query,
-                    embedded_text=(
-                        embedded_text
-                        if search_method == "embedding" and query
-                        else None
-                    ),
+                    embedded_text=(embedded_text if search_method == "embedding" and query else None),
                     search_field=search_field if search_field != "null" else "summary",
                     search_method=search_method,
                     limit=limit,
@@ -3579,25 +3414,19 @@ async def search_memory_all_users(
     # Single memory type searches (run serially as before)
     elif memory_type == "episodic":
         try:
-            episodic_memories = (
-                server.episodic_memory_manager.list_episodic_memory_by_org(
-                    agent_state=agent_state,
-                    organization_id=effective_org_id,
-                    query=query,
-                    embedded_text=(
-                        embedded_text_padded
-                        if search_method == "embedding" and query
-                        else None
-                    ),
-                    search_field=search_field if search_field != "null" else "summary",
-                    search_method=search_method,
-                    limit=limit,
-                    timezone_str="UTC",
-                    filter_tags=filter_tags_dict,
-                    start_date=parsed_start_date,
-                    end_date=parsed_end_date,
-                    similarity_threshold=similarity_threshold,
-                )
+            episodic_memories = server.episodic_memory_manager.list_episodic_memory_by_org(
+                agent_state=agent_state,
+                organization_id=effective_org_id,
+                query=query,
+                embedded_text=(embedded_text_padded if search_method == "embedding" and query else None),
+                search_field=search_field if search_field != "null" else "summary",
+                search_method=search_method,
+                limit=limit,
+                timezone_str="UTC",
+                filter_tags=filter_tags_dict,
+                start_date=parsed_start_date,
+                end_date=parsed_end_date,
+                similarity_threshold=similarity_threshold,
             )
             all_results.extend(
                 [
@@ -3605,9 +3434,7 @@ async def search_memory_all_users(
                         "memory_type": "episodic",
                         "user_id": x.user_id,
                         "id": x.id,
-                        "timestamp": (
-                            x.occurred_at.isoformat() if x.occurred_at else None
-                        ),
+                        "timestamp": (x.occurred_at.isoformat() if x.occurred_at else None),
                         "event_type": x.event_type,
                         "actor": x.actor,
                         "summary": x.summary,
@@ -3626,9 +3453,7 @@ async def search_memory_all_users(
                 agent_state=agent_state,
                 organization_id=effective_org_id,
                 query=query,
-                embedded_text=(
-                    embedded_text if search_method == "embedding" and query else None
-                ),
+                embedded_text=(embedded_text if search_method == "embedding" and query else None),
                 search_field=(
                     search_field
                     if search_field != "null"
@@ -3660,23 +3485,17 @@ async def search_memory_all_users(
     # Search procedural memories across organization
     elif memory_type == "procedural":
         try:
-            procedural_memories = (
-                server.procedural_memory_manager.list_procedures_by_org(
-                    agent_state=agent_state,
-                    organization_id=effective_org_id,
-                    query=query,
-                    embedded_text=(
-                        embedded_text
-                        if search_method == "embedding" and query
-                        else None
-                    ),
-                    search_field=search_field if search_field != "null" else "summary",
-                    search_method=search_method,
-                    limit=limit,
-                    timezone_str="UTC",
-                    filter_tags=filter_tags_dict,
-                    similarity_threshold=similarity_threshold,
-                )
+            procedural_memories = server.procedural_memory_manager.list_procedures_by_org(
+                agent_state=agent_state,
+                organization_id=effective_org_id,
+                query=query,
+                embedded_text=(embedded_text if search_method == "embedding" and query else None),
+                search_field=search_field if search_field != "null" else "summary",
+                search_method=search_method,
+                limit=limit,
+                timezone_str="UTC",
+                filter_tags=filter_tags_dict,
+                similarity_threshold=similarity_threshold,
             )
             all_results.extend(
                 [
@@ -3692,30 +3511,22 @@ async def search_memory_all_users(
                 ]
             )
         except Exception as e:
-            logger.error(
-                "Error searching procedural memories across organization: %s", e
-            )
+            logger.error("Error searching procedural memories across organization: %s", e)
 
     # Search knowledge vault across organization
     elif memory_type == "knowledge_vault":
         try:
-            knowledge_vault_memories = (
-                server.knowledge_vault_manager.list_knowledge_by_org(
-                    agent_state=agent_state,
-                    organization_id=effective_org_id,
-                    query=query,
-                    embedded_text=(
-                        embedded_text
-                        if search_method == "embedding" and query
-                        else None
-                    ),
-                    search_field=search_field if search_field != "null" else "caption",
-                    search_method=search_method,
-                    limit=limit,
-                    timezone_str="UTC",
-                    filter_tags=filter_tags_dict,
-                    similarity_threshold=similarity_threshold,
-                )
+            knowledge_vault_memories = server.knowledge_vault_manager.list_knowledge_by_org(
+                agent_state=agent_state,
+                organization_id=effective_org_id,
+                query=query,
+                embedded_text=(embedded_text if search_method == "embedding" and query else None),
+                search_field=search_field if search_field != "null" else "caption",
+                search_method=search_method,
+                limit=limit,
+                timezone_str="UTC",
+                filter_tags=filter_tags_dict,
+                similarity_threshold=similarity_threshold,
             )
             all_results.extend(
                 [
@@ -3738,23 +3549,17 @@ async def search_memory_all_users(
     # Search semantic memories across organization
     elif memory_type == "semantic":
         try:
-            semantic_memories = (
-                server.semantic_memory_manager.list_semantic_items_by_org(
-                    agent_state=agent_state,
-                    organization_id=effective_org_id,
-                    query=query,
-                    embedded_text=(
-                        embedded_text
-                        if search_method == "embedding" and query
-                        else None
-                    ),
-                    search_field=search_field if search_field != "null" else "summary",
-                    search_method=search_method,
-                    limit=limit,
-                    timezone_str="UTC",
-                    filter_tags=filter_tags_dict,
-                    similarity_threshold=similarity_threshold,
-                )
+            semantic_memories = server.semantic_memory_manager.list_semantic_items_by_org(
+                agent_state=agent_state,
+                organization_id=effective_org_id,
+                query=query,
+                embedded_text=(embedded_text if search_method == "embedding" and query else None),
+                search_field=search_field if search_field != "null" else "summary",
+                search_method=search_method,
+                limit=limit,
+                timezone_str="UTC",
+                filter_tags=filter_tags_dict,
+                similarity_threshold=similarity_threshold,
             )
             all_results.extend(
                 [
@@ -3865,29 +3670,17 @@ async def list_memory_components(
             timezone_str=timezone_str,
         )
         memories["episodic"] = {
-            "total_count": server.episodic_memory_manager.get_total_number_of_items(
-                user=user
-            ),
+            "total_count": server.episodic_memory_manager.get_total_number_of_items(user=user),
             "items": [
                 {
                     "id": item.id,
-                    "occurred_at": (
-                        item.occurred_at.isoformat() if item.occurred_at else None
-                    ),
+                    "occurred_at": (item.occurred_at.isoformat() if item.occurred_at else None),
                     "event_type": item.event_type,
                     "actor": item.actor,
                     "summary": item.summary,
                     "details": item.details,
-                    "created_at": (
-                        item.created_at.isoformat()
-                        if getattr(item, "created_at", None)
-                        else None
-                    ),
-                    "updated_at": (
-                        item.updated_at.isoformat()
-                        if getattr(item, "updated_at", None)
-                        else None
-                    ),
+                    "created_at": (item.created_at.isoformat() if getattr(item, "created_at", None) else None),
+                    "updated_at": (item.updated_at.isoformat() if getattr(item, "updated_at", None) else None),
                 }
                 for item in episodic_items
             ],
@@ -3904,9 +3697,7 @@ async def list_memory_components(
             timezone_str=timezone_str,
         )
         memories["semantic"] = {
-            "total_count": server.semantic_memory_manager.get_total_number_of_items(
-                user=user
-            ),
+            "total_count": server.semantic_memory_manager.get_total_number_of_items(user=user),
             "items": [
                 {
                     "id": item.id,
@@ -3914,16 +3705,8 @@ async def list_memory_components(
                     "summary": item.summary,
                     "details": item.details,
                     "source": item.source,
-                    "created_at": (
-                        item.created_at.isoformat()
-                        if getattr(item, "created_at", None)
-                        else None
-                    ),
-                    "updated_at": (
-                        item.updated_at.isoformat()
-                        if getattr(item, "updated_at", None)
-                        else None
-                    ),
+                    "created_at": (item.created_at.isoformat() if getattr(item, "created_at", None) else None),
+                    "updated_at": (item.updated_at.isoformat() if getattr(item, "updated_at", None) else None),
                 }
                 for item in semantic_items
             ],
@@ -3940,25 +3723,15 @@ async def list_memory_components(
             timezone_str=timezone_str,
         )
         memories["procedural"] = {
-            "total_count": server.procedural_memory_manager.get_total_number_of_items(
-                user=user
-            ),
+            "total_count": server.procedural_memory_manager.get_total_number_of_items(user=user),
             "items": [
                 {
                     "id": item.id,
                     "entry_type": item.entry_type,
                     "summary": item.summary,
                     "steps": item.steps,
-                    "created_at": (
-                        item.created_at.isoformat()
-                        if getattr(item, "created_at", None)
-                        else None
-                    ),
-                    "updated_at": (
-                        item.updated_at.isoformat()
-                        if getattr(item, "updated_at", None)
-                        else None
-                    ),
+                    "created_at": (item.created_at.isoformat() if getattr(item, "created_at", None) else None),
+                    "updated_at": (item.updated_at.isoformat() if getattr(item, "updated_at", None) else None),
                 }
                 for item in procedural_items
             ],
@@ -3975,9 +3748,7 @@ async def list_memory_components(
             timezone_str=timezone_str,
         )
         memories["resource"] = {
-            "total_count": server.resource_memory_manager.get_total_number_of_items(
-                user=user
-            ),
+            "total_count": server.resource_memory_manager.get_total_number_of_items(user=user),
             "items": [
                 {
                     "id": item.id,
@@ -3985,16 +3756,8 @@ async def list_memory_components(
                     "title": item.title,
                     "summary": item.summary,
                     "content": item.content,
-                    "created_at": (
-                        item.created_at.isoformat()
-                        if getattr(item, "created_at", None)
-                        else None
-                    ),
-                    "updated_at": (
-                        item.updated_at.isoformat()
-                        if getattr(item, "updated_at", None)
-                        else None
-                    ),
+                    "created_at": (item.created_at.isoformat() if getattr(item, "created_at", None) else None),
+                    "updated_at": (item.updated_at.isoformat() if getattr(item, "updated_at", None) else None),
                 }
                 for item in resource_items
             ],
@@ -4011,9 +3774,7 @@ async def list_memory_components(
             timezone_str=timezone_str,
         )
         memories["knowledge_vault"] = {
-            "total_count": server.knowledge_vault_manager.get_total_number_of_items(
-                user=user
-            ),
+            "total_count": server.knowledge_vault_manager.get_total_number_of_items(user=user),
             "items": [
                 {
                     "id": item.id,
@@ -4022,16 +3783,8 @@ async def list_memory_components(
                     "sensitivity": item.sensitivity,
                     "secret_value": item.secret_value,
                     "caption": item.caption,
-                    "created_at": (
-                        item.created_at.isoformat()
-                        if getattr(item, "created_at", None)
-                        else None
-                    ),
-                    "updated_at": (
-                        item.updated_at.isoformat()
-                        if getattr(item, "updated_at", None)
-                        else None
-                    ),
+                    "created_at": (item.created_at.isoformat() if getattr(item, "created_at", None) else None),
+                    "updated_at": (item.updated_at.isoformat() if getattr(item, "updated_at", None) else None),
                 }
                 for item in knowledge_items
             ],
@@ -4123,9 +3876,7 @@ def get_client_from_jwt_or_api_key(
             client_id = admin_payload["sub"]
             client = server.client_manager.get_client_by_id(client_id)
             if not client:
-                raise HTTPException(
-                    status_code=404, detail=f"Client {client_id} not found"
-                )
+                raise HTTPException(status_code=404, detail=f"Client {client_id} not found")
             return client, "jwt"
         except HTTPException:
             pass  # Try API key next
@@ -4138,9 +3889,7 @@ def get_client_from_jwt_or_api_key(
             client_id, org_id = get_client_and_org(client_id, org_id)
             client = server.client_manager.get_client_by_id(client_id)
             if not client:
-                raise HTTPException(
-                    status_code=404, detail=f"Client {client_id} not found"
-                )
+                raise HTTPException(status_code=404, detail=f"Client {client_id} not found")
             return client, "api_key"
 
     raise HTTPException(
@@ -4313,9 +4062,7 @@ async def delete_semantic_memory(
     server = get_server()
 
     try:
-        server.semantic_memory_manager.delete_semantic_item_by_id(
-            memory_id, actor=client
-        )
+        server.semantic_memory_manager.delete_semantic_item_by_id(memory_id, actor=client)
         return {"success": True, "message": f"Semantic memory {memory_id} deleted"}
     except Exception as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -4366,9 +4113,7 @@ async def update_procedural_memory(
             procedural_update_data["steps"] = request.steps
 
         updated_memory = server.procedural_memory_manager.update_item(
-            item_update=ProceduralMemoryItemUpdate.model_validate(
-                procedural_update_data
-            ),
+            item_update=ProceduralMemoryItemUpdate.model_validate(procedural_update_data),
             user=user,
             actor=client,
         )
@@ -4520,9 +4265,7 @@ async def update_raw_memory(
     agent_state = agents[0] if agents else None
 
     if not agent_state:
-        logger.warning(
-            "No agents found for client %s, embeddings will not be generated", client.id
-        )
+        logger.warning("No agents found for client %s, embeddings will not be generated", client.id)
 
     try:
         updated_memory = server.raw_memory_manager.update_raw_memory(
@@ -4588,9 +4331,7 @@ async def delete_raw_memory(
                 "message": f"Raw memory {memory_id} deleted",
             }
         else:
-            raise HTTPException(
-                status_code=404, detail=f"Raw memory {memory_id} not found"
-            )
+            raise HTTPException(status_code=404, detail=f"Raw memory {memory_id} not found")
     except Exception as e:
         logger.error(f"Error deleting raw memory {memory_id}: {e}")
         raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
@@ -4626,9 +4367,7 @@ async def search_raw_memory(
 
     # Ensure client is provided
     if not client:
-        raise HTTPException(
-            status_code=401, detail="Authentication required. Client not found."
-        )
+        raise HTTPException(status_code=401, detail="Authentication required. Client not found.")
 
     # If user_id is not provided, use the admin user for this client
     if not user_id:
@@ -4649,9 +4388,7 @@ async def search_raw_memory(
         raise
 
     # Process filter_tags: always set scope to client scope (overwrites any user-provided scope)
-    filter_tags = (
-        dict[str, Any](request.filter_tags) if request.filter_tags is not None else {}
-    )
+    filter_tags = dict[str, Any](request.filter_tags) if request.filter_tags is not None else {}
     filter_tags["scope"] = client.scope
 
     # Parse time_range from request, converting to UTC and stripping timezone for DB comparison
@@ -4676,51 +4413,27 @@ async def search_raw_memory(
 
         time_range_dict = {}
         if request.time_range.created_at_gte:
-            time_range_dict["created_at_gte"] = to_utc_stripped(
-                request.time_range.created_at_gte
-            )
+            time_range_dict["created_at_gte"] = to_utc_stripped(request.time_range.created_at_gte)
         if request.time_range.created_at_lte:
-            time_range_dict["created_at_lte"] = to_utc_stripped(
-                request.time_range.created_at_lte
-            )
+            time_range_dict["created_at_lte"] = to_utc_stripped(request.time_range.created_at_lte)
         if request.time_range.occurred_at_gte:
-            time_range_dict["occurred_at_gte"] = to_utc_stripped(
-                request.time_range.occurred_at_gte
-            )
+            time_range_dict["occurred_at_gte"] = to_utc_stripped(request.time_range.occurred_at_gte)
         if request.time_range.occurred_at_lte:
-            time_range_dict["occurred_at_lte"] = to_utc_stripped(
-                request.time_range.occurred_at_lte
-            )
+            time_range_dict["occurred_at_lte"] = to_utc_stripped(request.time_range.occurred_at_lte)
         if request.time_range.updated_at_gte:
-            time_range_dict["updated_at_gte"] = to_utc_stripped(
-                request.time_range.updated_at_gte
-            )
+            time_range_dict["updated_at_gte"] = to_utc_stripped(request.time_range.updated_at_gte)
         if request.time_range.updated_at_lte:
-            time_range_dict["updated_at_lte"] = to_utc_stripped(
-                request.time_range.updated_at_lte
-            )
+            time_range_dict["updated_at_lte"] = to_utc_stripped(request.time_range.updated_at_lte)
 
-        if time_range_dict.get("created_at_gte") and time_range_dict.get(
-            "created_at_lte"
-        ):
+        if time_range_dict.get("created_at_gte") and time_range_dict.get("created_at_lte"):
             if time_range_dict["created_at_gte"] > time_range_dict["created_at_lte"]:
-                raise HTTPException(
-                    status_code=400, detail="created_at_gte must be <= created_at_lte"
-                )
-        if time_range_dict.get("occurred_at_gte") and time_range_dict.get(
-            "occurred_at_lte"
-        ):
+                raise HTTPException(status_code=400, detail="created_at_gte must be <= created_at_lte")
+        if time_range_dict.get("occurred_at_gte") and time_range_dict.get("occurred_at_lte"):
             if time_range_dict["occurred_at_gte"] > time_range_dict["occurred_at_lte"]:
-                raise HTTPException(
-                    status_code=400, detail="occurred_at_gte must be <= occurred_at_lte"
-                )
-        if time_range_dict.get("updated_at_gte") and time_range_dict.get(
-            "updated_at_lte"
-        ):
+                raise HTTPException(status_code=400, detail="occurred_at_gte must be <= occurred_at_lte")
+        if time_range_dict.get("updated_at_gte") and time_range_dict.get("updated_at_lte"):
             if time_range_dict["updated_at_gte"] > time_range_dict["updated_at_lte"]:
-                raise HTTPException(
-                    status_code=400, detail="updated_at_gte must be <= updated_at_lte"
-                )
+                raise HTTPException(status_code=400, detail="updated_at_gte must be <= updated_at_lte")
 
     # Validate sort string
     valid_sorts = {
@@ -4761,9 +4474,7 @@ async def search_raw_memory(
 
 @router.post("/memory/raw/cleanup")
 async def cleanup_raw_memories_handler(
-    days_threshold: int = Query(
-        14, ge=1, le=365, description="Delete memories older than this many days"
-    ),
+    days_threshold: int = Query(14, ge=1, le=365, description="Delete memories older than this many days"),
     authorization: Optional[str] = Header(None),
     http_request: Request = None,
 ):
@@ -4812,9 +4523,7 @@ async def cleanup_raw_memories_handler(
 
 
 async def cleanup_raw_memories(
-    days_threshold: int = Query(
-        14, ge=1, le=365, description="Delete memories older than this many days"
-    ),
+    days_threshold: int = Query(14, ge=1, le=365, description="Delete memories older than this many days"),
     client: Client = None,
 ):
     """
@@ -4831,8 +4540,7 @@ async def cleanup_raw_memories(
 
         # Add success message to result
         result["message"] = (
-            f"Deleted {result['deleted_count']} stale raw memories "
-            f"(older than {days_threshold} days)"
+            f"Deleted {result['deleted_count']} stale raw memories " f"(older than {days_threshold} days)"
         )
 
         logger.info(
@@ -5127,14 +4835,10 @@ async def dashboard_login(request: DashboardLoginRequest):
 
     auth_manager = ClientAuthManager()
 
-    client, access_token, auth_status = auth_manager.authenticate(
-        request.email, request.password
-    )
+    client, access_token, auth_status = auth_manager.authenticate(request.email, request.password)
 
     if auth_status == "not_found":
-        raise HTTPException(
-            status_code=404, detail="Account does not exist. Please create an account."
-        )
+        raise HTTPException(status_code=404, detail="Account does not exist. Please create an account.")
     if auth_status == "wrong_password":
         raise HTTPException(status_code=401, detail="Incorrect password")
     if auth_status != "ok" or not client or not access_token:
@@ -5197,9 +4901,7 @@ async def list_dashboard_clients(
 
     # Check scope - only admin can list dashboard clients
     if client_payload.get("scope") != "admin":
-        raise HTTPException(
-            status_code=403, detail="Only admin clients can list dashboard clients"
-        )
+        raise HTTPException(status_code=403, detail="Only admin clients can list dashboard clients")
 
     from mirix.services.admin_user_manager import ClientAuthManager
 
@@ -5272,9 +4974,7 @@ async def dashboard_check_setup():
     return {
         "setup_required": is_first,
         "message": (
-            "No dashboard users exist. Please create the first account."
-            if is_first
-            else "Dashboard setup complete."
+            "No dashboard users exist. Please create the first account." if is_first else "Dashboard setup complete."
         ),
     }
 

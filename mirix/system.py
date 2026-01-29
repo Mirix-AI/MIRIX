@@ -68,9 +68,7 @@ def get_initial_boot_messages(version="startup"):
                         "type": "function",
                         "function": {
                             "name": "send_message",
-                            "arguments": '{\n  "message": "'
-                            + "Hi, is anyone there?"
-                            + '"\n}',
+                            "arguments": '{\n  "message": "' + "Hi, is anyone there?" + '"\n}',
                         },
                     }
                 ],
@@ -197,9 +195,7 @@ def package_summarize_message(
     return json_dumps(packaged_message)
 
 
-def package_summarize_message_no_summary(
-    hidden_message_count, timestamp=None, message=None
-):
+def package_summarize_message_no_summary(hidden_message_count, timestamp=None, message=None):
     """Add useful metadata to the summary message"""
 
     # Package the message with time and location
@@ -235,9 +231,7 @@ def unpack_message(packed_message) -> str:
     try:
         message_json = json.loads(packed_message)
     except (ValueError, TypeError):
-        warnings.warn(
-            f"Was unable to load message as JSON to unpack: '{packed_message}'"
-        )
+        warnings.warn(f"Was unable to load message as JSON to unpack: '{packed_message}'")
         return packed_message
 
     if "message" not in message_json:
@@ -247,9 +241,7 @@ def unpack_message(packed_message) -> str:
         ]:
             # This is a valid user message that the ADE expects, so don't print warning
             return packed_message
-        warnings.warn(
-            f"Was unable to find 'message' field in packed message object: '{packed_message}'"
-        )
+        warnings.warn(f"Was unable to find 'message' field in packed message object: '{packed_message}'")
         return packed_message
     else:
         message_type = message_json["type"]

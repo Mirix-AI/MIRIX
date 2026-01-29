@@ -110,9 +110,7 @@ def retry_with_exponential_backoff(
 
 
 # Add this helper function to extract generation metadata for LangFuse
-def _extract_generation_metadata(
-    llm_config, functions, max_tokens, summarizing, image_uris
-):
+def _extract_generation_metadata(llm_config, functions, max_tokens, summarizing, image_uris):
     """Extract metadata for LangFuse generation tracking."""
     metadata = {
         "provider": llm_config.model_endpoint_type,
@@ -122,9 +120,7 @@ def _extract_generation_metadata(
 
     if functions:
         metadata["functions_count"] = len(functions)
-        metadata["function_names"] = [
-            f.get("name") for f in functions if isinstance(f, dict) and "name" in f
-        ]
+        metadata["function_names"] = [f.get("name") for f in functions if isinstance(f, dict) and "name" in f]
 
     if max_tokens:
         metadata["max_tokens"] = max_tokens
@@ -200,10 +196,7 @@ def create(
         try:
             # Extract model parameters
             model_parameters = {}
-            if (
-                hasattr(llm_config, "temperature")
-                and llm_config.temperature is not None
-            ):
+            if hasattr(llm_config, "temperature") and llm_config.temperature is not None:
                 model_parameters["temperature"] = llm_config.temperature
             if max_tokens:
                 model_parameters["max_tokens"] = max_tokens
@@ -214,9 +207,7 @@ def create(
                 model=llm_config.model,
                 model_parameters=model_parameters,
                 input=trace_input,
-                metadata=_extract_generation_metadata(
-                    llm_config, functions, max_tokens, summarizing, image_uris
-                ),
+                metadata=_extract_generation_metadata(llm_config, functions, max_tokens, summarizing, image_uris),
                 trace_id=trace_context.get("trace_id"),
                 parent_observation_id=trace_context.get("observation_id"),
                 user_id=trace_context.get("user_id"),
@@ -231,14 +222,8 @@ def create(
         # Count the tokens first, if there's an overflow exit early by throwing an error up the stack
         # NOTE: we want to include a specific substring in the error message to trigger summarization
         messages_oai_format = [m.to_openai_dict() for m in messages]
-        prompt_tokens = num_tokens_from_messages(
-            messages=messages_oai_format, model=llm_config.model
-        )
-        function_tokens = (
-            num_tokens_from_functions(functions=functions, model=llm_config.model)
-            if functions
-            else 0
-        )
+        prompt_tokens = num_tokens_from_messages(messages=messages_oai_format, model=llm_config.model)
+        function_tokens = num_tokens_from_functions(functions=functions, model=llm_config.model) if functions else 0
         if prompt_tokens + function_tokens > llm_config.context_window:
             raise Exception(
                 f"Request exceeds maximum context length ({prompt_tokens + function_tokens} > {llm_config.context_window} tokens)"
@@ -250,9 +235,7 @@ def create(
             model_settings = model_settings
             assert isinstance(model_settings, ModelSettings)
 
-        printd(
-            f"Using model {llm_config.model_endpoint_type}, endpoint: {llm_config.model_endpoint}"
-        )
+        printd(f"Using model {llm_config.model_endpoint_type}, endpoint: {llm_config.model_endpoint}")
 
         if function_call and not functions:
             printd("unsetting function_call because functions is None")
@@ -266,10 +249,7 @@ def create(
             openai_override_key = ProviderManager().get_openai_override_key()
             has_openai_key = openai_override_key or model_settings.openai_api_key
 
-            if (
-                has_openai_key is None
-                and llm_config.model_endpoint == "https://api.openai.com/v1"
-            ):
+            if has_openai_key is None and llm_config.model_endpoint == "https://api.openai.com/v1":
                 # only is a problem if we are *not* using an openai proxy
                 raise MirixConfigurationError(
                     message="OpenAI key is missing from mirix config file",
@@ -321,29 +301,17 @@ def create(
                         if hasattr(choice, "message"):
                             msg = choice.message
                             output_message = {
-                                "role": (
-                                    msg.role if hasattr(msg, "role") else "assistant"
-                                ),
-                                "content": (
-                                    str(msg.content)[:500]
-                                    if hasattr(msg, "content")
-                                    else ""
-                                ),
+                                "role": (msg.role if hasattr(msg, "role") else "assistant"),
+                                "content": (str(msg.content)[:500] if hasattr(msg, "content") else ""),
                             }
 
                             # Add tool calls if present
                             if hasattr(msg, "tool_calls") and msg.tool_calls:
                                 output_message["tool_calls"] = [
                                     {
-                                        "name": (
-                                            tc.function.name
-                                            if hasattr(tc, "function")
-                                            else str(tc)
-                                        ),
+                                        "name": (tc.function.name if hasattr(tc, "function") else str(tc)),
                                         "arguments": (
-                                            str(tc.function.arguments)[:200]
-                                            if hasattr(tc, "function")
-                                            else ""
+                                            str(tc.function.arguments)[:200] if hasattr(tc, "function") else ""
                                         ),
                                     }
                                     for tc in msg.tool_calls[:5]
@@ -371,9 +339,7 @@ def create(
         # azure
         elif llm_config.model_endpoint_type == "azure":
             if stream:
-                raise NotImplementedError(
-                    f"Streaming not yet implemented for {llm_config.model_endpoint_type}"
-                )
+                raise NotImplementedError(f"Streaming not yet implemented for {llm_config.model_endpoint_type}")
 
             if model_settings.azure_api_key is None:
                 raise MirixConfigurationError(
@@ -429,13 +395,9 @@ def create(
 
         elif llm_config.model_endpoint_type == "google_ai":
             if stream:
-                raise NotImplementedError(
-                    f"Streaming not yet implemented for {llm_config.model_endpoint_type}"
-                )
+                raise NotImplementedError(f"Streaming not yet implemented for {llm_config.model_endpoint_type}")
             if not use_tool_naming:
-                raise NotImplementedError(
-                    "Only tool calling supported on Google AI API requests"
-                )
+                raise NotImplementedError("Only tool calling supported on Google AI API requests")
 
             if functions is not None:
                 tools = [{"type": "function", "function": f} for f in functions]
@@ -462,10 +424,7 @@ def create(
                         last_message_type = "chat"
 
                     elif len(messages) == 0 and len(extra_messages) > 0:
-                        if (
-                            last_message_type is not None
-                            and last_message_type == "extra"
-                        ):
+                        if last_message_type is not None and last_message_type == "extra":
                             # It means two extra messages in a row. Then we need to put them into one message:
                             m = extra_messages.pop(0)
                             new_messages[-1].text += (
@@ -479,27 +438,18 @@ def create(
                         else:
                             m = extra_messages.pop(0)
                             m.text = (
-                                "Timestamp: "
-                                + m.created_at.strftime("%Y-%m-%d %H:%M:%S")
-                                + "\tScreenshot:"
-                                + m.text
+                                "Timestamp: " + m.created_at.strftime("%Y-%m-%d %H:%M:%S") + "\tScreenshot:" + m.text
                             )
                             new_messages.append(m)
 
                         last_message_type = "extra"
 
-                    elif (
-                        messages[0].created_at.timestamp()
-                        < extra_messages[0].created_at.timestamp()
-                    ):
+                    elif messages[0].created_at.timestamp() < extra_messages[0].created_at.timestamp():
                         new_messages.append(messages.pop(0))
                         last_message_type = "chat"
 
                     else:
-                        if (
-                            last_message_type is not None
-                            and last_message_type == "extra"
-                        ):
+                        if last_message_type is not None and last_message_type == "extra":
                             # It means two extra messages in a row. Then we need to put them into one message:
                             m = extra_messages.pop(0)
                             new_messages[-1].text += (
@@ -513,10 +463,7 @@ def create(
                         else:
                             m = extra_messages.pop(0)
                             m.text = (
-                                "Timestamp: "
-                                + m.created_at.strftime("%Y-%m-%d %H:%M:%S")
-                                + "\tScreenshot:"
-                                + m.text
+                                "Timestamp: " + m.created_at.strftime("%Y-%m-%d %H:%M:%S") + "\tScreenshot:" + m.text
                             )
                             new_messages.append(m)
 
@@ -557,13 +504,9 @@ def create(
 
         elif llm_config.model_endpoint_type == "anthropic":
             if stream:
-                raise NotImplementedError(
-                    f"Streaming not yet implemented for {llm_config.model_endpoint_type}"
-                )
+                raise NotImplementedError(f"Streaming not yet implemented for {llm_config.model_endpoint_type}")
             if not use_tool_naming:
-                raise NotImplementedError(
-                    "Only tool calling supported on Anthropic API requests"
-                )
+                raise NotImplementedError("Only tool calling supported on Anthropic API requests")
 
             tool_call = None
             if force_tool_call is not None:
@@ -573,14 +516,8 @@ def create(
             response = anthropic_chat_completions_request(
                 data=ChatCompletionRequest(
                     model=llm_config.model,
-                    messages=[
-                        cast_message_to_subtype(m.to_openai_dict()) for m in messages
-                    ],
-                    tools=(
-                        [{"type": "function", "function": f} for f in functions]
-                        if functions
-                        else None
-                    ),
+                    messages=[cast_message_to_subtype(m.to_openai_dict()) for m in messages],
+                    tools=([{"type": "function", "function": f} for f in functions] if functions else None),
                     tool_choice=tool_call,
                     # user=str(user_id),
                     # NOTE: max_tokens is required for Anthropic API
@@ -631,25 +568,18 @@ def create(
 
             if (
                 model_settings.groq_api_key is None
-                and llm_config.model_endpoint
-                == "https://api.groq.com/openai/v1/chat/completions"
+                and llm_config.model_endpoint == "https://api.groq.com/openai/v1/chat/completions"
             ):
                 raise MirixConfigurationError(
                     message="Groq key is missing from mirix config file",
                     missing_fields=["groq_api_key"],
                 )
 
-            tools = (
-                [{"type": "function", "function": f} for f in functions]
-                if functions is not None
-                else None
-            )
+            tools = [{"type": "function", "function": f} for f in functions] if functions is not None else None
             data = ChatCompletionRequest(
                 model=llm_config.model,
                 messages=[
-                    m.to_openai_dict(
-                        put_inner_thoughts_in_kwargs=llm_config.put_inner_thoughts_in_kwargs
-                    )
+                    m.to_openai_dict(put_inner_thoughts_in_kwargs=llm_config.put_inner_thoughts_in_kwargs)
                     for m in messages
                 ],
                 tools=tools,
@@ -691,13 +621,9 @@ def create(
             """Anthropic endpoint that goes via /embeddings instead of /chat/completions"""
 
             if stream:
-                raise NotImplementedError(
-                    "Streaming not yet implemented for Anthropic (via the /embeddings endpoint)."
-                )
+                raise NotImplementedError("Streaming not yet implemented for Anthropic (via the /embeddings endpoint).")
             if not use_tool_naming:
-                raise NotImplementedError(
-                    "Only tool calling supported on Anthropic API requests"
-                )
+                raise NotImplementedError("Only tool calling supported on Anthropic API requests")
 
             if not has_valid_aws_credentials():
                 raise MirixConfigurationError(
@@ -712,14 +638,8 @@ def create(
             response = anthropic_bedrock_chat_completions_request(
                 data=ChatCompletionRequest(
                     model=llm_config.model,
-                    messages=[
-                        cast_message_to_subtype(m.to_openai_dict()) for m in messages
-                    ],
-                    tools=(
-                        [{"type": "function", "function": f} for f in functions]
-                        if functions
-                        else None
-                    ),
+                    messages=[cast_message_to_subtype(m.to_openai_dict()) for m in messages],
+                    tools=([{"type": "function", "function": f} for f in functions] if functions else None),
                     tool_choice=tool_call,
                     # user=str(user_id),
                     # NOTE: max_tokens is required for Anthropic API
@@ -738,9 +658,7 @@ def create(
 
         # local model
         else:
-            raise NotImplementedError(
-                f"Model endpoint type '{llm_config.model_endpoint_type}' is not yet supported"
-            )
+            raise NotImplementedError(f"Model endpoint type '{llm_config.model_endpoint_type}' is not yet supported")
 
     except Exception as e:
         # Update generation with error
@@ -753,7 +671,5 @@ def create(
                 )
                 generation.end()
             except Exception as update_error:
-                logger.warning(
-                    f"Failed to update LangFuse generation with error: {update_error}"
-                )
+                logger.warning(f"Failed to update LangFuse generation with error: {update_error}")
         raise  # Re-raise to preserve existing error handling

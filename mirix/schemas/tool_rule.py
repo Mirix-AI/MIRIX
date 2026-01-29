@@ -29,12 +29,8 @@ class ChildToolRule(BaseToolRule):
     A ToolRule represents a tool that can be invoked by the agent.
     """
 
-    type: Literal[ToolRuleType.constrain_child_tools] = (
-        ToolRuleType.constrain_child_tools
-    )
-    children: List[str] = Field(
-        ..., description="The children tools that can be invoked."
-    )
+    type: Literal[ToolRuleType.constrain_child_tools] = ToolRuleType.constrain_child_tools
+    children: List[str] = Field(..., description="The children tools that can be invoked.")
 
     def get_valid_tools(
         self,
@@ -52,9 +48,7 @@ class ParentToolRule(BaseToolRule):
     """
 
     type: Literal[ToolRuleType.parent_last_tool] = ToolRuleType.parent_last_tool
-    children: List[str] = Field(
-        ..., description="The children tools that can be invoked."
-    )
+    children: List[str] = Field(..., description="The children tools that can be invoked.")
 
     def get_valid_tools(
         self,
@@ -63,11 +57,7 @@ class ParentToolRule(BaseToolRule):
         last_function_response: Optional[str],
     ) -> Set[str]:
         last_tool = tool_call_history[-1] if tool_call_history else None
-        return (
-            set(self.children)
-            if last_tool == self.tool_name
-            else available_tools - set(self.children)
-        )
+        return set(self.children) if last_tool == self.tool_name else available_tools - set(self.children)
 
 
 class ConditionalToolRule(BaseToolRule):
@@ -80,9 +70,7 @@ class ConditionalToolRule(BaseToolRule):
         None,
         description="The default child tool to be called. If None, any tool can be called.",
     )
-    child_output_mapping: Dict[Any, str] = Field(
-        ..., description="The output case to check for mapping"
-    )
+    child_output_mapping: Dict[Any, str] = Field(..., description="The output case to check for mapping")
     require_output_mapping: bool = Field(
         default=False,
         description="Whether to throw an error when output doesn't match any case",
@@ -99,9 +87,7 @@ class ConditionalToolRule(BaseToolRule):
             return available_tools  # No constraints if this rule doesn't apply
 
         if not last_function_response:
-            raise ValueError(
-                "Conditional tool rule requires an LLM response to determine which child tool to use"
-            )
+            raise ValueError("Conditional tool rule requires an LLM response to determine which child tool to use")
 
         try:
             json_response = json.loads(last_function_response)
@@ -125,11 +111,7 @@ class ConditionalToolRule(BaseToolRule):
     def _matches_key(self, function_output: str, key: Any) -> bool:
         """Helper function to determine if function output matches a mapping key."""
         if isinstance(key, bool):
-            return (
-                function_output.lower() == "true"
-                if key
-                else function_output.lower() == "false"
-            )
+            return function_output.lower() == "true" if key else function_output.lower() == "false"
         elif isinstance(key, int):
             try:
                 return int(function_output) == key

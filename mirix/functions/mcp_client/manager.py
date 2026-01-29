@@ -68,9 +68,7 @@ class MCPClientManager:
             return True
 
         except Exception as e:
-            logger.error(
-                f"Failed to add MCP server {server_config.server_name}: {str(e)}"
-            )
+            logger.error(f"Failed to add MCP server {server_config.server_name}: {str(e)}")
             return False
 
     def _add_server_without_persistence(
@@ -101,15 +99,11 @@ class MCPClientManager:
             self.clients[server_config.server_name] = client
             self.server_configs[server_config.server_name] = server_config
 
-            logger.info(
-                f"Successfully restored MCP server: {server_config.server_name}"
-            )
+            logger.info(f"Successfully restored MCP server: {server_config.server_name}")
             return True
 
         except Exception as e:
-            logger.error(
-                f"Failed to restore MCP server {server_config.server_name}: {str(e)}"
-            )
+            logger.error(f"Failed to restore MCP server {server_config.server_name}: {str(e)}")
             return False
 
     def remove_server(self, server_name: str) -> bool:
@@ -167,9 +161,7 @@ class MCPClientManager:
                     all_tools[name] = []
             return all_tools
 
-    def execute_tool(
-        self, server_name: str, tool_name: str, tool_args: Dict[str, Any]
-    ) -> Tuple[str, bool]:
+    def execute_tool(self, server_name: str, tool_name: str, tool_args: Dict[str, Any]) -> Tuple[str, bool]:
         """Execute a tool on a specific server"""
         if server_name not in self.clients:
             raise MCPNotInitializedError(server_name)
@@ -185,14 +177,10 @@ class MCPClientManager:
                     if tool.name == tool_name:
                         return server_name, tool
             except Exception as e:
-                logger.error(
-                    f"Failed to search tools in server {server_name}: {str(e)}"
-                )
+                logger.error(f"Failed to search tools in server {server_name}: {str(e)}")
         return None
 
-    def execute_tool_by_name(
-        self, tool_name: str, tool_args: Dict[str, Any]
-    ) -> Tuple[str, bool]:
+    def execute_tool_by_name(self, tool_name: str, tool_args: Dict[str, Any]) -> Tuple[str, bool]:
         """Execute a tool by name (searches all servers)"""
         result = self.find_tool(tool_name)
         if result:
@@ -243,9 +231,7 @@ class MCPClientManager:
             with open(self.config_file, "w") as f:
                 json.dump(configs_data, f, indent=2)
 
-            logger.debug(
-                f"Saved {len(configs_data)} MCP server configurations to {self.config_file}"
-            )
+            logger.debug(f"Saved {len(configs_data)} MCP server configurations to {self.config_file}")
 
         except Exception as e:
             logger.error("Failed to save MCP server configurations: %s", str(e))
@@ -264,9 +250,7 @@ class MCPClientManager:
                 logger.info("No MCP server configurations to restore")
                 return
 
-            logger.info(
-                f"Loading {len(configs_data)} persistent MCP server configurations"
-            )
+            logger.info(f"Loading {len(configs_data)} persistent MCP server configurations")
 
             restored_count = 0
             failed_count = 0
@@ -291,16 +275,12 @@ class MCPClientManager:
                             token_file=config_data.get("token_file"),
                         )
                     else:
-                        logger.warning(
-                            f"Unsupported server type {server_type} for {server_name}"
-                        )
+                        logger.warning(f"Unsupported server type {server_type} for {server_name}")
                         failed_count += 1
                         continue
 
                     # Try to reconnect (but don't save to disk to avoid recursion)
-                    logger.debug(
-                        f"🔗 Attempting to restore {server_name} ({server_type.value})..."
-                    )
+                    logger.debug(f"🔗 Attempting to restore {server_name} ({server_type.value})...")
                     if self._add_server_without_persistence(config):
                         logger.debug("Restored MCP connection: %s", server_name)
                         restored_count += 1
@@ -313,14 +293,10 @@ class MCPClientManager:
                     failed_count += 1
                     continue
 
-            logger.debug(
-                f"MCP Restoration Complete: {restored_count} successful, {failed_count} failed"
-            )
+            logger.debug(f"MCP Restoration Complete: {restored_count} successful, {failed_count} failed")
 
         except Exception as e:
-            logger.error(
-                f"Failed to load persistent MCP server configurations: {str(e)}"
-            )
+            logger.error(f"Failed to load persistent MCP server configurations: {str(e)}")
 
 
 class AsyncMCPClientManager:
@@ -356,15 +332,11 @@ class AsyncMCPClientManager:
             self.clients[server_config.server_name] = client
             self.server_configs[server_config.server_name] = server_config
 
-            logger.info(
-                f"Successfully added async MCP server: {server_config.server_name}"
-            )
+            logger.info(f"Successfully added async MCP server: {server_config.server_name}")
             return True
 
         except Exception as e:
-            logger.error(
-                f"Failed to add async MCP server {server_config.server_name}: {str(e)}"
-            )
+            logger.error(f"Failed to add async MCP server {server_config.server_name}: {str(e)}")
             return False
 
     async def remove_server(self, server_name: str) -> bool:
@@ -383,9 +355,7 @@ class AsyncMCPClientManager:
             logger.warning("Async server %s not found", server_name)
             return False
 
-    async def list_tools(
-        self, server_name: Optional[str] = None
-    ) -> Dict[str, List[MCPTool]]:
+    async def list_tools(self, server_name: Optional[str] = None) -> Dict[str, List[MCPTool]]:
         """Asynchronously list tools from one or all servers"""
         if server_name:
             if server_name not in self.clients:
@@ -399,15 +369,11 @@ class AsyncMCPClientManager:
                 try:
                     all_tools[name] = await client.list_tools()
                 except Exception as e:
-                    logger.error(
-                        f"Failed to list tools for async server {name}: {str(e)}"
-                    )
+                    logger.error(f"Failed to list tools for async server {name}: {str(e)}")
                     all_tools[name] = []
             return all_tools
 
-    async def execute_tool(
-        self, server_name: str, tool_name: str, tool_args: Dict[str, Any]
-    ) -> Tuple[str, bool]:
+    async def execute_tool(self, server_name: str, tool_name: str, tool_args: Dict[str, Any]) -> Tuple[str, bool]:
         """Asynchronously execute a tool on a specific server"""
         if server_name not in self.clients:
             raise MCPNotInitializedError(server_name)

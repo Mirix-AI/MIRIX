@@ -32,6 +32,7 @@ if TYPE_CHECKING:
 
     from mirix.agent.agent import Agent
 
+
 def generate_langchain_tool_wrapper(
     tool: "LangChainBaseTool", additional_imports_module_attr_map: dict[str, str] = None
 ) -> tuple[str, str]:
@@ -61,11 +62,13 @@ def {func_name}(**kwargs):
 
     return func_name, wrapper_function_str
 
+
 def assert_code_gen_compilable(code_str):
     try:
         compile(code_str, "<string>", "exec")
     except SyntaxError as e:
         logger.debug("Syntax error in code: %s", e)
+
 
 def assert_all_classes_are_imported(
     tool: Union["LangChainBaseTool"], additional_imports_module_attr_map: dict[str, str]
@@ -81,6 +84,7 @@ def assert_all_classes_are_imported(
         err_msg = f"[ERROR] You are missing module_attr pairs in `additional_imports_module_attr_map`. Currently, you have imports for {current_class_imports}, but the required classes for import are {required_class_imports}"
         logger.debug(err_msg)
         raise RuntimeError(err_msg)
+
 
 def find_required_class_names_for_import(
     obj: Union["LangChainBaseTool", BaseModel],
@@ -127,6 +131,7 @@ def find_required_class_names_for_import(
                 queue.append(c)
 
     return list(class_names)
+
 
 def generate_imported_tool_instantiation_call_str(obj: Any) -> Optional[str]:
     if isinstance(obj, (int, float, str, bool, type(None))):
@@ -186,10 +191,12 @@ def generate_imported_tool_instantiation_call_str(obj: Any) -> Optional[str]:
 
         return None
 
+
 def is_base_model(obj: Any):
     from langchain_core.pydantic_v1 import BaseModel as LangChainBaseModel
 
     return isinstance(obj, BaseModel) or isinstance(obj, LangChainBaseModel)
+
 
 def generate_import_code(module_attr_map: Optional[dict]):
     if not module_attr_map:
@@ -198,12 +205,11 @@ def generate_import_code(module_attr_map: Optional[dict]):
     code_lines = []
     for module, attr in module_attr_map.items():
         module_name = module.split(".")[-1]
-        code_lines.append(
-            f"# Load the module\n    {module_name} = importlib.import_module('{module}')"
-        )
+        code_lines.append(f"# Load the module\n    {module_name} = importlib.import_module('{module}')")
         code_lines.append(f"    # Access the {attr} from the module")
         code_lines.append(f"    {attr} = getattr({module_name}, '{attr}')")
     return "\n".join(code_lines)
+
 
 def parse_mirix_response_for_assistant_message(
     mirix_response: MirixResponse,
@@ -214,10 +220,7 @@ def parse_mirix_response_for_assistant_message(
     for m in mirix_response.messages:
         if isinstance(m, AssistantMessage):
             return m.assistant_message
-        elif (
-            isinstance(m, ToolCallMessage)
-            and m.tool_call.name == assistant_message_tool_name
-        ):
+        elif isinstance(m, ToolCallMessage) and m.tool_call.name == assistant_message_tool_name:
             try:
                 return json.loads(m.tool_call.arguments)[assistant_message_tool_kwarg]
             except Exception:  # TODO: Make this more specific
@@ -227,6 +230,7 @@ def parse_mirix_response_for_assistant_message(
             reasoning_message += f"{m.reasoning}\n"
 
     return None
+
 
 async def async_send_message_with_retries(
     server,
@@ -305,7 +309,5 @@ async def async_send_message_with_retries(
             )
             await asyncio.sleep(backoff)
         else:
-            sender_agent.logger.error(
-                f"{logging_prefix} - Fatal error during agent to agent send_message: {error_msg}"
-            )
+            sender_agent.logger.error(f"{logging_prefix} - Fatal error during agent to agent send_message: {error_msg}")
             return error_msg

@@ -11,11 +11,13 @@ from mirix.schemas.openai.chat_completion_response import (
     ChatCompletionResponse,
     Choice,
     FunctionCall,
-    ToolCall,
-    UsageStatistics,
 )
 from mirix.schemas.openai.chat_completion_response import (
     Message as ChoiceMessage,  # NOTE: avoid conflict with our own Mirix Message datatype
+)
+from mirix.schemas.openai.chat_completion_response import (
+    ToolCall,
+    UsageStatistics,
 )
 from mirix.utils import get_tool_call_id, get_utc_time, json_dumps, smart_urljoin
 
@@ -59,9 +61,7 @@ def cohere_get_model_details(url: str, api_key: Union[str, None], model: str) ->
         raise e
 
 
-def cohere_get_model_context_window(
-    url: str, api_key: Union[str, None], model: str
-) -> int:
+def cohere_get_model_context_window(url: str, api_key: Union[str, None], model: str) -> int:
     model_details = cohere_get_model_details(url=url, api_key=api_key, model=model)
     return model_details["context_length"]
 
@@ -184,7 +184,7 @@ def convert_cohere_response_to_chatcompletion(
         # NOTE: no multi-call support for now
         assert len(tool_calls) == 1, tool_calls
         # TODO: not sure what to assign to 'content' here
-        content = 'EMPTY'
+        content = "EMPTY"
 
     else:
         # raise NotImplementedError(f"Expected a tool call response from Cohere API")
@@ -193,9 +193,7 @@ def convert_cohere_response_to_chatcompletion(
 
     # In Cohere API empty string == null
     content = None if content == "" else content
-    assert content is not None or tool_calls is not None, (
-        "Response message must have either content or tool_calls"
-    )
+    assert content is not None or tool_calls is not None, "Response message must have either content or tool_calls"
 
     choice = Choice(
         index=0,
@@ -220,9 +218,7 @@ def convert_cohere_response_to_chatcompletion(
     )
 
 
-def convert_tools_to_cohere_format(
-    tools: List[Tool], inner_thoughts_in_kwargs: Optional[bool] = True
-) -> List[dict]:
+def convert_tools_to_cohere_format(tools: List[Tool], inner_thoughts_in_kwargs: Optional[bool] = True) -> List[dict]:
     """See: https://docs.cohere.com/reference/chat
 
     OpenAI style:
@@ -271,9 +267,7 @@ def convert_tools_to_cohere_format(
                         "type": p_fields["type"],
                         "required": p_name in tool.function.parameters["required"],
                     }
-                    for p_name, p_fields in tool.function.parameters[
-                        "properties"
-                    ].items()
+                    for p_name, p_fields in tool.function.parameters["properties"].items()
                 },
             }
         )
@@ -297,9 +291,7 @@ def cohere_chat_completions_request(
 
     # convert the tools
     cohere_tools = (
-        None
-        if chat_completion_request.tools is None
-        else convert_tools_to_cohere_format(chat_completion_request.tools)
+        None if chat_completion_request.tools is None else convert_tools_to_cohere_format(chat_completion_request.tools)
     )
 
     # pydantic -> dict
@@ -311,15 +303,11 @@ def cohere_chat_completions_request(
     # If tools == None, strip from the payload
     if "tools" in data and data["tools"] is None:
         data.pop("tools")
-        data.pop(
-            "tool_choice", None
-        )  # extra safe,  should exist always (default="auto")
+        data.pop("tool_choice", None)  # extra safe,  should exist always (default="auto")
 
     # Convert messages to Cohere format
     msg_objs = [
-        Message.dict_to_message(
-            user_id=uuid.uuid4(), agent_id=uuid.uuid4(), openai_message_dict=m
-        )
+        Message.dict_to_message(user_id=uuid.uuid4(), agent_id=uuid.uuid4(), openai_message_dict=m)
         for m in data["messages"]
     ]
 

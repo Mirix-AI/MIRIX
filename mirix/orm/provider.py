@@ -17,11 +17,7 @@ class Provider(SqlalchemyBase, OrganizationMixin):
     __pydantic_model__ = PydanticProvider
 
     name: Mapped[str] = mapped_column(nullable=False, doc="The name of the provider")
-    api_key: Mapped[str] = mapped_column(
-        nullable=True, doc="API key used for requests to the provider."
-    )
+    api_key: Mapped[str] = mapped_column(nullable=True, doc="API key used for requests to the provider.")
 
     # relationships
-    organization: Mapped["Organization"] = relationship(
-        "Organization", back_populates="providers"
-    )
+    organization: Mapped["Organization"] = relationship("Organization", back_populates="providers")

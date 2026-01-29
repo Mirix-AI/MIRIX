@@ -16,6 +16,7 @@ logger = get_logger(__name__)
 # Add the mirix directory to the Python path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+
 def extract_schema_ddl():
     """Extract DDL statements from SQLAlchemy models for PGlite"""
 
@@ -52,6 +53,7 @@ def extract_schema_ddl():
     ]
 
     return "\n".join(setup_statements + ddl_statements)
+
 
 def clean_ddl_for_pglite(ddl):
     """Clean DDL statements for PGlite compatibility"""
@@ -100,6 +102,7 @@ def clean_ddl_for_pglite(ddl):
         filtered_lines.append(line)
 
     return "\n".join(filtered_lines)
+
 
 def get_basic_schema():
     """Get a basic schema for PGlite with essential tables"""
@@ -330,6 +333,7 @@ INSERT INTO users (id, organization_id, name, timezone)
 VALUES ('default-user', 'default-org', 'Default User', 'UTC') 
 ON CONFLICT DO NOTHING;
 """
+
 
 if __name__ == "__main__":
     try:

@@ -29,9 +29,7 @@ class UploadManager:
         self._upload_lock = threading.Lock()
 
         # Thread pool for concurrent uploads (max 4 simultaneous uploads)
-        self._executor = ThreadPoolExecutor(
-            max_workers=4, thread_name_prefix="upload_worker"
-        )
+        self._executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="upload_worker")
 
     def _compress_image(self, image_path, quality=85, max_size=(1920, 1080)):
         """Compress image to reduce upload time while maintaining reasonable quality"""
@@ -59,17 +57,9 @@ class UploadManager:
         """Upload a single file with 5-second timeout"""
         try:
             # Check if file already exists in cloud
-            if self.client.server.cloud_file_mapping_manager.check_if_existing(
-                local_file_id=filename
-            ):
-                cloud_file_name = (
-                    self.client.server.cloud_file_mapping_manager.get_cloud_file(
-                        local_file_id=filename
-                    )
-                )
-                file_ref = [
-                    x for x in self.existing_files if x.name == cloud_file_name
-                ][0]
+            if self.client.server.cloud_file_mapping_manager.check_if_existing(local_file_id=filename):
+                cloud_file_name = self.client.server.cloud_file_mapping_manager.get_cloud_file(local_file_id=filename)
+                file_ref = [x for x in self.existing_files if x.name == cloud_file_name][0]
 
                 with self._upload_lock:
                     self._upload_status[upload_uuid] = {
@@ -79,20 +69,14 @@ class UploadManager:
                 return
 
             # Choose file to upload (compressed if available, otherwise original)
-            upload_file = (
-                compressed_file
-                if compressed_file and os.path.exists(compressed_file)
-                else filename
-            )
+            upload_file = compressed_file if compressed_file and os.path.exists(compressed_file) else filename
 
             # Upload with 5-second timeout
             upload_start_time = time.time()
             file_ref = self.google_client.files.upload(file=upload_file)
             upload_duration = time.time() - upload_start_time
 
-            self.logger.info(
-                f"Upload completed in {upload_duration:.2f} seconds for file {upload_file}"
-            )
+            self.logger.info(f"Upload completed in {upload_duration:.2f} seconds for file {upload_file}")
 
             # Update tracking and database
             self.uri_to_create_time[file_ref.uri] = {
@@ -107,11 +91,7 @@ class UploadManager:
             )
 
             # Clean up compressed file if it was created and used
-            if (
-                compressed_file
-                and compressed_file != filename
-                and upload_file == compressed_file
-            ):
+            if compressed_file and compressed_file != filename and upload_file == compressed_file:
                 try:
                     os.remove(compressed_file)
                     logger.info("Removed compressed file: %s", compressed_file)
@@ -132,11 +112,7 @@ class UploadManager:
                 self._upload_status[upload_uuid] = {"status": "failed", "result": None}
 
             # Clean up compressed file on failure too
-            if (
-                compressed_file
-                and compressed_file != filename
-                and os.path.exists(compressed_file)
-            ):
+            if compressed_file and compressed_file != filename and os.path.exists(compressed_file):
                 try:
                     os.remove(compressed_file)
                 except Exception:
@@ -156,18 +132,14 @@ class UploadManager:
             self._upload_status[upload_uuid] = {"status": "pending", "result": None}
 
         # Submit upload task with 5-second timeout
-        future = self._executor.submit(
-            self._upload_single_file, upload_uuid, filename, timestamp, compressed_file
-        )
+        future = self._executor.submit(self._upload_single_file, upload_uuid, filename, timestamp, compressed_file)
 
         # Set up automatic timeout handling
         def timeout_handler():
             time.sleep(10.0)  # Wait 10 seconds
             with self._upload_lock:
                 if self._upload_status.get(upload_uuid, {}).get("status") == "pending":
-                    self.logger.info(
-                        f"Upload timeout (5s) for {filename}, marking as failed"
-                    )
+                    self.logger.info(f"Upload timeout (5s) for {filename}, marking as failed")
                     self._upload_status[upload_uuid] = {
                         "status": "failed",
                         "result": None,
@@ -225,16 +197,12 @@ class UploadManager:
 
             time.sleep(0.1)
 
-        raise TimeoutError(
-            f"Upload timeout after {timeout}s for {placeholder['filename']}"
-        )
+        raise TimeoutError(f"Upload timeout after {timeout}s for {placeholder['filename']}")
 
     def upload_file(self, filename, timestamp):
         """Legacy synchronous upload method"""
         placeholder = self.upload_file_async(filename, timestamp)
-        return self.wait_for_upload(
-            placeholder, timeout=10
-        )  # Reduced timeout since individual uploads timeout at 5s
+        return self.wait_for_upload(placeholder, timeout=10)  # Reduced timeout since individual uploads timeout at 5s
 
     def cleanup_resolved_upload(self, placeholder):
         """Clean up resolved upload from tracking"""

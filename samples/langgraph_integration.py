@@ -14,13 +14,11 @@ load_dotenv(os.path.join(mirix_root, ".env"))
 
 import logging
 
-from mirix.schemas.agent import AgentType
 from mirix.client import MirixClient
+from mirix.schemas.agent import AgentType
 
 # Configure logging
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 from typing import Annotated, List, TypedDict  # noqa: E402
@@ -47,18 +45,16 @@ org_id = "demo-org"
 
 # Build absolute path to config file (since we're in samples/ subdirectory)
 config_path = os.path.join(mirix_root, "mirix/configs/examples/mirix_gemini.yaml")
-    
+
 client = MirixClient(
-    api_key=None, # TODO: add authentication later
+    api_key=None,  # TODO: add authentication later
     client_id=client_id,
     org_id=org_id,
     debug=True,
 )
 
-client.initialize_meta_agent(
-    config_path=config_path,
-    update_agents=True
-)
+client.initialize_meta_agent(config_path=config_path, update_agents=True)
+
 
 class State(TypedDict):
     messages: Annotated[List[HumanMessage | AIMessage], add_messages]
@@ -71,18 +67,18 @@ graph = StateGraph(State)
 def format_memories_for_prompt(memories: dict) -> str:
     """
     Format the memories dictionary returned by retrieve_with_conversation() into a string.
-    
+
     Args:
         memories: Dictionary containing retrieved memories organized by type
-    
+
     Returns:
         Formatted string representation of memories
     """
     if not memories or not memories.get("memories"):
         return "No relevant memories found."
-    
+
     formatted_parts = []
-    
+
     # ✅ FIX: Format core memory first (most important - contains user's name and persona)
     if "core" in memories["memories"] and memories["memories"]["core"].get("items"):
         formatted_parts.append("\n=== CORE MEMORY ===")
@@ -92,7 +88,7 @@ def format_memories_for_prompt(memories: dict) -> str:
             if value:  # Only show non-empty blocks
                 formatted_parts.append(f"{label}: {value}")
         formatted_parts.append("")  # Empty line after core memory
-    
+
     # Format other memory types
     for memory_type, items in memories["memories"].items():
         if memory_type == "core":  # Already handled above
@@ -113,59 +109,39 @@ def format_memories_for_prompt(memories: dict) -> str:
                     text = item.get("caption", "")
                 else:
                     text = str(item)[:100]
-                
+
                 formatted_parts.append(f"  - {text[:150]}")
-    
+
     return "\n".join(formatted_parts) if formatted_parts else "No relevant memories found."
 
 
 def create_user_message(text: str) -> List[dict]:
     """
     Create a structured user message for Mirix retrieve_with_conversation() API.
-    
+
     Args:
         text: The user's message text
-    
+
     Returns:
         List containing a single user message dictionary
     """
-    return [
-        {
-            "role": "user",
-            "content": [{
-                "type": "text",
-                "text": text
-            }]
-        }
-    ]
+    return [{"role": "user", "content": [{"type": "text", "text": text}]}]
 
 
 def create_mirix_messages(user_content: str, assistant_content: str) -> List[dict]:
     """
     Create structured messages for Mirix client.add() API.
-    
+
     Args:
         user_content: The user's message content
         assistant_content: The assistant's response content
-    
+
     Returns:
         List of message dictionaries with role and content structure
     """
     return [
-        {
-            "role": "user",
-            "content": [{
-                "type": "text",
-                "text": user_content
-            }]
-        },
-        {
-            "role": "assistant",
-            "content": [{
-                "type": "text",
-                "text": assistant_content
-            }]
-        }
+        {"role": "user", "content": [{"type": "text", "text": user_content}]},
+        {"role": "assistant", "content": [{"type": "text", "text": assistant_content}]},
     ]
 
 
@@ -176,20 +152,15 @@ def chatbot(state: State):
     try:
         # Create structured message for memory retrieval
         retrieval_messages = create_user_message(messages[-1].content)
-        
-        memories = client.retrieve_with_conversation(
-            user_id=user_id,
-            messages=retrieval_messages,
-            limit=10
-        )
+
+        memories = client.retrieve_with_conversation(user_id=user_id, messages=retrieval_messages, limit=10)
 
         # Format memories into a readable string
         formatted_memories = format_memories_for_prompt(memories)
-        
+
         system_message = (
             "You are a helpful assistant that can answer questions and help with tasks. "
-            "You have the following memories:\n"
-            + formatted_memories
+            "You have the following memories:\n" + formatted_memories
         )
 
         full_messages = [system_message] + messages
@@ -199,8 +170,7 @@ def chatbot(state: State):
         # Store the interaction with Mirix
         try:
             mirix_messages = create_mirix_messages(
-                user_content=messages[-1].content,
-                assistant_content=response.content
+                user_content=messages[-1].content, assistant_content=response.content
             )
             client.add(user_id=user_id, messages=mirix_messages)
         except Exception as e:
