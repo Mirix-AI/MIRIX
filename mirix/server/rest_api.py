@@ -4178,7 +4178,8 @@ async def get_raw_memory_handler(
 async def get_raw_memory(
     memory_id: str,
     user_id: Optional[str] = None,
-    client: Client = None,
+    client: Optional[Client] = None,
+    client_id: Optional[str] = None,
 ):
     """
     Fetch a single raw memory by ID.
@@ -4187,6 +4188,12 @@ async def get_raw_memory(
     with a 14-day TTL.
     """
     server = get_server()
+
+    # Resolve client: use provided client or fetch from client_id
+    if not client and client_id:
+        client = server.client_manager.get_client_by_id(client_id)
+    if not client:
+        raise HTTPException(status_code=401, detail="Client or client_id required")
 
     # If user_id is not provided, use the admin user for this client
     if not user_id:
@@ -4238,7 +4245,8 @@ async def update_raw_memory(
     memory_id: str,
     request: RawMemoryItemUpdate,
     user_id: Optional[str] = None,
-    client: Client = None,
+    client: Optional[Client] = None,
+    client_id: Optional[str] = None,
 ):
     """
     Update an existing raw memory.
@@ -4247,6 +4255,12 @@ async def update_raw_memory(
     Supports append/replace modes for both context and tags.
     """
     server = get_server()
+
+    # Resolve client: use provided client or fetch from client_id
+    if not client and client_id:
+        client = server.client_manager.get_client_by_id(client_id)
+    if not client:
+        raise HTTPException(status_code=401, detail="Client or client_id required")
 
     # If user_id is not provided, use the admin user for this client
     if not user_id:
@@ -4313,7 +4327,8 @@ async def delete_raw_memory_handler(
 
 async def delete_raw_memory(
     memory_id: str,
-    client: Client = None,
+    client: Optional[Client] = None,
+    client_id: Optional[str] = None,
 ):
     """
     Delete a raw memory by ID.
@@ -4322,6 +4337,12 @@ async def delete_raw_memory(
     and Redis cache.
     """
     server = get_server()
+
+    # Resolve client: use provided client or fetch from client_id
+    if not client and client_id:
+        client = server.client_manager.get_client_by_id(client_id)
+    if not client:
+        raise HTTPException(status_code=401, detail="Client or client_id required")
 
     try:
         deleted = server.raw_memory_manager.delete_raw_memory(memory_id, client)
@@ -4358,16 +4379,19 @@ async def search_raw_memory_handler(
 async def search_raw_memory(
     request: SearchRawMemoryRequest,
     user_id: Optional[str] = None,
-    client: Client = None,
+    client: Optional[Client] = None,
+    client_id: Optional[str] = None,
 ):
     """
     Search raw memories with filtering, sorting, cursor-based pagination, and time range filtering.
     """
     server = get_server()
 
-    # Ensure client is provided
+    # Resolve client: use provided client or fetch from client_id
+    if not client and client_id:
+        client = server.client_manager.get_client_by_id(client_id)
     if not client:
-        raise HTTPException(status_code=401, detail="Authentication required. Client not found.")
+        raise HTTPException(status_code=401, detail="Client or client_id required")
 
     # If user_id is not provided, use the admin user for this client
     if not user_id:
@@ -4524,13 +4548,22 @@ async def cleanup_raw_memories_handler(
 
 async def cleanup_raw_memories(
     days_threshold: int = Query(14, ge=1, le=365, description="Delete memories older than this many days"),
-    client: Client = None,
+    client: Optional[Client] = None,
+    client_id: Optional[str] = None,
 ):
     """
     Manually trigger the raw memory cleanup job to delete stale memories.
 
     **Accepts both JWT (dashboard) and Client API Key (programmatic).**
     """
+    server = get_server()
+
+    # Resolve client: use provided client or fetch from client_id
+    if not client and client_id:
+        client = server.client_manager.get_client_by_id(client_id)
+    if not client:
+        raise HTTPException(status_code=401, detail="Client or client_id required")
+
     # Import the cleanup function
     from mirix.jobs.cleanup_raw_memories import delete_stale_raw_memories
 
