@@ -6,8 +6,6 @@ This document explains how to set up consistent code formatting for the MIRIX pr
 
 1. **Install dependencies:**
    ```bash
-   pip install -e ".[dev]"
-   # OR if using poetry:
    poetry install --extras dev
    ```
 
@@ -19,10 +17,10 @@ This document explains how to set up consistent code formatting for the MIRIX pr
 
 3. **Restart your editor** to pick up the new settings
 
-4. **Format all files (one-time):**
+5. **Format all files (one-time):**
    ```bash
-   isort .
-   black .
+   poetry run isort .
+   poetry run black .
    ```
 
 ## How Workspace Settings Work
@@ -54,36 +52,38 @@ This document explains how to set up consistent code formatting for the MIRIX pr
 
 ## Formatting Commands
 
+**Important:** This project uses Poetry for dependency management. Always use `poetry run` to ensure you're using the correct versions.
+
 ### Format All Files at Once
 
 ```bash
-isort .
-black .
+poetry run isort .
+poetry run black .
 ```
 
 ### Format Specific Files
 
 ```bash
 # Single file
-black path/to/file.py
-isort path/to/file.py
+poetry run black path/to/file.py
+poetry run isort path/to/file.py
 
 # Directory
-black mirix/server/
-isort mirix/server/
+poetry run black mirix/server/
+poetry run isort mirix/server/
 ```
 
 ### Check Formatting Without Changing Files
 
 ```bash
 # Check with Black
-black --check .
+poetry run black --check .
 
 # Check with isort
-isort --check-only .
+poetry run isort --check-only .
 
 # Check with mypy
-mypy mirix/
+poetry run mypy mirix/
 ```
 
 ## Type Checking with mypy
@@ -102,23 +102,38 @@ mypy mirix/server/rest_api.py
 
 Make sure you've installed dev dependencies:
 ```bash
-pip install -e ".[dev]"
+poetry install --extras dev
+```
+
+If using Poetry, ensure you're running commands with `poetry run`:
+```bash
+poetry run black .
 ```
 
 ### Formatting conflicts persist
 
-1. **Check for conflicting user settings:**
+1. **Verify Python interpreter is set to Poetry environment:**
+   - Check bottom-right corner of VS Code/Cursor
+   - Should show Poetry virtual environment (`.venv` or `poetry`)
+   - If not, select it: `Cmd+Shift+P` -> "Python: Select Interpreter"
+   - The Black Formatter extension uses `black-formatter.importStrategy: "fromEnvironment"` to use Poetry's Black
+
+2. **Check for conflicting user settings:**
    - Open Settings (`Cmd+,` / `Ctrl+,`)
    - Search for "format on save"
    - Workspace settings should show `✓` indicating they override user settings
 
-2. **Reload the window:**
+3. **Reload the window:**
    - Press `Cmd+Shift+P` / `Ctrl+Shift+P`
    - Type "Developer: Reload Window"
 
-3. **Check `.editorconfig` is being respected:**
+4. **Check `.editorconfig` is being respected:**
    - Install the EditorConfig extension if needed
    - Most editors respect `.editorconfig` automatically
+
+5. **Verify Black version matches:**
+   - Command line: `poetry run black --version` (should show 25.11.0)
+   - Editor uses the same version from Poetry's virtual environment
 
 ### Different line lengths
 
@@ -132,8 +147,9 @@ All three should match. If they don't, update them to use 120.
 
 ## Summary
 
-- **Formatter**: Black (120 char line length)
+- **Formatter**: Black 25.11.0 (120 char line length, pinned version)
 - **Import sorter**: isort (configured for Black)
 - **Type checker**: mypy
+- **Dependency management**: Poetry
 - **Settings location**: `.vscode/settings.json` (workspace settings override user settings)
-- **Format all files**: `make format-black` or `isort . && black .`
+- **Format all files**: `poetry run isort . && poetry run black .`

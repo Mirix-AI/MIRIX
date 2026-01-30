@@ -94,13 +94,8 @@ def sample_queue_message(sample_client):
     """Create a sample QueueMessage protobuf"""
     msg = QueueMessage()
 
-    # Set actor (Client converted to protobuf User)
-    msg.actor.id = sample_client.id
-    msg.actor.organization_id = sample_client.organization_id
-    msg.actor.name = sample_client.name
-    msg.actor.status = sample_client.status
-    msg.actor.timezone = "UTC"  # Client doesn't have timezone, use default
-    msg.actor.is_deleted = sample_client.is_deleted
+    # Set client_id (new approach - worker will look up Client from database)
+    msg.client_id = sample_client.id
 
     # Set agent and messages
     msg.agent_id = "agent-789"
@@ -171,7 +166,7 @@ class TestMemoryQueue:
         retrieved = queue.get(timeout=1.0)
 
         assert retrieved.agent_id == sample_queue_message.agent_id
-        assert retrieved.actor.id == sample_queue_message.actor.id
+        assert retrieved.client_id == sample_queue_message.client_id
         assert len(retrieved.input_messages) == len(sample_queue_message.input_messages)
 
     def test_memory_queue_timeout(self):
@@ -191,7 +186,7 @@ class TestMemoryQueue:
         messages = []
         for i in range(5):
             msg = QueueMessage()
-            msg.actor.id = sample_client.id
+            msg.client_id = sample_client.id
             msg.agent_id = f"agent-{i}"
             messages.append(msg)
             queue.put(msg)
@@ -244,7 +239,7 @@ class TestPartitionedMemoryQueue:
         messages = []
         for i in range(10):
             msg = QueueMessage()
-            msg.actor.id = sample_client.id
+            msg.client_id = sample_client.id
             msg.agent_id = f"agent-{i}"
             msg.user_id = user_id
             messages.append(msg)
@@ -285,7 +280,7 @@ class TestPartitionedMemoryQueue:
 
         for user_id in user_ids:
             msg = QueueMessage()
-            msg.actor.id = sample_client.id
+            msg.client_id = sample_client.id
             msg.agent_id = "agent-test"
             msg.user_id = user_id
             queue.put(msg)
@@ -310,7 +305,7 @@ class TestPartitionedMemoryQueue:
         # Manually put messages in specific partitions
         for i in range(3):
             msg = QueueMessage()
-            msg.actor.id = sample_client.id
+            msg.client_id = sample_client.id
             msg.agent_id = f"agent-partition-{i}"
             queue._partitions[i].put(msg)
 
@@ -338,40 +333,12 @@ class TestPartitionedMemoryQueue:
         with pytest.raises(q.Empty):
             pqueue.get_from_partition(0, timeout=0.1)
 
-    def test_fallback_to_actor_id_when_no_user_id(self, sample_client):
-        """Test that actor.id is used as partition key when user_id is not set"""
-        queue = PartitionedMemoryQueue(num_partitions=4)
-
-        # Create messages without user_id
-        for i in range(5):
-            msg = QueueMessage()
-            msg.actor.id = "actor-fallback"
-            msg.agent_id = f"agent-{i}"
-            # No user_id set
-            queue.put(msg)
-
-        # All should be in same partition (based on actor.id)
-        partition_counts = []
-        for partition_id in range(4):
-            count = 0
-            while True:
-                try:
-                    queue.get_from_partition(partition_id, timeout=0.01)
-                    count += 1
-                except:
-                    break
-            partition_counts.append(count)
-
-        # One partition should have all 5, others should have 0
-        assert max(partition_counts) == 5
-        assert sum(partition_counts) == 5
-
     def test_backward_compatible_get(self, sample_client):
         """Test that get() still works (retrieves from partition 0)"""
         queue = PartitionedMemoryQueue(num_partitions=1)
 
         msg = QueueMessage()
-        msg.actor.id = sample_client.id
+        msg.client_id = sample_client.id
         msg.agent_id = "agent-compat"
         msg.user_id = "user-compat"
         queue.put(msg)
@@ -712,14 +679,14 @@ class TestWorkerPartitionAssignment:
 
         # Put message directly in partition 1
         msg = QueueMessage()
-        msg.actor.id = sample_client.id
+        msg.client_id = sample_client.id
         msg.agent_id = "agent-partition-1"
         msg.user_id = "user-1"
         queue._partitions[1].put(msg)
 
         # Put message in partition 0 (different partition)
         msg2 = QueueMessage()
-        msg2.actor.id = sample_client.id
+        msg2.client_id = sample_client.id
         msg2.agent_id = "agent-partition-0"
         msg2.user_id = "user-0"
         queue._partitions[0].put(msg2)
@@ -768,13 +735,13 @@ class TestWorkerPartitionAssignment:
         # Put messages in specific partitions
         for i in range(5):
             msg = QueueMessage()
-            msg.actor.id = sample_client.id
+            msg.client_id = sample_client.id
             msg.agent_id = f"agent-p0-{i}"
             queue._partitions[0].put(msg)
 
         for i in range(5):
             msg = QueueMessage()
-            msg.actor.id = sample_client.id
+            msg.client_id = sample_client.id
             msg.agent_id = f"agent-p1-{i}"
             queue._partitions[1].put(msg)
 
@@ -864,7 +831,7 @@ class TestQueueUtil:
         # Retrieve and verify
         msg = manager._queue.get(timeout=1.0)
         assert msg.agent_id == "agent-789"
-        assert msg.actor.id == sample_client.id
+        assert msg.client_id == sample_client.id
         assert len(msg.input_messages) == len(sample_messages)
 
         # Cleanup

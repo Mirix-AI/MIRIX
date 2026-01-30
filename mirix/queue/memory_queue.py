@@ -142,13 +142,13 @@ class PartitionedMemoryQueue(QueueInterface):
             message: QueueMessage to extract key from
 
         Returns:
-            Partition key string (user_id or actor.id as fallback)
+            Partition key string (user_id, client_id)
         """
         # Match KafkaQueue's partition key logic from kafka_queue.py
         if message.HasField("user_id") and message.user_id:
             return message.user_id
-        elif message.HasField("actor") and message.actor.id:
-            return message.actor.id
+        elif message.client_id:
+            return message.client_id
         else:
             # Fallback to agent_id if no user context
             return message.agent_id

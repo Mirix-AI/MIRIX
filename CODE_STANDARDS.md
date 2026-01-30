@@ -41,24 +41,26 @@ The repository includes configuration files to ensure consistent formatting:
 
 ### Running Formatting Tools
 
+**Note:** This project uses Poetry for dependency management. Use `poetry run` to ensure correct versions.
+
 ```bash
 # Format code with Black
-black .
+poetry run black .
 
 # Sort imports with isort
-isort .
+poetry run isort .
 
 # Type check with mypy
-mypy mirix/
+poetry run mypy mirix/
 
 # Lint with Ruff
-ruff check .
+poetry run ruff check .
 ```
 
 ### IDE Setup
 
 For VS Code/Cursor users, the `.vscode/settings.json` file configures:
-- Black as the default formatter
+- Black as the default formatter (uses Poetry's Black installation, version 25.11.0)
 - Format on save enabled
 - Automatic import organization
 - mypy type checking
@@ -67,4 +69,7 @@ Make sure you have the following extensions installed:
 - Python extension (ms-python.python)
 - Black Formatter extension (ms-python.black-formatter)
 
-The editor will automatically format your code on save using the project's Black configuration.
+**Important:** 
+- Select the Poetry virtual environment as your Python interpreter (`Cmd+Shift+P` -> "Python: Select Interpreter")
+- The editor uses Poetry's Black installation (via `black-formatter.importStrategy: "fromEnvironment"`)
+- This ensures editor formatting matches `poetry run black` command-line formatting

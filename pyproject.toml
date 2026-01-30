@@ -94,7 +94,7 @@ dependencies = [
 dev = [
     "pytest>=6.0.0",
     "pytest-asyncio",
-    "black",
+    "black==25.11.0",
     "isort",
     "flake8",
     "mypy>=1.0.0",

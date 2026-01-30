@@ -99,27 +99,13 @@ def put_messages(
         use_cache: Control Redis cache behavior
         occurred_at: Optional ISO 8601 timestamp string for episodic memory
     """
-    logger.debug("Creating queue message for agent_id=%s, actor=%s (client_id derived from actor)", agent_id, actor.id)
+    logger.debug("Creating queue message for agent_id=%s, client_id=%s", agent_id, actor.id)
 
     if not actor or not actor.id:
         raise ValueError(
             f"Cannot queue message: actor is None or has no ID. "
             f"actor={actor}, actor.id={actor.id if actor else 'N/A'}"
         )
-
-    # Convert Pydantic Client to protobuf User (protobuf schema still uses "User")
-    proto_user = ProtoUser()
-    proto_user.id = actor.id
-    proto_user.organization_id = actor.organization_id or ""
-    proto_user.name = actor.name
-    proto_user.status = actor.status
-    # Client doesn't have timezone - use default "UTC"
-    proto_user.timezone = getattr(actor, "timezone", "UTC")
-    if actor.created_at:
-        proto_user.created_at.FromDatetime(actor.created_at)
-    if actor.updated_at:
-        proto_user.updated_at.FromDatetime(actor.updated_at)
-    proto_user.is_deleted = actor.is_deleted
 
     # Convert Pydantic MessageCreate list to protobuf MessageCreate list
     proto_input_messages = []
@@ -161,7 +147,7 @@ def put_messages(
     # Build the QueueMessage
     queue_msg = QueueMessage()
 
-    queue_msg.actor.CopyFrom(proto_user)
+    queue_msg.client_id = actor.id
 
     queue_msg.agent_id = agent_id
     queue_msg.input_messages.extend(proto_input_messages)

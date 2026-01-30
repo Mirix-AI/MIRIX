@@ -8,11 +8,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, Optional
 
 from mirix.log import get_logger
-from mirix.observability import (
-    get_langfuse_client,
-    mark_observation_as_child,
-    restore_trace_from_queue_message,
-)
+from mirix.observability import get_langfuse_client, mark_observation_as_child, restore_trace_from_queue_message
 from mirix.observability.context import clear_trace_context, get_trace_context
 from mirix.queue.message_pb2 import QueueMessage
 from mirix.services.user_manager import UserManager
@@ -209,12 +205,17 @@ class QueueWorker:
             trace_id = trace_context.get("trace_id") if trace_context else None
             parent_span_id = trace_context.get("observation_id") if trace_context else None
             logger.debug(f"Queue worker trace context: trace_id={trace_id}, " f"parent_span_id={parent_span_id}")
-            # Validate actor exists before processing
-            if not message.HasField("actor") or not message.actor.id:
-                raise ValueError(f"Queue message for agent {message.agent_id} missing required actor information")
 
-            # Convert protobuf to Pydantic Client (actor for write operations)
-            actor = self._convert_proto_user_to_pydantic(message.actor)
+            # Get client_id from message (required field)
+            client_id = message.client_id if message.client_id else None
+            if not client_id:
+                raise ValueError(f"Queue message for agent {message.agent_id} missing required client_id")
+
+            # Look up the Client from the database using client_id
+            # This ensures we always have the latest client data including scope
+            actor = server.client_manager.get_client_by_id(client_id)
+            if not actor:
+                raise ValueError(f"Client with id={client_id} not found in database")
 
             input_messages = [self._convert_proto_message_to_pydantic(msg) for msg in message.input_messages]
 
@@ -250,6 +251,8 @@ class QueueWorker:
                                 timezone=user_manager.DEFAULT_TIME_ZONE,
                                 status="active",
                                 is_deleted=False,
+                                client_id=client_id,
+                                is_admin=False,
                             )
                         )
                         logger.info(

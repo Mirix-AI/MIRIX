@@ -89,7 +89,10 @@ class KafkaQueue(QueueInterface):
         value_serializer = lambda msg: serialize_queue_message(msg, format=self.serialization_format)
         value_deserializer = lambda data: deserialize_queue_message(data, format=self.serialization_format)
 
-        logger.info("Using %s serialization for Kafka messages", self.serialization_format.upper())
+        logger.info(
+            "Using %s serialization for Kafka messages",
+            self.serialization_format.upper(),
+        )
 
         # Build Kafka producer/consumer config with optional SSL
         kafka_config = {
@@ -154,8 +157,13 @@ class KafkaQueue(QueueInterface):
         Args:
             message: QueueMessage protobuf message to send
         """
-        # Extract user_id as partition key (fallback to actor.id if not present)
-        partition_key = message.user_id if message.user_id else message.actor.id
+        # Extract partition key: prefer user_id, then client_id
+        if message.user_id:
+            partition_key = message.user_id
+        elif message.client_id:
+            partition_key = message.client_id
+        else:
+            raise ValueError("Queue message missing partition key: must have user_id or client_id")
 
         logger.debug(
             "Sending message to Kafka topic %s: agent_id=%s, partition_key=%s",
