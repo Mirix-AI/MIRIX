@@ -310,7 +310,11 @@ class RawMemoryManager:
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "operation": "updated",
             }
-            raw_memory._last_update_by_id = actor.id if actor else None
+            # Audit field (_last_updated_by_id) is handled by base class via
+            # property accessor when using update_with_redis(), or can be set
+            # manually: raw_memory.last_updated_by_id = actor.id
+            if actor:
+                raw_memory.last_updated_by_id = actor.id
 
             # Commit changes
             session.commit()

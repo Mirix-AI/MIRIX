@@ -43,7 +43,7 @@ class RawMemoryItem(RawMemoryItemBase):
     Represents a complete raw memory record with all database fields including
     timestamps, relationships, and metadata.
 
-    Note: Audit fields (_created_by_id, _last_update_by_id) are tracked internally
+    Note: Audit fields (_created_by_id, _last_updated_by_id) are tracked internally
     in the ORM layer but not exposed in the API response schema, consistent with
     other MIRIX memory types.
     """

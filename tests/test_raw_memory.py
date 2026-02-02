@@ -196,7 +196,7 @@ def test_manager_update_raw_memory_replace(raw_memory_manager, sample_raw_memory
     assert updated.context == "Completely new context"
     assert updated.filter_tags["status"] == "completed"
     assert "engagement_id" not in updated.filter_tags  # Replaced, not merged
-    # Note: _last_update_by_id is tracked in ORM but not exposed in schema
+    # Note: _last_updated_by_id is tracked in ORM but not exposed in schema
 
 
 def test_manager_update_raw_memory_append(raw_memory_manager, sample_raw_memory_data, test_actor, test_user):

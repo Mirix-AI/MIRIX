@@ -100,17 +100,8 @@ class RawMemory(SqlalchemyBase, OrganizationMixin, UserMixin):
         doc="When record was last updated",
     )
 
-    # Audit fields (track which client created/updated the record)
-    _created_by_id: Mapped[Optional[str]] = mapped_column(
-        String,
-        nullable=True,
-        doc="Client ID that created this memory",
-    )
-    _last_update_by_id: Mapped[Optional[str]] = mapped_column(
-        String,
-        nullable=True,
-        doc="Client ID that last updated this memory",
-    )
+    # Note: Audit fields (_created_by_id, _last_updated_by_id) are inherited
+    # from CommonSqlalchemyMetaMixins via SqlalchemyBase
 
     # Indexes following standard MIRIX memory table pattern
     __table_args__ = tuple(
