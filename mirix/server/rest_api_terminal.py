@@ -1387,41 +1387,6 @@ async def delete_user(user_id: str):
             )
         raise HTTPException(status_code=500, detail=error_msg)
 
-
-@router.delete("/users/{user_id}/memories")
-async def delete_user_memories(user_id: str):
-    """
-    Hard delete all memories, messages, and blocks for a user.
-    
-    This permanently removes data records while preserving the user record.
-    Use this for data cleanup/purging without affecting the user account itself.
-    
-    Records that are PERMANENTLY DELETED:
-    - Episodic memories for this user
-    - Semantic memories for this user
-    - Procedural memories for this user
-    - Resource memories for this user
-    - Knowledge items for this user
-    - Messages for this user
-    - Blocks for this user
-    
-    Records that are PRESERVED:
-    - User record
-    
-    Warning: This operation is irreversible. Deleted data cannot be recovered.
-    """
-    server = get_server()
-    
-    try:
-        server.user_manager.delete_memories_by_user_id(user_id)
-        return {
-            "message": f"All memories for user {user_id} hard deleted successfully",
-            "preserved": ["user"]
-        }
-    except Exception as e:
-        raise HTTPException(status_code=404, detail=str(e))
-
-
 @router.get("/users", response_model=List[User])
 async def list_users(
     cursor: Optional[str] = None,
@@ -1994,6 +1959,35 @@ async def initialize_meta_agent(
         )
 
     return meta_agent
+
+class ClearMemoryRequest(BaseModel):
+    """Request model for clearing user memory."""
+    user_id: str
+
+@router.post("/memory/clear")
+async def clear_memory(
+    request: ClearMemoryRequest,
+    x_client_id: Optional[str] = Header(None),
+    x_org_id: Optional[str] = Header(None),
+):
+    """
+    Clear all memories for a specific user.
+
+    This hard deletes episodic, semantic, procedural, resource, and knowledge memories,
+    as well as messages and blocks for the user.
+    """
+    server = get_server()
+    client_id, org_id = get_client_and_org(x_client_id, x_org_id)
+    try:
+        server.user_manager.delete_memories_by_user_id(request.user_id, client_id=client_id)
+        return {
+            "success": True,
+            "message": f"All memories for user {request.user_id} (client: {client_id}) cleared successfully"
+        }
+    except Exception as e:
+        logger.error("Error clearing memory for user %s (client: %s): %s", request.user_id, client_id, e)
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 class AddMemoryRequest(BaseModel):
     """Request model for adding memory."""

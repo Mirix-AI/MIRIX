@@ -4,8 +4,9 @@ import apiClient from '@/api/client';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { RefreshCcw, Search, ChevronDown, ChevronUp } from 'lucide-react';
+import { RefreshCcw, Search, ChevronDown, ChevronUp, Trash2, MoreVertical } from 'lucide-react';
 import { useSearchParams } from 'react-router-dom';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 
 interface MemoryResult {
   memory_type: string;
@@ -132,6 +133,8 @@ export const Memories: React.FC = () => {
   const [searchField, setSearchField] = useState<string>('null');
   const [searchMethod, setSearchMethod] = useState<'bm25' | 'embedding'>('bm25');
   const [viewMode, setViewMode] = useState<'search' | 'list'>('list');
+  const [clearingMemory, setClearingMemory] = useState(false);
+  const [deletingIds, setDeletingIds] = useState<Record<string, boolean>>({});
 
   const [memoryTab, setMemoryTab] = useState<MemoryTab>('episodic');
   const [memoryCollections, setMemoryCollections] = useState<MemoryCollections>({});
@@ -240,6 +243,114 @@ export const Memories: React.FC = () => {
       console.error('Error searching memories:', error);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleClearMemory = async () => {
+    if (!selectedUser || clearingMemory) return;
+    const confirmed = confirm(
+      `Clear all memories for ${selectedUser.name}? This will permanently delete episodic, semantic, procedural, resource, and knowledge memories, plus messages and blocks for this user.`
+    );
+    if (!confirmed) return;
+    setClearingMemory(true);
+    try {
+      await apiClient.post('/memory/clear', { user_id: selectedUser.id });
+      setResults([]);
+      setHasSearched(false);
+      setMemoryCollections({});
+      setMemoryError(null);
+      setExpandedEpisodic({});
+      setExpandedSemantic({});
+      setExpandedProcedural({});
+      setExpandedResource({});
+      setExpandedKnowledge({});
+      await fetchMemoryComponents();
+    } catch (error) {
+      console.error('Error clearing memories:', error);
+      setMemoryError('Failed to clear memories. Please try again.');
+    } finally {
+      setClearingMemory(false);
+    }
+  };
+
+  const getDeleteEndpoint = (memoryType: string, memoryId: string) => {
+    const normalized = memoryType.toLowerCase();
+    switch (normalized) {
+      case 'episodic':
+      case 'semantic':
+      case 'procedural':
+      case 'resource':
+      case 'knowledge':
+        return `/memory/${normalized}/${memoryId}`;
+      default:
+        return null;
+    }
+  };
+
+  const getMemoryLabel = (memoryType: string) => {
+    const normalized = memoryType.toLowerCase();
+    return `${normalized} memory`;
+  };
+
+  const isDeletableMemoryType = (memoryType: string) => {
+    const normalized = memoryType.toLowerCase();
+    return ['episodic', 'semantic', 'procedural', 'resource', 'knowledge'].includes(normalized);
+  };
+
+  const clearExpandedState = (memoryType: string, memoryId: string) => {
+    const normalized = memoryType.toLowerCase();
+    if (normalized === 'episodic') {
+      setExpandedEpisodic(({ [memoryId]: _removed, ...rest }) => rest);
+    }
+    if (normalized === 'semantic') {
+      setExpandedSemantic(({ [memoryId]: _removed, ...rest }) => rest);
+    }
+    if (normalized === 'procedural') {
+      setExpandedProcedural(({ [memoryId]: _removed, ...rest }) => rest);
+    }
+    if (normalized === 'resource') {
+      setExpandedResource(({ [memoryId]: _removed, ...rest }) => rest);
+    }
+    if (normalized === 'knowledge') {
+      setExpandedKnowledge(({ [memoryId]: _removed, ...rest }) => rest);
+    }
+  };
+
+  const handleDeleteMemory = async (memoryType: string, memoryId: string) => {
+    if (!selectedUser || deletingIds[memoryId] || !isDeletableMemoryType(memoryType)) return;
+    const endpoint = getDeleteEndpoint(memoryType, memoryId);
+    if (!endpoint) {
+      console.error('Unsupported memory type for deletion:', memoryType);
+      return;
+    }
+    const confirmed = confirm(
+      `Delete this ${getMemoryLabel(memoryType)} for ${selectedUser.name}? This action cannot be undone.`
+    );
+    if (!confirmed) return;
+    setDeletingIds((prev) => ({ ...prev, [memoryId]: true }));
+    try {
+      await apiClient.delete(endpoint);
+      setResults((prev) => prev.filter((item) => item.id !== memoryId));
+      setMemoryCollections((prev) => {
+        const normalized = memoryType.toLowerCase() as keyof MemoryCollections;
+        const bucket = prev[normalized];
+        if (!bucket) return prev;
+        const nextItems = bucket.items.filter((item) => item.id !== memoryId);
+        return {
+          ...prev,
+          [normalized]: {
+            ...bucket,
+            items: nextItems,
+            total_count: Math.max(0, bucket.total_count - 1),
+          },
+        };
+      });
+      clearExpandedState(memoryType, memoryId);
+    } catch (error) {
+      console.error('Error deleting memory:', error);
+      setMemoryError('Failed to delete memory. Please try again.');
+    } finally {
+      setDeletingIds((prev) => ({ ...prev, [memoryId]: false }));
     }
   };
 
@@ -391,7 +502,19 @@ export const Memories: React.FC = () => {
                         </span>
                       )}
                     </div>
-                    {item.occurred_at && <span>{formatDate(item.occurred_at)}</span>}
+                    <div className="flex items-center gap-2">
+                      {item.occurred_at && <span>{formatDate(item.occurred_at)}</span>}
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7 text-destructive hover:text-destructive hover:bg-destructive/10"
+                        onClick={() => handleDeleteMemory('episodic', item.id)}
+                        disabled={!!deletingIds[item.id]}
+                        title="Delete memory"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
                   </div>
                   <div className="flex items-start justify-between gap-2">
                     <div className="font-semibold text-base">{item.summary || 'No summary'}</div>
@@ -446,8 +569,18 @@ export const Memories: React.FC = () => {
                         </span>
                       )}
                     </div>
-                    <div className="flex items-center gap-3 text-[12px]">
+                    <div className="flex items-center gap-2 text-[12px]">
                       {item.created_at && <span>{formatDate(item.created_at)}</span>}
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7 text-destructive hover:text-destructive hover:bg-destructive/10"
+                        onClick={() => handleDeleteMemory('semantic', item.id)}
+                        disabled={!!deletingIds[item.id]}
+                        title="Delete memory"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
                     </div>
                   </div>
                   <div className="flex items-start justify-between gap-2">
@@ -500,7 +633,19 @@ export const Memories: React.FC = () => {
                     <span className="font-semibold uppercase tracking-wide">
                       {item.entry_type || 'Procedure'}
                     </span>
-                    {item.created_at && <span>{formatDate(item.created_at)}</span>}
+                    <div className="flex items-center gap-2">
+                      {item.created_at && <span>{formatDate(item.created_at)}</span>}
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7 text-destructive hover:text-destructive hover:bg-destructive/10"
+                        onClick={() => handleDeleteMemory('procedural', item.id)}
+                        disabled={!!deletingIds[item.id]}
+                        title="Delete memory"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
                   </div>
                   <div className="flex items-start justify-between gap-2">
                     <div className="font-semibold text-base">{item.summary || 'No summary'}</div>
@@ -554,7 +699,19 @@ export const Memories: React.FC = () => {
                     <span className="font-semibold uppercase tracking-wide">
                       {item.resource_type || 'Resource'}
                     </span>
-                    {item.created_at && <span>{formatDate(item.created_at)}</span>}
+                    <div className="flex items-center gap-2">
+                      {item.created_at && <span>{formatDate(item.created_at)}</span>}
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7 text-destructive hover:text-destructive hover:bg-destructive/10"
+                        onClick={() => handleDeleteMemory('resource', item.id)}
+                        disabled={!!deletingIds[item.id]}
+                        title="Delete memory"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
                   </div>
                   <div className="font-semibold text-base">{item.title || 'Untitled'}</div>
                   <div className="flex items-start justify-between gap-2">
@@ -607,7 +764,19 @@ export const Memories: React.FC = () => {
                     <span className="font-semibold uppercase tracking-wide">
                       {item.entry_type || 'Entry'}
                     </span>
-                    {item.created_at && <span>{formatDate(item.created_at)}</span>}
+                    <div className="flex items-center gap-2">
+                      {item.created_at && <span>{formatDate(item.created_at)}</span>}
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7 text-destructive hover:text-destructive hover:bg-destructive/10"
+                        onClick={() => handleDeleteMemory('knowledge', item.id)}
+                        disabled={!!deletingIds[item.id]}
+                        title="Delete memory"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
                   </div>
                   <div className="flex items-start justify-between gap-2">
                     <div className="font-semibold text-base">{item.caption || 'No caption'}</div>
@@ -703,6 +872,27 @@ export const Memories: React.FC = () => {
           >
             List mode
           </Button>
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button variant="outline" size="icon" aria-label="More actions">
+                <MoreVertical className="h-4 w-4" />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent align="end" className="w-56 p-1">
+              <Button
+                variant="ghost"
+                className="w-full justify-start text-destructive hover:text-destructive hover:bg-destructive/10"
+                onClick={handleClearMemory}
+                disabled={clearingMemory || memoryLoading || usersLoading}
+              >
+                <Trash2 className="mr-2 h-4 w-4" />
+                {clearingMemory ? 'Clearing...' : 'Clear memory'}
+              </Button>
+              <div className="px-2 py-1 text-xs text-muted-foreground">
+                Permanently deletes all memories for this user.
+              </div>
+            </PopoverContent>
+          </Popover>
         </div>
       </div>
 
@@ -776,14 +966,28 @@ export const Memories: React.FC = () => {
               results.map((memory) => (
                 <Card key={memory.id} className="overflow-hidden">
                   <div className="border-l-4 border-primary pl-4 py-4 pr-4">
-                    <div className="flex items-center gap-2 mb-2">
-                      <span className="text-xs font-bold uppercase tracking-wider text-muted-foreground bg-muted px-2 py-0.5 rounded">
-                        {memory.memory_type}
-                      </span>
-                      {memory.timestamp && (
-                        <span className="text-xs text-muted-foreground">
-                          {new Date(memory.timestamp).toLocaleString()}
+                    <div className="flex items-center justify-between gap-2 mb-2">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-bold uppercase tracking-wider text-muted-foreground bg-muted px-2 py-0.5 rounded">
+                          {memory.memory_type}
                         </span>
+                        {memory.timestamp && (
+                          <span className="text-xs text-muted-foreground">
+                            {new Date(memory.timestamp).toLocaleString()}
+                          </span>
+                        )}
+                      </div>
+                      {isDeletableMemoryType(memory.memory_type) && (
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7 text-destructive hover:text-destructive hover:bg-destructive/10"
+                          onClick={() => handleDeleteMemory(memory.memory_type, memory.id)}
+                          disabled={!!deletingIds[memory.id]}
+                          title="Delete memory"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </Button>
                       )}
                     </div>
                     <h4 className="font-medium text-lg mb-1">

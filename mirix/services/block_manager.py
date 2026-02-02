@@ -471,49 +471,41 @@ class BlockManager:
         
         return count
 
-    def delete_by_user_id(self, user_id: str) -> int:
+    def delete_by_user_id(self, user_id: str, client_id: str) -> int:
         """
-        Bulk hard delete all blocks for a user (removes from Redis cache).
+        Bulk hard delete blocks for a user (removes from Redis cache).
         Optimized with single DB query and batch Redis deletion.
         
         Args:
             user_id: ID of the user whose blocks to delete
+            client_id: Client ID to scope the deletion
             
         Returns:
             Number of records deleted
         """
-        from mirix.database.redis_client import get_redis_client
-        
         with self.session_maker() as session:
             # Get IDs for Redis cleanup (only fetch IDs, not full objects)
-            block_ids = [row[0] for row in session.query(BlockModel.id).filter(
-                BlockModel.user_id == user_id
+            # JOIN with User to filter by client_id since Block doesn't have it directly
+            from mirix.orm.user import User as UserModel
+            block_ids = [row[0] for row in session.query(BlockModel.id).join(
+                UserModel, BlockModel.user_id == UserModel.id
+            ).filter(
+                BlockModel.user_id == user_id,
+                UserModel.client_id == client_id
             ).all()]
-            
+
             count = len(block_ids)
             if count == 0:
                 return 0
-            
+
             # Invalidate agent caches that reference these blocks (before deletion)
             for block_id in block_ids:
                 self._invalidate_agent_caches_for_block(block_id)
-            
+
             # Bulk delete in single query
+            # We use the IDs we found to ensure we only delete blocks for the correct client
             session.query(BlockModel).filter(
-                BlockModel.user_id == user_id
+                BlockModel.id.in_(block_ids)
             ).delete(synchronize_session=False)
-            
+
             session.commit()
-        
-        # Batch delete from Redis cache (outside of session context)
-        redis_client = get_redis_client()
-        if redis_client and block_ids:
-            redis_keys = [f"{redis_client.BLOCK_PREFIX}{block_id}" for block_id in block_ids]
-            
-            # Delete in batches to avoid command size limits
-            BATCH_SIZE = 1000
-            for i in range(0, len(redis_keys), BATCH_SIZE):
-                batch = redis_keys[i:i + BATCH_SIZE]
-                redis_client.client.delete(*batch)
-        
-        return count

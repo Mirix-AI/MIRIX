@@ -254,7 +254,7 @@ class UserManager:
             except Exception as e:
                 logger.warning("Failed to update Redis cache for user %s: %s", user_id, e)
 
-    def delete_memories_by_user_id(self, user_id: str):
+    def delete_memories_by_user_id(self, user_id: str, client_id: str):
         """
         Hard delete memories, messages, and blocks for a user using memory managers' bulk delete.
         
@@ -278,11 +278,12 @@ class UserManager:
         
         Args:
             user_id: ID of the user whose memories to delete
+            client_id: Client ID to scope the deletion
         """
         from mirix.log import get_logger
 
         logger = get_logger(__name__)
-        logger.info("Bulk deleting memories for user %s using memory managers (preserving user record)...", user_id)
+        logger.info("Bulk deleting memories for user %s (client: %s) using memory managers (preserving user record)...", user_id, client_id)
 
         # Import managers
         from mirix.services.episodic_memory_manager import EpisodicMemoryManager
@@ -305,25 +306,25 @@ class UserManager:
         # Use managers' bulk delete methods
         try:
             # Bulk delete memories using manager methods
-            episodic_count = episodic_manager.delete_by_user_id(user_id=user_id)
+            episodic_count = episodic_manager.delete_by_user_id(user_id=user_id, client_id=client_id)
             logger.debug("Bulk deleted %d episodic memories", episodic_count)
 
-            semantic_count = semantic_manager.delete_by_user_id(user_id=user_id)
+            semantic_count = semantic_manager.delete_by_user_id(user_id=user_id, client_id=client_id)
             logger.debug("Bulk deleted %d semantic memories", semantic_count)
 
-            procedural_count = procedural_manager.delete_by_user_id(user_id=user_id)
+            procedural_count = procedural_manager.delete_by_user_id(user_id=user_id, client_id=client_id)
             logger.debug("Bulk deleted %d procedural memories", procedural_count)
 
-            resource_count = resource_manager.delete_by_user_id(user_id=user_id)
+            resource_count = resource_manager.delete_by_user_id(user_id=user_id, client_id=client_id)
             logger.debug("Bulk deleted %d resource memories", resource_count)
 
-            knowledge_count = knowledge_manager.delete_by_user_id(user_id=user_id)
+            knowledge_count = knowledge_manager.delete_by_user_id(user_id=user_id, client_id=client_id)
             logger.debug("Bulk deleted %d knowledge items", knowledge_count)
 
-            message_count = message_manager.delete_by_user_id(user_id=user_id)
+            message_count = message_manager.delete_by_user_id(user_id=user_id, client_id=client_id)
             logger.debug("Bulk deleted %d messages", message_count)
 
-            block_count = block_manager.delete_by_user_id(user_id=user_id)
+            block_count = block_manager.delete_by_user_id(user_id=user_id, client_id=client_id)
             logger.debug("Bulk deleted %d blocks", block_count)
 
             # Clear message_ids from ALL agents in PostgreSQL (messages are user-scoped, agents are client-scoped)

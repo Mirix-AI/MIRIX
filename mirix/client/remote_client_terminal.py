@@ -1521,7 +1521,39 @@ class MirixTerminalClient():
             request_data["occurred_at"] = occurred_at
 
         return self._request("POST", "/memory/add", json=request_data, headers=headers)
-    
+
+    def clear_memory(self, user_id: str, headers: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+        """
+        Clear all memories for a specific user.
+        
+        Args:
+            user_id: User ID whose memory should be cleared
+            headers: Optional HTTP headers
+            
+        Returns:
+            Dict containing success status and message
+        """
+        request_data = {"user_id": user_id}
+        return self._request("POST", "/memory/clear", json=request_data, headers=headers)
+
+    def delete_memory(self, memory_type: str, memory_id: str, headers: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+        """
+        Delete a specific memory by type and ID.
+        
+        Args:
+            memory_type: Type of memory ('episodic', 'semantic', 'procedural', 'resource', 'knowledge')
+            memory_id: ID of the memory to delete
+            headers: Optional HTTP headers
+            
+        Returns:
+            Dict containing success status and message
+        """
+        valid_types = ['episodic', 'semantic', 'procedural', 'resource', 'knowledge']
+        if memory_type not in valid_types:
+            raise ValueError(f"Invalid memory_type. Must be one of {valid_types}")
+            
+        return self._request("DELETE", f"/memory/{memory_type}/{memory_id}", headers=headers)
+
     def retrieve_with_conversation(
         self,
         user_id: str,

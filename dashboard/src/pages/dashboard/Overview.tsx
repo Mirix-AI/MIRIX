@@ -14,10 +14,6 @@ export const Overview: React.FC = () => {
   }, [refreshUser]);
   const { selectedUser, users, isLoading } = useWorkspace(); // Selected End User
   const navigate = useNavigate();
-  const buildUserPath = (path: string) => {
-    if (!selectedUser?.id) return path;
-    return `${path}?user=${encodeURIComponent(selectedUser.id)}`;
-  };
 
   // Get display name - just show the user name as-is
   const getDisplayName = () => {
@@ -100,8 +96,8 @@ export const Overview: React.FC = () => {
               Manage your API keys for accessing the Mirix SDK.
             </CardDescription>
           </CardHeader>
-            <CardContent>
-            <Button onClick={() => navigate(buildUserPath('/dashboard/api-keys'))}>
+          <CardContent>
+            <Button onClick={() => navigate('/dashboard/api-keys')}>
               Manage Keys <ArrowRight className="ml-2 h-4 w-4" />
             </Button>
           </CardContent>
@@ -112,7 +108,7 @@ export const Overview: React.FC = () => {
             <CardDescription>Monitor your API usage and credit balance.</CardDescription>
           </CardHeader>
           <CardContent>
-            <Button onClick={() => navigate(buildUserPath('/dashboard/usage'))} variant="outline">
+            <Button onClick={() => navigate('/dashboard/usage')} variant="outline">
               View Usage <Coins className="ml-2 h-4 w-4" />
             </Button>
           </CardContent>
@@ -125,7 +121,7 @@ export const Overview: React.FC = () => {
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <Button onClick={() => navigate(buildUserPath('/dashboard/memories'))} variant="secondary" disabled={!selectedUser}>
+            <Button onClick={() => navigate('/dashboard/memories')} variant="secondary" disabled={!selectedUser}>
               Explore Memories <Brain className="ml-2 h-4 w-4" />
             </Button>
           </CardContent>

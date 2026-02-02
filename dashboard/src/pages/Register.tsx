@@ -31,6 +31,8 @@ export const Register: React.FC = () => {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [verificationPending, setVerificationPending] = useState(false);
+  const [registeredEmail, setRegisteredEmail] = useState('');
   const { login } = useAuth();
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -45,8 +47,18 @@ export const Register: React.FC = () => {
         password,
       });
 
+      // Check if verification is required (202 response)
+      if (response.status === 202) {
+        setVerificationPending(true);
+        setRegisteredEmail(email);
+        return;
+      }
+
+      // Otherwise, auto-login (should not happen anymore, but kept for compatibility)
       const { access_token, client } = response.data;
-      login(access_token, client);
+      if (access_token && client) {
+        login(access_token, client);
+      }
     } catch (err) {
       if (axios.isAxiosError(err)) {
         const message = parseErrorDetail(err.response?.data?.detail, 'Failed to register');
@@ -58,6 +70,48 @@ export const Register: React.FC = () => {
       setLoading(false);
     }
   };
+
+  // Show verification pending message if verification email was sent
+  if (verificationPending) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-background px-4 py-12 sm:px-6 lg:px-8">
+        <Card className="w-full max-w-md">
+          <CardHeader className="space-y-1 text-center">
+            <div className="flex justify-center mb-4">
+              <img src={logoImg} alt="Mirix" className="h-12 w-auto" />
+            </div>
+            <CardTitle className="text-2xl">Check your email</CardTitle>
+            <CardDescription>
+              We've sent a verification link to {registeredEmail}
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="rounded-lg bg-blue-50 dark:bg-blue-950 p-4 text-sm text-blue-900 dark:text-blue-100">
+              <p className="font-medium mb-2">📧 Verification email sent!</p>
+              <p className="text-blue-700 dark:text-blue-300">
+                Please check your inbox and click the verification link to activate your account.
+                The link will expire in 24 hours.
+              </p>
+            </div>
+            <div className="text-center text-sm text-muted-foreground">
+              <p>Didn't receive the email?</p>
+              <button 
+                className="text-primary hover:underline font-medium mt-1"
+                onClick={() => setVerificationPending(false)}
+              >
+                Try again
+              </button>
+            </div>
+          </CardContent>
+          <CardFooter className="justify-center text-sm text-muted-foreground">
+            <Link to="/login" className="font-medium text-primary hover:underline">
+              Back to sign in
+            </Link>
+          </CardFooter>
+        </Card>
+      </div>
+    );
+  }
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-background px-4 py-12 sm:px-6 lg:px-8">

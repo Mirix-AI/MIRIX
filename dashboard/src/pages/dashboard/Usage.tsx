@@ -1,13 +1,18 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Coins, AlertTriangle, RefreshCw } from 'lucide-react';
+import { Coins, AlertTriangle, RefreshCw, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import apiClient from '@/api/client';
 
 export const Usage: React.FC = () => {
   const { user, refreshUser } = useAuth();
 
   const credits = user?.credits ?? 0;
+  const [creditsToBuy, setCreditsToBuy] = useState(25);
+  const [checkoutLoading, setCheckoutLoading] = useState(false);
+  const [checkoutError, setCheckoutError] = useState<string | null>(null);
 
   useEffect(() => {
     refreshUser();
@@ -33,6 +38,31 @@ export const Usage: React.FC = () => {
       minimumFractionDigits: 2,
       maximumFractionDigits: 4,
     }).format(value);
+  };
+
+  const handleCheckout = async () => {
+    setCheckoutLoading(true);
+    setCheckoutError(null);
+
+    try {
+      const response = await apiClient.post('/billing/stripe/checkout', {
+        credits: creditsToBuy,
+      });
+      const url = response.data?.url;
+      if (!url) {
+        setCheckoutError('Checkout URL was not returned.');
+        return;
+      }
+      window.location.href = url;
+    } catch (error: any) {
+      const message =
+        error?.response?.data?.detail ||
+        error?.message ||
+        'Unable to start Stripe checkout.';
+      setCheckoutError(message);
+    } finally {
+      setCheckoutLoading(false);
+    }
   };
 
   return (
@@ -91,6 +121,58 @@ export const Usage: React.FC = () => {
           <p className="text-xs text-muted-foreground">
             {credits <= 0 ? 'Contact support for more credits' : 'Credits available for use'}
           </p>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base">Buy Credits</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex flex-wrap gap-2">
+            {[10, 25, 100].map((amount) => (
+              <Button
+                key={amount}
+                type="button"
+                variant={creditsToBuy === amount ? 'default' : 'outline'}
+                size="sm"
+                onClick={() => setCreditsToBuy(amount)}
+              >
+                {amount} credits
+              </Button>
+            ))}
+          </div>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+            <div className="w-full sm:max-w-[200px]">
+              <Input
+                type="number"
+                min={1}
+                step={1}
+                value={creditsToBuy}
+                onChange={(event) => {
+                  const nextValue = Number(event.target.value);
+                  const normalized = Number.isFinite(nextValue) && nextValue > 0 ? Math.floor(nextValue) : 1;
+                  setCreditsToBuy(normalized);
+                }}
+              />
+            </div>
+            <div className="text-sm text-muted-foreground">
+              Total: <span className="font-medium text-foreground">{formatCredits(creditsToBuy)}</span>
+            </div>
+          </div>
+          {checkoutError ? (
+            <div className="text-sm text-red-500">{checkoutError}</div>
+          ) : null}
+          <Button onClick={handleCheckout} disabled={checkoutLoading}>
+            {checkoutLoading ? (
+              <>
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                Redirecting...
+              </>
+            ) : (
+              'Continue to Payment'
+            )}
+          </Button>
         </CardContent>
       </Card>
 

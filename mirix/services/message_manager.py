@@ -341,7 +341,7 @@ class MessageManager:
         
         return count
 
-    def delete_by_user_id(self, user_id: str) -> int:
+    def delete_by_user_id(self, user_id: str, client_id: str) -> int:
         """
         Bulk hard delete all NON-SYSTEM messages for a user (removes from Redis cache).
         System messages are preserved as they are essential for agent functionality.
@@ -349,6 +349,7 @@ class MessageManager:
         
         Args:
             user_id: ID of the user whose messages to delete
+            client_id: Client ID to scope the deletion
             
         Returns:
             Number of records deleted
@@ -360,6 +361,7 @@ class MessageManager:
             # Get IDs for non-system messages only (preserve system messages)
             message_ids = [row[0] for row in session.query(MessageModel.id).filter(
                 MessageModel.user_id == user_id,
+                MessageModel.client_id == client_id,
                 MessageModel.role != MessageRole.system  # Exclude system messages
             ).all()]
             
@@ -370,6 +372,7 @@ class MessageManager:
             # Bulk delete in single query (exclude system messages)
             session.query(MessageModel).filter(
                 MessageModel.user_id == user_id,
+                MessageModel.client_id == client_id,
                 MessageModel.role != MessageRole.system
             ).delete(synchronize_session=False)
             

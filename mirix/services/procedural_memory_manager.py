@@ -1140,13 +1140,14 @@ class ProceduralMemoryManager:
         
         return count
 
-    def delete_by_user_id(self, user_id: str) -> int:
+    def delete_by_user_id(self, user_id: str, client_id: str) -> int:
         """
         Bulk hard delete all procedural memory records for a user (removes from Redis cache).
         Optimized with single DB query and batch Redis deletion.
         
         Args:
             user_id: ID of the user whose memories to delete
+            client_id: Client ID to scope the deletion
             
         Returns:
             Number of records deleted
@@ -1156,7 +1157,8 @@ class ProceduralMemoryManager:
         with self.session_maker() as session:
             # Get IDs for Redis cleanup (only fetch IDs, not full objects)
             item_ids = [row[0] for row in session.query(ProceduralMemoryItem.id).filter(
-                ProceduralMemoryItem.user_id == user_id
+                ProceduralMemoryItem.user_id == user_id,
+                ProceduralMemoryItem.client_id == client_id
             ).all()]
             
             count = len(item_ids)
@@ -1165,7 +1167,8 @@ class ProceduralMemoryManager:
             
             # Bulk delete in single query
             session.query(ProceduralMemoryItem).filter(
-                ProceduralMemoryItem.user_id == user_id
+                ProceduralMemoryItem.user_id == user_id,
+                ProceduralMemoryItem.client_id == client_id
             ).delete(synchronize_session=False)
             
             session.commit()
