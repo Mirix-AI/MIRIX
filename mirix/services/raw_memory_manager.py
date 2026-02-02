@@ -22,6 +22,7 @@ from mirix.schemas.client import Client as PydanticClient
 from mirix.schemas.raw_memory import RawMemoryItem as PydanticRawMemoryItem
 from mirix.schemas.raw_memory import RawMemoryItemCreate as PydanticRawMemoryItemCreate
 from mirix.schemas.user import User as PydanticUser
+from mirix.services.user_manager import UserManager
 from mirix.settings import settings
 from mirix.utils import enforce_types
 
@@ -46,9 +47,9 @@ class RawMemoryManager:
         self,
         raw_memory: PydanticRawMemoryItemCreate,
         actor: PydanticClient,
+        user_id: str,
         agent_state: Optional[AgentState] = None,
         client_id: Optional[str] = None,
-        user_id: Optional[str] = None,
         use_cache: bool = True,
     ) -> PydanticRawMemoryItem:
         """
@@ -57,32 +58,73 @@ class RawMemoryManager:
         Args:
             raw_memory: The raw memory data to create
             actor: Client performing the operation (for audit trail)
+            user_id: End-user identifier (required)
             agent_state: Agent state containing embedding configuration (optional)
             client_id: Client application identifier (defaults to actor.id)
-            user_id: End-user identifier (defaults to admin user)
             use_cache: If True, cache in Redis. If False, skip caching.
 
         Returns:
             Created raw memory as Pydantic model
+
+        Raises:
+            ValueError: If user_id is not provided
         """
+        # Validate user_id is provided
+        if not user_id:
+            raise ValueError("user_id is required for create_raw_memory")
+
         # Backward compatibility: if client_id not provided, use actor.id as fallback
         if client_id is None:
             client_id = actor.id
             logger.warning("client_id not provided to create_raw_memory, using actor.id as fallback")
 
-        # user_id should be explicitly provided for proper multi-user isolation
-        # Fallback to admin user if not provided
-        if user_id is None:
-            from mirix.services.user_manager import UserManager
-
-            user_id = UserManager.ADMIN_USER_ID
-            logger.warning("user_id not provided to create_raw_memory, using ADMIN_USER_ID as fallback")
+        # Auto-create user if it doesn't exist
+        user_manager = UserManager()
+        try:
+            user_manager.get_user_by_id(user_id)
+        except NoResultFound:
+            logger.info(
+                "User with id=%s not found, auto-creating with organization_id=%s",
+                user_id,
+                actor.organization_id,
+            )
+            try:
+                # Create user with provided user_id and client's organization
+                user_manager.create_user(
+                    pydantic_user=PydanticUser(
+                        id=user_id,
+                        name=user_id,  # Use user_id as default name
+                        organization_id=actor.organization_id,
+                        timezone=user_manager.DEFAULT_TIME_ZONE,
+                        status="active",
+                        is_deleted=False,
+                        client_id=client_id,
+                        is_admin=False,
+                    )
+                )
+                logger.info(
+                    "✓ Auto-created user: %s in organization: %s",
+                    user_id,
+                    actor.organization_id,
+                )
+            except Exception as create_error:
+                logger.error(
+                    "Failed to auto-create user with id=%s: %s",
+                    user_id,
+                    create_error,
+                )
+                raise create_error
 
         # Ensure ID is set before model_dump
         if not raw_memory.id:
             from mirix.utils import generate_unique_short_id
 
             raw_memory.id = generate_unique_short_id(self.session_maker, RawMemory, "raw_mem")
+
+        # Auto-inject scope from actor
+        if raw_memory.filter_tags is None:
+            raw_memory.filter_tags = {}
+        raw_memory.filter_tags["scope"] = actor.scope
 
         logger.debug(
             "Creating raw memory: id=%s, client_id=%s, user_id=%s, filter_tags=%s",
@@ -144,22 +186,25 @@ class RawMemoryManager:
     def get_raw_memory_by_id(
         self,
         memory_id: str,
-        user: PydanticUser,
+        actor: PydanticClient,
+        user_id: Optional[str] = None,
     ) -> Optional[PydanticRawMemoryItem]:
         """
         Fetch a single raw memory record by ID (with Redis JSON caching).
 
         Args:
             memory_id: ID of the memory to fetch
-            user: User who owns this memory
+            actor: Client performing the operation (for scope validation)
+            user_id: Optional user ID - if provided, filters by user (404 if mismatch)
 
         Returns:
             Raw memory as Pydantic model
 
         Raises:
-            NoResultFound: If the record doesn't exist or doesn't belong to user
+            NoResultFound: If the record doesn't exist, scope doesn't match, or user doesn't match
         """
         # Try Redis cache first (JSON-based for memory tables)
+        redis_client = None
         try:
             from mirix.database.redis_client import get_redis_client
 
@@ -169,9 +214,22 @@ class RawMemoryManager:
                 redis_key = f"{redis_client.RAW_MEMORY_PREFIX}{memory_id}"
                 cached_data = redis_client.get_json(redis_key)
                 if cached_data:
-                    # Cache HIT - return from Redis
+                    # Cache HIT - validate scope before returning
                     logger.debug("Redis cache HIT for raw memory %s", memory_id)
-                    return PydanticRawMemoryItem(**cached_data)
+                    pydantic_memory = PydanticRawMemoryItem(**cached_data)
+
+                    # Validate scope
+                    memory_scope = (pydantic_memory.filter_tags or {}).get("scope")
+                    if memory_scope != actor.scope:
+                        raise NoResultFound(f"Raw memory record with id {memory_id} not found.")
+
+                    # Validate user_id if provided
+                    if user_id and pydantic_memory.user_id != user_id:
+                        raise NoResultFound(f"Raw memory record with id {memory_id} not found.")
+
+                    return pydantic_memory
+        except NoResultFound:
+            raise
         except Exception as e:
             # Log but continue to PostgreSQL on Redis error
             logger.warning(
@@ -183,19 +241,22 @@ class RawMemoryManager:
         # Cache MISS or Redis unavailable - fetch from PostgreSQL
         with self.session_maker() as session:
             try:
-                # Construct a PydanticClient for actor using user's organization_id
-                actor = PydanticClient(
-                    id="system-default-client",
-                    organization_id=user.organization_id,
-                    name="system-client",
-                )
-
                 raw_memory_item = RawMemory.read(db_session=session, identifier=memory_id, actor=actor)
                 pydantic_memory = raw_memory_item.to_pydantic()
+
+                # Validate scope
+                memory_scope = (pydantic_memory.filter_tags or {}).get("scope")
+                if memory_scope != actor.scope:
+                    raise NoResultFound(f"Raw memory record with id {memory_id} not found.")
+
+                # Validate user_id if provided
+                if user_id and pydantic_memory.user_id != user_id:
+                    raise NoResultFound(f"Raw memory record with id {memory_id} not found.")
 
                 # Populate Redis cache for next time
                 try:
                     if redis_client:
+                        redis_key = f"{redis_client.RAW_MEMORY_PREFIX}{memory_id}"
                         data = pydantic_memory.model_dump(mode="json")
                         redis_client.set_json(redis_key, data, ttl=settings.redis_ttl_default)
                         logger.debug(
@@ -217,12 +278,13 @@ class RawMemoryManager:
     def update_raw_memory(
         self,
         memory_id: str,
+        actor: PydanticClient,
         new_context: Optional[str] = None,
         new_filter_tags: Optional[Dict[str, Any]] = None,
-        actor: Optional[PydanticClient] = None,
         agent_state: Optional[AgentState] = None,
         context_update_mode: str = "replace",
         tags_merge_mode: str = "replace",
+        user_id: Optional[str] = None,
     ) -> PydanticRawMemoryItem:
         """
         Update an existing raw memory record.
@@ -231,16 +293,17 @@ class RawMemoryManager:
             memory_id: ID of the memory to update
             new_context: New context text
             new_filter_tags: New or updated filter tags
-            actor: Client performing the update (for access control and audit)
+            actor: Client performing the update (required for access control)
             agent_state: Agent state containing embedding configuration (optional)
             context_update_mode: How to handle context updates ("append" or "replace")
             tags_merge_mode: How to handle filter_tags updates ("merge" or "replace")
+            user_id: Optional user ID - if provided, filters by user (404 if mismatch)
 
         Returns:
             Updated raw memory as Pydantic model
 
         Raises:
-            ValueError: If memory not found or validation fails
+            ValueError: If memory not found, scope mismatch, user mismatch, or validation fails
         """
         logger.debug(
             "Updating raw memory: id=%s, context_mode=%s, tags_mode=%s",
@@ -261,12 +324,28 @@ class RawMemoryManager:
                 raise ValueError(f"Raw memory {memory_id} not found")
 
             # Perform access control check (replaces RawMemory.read's built-in check)
-            if actor and raw_memory.organization_id != actor.organization_id:
+            if raw_memory.organization_id != actor.organization_id:
                 raise ValueError(
                     f"Access denied: memory {memory_id} belongs to "
                     f"organization {raw_memory.organization_id}, "
                     f"actor belongs to {actor.organization_id}"
                 )
+
+            # Perform scope access control check
+            memory_scope = (raw_memory.filter_tags or {}).get("scope")
+            if memory_scope != actor.scope:
+                raise ValueError(
+                    f"Access denied: memory {memory_id} has scope '{memory_scope}', " f"actor has scope '{actor.scope}'"
+                )
+
+            # Perform user_id access control check if provided
+            if user_id and raw_memory.user_id != user_id:
+                raise ValueError(f"Raw memory {memory_id} not found")
+
+            # Prevent scope tampering in filter_tags updates
+            if new_filter_tags is not None and "scope" in new_filter_tags:
+                if new_filter_tags["scope"] != actor.scope:
+                    raise ValueError("Cannot change memory scope - scope must match actor.scope")
 
             # Update context
             if new_context is not None:
@@ -288,7 +367,11 @@ class RawMemoryManager:
                     }
                     logger.debug("Merged filter_tags for memory %s", memory_id)
                 else:  # replace
+                    # Preserve scope when replacing tags - scope is immutable
+                    preserved_scope = (raw_memory.filter_tags or {}).get("scope")
                     raw_memory.filter_tags = new_filter_tags
+                    if preserved_scope:
+                        raw_memory.filter_tags["scope"] = preserved_scope
                     logger.debug("Replaced filter_tags for memory %s", memory_id)
 
             # Regenerate embeddings if context changed and agent_state provided
@@ -343,6 +426,7 @@ class RawMemoryManager:
         self,
         memory_id: str,
         actor: PydanticClient,
+        user_id: Optional[str] = None,
     ) -> bool:
         """
         Delete a raw memory (hard delete, used by cleanup job).
@@ -350,15 +434,30 @@ class RawMemoryManager:
         Args:
             memory_id: ID of the memory to delete
             actor: Client performing the deletion (for access control)
+            user_id: Optional user ID - if provided, filters by user (returns False if mismatch)
 
         Returns:
-            True if deleted, False if not found
+            True if deleted, False if not found or user mismatch
         """
         logger.info("Deleting raw memory: id=%s", memory_id)
 
         with self.session_maker() as session:
             try:
                 raw_memory = RawMemory.read(db_session=session, identifier=memory_id, actor=actor)
+
+                # Perform scope access control check
+                memory_scope = (raw_memory.filter_tags or {}).get("scope")
+                if memory_scope != actor.scope:
+                    raise ValueError(
+                        f"Access denied: memory {memory_id} has scope '{memory_scope}', "
+                        f"actor has scope '{actor.scope}'"
+                    )
+
+                # Perform user_id access control check if provided
+                if user_id and raw_memory.user_id != user_id:
+                    logger.warning("Raw memory %s not found for deletion (user mismatch)", memory_id)
+                    return False
+
                 session.delete(raw_memory)
                 session.commit()
 
@@ -390,7 +489,8 @@ class RawMemoryManager:
     @enforce_types
     def search_raw_memories(
         self,
-        user: PydanticUser,
+        organization_id: str,
+        user_id: Optional[str] = None,
         filter_tags: Optional[Dict[str, Any]] = None,
         sort: str = "-updated_at",
         cursor: Optional[str] = None,
@@ -401,7 +501,8 @@ class RawMemoryManager:
         Search raw memories with filtering, sorting, cursor-based pagination, and time range filtering.
 
         Args:
-            user: User to search memories for (used for organization_id filtering)
+            organization_id: Organization ID to filter by (required)
+            user_id: Optional user ID - if provided, filters by user
             filter_tags: AND filter on top-level keys (scope is handled separately)
             sort: Sort field and direction (updated_at, -updated_at, created_at, -created_at, occurred_at, -occurred_at)
             cursor: Opaque Base64-encoded cursor for pagination
@@ -445,7 +546,11 @@ class RawMemoryManager:
 
         with self.session_maker() as session:
             # Base query filtering by organization_id
-            base_query = select(RawMemory).where(RawMemory.organization_id == user.organization_id)
+            base_query = select(RawMemory).where(RawMemory.organization_id == organization_id)
+
+            # Apply user_id filter if provided
+            if user_id:
+                base_query = base_query.where(RawMemory.user_id == user_id)
 
             # Apply filter_tags (AND filter on top-level keys)
             if filter_tags:

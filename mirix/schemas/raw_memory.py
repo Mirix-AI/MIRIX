@@ -189,6 +189,39 @@ class RawMemoryItemUpdate(MirixBase):
     )
 
 
+class RawMemoryItemCreateRequest(MirixBase):
+    """
+    Request schema for creating a raw memory via REST API.
+
+    This schema contains only the fields that clients should provide.
+    Server-managed fields (organization_id, context_embedding, embedding_config)
+    are excluded and will be set by the API handler.
+
+    Args:
+        context: Raw task context string (required)
+        filter_tags: Filter tags for categorization (optional, scope auto-injected)
+        occurred_at: When the event occurred (optional, defaults to now)
+        id: Unique identifier (optional, server generates if omitted)
+    """
+
+    context: str = Field(
+        ...,
+        description="Raw task context string (unprocessed)",
+    )
+    filter_tags: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Filter tags for categorization (scope is auto-injected from client)",
+    )
+    occurred_at: Optional[datetime] = Field(
+        None,
+        description="When the event occurred (defaults to now)",
+    )
+    id: Optional[str] = Field(
+        None,
+        description="Unique identifier (server generates if omitted)",
+    )
+
+
 class TimeRangeFilter(BaseModel):
     """Time range filter for searching raw memories."""
 
