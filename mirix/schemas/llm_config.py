@@ -91,6 +91,12 @@ class LLMConfig(BaseModel):
         description="Name of registered auth provider for dynamic header injection (e.g., for claims-based tickets)",
     )
 
+    # Langfuse observability
+    langfuse_model: Optional[str] = Field(
+        None,
+        description="Model name to report to Langfuse for cost tracking (overrides 'model' if set). Use standard model names like 'gpt-4.1', 'gpt-4o', etc.",
+    )
+
     # Azure-specific fields (Azure OpenAI only)
     api_version: Optional[str] = Field(
         None,

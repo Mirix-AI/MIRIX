@@ -255,7 +255,7 @@ class OpenAIEmbeddingWithCustomAuth:
 
         if is_embedding_tracing_enabled():
             return traced_embedding_with_retry(
-                model=self.model,
+                model=self.config.langfuse_model or self.model,
                 provider="openai_custom_auth",
                 text=text,
                 embedding_func=_do_embedding,
@@ -280,6 +280,7 @@ class EmbeddingEndpoint:
         base_url: str,
         user: str,
         timeout: float = 60.0,
+        langfuse_model: Optional[str] = None,
         **kwargs: Any,
     ):
         if not is_valid_url(base_url):
@@ -290,6 +291,7 @@ class EmbeddingEndpoint:
         if model == "mirix-free":
             model = "BAAI/bge-large-en-v1.5"
         self.model_name = model
+        self._langfuse_model = langfuse_model
         self._user = user
         self._base_url = base_url
         self._timeout = timeout
@@ -334,7 +336,7 @@ class EmbeddingEndpoint:
     def get_text_embedding(self, text: str) -> List[float]:
         if is_embedding_tracing_enabled():
             return traced_embedding_with_retry(
-                model=self.model_name,
+                model=self._langfuse_model or self.model_name,
                 provider="hugging-face",
                 text=text,
                 embedding_func=lambda: self._call_api(text),
@@ -345,11 +347,19 @@ class EmbeddingEndpoint:
 
 
 class AzureOpenAIEmbedding:
-    def __init__(self, api_endpoint: str, api_key: str, api_version: str, model: str):
+    def __init__(
+        self,
+        api_endpoint: str,
+        api_key: str,
+        api_version: str,
+        model: str,
+        langfuse_model: Optional[str] = None,
+    ):
         from openai import AzureOpenAI
 
         self.client = AzureOpenAI(api_key=api_key, api_version=api_version, azure_endpoint=api_endpoint)
         self.model = model
+        self._langfuse_model = langfuse_model
 
     def get_text_embedding(self, text: str):
 
@@ -358,7 +368,7 @@ class AzureOpenAIEmbedding:
 
         if is_embedding_tracing_enabled():
             return traced_embedding_with_retry(
-                model=self.model,
+                model=self._langfuse_model or self.model,
                 provider="azure",
                 text=text,
                 embedding_func=_do_embedding,
@@ -374,10 +384,17 @@ class OllamaEmbeddings:
     #   "prompt": "Llamas are members of the camelid family"
     # }'
 
-    def __init__(self, model: str, base_url: str, ollama_additional_kwargs: dict):
+    def __init__(
+        self,
+        model: str,
+        base_url: str,
+        ollama_additional_kwargs: dict,
+        langfuse_model: Optional[str] = None,
+    ):
         self.model = model
         self.base_url = base_url
         self.ollama_additional_kwargs = ollama_additional_kwargs
+        self._langfuse_model = langfuse_model
 
     def get_text_embedding(self, text: str):
 
@@ -400,7 +417,7 @@ class OllamaEmbeddings:
 
         if is_embedding_tracing_enabled():
             return traced_embedding_with_retry(
-                model=self.model,
+                model=self._langfuse_model or self.model,
                 provider="ollama",
                 text=text,
                 embedding_func=_do_embedding,
@@ -493,6 +510,7 @@ def embedding_model(config: EmbeddingConfig, user_id: Optional[uuid.UUID] = None
             api_key=model_settings.azure_api_key,
             api_version=model_settings.azure_api_version,
             model=config.embedding_model,
+            langfuse_model=config.langfuse_model,
         )
 
     elif endpoint_type == "hugging-face":
@@ -500,12 +518,14 @@ def embedding_model(config: EmbeddingConfig, user_id: Optional[uuid.UUID] = None
             model=config.embedding_model,
             base_url=config.embedding_endpoint,
             user=user_id,
+            langfuse_model=config.langfuse_model,
         )
     elif endpoint_type == "ollama":
         model = OllamaEmbeddings(
             model=config.embedding_model,
             base_url=config.embedding_endpoint,
             ollama_additional_kwargs={},
+            langfuse_model=config.langfuse_model,
         )
         return model
 

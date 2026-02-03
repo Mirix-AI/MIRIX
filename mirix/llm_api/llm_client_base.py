@@ -141,7 +141,7 @@ class LLMClientBase:
                 name="llm_completion",
                 as_type="generation",
                 trace_context=cast("TraceContext", trace_context_dict),
-                model=self.llm_config.model,
+                model=self.llm_config.langfuse_model or self.llm_config.model,
                 input=trace_input,
                 metadata={
                     "provider": self.llm_config.model_endpoint_type,

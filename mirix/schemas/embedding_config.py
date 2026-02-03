@@ -54,6 +54,12 @@ class EmbeddingConfig(BaseModel):
         description="Name of registered auth provider for dynamic header injection (e.g., for claims-based tickets)",
     )
 
+    # Langfuse observability
+    langfuse_model: Optional[str] = Field(
+        None,
+        description="Model name to report to Langfuse for cost tracking (overrides 'embedding_model' if set).",
+    )
+
     # azure only
     azure_endpoint: Optional[str] = Field(None, description="The Azure endpoint for the model.")
     azure_version: Optional[str] = Field(None, description="The Azure version for the model.")
