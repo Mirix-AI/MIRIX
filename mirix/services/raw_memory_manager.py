@@ -203,19 +203,19 @@ class RawMemoryManager:
         Raises:
             NoResultFound: If the record doesn't exist, scope doesn't match, or user doesn't match
         """
-        # Try Redis cache first (JSON-based for memory tables)
-        redis_client = None
+        # Try cache first (cache provider: Redis or IPS Cache)
+        cache_provider = None
         try:
-            from mirix.database.redis_client import get_redis_client
+            from mirix.database.cache_provider import get_cache_provider
 
-            redis_client = get_redis_client()
+            cache_provider = get_cache_provider()
 
-            if redis_client:
-                redis_key = f"{redis_client.RAW_MEMORY_PREFIX}{memory_id}"
-                cached_data = redis_client.get_json(redis_key)
+            if cache_provider:
+                cache_key = f"{cache_provider.RAW_MEMORY_PREFIX}{memory_id}"
+                cached_data = cache_provider.get_json(cache_key)
                 if cached_data:
                     # Cache HIT - validate scope before returning
-                    logger.debug("Redis cache HIT for raw memory %s", memory_id)
+                    logger.debug("Cache HIT for raw memory %s", memory_id)
                     pydantic_memory = PydanticRawMemoryItem(**cached_data)
 
                     # Validate scope
@@ -231,7 +231,7 @@ class RawMemoryManager:
         except NoResultFound:
             raise
         except Exception as e:
-            # Log but continue to PostgreSQL on Redis error
+            # Log but continue to PostgreSQL on cache error
             logger.warning(
                 "Redis cache read failed for raw memory %s: %s",
                 memory_id,
@@ -253,14 +253,14 @@ class RawMemoryManager:
                 if user_id and pydantic_memory.user_id != user_id:
                     raise NoResultFound(f"Raw memory record with id {memory_id} not found.")
 
-                # Populate Redis cache for next time
+                # Populate cache for next time
                 try:
-                    if redis_client:
-                        redis_key = f"{redis_client.RAW_MEMORY_PREFIX}{memory_id}"
+                    if cache_provider:
+                        cache_key = f"{cache_provider.RAW_MEMORY_PREFIX}{memory_id}"
                         data = pydantic_memory.model_dump(mode="json")
-                        redis_client.set_json(redis_key, data, ttl=settings.redis_ttl_default)
+                        cache_provider.set_json(cache_key, data, ttl=settings.redis_ttl_default)
                         logger.debug(
-                            "Populated Redis cache for raw memory %s",
+                            "Populated cache for raw memory %s",
                             memory_id,
                         )
                 except Exception as e:
@@ -402,18 +402,18 @@ class RawMemoryManager:
             # Commit changes
             session.commit()
 
-            # Invalidate Redis cache
+            # Invalidate cache
             try:
-                from mirix.database.redis_client import get_redis_client
+                from mirix.database.cache_provider import get_cache_provider
 
-                redis_client = get_redis_client()
-                if redis_client:
-                    redis_key = f"{redis_client.RAW_MEMORY_PREFIX}{memory_id}"
-                    redis_client.delete(redis_key)
-                    logger.debug("Invalidated Redis cache for memory %s", memory_id)
+                cache_provider = get_cache_provider()
+                if cache_provider:
+                    cache_key = f"{cache_provider.RAW_MEMORY_PREFIX}{memory_id}"
+                    cache_provider.delete(cache_key)
+                    logger.debug("Invalidated cache for memory %s", memory_id)
             except Exception as e:
                 logger.warning(
-                    "Failed to invalidate Redis cache for memory %s: %s",
+                    "Failed to invalidate cache for memory %s: %s",
                     memory_id,
                     e,
                 )
@@ -461,21 +461,21 @@ class RawMemoryManager:
                 session.delete(raw_memory)
                 session.commit()
 
-                # Invalidate Redis cache
+                # Invalidate cache
                 try:
-                    from mirix.database.redis_client import get_redis_client
+                    from mirix.database.cache_provider import get_cache_provider
 
-                    redis_client = get_redis_client()
-                    if redis_client:
-                        redis_key = f"{redis_client.RAW_MEMORY_PREFIX}{memory_id}"
-                        redis_client.delete(redis_key)
+                    cache_provider = get_cache_provider()
+                    if cache_provider:
+                        cache_key = f"{cache_provider.RAW_MEMORY_PREFIX}{memory_id}"
+                        cache_provider.delete(cache_key)
                         logger.debug(
-                            "Invalidated Redis cache for deleted memory %s",
+                            "Invalidated cache for deleted memory %s",
                             memory_id,
                         )
                 except Exception as e:
                     logger.warning(
-                        "Failed to invalidate Redis cache for deleted memory %s: %s",
+                        "Failed to invalidate cache for deleted memory %s: %s",
                         memory_id,
                         e,
                     )

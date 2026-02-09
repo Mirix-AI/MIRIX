@@ -138,35 +138,27 @@ class EpisodicMemoryManager:
         Raises:
             NoResultFound: If the record doesn't exist or doesn't belong to user
         """
-        # Try Redis cache first (JSON-based for memory tables)
+        cache_provider = None
         try:
-            from mirix.database.redis_client import get_redis_client
+            from mirix.database.cache_provider import get_cache_provider
 
-            redis_client = get_redis_client()
+            cache_provider = get_cache_provider()
 
-            if redis_client:
-                redis_key = f"{redis_client.EPISODIC_PREFIX}{episodic_memory_id}"
-                cached_data = redis_client.get_json(redis_key)
+            if cache_provider:
+                cache_key = f"{cache_provider.EPISODIC_PREFIX}{episodic_memory_id}"
+                cached_data = cache_provider.get_json(cache_key)
                 if cached_data:
-                    # Cache HIT - return from Redis
-                    logger.debug("Redis cache HIT for episodic memory %s", episodic_memory_id)
+                    logger.debug("Cache HIT for episodic memory %s", episodic_memory_id)
                     return PydanticEpisodicEvent(**cached_data)
         except Exception as e:
-            # Log but continue to PostgreSQL on Redis error
             logger.warning(
-                "Redis cache read failed for episodic memory %s: %s",
+                "Cache read failed for episodic memory %s: %s",
                 episodic_memory_id,
                 e,
             )
 
-        # Cache MISS or Redis unavailable - fetch from PostgreSQL
         with self.session_maker() as session:
             try:
-                # Construct a PydanticClient for actor using user's organization_id.
-                # Note: We can pass in a PydanticClient with a default client ID because
-                # EpisodicEvent.read() only uses the organization_id from the actor for
-                # access control (see apply_access_predicate in sqlalchemy_base.py).
-                # The actual client ID is not used for filtering.
                 actor = PydanticClient(
                     id="system-default-client",
                     organization_id=user.organization_id,
@@ -178,19 +170,20 @@ class EpisodicMemoryManager:
                 )
                 pydantic_event = episodic_memory_item.to_pydantic()
 
-                # Populate Redis cache for next time
                 try:
-                    if redis_client:
+                    if cache_provider:
+                        from mirix.settings import settings
+
+                        cache_key = f"{cache_provider.EPISODIC_PREFIX}{episodic_memory_id}"
                         data = pydantic_event.model_dump(mode="json")
-                        # model_dump(mode='json') already converts datetime to ISO format strings
-                        redis_client.set_json(redis_key, data, ttl=settings.redis_ttl_default)
+                        cache_provider.set_json(cache_key, data, ttl=settings.redis_ttl_default)
                         logger.debug(
-                            "Populated Redis cache for episodic memory %s",
+                            "Populated cache for episodic memory %s",
                             episodic_memory_id,
                         )
                 except Exception as e:
                     logger.warning(
-                        "Failed to populate Redis cache for episodic memory %s: %s",
+                        "Failed to populate cache for episodic memory %s: %s",
                         episodic_memory_id,
                         e,
                     )
@@ -322,13 +315,13 @@ class EpisodicMemoryManager:
         with self.session_maker() as session:
             try:
                 episodic_memory_item = EpisodicEvent.read(db_session=session, identifier=id, actor=actor)
-                # Remove from Redis cache before hard delete
-                from mirix.database.redis_client import get_redis_client
+                # Remove from cache before hard delete
+                from mirix.database.cache_provider import get_cache_provider
 
-                redis_client = get_redis_client()
-                if redis_client:
-                    redis_key = f"{redis_client.EPISODIC_PREFIX}{id}"
-                    redis_client.delete(redis_key)
+                cache_provider = get_cache_provider()
+                if cache_provider:
+                    cache_key = f"{cache_provider.EPISODIC_PREFIX}{id}"
+                    cache_provider.delete(cache_key)
                 episodic_memory_item.hard_delete(session)
             except NoResultFound:
                 raise NoResultFound(f"Episodic episodic_memory record with id {id} not found.")

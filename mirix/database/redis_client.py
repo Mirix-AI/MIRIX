@@ -1618,6 +1618,20 @@ def initialize_redis_client() -> Optional[RedisMemoryClient]:
         _redis_client.log_connection_stats()
 
         logger.info("Redis client initialized successfully with optimized connection pool")
+
+        # Auto-register as cache provider so service managers can use get_cache_provider()
+        try:
+            from mirix.database.cache_provider import register_cache_provider
+            from mirix.database.redis_cache_provider import RedisCacheProvider
+
+            redis_provider = RedisCacheProvider(_redis_client)
+            register_cache_provider("redis", redis_provider)
+            logger.info("Auto-registered Redis cache provider")
+        except ImportError:
+            logger.debug(
+                "Cache provider registry not available - skipping Redis auto-registration"
+            )
+
         return _redis_client
 
     except Exception as e:

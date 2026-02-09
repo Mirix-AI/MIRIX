@@ -24,46 +24,39 @@ class MessageManager:
     def get_message_by_id(
         self, message_id: str, actor: PydanticClient, use_cache: bool = True
     ) -> Optional[PydanticMessage]:
-        """Fetch a message by ID (with Redis Hash caching - 40-60% faster!)."""
-        # Try Redis cache first (if cache enabled and Redis is available)
+        """Fetch a message by ID (with cache - Redis or IPS Cache)."""
+        from mirix.log import get_logger
+
+        logger = get_logger(__name__)
+        cache_provider = None
         try:
-            from mirix.database.redis_client import get_redis_client
+            from mirix.database.cache_provider import get_cache_provider
 
-            redis_client = get_redis_client()
+            cache_provider = get_cache_provider()
 
-            if use_cache and redis_client:
-                redis_key = f"{redis_client.MESSAGE_PREFIX}{message_id}"
-                cached_data = redis_client.get_hash(redis_key)
+            if use_cache and cache_provider:
+                cache_key = f"{cache_provider.MESSAGE_PREFIX}{message_id}"
+                cached_data = cache_provider.get_hash(cache_key)
                 if cached_data:
-                    # Cache HIT - return from Redis
                     return PydanticMessage(**cached_data)
         except Exception as e:
-            # Log but continue to PostgreSQL on Redis error
-            from mirix.log import get_logger
+            logger.warning("Cache read failed for message %s: %s", message_id, e)
 
-            logger = get_logger(__name__)
-            logger.warning("Redis cache read failed for message %s: %s", message_id, e)
-
-        # Cache MISS or Redis unavailable - fetch from PostgreSQL
+        # Cache MISS or no cache - fetch from PostgreSQL
         with self.session_maker() as session:
             try:
                 message = MessageModel.read(db_session=session, identifier=message_id, actor=actor)
                 pydantic_message = message.to_pydantic()
 
-                # Populate Redis cache for next time
                 try:
-                    if redis_client:
+                    if cache_provider:
                         from mirix.settings import settings
 
+                        cache_key = f"{cache_provider.MESSAGE_PREFIX}{message_id}"
                         data = pydantic_message.model_dump(mode="json")
-                        # model_dump(mode='json') already converts datetime to ISO format strings
-                        redis_client.set_hash(redis_key, data, ttl=settings.redis_ttl_messages)
+                        cache_provider.set_hash(cache_key, data, ttl=settings.redis_ttl_messages)
                 except Exception as e:
-                    # Log but don't fail on cache population error
-                    from mirix.log import get_logger
-
-                    logger = get_logger(__name__)
-                    logger.warning("Failed to populate Redis cache for message %s: %s", message_id, e)
+                    logger.warning("Failed to populate cache for message %s: %s", message_id, e)
 
                 return pydantic_message
             except NoResultFound:
@@ -188,13 +181,13 @@ class MessageManager:
                     identifier=message_id,
                     actor=actor,
                 )
-                # Remove from Redis cache before hard delete
-                from mirix.database.redis_client import get_redis_client
+                # Remove from cache before hard delete
+                from mirix.database.cache_provider import get_cache_provider
 
-                redis_client = get_redis_client()
-                if redis_client:
-                    redis_key = f"{redis_client.MESSAGE_PREFIX}{message_id}"
-                    redis_client.delete(redis_key)
+                cache_provider = get_cache_provider()
+                if cache_provider:
+                    cache_key = f"{cache_provider.MESSAGE_PREFIX}{message_id}"
+                    cache_provider.delete(cache_key)
                 msg.hard_delete(session, actor=actor)
             except NoResultFound:
                 raise ValueError(f"Message with id {message_id} not found.")

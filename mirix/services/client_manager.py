@@ -203,23 +203,22 @@ class ClientManager:
             # Soft delete using ORM's delete method (sets is_deleted=True)
             client.delete(session, actor=None)
 
-            # Update Redis cache (remove from cache since it's deleted)
+            # Remove from cache since it's deleted
             try:
-                from mirix.database.redis_client import get_redis_client
+                from mirix.database.cache_provider import get_cache_provider
                 from mirix.log import get_logger
 
                 logger = get_logger(__name__)
-                redis_client = get_redis_client()
-                if redis_client:
-                    # Remove from cache since it's deleted
-                    redis_key = f"{redis_client.CLIENT_PREFIX}{client_id}"
-                    redis_client.delete(redis_key)
-                    logger.debug("Removed soft-deleted client %s from Redis cache", client_id)
+                cache_provider = get_cache_provider()
+                if cache_provider:
+                    cache_key = f"{cache_provider.CLIENT_PREFIX}{client_id}"
+                    cache_provider.delete(cache_key)
+                    logger.debug("Removed soft-deleted client %s from cache", client_id)
             except Exception as e:
                 from mirix.log import get_logger
 
                 logger = get_logger(__name__)
-                logger.warning("Failed to update Redis for soft-deleted client %s: %s", client_id, e)
+                logger.warning("Failed to update cache for soft-deleted client %s: %s", client_id, e)
 
             return client.to_pydantic()
 
@@ -526,14 +525,14 @@ class ClientManager:
                 )
 
             # Invalidate ALL agent caches for this client (force reload from PostgreSQL with cleared message_ids)
-            from mirix.database.redis_client import get_redis_client
+            from mirix.database.cache_provider import get_cache_provider
 
-            redis_client = get_redis_client()
-            if redis_client and agent_ids:
+            cache_provider = get_cache_provider()
+            if cache_provider and agent_ids:
                 logger.debug("Invalidating %d agent caches for client %s", len(agent_ids), client_id)
                 for agent_id in agent_ids:
-                    agent_key = f"{redis_client.AGENT_PREFIX}{agent_id}"
-                    redis_client.delete(agent_key)
+                    agent_key = f"{cache_provider.AGENT_PREFIX}{agent_id}"
+                    cache_provider.delete(agent_key)
                 logger.debug("Invalidated %d agent caches", len(agent_ids))
 
             logger.info(
@@ -555,43 +554,39 @@ class ClientManager:
 
     @enforce_types
     def get_client_by_id(self, client_id: str) -> PydanticClient:
-        """Fetch a client by ID (with Redis Hash caching)."""
-        # Try Redis cache first
+        """Fetch a client by ID (with cache - Redis or IPS Cache)."""
+        from mirix.log import get_logger
+
+        logger = get_logger(__name__)
+        cache_provider = None
         try:
-            from mirix.database.redis_client import get_redis_client
-            from mirix.log import get_logger
+            from mirix.database.cache_provider import get_cache_provider
 
-            logger = get_logger(__name__)
-            redis_client = get_redis_client()
+            cache_provider = get_cache_provider()
 
-            if redis_client:
-                redis_key = f"{redis_client.CLIENT_PREFIX}{client_id}"
-                cached_data = redis_client.get_hash(redis_key)
+            if cache_provider:
+                cache_key = f"{cache_provider.CLIENT_PREFIX}{client_id}"
+                cached_data = cache_provider.get_hash(cache_key)
                 if cached_data:
-                    logger.debug("Redis cache HIT for client %s", client_id)
+                    logger.debug("Cache HIT for client %s", client_id)
                     return PydanticClient(**cached_data)
         except Exception as e:
-            # Log but continue to PostgreSQL on Redis error
-            from mirix.log import get_logger
+            logger.warning("Cache read failed for client %s: %s", client_id, e)
 
-            logger = get_logger(__name__)
-            logger.warning("Redis cache read failed for client %s: %s", client_id, e)
-
-        # Cache MISS or Redis unavailable - fetch from PostgreSQL
         with self.session_maker() as session:
             client = ClientModel.read(db_session=session, identifier=client_id)
             pydantic_client = client.to_pydantic()
 
-            # Populate Redis cache for next time
             try:
-                if redis_client:
+                if cache_provider:
                     from mirix.settings import settings
 
+                    cache_key = f"{cache_provider.CLIENT_PREFIX}{client_id}"
                     data = pydantic_client.model_dump(mode="json")
-                    redis_client.set_hash(redis_key, data, ttl=settings.redis_ttl_clients)
-                    logger.debug("Populated Redis cache for client %s", client_id)
+                    cache_provider.set_hash(cache_key, data, ttl=settings.redis_ttl_clients)
+                    logger.debug("Populated cache for client %s", client_id)
             except Exception as e:
-                logger.warning("Failed to populate Redis cache for client %s: %s", client_id, e)
+                logger.warning("Failed to populate cache for client %s: %s", client_id, e)
 
             return pydantic_client
 

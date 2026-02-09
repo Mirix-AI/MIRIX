@@ -72,29 +72,28 @@ class BlockManager:
         Called when a block is updated or deleted to maintain cache consistency.
         """
         try:
+            from mirix.database.cache_provider import get_cache_provider
             from mirix.database.redis_client import get_redis_client
 
             redis_client = get_redis_client()
+            cache_provider = get_cache_provider()
 
             if redis_client:
-                # Get all agent IDs that reference this block
                 reverse_key = f"{redis_client.BLOCK_PREFIX}{block_id}:agents"
                 agent_ids = redis_client.client.smembers(reverse_key)
 
                 if agent_ids:
                     logger.debug("Invalidating %s agent caches due to block %s change", len(agent_ids), block_id)
 
-                    # Delete each agent's cache
-                    for agent_id in agent_ids:
-                        agent_key = f"{redis_client.AGENT_PREFIX}{agent_id.decode() if isinstance(agent_id, bytes) else agent_id}"
-                        redis_client.delete(agent_key)
-
-                    # Clean up the reverse mapping
-                    redis_client.delete(reverse_key)
+                    if cache_provider:
+                        for agent_id in agent_ids:
+                            aid = agent_id.decode() if isinstance(agent_id, bytes) else agent_id
+                            agent_key = f"{cache_provider.AGENT_PREFIX}{aid}"
+                            cache_provider.delete(agent_key)
+                        cache_provider.delete(reverse_key)
 
                     logger.debug("Invalidated %s agent caches for block %s", len(agent_ids), block_id)
         except Exception as e:
-            # Log but don't fail the operation if cache invalidation fails
             logger.warning("Failed to invalidate agent caches for block %s: %s", block_id, e)
 
     def update_block(
@@ -135,18 +134,17 @@ class BlockManager:
 
     @enforce_types
     def delete_block(self, block_id: str, actor: PydanticClient) -> PydanticBlock:
-        """Delete a block by its ID (removes from Redis cache and invalidates agent caches)."""
+        """Delete a block by its ID (removes from cache and invalidates agent caches)."""
+        from mirix.database.cache_provider import get_cache_provider
+
         with self.session_maker() as session:
             block = BlockModel.read(db_session=session, identifier=block_id)
-            # Use hard_delete and manually update Redis cache
-            from mirix.database.redis_client import get_redis_client
 
-            redis_client = get_redis_client()
-            if redis_client:
-                redis_key = f"{redis_client.BLOCK_PREFIX}{block_id}"
-                redis_client.delete(redis_key)
+            cache_provider = get_cache_provider()
+            if cache_provider:
+                cache_key = f"{cache_provider.BLOCK_PREFIX}{block_id}"
+                cache_provider.delete(cache_key)
 
-            # Invalidate agent caches that reference this block
             self._invalidate_agent_caches_for_block(block_id)
 
             block.hard_delete(db_session=session, actor=actor)
@@ -341,27 +339,23 @@ class BlockManager:
 
     @enforce_types
     def get_block_by_id(self, block_id: str, user: Optional[PydanticUser] = None) -> Optional[PydanticBlock]:
-        """Retrieve a block by its ID (with Redis Hash caching - 40-60% faster!)."""
-        # Try Redis cache first (Hash-based for blocks)
+        """Retrieve a block by its ID (with cache - Redis or IPS Cache)."""
+        cache_provider = None
         try:
-            from mirix.database.redis_client import get_redis_client
+            from mirix.database.cache_provider import get_cache_provider
 
-            redis_client = get_redis_client()
+            cache_provider = get_cache_provider()
 
-            if redis_client:
-                redis_key = f"{redis_client.BLOCK_PREFIX}{block_id}"
-                cached_data = redis_client.get_hash(redis_key)
+            if cache_provider:
+                cache_key = f"{cache_provider.BLOCK_PREFIX}{block_id}"
+                cached_data = cache_provider.get_hash(cache_key)
                 if cached_data:
-                    # Normalize block data: ensure 'value' is never None (use empty string instead)
                     if "value" not in cached_data or cached_data["value"] is None:
                         cached_data["value"] = ""
-                    # Cache HIT - return from Redis
                     return PydanticBlock(**cached_data)
         except Exception as e:
-            # Log but continue to PostgreSQL on Redis error
-            logger.warning("Redis cache read failed for block %s: %s", block_id, e)
+            logger.warning("Cache read failed for block %s: %s", block_id, e)
 
-        # Cache MISS or Redis unavailable - fetch from PostgreSQL
         with self.session_maker() as session:
             try:
                 block = BlockModel.read(
@@ -372,17 +366,15 @@ class BlockManager:
                 )
                 pydantic_block = block.to_pydantic()
 
-                # Populate Redis cache for next time
                 try:
-                    if redis_client:
+                    if cache_provider:
                         from mirix.settings import settings
 
+                        cache_key = f"{cache_provider.BLOCK_PREFIX}{block_id}"
                         data = pydantic_block.model_dump(mode="json")
-                        # model_dump(mode='json') already converts datetime to ISO format strings
-                        redis_client.set_hash(redis_key, data, ttl=settings.redis_ttl_blocks)
+                        cache_provider.set_hash(cache_key, data, ttl=settings.redis_ttl_blocks)
                 except Exception as e:
-                    # Log but don't fail on cache population error
-                    logger.warning("Failed to populate Redis cache for block %s: %s", block_id, e)
+                    logger.warning("Failed to populate cache for block %s: %s", block_id, e)
 
                 return pydantic_block
             except NoResultFound:
