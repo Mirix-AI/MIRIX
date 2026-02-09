@@ -929,7 +929,7 @@ class KnowledgeVaultManager:
 
     @enforce_types
     def delete_knowledge_by_id(self, knowledge_vault_item_id: str, actor: PydanticClient) -> None:
-        """Delete a knowledge vault item by ID (removes from Redis cache)."""
+        """Delete a knowledge vault item by ID (removes from cache)."""
         with self.session_maker() as session:
             try:
                 item = KnowledgeVaultItem.read(db_session=session, identifier=knowledge_vault_item_id, actor=actor)

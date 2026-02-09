@@ -983,7 +983,7 @@ class SemanticMemoryManager:
             raise e
 
     def delete_semantic_item_by_id(self, semantic_memory_id: str, actor: PydanticClient) -> None:
-        """Delete a semantic memory item by ID (removes from Redis cache)."""
+        """Delete a semantic memory item by ID (removes from cache)."""
         with self.session_maker() as session:
             try:
                 item = SemanticMemoryItem.read(db_session=session, identifier=semantic_memory_id, actor=actor)

@@ -233,12 +233,12 @@ class RawMemoryManager:
         except Exception as e:
             # Log but continue to PostgreSQL on cache error
             logger.warning(
-                "Redis cache read failed for raw memory %s: %s",
+                "Cache read failed for raw memory %s: %s",
                 memory_id,
                 e,
             )
 
-        # Cache MISS or Redis unavailable - fetch from PostgreSQL
+        # Cache MISS or cache unavailable - fetch from PostgreSQL
         with self.session_maker() as session:
             try:
                 raw_memory_item = RawMemory.read(db_session=session, identifier=memory_id, actor=actor)
@@ -265,7 +265,7 @@ class RawMemoryManager:
                         )
                 except Exception as e:
                     logger.warning(
-                        "Failed to populate Redis cache for raw memory %s: %s",
+                        "Failed to populate cache for raw memory %s: %s",
                         memory_id,
                         e,
                     )

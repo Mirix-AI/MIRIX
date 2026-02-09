@@ -304,12 +304,12 @@ class BlockManager:
                 session.refresh(new_block)
                 logger.debug(f"Refreshed block {new_block_id} from database")
 
-                # Update Redis cache manually
+                # Update cache manually
                 try:
                     new_block._update_redis_cache(operation="create", actor=None)
-                    logger.debug(f"Cached copied block {new_block.id} to Redis")
+                    logger.debug("Cached copied block %s to cache", new_block.id)
                 except Exception as e:
-                    logger.warning(f"Failed to cache block {new_block.id} to Redis: {e}")
+                    logger.warning("Failed to cache block %s to cache: %s", new_block.id, e)
 
                 new_blocks.append(new_block)
 

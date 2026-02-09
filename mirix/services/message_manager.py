@@ -173,7 +173,7 @@ class MessageManager:
 
     @enforce_types
     def delete_message_by_id(self, message_id: str, actor: PydanticClient) -> bool:
-        """Delete a message (removes from Redis cache)."""
+        """Delete a message (removes from cache)."""
         with self.session_maker() as session:
             try:
                 msg = MessageModel.read(

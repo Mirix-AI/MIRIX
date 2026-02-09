@@ -71,7 +71,7 @@ class UserManager:
 
     @enforce_types
     def update_user(self, user_update: UserUpdate) -> PydanticUser:
-        """Update user details (with Redis cache invalidation)."""
+        """Update user details (with cache invalidation)."""
         with self.session_maker() as session:
             # Retrieve the existing user by ID
             existing_user = UserModel.read(db_session=session, identifier=user_update.id)
@@ -87,7 +87,7 @@ class UserManager:
 
     @enforce_types
     def update_user_timezone(self, timezone_str: str, user_id: str) -> PydanticUser:
-        """Update the timezone of a user (with Redis cache invalidation)."""
+        """Update the timezone of a user (with cache invalidation)."""
         with self.session_maker() as session:
             # Retrieve the existing user by ID
             existing_user = UserModel.read(db_session=session, identifier=user_id)
@@ -101,7 +101,7 @@ class UserManager:
 
     @enforce_types
     def update_user_status(self, user_id: str, status: str) -> PydanticUser:
-        """Update the status of a user (with Redis cache invalidation)."""
+        """Update the status of a user (with cache invalidation)."""
         with self.session_maker() as session:
             # Retrieve the existing user by ID
             existing_user = UserModel.read(db_session=session, identifier=user_id)

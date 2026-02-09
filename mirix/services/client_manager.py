@@ -53,7 +53,7 @@ class ClientManager:
 
     @enforce_types
     def create_client(self, pydantic_client: PydanticClient) -> PydanticClient:
-        """Create a new client if it doesn't already exist (with Redis caching)."""
+        """Create a new client if it doesn't already exist (with caching)."""
         with self.session_maker() as session:
             new_client = ClientModel(**pydantic_client.model_dump())
             new_client.create_with_redis(session, actor=None)  # Auto-caches to Redis
@@ -61,7 +61,7 @@ class ClientManager:
 
     @enforce_types
     def update_client(self, client_update: ClientUpdate) -> PydanticClient:
-        """Update client details (with Redis cache invalidation)."""
+        """Update client details (with cache invalidation)."""
         with self.session_maker() as session:
             # Retrieve the existing client by ID
             existing_client = ClientModel.read(db_session=session, identifier=client_update.id)
@@ -170,7 +170,7 @@ class ClientManager:
 
     @enforce_types
     def update_client_status(self, client_id: str, status: str) -> PydanticClient:
-        """Update the status of a client (with Redis cache invalidation)."""
+        """Update the status of a client (with cache invalidation)."""
         with self.session_maker() as session:
             # Retrieve the existing client by ID
             existing_client = ClientModel.read(db_session=session, identifier=client_id)

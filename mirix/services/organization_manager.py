@@ -92,7 +92,7 @@ class OrganizationManager:
 
     @enforce_types
     def update_organization_name_using_id(self, org_id: str, name: Optional[str] = None) -> PydanticOrganization:
-        """Update an organization (with Redis cache invalidation)."""
+        """Update an organization (with cache invalidation)."""
         with self.session_maker() as session:
             org = OrganizationModel.read(db_session=session, identifier=org_id)
             if name:
@@ -102,7 +102,7 @@ class OrganizationManager:
 
     @enforce_types
     def delete_organization_by_id(self, org_id: str):
-        """Delete an organization (removes from Redis cache)."""
+        """Delete an organization (removes from cache)."""
         with self.session_maker() as session:
             organization = OrganizationModel.read(db_session=session, identifier=org_id)
 

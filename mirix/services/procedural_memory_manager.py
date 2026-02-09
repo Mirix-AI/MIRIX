@@ -933,7 +933,7 @@ class ProceduralMemoryManager:
             raise e
 
     def delete_procedure_by_id(self, procedure_id: str, actor: PydanticClient) -> None:
-        """Delete a procedural memory item by ID (removes from Redis cache)."""
+        """Delete a procedural memory item by ID (removes from cache)."""
         with self.session_maker() as session:
             try:
                 item = ProceduralMemoryItem.read(db_session=session, identifier=procedure_id, actor=actor)

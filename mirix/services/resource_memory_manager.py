@@ -842,7 +842,7 @@ class ResourceMemoryManager:
 
     @enforce_types
     def delete_resource_by_id(self, resource_id: str, actor: PydanticClient) -> None:
-        """Delete a resource memory item by ID (removes from Redis cache)."""
+        """Delete a resource memory item by ID (removes from cache)."""
         with self.session_maker() as session:
             try:
                 item = ResourceMemoryItem.read(db_session=session, identifier=resource_id, actor=actor)

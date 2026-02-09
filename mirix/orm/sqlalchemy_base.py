@@ -683,13 +683,12 @@ class SqlalchemyBase(CommonSqlalchemyMetaMixins, Base):
                 session.commit()
                 session.refresh(self)
 
-                # Conditional Redis caching
+                # Conditional cache write
                 if use_cache:
-                    # Write to Redis cache
                     self._update_redis_cache(operation="create", actor=actor)
-                    logger.debug(f"Cached {self.__class__.__name__} to Redis")
+                    logger.debug("Cached %s to cache", self.__class__.__name__)
                 else:
-                    logger.debug(f"Skipped Redis cache for {self.__class__.__name__} (use_cache=False)")
+                    logger.debug("Skipped cache for %s (use_cache=False)", self.__class__.__name__)
 
                 return self
             except (DBAPIError, IntegrityError) as e:
@@ -707,12 +706,12 @@ class SqlalchemyBase(CommonSqlalchemyMetaMixins, Base):
         self, db_session: "Session", actor: Optional["Client"] = None, use_cache: bool = True
     ) -> "SqlalchemyBase":
         """
-        Update record in PostgreSQL and optionally update Redis cache.
+        Update record in PostgreSQL and optionally update cache.
 
         Args:
             db_session: Database session
             actor: User performing the operation
-            use_cache: If True, update Redis cache. If False, skip caching.
+            use_cache: If True, update cache. If False, skip caching.
         """
         logger.debug(
             f"Updating {self.__class__.__name__} with ID: {self.id} (use_cache={use_cache}) with actor={actor}"
@@ -729,13 +728,12 @@ class SqlalchemyBase(CommonSqlalchemyMetaMixins, Base):
                 session.commit()
                 session.refresh(self)
 
-                # Conditional Redis cache update
+                # Conditional cache update
                 if use_cache:
-                    # Update Redis cache
                     self._update_redis_cache(operation="update", actor=actor)
-                    logger.debug(f"Updated {self.__class__.__name__} in Redis")
+                    logger.debug("Updated %s in cache", self.__class__.__name__)
                 else:
-                    logger.debug(f"Skipped Redis cache update for {self.__class__.__name__} (use_cache=False)")
+                    logger.debug("Skipped cache update for %s (use_cache=False)", self.__class__.__name__)
 
                 return self
             except Exception as e:
@@ -749,12 +747,12 @@ class SqlalchemyBase(CommonSqlalchemyMetaMixins, Base):
         self, db_session: "Session", actor: Optional["Client"] = None, use_cache: bool = True
     ) -> "SqlalchemyBase":
         """
-        Soft delete record in PostgreSQL and optionally remove from Redis cache.
+        Soft delete record in PostgreSQL and optionally remove from cache.
 
         Args:
             db_session: Database session
             actor: User performing the operation
-            use_cache: If True, remove from Redis cache. If False, skip cache deletion.
+            use_cache: If True, remove from cache. If False, skip cache deletion.
         """
         logger.debug(
             f"Soft deleting {self.__class__.__name__} with ID: {self.id} (use_cache={use_cache}) with actor={actor}"
@@ -765,18 +763,18 @@ class SqlalchemyBase(CommonSqlalchemyMetaMixins, Base):
 
         self.is_deleted = True
 
-        # Conditional Redis cache deletion
+        # Conditional cache deletion
         if use_cache:
             self._update_redis_cache(operation="delete", actor=actor)
-            logger.debug(f"Removed {self.__class__.__name__} from Redis")
+            logger.debug("Removed %s from cache", self.__class__.__name__)
         else:
-            logger.debug(f"Skipped Redis cache deletion for {self.__class__.__name__} (use_cache=False)")
+            logger.debug("Skipped cache deletion for %s (use_cache=False)", self.__class__.__name__)
 
         return self.update(db_session)
 
     def _update_redis_cache(self, operation: str = "update", actor: Optional["Client"] = None) -> None:
         """
-        Update Redis cache based on table type.
+        Update cache based on table type (via cache provider).
 
         Args:
             operation: "create", "update", or "delete"
@@ -955,5 +953,5 @@ class SqlalchemyBase(CommonSqlalchemyMetaMixins, Base):
 
         except Exception as e:
             # Log but don't fail the operation if Redis fails
-            logger.error("Failed to update Redis cache for %s %s: %s", self.__class__.__name__, self.id, e)
-            logger.info("Operation completed successfully in PostgreSQL despite Redis error")
+            logger.error("Failed to update cache for %s %s: %s", self.__class__.__name__, self.id, e)
+            logger.info("Operation completed successfully in PostgreSQL despite cache error")
