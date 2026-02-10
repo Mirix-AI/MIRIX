@@ -19,7 +19,7 @@ Key prefix constants (all providers should define these):
     ORGANIZATION_PREFIX, USER_PREFIX, CLIENT_PREFIX, AGENT_PREFIX, TOOL_PREFIX
 
 Usage:
-    # In external project (e.g., ECMS)
+    # In external project 
     from mirix.database.cache_provider import register_cache_provider
     cache_provider = MyCustomCacheProvider(config)
     register_cache_provider("my_cache", cache_provider)
