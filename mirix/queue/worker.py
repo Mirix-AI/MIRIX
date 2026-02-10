@@ -243,6 +243,7 @@ class QueueWorker:
 
                     try:
                         # Create user with provided user_id and client's organization
+                        # Users are organization-scoped, not client-scoped
                         user = user_manager.create_user(
                             pydantic_user=PydanticUser(
                                 id=user_id,
@@ -251,7 +252,6 @@ class QueueWorker:
                                 timezone=user_manager.DEFAULT_TIME_ZONE,
                                 status="active",
                                 is_deleted=False,
-                                client_id=client_id,
                                 is_admin=False,
                             )
                         )

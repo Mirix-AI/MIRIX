@@ -1306,7 +1306,7 @@ async def create_or_get_user(
 
     **Accepts both JWT (dashboard) and Client API Key (programmatic access).**
 
-    The user will be associated with the authenticated client.
+    The user is organization-scoped (not client-scoped).
     The organization is determined from the API key or JWT token.
     If user_id is not provided, a random ID will be generated.
     """
@@ -1317,8 +1317,7 @@ async def create_or_get_user(
     if not client:
         raise HTTPException(status_code=404, detail="Client not found")
 
-    # Extract client_id and org_id from client object
-    client_id = client.id
+    # Extract org_id from client object
     org_id = client.organization_id or server.organization_manager.DEFAULT_ORG_ID
 
     # Use provided user_id or generate a new one
@@ -1340,7 +1339,7 @@ async def create_or_get_user(
 
     from mirix.schemas.user import User as PydanticUser
 
-    # Create a User object with all required fields, linked to the client
+    # Create a User object with all required fields (organization-scoped)
     user = server.user_manager.create_user(
         pydantic_user=PydanticUser(
             id=user_id,
@@ -1349,9 +1348,8 @@ async def create_or_get_user(
             timezone=server.user_manager.DEFAULT_TIME_ZONE,
             status="active",
         ),
-        client_id=client_id,  # Associate user with client
     )
-    logger.debug("Created new user: %s for client: %s", user_id, client_id)
+    logger.debug("Created new user: %s in organization: %s", user_id, org_id)
     return user
 
 
@@ -1423,23 +1421,33 @@ async def delete_user_memories(user_id: str):
 async def list_users(
     cursor: Optional[str] = None,
     limit: int = 50,
+    organization_id: Optional[str] = None,
     authorization: Optional[str] = Header(None),
 ):
     """
-    List all users for the authenticated client.
+    List all users for the authenticated client's organization.
 
     **Requires JWT authentication (dashboard only).**
+
+    Users are organization-scoped, so this returns all users in the organization.
     """
     # Require admin JWT authentication
     client_payload = get_current_admin(authorization)
-    client_id = client_payload["sub"]
 
     server = get_server()
+
+    # Get client to determine organization
+    client = server.admin_user_manager.get_client_by_id(client_payload["sub"])
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+
+    # Use provided organization_id or default to client's organization
+    org_id = organization_id or client.organization_id
 
     users = server.user_manager.list_users(
         cursor=cursor,
         limit=limit,
-        client_id=client_id,  # Filter by client
+        organization_id=org_id,
     )
     return users
 

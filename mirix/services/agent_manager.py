@@ -213,11 +213,11 @@ class AgentManager:
                     e,
                 )
                 # Fall back to organization's default user (not global admin)
-                user = user_manager.get_or_create_org_default_user(org_id=actor.organization_id, client_id=actor.id)
+                user = user_manager.get_or_create_org_default_user(org_id=actor.organization_id)
         else:
             # No user_id provided - use organization's default template user
             # This user will serve as the template for copying blocks to new users
-            user = user_manager.get_or_create_org_default_user(org_id=actor.organization_id, client_id=actor.id)
+            user = user_manager.get_or_create_org_default_user(org_id=actor.organization_id)
             logger.debug(
                 "Using organization default user %s for block templates in org %s",
                 user.id,

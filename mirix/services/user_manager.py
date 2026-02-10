@@ -54,17 +54,14 @@ class UserManager:
             return user.to_pydantic()
 
     @enforce_types
-    def create_user(self, pydantic_user: PydanticUser, client_id: Optional[str] = None) -> PydanticUser:
+    def create_user(self, pydantic_user: PydanticUser) -> PydanticUser:
         """Create a new user if it doesn't already exist (with Redis caching).
 
         Args:
             pydantic_user: The user data
-            client_id: Optional client ID to associate the user with
         """
         with self.session_maker() as session:
             user_data = pydantic_user.model_dump()
-            if client_id:
-                user_data["client_id"] = client_id
             new_user = UserModel(**user_data)
             new_user.create_with_redis(session, actor=None)  # Auto-caches to Redis
             return new_user.to_pydantic()
@@ -406,14 +403,13 @@ class UserManager:
             return self.create_admin_user(org_id=OrganizationManager.DEFAULT_ORG_ID)
 
     @enforce_types
-    def get_or_create_org_default_user(self, org_id: str, client_id: Optional[str] = None) -> PydanticUser:
+    def get_or_create_org_default_user(self, org_id: str) -> PydanticUser:
         """
         Get or create the default template user for an organization.
         This user serves as the template for copying blocks to new users.
 
         Args:
             org_id: Organization ID
-            client_id: Optional client ID (for audit trail)
 
         Returns:
             PydanticUser: The default user for this organization
@@ -457,7 +453,6 @@ class UserManager:
                 status="active",
                 timezone=self.DEFAULT_TIME_ZONE,
                 organization_id=org_id,
-                client_id=client_id,  # Optional - which client created this user
             )
             user.create(session)
             logger.info("Created default template user %s for organization %s", default_user_id, org_id)
@@ -479,7 +474,6 @@ class UserManager:
         self,
         cursor: Optional[str] = None,
         limit: Optional[int] = 50,
-        client_id: Optional[str] = None,
         organization_id: Optional[str] = None,
     ) -> List[PydanticUser]:
         """List users with pagination using cursor (id) and limit.
@@ -487,14 +481,10 @@ class UserManager:
         Args:
             cursor: Cursor for pagination
             limit: Maximum number of users to return
-            client_id: Filter by client ID (users belonging to this client)
             organization_id: Filter by organization ID
         """
         with self.session_maker() as session:
             query = session.query(UserModel).filter(UserModel.is_deleted == False)
-
-            if client_id:
-                query = query.filter(UserModel.client_id == client_id)
 
             if organization_id:
                 query = query.filter(UserModel.organization_id == organization_id)

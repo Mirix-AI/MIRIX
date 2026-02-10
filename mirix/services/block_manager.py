@@ -228,9 +228,7 @@ class BlockManager:
         # This ensures we copy blocks from the correct template within the same organization
         user_manager = UserManager()
         try:
-            org_default_user = user_manager.get_or_create_org_default_user(
-                org_id=organization_id, client_id=None  # No specific client needed for lookup
-            )
+            org_default_user = user_manager.get_or_create_org_default_user(org_id=organization_id)
             default_user_id = org_default_user.id
             logger.debug(
                 "Using organization default user %s as template for user %s in org %s",

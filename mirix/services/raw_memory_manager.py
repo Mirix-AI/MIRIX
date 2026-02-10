@@ -60,7 +60,7 @@ class RawMemoryManager:
             actor: Client performing the operation (for audit trail)
             user_id: End-user identifier (required)
             agent_state: Agent state containing embedding configuration (optional)
-            client_id: Client application identifier (defaults to actor.id)
+            client_id: Client application identifier (defaults to actor.id, used for audit trail)
             use_cache: If True, cache in Redis. If False, skip caching.
 
         Returns:
@@ -78,7 +78,7 @@ class RawMemoryManager:
             client_id = actor.id
             logger.warning("client_id not provided to create_raw_memory, using actor.id as fallback")
 
-        # Auto-create user if it doesn't exist
+        # Auto-create user if it doesn't exist (users are organization-scoped, not client-scoped)
         user_manager = UserManager()
         try:
             user_manager.get_user_by_id(user_id)
@@ -98,7 +98,6 @@ class RawMemoryManager:
                         timezone=user_manager.DEFAULT_TIME_ZONE,
                         status="active",
                         is_deleted=False,
-                        client_id=client_id,
                         is_admin=False,
                     )
                 )

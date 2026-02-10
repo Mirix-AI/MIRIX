@@ -736,7 +736,6 @@ def api_client(server_check, test_actor):
                 organization_id=test_actor.organization_id,
                 is_admin=True,
             ),
-            client_id=test_actor.id,
         )
 
     class APIClient:

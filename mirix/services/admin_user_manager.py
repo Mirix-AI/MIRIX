@@ -250,11 +250,10 @@ class ClientAuthManager:
                 if not existing_user:
                     admin_user = UserModel(
                         id=admin_user_id,
-                        name=f"Admin",
+                        name="Admin",
                         status="active",
                         timezone="UTC",
                         organization_id=org_id,
-                        client_id=client.id,  # Link user to client
                         is_admin=True,  # Mark as admin user
                     )
                     admin_user.create(session)
