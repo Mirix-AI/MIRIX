@@ -1336,23 +1336,24 @@ class AgentManager:
 
     @enforce_types
     def get_agent_by_id(self, agent_id: str, actor: PydanticClient) -> PydanticAgentState:
-        """Fetch an agent by its ID (with Redis Hash caching and tool retrieval pipeline)."""
-        # Try Redis cache first
+        """Fetch an agent by its ID (with cache and Redis pipeline for tools/blocks)."""
+        import json
+
+        from mirix.database.cache_provider import get_cache_provider
+        from mirix.database.redis_client import get_redis_client
+        from mirix.log import get_logger
+        from mirix.schemas.tool import Tool as PydanticTool
+
+        logger = get_logger(__name__)
+        cache_provider = get_cache_provider()
+        redis_client = get_redis_client()
+
         try:
-            import json
-
-            from mirix.database.redis_client import get_redis_client
-            from mirix.log import get_logger
-            from mirix.schemas.tool import Tool as PydanticTool
-
-            logger = get_logger(__name__)
-            redis_client = get_redis_client()
-
-            if redis_client:
-                redis_key = f"{redis_client.AGENT_PREFIX}{agent_id}"
-                cached_data = redis_client.get_hash(redis_key)
-                if cached_data:
-                    logger.debug("Redis cache HIT for agent %s", agent_id)
+            if cache_provider:
+                cache_key = f"{cache_provider.AGENT_PREFIX}{agent_id}"
+                cached_data = cache_provider.get_hash(cache_key)
+                if cached_data and redis_client:
+                    logger.debug("Cache HIT for agent %s", agent_id)
 
                     # Deserialize JSON fields
                     if "message_ids" in cached_data:
@@ -1467,13 +1468,9 @@ class AgentManager:
 
                     return agent_state  # Cache HIT (agent + tools + memory)
         except Exception as e:
-            # Log but continue to PostgreSQL on Redis error
-            from mirix.log import get_logger
+            logger.warning("Cache read failed for agent %s: %s", agent_id, e)
 
-            logger = get_logger(__name__)
-            logger.warning("Redis cache read failed for agent %s: %s", agent_id, e)
-
-        # Cache MISS or Redis unavailable - fetch from PostgreSQL with client filtering
+        # Cache MISS or no cache - fetch from PostgreSQL with client filtering
         with self.session_maker() as session:
             # AgentModel.read calls apply_access_predicate, which now filters by client (organization_id + _created_by_id)
             # If agent doesn't belong to this client, read() will raise NoResultFound automatically
@@ -1484,16 +1481,13 @@ class AgentManager:
             )
             pydantic_agent = agent.to_pydantic()
 
-            # Populate Redis cache for next time
+            # Populate cache for next time
             try:
-                if redis_client:
-                    import json
-
+                if cache_provider:
                     from mirix.settings import settings
 
                     data = pydantic_agent.model_dump(mode="json")
 
-                    # Serialize JSON fields for Hash storage
                     if "message_ids" in data and data["message_ids"]:
                         data["message_ids"] = json.dumps(data["message_ids"])
                     if "llm_config" in data and data["llm_config"]:
@@ -1505,22 +1499,19 @@ class AgentManager:
                     if "mcp_tools" in data and data["mcp_tools"]:
                         data["mcp_tools"] = json.dumps(data["mcp_tools"])
 
-                    # model_dump(mode='json') already converts datetime to ISO format strings
-
-                    # Cache tools separately and store tool_ids
                     if "tools" in data and data["tools"]:
                         tool_ids = [tool["id"] for tool in data["tools"]]
                         data["tool_ids"] = json.dumps(tool_ids)
 
                         for tool in data["tools"]:
-                            tool_key = f"{redis_client.TOOL_PREFIX}{tool['id']}"
-                            if "json_schema" in tool and tool["json_schema"]:
-                                tool["json_schema"] = json.dumps(tool["json_schema"])
-                            if "tags" in tool and tool["tags"]:
-                                tool["tags"] = json.dumps(tool["tags"])
-                            redis_client.set_hash(tool_key, tool, ttl=settings.redis_ttl_tools)
+                            tool_key = f"{cache_provider.TOOL_PREFIX}{tool['id']}"
+                            tool_data = dict(tool)
+                            if "json_schema" in tool_data and tool_data["json_schema"]:
+                                tool_data["json_schema"] = json.dumps(tool_data["json_schema"])
+                            if "tags" in tool_data and tool_data["tags"]:
+                                tool_data["tags"] = json.dumps(tool_data["tags"])
+                            cache_provider.set_hash(tool_key, tool_data, ttl=settings.redis_ttl_tools)
 
-                    # Cache memory_block_ids for reconstruction
                     if "memory" in data and data["memory"]:
                         memory_obj = data["memory"]
                         if isinstance(memory_obj, dict) and "blocks" in memory_obj:
@@ -1530,34 +1521,33 @@ class AgentManager:
                             data["memory_block_ids"] = json.dumps(block_ids)
                             data["memory_prompt_template"] = memory_obj.get("prompt_template", "")
 
-                            # Maintain reverse mapping for cache invalidation
-                            for block_id in block_ids:
-                                reverse_key = f"{redis_client.BLOCK_PREFIX}{block_id}:agents"
-                                redis_client.client.sadd(reverse_key, agent_id)
-                                redis_client.client.expire(reverse_key, settings.redis_ttl_agents)
+                            if redis_client:
+                                for block_id in block_ids:
+                                    reverse_key = f"{redis_client.BLOCK_PREFIX}{block_id}:agents"
+                                    redis_client.client.sadd(reverse_key, agent_id)
+                                    redis_client.client.expire(reverse_key, settings.redis_ttl_agents)
 
-                    # Cache children_ids for reconstruction (list_agents only)
                     if "children" in data and data["children"]:
                         children_ids = [
                             child["id"] if isinstance(child, dict) else child.id for child in data["children"]
                         ]
                         data["children_ids"] = json.dumps(children_ids)
 
-                        # Maintain reverse mapping for cache invalidation
-                        for child_id in children_ids:
-                            reverse_key = f"{redis_client.AGENT_PREFIX}{child_id}:parent"
-                            redis_client.client.set(reverse_key, agent_id)
-                            redis_client.client.expire(reverse_key, settings.redis_ttl_agents)
+                        if redis_client:
+                            for child_id in children_ids:
+                                reverse_key = f"{redis_client.AGENT_PREFIX}{child_id}:parent"
+                                redis_client.client.set(reverse_key, agent_id)
+                                redis_client.client.expire(reverse_key, settings.redis_ttl_agents)
 
-                    # Remove relationship fields
                     data.pop("tools", None)
                     data.pop("memory", None)
                     data.pop("children", None)
 
-                    redis_client.set_hash(redis_key, data, ttl=settings.redis_ttl_agents)
-                    logger.debug("Populated Redis cache for agent %s with tools", agent_id)
+                    agent_cache_key = f"{cache_provider.AGENT_PREFIX}{agent_id}"
+                    cache_provider.set_hash(agent_cache_key, data, ttl=settings.redis_ttl_agents)
+                    logger.debug("Populated cache for agent %s with tools", agent_id)
             except Exception as e:
-                logger.warning("Failed to populate Redis cache for agent %s: %s", agent_id, e)
+                logger.warning("Failed to populate cache for agent %s: %s", agent_id, e)
 
             return pydantic_agent
 
@@ -1588,22 +1578,22 @@ class AgentManager:
             # Track parent_id for cache invalidation
             parent_id = agent.parent_id
 
-            # Remove from Redis cache before hard delete
+            # Remove from cache before hard delete
             try:
-                from mirix.database.redis_client import get_redis_client
+                from mirix.database.cache_provider import get_cache_provider
                 from mirix.log import get_logger
 
                 logger = get_logger(__name__)
-                redis_client = get_redis_client()
-                if redis_client:
-                    redis_key = f"{redis_client.AGENT_PREFIX}{agent_id}"
-                    redis_client.delete(redis_key)
-                    logger.debug("Removed agent %s from Redis cache", agent_id)
+                cache_provider = get_cache_provider()
+                if cache_provider:
+                    cache_key = f"{cache_provider.AGENT_PREFIX}{agent_id}"
+                    cache_provider.delete(cache_key)
+                    logger.debug("Removed agent %s from cache", agent_id)
             except Exception as e:
                 from mirix.log import get_logger
 
                 logger = get_logger(__name__)
-                logger.warning("Failed to remove agent %s from Redis cache: %s", agent_id, e)
+                logger.warning("Failed to remove agent %s from cache: %s", agent_id, e)
 
             agent.hard_delete(session)
 

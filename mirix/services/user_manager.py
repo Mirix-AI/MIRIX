@@ -71,7 +71,7 @@ class UserManager:
 
     @enforce_types
     def update_user(self, user_update: UserUpdate) -> PydanticUser:
-        """Update user details (with Redis cache invalidation)."""
+        """Update user details (with cache invalidation)."""
         with self.session_maker() as session:
             # Retrieve the existing user by ID
             existing_user = UserModel.read(db_session=session, identifier=user_update.id)
@@ -87,7 +87,7 @@ class UserManager:
 
     @enforce_types
     def update_user_timezone(self, timezone_str: str, user_id: str) -> PydanticUser:
-        """Update the timezone of a user (with Redis cache invalidation)."""
+        """Update the timezone of a user (with cache invalidation)."""
         with self.session_maker() as session:
             # Retrieve the existing user by ID
             existing_user = UserModel.read(db_session=session, identifier=user_id)
@@ -101,7 +101,7 @@ class UserManager:
 
     @enforce_types
     def update_user_status(self, user_id: str, status: str) -> PydanticUser:
-        """Update the status of a user (with Redis cache invalidation)."""
+        """Update the status of a user (with cache invalidation)."""
         with self.session_maker() as session:
             # Retrieve the existing user by ID
             existing_user = UserModel.read(db_session=session, identifier=user_id)
@@ -355,44 +355,39 @@ class UserManager:
 
     @enforce_types
     def get_user_by_id(self, user_id: str) -> PydanticUser:
-        """Fetch a user by ID (with Redis Hash caching)."""
-        # Try Redis cache first
+        """Fetch a user by ID (with cache - Redis or IPS Cache)."""
+        from mirix.log import get_logger
+
+        logger = get_logger(__name__)
+        cache_provider = None
         try:
-            from mirix.database.redis_client import get_redis_client
-            from mirix.log import get_logger
+            from mirix.database.cache_provider import get_cache_provider
 
-            logger = get_logger(__name__)
-            redis_client = get_redis_client()
+            cache_provider = get_cache_provider()
 
-            if redis_client:
-                redis_key = f"{redis_client.USER_PREFIX}{user_id}"
-                cached_data = redis_client.get_hash(redis_key)
+            if cache_provider:
+                cache_key = f"{cache_provider.USER_PREFIX}{user_id}"
+                cached_data = cache_provider.get_hash(cache_key)
                 if cached_data:
-                    logger.debug("Redis cache HIT for user %s", user_id)
+                    logger.debug("Cache HIT for user %s", user_id)
                     return PydanticUser(**cached_data)
         except Exception as e:
-            # Log but continue to PostgreSQL on Redis error
-            from mirix.log import get_logger
+            logger.warning("Cache read failed for user %s: %s", user_id, e)
 
-            logger = get_logger(__name__)
-            logger.warning("Redis cache read failed for user %s: %s", user_id, e)
-
-        # Cache MISS or Redis unavailable - fetch from PostgreSQL
         with self.session_maker() as session:
             user = UserModel.read(db_session=session, identifier=user_id)
             pydantic_user = user.to_pydantic()
 
-            # Populate Redis cache for next time
             try:
-                if redis_client:
+                if cache_provider:
                     from mirix.settings import settings
 
+                    cache_key = f"{cache_provider.USER_PREFIX}{user_id}"
                     data = pydantic_user.model_dump(mode="json")
-                    # model_dump(mode='json') already converts datetime to ISO format strings
-                    redis_client.set_hash(redis_key, data, ttl=settings.redis_ttl_users)
-                    logger.debug("Populated Redis cache for user %s", user_id)
+                    cache_provider.set_hash(cache_key, data, ttl=settings.redis_ttl_users)
+                    logger.debug("Populated cache for user %s", user_id)
             except Exception as e:
-                logger.warning("Failed to populate Redis cache for user %s: %s", user_id, e)
+                logger.warning("Failed to populate cache for user %s: %s", user_id, e)
 
             return pydantic_user
 

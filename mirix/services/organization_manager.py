@@ -28,44 +28,39 @@ class OrganizationManager:
 
     @enforce_types
     def get_organization_by_id(self, org_id: str) -> Optional[PydanticOrganization]:
-        """Fetch an organization by ID (with Redis Hash caching)."""
-        # Try Redis cache first
+        """Fetch an organization by ID (with cache - Redis or IPS Cache)."""
+        from mirix.log import get_logger
+
+        logger = get_logger(__name__)
+        cache_provider = None
         try:
-            from mirix.database.redis_client import get_redis_client
-            from mirix.log import get_logger
+            from mirix.database.cache_provider import get_cache_provider
 
-            logger = get_logger(__name__)
-            redis_client = get_redis_client()
+            cache_provider = get_cache_provider()
 
-            if redis_client:
-                redis_key = f"{redis_client.ORGANIZATION_PREFIX}{org_id}"
-                cached_data = redis_client.get_hash(redis_key)
+            if cache_provider:
+                cache_key = f"{cache_provider.ORGANIZATION_PREFIX}{org_id}"
+                cached_data = cache_provider.get_hash(cache_key)
                 if cached_data:
-                    logger.debug("Redis cache HIT for organization %s", org_id)
+                    logger.debug("Cache HIT for organization %s", org_id)
                     return PydanticOrganization(**cached_data)
         except Exception as e:
-            # Log but continue to PostgreSQL on Redis error
-            from mirix.log import get_logger
+            logger.warning("Cache read failed for organization %s: %s", org_id, e)
 
-            logger = get_logger(__name__)
-            logger.warning("Redis cache read failed for organization %s: %s", org_id, e)
-
-        # Cache MISS or Redis unavailable - fetch from PostgreSQL
         with self.session_maker() as session:
             organization = OrganizationModel.read(db_session=session, identifier=org_id)
             pydantic_org = organization.to_pydantic()
 
-            # Populate Redis cache for next time
             try:
-                if redis_client:
+                if cache_provider:
                     from mirix.settings import settings
 
+                    cache_key = f"{cache_provider.ORGANIZATION_PREFIX}{org_id}"
                     data = pydantic_org.model_dump(mode="json")
-                    # model_dump(mode='json') already converts datetime to ISO format strings
-                    redis_client.set_hash(redis_key, data, ttl=settings.redis_ttl_organizations)
-                    logger.debug("Populated Redis cache for organization %s", org_id)
+                    cache_provider.set_hash(cache_key, data, ttl=settings.redis_ttl_organizations)
+                    logger.debug("Populated cache for organization %s", org_id)
             except Exception as e:
-                logger.warning("Failed to populate Redis cache for organization %s: %s", org_id, e)
+                logger.warning("Failed to populate cache for organization %s: %s", org_id, e)
 
             return pydantic_org
 
@@ -97,7 +92,7 @@ class OrganizationManager:
 
     @enforce_types
     def update_organization_name_using_id(self, org_id: str, name: Optional[str] = None) -> PydanticOrganization:
-        """Update an organization (with Redis cache invalidation)."""
+        """Update an organization (with cache invalidation)."""
         with self.session_maker() as session:
             org = OrganizationModel.read(db_session=session, identifier=org_id)
             if name:
@@ -107,26 +102,26 @@ class OrganizationManager:
 
     @enforce_types
     def delete_organization_by_id(self, org_id: str):
-        """Delete an organization (removes from Redis cache)."""
+        """Delete an organization (removes from cache)."""
         with self.session_maker() as session:
             organization = OrganizationModel.read(db_session=session, identifier=org_id)
 
-            # Remove from Redis cache before hard delete
+            # Remove from cache before hard delete
             try:
-                from mirix.database.redis_client import get_redis_client
+                from mirix.database.cache_provider import get_cache_provider
                 from mirix.log import get_logger
 
                 logger = get_logger(__name__)
-                redis_client = get_redis_client()
-                if redis_client:
-                    redis_key = f"{redis_client.ORGANIZATION_PREFIX}{org_id}"
-                    redis_client.delete(redis_key)
-                    logger.debug("Removed organization %s from Redis cache", org_id)
+                cache_provider = get_cache_provider()
+                if cache_provider:
+                    cache_key = f"{cache_provider.ORGANIZATION_PREFIX}{org_id}"
+                    cache_provider.delete(cache_key)
+                    logger.debug("Removed organization %s from cache", org_id)
             except Exception as e:
                 from mirix.log import get_logger
 
                 logger = get_logger(__name__)
-                logger.warning("Failed to remove organization %s from Redis cache: %s", org_id, e)
+                logger.warning("Failed to remove organization %s from cache: %s", org_id, e)
 
             organization.hard_delete(session)
 
