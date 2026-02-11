@@ -85,17 +85,13 @@ class TestGetMessagesByIds:
             mock_context.__exit__ = MagicMock(return_value=False)
             mock_session_maker.return_value = mock_context
 
-            with patch(
-                "mirix.services.message_manager.MessageModel"
-            ) as MockMessageModel:
+            with patch("mirix.services.message_manager.MessageModel") as MockMessageModel:
                 MockMessageModel.list.return_value = [mock_msg1, mock_msg2]
 
                 actor = make_client()
 
                 # Request 3 messages, but only 2 exist
-                result = manager.get_messages_by_ids(
-                    message_ids=["msg-1", "msg-2", "msg-3"], actor=actor
-                )
+                result = manager.get_messages_by_ids(message_ids=["msg-1", "msg-2", "msg-3"], actor=actor)
 
                 # Should return only the 2 that exist, not crash
                 assert len(result) == 2
@@ -120,17 +116,13 @@ class TestGetMessagesByIds:
             mock_context.__exit__ = MagicMock(return_value=False)
             mock_session_maker.return_value = mock_context
 
-            with patch(
-                "mirix.services.message_manager.MessageModel"
-            ) as MockMessageModel:
+            with patch("mirix.services.message_manager.MessageModel") as MockMessageModel:
                 # DB returns in different order
                 MockMessageModel.list.return_value = [mock_msg2, mock_msg1]
 
                 actor = make_client()
 
-                result = manager.get_messages_by_ids(
-                    message_ids=["msg-1", "msg-2"], actor=actor  # Requested order
-                )
+                result = manager.get_messages_by_ids(message_ids=["msg-1", "msg-2"], actor=actor)  # Requested order
 
                 # Should be in requested order, not DB order
                 assert result[0].id == "msg-1"
@@ -146,16 +138,12 @@ class TestGetMessagesByIds:
             mock_context.__exit__ = MagicMock(return_value=False)
             mock_session_maker.return_value = mock_context
 
-            with patch(
-                "mirix.services.message_manager.MessageModel"
-            ) as MockMessageModel:
+            with patch("mirix.services.message_manager.MessageModel") as MockMessageModel:
                 MockMessageModel.list.return_value = []  # All missing
 
                 actor = make_client()
 
-                result = manager.get_messages_by_ids(
-                    message_ids=["msg-1", "msg-2"], actor=actor
-                )
+                result = manager.get_messages_by_ids(message_ids=["msg-1", "msg-2"], actor=actor)
 
                 assert result == []
 
@@ -192,9 +180,7 @@ class TestGetInContextMessages:
             actor = make_client(id="client-123")
             user = make_user(id="user-a")  # Should filter to this user's messages
 
-            result = manager.get_in_context_messages(
-                agent_state=agent_state, actor=actor, user=user
-            )
+            result = manager.get_in_context_messages(agent_state=agent_state, actor=actor, user=user)
 
             # Should have system message + only user-a's message
             assert len(result) == 2
@@ -224,9 +210,7 @@ class TestGetInContextMessages:
             actor = make_client()
 
             # No user parameter
-            result = manager.get_in_context_messages(
-                agent_state=agent_state, actor=actor
-            )
+            result = manager.get_in_context_messages(agent_state=agent_state, actor=actor)
 
             # Should return all messages (no filtering)
             assert len(result) == 3
@@ -241,8 +225,6 @@ class TestGetInContextMessages:
             agent_state = make_agent_state(message_ids=[])
             actor = make_client()
 
-            result = manager.get_in_context_messages(
-                agent_state=agent_state, actor=actor
-            )
+            result = manager.get_in_context_messages(agent_state=agent_state, actor=actor)
 
             assert result == []

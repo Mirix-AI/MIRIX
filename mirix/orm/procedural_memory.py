@@ -9,9 +9,7 @@ from mirix.constants import MAX_EMBEDDING_DIM
 from mirix.orm.custom_columns import CommonVector, EmbeddingConfigColumn
 from mirix.orm.mixins import OrganizationMixin, UserMixin
 from mirix.orm.sqlalchemy_base import SqlalchemyBase
-from mirix.schemas.procedural_memory import (
-    ProceduralMemoryItem as PydanticProceduralMemoryItem,
-)
+from mirix.schemas.procedural_memory import ProceduralMemoryItem as PydanticProceduralMemoryItem
 from mirix.settings import settings
 
 if TYPE_CHECKING:
@@ -56,26 +54,17 @@ class ProceduralMemoryItem(SqlalchemyBase, OrganizationMixin, UserMixin):
     )
 
     # Distinguish the type/category of the procedure
-    entry_type: Mapped[str] = mapped_column(
-        String, doc="Category or type (e.g. 'workflow', 'guide', 'script')"
-    )
+    entry_type: Mapped[str] = mapped_column(String, doc="Category or type (e.g. 'workflow', 'guide', 'script')")
 
     # A human-friendly description of this procedure
-    summary: Mapped[str] = mapped_column(
-        String, doc="Short description or title of the procedure"
-    )
+    summary: Mapped[str] = mapped_column(String, doc="Short description or title of the procedure")
 
     # Steps or instructions stored as a JSON object/list
-    steps: Mapped[list] = mapped_column(
-        JSON, doc="Step-by-step instructions stored as a list of strings"
-    )
+    steps: Mapped[list] = mapped_column(JSON, doc="Step-by-step instructions stored as a list of strings")
 
     # NEW: Filter tags for flexible filtering and categorization
     filter_tags: Mapped[Optional[dict]] = mapped_column(
-        JSON,
-        nullable=True,
-        default=None,
-        doc="Custom filter tags for filtering and categorization"
+        JSON, nullable=True, default=None, doc="Custom filter tags for filtering and categorization"
     )
 
     # When was this item last modified and what operation?
@@ -109,36 +98,46 @@ class ProceduralMemoryItem(SqlalchemyBase, OrganizationMixin, UserMixin):
             None,
             [
                 # Organization-level query optimization indexes
-                Index("ix_procedural_memory_organization_id", "organization_id")
-                if settings.mirix_pg_uri_no_default
-                else None,
-                Index(
-                    "ix_procedural_memory_org_created_at",
-                    "organization_id",
-                    "created_at",
-                    postgresql_using="btree",
-                )
-                if settings.mirix_pg_uri_no_default
-                else None,
-                Index(
-                    "ix_procedural_memory_filter_tags_gin",
-                    text("(filter_tags::jsonb)"),
-                    postgresql_using="gin",
-                )
-                if settings.mirix_pg_uri_no_default
-                else None,
-                Index(
-                    "ix_procedural_memory_org_filter_scope",
-                    "organization_id",
-                    text("((filter_tags->>'scope')::text)"),
-                    postgresql_using="btree",
-                )
-                if settings.mirix_pg_uri_no_default
-                else None,
+                (
+                    Index("ix_procedural_memory_organization_id", "organization_id")
+                    if settings.mirix_pg_uri_no_default
+                    else None
+                ),
+                (
+                    Index(
+                        "ix_procedural_memory_org_created_at",
+                        "organization_id",
+                        "created_at",
+                        postgresql_using="btree",
+                    )
+                    if settings.mirix_pg_uri_no_default
+                    else None
+                ),
+                (
+                    Index(
+                        "ix_procedural_memory_filter_tags_gin",
+                        text("(filter_tags::jsonb)"),
+                        postgresql_using="gin",
+                    )
+                    if settings.mirix_pg_uri_no_default
+                    else None
+                ),
+                (
+                    Index(
+                        "ix_procedural_memory_org_filter_scope",
+                        "organization_id",
+                        text("((filter_tags->>'scope')::text)"),
+                        postgresql_using="btree",
+                    )
+                    if settings.mirix_pg_uri_no_default
+                    else None
+                ),
                 # SQLite indexes
-                Index("ix_procedural_memory_organization_id_sqlite", "organization_id")
-                if not settings.mirix_pg_uri_no_default
-                else None,
+                (
+                    Index("ix_procedural_memory_organization_id_sqlite", "organization_id")
+                    if not settings.mirix_pg_uri_no_default
+                    else None
+                ),
             ],
         )
     )
@@ -156,9 +155,7 @@ class ProceduralMemoryItem(SqlalchemyBase, OrganizationMixin, UserMixin):
         Relationship to organization (mirroring your existing patterns).
         Adjust 'back_populates' to match the collection name in your `Organization` model.
         """
-        return relationship(
-            "Organization", back_populates="procedural_memory", lazy="selectin"
-        )
+        return relationship("Organization", back_populates="procedural_memory", lazy="selectin")
 
     @declared_attr
     def user(cls) -> Mapped["User"]:

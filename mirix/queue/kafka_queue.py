@@ -4,14 +4,12 @@ Requires kafka-python and protobuf libraries to be installed
 Supports both Protocol Buffers and JSON serialization
 """
 
-import json
 import logging
 from typing import Optional
 
-from google.protobuf.json_format import MessageToDict, ParseDict
-
 from mirix.queue.message_pb2 import QueueMessage
 from mirix.queue.queue_interface import QueueInterface
+from mirix.queue.queue_util import deserialize_queue_message, serialize_queue_message
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +59,7 @@ class KafkaQueue(QueueInterface):
             (We should change it though.)
         """
         logger.info(
-            "🔧 Initializing Kafka queue: servers=%s, topic=%s, group=%s, format=%s, security=%s",
+            "Initializing Kafka queue: servers=%s, topic=%s, group=%s, format=%s, security=%s",
             bootstrap_servers,
             topic,
             group_id,
@@ -69,7 +67,7 @@ class KafkaQueue(QueueInterface):
             security_protocol,
         )
         logger.info(
-            "🔧 Kafka consumer config: auto_offset_reset=%s, consumer_timeout_ms=%d, max_poll_interval_ms=%d, session_timeout_ms=%d",
+            "Kafka consumer config: auto_offset_reset=%s, consumer_timeout_ms=%d, max_poll_interval_ms=%d, session_timeout_ms=%d",
             auto_offset_reset,
             consumer_timeout_ms,
             max_poll_interval_ms,
@@ -81,78 +79,20 @@ class KafkaQueue(QueueInterface):
         except ImportError:
             logger.error("kafka-python not installed")
             raise ImportError(
-                "kafka-python is required for Kafka support. "
-                "Install it with: pip install queue-sample[kafka]"
+                "kafka-python is required for Kafka support. " "Install it with: pip install queue-sample[kafka]"
             )
 
         self.topic = topic
         self.serialization_format = serialization_format.lower()
 
-        # Protobuf serializer: Convert QueueMessage to bytes
-        def protobuf_serializer(message: QueueMessage) -> bytes:
-            """
-            Serialize QueueMessage to Protocol Buffer format
+        # Configure message serialization format
+        value_serializer = lambda msg: serialize_queue_message(msg, format=self.serialization_format)
+        value_deserializer = lambda data: deserialize_queue_message(data, format=self.serialization_format)
 
-            Args:
-                message: QueueMessage protobuf to serialize
-
-            Returns:
-                Serialized protobuf bytes
-            """
-            return message.SerializeToString()
-
-        # Protobuf deserializer: Convert bytes to QueueMessage
-        def protobuf_deserializer(serialized_msg: bytes) -> QueueMessage:
-            """
-            Deserialize Protocol Buffer message to QueueMessage
-
-            Args:
-                serialized_msg: Serialized protobuf bytes
-
-            Returns:
-                QueueMessage protobuf object
-            """
-            msg = QueueMessage()
-            msg.ParseFromString(serialized_msg)
-            return msg
-
-        # JSON serializer: Convert QueueMessage to JSON bytes
-        def json_serializer(message: QueueMessage) -> bytes:
-            """
-            Serialize QueueMessage to JSON format
-
-            Args:
-                message: QueueMessage protobuf to serialize
-
-            Returns:
-                JSON bytes
-            """
-            message_dict = MessageToDict(message, preserving_proto_field_name=True)
-            return json.dumps(message_dict).encode("utf-8")
-
-        # JSON deserializer: Convert JSON bytes to QueueMessage
-        def json_deserializer(serialized_msg: bytes) -> QueueMessage:
-            """
-            Deserialize JSON message to QueueMessage
-
-            Args:
-                serialized_msg: JSON bytes
-
-            Returns:
-                QueueMessage protobuf object
-            """
-            message_dict = json.loads(serialized_msg.decode("utf-8"))
-            return ParseDict(message_dict, QueueMessage())
-
-        # Select serializer/deserializer based on format
-        if self.serialization_format == "json":
-            value_serializer = json_serializer
-            value_deserializer = json_deserializer
-            logger.info("Using JSON serialization for Kafka messages")
-        else:
-            value_serializer = protobuf_serializer
-            value_deserializer = protobuf_deserializer
-            logger.info("Using Protobuf serialization for Kafka messages")
+        logger.info(
+            "Using %s serialization for Kafka messages",
+            self.serialization_format.upper(),
+        )
 
         # Build Kafka producer/consumer config with optional SSL
         kafka_config = {
@@ -193,7 +133,7 @@ class KafkaQueue(QueueInterface):
         )
 
         logger.info(
-            "✅ Kafka consumer configured: auto_offset_reset=%s, max_poll_interval=%dms (%.1f min), session_timeout=%dms, consumer_timeout=%dms",
+            "Kafka consumer configured: auto_offset_reset=%s, max_poll_interval=%dms (%.1f min), session_timeout=%dms, consumer_timeout=%dms",
             auto_offset_reset,
             max_poll_interval_ms,
             max_poll_interval_ms / 60000,
@@ -217,8 +157,13 @@ class KafkaQueue(QueueInterface):
         Args:
             message: QueueMessage protobuf message to send
         """
-        # Extract user_id as partition key (fallback to actor.id if not present)
-        partition_key = message.user_id if message.user_id else message.actor.id
+        # Extract partition key: prefer user_id, then client_id
+        if message.user_id:
+            partition_key = message.user_id
+        elif message.client_id:
+            partition_key = message.client_id
+        else:
+            raise ValueError("Queue message missing partition key: must have user_id or client_id")
 
         logger.debug(
             "Sending message to Kafka topic %s: agent_id=%s, partition_key=%s",
@@ -236,9 +181,7 @@ class KafkaQueue(QueueInterface):
         )
         future.get(timeout=10)  # Wait up to 10 seconds for confirmation
 
-        logger.debug(
-            "Message sent to Kafka successfully with partition key: %s", partition_key
-        )
+        logger.debug("Message sent to Kafka successfully with partition key: %s", partition_key)
 
     def get(self, timeout: Optional[float] = None) -> QueueMessage:
         """
@@ -257,9 +200,7 @@ class KafkaQueue(QueueInterface):
 
         # Poll for messages
         for message in self.consumer:
-            logger.debug(
-                "Retrieved message from Kafka: agent_id=%s", message.value.agent_id
-            )
+            logger.debug("Retrieved message from Kafka: agent_id=%s", message.value.agent_id)
             return message.value
 
         # If no message received, raise exception (similar to queue.Empty)

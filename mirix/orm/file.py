@@ -22,9 +22,7 @@ class FileMetadata(SqlalchemyBase, OrganizationMixin):
         nullable=True,
         doc="The unique identifier of the source associated with the file.",
     )
-    file_name: Mapped[Optional[str]] = mapped_column(
-        String, nullable=True, doc="The name of the file."
-    )
+    file_name: Mapped[Optional[str]] = mapped_column(String, nullable=True, doc="The name of the file.")
     file_path: Mapped[Optional[str]] = mapped_column(
         String, nullable=True, doc="The file path on the local filesystem."
     )
@@ -38,12 +36,8 @@ class FileMetadata(SqlalchemyBase, OrganizationMixin):
         nullable=True,
         doc="The Google Cloud URI for files stored in Google Cloud (e.g., Google Gemini files).",
     )
-    file_type: Mapped[Optional[str]] = mapped_column(
-        String, nullable=True, doc="The type of the file."
-    )
-    file_size: Mapped[Optional[int]] = mapped_column(
-        Integer, nullable=True, doc="The size of the file in bytes."
-    )
+    file_type: Mapped[Optional[str]] = mapped_column(String, nullable=True, doc="The type of the file.")
+    file_size: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, doc="The size of the file in bytes.")
     file_creation_date: Mapped[Optional[str]] = mapped_column(
         String, nullable=True, doc="The creation date of the file."
     )
@@ -52,6 +46,4 @@ class FileMetadata(SqlalchemyBase, OrganizationMixin):
     )
 
     # relationships
-    organization: Mapped["Organization"] = relationship(
-        "Organization", back_populates="files", lazy="selectin"
-    )
+    organization: Mapped["Organization"] = relationship("Organization", back_populates="files", lazy="selectin")

@@ -72,9 +72,7 @@ class SampleAuthProvider(AuthProvider):
 
         new_token = f"claims_token_{int(time.time())}"
         self.current_token = new_token
-        self.token_expiry = datetime.now() + timedelta(
-            seconds=self.token_lifetime_seconds
-        )
+        self.token_expiry = datetime.now() + timedelta(seconds=self.token_lifetime_seconds)
         print(f"[Auth] Refreshed token (sync HTTP), expires at {self.token_expiry}")
         return new_token
 
@@ -95,9 +93,7 @@ class SampleAuthProvider(AuthProvider):
 
 
 # Register the auth provider
-sample_auth_provider = SampleAuthProvider(
-    auth_endpoint="https://auth.example.com/token", token_lifetime_seconds=600
-)
+sample_auth_provider = SampleAuthProvider(auth_endpoint="https://auth.example.com/token", token_lifetime_seconds=600)
 register_auth_provider("sample_provider", sample_auth_provider)
 
 

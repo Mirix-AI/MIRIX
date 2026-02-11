@@ -57,9 +57,7 @@ class TemporaryMessageAccumulator:
         self.temporary_message_limit = temporary_message_limit
 
         # Initialize logger
-        self.logger = logging.getLogger(
-            f"Mirix.TemporaryMessageAccumulator.{model_name}"
-        )
+        self.logger = logging.getLogger(f"Mirix.TemporaryMessageAccumulator.{model_name}")
         self.logger.setLevel(logging.INFO)
 
         # Determine if this model needs file uploads
@@ -78,9 +76,7 @@ class TemporaryMessageAccumulator:
         # Upload tracking for cleanup
         self.upload_start_times = {}  # Track when uploads started for cleanup purposes
 
-    def add_message(
-        self, full_message, timestamp, delete_after_upload=True, async_upload=True
-    ):
+    def add_message(self, full_message, timestamp, delete_after_upload=True, async_upload=True):
         """Add a message to temporary storage."""
         if self.needs_upload and self.upload_manager is not None:
             if "image_uris" in full_message and full_message["image_uris"]:
@@ -99,9 +95,7 @@ class TemporaryMessageAccumulator:
                 current_time = time.time()
                 for placeholder in image_file_ref_placeholders:
                     if isinstance(placeholder, dict) and placeholder.get("pending"):
-                        placeholder_id = id(
-                            placeholder
-                        )  # Use object ID as unique identifier
+                        placeholder_id = id(placeholder)  # Use object ID as unique identifier
                         self.upload_start_times[placeholder_id] = current_time
             else:
                 image_file_ref_placeholders = None
@@ -114,16 +108,14 @@ class TemporaryMessageAccumulator:
                         audio_segment.append(converted_segment)
                     else:
                         self.logger.error(
-                            f"❌ Error converting voice chunk {i + 1}/{len(full_message['voice_files'])} to AudioSegment"
+                            f"Error converting voice chunk {i + 1}/{len(full_message['voice_files'])} to AudioSegment"
                         )
                         continue
                 audio_segment = None if len(audio_segment) == 0 else audio_segment
                 if audio_segment:
-                    self.logger.info(
-                        f"✅ Successfully processed {len(audio_segment)} voice segments"
-                    )
+                    self.logger.info(f"Successfully processed {len(audio_segment)} voice segments")
                 else:
-                    self.logger.info("❌ No voice segments were successfully processed")
+                    self.logger.info("No voice segments were successfully processed")
             else:
                 audio_segment = None
 
@@ -200,9 +192,7 @@ class TemporaryMessageAccumulator:
                         for j, file_ref in enumerate(item["image_uris"]):
                             if isinstance(file_ref, dict) and file_ref.get("pending"):
                                 # Get upload status
-                                upload_status = self.upload_manager.get_upload_status(
-                                    file_ref
-                                )
+                                upload_status = self.upload_manager.get_upload_status(file_ref)
 
                                 if upload_status["status"] == "completed":
                                     # Upload completed, use the resolved reference
@@ -264,12 +254,8 @@ class TemporaryMessageAccumulator:
         """
         with self._temporary_messages_lock:
             # Get the most recent content
-            recent_limit = min(
-                self.temporary_message_limit, len(self.temporary_messages)
-            )
-            most_recent_content = (
-                self.temporary_messages[-recent_limit:] if recent_limit > 0 else []
-            )
+            recent_limit = min(self.temporary_message_limit, len(self.temporary_messages))
+            most_recent_content = self.temporary_messages[-recent_limit:] if recent_limit > 0 else []
 
             # Calculate timestamp cutoff (1 minute ago)
             cutoff_time = current_timestamp - timedelta(minutes=1)
@@ -280,9 +266,7 @@ class TemporaryMessageAccumulator:
                 # Handle different timestamp formats that might be used
                 if isinstance(timestamp, str):
                     # Try to parse timestamp string and make it timezone-aware
-                    timestamp_dt = datetime.fromisoformat(
-                        timestamp.replace("Z", "+00:00")
-                    )
+                    timestamp_dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
                     # If timezone-naive, localize it to match the cutoff_time timezone awareness
                     if timestamp_dt.tzinfo is None:
                         timestamp_dt = self.timezone.localize(timestamp_dt)
@@ -309,9 +293,7 @@ class TemporaryMessageAccumulator:
                             # For GEMINI models: Resolve pending uploads for immediate use (non-blocking check)
                             if isinstance(file_ref, dict) and file_ref.get("pending"):
                                 # Get upload status
-                                upload_status = self.upload_manager.get_upload_status(
-                                    file_ref
-                                )
+                                upload_status = self.upload_manager.get_upload_status(file_ref)
 
                                 if upload_status["status"] == "completed":
                                     file_ref = upload_status["result"]
@@ -330,15 +312,11 @@ class TemporaryMessageAccumulator:
                         # For non-GEMINI models: file_ref is already the image URI, use as-is
                         # Include sources information if available
                         sources = item.get("sources")
-                        most_recent_images.append(
-                            (timestamp, file_ref, sources[j] if sources else None)
-                        )
+                        most_recent_images.append((timestamp, file_ref, sources[j] if sources else None))
 
             return most_recent_images
 
-    def absorb_content_into_memory(
-        self, agent_states, ready_messages=None, user_id=None
-    ):
+    def absorb_content_into_memory(self, agent_states, ready_messages=None, user_id=None):
         """Process accumulated content and send to memory agents."""
 
         if ready_messages is not None:
@@ -356,14 +334,10 @@ class TemporaryMessageAccumulator:
                         timestamp, item = self.temporary_messages[i]
                         if "image_uris" in item and item["image_uris"]:
                             for file_ref in item["image_uris"]:
-                                if isinstance(file_ref, dict) and file_ref.get(
-                                    "pending"
-                                ):
+                                if isinstance(file_ref, dict) and file_ref.get("pending"):
                                     placeholder_id = id(file_ref)
                                     # Clean up upload manager status and local tracking
-                                    self.upload_manager.cleanup_resolved_upload(
-                                        file_ref
-                                    )
+                                    self.upload_manager.cleanup_resolved_upload(file_ref)
                                     self.upload_start_times.pop(placeholder_id, None)
 
                 self.temporary_messages = self.temporary_messages[num_to_remove:]
@@ -384,46 +358,28 @@ class TemporaryMessageAccumulator:
                         for file_ref in item["image_uris"]:
                             if self.needs_upload and self.upload_manager is not None:
                                 # For GEMINI models: Check if this is a pending placeholder
-                                if isinstance(file_ref, dict) and file_ref.get(
-                                    "pending"
-                                ):
+                                if isinstance(file_ref, dict) and file_ref.get("pending"):
                                     placeholder_id = id(file_ref)
                                     # Get upload status
-                                    upload_status = (
-                                        self.upload_manager.get_upload_status(file_ref)
-                                    )
+                                    upload_status = self.upload_manager.get_upload_status(file_ref)
 
                                     if upload_status["status"] == "completed":
                                         # Upload completed, use the result
-                                        processed_image_uris.append(
-                                            upload_status["result"]
-                                        )
+                                        processed_image_uris.append(upload_status["result"])
                                         # Clean up both upload manager and local tracking
-                                        self.upload_manager.cleanup_resolved_upload(
-                                            file_ref
-                                        )
-                                        self.upload_start_times.pop(
-                                            placeholder_id, None
-                                        )
+                                        self.upload_manager.cleanup_resolved_upload(file_ref)
+                                        self.upload_start_times.pop(placeholder_id, None)
                                     elif upload_status["status"] == "failed":
                                         # Upload failed, skip this image but continue processing
                                         # Clean up both upload manager and local tracking
-                                        self.upload_manager.cleanup_resolved_upload(
-                                            file_ref
-                                        )
-                                        self.upload_start_times.pop(
-                                            placeholder_id, None
-                                        )
+                                        self.upload_manager.cleanup_resolved_upload(file_ref)
+                                        self.upload_start_times.pop(placeholder_id, None)
                                         continue
                                     elif upload_status["status"] == "unknown":
                                         # Upload was cleaned up, treat as failed
-                                        logger.debug(
-                                            "Skipping unknown/cleaned upload in absorb_content_into_memory"
-                                        )
+                                        logger.debug("Skipping unknown/cleaned upload in absorb_content_into_memory")
                                         # Only clean up local tracking since upload manager already cleaned up
-                                        self.upload_start_times.pop(
-                                            placeholder_id, None
-                                        )
+                                        self.upload_start_times.pop(placeholder_id, None)
                                         continue
                                     else:
                                         # Still pending, keep original for next cycle
@@ -459,9 +415,7 @@ class TemporaryMessageAccumulator:
 
         # Save voice content to folder if any exists
         if voice_content:
-            current_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[
-                :-3
-            ]  # Include milliseconds
+            current_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]  # Include milliseconds
             voice_folder = f"tmp_voice_content_{current_timestamp}"
 
             try:
@@ -476,9 +430,7 @@ class TemporaryMessageAccumulator:
                             filename = f"voice_segment_{i + 1:03d}.wav"
                             filepath = os.path.join(voice_folder, filename)
                             audio_segment.export(filepath, format="wav")
-                            self.logger.info(
-                                f"Saved voice segment {i + 1} to {filepath}"
-                            )
+                            self.logger.info(f"Saved voice segment {i + 1} to {filepath}")
                         else:
                             # Handle other audio formats (e.g., raw bytes)
                             filename = f"voice_segment_{i + 1:03d}.dat"
@@ -493,13 +445,9 @@ class TemporaryMessageAccumulator:
                     except Exception as e:
                         logger.error("Failed to save voice segment %s: %s", i + 1, e)
 
-                self.logger.info(
-                    f"Successfully saved {len(voice_content)} voice segments to {voice_folder}"
-                )
+                self.logger.info(f"Successfully saved {len(voice_content)} voice segments to {voice_folder}")
             except Exception as e:
-                self.logger.error(
-                    f"Failed to create voice content folder {voice_folder}: {e}"
-                )
+                self.logger.error(f"Failed to create voice content folder {voice_folder}: {e}")
 
         # Process content and build message
         message = self._build_memory_message(ready_to_process, voice_content)
@@ -630,9 +578,7 @@ class TemporaryMessageAccumulator:
 
                 # Add each image with its timestamp
                 for timestamp, file_ref in source_images:
-                    message_parts.append(
-                        {"type": "text", "text": f"Timestamp: {timestamp}"}
-                    )
+                    message_parts.append({"type": "text", "text": f"Timestamp: {timestamp}"})
 
                     # Handle different types of file references
                     if hasattr(file_ref, "uri"):
@@ -686,9 +632,7 @@ class TemporaryMessageAccumulator:
             )
 
             for idx, (timestamp, text) in enumerate(text_content):
-                message_parts.append(
-                    {"type": "text", "text": f"Timestamp: {timestamp} Text:\n{text}"}
-                )
+                message_parts.append({"type": "text", "text": f"Timestamp: {timestamp} Text:\n{text}"})
 
         return message_parts
 
@@ -707,9 +651,7 @@ class TemporaryMessageAccumulator:
             user_message_added = True
         return message, user_message_added
 
-    def _send_to_meta_memory_agent(
-        self, message, existing_file_uris, agent_states, user_id=None
-    ):
+    def _send_to_meta_memory_agent(self, message, existing_file_uris, agent_states, user_id=None):
         """Send the processed content to the meta memory agent."""
 
         payloads = {
@@ -728,9 +670,7 @@ class TemporaryMessageAccumulator:
         )
         return response, agent_type
 
-    def _send_to_memory_agents_separately(
-        self, message, existing_file_uris, agent_states, user_id=None
-    ):
+    def _send_to_memory_agents_separately(self, message, existing_file_uris, agent_states, user_id=None):
         """Send the processed content to all memory agents in parallel."""
 
         payloads = {
@@ -775,9 +715,7 @@ class TemporaryMessageAccumulator:
                     for file_ref in item["image_uris"]:
                         if hasattr(file_ref, "name"):
                             try:
-                                self.client.server.cloud_file_mapping_manager.set_processed(
-                                    cloud_file_id=file_ref.name
-                                )
+                                self.client.server.cloud_file_mapping_manager.set_processed(cloud_file_id=file_ref.name)
                             except Exception:
                                 pass
 
@@ -790,9 +728,7 @@ class TemporaryMessageAccumulator:
             # For OpenAI models: Clean up image files if delete_after_upload is True
             for timestamp, item in ready_to_process:
                 # Check if this item should have its files deleted
-                should_delete = item.get(
-                    "delete_after_upload", True
-                )  # Default to True for backward compatibility
+                should_delete = item.get("delete_after_upload", True)  # Default to True for backward compatibility
 
                 if should_delete and "image_uris" in item and item["image_uris"]:
                     for image_uri in item["image_uris"]:
@@ -828,9 +764,7 @@ class TemporaryMessageAccumulator:
                             f"Failed to delete image file {image_path} after {max_retries} attempts: {e}"
                         )
         except Exception as e:
-            self.logger.error(
-                f"Error while trying to delete image file {image_path}: {e}"
-            )
+            self.logger.error(f"Error while trying to delete image file {image_path}: {e}")
 
     def _cleanup_file_after_upload(self, filenames, placeholders):
         """Clean up local file after upload completes."""
@@ -843,9 +777,7 @@ class TemporaryMessageAccumulator:
 
             try:
                 # Wait for upload to complete with timeout
-                upload_successful = self.upload_manager.wait_for_upload(
-                    placeholder, timeout=60
-                )
+                upload_successful = self.upload_manager.wait_for_upload(placeholder, timeout=60)
 
                 if upload_successful:
                     # Clean up tracking
@@ -896,12 +828,8 @@ class TemporaryMessageAccumulator:
         }
 
         # Get upload manager status if available
-        if self.upload_manager and hasattr(
-            self.upload_manager, "get_upload_status_summary"
-        ):
-            summary["upload_manager_status"] = (
-                self.upload_manager.get_upload_status_summary()
-            )
+        if self.upload_manager and hasattr(self.upload_manager, "get_upload_status_summary"):
+            summary["upload_manager_status"] = self.upload_manager.get_upload_status_summary()
 
         return summary
 
@@ -909,7 +837,5 @@ class TemporaryMessageAccumulator:
         """Update the model name and related settings."""
         self.model_name = new_model_name
         self.needs_upload = new_model_name in GEMINI_MODELS
-        self.logger = logging.getLogger(
-            f"Mirix.TemporaryMessageAccumulator.{new_model_name}"
-        )
+        self.logger = logging.getLogger(f"Mirix.TemporaryMessageAccumulator.{new_model_name}")
         self.logger.setLevel(logging.INFO)

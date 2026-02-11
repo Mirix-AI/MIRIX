@@ -30,12 +30,8 @@ class Block(OrganizationMixin, UserMixin, SqlalchemyBase):
         Index("idx_block_id_label", "id", "label", unique=True),
     )
 
-    label: Mapped[str] = mapped_column(
-        doc="the type of memory block in use, ie 'human', 'persona', 'system'"
-    )
-    value: Mapped[str] = mapped_column(
-        doc="Text content of the block for the respective section of core memory."
-    )
+    label: Mapped[str] = mapped_column(doc="the type of memory block in use, ie 'human', 'persona', 'system'")
+    value: Mapped[str] = mapped_column(doc="Text content of the block for the respective section of core memory.")
     limit: Mapped[BigInteger] = mapped_column(
         Integer,
         default=CORE_MEMORY_BLOCK_CHAR_LIMIT,

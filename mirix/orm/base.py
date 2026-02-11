@@ -20,9 +20,7 @@ class Base(DeclarativeBase):
 class CommonSqlalchemyMetaMixins(Base):
     __abstract__ = True
 
-    created_at: Mapped[Optional[datetime]] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    created_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), server_onupdate=func.now()
     )
@@ -90,6 +88,6 @@ class CommonSqlalchemyMetaMixins(Base):
         if not value:
             setattr(self, full_prop, None)
             return
-        
+
         # Set the full value (no prefix validation - accept any user_id format)
         setattr(self, full_prop, value)

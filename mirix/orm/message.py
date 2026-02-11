@@ -42,31 +42,22 @@ class Message(SqlalchemyBase, OrganizationMixin, UserMixin, AgentMixin):
         MessageContentColumn, nullable=True, doc="Message content parts"
     )
     model: Mapped[Optional[str]] = mapped_column(nullable=True, doc="LLM model used")
-    name: Mapped[Optional[str]] = mapped_column(
-        nullable=True, doc="Name for multi-agent scenarios"
-    )
-    tool_calls: Mapped[List[OpenAIToolCall]] = mapped_column(
-        ToolCallColumn, doc="Tool call information"
-    )
-    tool_call_id: Mapped[Optional[str]] = mapped_column(
-        nullable=True, doc="ID of the tool call"
-    )
-    
+    name: Mapped[Optional[str]] = mapped_column(nullable=True, doc="Name for multi-agent scenarios")
+    tool_calls: Mapped[List[OpenAIToolCall]] = mapped_column(ToolCallColumn, doc="Tool call information")
+    tool_call_id: Mapped[Optional[str]] = mapped_column(nullable=True, doc="ID of the tool call")
+
     # NEW: Filter tags for flexible filtering and categorization
     filter_tags: Mapped[Optional[dict]] = mapped_column(
-        JSON,
-        nullable=True,
-        default=None,
-        doc="Custom filter tags for filtering and categorization"
+        JSON, nullable=True, default=None, doc="Custom filter tags for filtering and categorization"
     )
-    
+
     # Foreign key to client (for access control and filtering)
     client_id: Mapped[Optional[str]] = mapped_column(
         ForeignKey("clients.id", ondelete="CASCADE"),
         nullable=True,
         doc="ID of the client application that created this message",
     )
-    
+
     step_id: Mapped[Optional[str]] = mapped_column(
         ForeignKey("steps.id", ondelete="SET NULL"),
         nullable=True,
@@ -89,15 +80,9 @@ class Message(SqlalchemyBase, OrganizationMixin, UserMixin, AgentMixin):
     )
 
     # Relationships
-    agent: Mapped["Agent"] = relationship(
-        "Agent", back_populates="messages", lazy="selectin"
-    )
-    organization: Mapped["Organization"] = relationship(
-        "Organization", back_populates="messages", lazy="selectin"
-    )
-    step: Mapped["Step"] = relationship(
-        "Step", back_populates="messages", lazy="selectin"
-    )
+    agent: Mapped["Agent"] = relationship("Agent", back_populates="messages", lazy="selectin")
+    organization: Mapped["Organization"] = relationship("Organization", back_populates="messages", lazy="selectin")
+    step: Mapped["Step"] = relationship("Step", back_populates="messages", lazy="selectin")
 
     @declared_attr
     def user(cls) -> Mapped["User"]:

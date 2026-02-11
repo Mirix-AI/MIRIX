@@ -5,6 +5,7 @@ import requests
 
 from mirix.constants import MAX_IMAGES_TO_PROCESS, NON_USER_MSG_PREFIX
 from mirix.llm_api.helpers import make_post_request
+from mirix.log import get_logger
 from mirix.schemas.openai.chat_completion_request import Tool
 from mirix.schemas.openai.chat_completion_response import (
     ChatCompletionResponse,
@@ -14,7 +15,6 @@ from mirix.schemas.openai.chat_completion_response import (
     ToolCall,
     UsageStatistics,
 )
-from mirix.log import get_logger
 from mirix.utils import (
     clean_json_string_extra_backslash,
     count_tokens,
@@ -24,6 +24,7 @@ from mirix.utils import (
 )
 
 logger = get_logger(__name__)
+
 
 def get_gemini_endpoint_and_headers(
     base_url: str,
@@ -55,14 +56,11 @@ def get_gemini_endpoint_and_headers(
 
     return url, headers
 
-def google_ai_get_model_details(
-    base_url: str, api_key: str, model: str, key_in_header: bool = True
-) -> List[dict]:
+
+def google_ai_get_model_details(base_url: str, api_key: str, model: str, key_in_header: bool = True) -> List[dict]:
     from mirix.utils import printd
 
-    url, headers = get_gemini_endpoint_and_headers(
-        base_url, model, api_key, key_in_header
-    )
+    url, headers = get_gemini_endpoint_and_headers(base_url, model, api_key, key_in_header)
 
     try:
         response = requests.get(url, headers=headers)
@@ -93,9 +91,8 @@ def google_ai_get_model_details(
         printd(f"Got unknown Exception, exception={e}")
         raise e
 
-def google_ai_get_model_context_window(
-    base_url: str, api_key: str, model: str, key_in_header: bool = True
-) -> int:
+
+def google_ai_get_model_context_window(base_url: str, api_key: str, model: str, key_in_header: bool = True) -> int:
     model_details = google_ai_get_model_details(
         base_url=base_url, api_key=api_key, model=model, key_in_header=key_in_header
     )
@@ -103,14 +100,11 @@ def google_ai_get_model_context_window(
     # return model_details["inputTokenLimit"] + model_details["outputTokenLimit"]
     return int(model_details["inputTokenLimit"])
 
-def google_ai_get_model_list(
-    base_url: str, api_key: str, key_in_header: bool = True
-) -> List[dict]:
+
+def google_ai_get_model_list(base_url: str, api_key: str, key_in_header: bool = True) -> List[dict]:
     from mirix.utils import printd
 
-    url, headers = get_gemini_endpoint_and_headers(
-        base_url, None, api_key, key_in_header
-    )
+    url, headers = get_gemini_endpoint_and_headers(base_url, None, api_key, key_in_header)
 
     try:
         response = requests.get(url, headers=headers)
@@ -140,6 +134,7 @@ def google_ai_get_model_list(
         printd(f"Got unknown Exception, exception={e}")
         raise e
 
+
 def add_dummy_model_messages(messages: List[dict]) -> List[dict]:
     """Google AI API requires all function call returns are immediately followed by a 'model' role message.
 
@@ -152,29 +147,22 @@ def add_dummy_model_messages(messages: List[dict]) -> List[dict]:
     """
     dummy_yield_message = {
         "role": "model",
-        "parts": [
-            {
-                "text": f"{NON_USER_MSG_PREFIX}Function call returned, waiting for user response."
-            }
-        ],
+        "parts": [{"text": f"{NON_USER_MSG_PREFIX}Function call returned, waiting for user response."}],
     }
     messages_with_padding = []
     for i, message in enumerate(messages):
         messages_with_padding.append(message)
         # Check if the current message role is 'tool' and the next message role is 'user'
-        if message["role"] in ["tool", "function"] and (
-            i + 1 < len(messages) and messages[i + 1]["role"] == "user"
-        ):
+        if message["role"] in ["tool", "function"] and (i + 1 < len(messages) and messages[i + 1]["role"] == "user"):
             messages_with_padding.append(dummy_yield_message)
 
     return messages_with_padding
 
+
 # TODO use pydantic model as input
 def to_google_ai(openai_message_dict: dict) -> dict:
     # TODO supports "parts" as part of multimodal support
-    assert not isinstance(openai_message_dict["content"], list), (
-        "Multi-part content is message not yet supported"
-    )
+    assert not isinstance(openai_message_dict["content"], list), "Multi-part content is message not yet supported"
     if openai_message_dict["role"] == "user":
         google_ai_message_dict = {
             "role": "user",
@@ -191,15 +179,12 @@ def to_google_ai(openai_message_dict: dict) -> dict:
             "parts": [{"text": openai_message_dict["content"]}],
         }
     else:
-        raise ValueError(
-            f"Unsupported conversion (OpenAI -> Google AI) from role {openai_message_dict['role']}"
-        )
+        raise ValueError(f"Unsupported conversion (OpenAI -> Google AI) from role {openai_message_dict['role']}")
     return google_ai_message_dict
 
+
 # TODO convert return type to pydantic
-def convert_tools_to_google_ai_format(
-    tools: List[Tool], inner_thoughts_in_kwargs: Optional[bool] = True
-) -> List[dict]:
+def convert_tools_to_google_ai_format(tools: List[Tool], inner_thoughts_in_kwargs: Optional[bool] = True) -> List[dict]:
     """
     OpenAI style:
       "tools": [{
@@ -261,12 +246,11 @@ def convert_tools_to_google_ai_format(
             param_fields["type"] = param_fields["type"].upper()
     return [{"functionDeclarations": function_list}]
 
+
 def convert_google_ai_response_to_chatcompletion(
     response_json: dict,  # REST response from Google AI API
     model: str,  # Required since not returned
-    input_messages: Optional[
-        List[dict]
-    ] = None,  # Required if the API doesn't return UsageMetadata
+    input_messages: Optional[List[dict]] = None,  # Required if the API doesn't return UsageMetadata
 ) -> ChatCompletionResponse:
     """Google AI API response format is not the same as ChatCompletion, requires unpacking
 
@@ -311,10 +295,7 @@ def convert_google_ai_response_to_chatcompletion(
             # TODO Alternative here is to throw away everything else except for the first part
             for response_message in parts:
                 # Convert the actual message style to OpenAI style
-                if (
-                    "functionCall" in response_message
-                    and response_message["functionCall"] is not None
-                ):
+                if "functionCall" in response_message and response_message["functionCall"] is not None:
                     function_call = response_message["functionCall"]
                     assert isinstance(function_call, dict), function_call
                     function_name = function_call["name"]
@@ -332,9 +313,7 @@ def convert_google_ai_response_to_chatcompletion(
                                 type="function",
                                 function=FunctionCall(
                                     name=function_name,
-                                    arguments=clean_json_string_extra_backslash(
-                                        json_dumps(function_args)
-                                    ),
+                                    arguments=clean_json_string_extra_backslash(json_dumps(function_args)),
                                 ),
                             )
                         ],
@@ -370,9 +349,7 @@ def convert_google_ai_response_to_chatcompletion(
                 elif finish_reason == "RECITATION":
                     openai_finish_reason = "content_filter"
                 else:
-                    raise ValueError(
-                        f"Unrecognized finish reason in Google AI response: {finish_reason}"
-                    )
+                    raise ValueError(f"Unrecognized finish reason in Google AI response: {finish_reason}")
 
                 choices.append(
                     Choice(
@@ -395,19 +372,15 @@ def convert_google_ai_response_to_chatcompletion(
         if "usageMetadata" in response_json:
             usage = UsageStatistics(
                 prompt_tokens=response_json["usageMetadata"]["promptTokenCount"],
-                completion_tokens=response_json["usageMetadata"][
-                    "candidatesTokenCount"
-                ],
+                completion_tokens=response_json["usageMetadata"]["candidatesTokenCount"],
                 total_tokens=response_json["usageMetadata"]["totalTokenCount"],
             )
         else:
             # Count it ourselves
-            assert input_messages is not None, (
-                "Didn't get UsageMetadata from the API response, so input_messages is required"
-            )
-            prompt_tokens = count_tokens(
-                json_dumps(input_messages)
-            )  # NOTE: this is a very rough approximation
+            assert (
+                input_messages is not None
+            ), "Didn't get UsageMetadata from the API response, so input_messages is required"
+            prompt_tokens = count_tokens(json_dumps(input_messages))  # NOTE: this is a very rough approximation
             completion_tokens = count_tokens(
                 json_dumps(openai_response_message.model_dump())
             )  # NOTE: this is also approximate
@@ -429,6 +402,7 @@ def convert_google_ai_response_to_chatcompletion(
     except KeyError as e:
         raise e
 
+
 def extract_content(content):
     import re
 
@@ -443,6 +417,7 @@ def extract_content(content):
             result.append({"type": "image_url", "image_url": image.strip()})
 
     return result
+
 
 # TODO convert 'data' type to pydantic
 def google_ai_chat_completions_request(
@@ -469,9 +444,7 @@ def google_ai_chat_completions_request(
 
     assert api_key is not None, "Missing api_key when calling Google AI"
 
-    url, headers = get_gemini_endpoint_and_headers(
-        base_url, model, api_key, key_in_header, generate_content=True
-    )
+    url, headers = get_gemini_endpoint_and_headers(base_url, model, api_key, key_in_header, generate_content=True)
 
     # data["contents"][-1]["role"] = "model"
     if add_postfunc_model_messages:

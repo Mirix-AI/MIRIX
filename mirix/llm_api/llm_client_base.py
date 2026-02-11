@@ -63,18 +63,14 @@ class LLMClientBase:
         trace_id = trace_context.get("trace_id") if trace_context else None
         parent_span_id = trace_context.get("observation_id") if trace_context else None
         if langfuse and trace_id:
-            return self._execute_with_langfuse(
-                langfuse, request_data, messages, tools, trace_id, parent_span_id
-            )
+            return self._execute_with_langfuse(langfuse, request_data, messages, tools, trace_id, parent_span_id)
         else:
             # Provide diagnostic info about why tracing is not active
             reason = "LangFuse client not available" if not langfuse else "No active trace_id in context"
             self.logger.debug(f"Sending LLM request without LangFuse tracing ({reason})")
             return self._execute_without_langfuse(request_data, messages)
 
-    def _execute_without_langfuse(
-        self, request_data: dict, messages: List[Message]
-    ) -> ChatCompletionResponse:
+    def _execute_without_langfuse(self, request_data: dict, messages: List[Message]) -> ChatCompletionResponse:
         """Execute LLM request without LangFuse tracing."""
         try:
             t1 = time.time()
@@ -119,16 +115,8 @@ class LLMClientBase:
                     {
                         "id": getattr(tc, "id", None),
                         "function": {
-                            "name": (
-                                getattr(tc.function, "name", None)
-                                if hasattr(tc, "function")
-                                else None
-                            ),
-                            "arguments": (
-                                getattr(tc.function, "arguments", None)
-                                if hasattr(tc, "function")
-                                else None
-                            ),
+                            "name": (getattr(tc.function, "name", None) if hasattr(tc, "function") else None),
+                            "arguments": (getattr(tc.function, "arguments", None) if hasattr(tc, "function") else None),
                         },
                     }
                     for tc in m.tool_calls
@@ -153,7 +141,7 @@ class LLMClientBase:
                 name="llm_completion",
                 as_type="generation",
                 trace_context=cast("TraceContext", trace_context_dict),
-                model=self.llm_config.model,
+                model=self.llm_config.langfuse_model or self.llm_config.model,
                 input=trace_input,
                 metadata={
                     "provider": self.llm_config.model_endpoint_type,
@@ -162,9 +150,7 @@ class LLMClientBase:
             )
         except Exception as e:
             # Langfuse failed to start observation - execute without tracing
-            self.logger.error(
-                f"Langfuse failed to start observation. Continuing without tracing: {e}"
-            )
+            self.logger.error(f"Langfuse failed to start observation. Continuing without tracing: {e}")
             return self._execute_without_langfuse(request_data, messages)
 
         # Now execute with tracing - LLM errors propagate normally
@@ -187,14 +173,10 @@ class LLMClientBase:
                     )
                 except Exception as langfuse_err:
                     # log then swallow if we were unable to update langfuse
-                    self.logger.error(
-                        f"Failed to update LangFuse trace with error. Continuing: {langfuse_err}"
-                    )
+                    self.logger.error(f"Failed to update LangFuse trace with error. Continuing: {langfuse_err}")
                 raise self.handle_llm_error(e)
 
-            chat_completion_data = self.convert_response_to_chat_completion(
-                response_data, messages
-            )
+            chat_completion_data = self.convert_response_to_chat_completion(response_data, messages)
 
             # Try to update trace with success
             try:
@@ -204,20 +186,13 @@ class LLMClientBase:
                 generation.update(output=output_message, usage_details=usage_dict)
             except Exception as update_err:
                 # log then swallow if we were unable to update langfuse
-                self.logger.error(
-                    f"Failed to update LangFuse trace with success. Continuing: {update_err}"
-                )
+                self.logger.error(f"Failed to update LangFuse trace with success. Continuing: {update_err}")
 
             return chat_completion_data
 
-    def _build_output_message(
-        self, chat_completion_data: ChatCompletionResponse
-    ) -> Optional[dict]:
+    def _build_output_message(self, chat_completion_data: ChatCompletionResponse) -> Optional[dict]:
         """Build output message dict for Langfuse trace."""
-        if (
-            not hasattr(chat_completion_data, "choices")
-            or len(chat_completion_data.choices) == 0
-        ):
+        if not hasattr(chat_completion_data, "choices") or len(chat_completion_data.choices) == 0:
             return None
 
         choice = chat_completion_data.choices[0]
@@ -237,16 +212,8 @@ class LLMClientBase:
                     "id": getattr(tc, "id", None),
                     "type": getattr(tc, "type", "function"),
                     "function": {
-                        "name": (
-                            getattr(tc.function, "name", None)
-                            if hasattr(tc, "function")
-                            else None
-                        ),
-                        "arguments": (
-                            getattr(tc.function, "arguments", None)
-                            if hasattr(tc, "function")
-                            else None
-                        ),
+                        "name": (getattr(tc.function, "name", None) if hasattr(tc, "function") else None),
+                        "arguments": (getattr(tc.function, "arguments", None) if hasattr(tc, "function") else None),
                     },
                 }
                 for tc in msg.tool_calls
@@ -254,9 +221,7 @@ class LLMClientBase:
 
         return output_message
 
-    def _build_usage_dict(
-        self, chat_completion_data: ChatCompletionResponse
-    ) -> Optional[dict]:
+    def _build_usage_dict(self, chat_completion_data: ChatCompletionResponse) -> Optional[dict]:
         """Build usage dict for Langfuse trace."""
         if not hasattr(chat_completion_data, "usage") or not chat_completion_data.usage:
             return None

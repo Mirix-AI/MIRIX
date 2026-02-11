@@ -5,9 +5,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from mirix.orm.mixins import OrganizationMixin
 from mirix.orm.sqlalchemy_base import SqlalchemyBase
-from mirix.schemas.cloud_file_mapping import (
-    CloudFileMapping as PydanticCloudFileMapping,
-)
+from mirix.schemas.cloud_file_mapping import CloudFileMapping as PydanticCloudFileMapping
 
 if TYPE_CHECKING:
     from mirix.orm.organization import Organization
@@ -33,9 +31,7 @@ class CloudFileMapping(SqlalchemyBase, OrganizationMixin):
 
     local_file_id: Mapped[str] = mapped_column(String, doc="ID of the local file")
 
-    status: Mapped[str] = mapped_column(
-        String, doc="whether it has been processed by our model"
-    )
+    status: Mapped[str] = mapped_column(String, doc="whether it has been processed by our model")
 
     timestamp: Mapped[str] = mapped_column(String, doc="timestamp of the screenshot")
 

@@ -29,9 +29,7 @@ def get_azure_deployment_list_endpoint(base_url: str):
     return f"{base_url}/openai/deployments?api-version=2023-03-15-preview"
 
 
-def azure_openai_get_deployed_model_list(
-    base_url: str, api_key: str, api_version: str
-) -> list:
+def azure_openai_get_deployed_model_list(base_url: str, api_key: str, api_version: str) -> list:
     """https://learn.microsoft.com/en-us/rest/api/azureopenai/models/list?view=rest-azureopenai-2023-05-15&tabs=HTTP"""
 
     # https://xxx.openai.azure.com/openai/models?api-version=xxx
@@ -60,9 +58,7 @@ def azure_openai_get_deployed_model_list(
     deployed_model_names = set([m["id"] for m in deployed_models])
 
     # 3. Only return the models in available models if they have been deployed
-    deployed_models = [
-        m for m in all_available_models if m["id"] in deployed_model_names
-    ]
+    deployed_models = [m for m in all_available_models if m["id"] in deployed_model_names]
 
     # 4. Remove redundant deployments, only include the ones with the latest deployment
     # Create a dictionary to store the latest model for each ID
@@ -74,24 +70,17 @@ def azure_openai_get_deployed_model_list(
         updated_at = model["created_at"]
 
         # If the model ID is new or the current model has a more recent created_at, update the dictionary
-        if (
-            model_id not in latest_models
-            or updated_at > latest_models[model_id]["created_at"]
-        ):
+        if model_id not in latest_models or updated_at > latest_models[model_id]["created_at"]:
             latest_models[model_id] = model
 
     # Extract the unique models
     return list(latest_models.values())
 
 
-def azure_openai_get_chat_completion_model_list(
-    base_url: str, api_key: str, api_version: str
-) -> list:
+def azure_openai_get_chat_completion_model_list(base_url: str, api_key: str, api_version: str) -> list:
     model_list = azure_openai_get_deployed_model_list(base_url, api_key, api_version)
     # Extract models that support text generation
-    model_options = [
-        m for m in model_list if m.get("capabilities").get("chat_completion")
-    ]
+    model_options = [m for m in model_list if m.get("capabilities").get("chat_completion")]
     return model_options
 
 
@@ -132,15 +121,11 @@ def azure_openai_chat_completions_request(
     # If functions == None, strip from the payload
     if "functions" in data and data["functions"] is None:
         data.pop("functions")
-        data.pop(
-            "function_call", None
-        )  # extra safe,  should exist always (default="auto")
+        data.pop("function_call", None)  # extra safe,  should exist always (default="auto")
 
     if "tools" in data and data["tools"] is None:
         data.pop("tools")
-        data.pop(
-            "tool_choice", None
-        )  # extra safe,  should exist always (default="auto")
+        data.pop("tool_choice", None)  # extra safe,  should exist always (default="auto")
 
     url = get_azure_chat_completions_endpoint(
         model_settings.azure_base_url,

@@ -8,44 +8,46 @@ import "google/protobuf/struct.proto";
 
 // Main request message for send_messages
 message QueueMessage {
-  // Actor/User information
-  User actor = 1;
-  
+  // Client ID - identifies the client performing the action (for auth/write operations)
+  // The full Client object is looked up from the database by the worker
+  string client_id = 1;
+
+
   // Required agent identifier
   string agent_id = 2;
-  
+
   // List of input messages to send
   repeated MessageCreate input_messages = 3;
-  
+
   // Optional chaining flag
   optional bool chaining = 4;
-  
+
   // User ID - identifies the end user within the client application
   optional string user_id = 5;
-  
+
   // Optional verbose flag
   optional bool verbose = 6;
-  
+
   // Filter tags as flexible JSON structure
   google.protobuf.Struct filter_tags = 7;
-  
+
   // Optional use_cache flag for controlling Redis cache behavior
   optional bool use_cache = 8;
-  
+
   // Optional occurred_at timestamp for episodic memory
   // ISO 8601 format string (e.g., "2025-11-18T10:30:00+00:00")
   optional string occurred_at = 9;
-  
+
   // ========== LANGFUSE TRACE CONTEXT (for observability) ==========
   // LangFuse trace ID for distributed tracing continuity
   optional string langfuse_trace_id = 10;
-  
+
   // LangFuse observation/span ID (parent span)
   optional string langfuse_observation_id = 11;
-  
+
   // LangFuse session ID (agent/conversation session)
   optional string langfuse_session_id = 12;
-  
+
   // LangFuse user ID (for user-level tracking)
   optional string langfuse_user_id = 13;
 }
@@ -69,25 +71,25 @@ message MessageCreate {
     ROLE_USER = 1;
     ROLE_SYSTEM = 2;
   }
-  
+
   // The role of the participant
   Role role = 1;
-  
+
   // Content can be either simple text or complex structured content
   oneof content_type {
     string text_content = 2;
     MessageContentList structured_content = 3;
   }
-  
+
   // Optional name of the participant
   optional string name = 4;
-  
+
   // Optional offline threading id
   optional string otid = 5;
-  
+
   // Optional sender identifier
   optional string sender_id = 6;
-  
+
   // Optional multi-agent group id
   optional string group_id = 7;
 }

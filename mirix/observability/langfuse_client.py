@@ -70,9 +70,7 @@ def initialize_langfuse(force: bool = False) -> Optional["Langfuse"]:
                 return None
 
             environment = settings.langfuse_environment
-            logger.info(
-                f"Initializing LangFuse client (host: {settings.langfuse_host}, environment: {environment})"
-            )
+            logger.info(f"Initializing LangFuse client (host: {settings.langfuse_host}, environment: {environment})")
 
             from langfuse import Langfuse
             from opentelemetry.sdk.trace import TracerProvider
@@ -101,12 +99,10 @@ def initialize_langfuse(force: bool = False) -> Optional["Langfuse"]:
             try:
                 _langfuse_client.flush()
                 logger.info(
-                    f"✅ LangFuse observability initialized and verified successfully (environment: {environment})"
+                    f"LangFuse observability initialized and verified successfully (environment: {environment})"
                 )
             except Exception as health_error:
-                logger.warning(
-                    f"LangFuse initialized but health check failed: {health_error}"
-                )
+                logger.warning(f"LangFuse initialized but health check failed: {health_error}")
                 # Continue anyway - will retry on actual use
 
             return _langfuse_client
@@ -178,7 +174,7 @@ def flush_langfuse(timeout: Optional[float] = None) -> bool:
     try:
         logger.info(f"Flushing LangFuse traces (timeout: {timeout}s)...")
         _langfuse_client.flush()
-        logger.info("✅ LangFuse traces flushed successfully")
+        logger.info("LangFuse traces flushed successfully")
         return True
     except Exception as e:
         logger.error(f"Error flushing LangFuse traces: {e}", exc_info=True)
@@ -205,7 +201,7 @@ def shutdown_langfuse() -> None:
             if hasattr(_langfuse_client, "shutdown"):
                 _langfuse_client.shutdown()
 
-            logger.info("✅ LangFuse client shutdown complete")
+            logger.info("LangFuse client shutdown complete")
         except Exception as e:
             logger.warning(f"Error during LangFuse shutdown: {e}")
         finally:

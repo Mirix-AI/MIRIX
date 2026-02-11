@@ -51,9 +51,7 @@ def ensure_organization():
     try:
         org_mgr.get_organization_by_id(TEST_QUEUE_ORG_ID)
     except Exception:
-        org_mgr.create_organization(
-            PydanticOrganization(id=TEST_QUEUE_ORG_ID, name="Test Queue Org")
-        )
+        org_mgr.create_organization(PydanticOrganization(id=TEST_QUEUE_ORG_ID, name="Test Queue Org"))
     return TEST_QUEUE_ORG_ID
 
 
@@ -62,11 +60,7 @@ def mock_server():
     """Create a mock SyncServer instance"""
     server = Mock()
     server.send_messages = Mock(
-        return_value=Mock(
-            model_dump=Mock(
-                return_value={"completion_tokens": 100, "prompt_tokens": 50}
-            )
-        )
+        return_value=Mock(model_dump=Mock(return_value={"completion_tokens": 100, "prompt_tokens": 50}))
     )
     return server
 
@@ -100,13 +94,8 @@ def sample_queue_message(sample_client):
     """Create a sample QueueMessage protobuf"""
     msg = QueueMessage()
 
-    # Set actor (Client converted to protobuf User)
-    msg.actor.id = sample_client.id
-    msg.actor.organization_id = sample_client.organization_id
-    msg.actor.name = sample_client.name
-    msg.actor.status = sample_client.status
-    msg.actor.timezone = "UTC"  # Client doesn't have timezone, use default
-    msg.actor.is_deleted = sample_client.is_deleted
+    # Set client_id (new approach - worker will look up Client from database)
+    msg.client_id = sample_client.id
 
     # Set agent and messages
     msg.agent_id = "agent-789"
@@ -177,7 +166,7 @@ class TestMemoryQueue:
         retrieved = queue.get(timeout=1.0)
 
         assert retrieved.agent_id == sample_queue_message.agent_id
-        assert retrieved.actor.id == sample_queue_message.actor.id
+        assert retrieved.client_id == sample_queue_message.client_id
         assert len(retrieved.input_messages) == len(sample_queue_message.input_messages)
 
     def test_memory_queue_timeout(self):
@@ -197,7 +186,7 @@ class TestMemoryQueue:
         messages = []
         for i in range(5):
             msg = QueueMessage()
-            msg.actor.id = sample_client.id
+            msg.client_id = sample_client.id
             msg.agent_id = f"agent-{i}"
             messages.append(msg)
             queue.put(msg)
@@ -250,7 +239,7 @@ class TestPartitionedMemoryQueue:
         messages = []
         for i in range(10):
             msg = QueueMessage()
-            msg.actor.id = sample_client.id
+            msg.client_id = sample_client.id
             msg.agent_id = f"agent-{i}"
             msg.user_id = user_id
             messages.append(msg)
@@ -284,16 +273,14 @@ class TestPartitionedMemoryQueue:
 
     def test_different_users_can_route_to_different_partitions(self, sample_client):
         """Test that different user_ids can go to different partitions"""
-        queue = PartitionedMemoryQueue(
-            num_partitions=100
-        )  # Many partitions to increase spread
+        queue = PartitionedMemoryQueue(num_partitions=100)  # Many partitions to increase spread
 
         # Create messages for many different users
         user_ids = [f"user-{i}" for i in range(50)]
 
         for user_id in user_ids:
             msg = QueueMessage()
-            msg.actor.id = sample_client.id
+            msg.client_id = sample_client.id
             msg.agent_id = "agent-test"
             msg.user_id = user_id
             queue.put(msg)
@@ -318,7 +305,7 @@ class TestPartitionedMemoryQueue:
         # Manually put messages in specific partitions
         for i in range(3):
             msg = QueueMessage()
-            msg.actor.id = sample_client.id
+            msg.client_id = sample_client.id
             msg.agent_id = f"agent-partition-{i}"
             queue._partitions[i].put(msg)
 
@@ -346,40 +333,12 @@ class TestPartitionedMemoryQueue:
         with pytest.raises(q.Empty):
             pqueue.get_from_partition(0, timeout=0.1)
 
-    def test_fallback_to_actor_id_when_no_user_id(self, sample_client):
-        """Test that actor.id is used as partition key when user_id is not set"""
-        queue = PartitionedMemoryQueue(num_partitions=4)
-
-        # Create messages without user_id
-        for i in range(5):
-            msg = QueueMessage()
-            msg.actor.id = "actor-fallback"
-            msg.agent_id = f"agent-{i}"
-            # No user_id set
-            queue.put(msg)
-
-        # All should be in same partition (based on actor.id)
-        partition_counts = []
-        for partition_id in range(4):
-            count = 0
-            while True:
-                try:
-                    queue.get_from_partition(partition_id, timeout=0.01)
-                    count += 1
-                except:
-                    break
-            partition_counts.append(count)
-
-        # One partition should have all 5, others should have 0
-        assert max(partition_counts) == 5
-        assert sum(partition_counts) == 5
-
     def test_backward_compatible_get(self, sample_client):
         """Test that get() still works (retrieves from partition 0)"""
         queue = PartitionedMemoryQueue(num_partitions=1)
 
         msg = QueueMessage()
-        msg.actor.id = sample_client.id
+        msg.client_id = sample_client.id
         msg.agent_id = "agent-compat"
         msg.user_id = "user-compat"
         queue.put(msg)
@@ -453,9 +412,7 @@ class TestQueueWorker:
         worker._process_message(sample_queue_message)
         # No error should be raised
 
-    def test_worker_process_message_with_server(
-        self, mock_server, sample_queue_message
-    ):
+    def test_worker_process_message_with_server(self, mock_server, sample_queue_message):
         """Test processing message with server available"""
         queue = MemoryQueue()
         worker = QueueWorker(queue, server=mock_server)
@@ -471,9 +428,7 @@ class TestQueueWorker:
         assert call_args.kwargs["agent_id"] == sample_queue_message.agent_id
         assert len(call_args.kwargs["input_messages"]) > 0
 
-    def test_worker_message_processing_integration(
-        self, mock_server, sample_queue_message
-    ):
+    def test_worker_message_processing_integration(self, mock_server, sample_queue_message):
         """Test end-to-end message processing"""
         queue = MemoryQueue()
         worker = QueueWorker(queue, server=mock_server)
@@ -635,9 +590,7 @@ class TestMultiWorkerManager:
 
         manager.cleanup()
 
-    def test_manager_workers_have_unique_partition_ids(
-        self, configure_workers, mock_server
-    ):
+    def test_manager_workers_have_unique_partition_ids(self, configure_workers, mock_server):
         """Test each worker is assigned a unique partition_id"""
         manager = configure_workers(num_workers=4)
         manager.initialize(server=mock_server)
@@ -726,14 +679,14 @@ class TestWorkerPartitionAssignment:
 
         # Put message directly in partition 1
         msg = QueueMessage()
-        msg.actor.id = sample_client.id
+        msg.client_id = sample_client.id
         msg.agent_id = "agent-partition-1"
         msg.user_id = "user-1"
         queue._partitions[1].put(msg)
 
         # Put message in partition 0 (different partition)
         msg2 = QueueMessage()
-        msg2.actor.id = sample_client.id
+        msg2.client_id = sample_client.id
         msg2.agent_id = "agent-partition-0"
         msg2.user_id = "user-0"
         queue._partitions[0].put(msg2)
@@ -782,13 +735,13 @@ class TestWorkerPartitionAssignment:
         # Put messages in specific partitions
         for i in range(5):
             msg = QueueMessage()
-            msg.actor.id = sample_client.id
+            msg.client_id = sample_client.id
             msg.agent_id = f"agent-p0-{i}"
             queue._partitions[0].put(msg)
 
         for i in range(5):
             msg = QueueMessage()
-            msg.actor.id = sample_client.id
+            msg.client_id = sample_client.id
             msg.agent_id = f"agent-p1-{i}"
             queue._partitions[1].put(msg)
 
@@ -873,22 +826,18 @@ class TestQueueUtil:
         manager = clean_manager
         manager.initialize()
 
-        put_messages(
-            actor=sample_client, agent_id="agent-789", input_messages=sample_messages
-        )
+        put_messages(actor=sample_client, agent_id="agent-789", input_messages=sample_messages)
 
         # Retrieve and verify
         msg = manager._queue.get(timeout=1.0)
         assert msg.agent_id == "agent-789"
-        assert msg.actor.id == sample_client.id
+        assert msg.client_id == sample_client.id
         assert len(msg.input_messages) == len(sample_messages)
 
         # Cleanup
         manager.cleanup()
 
-    def test_put_messages_with_options(
-        self, clean_manager, sample_client, sample_messages
-    ):
+    def test_put_messages_with_options(self, clean_manager, sample_client, sample_messages):
         """Test put_messages with optional parameters"""
         manager = clean_manager
         manager.initialize()
@@ -991,9 +940,7 @@ class TestQueueInit:
 class TestQueueIntegration:
     """Integration tests for the complete queue system"""
 
-    def test_end_to_end_message_flow(
-        self, clean_manager, mock_server, sample_client, sample_messages
-    ):
+    def test_end_to_end_message_flow(self, clean_manager, mock_server, sample_client, sample_messages):
         """Test complete message flow from enqueue to processing"""
         manager = clean_manager
 
@@ -1020,9 +967,7 @@ class TestQueueIntegration:
         # Cleanup
         manager.cleanup()
 
-    def test_multiple_messages_processing(
-        self, clean_manager, mock_server, sample_client, sample_messages
-    ):
+    def test_multiple_messages_processing(self, clean_manager, mock_server, sample_client, sample_messages):
         """Test processing multiple messages"""
         manager = clean_manager
         initialize_queue(mock_server)
@@ -1044,9 +989,7 @@ class TestQueueIntegration:
         # Cleanup
         manager.cleanup()
 
-    def test_worker_handles_processing_errors(
-        self, clean_manager, sample_client, sample_messages
-    ):
+    def test_worker_handles_processing_errors(self, clean_manager, sample_client, sample_messages):
         """Test that worker handles errors gracefully"""
         manager = clean_manager
 
@@ -1057,9 +1000,7 @@ class TestQueueIntegration:
         initialize_queue(error_server)
 
         # Enqueue message
-        put_messages(
-            actor=sample_client, agent_id="agent-error", input_messages=sample_messages
-        )
+        put_messages(actor=sample_client, agent_id="agent-error", input_messages=sample_messages)
 
         # Wait for processing attempt
         time.sleep(1.5)

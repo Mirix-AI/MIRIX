@@ -73,14 +73,10 @@ class EpisodicMemoryManager:
         cleaned_text = self._clean_text_for_search(text)
 
         # Split into tokens and filter out empty strings and very short tokens
-        tokens = [
-            token for token in cleaned_text.split() if token.strip() and len(token) > 1
-        ]
+        tokens = [token for token in cleaned_text.split() if token.strip() and len(token) > 1]
         return tokens
 
-    def _count_word_matches(
-        self, event_data: Dict[str, Any], query_words: List[str], search_field: str = ""
-    ) -> int:
+    def _count_word_matches(self, event_data: Dict[str, Any], query_words: List[str], search_field: str = "") -> int:
         """
         Count how many of the query words are present in the event data.
 
@@ -142,37 +138,27 @@ class EpisodicMemoryManager:
         Raises:
             NoResultFound: If the record doesn't exist or doesn't belong to user
         """
-        # Try Redis cache first (JSON-based for memory tables)
+        cache_provider = None
         try:
-            from mirix.database.redis_client import get_redis_client
+            from mirix.database.cache_provider import get_cache_provider
 
-            redis_client = get_redis_client()
+            cache_provider = get_cache_provider()
 
-            if redis_client:
-                redis_key = f"{redis_client.EPISODIC_PREFIX}{episodic_memory_id}"
-                cached_data = redis_client.get_json(redis_key)
+            if cache_provider:
+                cache_key = f"{cache_provider.EPISODIC_PREFIX}{episodic_memory_id}"
+                cached_data = cache_provider.get_json(cache_key)
                 if cached_data:
-                    # Cache HIT - return from Redis
-                    logger.debug(
-                        "✅ Redis cache HIT for episodic memory %s", episodic_memory_id
-                    )
+                    logger.debug("Cache HIT for episodic memory %s", episodic_memory_id)
                     return PydanticEpisodicEvent(**cached_data)
         except Exception as e:
-            # Log but continue to PostgreSQL on Redis error
             logger.warning(
-                "Redis cache read failed for episodic memory %s: %s",
+                "Cache read failed for episodic memory %s: %s",
                 episodic_memory_id,
                 e,
             )
 
-        # Cache MISS or Redis unavailable - fetch from PostgreSQL
         with self.session_maker() as session:
             try:
-                # Construct a PydanticClient for actor using user's organization_id.
-                # Note: We can pass in a PydanticClient with a default client ID because
-                # EpisodicEvent.read() only uses the organization_id from the actor for
-                # access control (see apply_access_predicate in sqlalchemy_base.py).
-                # The actual client ID is not used for filtering.
                 actor = PydanticClient(
                     id="system-default-client",
                     organization_id=user.organization_id,
@@ -184,30 +170,27 @@ class EpisodicMemoryManager:
                 )
                 pydantic_event = episodic_memory_item.to_pydantic()
 
-                # Populate Redis cache for next time
                 try:
-                    if redis_client:
+                    if cache_provider:
+                        from mirix.settings import settings
+
+                        cache_key = f"{cache_provider.EPISODIC_PREFIX}{episodic_memory_id}"
                         data = pydantic_event.model_dump(mode="json")
-                        # model_dump(mode='json') already converts datetime to ISO format strings
-                        redis_client.set_json(
-                            redis_key, data, ttl=settings.redis_ttl_default
-                        )
+                        cache_provider.set_json(cache_key, data, ttl=settings.redis_ttl_default)
                         logger.debug(
-                            "Populated Redis cache for episodic memory %s",
+                            "Populated cache for episodic memory %s",
                             episodic_memory_id,
                         )
                 except Exception as e:
                     logger.warning(
-                        "Failed to populate Redis cache for episodic memory %s: %s",
+                        "Failed to populate cache for episodic memory %s: %s",
                         episodic_memory_id,
                         e,
                     )
 
                 return pydantic_event
             except NoResultFound:
-                raise NoResultFound(
-                    f"Episodic episodic_memory record with id {episodic_memory_id} not found."
-                )
+                raise NoResultFound(f"Episodic episodic_memory record with id {episodic_memory_id} not found.")
 
     @update_timezone
     @enforce_types
@@ -231,11 +214,7 @@ class EpisodicMemoryManager:
             query = (
                 select(EpisodicEvent)
                 .where(EpisodicEvent.user_id == user.id)
-                .order_by(
-                    cast(
-                        text("episodic_memory.last_modify ->> 'timestamp'"), DateTime
-                    ).desc()
-                )
+                .order_by(cast(text("episodic_memory.last_modify ->> 'timestamp'"), DateTime).desc())
             )
 
             result = session.execute(query.limit(1))
@@ -267,9 +246,7 @@ class EpisodicMemoryManager:
         # Backward compatibility: if client_id not provided, use actor.id as fallback
         if client_id is None:
             client_id = actor.id
-            logger.warning(
-                "client_id not provided to create_episodic_memory, using actor.id as fallback"
-            )
+            logger.warning("client_id not provided to create_episodic_memory, using actor.id as fallback")
 
         # user_id should be explicitly provided for proper multi-user isolation
         # Fallback to None if not provided - callers should pass user_id explicitly
@@ -277,17 +254,13 @@ class EpisodicMemoryManager:
             from mirix.services.user_manager import UserManager
 
             user_id = UserManager.ADMIN_USER_ID
-            logger.warning(
-                "user_id not provided to create_episodic_memory, using ADMIN_USER_ID as fallback"
-            )
+            logger.warning("user_id not provided to create_episodic_memory, using ADMIN_USER_ID as fallback")
 
         # Ensure ID is set before model_dump
         if not episodic_memory.id:
             from mirix.utils import generate_unique_short_id
 
-            episodic_memory.id = generate_unique_short_id(
-                self.session_maker, EpisodicEvent, "ep"
-            )
+            episodic_memory.id = generate_unique_short_id(self.session_maker, EpisodicEvent, "ep")
 
         # Convert the Pydantic model into a dict
         episodic_memory_dict = episodic_memory.model_dump()
@@ -307,9 +280,7 @@ class EpisodicMemoryManager:
         required_fields = ["event_type", "summary"]
         for field in required_fields:
             if field not in episodic_memory_dict or episodic_memory_dict[field] is None:
-                raise ValueError(
-                    f"Required field '{field}' is missing or None in episodic episodic_memory data"
-                )
+                raise ValueError(f"Required field '{field}' is missing or None in episodic episodic_memory data")
 
         # Set defaults if needed
         episodic_memory_dict.setdefault("organization_id", actor.organization_id)
@@ -320,9 +291,7 @@ class EpisodicMemoryManager:
         # Create the episodic memory item (with conditional Redis caching)
         with self.session_maker() as session:
             episodic_memory_item = EpisodicEvent(**episodic_memory_dict)
-            episodic_memory_item.create_with_redis(
-                session, actor=actor, use_cache=use_cache
-            )
+            episodic_memory_item.create_with_redis(session, actor=actor, use_cache=use_cache)
             return episodic_memory_item.to_pydantic()
 
     @enforce_types
@@ -336,10 +305,7 @@ class EpisodicMemoryManager:
         """
         Create multiple episodic episodic_memory records in one go.
         """
-        return [
-            self.create_episodic_memory(e, actor, client_id, user_id)
-            for e in episodic_memory
-        ]
+        return [self.create_episodic_memory(e, actor, client_id, user_id) for e in episodic_memory]
 
     @enforce_types
     def delete_event_by_id(self, id: str, actor: PydanticClient) -> None:
@@ -348,21 +314,17 @@ class EpisodicMemoryManager:
         """
         with self.session_maker() as session:
             try:
-                episodic_memory_item = EpisodicEvent.read(
-                    db_session=session, identifier=id, actor=actor
-                )
-                # Remove from Redis cache before hard delete
-                from mirix.database.redis_client import get_redis_client
+                episodic_memory_item = EpisodicEvent.read(db_session=session, identifier=id, actor=actor)
+                # Remove from cache before hard delete
+                from mirix.database.cache_provider import get_cache_provider
 
-                redis_client = get_redis_client()
-                if redis_client:
-                    redis_key = f"{redis_client.EPISODIC_PREFIX}{id}"
-                    redis_client.delete(redis_key)
+                cache_provider = get_cache_provider()
+                if cache_provider:
+                    cache_key = f"{cache_provider.EPISODIC_PREFIX}{id}"
+                    cache_provider.delete(cache_key)
                 episodic_memory_item.hard_delete(session)
             except NoResultFound:
-                raise NoResultFound(
-                    f"Episodic episodic_memory record with id {id} not found."
-                )
+                raise NoResultFound(f"Episodic episodic_memory record with id {id} not found.")
 
     @enforce_types
     def delete_by_client_id(self, actor: PydanticClient) -> int:
@@ -381,10 +343,7 @@ class EpisodicMemoryManager:
         with self.session_maker() as session:
             # Get IDs for Redis cleanup (only fetch IDs, not full objects)
             item_ids = [
-                row[0]
-                for row in session.query(EpisodicEvent.id)
-                .filter(EpisodicEvent.client_id == actor.id)
-                .all()
+                row[0] for row in session.query(EpisodicEvent.id).filter(EpisodicEvent.client_id == actor.id).all()
             ]
 
             count = len(item_ids)
@@ -392,18 +351,14 @@ class EpisodicMemoryManager:
                 return 0
 
             # Bulk delete in single query
-            session.query(EpisodicEvent).filter(
-                EpisodicEvent.client_id == actor.id
-            ).delete(synchronize_session=False)
+            session.query(EpisodicEvent).filter(EpisodicEvent.client_id == actor.id).delete(synchronize_session=False)
 
             session.commit()
 
         # Batch delete from Redis cache (outside of session context)
         redis_client = get_redis_client()
         if redis_client and item_ids:
-            redis_keys = [
-                f"{redis_client.EPISODIC_PREFIX}{item_id}" for item_id in item_ids
-            ]
+            redis_keys = [f"{redis_client.EPISODIC_PREFIX}{item_id}" for item_id in item_ids]
 
             # Delete in batches to avoid command size limits
             BATCH_SIZE = 1000
@@ -483,9 +438,7 @@ class EpisodicMemoryManager:
             item_ids = [
                 row[0]
                 for row in session.query(EpisodicEvent.id)
-                .filter(
-                    EpisodicEvent.user_id == user_id, EpisodicEvent.is_deleted == False
-                )
+                .filter(EpisodicEvent.user_id == user_id, EpisodicEvent.is_deleted == False)
                 .all()
             ]
 
@@ -547,10 +500,7 @@ class EpisodicMemoryManager:
         with self.session_maker() as session:
             # Get IDs for Redis cleanup (only fetch IDs, not full objects)
             item_ids = [
-                row[0]
-                for row in session.query(EpisodicEvent.id)
-                .filter(EpisodicEvent.user_id == user_id)
-                .all()
+                row[0] for row in session.query(EpisodicEvent.id).filter(EpisodicEvent.user_id == user_id).all()
             ]
 
             count = len(item_ids)
@@ -558,18 +508,14 @@ class EpisodicMemoryManager:
                 return 0
 
             # Bulk delete in single query
-            session.query(EpisodicEvent).filter(
-                EpisodicEvent.user_id == user_id
-            ).delete(synchronize_session=False)
+            session.query(EpisodicEvent).filter(EpisodicEvent.user_id == user_id).delete(synchronize_session=False)
 
             session.commit()
 
         # Batch delete from Redis cache (outside of session context)
         redis_client = get_redis_client()
         if redis_client and item_ids:
-            redis_keys = [
-                f"{redis_client.EPISODIC_PREFIX}{item_id}" for item_id in item_ids
-            ]
+            redis_keys = [f"{redis_client.EPISODIC_PREFIX}{item_id}" for item_id in item_ids]
 
             # Delete in batches to avoid command size limits
             BATCH_SIZE = 1000
@@ -690,9 +636,7 @@ class EpisodicMemoryManager:
             user: User who owns the memories to count
         """
         with self.session_maker() as session:
-            query = select(func.count(EpisodicEvent.id)).where(
-                EpisodicEvent.user_id == user.id
-            )
+            query = select(func.count(EpisodicEvent.id)).where(EpisodicEvent.user_id == user.id)
             result = session.execute(query)
             return result.scalar_one()
 
@@ -758,7 +702,7 @@ class EpisodicMemoryManager:
         # Extract organization_id from user for multi-tenant isolation
         organization_id = user.organization_id
 
-        # ⭐ Try Redis Search first (if cache enabled and Redis is available)
+        # Try Redis Search first (if cache enabled and Redis is available)
         from mirix.database.redis_client import get_redis_client
 
         redis_client = get_redis_client()
@@ -779,7 +723,7 @@ class EpisodicMemoryManager:
                     )
                     if results:
                         logger.debug(
-                            "✅ Redis cache HIT: returned %d recent episodic events",
+                            "Redis cache HIT: returned %d recent episodic events",
                             len(results),
                         )
                         # Clean Redis-specific fields before Pydantic validation
@@ -795,9 +739,7 @@ class EpisodicMemoryManager:
                         from mirix.constants import MAX_EMBEDDING_DIM
                         from mirix.embeddings import embedding_model
 
-                        embedded_text = embedding_model(
-                            agent_state.embedding_config
-                        ).get_text_embedding(query)
+                        embedded_text = embedding_model(agent_state.embedding_config).get_text_embedding(query)
                         embedded_text = np.array(embedded_text)
                         embedded_text = np.pad(
                             embedded_text,
@@ -806,11 +748,7 @@ class EpisodicMemoryManager:
                         ).tolist()
 
                     # Determine vector field
-                    vector_field = (
-                        f"{search_field}_embedding"
-                        if search_field
-                        else "details_embedding"
-                    )
+                    vector_field = f"{search_field}_embedding" if search_field else "details_embedding"
 
                     results = redis_client.search_vector(
                         index_name=redis_client.EPISODIC_INDEX,
@@ -825,7 +763,7 @@ class EpisodicMemoryManager:
                     )
                     if results:
                         logger.debug(
-                            "✅ Redis vector search HIT: found %d episodic events",
+                            "Redis vector search HIT: found %d episodic events",
                             len(results),
                         )
                         # Clean Redis-specific fields before Pydantic validation
@@ -850,7 +788,7 @@ class EpisodicMemoryManager:
                     )
                     if results:
                         logger.debug(
-                            "✅ Redis text search HIT: found %d episodic events",
+                            "Redis text search HIT: found %d episodic events",
                             len(results),
                         )
                         # Clean Redis-specific fields before Pydantic validation
@@ -866,13 +804,9 @@ class EpisodicMemoryManager:
 
         # Log when bypassing cache or Redis unavailable
         if not use_cache:
-            logger.debug(
-                "⏭️  Bypassing Redis cache (use_cache=False), querying PostgreSQL directly for episodic memory"
-            )
+            logger.debug("Bypassing Redis cache (use_cache=False), querying PostgreSQL directly for episodic memory")
         elif not redis_client:
-            logger.debug(
-                "⚠️  Redis unavailable, querying PostgreSQL directly for episodic memory"
-            )
+            logger.debug("Redis unavailable, querying PostgreSQL directly for episodic memory")
 
         # Original PostgreSQL implementation (unchanged - serves as fallback)
         with self.session_maker() as session:
@@ -890,15 +824,11 @@ class EpisodicMemoryManager:
                 # This allows clients to filter memories by custom tags for access control
                 if filter_tags:
                     for key, value in filter_tags.items():
-                        query_stmt = query_stmt.where(
-                            EpisodicEvent.filter_tags[key].as_string() == str(value)
-                        )
+                        query_stmt = query_stmt.where(EpisodicEvent.filter_tags[key].as_string() == str(value))
 
                 # Apply temporal filtering if provided
                 if start_date is not None:
-                    query_stmt = query_stmt.where(
-                        EpisodicEvent.occurred_at >= start_date
-                    )
+                    query_stmt = query_stmt.where(EpisodicEvent.occurred_at >= start_date)
                 if end_date is not None:
                     query_stmt = query_stmt.where(EpisodicEvent.occurred_at <= end_date)
 
@@ -934,15 +864,11 @@ class EpisodicMemoryManager:
                 # This allows clients to filter memories by custom tags for access control
                 if filter_tags:
                     for key, value in filter_tags.items():
-                        base_query = base_query.where(
-                            EpisodicEvent.filter_tags[key].as_string() == str(value)
-                        )
+                        base_query = base_query.where(EpisodicEvent.filter_tags[key].as_string() == str(value))
 
                 # Apply temporal filtering if provided
                 if start_date is not None:
-                    base_query = base_query.where(
-                        EpisodicEvent.occurred_at >= start_date
-                    )
+                    base_query = base_query.where(EpisodicEvent.occurred_at >= start_date)
                 if end_date is not None:
                     base_query = base_query.where(EpisodicEvent.occurred_at <= end_date)
 
@@ -956,18 +882,14 @@ class EpisodicMemoryManager:
                         embedded_text=embedded_text,
                         embed_query=embed_query,
                         embedding_config=embedding_config,
-                        search_field=eval(
-                            "EpisodicEvent." + search_field + "_embedding"
-                        ),
+                        search_field=eval("EpisodicEvent." + search_field + "_embedding"),
                         target_class=EpisodicEvent,
                         similarity_threshold=similarity_threshold,
                     )
 
                 elif search_method == "string_match":
                     search_field = eval("EpisodicEvent." + search_field)
-                    main_query = base_query.where(
-                        func.lower(search_field).contains(query.lower())
-                    )
+                    main_query = base_query.where(func.lower(search_field).contains(query.lower()))
 
                 elif search_method == "bm25":
                     # Check if we're using PostgreSQL - use native full-text search if available
@@ -987,26 +909,14 @@ class EpisodicMemoryManager:
                     else:
                         # Fallback to in-memory BM25 for SQLite (legacy method)
                         # Load all candidate events (memory-intensive, kept for compatibility)
-                        result = session.execute(
-                            select(EpisodicEvent).where(
-                                EpisodicEvent.user_id == user.id
-                            )
-                        )
+                        result = session.execute(select(EpisodicEvent).where(EpisodicEvent.user_id == user.id))
                         all_events = result.scalars().all()
 
                         # Apply temporal filtering in memory for SQLite
                         if start_date is not None:
-                            all_events = [
-                                e
-                                for e in all_events
-                                if e.occurred_at and e.occurred_at >= start_date
-                            ]
+                            all_events = [e for e in all_events if e.occurred_at and e.occurred_at >= start_date]
                         if end_date is not None:
-                            all_events = [
-                                e
-                                for e in all_events
-                                if e.occurred_at and e.occurred_at <= end_date
-                            ]
+                            all_events = [e for e in all_events if e.occurred_at and e.occurred_at <= end_date]
 
                         if not all_events:
                             return []
@@ -1041,9 +951,7 @@ class EpisodicMemoryManager:
 
                         if not query_tokens:
                             # If query has no valid tokens, return most recent events
-                            return [
-                                event.to_pydantic() for event in valid_events[:limit]
-                            ]
+                            return [event.to_pydantic() for event in valid_events[:limit]]
 
                         # Get BM25 scores for all documents
                         scores = bm25.get_scores(query_tokens)
@@ -1063,9 +971,7 @@ class EpisodicMemoryManager:
 
                 elif search_method == "fuzzy_match":
                     # Load all candidate events (kept for backward compatibility)
-                    result = session.execute(
-                        select(EpisodicEvent).where(EpisodicEvent.user_id == user.id)
-                    )
+                    result = session.execute(select(EpisodicEvent).where(EpisodicEvent.user_id == user.id))
                     all_events = result.scalars().all()
                     scored_events = []
                     for event in all_events:
@@ -1078,9 +984,7 @@ class EpisodicMemoryManager:
                             text_to_search = event.summary
 
                         # Use fuzz.partial_ratio for short query matching against long text.
-                        score = fuzz.partial_ratio(
-                            query.lower(), text_to_search.lower()
-                        )
+                        score = fuzz.partial_ratio(query.lower(), text_to_search.lower())
                         scored_events.append((score, event))
 
                     # Sort events in descending order of fuzzy match score.
@@ -1157,13 +1061,7 @@ class EpisodicMemoryManager:
         tsquery_parts = []
         for word in query_words:
             # Escape special characters for tsquery
-            escaped_word = (
-                word.replace("'", "''")
-                .replace("&", "")
-                .replace("|", "")
-                .replace("!", "")
-                .replace(":", "")
-            )
+            escaped_word = word.replace("'", "''").replace("&", "").replace("|", "").replace("!", "").replace(":", "")
             if escaped_word and len(escaped_word) > 1:  # Skip very short words
                 # Add both exact and prefix matching for better results
                 if len(escaped_word) >= 3:
@@ -1197,7 +1095,9 @@ class EpisodicMemoryManager:
             rank_sql = "ts_rank_cd(to_tsvector('english', coalesce(actor, '')), to_tsquery('english', :tsquery), 32)"
         elif search_field == "event_type":
             tsvector_sql = "to_tsvector('english', coalesce(event_type, ''))"
-            rank_sql = "ts_rank_cd(to_tsvector('english', coalesce(event_type, '')), to_tsquery('english', :tsquery), 32)"
+            rank_sql = (
+                "ts_rank_cd(to_tsvector('english', coalesce(event_type, '')), to_tsquery('english', :tsquery), 32)"
+            )
         else:
             # Search across all relevant text fields with weighting
             tsvector_sql = """setweight(to_tsvector('english', coalesce(summary, '')), 'A') ||
@@ -1347,9 +1247,9 @@ class EpisodicMemoryManager:
                 if search_field and hasattr(EpisodicEvent, search_field)
                 else EpisodicEvent.summary
             )
-            fallback_query = base_query.where(
-                func.lower(fallback_field).contains(query_text.lower())
-            ).order_by(EpisodicEvent.created_at.desc())
+            fallback_query = base_query.where(func.lower(fallback_field).contains(query_text.lower())).order_by(
+                EpisodicEvent.created_at.desc()
+            )
 
             if limit:
                 fallback_query = fallback_query.limit(limit)
@@ -1383,14 +1283,10 @@ class EpisodicMemoryManager:
         with self.session_maker() as session:
             # Use the passed actor directly for access control
             # EpisodicEvent.read() uses organization_id from actor for filtering
-            selected_event = EpisodicEvent.read(
-                db_session=session, identifier=event_id, actor=actor
-            )
+            selected_event = EpisodicEvent.read(db_session=session, identifier=event_id, actor=actor)
 
             if not selected_event:
-                raise ValueError(
-                    f"Episodic episodic_memory record with id {event_id} not found."
-                )
+                raise ValueError(f"Episodic episodic_memory record with id {event_id} not found.")
 
             operations = []
             if new_summary:
@@ -1403,11 +1299,7 @@ class EpisodicMemoryManager:
                     selected_event.details += "\n" + new_details
                 operations.append("details_updated")
 
-            if (
-                BUILD_EMBEDDINGS_FOR_MEMORY
-                and agent_state is not None
-                and (new_summary or new_details)
-            ):
+            if BUILD_EMBEDDINGS_FOR_MEMORY and agent_state is not None and (new_summary or new_details):
                 embed_model = embedding_model(agent_state.embedding_config)
 
                 # Use Pydantic validator to pad embeddings (single source of truth)
@@ -1425,9 +1317,7 @@ class EpisodicMemoryManager:
                 "operation": ", ".join(operations) if operations else "updated",
             }
 
-            selected_event.update_with_redis(
-                session, actor=actor
-            )  # ⭐ Updates Redis JSON cache
+            selected_event.update_with_redis(session, actor=actor)  # Updates Redis JSON cache
             return selected_event.to_pydantic()
 
     def _parse_embedding_field(self, embedding_value):
@@ -1465,17 +1355,11 @@ class EpisodicMemoryManager:
 
                 # Try comma-separated values
                 if "," in embedding_value:
-                    return [
-                        float(x.strip())
-                        for x in embedding_value.split(",")
-                        if x.strip()
-                    ]
+                    return [float(x.strip()) for x in embedding_value.split(",") if x.strip()]
 
                 # Try space-separated values
                 if " " in embedding_value:
-                    return [
-                        float(x.strip()) for x in embedding_value.split() if x.strip()
-                    ]
+                    return [float(x.strip()) for x in embedding_value.split() if x.strip()]
 
             # Try using the original deserialize_vector approach for binary data
             try:
@@ -1555,7 +1439,7 @@ class EpisodicMemoryManager:
                     )
                     if results:
                         logger.debug(
-                            "✅ Redis cache HIT: returned %d recent episodic events for org %s",
+                            "Redis cache HIT: returned %d recent episodic events for org %s",
                             len(results),
                             organization_id,
                         )
@@ -1571,9 +1455,7 @@ class EpisodicMemoryManager:
                         from mirix.constants import MAX_EMBEDDING_DIM
                         from mirix.embeddings import embedding_model
 
-                        embedded_text = embedding_model(
-                            agent_state.embedding_config
-                        ).get_text_embedding(query)
+                        embedded_text = embedding_model(agent_state.embedding_config).get_text_embedding(query)
                         embedded_text = np.array(embedded_text)
                         embedded_text = np.pad(
                             embedded_text,
@@ -1582,11 +1464,7 @@ class EpisodicMemoryManager:
                         ).tolist()
 
                     # Determine vector field
-                    vector_field = (
-                        f"{search_field}_embedding"
-                        if search_field
-                        else "details_embedding"
-                    )
+                    vector_field = f"{search_field}_embedding" if search_field else "details_embedding"
 
                     results = redis_client.search_vector_by_org(
                         index_name=redis_client.EPISODIC_INDEX,
@@ -1600,7 +1478,7 @@ class EpisodicMemoryManager:
                     )
                     if results:
                         logger.debug(
-                            "✅ Redis vector search HIT: %d results for org %s",
+                            "Redis vector search HIT: %d results for org %s",
                             len(results),
                             organization_id,
                         )
@@ -1622,7 +1500,7 @@ class EpisodicMemoryManager:
                     )
                     if results:
                         logger.debug(
-                            "✅ Redis text search HIT: %d results for org %s",
+                            "Redis text search HIT: %d results for org %s",
                             len(results),
                             organization_id,
                         )
@@ -1634,16 +1512,14 @@ class EpisodicMemoryManager:
 
         # Fallback to PostgreSQL
         logger.debug(
-            "⚠️ Redis cache MISS or disabled - falling back to PostgreSQL for org %s",
+            "Redis cache MISS or disabled - falling back to PostgreSQL for org %s",
             organization_id,
         )
 
         with self.session_maker() as session:
             # Base query filtering by organization_id instead of user_id
             # Return full EpisodicEvent objects, not individual columns
-            base_query = select(EpisodicEvent).where(
-                EpisodicEvent.organization_id == organization_id
-            )
+            base_query = select(EpisodicEvent).where(EpisodicEvent.organization_id == organization_id)
 
             # Apply filter_tags (INCLUDING SCOPE)
             # For scope: check if input value is contained in memory's scope
@@ -1656,18 +1532,13 @@ class EpisodicMemoryManager:
                         # Scope matching: input value must be in memory's scope field
                         base_query = base_query.where(
                             or_(
-                                func.lower(
-                                    EpisodicEvent.filter_tags[key].as_string()
-                                ).contains(str(value).lower()),
-                                EpisodicEvent.filter_tags[key].as_string()
-                                == str(value),
+                                func.lower(EpisodicEvent.filter_tags[key].as_string()).contains(str(value).lower()),
+                                EpisodicEvent.filter_tags[key].as_string() == str(value),
                             )
                         )
                     else:
                         # Other keys: exact match
-                        base_query = base_query.where(
-                            EpisodicEvent.filter_tags[key].as_string() == str(value)
-                        )
+                        base_query = base_query.where(EpisodicEvent.filter_tags[key].as_string() == str(value))
 
             # Apply temporal filtering if provided
             if start_date is not None:
@@ -1695,9 +1566,7 @@ class EpisodicMemoryManager:
                     from mirix.constants import MAX_EMBEDDING_DIM
                     from mirix.embeddings import embedding_model
 
-                    embedded_text = embedding_model(
-                        embedding_config
-                    ).get_text_embedding(query)
+                    embedded_text = embedding_model(embedding_config).get_text_embedding(query)
                     embedded_text = np.array(embedded_text)
                     embedded_text = np.pad(
                         embedded_text,
@@ -1713,17 +1582,13 @@ class EpisodicMemoryManager:
                 else:
                     embedding_field = EpisodicEvent.details_embedding
 
-                embedding_query_field = embedding_field.cosine_distance(
-                    embedded_text
-                ).label("distance")
+                embedding_query_field = embedding_field.cosine_distance(embedded_text).label("distance")
 
                 base_query = base_query.add_columns(embedding_query_field)
 
                 # Apply similarity threshold if provided
                 if similarity_threshold is not None:
-                    base_query = base_query.where(
-                        embedding_query_field < similarity_threshold
-                    )
+                    base_query = base_query.where(embedding_query_field < similarity_threshold)
 
                 base_query = base_query.order_by(embedding_query_field)
             elif search_method == "bm25":
@@ -1743,11 +1608,7 @@ class EpisodicMemoryManager:
                 tsvector = func.to_tsvector("english", text_field)
                 rank = func.ts_rank_cd(tsvector, tsquery).label("rank")
 
-                base_query = (
-                    base_query.add_columns(rank)
-                    .where(tsvector.op("@@")(tsquery))
-                    .order_by(rank.desc())
-                )
+                base_query = base_query.add_columns(rank).where(tsvector.op("@@")(tsquery)).order_by(rank.desc())
 
             if limit:
                 base_query = base_query.limit(limit)

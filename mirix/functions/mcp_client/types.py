@@ -36,9 +36,7 @@ class BaseServerConfig(BaseModel, ABC):
         """Check if string contains templated variables like {{ VARIABLE_NAME }}"""
         return bool(re.search(TEMPLATED_VARIABLE_REGEX, value))
 
-    def get_tool_variable(
-        self, value: str, environment_variables: Dict[str, str]
-    ) -> Optional[str]:
+    def get_tool_variable(self, value: str, environment_variables: Dict[str, str]) -> Optional[str]:
         """Replace templated variables with environment variable values"""
         if not self.is_templated_tool_variable(value):
             return value
@@ -48,11 +46,7 @@ class BaseServerConfig(BaseModel, ABC):
             default_value = match.group(2) if match.group(2) else None
 
             # Try to get the value from environment variables
-            env_value = (
-                environment_variables.get(variable_name)
-                if environment_variables
-                else None
-            )
+            env_value = environment_variables.get(variable_name) if environment_variables else None
 
             if env_value is not None:
                 return env_value
@@ -70,9 +64,7 @@ class BaseServerConfig(BaseModel, ABC):
         return result
 
     @abstractmethod
-    def resolve_environment_variables(
-        self, environment_variables: Optional[Dict[str, str]] = None
-    ) -> None:
+    def resolve_environment_variables(self, environment_variables: Optional[Dict[str, str]] = None) -> None:
         """Resolve templated environment variables in configuration"""
         raise NotImplementedError
 
@@ -82,16 +74,10 @@ class StdioServerConfig(BaseServerConfig):
 
     type: MCPServerType = MCPServerType.STDIO
     command: str = Field(..., description="The command to run")
-    args: List[str] = Field(
-        default_factory=list, description="Arguments to pass to the command"
-    )
-    env: Optional[Dict[str, str]] = Field(
-        None, description="Environment variables to set"
-    )
+    args: List[str] = Field(default_factory=list, description="Arguments to pass to the command")
+    env: Optional[Dict[str, str]] = Field(None, description="Environment variables to set")
 
-    def resolve_environment_variables(
-        self, environment_variables: Optional[Dict[str, str]] = None
-    ) -> None:
+    def resolve_environment_variables(self, environment_variables: Optional[Dict[str, str]] = None) -> None:
         """Resolve any templated variables in env dict"""
         if self.env and environment_variables:
             for key, value in self.env.items():
@@ -117,13 +103,9 @@ class SSEServerConfig(BaseServerConfig):
     server_url: str = Field(..., description="The URL of the SSE server")
     auth_header: Optional[str] = Field(None, description="Authentication header name")
     auth_token: Optional[str] = Field(None, description="Authentication token")
-    custom_headers: Optional[Dict[str, str]] = Field(
-        None, description="Custom HTTP headers"
-    )
+    custom_headers: Optional[Dict[str, str]] = Field(None, description="Custom HTTP headers")
 
-    def resolve_environment_variables(
-        self, environment_variables: Optional[Dict[str, str]] = None
-    ) -> None:
+    def resolve_environment_variables(self, environment_variables: Optional[Dict[str, str]] = None) -> None:
         """Resolve templated variables in auth token and headers"""
         if self.auth_token and self.is_templated_tool_variable(self.auth_token):
             resolved = self.get_tool_variable(self.auth_token, environment_variables)
@@ -158,9 +140,7 @@ class GmailServerConfig(BaseServerConfig):
     client_secret: str = Field(..., description="Gmail OAuth2 Client Secret")
     token_file: Optional[str] = Field(None, description="Path to store OAuth2 token")
 
-    def resolve_environment_variables(
-        self, environment_variables: Optional[Dict[str, str]] = None
-    ) -> None:
+    def resolve_environment_variables(self, environment_variables: Optional[Dict[str, str]] = None) -> None:
         """Resolve templated variables in client credentials"""
         if environment_variables:
             if self.is_templated_tool_variable(self.client_id):
@@ -169,9 +149,7 @@ class GmailServerConfig(BaseServerConfig):
                     self.client_id = resolved
 
             if self.is_templated_tool_variable(self.client_secret):
-                resolved = self.get_tool_variable(
-                    self.client_secret, environment_variables
-                )
+                resolved = self.get_tool_variable(self.client_secret, environment_variables)
                 if resolved:
                     self.client_secret = resolved
 

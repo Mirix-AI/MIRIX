@@ -89,9 +89,7 @@ class PartitionedMemoryQueue(QueueInterface):
         """
         self._num_partitions = max(1, num_partitions)
         self._round_robin = round_robin
-        self._partitions: List[queue.Queue] = [
-            queue.Queue() for _ in range(self._num_partitions)
-        ]
+        self._partitions: List[queue.Queue] = [queue.Queue() for _ in range(self._num_partitions)]
 
         # For even partitioning: track user -> partition assignments
         self._user_partition_map: Dict[str, int] = {}
@@ -144,13 +142,13 @@ class PartitionedMemoryQueue(QueueInterface):
             message: QueueMessage to extract key from
 
         Returns:
-            Partition key string (user_id or actor.id as fallback)
+            Partition key string (user_id, client_id)
         """
         # Match KafkaQueue's partition key logic from kafka_queue.py
         if message.HasField("user_id") and message.user_id:
             return message.user_id
-        elif message.HasField("actor") and message.actor.id:
-            return message.actor.id
+        elif message.client_id:
+            return message.client_id
         else:
             # Fallback to agent_id if no user context
             return message.agent_id
@@ -223,9 +221,7 @@ class PartitionedMemoryQueue(QueueInterface):
         """
         return self.get_from_partition(0, timeout)
 
-    def get_from_partition(
-        self, partition_id: int, timeout: Optional[float] = None
-    ) -> QueueMessage:
+    def get_from_partition(self, partition_id: int, timeout: Optional[float] = None) -> QueueMessage:
         """
         Retrieve a message from a specific partition
 
@@ -241,10 +237,7 @@ class PartitionedMemoryQueue(QueueInterface):
             ValueError: If partition_id is out of range
         """
         if partition_id < 0 or partition_id >= self._num_partitions:
-            raise ValueError(
-                f"Invalid partition_id {partition_id}, "
-                f"must be 0 to {self._num_partitions - 1}"
-            )
+            raise ValueError(f"Invalid partition_id {partition_id}, " f"must be 0 to {self._num_partitions - 1}")
 
         message = self._partitions[partition_id].get(timeout=timeout)
         logger.debug(

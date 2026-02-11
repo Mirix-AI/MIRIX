@@ -41,9 +41,7 @@ class AbstractClient(object):
     ):
         self.debug = debug
 
-    def agent_exists(
-        self, agent_id: Optional[str] = None, agent_name: Optional[str] = None
-    ) -> bool:
+    def agent_exists(self, agent_id: Optional[str] = None, agent_name: Optional[str] = None) -> bool:
         raise NotImplementedError
 
     def create_agent(
@@ -106,9 +104,7 @@ class AbstractClient(object):
     def get_in_context_memory(self, agent_id: str) -> Memory:
         raise NotImplementedError
 
-    def update_in_context_memory(
-        self, agent_id: str, section: str, value: Union[List[str], str]
-    ) -> Memory:
+    def update_in_context_memory(self, agent_id: str, section: str, value: Union[List[str], str]) -> Memory:
         raise NotImplementedError
 
     def get_archival_memory_summary(self, agent_id: str) -> ArchivalMemorySummary:
@@ -213,9 +209,7 @@ class AbstractClient(object):
     ) -> Tool:
         raise NotImplementedError
 
-    def list_tools(
-        self, cursor: Optional[str] = None, limit: Optional[int] = 50
-    ) -> List[Tool]:
+    def list_tools(self, cursor: Optional[str] = None, limit: Optional[int] = 50) -> List[Tool]:
         raise NotImplementedError
 
     def get_tool(self, id: str) -> Tool:
@@ -248,17 +242,13 @@ class AbstractClient(object):
     def create_org(self, name: Optional[str] = None) -> Organization:
         raise NotImplementedError
 
-    def list_orgs(
-        self, cursor: Optional[str] = None, limit: Optional[int] = 50
-    ) -> List[Organization]:
+    def list_orgs(self, cursor: Optional[str] = None, limit: Optional[int] = 50) -> List[Organization]:
         raise NotImplementedError
 
     def delete_org(self, org_id: str) -> Organization:
         raise NotImplementedError
 
-    def create_sandbox_config(
-        self, config: Union[LocalSandboxConfig, E2BSandboxConfig]
-    ) -> SandboxConfig:
+    def create_sandbox_config(self, config: Union[LocalSandboxConfig, E2BSandboxConfig]) -> SandboxConfig:
         """
         Create a new sandbox configuration.
 
@@ -296,9 +286,7 @@ class AbstractClient(object):
         """
         raise NotImplementedError
 
-    def list_sandbox_configs(
-        self, limit: int = 50, cursor: Optional[str] = None
-    ) -> List[SandboxConfig]:
+    def list_sandbox_configs(self, limit: int = 50, cursor: Optional[str] = None) -> List[SandboxConfig]:
         """
         List all sandbox configurations.
 

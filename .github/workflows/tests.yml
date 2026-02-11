@@ -101,24 +101,3 @@ jobs:
         path: htmlcov/
       continue-on-error: true
 
-  lint:
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v4
-
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.12' 
-
-    - name: Install ruff
-      run: pip install ruff
-
-    - name: Run ruff on mirix package
-      run: ruff check mirix/
-      continue-on-error: true
-    
-    - name: Run ruff on tests
-      run: ruff check tests/
-      continue-on-error: true
-

@@ -34,7 +34,10 @@ from mirix.schemas.openai.chat_completion_response import (
     FunctionCall,
 )
 from mirix.schemas.openai.chat_completion_response import Message as ChoiceMessage
-from mirix.schemas.openai.chat_completion_response import ToolCall, UsageStatistics
+from mirix.schemas.openai.chat_completion_response import (
+    ToolCall,
+    UsageStatistics,
+)
 from mirix.services.provider_manager import ProviderManager
 from mirix.tracing import trace_method
 
@@ -46,27 +49,19 @@ logger = get_logger(__name__)
 class AnthropicClient(LLMClientBase):
     def request(self, request_data: dict) -> dict:
         client = self._get_anthropic_client(async_client=False)
-        response = client.beta.messages.create(
-            **request_data, betas=["tools-2024-04-04"]
-        )
+        response = client.beta.messages.create(**request_data, betas=["tools-2024-04-04"])
         return response.model_dump()
 
     async def request_async(self, request_data: dict) -> dict:
         client = self._get_anthropic_client(async_client=True)
-        response = await client.beta.messages.create(
-            **request_data, betas=["tools-2024-04-04"]
-        )
+        response = await client.beta.messages.create(**request_data, betas=["tools-2024-04-04"])
         return response.model_dump()
 
     @trace_method
-    async def stream_async(
-        self, request_data: dict
-    ) -> AsyncStream[BetaRawMessageStreamEvent]:
+    async def stream_async(self, request_data: dict) -> AsyncStream[BetaRawMessageStreamEvent]:
         client = self._get_anthropic_client(async_client=True)
         request_data["stream"] = True
-        return await client.beta.messages.create(
-            **request_data, betas=["tools-2024-04-04"]
-        )
+        return await client.beta.messages.create(**request_data, betas=["tools-2024-04-04"])
 
     @trace_method
     async def send_llm_batch_request_async(
@@ -92,9 +87,7 @@ class AnthropicClient(LLMClientBase):
         """
         # Validate that both mappings use the same set of agent_ids.
         if set(agent_messages_mapping.keys()) != set(agent_tools_mapping.keys()):
-            raise ValueError(
-                "Agent mappings for messages and tools must use the same agent_ids."
-            )
+            raise ValueError("Agent mappings for messages and tools must use the same agent_ids.")
 
         try:
             requests = {
@@ -109,15 +102,11 @@ class AnthropicClient(LLMClientBase):
             client = self._get_anthropic_client(async_client=True)
 
             anthropic_requests = [
-                Request(
-                    custom_id=agent_id, params=MessageCreateParamsNonStreaming(**params)
-                )
+                Request(custom_id=agent_id, params=MessageCreateParamsNonStreaming(**params))
                 for agent_id, params in requests.items()
             ]
 
-            batch_response = await client.beta.messages.batches.create(
-                requests=anthropic_requests
-            )
+            batch_response = await client.beta.messages.batches.create(requests=anthropic_requests)
 
             return batch_response
 
@@ -127,21 +116,11 @@ class AnthropicClient(LLMClientBase):
             raise self.handle_llm_error(e)
 
     @trace_method
-    def _get_anthropic_client(
-        self, async_client: bool = False
-    ) -> Union[anthropic.AsyncAnthropic, anthropic.Anthropic]:
+    def _get_anthropic_client(self, async_client: bool = False) -> Union[anthropic.AsyncAnthropic, anthropic.Anthropic]:
         override_key = ProviderManager().get_anthropic_override_key()
         if async_client:
-            return (
-                anthropic.AsyncAnthropic(api_key=override_key)
-                if override_key
-                else anthropic.AsyncAnthropic()
-            )
-        return (
-            anthropic.Anthropic(api_key=override_key)
-            if override_key
-            else anthropic.Anthropic()
-        )
+            return anthropic.AsyncAnthropic(api_key=override_key) if override_key else anthropic.AsyncAnthropic()
+        return anthropic.Anthropic(api_key=override_key) if override_key else anthropic.Anthropic()
 
     @trace_method
     def build_request_data(
@@ -156,9 +135,7 @@ class AnthropicClient(LLMClientBase):
         # TODO: I really want to get rid of prefixing, it's a recipe for disaster code maintenance wise
         prefix_fill = True
         if not self.use_tool_naming:
-            raise NotImplementedError(
-                "Only tool calling supported on Anthropic API requests"
-            )
+            raise NotImplementedError("Only tool calling supported on Anthropic API requests")
 
         if not llm_config.max_tokens:
             raise ValueError("Max  tokens must be set for anthropic")
@@ -194,9 +171,7 @@ class AnthropicClient(LLMClientBase):
             tools_for_request = [Tool(function=f) for f in tools]
         elif force_tool_call is not None:
             tool_choice = {"type": "tool", "name": force_tool_call}
-            tools_for_request = [
-                Tool(function=f) for f in tools if f["name"] == force_tool_call
-            ]
+            tools_for_request = [Tool(function=f) for f in tools if f["name"] == force_tool_call]
 
             # need to have this setting to be able to put inner thoughts in kwargs
             if not llm_config.put_inner_thoughts_in_kwargs:
@@ -210,9 +185,7 @@ class AnthropicClient(LLMClientBase):
                 tool_choice = {"type": "any", "disable_parallel_tool_use": True}
             else:
                 tool_choice = {"type": "auto", "disable_parallel_tool_use": True}
-            tools_for_request = (
-                [Tool(function=f) for f in tools] if tools is not None else None
-            )
+            tools_for_request = [Tool(function=f) for f in tools] if tools is not None else None
 
         # Add tool choice
         if tool_choice:
@@ -227,20 +200,12 @@ class AnthropicClient(LLMClientBase):
 
         # Move 'system' to the top level
         if messages[0].role != "system":
-            raise RuntimeError(
-                f"First message is not a system message, instead has role {messages[0].role}"
-            )
-        data["system"] = (
-            messages[0].content
-            if isinstance(messages[0].content, str)
-            else messages[0].content[0].text
-        )
+            raise RuntimeError(f"First message is not a system message, instead has role {messages[0].role}")
+        data["system"] = messages[0].content if isinstance(messages[0].content, str) else messages[0].content[0].text
         data["messages"] = [
             m.to_anthropic_dict(
                 inner_thoughts_xml_tag=inner_thoughts_xml_tag,
-                put_inner_thoughts_in_kwargs=bool(
-                    llm_config.put_inner_thoughts_in_kwargs
-                ),
+                put_inner_thoughts_in_kwargs=bool(llm_config.put_inner_thoughts_in_kwargs),
             )
             for m in messages[1:]
         ]
@@ -249,9 +214,7 @@ class AnthropicClient(LLMClientBase):
 
         # Ensure first message is user
         if data["messages"][0]["role"] != "user":
-            data["messages"] = [
-                {"role": "user", "content": DUMMY_FIRST_USER_MESSAGE}
-            ] + data["messages"]
+            data["messages"] = [{"role": "user", "content": DUMMY_FIRST_USER_MESSAGE}] + data["messages"]
 
         # Handle alternating messages
         data["messages"] = merge_tool_results_into_user_messages(data["messages"])
@@ -260,11 +223,7 @@ class AnthropicClient(LLMClientBase):
         # https://docs.anthropic.com/en/api/messages#body-messages
         # NOTE: cannot prefill with tools for opus:
         # Your API request included an `assistant` message in the final position, which would pre-fill the `assistant` response. When using tools with "claude-3-opus-20240229"
-        if (
-            prefix_fill
-            and not llm_config.put_inner_thoughts_in_kwargs
-            and "opus" not in data["model"]
-        ):
+        if prefix_fill and not llm_config.put_inner_thoughts_in_kwargs and "opus" not in data["model"]:
             data["messages"].append(
                 # Start the thinking process for the assistant
                 {"role": "assistant", "content": f"<{inner_thoughts_xml_tag}>"},
@@ -300,10 +259,7 @@ class AnthropicClient(LLMClientBase):
             message_content = []
             for m in message["content"]:
                 if m["type"] == "image_url":
-                    if (
-                        LOAD_IMAGE_CONTENT_FOR_LAST_MESSAGE_ONLY
-                        and image_content_loaded
-                    ):
+                    if LOAD_IMAGE_CONTENT_FOR_LAST_MESSAGE_ONLY and image_content_loaded:
                         message_content.append(
                             {
                                 "type": "text",
@@ -332,9 +288,7 @@ class AnthropicClient(LLMClientBase):
                                 mime_type = "image/jpeg"  # Default fallback
 
                             with open(file.file_path, "rb") as img_file:
-                                base64_data = base64.b64encode(img_file.read()).decode(
-                                    "utf-8"
-                                )
+                                base64_data = base64.b64encode(img_file.read()).decode("utf-8")
                                 message_content.append(
                                     {
                                         "type": "image",
@@ -346,18 +300,12 @@ class AnthropicClient(LLMClientBase):
                                     }
                                 )
                         else:
-                            raise ValueError(
-                                f"File {file.file_path} has no source_url or file_path"
-                            )
+                            raise ValueError(f"File {file.file_path} has no source_url or file_path")
                         # global_image_idx += 1
                         has_image = True
                 elif m["type"] == "cloud_file_uri":
-                    file = self.file_manager.get_file_metadata_by_id(
-                        m["cloud_file_uri"]
-                    )
-                    local_path = self.cloud_file_mapping_manager.get_local_file(
-                        file.google_cloud_url
-                    )
+                    file = self.file_manager.get_file_metadata_by_id(m["cloud_file_uri"])
+                    local_path = self.cloud_file_mapping_manager.get_local_file(file.google_cloud_url)
 
                     import base64
                     import mimetypes
@@ -523,11 +471,7 @@ class AnthropicClient(LLMClientBase):
                 if content_part.type == "tool_use":
                     # hack for tool rules
                     input = json.loads(json.dumps(content_part.input))
-                    if (
-                        "id" in input
-                        and input["id"].startswith("toolu_")
-                        and "function" in input
-                    ):
+                    if "id" in input and input["id"].startswith("toolu_") and "function" in input:
                         arguments = str(input["function"]["arguments"])
                     else:
                         arguments = json.dumps(content_part.input, indent=2)
@@ -630,8 +574,7 @@ def convert_tools_to_anthropic_format(tools: List[Tool]) -> List[dict]:
         formatted_tool = {
             "name": tool.function.name,
             "description": tool.function.description,
-            "input_schema": tool.function.parameters
-            or {"type": "object", "properties": {}, "required": []},
+            "input_schema": tool.function.parameters or {"type": "object", "properties": {}, "required": []},
         }
         formatted_tools.append(formatted_tool)
 

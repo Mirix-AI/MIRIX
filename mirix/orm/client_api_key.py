@@ -26,35 +26,24 @@ class ClientApiKey(SqlalchemyBase, OrganizationMixin):
     )
 
     # API key fields
-    api_key_hash: Mapped[str] = mapped_column(
-        nullable=False, doc="Hashed API key for authentication"
-    )
-    
-    name: Mapped[Optional[str]] = mapped_column(
-        nullable=True, doc="Optional name/label for this API key"
-    )
-    
+    api_key_hash: Mapped[str] = mapped_column(nullable=False, doc="Hashed API key for authentication")
+
+    name: Mapped[Optional[str]] = mapped_column(nullable=True, doc="Optional name/label for this API key")
+
     status: Mapped[str] = mapped_column(
-        nullable=False, 
-        default="active",
-        doc="Status of the API key: active, revoked, expired"
+        nullable=False, default="active", doc="Status of the API key: active, revoked, expired"
     )
-    
+
     permission: Mapped[str] = mapped_column(
-        nullable=False,
-        default="all",
-        doc="Permission level: all, restricted, read_only"
+        nullable=False, default="all", doc="Permission level: all, restricted, read_only"
     )
-    
+
     # Optional user association
     user_id: Mapped[Optional[str]] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"),
         nullable=True,
-        doc="The user this API key is associated with (optional)"
+        doc="The user this API key is associated with (optional)",
     )
 
     # Relationships
-    client: Mapped["Client"] = relationship(
-        "Client", back_populates="api_keys"
-    )
-
+    client: Mapped["Client"] = relationship("Client", back_populates="api_keys")

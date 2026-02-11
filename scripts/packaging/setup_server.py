@@ -70,9 +70,7 @@ def get_version():
 
     version_file = os.path.join(project_root, "mirix", "__init__.py")
     with open(version_file, "r", encoding="utf-8") as version_f:
-        version_match = re.search(
-            r"^__version__ = ['\"]([^'\"]*)['\"]", version_f.read(), re.M
-        )
+        version_match = re.search(r"^__version__ = ['\"]([^'\"]*)['\"]", version_f.read(), re.M)
         if version_match:
             return version_match.group(1)
         raise RuntimeError("Unable to find version string.")

@@ -2,10 +2,11 @@ import threading
 import time
 import traceback
 import uuid
+
 from mirix.log import get_logger
 
-
 logger = get_logger(__name__)
+
 
 class MessageQueue:
     """
@@ -56,9 +57,7 @@ class MessageQueue:
         except Exception as e:
             logger.error("Error sending message: %s", e)
             logger.error(traceback.format_exc())
-            logger.debug(
-                "agent_type: ", agent_type, "gets error. agent_id: ", agent_id, "ERROR"
-            )
+            logger.debug("agent_type: ", agent_type, "gets error. agent_id: ", agent_id, "ERROR")
             response = "ERROR"
 
         with self._message_queue_lock:

@@ -40,9 +40,7 @@ def resolve_type(annotation: str):
         raise ValueError(f"Unsupported annotation: {annotation}")
 
 
-def get_function_annotations_from_source(
-    source_code: str, function_name: str
-) -> Dict[str, str]:
+def get_function_annotations_from_source(source_code: str, function_name: str) -> Dict[str, str]:
     """
     Parse the source code to extract annotations for a given function name.
 
@@ -65,14 +63,10 @@ def get_function_annotations_from_source(
                     annotation_str = ast.unparse(arg.annotation)
                     annotations[arg.arg] = annotation_str
             return annotations
-    raise ValueError(
-        f"Function '{function_name}' not found in the provided source code."
-    )
+    raise ValueError(f"Function '{function_name}' not found in the provided source code.")
 
 
-def coerce_dict_args_by_annotations(
-    function_args: dict, annotations: Dict[str, str]
-) -> dict:
+def coerce_dict_args_by_annotations(function_args: dict, annotations: Dict[str, str]) -> dict:
     """
     Coerce arguments in a dictionary to their annotated types.
 
@@ -107,7 +101,5 @@ def coerce_dict_args_by_annotations(
                 # Coerce the value to the resolved type
                 coerced_args[arg_name] = arg_type(value)
             except (TypeError, ValueError, json.JSONDecodeError, SyntaxError) as e:
-                raise ValueError(
-                    f"Failed to coerce argument '{arg_name}' to {annotation_str}: {e}"
-                )
+                raise ValueError(f"Failed to coerce argument '{arg_name}' to {annotation_str}: {e}")
     return coerced_args

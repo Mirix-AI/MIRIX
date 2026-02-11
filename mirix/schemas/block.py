@@ -16,9 +16,7 @@ class BaseBlock(MirixBase, validate_assignment=True):
 
     # data value
     value: Optional[str] = Field(None, description="Value of the block.")
-    limit: int = Field(
-        CORE_MEMORY_BLOCK_CHAR_LIMIT, description="Character limit of the block."
-    )
+    limit: int = Field(CORE_MEMORY_BLOCK_CHAR_LIMIT, description="Character limit of the block.")
 
     # context window label
     label: Optional[str] = Field(
@@ -32,7 +30,9 @@ class BaseBlock(MirixBase, validate_assignment=True):
     @model_validator(mode="after")
     def verify_char_limit(self) -> Self:
         if self.value and len(self.value) > self.limit:
-            error_msg = f"Edit failed: Exceeds {self.limit} character limit (requested {len(self.value)}) - {str(self)}."
+            error_msg = (
+                f"Edit failed: Exceeds {self.limit} character limit (requested {len(self.value)}) - {str(self)}."
+            )
             raise ValueError(error_msg)
 
         return self
@@ -60,24 +60,16 @@ class Block(BaseBlock):
     id: str = BaseBlock.generate_id_field()
 
     # associated user/agent/organization
-    user_id: Optional[str] = Field(
-        None, description="The unique identifier of the user associated with the block."
-    )
-    agent_id: Optional[str] = Field(
-        None, description="The unique identifier of the agent associated with the block."
-    )
+    user_id: Optional[str] = Field(None, description="The unique identifier of the user associated with the block.")
+    agent_id: Optional[str] = Field(None, description="The unique identifier of the agent associated with the block.")
     organization_id: Optional[str] = Field(
         None,
         description="The unique identifier of the organization associated with the block.",
     )
 
     # default orm fields
-    created_by_id: Optional[str] = Field(
-        None, description="The id of the user that made this Block."
-    )
-    last_updated_by_id: Optional[str] = Field(
-        None, description="The id of the user that last updated this Block."
-    )
+    created_by_id: Optional[str] = Field(None, description="The id of the user that made this Block.")
+    last_updated_by_id: Optional[str] = Field(None, description="The id of the user that last updated this Block.")
 
 
 class Human(Block):
@@ -120,9 +112,7 @@ class BlockLabelUpdate(BaseModel):
 class BlockUpdate(BaseBlock):
     """Update a block"""
 
-    limit: Optional[int] = Field(
-        CORE_MEMORY_BLOCK_CHAR_LIMIT, description="Character limit of the block."
-    )
+    limit: Optional[int] = Field(CORE_MEMORY_BLOCK_CHAR_LIMIT, description="Character limit of the block.")
     value: Optional[str] = Field(None, description="Value of the block.")
 
     class Config:
@@ -152,9 +142,7 @@ class CreateBlock(BaseBlock):
     """Create a block"""
 
     label: str = Field(..., description="Label of the block.")
-    limit: int = Field(
-        CORE_MEMORY_BLOCK_CHAR_LIMIT, description="Character limit of the block."
-    )
+    limit: int = Field(CORE_MEMORY_BLOCK_CHAR_LIMIT, description="Character limit of the block.")
     value: str = Field(..., description="Value of the block.")
 
 

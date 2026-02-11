@@ -92,13 +92,8 @@ def serialize_tool_rules(tool_rules: Optional[List[ToolRule]]) -> List[Dict[str,
 
     # Validate ToolRule structure
     for rule_data in data:
-        if (
-            rule_data["type"] == ToolRuleType.constrain_child_tools.value
-            and "children" not in rule_data
-        ):
-            raise ValueError(
-                f"Invalid ToolRule serialization: 'children' field missing for rule {rule_data}"
-            )
+        if rule_data["type"] == ToolRuleType.constrain_child_tools.value and "children" not in rule_data:
+            raise ValueError(f"Invalid ToolRule serialization: 'children' field missing for rule {rule_data}")
 
     return data
 
@@ -192,9 +187,7 @@ def serialize_tool_returns(
         if isinstance(tool_return, ToolReturn):
             serialized_tool_returns.append(tool_return.model_dump(mode="json"))
         elif isinstance(tool_return, dict):
-            serialized_tool_returns.append(
-                tool_return
-            )  # Already a dictionary, leave it as-is
+            serialized_tool_returns.append(tool_return)  # Already a dictionary, leave it as-is
         else:
             raise TypeError(f"Unexpected tool return type: {type(tool_return)}")
 
@@ -231,9 +224,7 @@ def serialize_message_content(
         if isinstance(content, MessageContent):
             serialized_message_content.append(content.model_dump(mode="json"))
         elif isinstance(content, dict):
-            serialized_message_content.append(
-                content
-            )  # Already a dictionary, leave it as-is
+            serialized_message_content.append(content)  # Already a dictionary, leave it as-is
         else:
             raise TypeError(f"Unexpected message content type: {type(content)}")
 
@@ -389,9 +380,7 @@ def serialize_batch_request_result(
         llm_provider_type = ProviderType.anthropic.value
 
     if not llm_provider_type:
-        raise ValueError(
-            f"Could not determine llm provider from batch result object type: {batch_individual_response}"
-        )
+        raise ValueError(f"Could not determine llm provider from batch result object type: {batch_individual_response}")
 
     return {
         "data": batch_individual_response.model_dump(mode="json"),

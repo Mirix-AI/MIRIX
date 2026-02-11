@@ -22,9 +22,7 @@ from .types import MCPTool
 
 
 # Import authenticate_gmail locally to avoid circular import
-def authenticate_gmail_local(
-    client_id: str, client_secret: str, token_file: str = None
-) -> dict:
+def authenticate_gmail_local(client_id: str, client_secret: str, token_file: str = None) -> dict:
     """
     Authenticate with Gmail using OAuth2 with a local server to catch the callback.
     Local copy to avoid circular imports.
@@ -130,19 +128,13 @@ class GmailMCPClient(BaseMCPClient):
     def _initialize_connection(self, server_config, timeout: float) -> bool:
         """Initialize Gmail connection using OAuth"""
         try:
-            token_file = server_config.token_file or os.path.expanduser(
-                "~/.mirix/gmail_token.json"
-            )
+            token_file = server_config.token_file or os.path.expanduser("~/.mirix/gmail_token.json")
 
             # Authenticate with Gmail
-            auth_result = authenticate_gmail_local(
-                server_config.client_id, server_config.client_secret, token_file
-            )
+            auth_result = authenticate_gmail_local(server_config.client_id, server_config.client_secret, token_file)
 
             if not auth_result["success"]:
-                logger.error(
-                    f"Gmail authentication failed: {auth_result.get('error', 'Unknown error')}"
-                )
+                logger.error(f"Gmail authentication failed: {auth_result.get('error', 'Unknown error')}")
                 return False
 
             # Load credentials and build service
@@ -158,13 +150,8 @@ class GmailMCPClient(BaseMCPClient):
                     )
 
                     # Check if credentials have refresh token
-                    if (
-                        not hasattr(self.credentials, "refresh_token")
-                        or not self.credentials.refresh_token
-                    ):
-                        logger.warning(
-                            "Gmail token missing refresh_token. Removing invalid token file."
-                        )
+                    if not hasattr(self.credentials, "refresh_token") or not self.credentials.refresh_token:
+                        logger.warning("Gmail token missing refresh_token. Removing invalid token file.")
                         os.remove(token_file)
                         # Retry authentication with fresh flow
                         auth_result = authenticate_gmail_local(
@@ -182,14 +169,10 @@ class GmailMCPClient(BaseMCPClient):
                                 ],
                             )
                         else:
-                            logger.error(
-                                "Failed to re-authenticate after removing invalid token"
-                            )
+                            logger.error("Failed to re-authenticate after removing invalid token")
                             return False
 
-                    self.gmail_service = build(
-                        "gmail", "v1", credentials=self.credentials
-                    )
+                    self.gmail_service = build("gmail", "v1", credentials=self.credentials)
                     logger.info("Gmail service initialized successfully")
                     return True
 
@@ -279,9 +262,7 @@ class GmailMCPClient(BaseMCPClient):
             ),
         ]
 
-    def execute_tool(
-        self, tool_name: str, tool_args: Dict[str, Any], timeout: float = 60.0
-    ) -> Tuple[str, bool]:
+    def execute_tool(self, tool_name: str, tool_args: Dict[str, Any], timeout: float = 60.0) -> Tuple[str, bool]:
         """Execute a Gmail tool"""
         self._check_initialized()
 
@@ -335,17 +316,10 @@ class GmailMCPClient(BaseMCPClient):
             attachments = args.get("attachments", [])
 
             # Create email message
-            message = self._create_message(
-                to, subject, body, cc, bcc, attachments, html_body
-            )
+            message = self._create_message(to, subject, body, cc, bcc, attachments, html_body)
 
             # Send the message
-            result = (
-                self.gmail_service.users()
-                .messages()
-                .send(userId="me", body=message)
-                .execute()
-            )
+            result = self.gmail_service.users().messages().send(userId="me", body=message).execute()
 
             return f"Email sent successfully! Message ID: {result['id']}", False
 
@@ -359,12 +333,7 @@ class GmailMCPClient(BaseMCPClient):
             max_results = args.get("max_results", 10)
 
             # Get list of messages
-            results = (
-                self.gmail_service.users()
-                .messages()
-                .list(userId="me", q=query, maxResults=max_results)
-                .execute()
-            )
+            results = self.gmail_service.users().messages().list(userId="me", q=query, maxResults=max_results).execute()
 
             messages = results.get("messages", [])
 
@@ -374,12 +343,7 @@ class GmailMCPClient(BaseMCPClient):
             # Get details for each message
             email_details = []
             for message in messages:
-                msg = (
-                    self.gmail_service.users()
-                    .messages()
-                    .get(userId="me", id=message["id"])
-                    .execute()
-                )
+                msg = self.gmail_service.users().messages().get(userId="me", id=message["id"]).execute()
 
                 headers = msg["payload"].get("headers", [])
                 subject = next(
@@ -390,9 +354,7 @@ class GmailMCPClient(BaseMCPClient):
                     (h["value"] for h in headers if h["name"] == "From"),
                     "Unknown Sender",
                 )
-                date = next(
-                    (h["value"] for h in headers if h["name"] == "Date"), "Unknown Date"
-                )
+                date = next((h["value"] for h in headers if h["name"] == "Date"), "Unknown Date")
 
                 email_details.append(
                     {
@@ -414,24 +376,13 @@ class GmailMCPClient(BaseMCPClient):
             email_id = args["email_id"]
 
             # Get the message
-            message = (
-                self.gmail_service.users()
-                .messages()
-                .get(userId="me", id=email_id)
-                .execute()
-            )
+            message = self.gmail_service.users().messages().get(userId="me", id=email_id).execute()
 
             # Extract email content
             headers = message["payload"].get("headers", [])
-            subject = next(
-                (h["value"] for h in headers if h["name"] == "Subject"), "No Subject"
-            )
-            sender = next(
-                (h["value"] for h in headers if h["name"] == "From"), "Unknown Sender"
-            )
-            date = next(
-                (h["value"] for h in headers if h["name"] == "Date"), "Unknown Date"
-            )
+            subject = next((h["value"] for h in headers if h["name"] == "Subject"), "No Subject")
+            sender = next((h["value"] for h in headers if h["name"] == "From"), "Unknown Sender")
+            date = next((h["value"] for h in headers if h["name"] == "Date"), "Unknown Date")
 
             # Get body
             body = self._extract_message_body(message["payload"])

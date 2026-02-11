@@ -84,24 +84,14 @@ class MirixBase(BaseModel):
         """
         _ = values  # for SCA
         if isinstance(v, UUID):
-            logger.debug(
-                f"Bare UUIDs are deprecated, please use the full prefixed id ({cls.__id_prefix__})!"
-            )
+            logger.debug(f"Bare UUIDs are deprecated, please use the full prefixed id ({cls.__id_prefix__})!")
             return f"{cls.__id_prefix__}-{v}"
         return v
 
 
 class OrmMetadataBase(MirixBase):
     # metadata fields
-    created_by_id: Optional[str] = Field(
-        None, description="The id of the user that made this object."
-    )
-    last_updated_by_id: Optional[str] = Field(
-        None, description="The id of the user that made this object."
-    )
-    created_at: Optional[datetime] = Field(
-        None, description="The timestamp when the object was created."
-    )
-    updated_at: Optional[datetime] = Field(
-        None, description="The timestamp when the object was last updated."
-    )
+    created_by_id: Optional[str] = Field(None, description="The id of the user that made this object.")
+    last_updated_by_id: Optional[str] = Field(None, description="The id of the user that made this object.")
+    created_at: Optional[datetime] = Field(None, description="The timestamp when the object was created.")
+    updated_at: Optional[datetime] = Field(None, description="The timestamp when the object was last updated.")

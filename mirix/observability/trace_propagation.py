@@ -32,9 +32,7 @@ def add_trace_to_queue_message(message: Any) -> Any:
 
     # Only add if we have an active trace
     if not context.get("trace_id"):
-        logger.debug(
-            "No active trace context when queueing message - LangFuse tracing will not propagate to worker"
-        )
+        logger.debug("No active trace context when queueing message - LangFuse tracing will not propagate to worker")
         return message
 
     # Set trace fields on protobuf message
@@ -72,23 +70,15 @@ def restore_trace_from_queue_message(message: Any) -> bool:
         logger.debug("Message does not have trace fields (old schema version?)")
         return False
 
-    trace_id = (
-        message.langfuse_trace_id if message.HasField("langfuse_trace_id") else None
-    )
+    trace_id = message.langfuse_trace_id if message.HasField("langfuse_trace_id") else None
 
     if not trace_id:
         logger.debug("No trace ID in queue message")
         return False
 
     # Restore trace context
-    observation_id = (
-        message.langfuse_observation_id
-        if message.HasField("langfuse_observation_id")
-        else None
-    )
-    session_id = (
-        message.langfuse_session_id if message.HasField("langfuse_session_id") else None
-    )
+    observation_id = message.langfuse_observation_id if message.HasField("langfuse_observation_id") else None
+    session_id = message.langfuse_session_id if message.HasField("langfuse_session_id") else None
     user_id = message.langfuse_user_id if message.HasField("langfuse_user_id") else None
 
     set_trace_context(

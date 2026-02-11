@@ -34,9 +34,7 @@ async def trace_request_middleware(request: Request, call_next):
     if not _is_tracing_initialized:
         return await call_next(request)
     initial_span_name = f"{request.method} {request.url.path}"
-    if any(
-        re.match(regex, initial_span_name) for regex in _excluded_v1_endpoints_regex
-    ):
+    if any(re.match(regex, initial_span_name) for regex in _excluded_v1_endpoints_regex):
         return await call_next(request)
 
     with tracer.start_as_current_span(
@@ -46,11 +44,7 @@ async def trace_request_middleware(request: Request, call_next):
         try:
             response = await call_next(request)
             span.set_attribute("http.status_code", response.status_code)
-            span.set_status(
-                Status(
-                    StatusCode.OK if response.status_code < 400 else StatusCode.ERROR
-                )
-            )
+            span.set_status(Status(StatusCode.OK if response.status_code < 400 else StatusCode.ERROR))
             return response
         except Exception as e:
             span.set_status(Status(StatusCode.ERROR))
@@ -132,21 +126,13 @@ def setup_tracing(
         )
     )
     if endpoint:
-        provider.add_span_processor(
-            BatchSpanProcessor(OTLPSpanExporter(endpoint=endpoint))
-        )
+        provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter(endpoint=endpoint)))
         _is_tracing_initialized = True
         trace.set_tracer_provider(provider)
 
         def requests_callback(span: trace.Span, _: Any, response: Any) -> None:
             if hasattr(response, "status_code"):
-                span.set_status(
-                    Status(
-                        StatusCode.OK
-                        if response.status_code < 400
-                        else StatusCode.ERROR
-                    )
-                )
+                span.set_status(Status(StatusCode.OK if response.status_code < 400 else StatusCode.ERROR))
 
         RequestsInstrumentor().instrument(response_hook=requests_callback)
 
@@ -159,15 +145,8 @@ def setup_tracing(
 
             for router in v1_routes:
                 for route in router.routes:
-                    full_path = (
-                        ((next(iter(route.methods)) + " ") if route.methods else "")
-                        + "/v1"
-                        + route.path
-                    )
-                    if not any(
-                        re.match(regex, full_path)
-                        for regex in _excluded_v1_endpoints_regex
-                    ):
+                    full_path = ((next(iter(route.methods)) + " ") if route.methods else "") + "/v1" + route.path
+                    if not any(re.match(regex, full_path) for regex in _excluded_v1_endpoints_regex):
                         route.dependencies.append(Depends(update_trace_attributes))
 
             # Register exception handlers
@@ -252,9 +231,7 @@ def log_event(
                 return v
             return str(v)
 
-        attributes = (
-            {k: _safe_convert(v) for k, v in attributes.items()} if attributes else None
-        )
+        attributes = {k: _safe_convert(v) for k, v in attributes.items()} if attributes else None
         current_span.add_event(name=name, attributes=attributes, timestamp=timestamp)
 
 

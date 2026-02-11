@@ -18,9 +18,7 @@ class ErrorCode(Enum):
     # Server-side errors
     INTERNAL_SERVER_ERROR = "INTERNAL_SERVER_ERROR"
     SERVICE_UNAVAILABLE = "SERVICE_UNAVAILABLE"
-    DEPENDENCY_TIMEOUT = (
-        "DEPENDENCY_TIMEOUT"  # External service timeout (e.g., 424 errors)
-    )
+    DEPENDENCY_TIMEOUT = "DEPENDENCY_TIMEOUT"  # External service timeout (e.g., 424 errors)
 
     # Request/response errors
     CONTEXT_WINDOW_EXCEEDED = "CONTEXT_WINDOW_EXCEEDED"
@@ -38,9 +36,7 @@ class ErrorCode(Enum):
 class MirixError(Exception):
     """Base class for all Mirix related errors."""
 
-    def __init__(
-        self, message: str, code: Optional[ErrorCode] = None, details: dict = {}
-    ):
+    def __init__(self, message: str, code: Optional[ErrorCode] = None, details: dict = {}):
         self.message = message
         self.code = code
         self.details = details
@@ -69,9 +65,7 @@ class MirixConfigurationError(MirixError):
 
     def __init__(self, message: str, missing_fields: Optional[List[str]] = None):
         self.missing_fields = missing_fields or []
-        super().__init__(
-            message=message, details={"missing_fields": self.missing_fields}
-        )
+        super().__init__(message=message, details={"missing_fields": self.missing_fields})
 
 
 class MirixAgentNotFoundError(MirixError):
@@ -208,9 +202,7 @@ class MirixMessageError(MirixError):
         messages: List[Union["Message", "MirixMessage"]],
         explanation: Optional[str] = None,
     ) -> None:
-        error_msg = self.construct_error_message(
-            messages, self.default_error_message, explanation
-        )
+        error_msg = self.construct_error_message(messages, self.default_error_message, explanation)
         super().__init__(error_msg)
         self.messages = messages
 
@@ -225,9 +217,7 @@ class MirixMessageError(MirixError):
             error_msg += f" (Explanation: {explanation})"
 
         # Pretty print out message JSON
-        message_json = json.dumps(
-            [message.model_dump() for message in messages], indent=4
-        )
+        message_json = json.dumps([message.model_dump() for message in messages], indent=4)
         return f"{error_msg}\n\n{message_json}"
 
 
@@ -240,9 +230,7 @@ class MissingToolCallError(MirixMessageError):
 class InvalidToolCallError(MirixMessageError):
     """Error raised when a message uses an invalid tool call."""
 
-    default_error_message = (
-        "The message uses an invalid tool call or has improper usage of a tool call."
-    )
+    default_error_message = "The message uses an invalid tool call or has improper usage of a tool call."
 
 
 class MissingInnerMonologueError(MirixMessageError):

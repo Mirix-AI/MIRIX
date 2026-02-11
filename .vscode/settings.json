@@ -1,0 +1,54 @@
+{
+  // IMPORTANT: Workspace settings override user settings automatically in VS Code/Cursor
+  // These settings ensure consistent formatting across all team members
+
+  // Format on save - REQUIRED for consistency
+  "editor.formatOnSave": true,
+  "editor.codeActionsOnSave": {
+    "source.organizeImports": "explicit"
+  },
+
+  // Python interpreter: Use Poetry's virtual environment
+  // This ensures all Python tools (including Black Formatter) use the Poetry environment
+  "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python",
+
+  // Python linting - mypy
+  "python.linting.enabled": true,
+  "python.linting.mypyEnabled": true,
+  "python.linting.mypyArgs": [
+    "--config-file=pyproject.toml"
+  ],
+
+  // File associations - Python files use Black
+  "[python]": {
+    "editor.defaultFormatter": "ms-python.black-formatter",
+    "editor.formatOnSave": true,
+    "editor.rulers": [120],
+    "editor.tabSize": 4,
+    "editor.insertSpaces": true
+  },
+
+  // Black Formatter: Use extension's bundled Black with explicit settings
+  // Explicitly match command-line Black settings to ensure consistency
+  // Line length 120 matches pyproject.toml [tool.black] line-length = 120
+  "black-formatter.args": [
+    "--line-length",
+    "120"
+  ],
+  // Note: Extension uses its bundled Black version, but with matching line-length
+  // Minor formatting differences may still occur due to version differences
+
+  // Global editor settings
+  "editor.trimAutoWhitespace": true,
+  "files.insertFinalNewline": true,
+  "files.trimTrailingWhitespace": true,
+  "files.eol": "\n",
+
+  // Exclude patterns from file explorer
+  "files.exclude": {
+    "**/__pycache__": true,
+    "**/*.pyc": true,
+    "**/.mypy_cache": true,
+    "**/.pytest_cache": true
+  }
+}

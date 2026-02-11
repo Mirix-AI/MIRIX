@@ -71,9 +71,7 @@ class AgentManager:
         self.message_manager = MessageManager()
         self.block_manager = BlockManager()
 
-    def _monitor_cache_conflict(
-        self, agent_id: str, db_updated_at: datetime, loaded_at: datetime
-    ) -> None:
+    def _monitor_cache_conflict(self, agent_id: str, db_updated_at: datetime, loaded_at: datetime) -> None:
         """
         Monitor for potential cache invalidation conflicts (stale writes).
 
@@ -93,8 +91,7 @@ class AgentManager:
             # Potential stale write detected
             time_diff = (db_updated_at - loaded_at).total_seconds()
             logger.warning(
-                "⚠️  Potential stale agent write detected: agent=%s, "
-                "db_updated_at=%s, loaded_at=%s, diff=%.2fs",
+                "Potential stale agent write detected: agent=%s, " "db_updated_at=%s, loaded_at=%s, diff=%.2fs",
                 agent_id,
                 db_updated_at.isoformat(),
                 loaded_at.isoformat(),
@@ -112,18 +109,14 @@ class AgentManager:
         agent_create: CreateAgent,
         actor: PydanticClient,
     ) -> PydanticAgentState:
-        system = derive_system_message(
-            agent_type=agent_create.agent_type, system=agent_create.system
-        )
+        system = derive_system_message(agent_type=agent_create.agent_type, system=agent_create.system)
 
         if not agent_create.llm_config or not agent_create.embedding_config:
             raise ValueError("llm_config and embedding_config are required")
 
         # Check tool rules are valid
         if agent_create.tool_rules:
-            check_supports_structured_output(
-                model=agent_create.llm_config.model, tool_rules=agent_create.tool_rules
-            )
+            check_supports_structured_output(model=agent_create.llm_config.model, tool_rules=agent_create.tool_rules)
 
         # TODO: Remove this block once we deprecate the legacy `tools` field
         # create passed in `tools`
@@ -149,12 +142,7 @@ class AgentManager:
         if agent_create.agent_type == AgentType.meta_memory_agent:
             tool_names.extend(META_MEMORY_TOOLS + UNIVERSAL_MEMORY_TOOLS)
         if agent_create.agent_type == AgentType.reflexion_agent:
-            tool_names.extend(
-                SEARCH_MEMORY_TOOLS
-                + CHAT_AGENT_TOOLS
-                + UNIVERSAL_MEMORY_TOOLS
-                + EXTRAS_TOOLS
-            )
+            tool_names.extend(SEARCH_MEMORY_TOOLS + CHAT_AGENT_TOOLS + UNIVERSAL_MEMORY_TOOLS + EXTRAS_TOOLS)
 
         # Remove duplicates
         tool_names = list(set(tool_names))
@@ -211,7 +199,7 @@ class AgentManager:
         if not meta_agent_create.llm_config or not meta_agent_create.embedding_config:
             raise ValueError("llm_config and embedding_config are required")
 
-        # ✅ NEW: Get or create organization-specific default user for block templates
+        # NEW: Get or create organization-specific default user for block templates
         user_manager = UserManager()
 
         if user_id:
@@ -225,15 +213,11 @@ class AgentManager:
                     e,
                 )
                 # Fall back to organization's default user (not global admin)
-                user = user_manager.get_or_create_org_default_user(
-                    org_id=actor.organization_id, client_id=actor.id
-                )
+                user = user_manager.get_or_create_org_default_user(org_id=actor.organization_id)
         else:
             # No user_id provided - use organization's default template user
             # This user will serve as the template for copying blocks to new users
-            user = user_manager.get_or_create_org_default_user(
-                org_id=actor.organization_id, client_id=actor.id
-            )
+            user = user_manager.get_or_create_org_default_user(org_id=actor.organization_id)
             logger.debug(
                 "Using organization default user %s for block templates in org %s",
                 user.id,
@@ -259,9 +243,7 @@ class AgentManager:
 
         # Load default system prompts from base folder
         default_system_prompts = {}
-        base_prompts_dir = os.path.join(
-            os.path.dirname(os.path.dirname(__file__)), "prompts", "system", "base"
-        )
+        base_prompts_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "prompts", "system", "base")
 
         for filename in os.listdir(base_prompts_dir):
             if filename.endswith(".txt"):
@@ -273,10 +255,7 @@ class AgentManager:
         # First, create the meta_memory_agent as the parent
         meta_agent_name = meta_agent_create.name or "meta_memory_agent"
         meta_system_prompt = None
-        if (
-            meta_agent_create.system_prompts
-            and "meta_memory_agent" in meta_agent_create.system_prompts
-        ):
+        if meta_agent_create.system_prompts and "meta_memory_agent" in meta_agent_create.system_prompts:
             meta_system_prompt = meta_agent_create.system_prompts["meta_memory_agent"]
         else:
             meta_system_prompt = default_system_prompts["meta_memory_agent"]
@@ -294,9 +273,7 @@ class AgentManager:
             agent_create=meta_agent_create_schema,
             actor=actor,
         )
-        logger.debug(
-            f"Created meta_memory_agent: {meta_agent_name} with id: {meta_agent_state.id}"
-        )
+        logger.debug(f"Created meta_memory_agent: {meta_agent_name} with id: {meta_agent_state.id}")
 
         # Store the parent agent
         created_agents = {}
@@ -329,10 +306,7 @@ class AgentManager:
 
             # Get custom system prompt if provided, fallback to default
             custom_system = None
-            if (
-                meta_agent_create.system_prompts
-                and agent_name in meta_agent_create.system_prompts
-            ):
+            if meta_agent_create.system_prompts and agent_name in meta_agent_create.system_prompts:
                 custom_system = meta_agent_create.system_prompts[agent_name]
             elif agent_name in default_system_prompts:
                 custom_system = default_system_prompts[agent_name]
@@ -354,11 +328,9 @@ class AgentManager:
                 actor=actor,
             )
             created_agents[agent_name] = agent_state
-            logger.debug(
-                f"Created sub-agent: {agent_name} with id: {agent_state.id}, parent_id: {meta_agent_state.id}"
-            )
+            logger.debug(f"Created sub-agent: {agent_name} with id: {agent_state.id}, parent_id: {meta_agent_state.id}")
 
-            # ✅ FIX: Process agent-specific initialization (e.g., blocks for core_memory_agent)
+            # FIX: Process agent-specific initialization (e.g., blocks for core_memory_agent)
             # This handles any agent configuration provided in the meta_agent creation request
             if "blocks" in agent_config:
                 # Create memory blocks for this agent (typically core_memory_agent)
@@ -371,18 +343,16 @@ class AgentManager:
                             label=block["label"],
                         ),
                         actor=actor,
-                        agent_id=agent_state.id,  # ✅ Use child agent's ID, not parent's
-                        user=user,  # ✅ Pass user for block creation
+                        agent_id=agent_state.id,  # Use child agent's ID, not parent's
+                        user=user,  # Pass user for block creation
                     )
                 logger.debug(
                     f"Created {len(memory_block_configs)} memory blocks for {agent_name} (agent_id: {agent_state.id})"
                 )
 
-                # ✅ Ensure blocks are committed to database before proceeding
+                # Ensure blocks are committed to database before proceeding
                 # This is critical for template block copying to work correctly
-                logger.debug(
-                    f"Flushing database session to ensure blocks are committed for agent {agent_state.id}"
-                )
+                logger.debug(f"Flushing database session to ensure blocks are committed for agent {agent_state.id}")
                 with self.block_manager.session_maker() as session:
                     session.commit()  # Explicit commit to ensure blocks are visible to other sessions
 
@@ -433,9 +403,7 @@ class AgentManager:
 
         # Load default system prompts from base folder
         default_system_prompts = {}
-        base_prompts_dir = os.path.join(
-            os.path.dirname(os.path.dirname(__file__)), "prompts", "system", "base"
-        )
+        base_prompts_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "prompts", "system", "base")
 
         for filename in os.listdir(base_prompts_dir):
             if filename.endswith(".txt"):
@@ -451,9 +419,7 @@ class AgentManager:
         if meta_agent_update.llm_config is not None:
             meta_agent_update_fields["llm_config"] = meta_agent_update.llm_config
         if meta_agent_update.embedding_config is not None:
-            meta_agent_update_fields["embedding_config"] = (
-                meta_agent_update.embedding_config
-            )
+            meta_agent_update_fields["embedding_config"] = meta_agent_update.embedding_config
 
         # Update meta agent with all fields at once
         if meta_agent_update_fields:
@@ -465,10 +431,7 @@ class AgentManager:
             meta_agent_state = self.get_agent_by_id(agent_id=meta_agent_id, actor=actor)
 
         # Update meta agent's system prompt if provided (separate call needed for rebuild_system_prompt)
-        if (
-            meta_agent_update.system_prompts
-            and "meta_memory_agent" in meta_agent_update.system_prompts
-        ):
+        if meta_agent_update.system_prompts and "meta_memory_agent" in meta_agent_update.system_prompts:
             self.update_system_prompt(
                 agent_id=meta_agent_id,
                 system_prompt=meta_agent_update.system_prompts["meta_memory_agent"],
@@ -488,16 +451,8 @@ class AgentManager:
         #             existing_agent_names.add(agent_type_name)
         #             existing_agents_by_name[agent_type_name] = child
         #             break
-        existing_agent_names = set(
-            [
-                child.name.replace("meta_memory_agent_", "")
-                for child in existing_children
-            ]
-        )
-        existing_agents_by_name = {
-            child.name.replace("meta_memory_agent_", ""): child
-            for child in existing_children
-        }
+        existing_agent_names = set([child.name.replace("meta_memory_agent_", "") for child in existing_children])
+        existing_agents_by_name = {child.name.replace("meta_memory_agent_", ""): child for child in existing_children}
 
         # If agents list is provided, determine what needs to be created or deleted
         if meta_agent_update.agents is not None:
@@ -513,9 +468,7 @@ class AgentManager:
                     agent_name = list(agent_item.keys())[0]
                     agent_configs[agent_name] = agent_item[agent_name] or {}
                 else:
-                    logger.warning(
-                        "Invalid agent item format: %s, skipping...", agent_item
-                    )
+                    logger.warning("Invalid agent item format: %s, skipping...", agent_item)
                     continue
 
                 # Skip meta_memory_agent as it's the parent
@@ -530,9 +483,7 @@ class AgentManager:
             for agent_name in agents_to_delete:
                 if agent_name in existing_agents_by_name:
                     child_agent = existing_agents_by_name[agent_name]
-                    logger.debug(
-                        "Deleting sub-agent: %s with id: %s", agent_name, child_agent.id
-                    )
+                    logger.debug("Deleting sub-agent: %s with id: %s", agent_name, child_agent.id)
                     self.delete_agent(agent_id=child_agent.id, actor=actor)
 
             # Create new agents
@@ -544,20 +495,14 @@ class AgentManager:
 
                 # Get custom system prompt if provided, fallback to default
                 custom_system = None
-                if (
-                    meta_agent_update.system_prompts
-                    and agent_name in meta_agent_update.system_prompts
-                ):
+                if meta_agent_update.system_prompts and agent_name in meta_agent_update.system_prompts:
                     custom_system = meta_agent_update.system_prompts[agent_name]
                 elif agent_name in default_system_prompts:
                     custom_system = default_system_prompts[agent_name]
 
                 # Use the updated configs or fall back to meta agent's configs
                 llm_config = meta_agent_update.llm_config or meta_agent_state.llm_config
-                embedding_config = (
-                    meta_agent_update.embedding_config
-                    or meta_agent_state.embedding_config
-                )
+                embedding_config = meta_agent_update.embedding_config or meta_agent_state.embedding_config
 
                 # Create the agent using CreateAgent schema with parent_id
                 agent_create = CreateAgent(
@@ -590,9 +535,7 @@ class AgentManager:
                 if agent_name in existing_agents_by_name:
                     child_agent = existing_agents_by_name[agent_name]
                     if child_agent.system != system_prompt:
-                        logger.debug(
-                            "Updating system prompt for sub-agent: %s", agent_name
-                        )
+                        logger.debug("Updating system prompt for sub-agent: %s", agent_name)
                         self.update_system_prompt(
                             agent_id=child_agent.id,
                             system_prompt=system_prompt,
@@ -606,9 +549,7 @@ class AgentManager:
                 if meta_agent_update.llm_config is not None:
                     update_fields["llm_config"] = meta_agent_update.llm_config
                 if meta_agent_update.embedding_config is not None:
-                    update_fields["embedding_config"] = (
-                        meta_agent_update.embedding_config
-                    )
+                    update_fields["embedding_config"] = meta_agent_update.embedding_config
 
                 if update_fields:
                     logger.debug("Updating configs for sub-agent: %s", agent_name)
@@ -636,9 +577,7 @@ class AgentManager:
         # update the system prompt
         if system_prompt is not None:
             if not agent_state.system == system_prompt:
-                self.update_system_prompt(
-                    agent_id=agent_id, system_prompt=system_prompt, actor=actor
-                )
+                self.update_system_prompt(agent_id=agent_id, system_prompt=system_prompt, actor=actor)
 
         # update the tools
         ## get the new tool names
@@ -660,12 +599,7 @@ class AgentManager:
         if agent_state.agent_type == AgentType.chat_agent:
             tool_names.extend(BASE_TOOLS + CHAT_AGENT_TOOLS + EXTRAS_TOOLS)
         if agent_state.agent_type == AgentType.reflexion_agent:
-            tool_names.extend(
-                SEARCH_MEMORY_TOOLS
-                + CHAT_AGENT_TOOLS
-                + UNIVERSAL_MEMORY_TOOLS
-                + EXTRAS_TOOLS
-            )
+            tool_names.extend(SEARCH_MEMORY_TOOLS + CHAT_AGENT_TOOLS + UNIVERSAL_MEMORY_TOOLS + EXTRAS_TOOLS)
 
         ## extract the existing tool names for the agent
         existing_tools = agent_state.tools
@@ -673,17 +607,11 @@ class AgentManager:
         existing_tool_ids = [tool.id for tool in existing_tools]
 
         # Separate MCP tools from native tools - preserve MCP tools
-        mcp_tools = [
-            tool for tool in existing_tools if tool.tool_type == ToolType.MIRIX_MCP
-        ]
+        mcp_tools = [tool for tool in existing_tools if tool.tool_type == ToolType.MIRIX_MCP]
         mcp_tool_names = set([tool.name for tool in mcp_tools])
         mcp_tool_ids = [tool.id for tool in mcp_tools]
 
-        new_tool_names = [
-            tool_name
-            for tool_name in tool_names
-            if tool_name not in existing_tool_names
-        ]
+        new_tool_names = [tool_name for tool_name in tool_names if tool_name not in existing_tool_names]
         # Only remove non-MCP tools that aren't in the expected tool list
         tool_names_to_remove = [
             tool_name
@@ -702,9 +630,7 @@ class AgentManager:
         # Add new tools
         if len(new_tool_names) > 0:
             for tool_name in new_tool_names:
-                tool = self.tool_manager.get_tool_by_name(
-                    tool_name=tool_name, actor=actor
-                )
+                tool = self.tool_manager.get_tool_by_name(tool_name=tool_name, actor=actor)
                 if tool:
                     tool_ids.append(tool.id)
 
@@ -712,16 +638,12 @@ class AgentManager:
         if len(tool_names_to_remove) > 0:
             tools_to_remove_ids = []
             for tool_name in tool_names_to_remove:
-                tool = self.tool_manager.get_tool_by_name(
-                    tool_name=tool_name, actor=actor
-                )
+                tool = self.tool_manager.get_tool_by_name(tool_name=tool_name, actor=actor)
                 if tool:
                     tools_to_remove_ids.append(tool.id)
 
             # Filter out the tools to be removed
-            tool_ids = [
-                tool_id for tool_id in tool_ids if tool_id not in tools_to_remove_ids
-            ]
+            tool_ids = [tool_id for tool_id in tool_ids if tool_id not in tools_to_remove_ids]
 
         # Update the agent if there are any changes
         if len(new_tool_names) > 0 or len(tool_names_to_remove) > 0:
@@ -785,9 +707,7 @@ class AgentManager:
         init_messages = self._generate_initial_message_sequence(
             actor, agent_state, initial_message_sequence, user_id=user_id
         )
-        return self.append_to_in_context_messages(
-            init_messages, agent_id=agent_state.id, actor=actor, user_id=user_id
-        )
+        return self.append_to_in_context_messages(init_messages, agent_id=agent_state.id, actor=actor, user_id=user_id)
 
     @enforce_types
     def _create_agent(
@@ -822,10 +742,8 @@ class AgentManager:
 
             # Create the new agent using SqlalchemyBase.create_with_redis
             new_agent = AgentModel(**data)
-            _process_relationship(
-                session, new_agent, "tools", ToolModel, tool_ids, replace=True
-            )
-            new_agent.create_with_redis(session, actor=actor)  # ⭐ Auto-caches to Redis
+            _process_relationship(session, new_agent, "tools", ToolModel, tool_ids, replace=True)
+            new_agent.create_with_redis(session, actor=actor)  # Auto-caches to Redis
 
             # Invalidate parent cache if this is a child agent
             if parent_id:
@@ -835,25 +753,17 @@ class AgentManager:
             return new_agent.to_pydantic()
 
     @enforce_types
-    def update_agent(
-        self, agent_id: str, agent_update: UpdateAgent, actor: PydanticClient
-    ) -> PydanticAgentState:
+    def update_agent(self, agent_id: str, agent_update: UpdateAgent, actor: PydanticClient) -> PydanticAgentState:
         # Get current state BEFORE update to detect changes
         old_agent_state = None
         if agent_update.system:
             old_agent_state = self.get_agent_by_id(agent_id=agent_id, actor=actor)
 
         # Update agent (including system field in database)
-        agent_state = self._update_agent(
-            agent_id=agent_id, agent_update=agent_update, actor=actor
-        )
+        agent_state = self._update_agent(agent_id=agent_id, agent_update=agent_update, actor=actor)
 
         # Rebuild the system prompt if it changed
-        if (
-            agent_update.system
-            and old_agent_state
-            and agent_update.system != old_agent_state.system
-        ):
+        if agent_update.system and old_agent_state and agent_update.system != old_agent_state.system:
             agent_state = self.rebuild_system_prompt(
                 agent_id=agent_state.id,
                 system_prompt=agent_update.system,  # Pass the new system prompt
@@ -864,9 +774,7 @@ class AgentManager:
         return agent_state
 
     @enforce_types
-    def update_llm_config(
-        self, agent_id: str, llm_config: LLMConfig, actor: PydanticClient
-    ) -> PydanticAgentState:
+    def update_llm_config(self, agent_id: str, llm_config: LLMConfig, actor: PydanticClient) -> PydanticAgentState:
         return self.update_agent(
             agent_id=agent_id,
             agent_update=UpdateAgent(llm_config=llm_config),
@@ -874,9 +782,7 @@ class AgentManager:
         )
 
     @enforce_types
-    def update_system_prompt(
-        self, agent_id: str, system_prompt: str, actor: PydanticClient
-    ) -> PydanticAgentState:
+    def update_system_prompt(self, agent_id: str, system_prompt: str, actor: PydanticClient) -> PydanticAgentState:
         agent_state = self.update_agent(
             agent_id=agent_id,
             agent_update=UpdateAgent(system=system_prompt),
@@ -932,9 +838,7 @@ class AgentManager:
         return agent_state
 
     @enforce_types
-    def _update_agent(
-        self, agent_id: str, agent_update: UpdateAgent, actor: PydanticClient
-    ) -> PydanticAgentState:
+    def _update_agent(self, agent_id: str, agent_update: UpdateAgent, actor: PydanticClient) -> PydanticAgentState:
         """
         Update an existing agent.
 
@@ -948,9 +852,7 @@ class AgentManager:
         """
         with self.session_maker() as session:
             # Retrieve the existing agent
-            agent = AgentModel.read(
-                db_session=session, identifier=agent_id, actor=actor
-            )
+            agent = AgentModel.read(db_session=session, identifier=agent_id, actor=actor)
 
             # Track old parent_id for cache invalidation
             old_parent_id = agent.parent_id
@@ -983,7 +885,7 @@ class AgentManager:
                 )
 
             # Commit and refresh the agent, update Redis cache
-            agent.update_with_redis(session, actor=actor)  # ⭐ Updates Redis cache
+            agent.update_with_redis(session, actor=actor)  # Updates Redis cache
 
             # Invalidate parent caches if parent_id changed or agent has a parent
             if old_parent_id:
@@ -994,9 +896,7 @@ class AgentManager:
             # Convert to PydanticAgentState and return
             return agent.to_pydantic()
 
-    def _invalidate_parent_cache_for_child(
-        self, child_agent_id: str, parent_id: Optional[str] = None
-    ) -> None:
+    def _invalidate_parent_cache_for_child(self, child_agent_id: str, parent_id: Optional[str] = None) -> None:
         """
         Invalidate parent agent cache when a child agent is created/updated/deleted.
 
@@ -1018,9 +918,7 @@ class AgentManager:
                 parent_id_bytes = redis_client.client.get(reverse_key)
                 if parent_id_bytes:
                     parent_id = (
-                        parent_id_bytes.decode("utf-8")
-                        if isinstance(parent_id_bytes, bytes)
-                        else parent_id_bytes
+                        parent_id_bytes.decode("utf-8") if isinstance(parent_id_bytes, bytes) else parent_id_bytes
                     )
 
             # Invalidate parent agent cache
@@ -1028,7 +926,7 @@ class AgentManager:
                 parent_key = f"{redis_client.AGENT_PREFIX}{parent_id}"
                 redis_client.delete(parent_key)
                 logger.debug(
-                    "✅ Invalidated parent agent %s cache due to child %s change",
+                    "Invalidated parent agent %s cache due to child %s change",
                     parent_id,
                     child_agent_id,
                 )
@@ -1039,9 +937,7 @@ class AgentManager:
 
         except Exception as e:
             # Log but don't fail the operation if cache invalidation fails
-            logger.warning(
-                "Failed to invalidate parent cache for child %s: %s", child_agent_id, e
-            )
+            logger.warning("Failed to invalidate parent cache for child %s: %s", child_agent_id, e)
 
     def _reconstruct_children_from_cache(
         self,
@@ -1077,7 +973,7 @@ class AgentManager:
                 # Redis not available, fall back to PostgreSQL
                 return self._get_children_from_db(parent_ids, session, actor)
 
-            # ⭐ Step 1: Fetch parent agents from Redis to get children_ids
+            # Step 1: Fetch parent agents from Redis to get children_ids
             pipe = redis_client.client.pipeline()
             for parent_id in parent_ids:
                 pipe.hgetall(f"{redis_client.AGENT_PREFIX}{parent_id}")
@@ -1091,9 +987,7 @@ class AgentManager:
                     children_ids_str = parent_data["children_ids"]
                     if isinstance(children_ids_str, bytes):
                         children_ids_str = children_ids_str.decode("utf-8")
-                    children_ids = (
-                        json.loads(children_ids_str) if children_ids_str else []
-                    )
+                    children_ids = json.loads(children_ids_str) if children_ids_str else []
                     parent_to_children_ids[parent_ids[i]] = children_ids
                     all_children_ids.extend(children_ids)
 
@@ -1101,7 +995,7 @@ class AgentManager:
                 # No children IDs found, return empty
                 return children_by_parent
 
-            # ⭐ Step 2: Fetch all child agents from Redis using pipeline
+            # Step 2: Fetch all child agents from Redis using pipeline
             pipe = redis_client.client.pipeline()
             for child_id in all_children_ids:
                 pipe.hgetall(f"{redis_client.AGENT_PREFIX}{child_id}")
@@ -1149,7 +1043,7 @@ class AgentManager:
                         else child_data["mcp_tools"]
                     )
 
-                # ⭐ Reconstruct tools from Redis
+                # Reconstruct tools from Redis
                 tools = []
                 if "tool_ids" in child_data and child_data["tool_ids"]:
                     tool_ids = (
@@ -1165,22 +1059,16 @@ class AgentManager:
 
                     for tool_data in tool_results:
                         if tool_data:
-                            if "json_schema" in tool_data and isinstance(
-                                tool_data["json_schema"], (str, bytes)
-                            ):
-                                tool_data["json_schema"] = json.loads(
-                                    tool_data["json_schema"]
-                                )
-                            if "tags" in tool_data and isinstance(
-                                tool_data["tags"], (str, bytes)
-                            ):
+                            if "json_schema" in tool_data and isinstance(tool_data["json_schema"], (str, bytes)):
+                                tool_data["json_schema"] = json.loads(tool_data["json_schema"])
+                            if "tags" in tool_data and isinstance(tool_data["tags"], (str, bytes)):
                                 tool_data["tags"] = json.loads(tool_data["tags"])
                             tools.append(PydanticTool(**tool_data))
 
                 child_data["tools"] = tools
                 child_data.pop("tool_ids", None)
 
-                # ⭐ Reconstruct memory from blocks
+                # Reconstruct memory from blocks
                 blocks = []
                 prompt_template = ""
 
@@ -1225,16 +1113,14 @@ class AgentManager:
                 )
                 return self._get_children_from_db(parent_ids, session, actor)
 
-            # ⭐ Step 3: Group children by parent_id
+            # Step 3: Group children by parent_id
             for parent_id, children_ids in parent_to_children_ids.items():
                 children_by_parent[parent_id] = [
-                    children_cache[child_id]
-                    for child_id in children_ids
-                    if child_id in children_cache
+                    children_cache[child_id] for child_id in children_ids if child_id in children_cache
                 ]
 
             logger.debug(
-                "✅ Reconstructed children for %s parent agents from Redis cache",
+                "Reconstructed children for %s parent agents from Redis cache",
                 len(children_by_parent),
             )
             return children_by_parent
@@ -1244,9 +1130,7 @@ class AgentManager:
             logger.warning("Failed to reconstruct children from Redis cache: %s", e)
             return self._get_children_from_db(parent_ids, session, actor)
 
-    def _get_children_from_db(
-        self, parent_ids: List[str], session: Session, actor: PydanticClient
-    ) -> dict:
+    def _get_children_from_db(self, parent_ids: List[str], session: Session, actor: PydanticClient) -> dict:
         """
         Fallback method to get children from PostgreSQL with client-level filtering.
 
@@ -1278,9 +1162,7 @@ class AgentManager:
         )
         return children_by_parent
 
-    def _get_children_from_redis(
-        self, parent_id: str, actor: PydanticClient
-    ) -> Optional[List[PydanticAgentState]]:
+    def _get_children_from_redis(self, parent_id: str, actor: PydanticClient) -> Optional[List[PydanticAgentState]]:
         """
         Fetch children from Redis cache using parent's children_ids.
 
@@ -1334,7 +1216,7 @@ class AgentManager:
                     return None  # Fall back to PostgreSQL for consistency
 
             logger.debug(
-                "✅ Retrieved %s children for parent %s from Redis cache",
+                "Retrieved %s children for parent %s from Redis cache",
                 len(children),
                 parent_id,
             )
@@ -1342,14 +1224,10 @@ class AgentManager:
 
         except Exception as e:
             # Log error and return None to trigger PostgreSQL fallback
-            logger.warning(
-                "Failed to get children from Redis for parent %s: %s", parent_id, e
-            )
+            logger.warning("Failed to get children from Redis for parent %s: %s", parent_id, e)
             return None
 
-    def _cache_children_ids_for_parents(
-        self, agent_states: List[PydanticAgentState]
-    ) -> None:
+    def _cache_children_ids_for_parents(self, agent_states: List[PydanticAgentState]) -> None:
         """
         Cache children_ids for parent agents that have children populated.
         This enables future list_agents(parent_id=X) calls to use Redis cache.
@@ -1374,20 +1252,16 @@ class AgentManager:
 
                     # Update parent's cache with children_ids
                     parent_key = f"{redis_client.AGENT_PREFIX}{agent_state.id}"
-                    redis_client.client.hset(
-                        parent_key, "children_ids", json.dumps(children_ids)
-                    )
+                    redis_client.client.hset(parent_key, "children_ids", json.dumps(children_ids))
 
                     # Maintain reverse mapping for cache invalidation
                     for child_id in children_ids:
                         reverse_key = f"{redis_client.AGENT_PREFIX}{child_id}:parent"
                         redis_client.client.set(reverse_key, agent_state.id)
-                        redis_client.client.expire(
-                            reverse_key, settings.redis_ttl_agents
-                        )
+                        redis_client.client.expire(reverse_key, settings.redis_ttl_agents)
 
             logger.debug(
-                "✅ Cached children_ids for %s parent agents",
+                "Cached children_ids for %s parent agents",
                 len([a for a in agent_states if a.children]),
             )
         except Exception as e:
@@ -1414,11 +1288,11 @@ class AgentManager:
         When parent_id is provided, tries to use Redis cache via parent's children_ids first,
         then falls back to PostgreSQL if cache miss.
         """
-        # ⭐ Optimization: Use Redis cache for list_agents(parent_id=X)
+        # Optimization: Use Redis cache for list_agents(parent_id=X)
         if parent_id is not None:
             cached_children = self._get_children_from_redis(parent_id, actor)
             if cached_children is not None:
-                logger.debug("✅ Redis cache HIT for children of parent %s", parent_id)
+                logger.debug("Redis cache HIT for children of parent %s", parent_id)
                 return cached_children
             # Cache miss - fall through to PostgreSQL query
             logger.debug(
@@ -1449,40 +1323,37 @@ class AgentManager:
 
             # Only populate children if we're listing top-level agents (parent_id is None)
             if parent_id is None:
-                children_by_parent = self._reconstruct_children_from_cache(
-                    agent_states, session, actor
-                )
+                children_by_parent = self._reconstruct_children_from_cache(agent_states, session, actor)
 
                 # Assign children to their parent agents
                 for agent_state in agent_states:
                     agent_state.children = children_by_parent.get(agent_state.id, [])
 
-                # ⭐ Cache children_ids for future list_agents(parent_id=X) calls
+                # Cache children_ids for future list_agents(parent_id=X) calls
                 self._cache_children_ids_for_parents(agent_states)
 
             return agent_states
 
     @enforce_types
-    def get_agent_by_id(
-        self, agent_id: str, actor: PydanticClient
-    ) -> PydanticAgentState:
-        """Fetch an agent by its ID (with Redis Hash caching and tool retrieval pipeline)."""
-        # Try Redis cache first
+    def get_agent_by_id(self, agent_id: str, actor: PydanticClient) -> PydanticAgentState:
+        """Fetch an agent by its ID (with cache and Redis pipeline for tools/blocks)."""
+        import json
+
+        from mirix.database.cache_provider import get_cache_provider
+        from mirix.database.redis_client import get_redis_client
+        from mirix.log import get_logger
+        from mirix.schemas.tool import Tool as PydanticTool
+
+        logger = get_logger(__name__)
+        cache_provider = get_cache_provider()
+        redis_client = get_redis_client()
+
         try:
-            import json
-
-            from mirix.database.redis_client import get_redis_client
-            from mirix.log import get_logger
-            from mirix.schemas.tool import Tool as PydanticTool
-
-            logger = get_logger(__name__)
-            redis_client = get_redis_client()
-
-            if redis_client:
-                redis_key = f"{redis_client.AGENT_PREFIX}{agent_id}"
-                cached_data = redis_client.get_hash(redis_key)
-                if cached_data:
-                    logger.debug("✅ Redis cache HIT for agent %s", agent_id)
+            if cache_provider:
+                cache_key = f"{cache_provider.AGENT_PREFIX}{agent_id}"
+                cached_data = cache_provider.get_hash(cache_key)
+                if cached_data and redis_client:
+                    logger.debug("Cache HIT for agent %s", agent_id)
 
                     # Deserialize JSON fields
                     if "message_ids" in cached_data:
@@ -1516,7 +1387,7 @@ class AgentManager:
                             else cached_data["mcp_tools"]
                         )
 
-                    # ⭐ Retrieve tools from Redis using pipeline (denormalized tools_agents)
+                    # Retrieve tools from Redis using pipeline (denormalized tools_agents)
                     tools = []
                     if "tool_ids" in cached_data and cached_data["tool_ids"]:
                         tool_ids = (
@@ -1535,32 +1406,23 @@ class AgentManager:
                         for tool_data in tool_results:
                             if tool_data:
                                 # Convert Redis hash data to proper types
-                                if "json_schema" in tool_data and isinstance(
-                                    tool_data["json_schema"], str
-                                ):
-                                    tool_data["json_schema"] = json.loads(
-                                        tool_data["json_schema"]
-                                    )
-                                if "tags" in tool_data and isinstance(
-                                    tool_data["tags"], str
-                                ):
+                                if "json_schema" in tool_data and isinstance(tool_data["json_schema"], str):
+                                    tool_data["json_schema"] = json.loads(tool_data["json_schema"])
+                                if "tags" in tool_data and isinstance(tool_data["tags"], str):
                                     tool_data["tags"] = json.loads(tool_data["tags"])
                                 tools.append(PydanticTool(**tool_data))
 
                     cached_data["tools"] = tools
                     cached_data.pop("tool_ids", None)  # Remove denormalized field
 
-                    # ⭐ Reconstruct memory from block IDs
+                    # Reconstruct memory from block IDs
                     from mirix.schemas.block import Block as PydanticBlock
                     from mirix.schemas.memory import Memory as PydanticMemory
 
                     blocks = []
                     prompt_template = ""
 
-                    if (
-                        "memory_block_ids" in cached_data
-                        and cached_data["memory_block_ids"]
-                    ):
+                    if "memory_block_ids" in cached_data and cached_data["memory_block_ids"]:
                         block_ids = (
                             json.loads(cached_data["memory_block_ids"])
                             if isinstance(cached_data["memory_block_ids"], str)
@@ -1578,23 +1440,18 @@ class AgentManager:
                         for block_data in block_results:
                             if block_data:
                                 # Normalize block data: ensure 'value' is never None (use empty string instead)
-                                if (
-                                    "value" not in block_data
-                                    or block_data["value"] is None
-                                ):
+                                if "value" not in block_data or block_data["value"] is None:
                                     block_data["value"] = ""
                                 blocks.append(PydanticBlock(**block_data))
 
                         logger.debug(
-                            "✅ Reconstructed memory with %s blocks for agent %s",
+                            "Reconstructed memory with %s blocks for agent %s",
                             len(blocks),
                             agent_id,
                         )
 
                     # Always create a Memory object (even if empty) - never None
-                    memory = PydanticMemory(
-                        blocks=blocks, prompt_template=prompt_template
-                    )
+                    memory = PydanticMemory(blocks=blocks, prompt_template=prompt_template)
 
                     cached_data["memory"] = memory
                     cached_data.pop("memory_block_ids", None)
@@ -1607,19 +1464,13 @@ class AgentManager:
                     if agent_state.created_by_id != actor.id:
                         from sqlalchemy.exc import NoResultFound
 
-                        raise NoResultFound(
-                            f"Agent {agent_id} not found or not accessible to client {actor.id}"
-                        )
+                        raise NoResultFound(f"Agent {agent_id} not found or not accessible to client {actor.id}")
 
                     return agent_state  # Cache HIT (agent + tools + memory)
         except Exception as e:
-            # Log but continue to PostgreSQL on Redis error
-            from mirix.log import get_logger
+            logger.warning("Cache read failed for agent %s: %s", agent_id, e)
 
-            logger = get_logger(__name__)
-            logger.warning("Redis cache read failed for agent %s: %s", agent_id, e)
-
-        # Cache MISS or Redis unavailable - fetch from PostgreSQL with client filtering
+        # Cache MISS or no cache - fetch from PostgreSQL with client filtering
         with self.session_maker() as session:
             # AgentModel.read calls apply_access_predicate, which now filters by client (organization_id + _created_by_id)
             # If agent doesn't belong to this client, read() will raise NoResultFound automatically
@@ -1630,16 +1481,13 @@ class AgentManager:
             )
             pydantic_agent = agent.to_pydantic()
 
-            # Populate Redis cache for next time
+            # Populate cache for next time
             try:
-                if redis_client:
-                    import json
-
+                if cache_provider:
                     from mirix.settings import settings
 
                     data = pydantic_agent.model_dump(mode="json")
 
-                    # Serialize JSON fields for Hash storage
                     if "message_ids" in data and data["message_ids"]:
                         data["message_ids"] = json.dumps(data["message_ids"])
                     if "llm_config" in data and data["llm_config"]:
@@ -1651,86 +1499,60 @@ class AgentManager:
                     if "mcp_tools" in data and data["mcp_tools"]:
                         data["mcp_tools"] = json.dumps(data["mcp_tools"])
 
-                    # model_dump(mode='json') already converts datetime to ISO format strings
-
-                    # Cache tools separately and store tool_ids
                     if "tools" in data and data["tools"]:
                         tool_ids = [tool["id"] for tool in data["tools"]]
                         data["tool_ids"] = json.dumps(tool_ids)
 
                         for tool in data["tools"]:
-                            tool_key = f"{redis_client.TOOL_PREFIX}{tool['id']}"
-                            if "json_schema" in tool and tool["json_schema"]:
-                                tool["json_schema"] = json.dumps(tool["json_schema"])
-                            if "tags" in tool and tool["tags"]:
-                                tool["tags"] = json.dumps(tool["tags"])
-                            redis_client.set_hash(
-                                tool_key, tool, ttl=settings.redis_ttl_tools
-                            )
+                            tool_key = f"{cache_provider.TOOL_PREFIX}{tool['id']}"
+                            tool_data = dict(tool)
+                            if "json_schema" in tool_data and tool_data["json_schema"]:
+                                tool_data["json_schema"] = json.dumps(tool_data["json_schema"])
+                            if "tags" in tool_data and tool_data["tags"]:
+                                tool_data["tags"] = json.dumps(tool_data["tags"])
+                            cache_provider.set_hash(tool_key, tool_data, ttl=settings.redis_ttl_tools)
 
-                    # Cache memory_block_ids for reconstruction
                     if "memory" in data and data["memory"]:
                         memory_obj = data["memory"]
                         if isinstance(memory_obj, dict) and "blocks" in memory_obj:
                             block_ids = [
-                                block["id"] if isinstance(block, dict) else block.id
-                                for block in memory_obj["blocks"]
+                                block["id"] if isinstance(block, dict) else block.id for block in memory_obj["blocks"]
                             ]
                             data["memory_block_ids"] = json.dumps(block_ids)
-                            data["memory_prompt_template"] = memory_obj.get(
-                                "prompt_template", ""
-                            )
+                            data["memory_prompt_template"] = memory_obj.get("prompt_template", "")
 
-                            # Maintain reverse mapping for cache invalidation
-                            for block_id in block_ids:
-                                reverse_key = (
-                                    f"{redis_client.BLOCK_PREFIX}{block_id}:agents"
-                                )
-                                redis_client.client.sadd(reverse_key, agent_id)
-                                redis_client.client.expire(
-                                    reverse_key, settings.redis_ttl_agents
-                                )
+                            if redis_client:
+                                for block_id in block_ids:
+                                    reverse_key = f"{redis_client.BLOCK_PREFIX}{block_id}:agents"
+                                    redis_client.client.sadd(reverse_key, agent_id)
+                                    redis_client.client.expire(reverse_key, settings.redis_ttl_agents)
 
-                    # Cache children_ids for reconstruction (list_agents only)
                     if "children" in data and data["children"]:
                         children_ids = [
-                            child["id"] if isinstance(child, dict) else child.id
-                            for child in data["children"]
+                            child["id"] if isinstance(child, dict) else child.id for child in data["children"]
                         ]
                         data["children_ids"] = json.dumps(children_ids)
 
-                        # Maintain reverse mapping for cache invalidation
-                        for child_id in children_ids:
-                            reverse_key = (
-                                f"{redis_client.AGENT_PREFIX}{child_id}:parent"
-                            )
-                            redis_client.client.set(reverse_key, agent_id)
-                            redis_client.client.expire(
-                                reverse_key, settings.redis_ttl_agents
-                            )
+                        if redis_client:
+                            for child_id in children_ids:
+                                reverse_key = f"{redis_client.AGENT_PREFIX}{child_id}:parent"
+                                redis_client.client.set(reverse_key, agent_id)
+                                redis_client.client.expire(reverse_key, settings.redis_ttl_agents)
 
-                    # Remove relationship fields
                     data.pop("tools", None)
                     data.pop("memory", None)
                     data.pop("children", None)
 
-                    redis_client.set_hash(
-                        redis_key, data, ttl=settings.redis_ttl_agents
-                    )
-                    logger.debug(
-                        "Populated Redis cache for agent %s with tools", agent_id
-                    )
+                    agent_cache_key = f"{cache_provider.AGENT_PREFIX}{agent_id}"
+                    cache_provider.set_hash(agent_cache_key, data, ttl=settings.redis_ttl_agents)
+                    logger.debug("Populated cache for agent %s with tools", agent_id)
             except Exception as e:
-                logger.warning(
-                    "Failed to populate Redis cache for agent %s: %s", agent_id, e
-                )
+                logger.warning("Failed to populate cache for agent %s: %s", agent_id, e)
 
             return pydantic_agent
 
     @enforce_types
-    def get_agent_by_name(
-        self, agent_name: str, actor: PydanticClient
-    ) -> PydanticAgentState:
+    def get_agent_by_name(self, agent_name: str, actor: PydanticClient) -> PydanticAgentState:
         """Fetch an agent by its ID."""
         with self.session_maker() as session:
             agent = AgentModel.read(db_session=session, name=agent_name, actor=actor)
@@ -1751,31 +1573,27 @@ class AgentManager:
         """
         with self.session_maker() as session:
             # Retrieve the agent
-            agent = AgentModel.read(
-                db_session=session, identifier=agent_id, actor=actor
-            )
+            agent = AgentModel.read(db_session=session, identifier=agent_id, actor=actor)
 
             # Track parent_id for cache invalidation
             parent_id = agent.parent_id
 
-            # Remove from Redis cache before hard delete
+            # Remove from cache before hard delete
             try:
-                from mirix.database.redis_client import get_redis_client
+                from mirix.database.cache_provider import get_cache_provider
                 from mirix.log import get_logger
 
                 logger = get_logger(__name__)
-                redis_client = get_redis_client()
-                if redis_client:
-                    redis_key = f"{redis_client.AGENT_PREFIX}{agent_id}"
-                    redis_client.delete(redis_key)
-                    logger.debug("Removed agent %s from Redis cache", agent_id)
+                cache_provider = get_cache_provider()
+                if cache_provider:
+                    cache_key = f"{cache_provider.AGENT_PREFIX}{agent_id}"
+                    cache_provider.delete(cache_key)
+                    logger.debug("Removed agent %s from cache", agent_id)
             except Exception as e:
                 from mirix.log import get_logger
 
                 logger = get_logger(__name__)
-                logger.warning(
-                    "Failed to remove agent %s from Redis cache: %s", agent_id, e
-                )
+                logger.warning("Failed to remove agent %s from cache: %s", agent_id, e)
 
             agent.hard_delete(session)
 
@@ -1811,24 +1629,18 @@ class AgentManager:
         user: Optional[PydanticUser] = None,
     ) -> List[PydanticMessage]:
         message_ids = agent_state.message_ids
-        messages = self.message_manager.get_messages_by_ids(
-            message_ids=message_ids, actor=actor
-        )
+        messages = self.message_manager.get_messages_by_ids(message_ids=message_ids, actor=actor)
         # Handle empty message list (e.g., after deletion)
         if not messages:
             return []
 
         # Keep first message (system message) and filter rest by user_id
         if user:
-            messages = [messages[0]] + [
-                message for message in messages[1:] if message.user_id == user.id
-            ]
+            messages = [messages[0]] + [message for message in messages[1:] if message.user_id == user.id]
         return messages
 
     @enforce_types
-    def get_system_message(
-        self, agent_id: str, actor: PydanticClient
-    ) -> PydanticMessage:
+    def get_system_message(self, agent_id: str, actor: PydanticClient) -> PydanticMessage:
         agent_state = self.get_agent_by_id(agent_id=agent_id, actor=actor)
         message_ids = agent_state.message_ids
 
@@ -1836,9 +1648,7 @@ class AgentManager:
         if not message_ids:
             return None
 
-        return self.message_manager.get_message_by_id(
-            message_id=message_ids[0], actor=actor
-        )
+        return self.message_manager.get_message_by_id(message_id=message_ids[0], actor=actor)
 
     @enforce_types
     def rebuild_system_prompt(
@@ -1854,12 +1664,8 @@ class AgentManager:
             openai_message_dict={"role": "system", "content": system_prompt},
         )
         message = self.message_manager.create_message(message, actor=actor)
-        message_ids = [message.id] + agent_state.message_ids[
-            1:
-        ]  # swap index 0 (system)
-        return self.set_in_context_messages(
-            agent_id=agent_id, message_ids=message_ids, actor=actor
-        )
+        message_ids = [message.id] + agent_state.message_ids[1:]  # swap index 0 (system)
+        return self.set_in_context_messages(agent_id=agent_id, message_ids=message_ids, actor=actor)
 
     @enforce_types
     def set_in_context_messages(
@@ -1896,17 +1702,10 @@ class AgentManager:
         message_id_indices_belonging_to_user = [
             idx
             for idx, message_id in enumerate(message_ids)
-            if self.message_manager.get_message_by_id(
-                message_id=message_id, actor=actor
-            ).user_id
-            == user_id
+            if self.message_manager.get_message_by_id(message_id=message_id, actor=actor).user_id == user_id
         ]
-        message_ids_belonging_to_user = [
-            message_ids[idx] for idx in message_id_indices_belonging_to_user
-        ]
-        message_ids_to_keep = [
-            message_ids[idx] for idx in message_id_indices_belonging_to_user[num - 1 :]
-        ]
+        message_ids_belonging_to_user = [message_ids[idx] for idx in message_id_indices_belonging_to_user]
+        message_ids_to_keep = [message_ids[idx] for idx in message_id_indices_belonging_to_user[num - 1 :]]
 
         message_ids_belonging_to_user = set(message_ids_belonging_to_user)
         message_ids_to_keep = set(message_ids_to_keep)
@@ -1915,14 +1714,9 @@ class AgentManager:
         new_messages = [system_message_id] + [
             msg_id
             for msg_id in message_ids
-            if (
-                msg_id not in message_ids_belonging_to_user
-                or msg_id in message_ids_to_keep
-            )
+            if (msg_id not in message_ids_belonging_to_user or msg_id in message_ids_to_keep)
         ]
-        return self.set_in_context_messages(
-            agent_id=agent_id, message_ids=new_messages, actor=actor
-        )
+        return self.set_in_context_messages(agent_id=agent_id, message_ids=new_messages, actor=actor)
 
     @enforce_types
     def trim_all_in_context_messages_except_system(
@@ -1943,15 +1737,11 @@ class AgentManager:
         # Keep system message and only filter out messages belonging to the specified user
         new_message_ids = [system_message_id]
         for message_id in message_ids[1:]:  # Skip system message
-            message = self.message_manager.get_message_by_id(
-                message_id=message_id, actor=actor
-            )
+            message = self.message_manager.get_message_by_id(message_id=message_id, actor=actor)
             if message.user_id != user_id:
                 new_message_ids.append(message_id)
 
-        return self.set_in_context_messages(
-            agent_id=agent_id, message_ids=new_message_ids, actor=actor
-        )
+        return self.set_in_context_messages(agent_id=agent_id, message_ids=new_message_ids, actor=actor)
 
     @enforce_types
     def prepend_to_in_context_messages(
@@ -1962,13 +1752,9 @@ class AgentManager:
         user_id: Optional[str] = None,
     ) -> PydanticAgentState:
         message_ids = self.get_agent_by_id(agent_id=agent_id, actor=actor).message_ids
-        new_messages = self.message_manager.create_many_messages(
-            messages, actor=actor, user_id=user_id
-        )
+        new_messages = self.message_manager.create_many_messages(messages, actor=actor, user_id=user_id)
         message_ids = [message_ids[0]] + [m.id for m in new_messages] + message_ids[1:]
-        return self.set_in_context_messages(
-            agent_id=agent_id, message_ids=message_ids, actor=actor
-        )
+        return self.set_in_context_messages(agent_id=agent_id, message_ids=message_ids, actor=actor)
 
     @enforce_types
     def append_to_in_context_messages(
@@ -1978,16 +1764,10 @@ class AgentManager:
         actor: PydanticClient,
         user_id: Optional[str] = None,
     ) -> PydanticAgentState:
-        messages = self.message_manager.create_many_messages(
-            messages, actor=actor, user_id=user_id
-        )
-        message_ids = (
-            self.get_agent_by_id(agent_id=agent_id, actor=actor).message_ids or []
-        )
+        messages = self.message_manager.create_many_messages(messages, actor=actor, user_id=user_id)
+        message_ids = self.get_agent_by_id(agent_id=agent_id, actor=actor).message_ids or []
         message_ids += [m.id for m in messages]
-        return self.set_in_context_messages(
-            agent_id=agent_id, message_ids=message_ids, actor=actor
-        )
+        return self.set_in_context_messages(agent_id=agent_id, message_ids=message_ids, actor=actor)
 
     @enforce_types
     def reset_messages(
@@ -2014,9 +1794,7 @@ class AgentManager:
         """
         with self.session_maker() as session:
             # Retrieve the existing agent (will raise NoResultFound if invalid)
-            agent = AgentModel.read(
-                db_session=session, identifier=agent_id, actor=actor
-            )
+            agent = AgentModel.read(db_session=session, identifier=agent_id, actor=actor)
 
             # Get current messages to filter
             current_messages = agent.messages
@@ -2051,9 +1829,7 @@ class AgentManager:
             agent_state = agent.to_pydantic()
 
         if add_default_initial_messages:
-            return self.append_initial_message_sequence_to_in_context_messages(
-                actor, agent_state, user_id=user_id
-            )
+            return self.append_initial_message_sequence_to_in_context_messages(actor, agent_state, user_id=user_id)
         else:
             # We still want to always have a system message
             init_messages = initialize_message_sequence(
@@ -2067,17 +1843,13 @@ class AgentManager:
                 model=agent_state.llm_config.model,
                 openai_message_dict=init_messages[0],
             )
-            return self.append_to_in_context_messages(
-                [system_message], agent_id=agent_state.id, actor=actor
-            )
+            return self.append_to_in_context_messages([system_message], agent_id=agent_state.id, actor=actor)
 
     # ======================================================================================================================
     # Tool Management
     # ======================================================================================================================
     @enforce_types
-    def attach_tool(
-        self, agent_id: str, tool_id: str, actor: PydanticClient
-    ) -> PydanticAgentState:
+    def attach_tool(self, agent_id: str, tool_id: str, actor: PydanticClient) -> PydanticAgentState:
         """
         Attaches a tool to an agent.
 
@@ -2094,9 +1866,7 @@ class AgentManager:
         """
         with self.session_maker() as session:
             # Verify the agent exists and user has permission to access it
-            agent = AgentModel.read(
-                db_session=session, identifier=agent_id, actor=actor
-            )
+            agent = AgentModel.read(db_session=session, identifier=agent_id, actor=actor)
 
             # Use the _process_relationship helper to attach the tool
             _process_relationship(
@@ -2114,9 +1884,7 @@ class AgentManager:
             return agent.to_pydantic()
 
     @enforce_types
-    def detach_tool(
-        self, agent_id: str, tool_id: str, actor: PydanticClient
-    ) -> PydanticAgentState:
+    def detach_tool(self, agent_id: str, tool_id: str, actor: PydanticClient) -> PydanticAgentState:
         """
         Detaches a tool from an agent.
 
@@ -2133,16 +1901,12 @@ class AgentManager:
         """
         with self.session_maker() as session:
             # Verify the agent exists and user has permission to access it
-            agent = AgentModel.read(
-                db_session=session, identifier=agent_id, actor=actor
-            )
+            agent = AgentModel.read(db_session=session, identifier=agent_id, actor=actor)
 
             # Filter out the tool to be detached
             remaining_tools = [tool for tool in agent.tools if tool.id != tool_id]
 
-            if len(remaining_tools) == len(
-                agent.tools
-            ):  # Tool ID was not in the relationship
+            if len(remaining_tools) == len(agent.tools):  # Tool ID was not in the relationship
                 logger.warning(
                     f"Attempted to remove unattached tool id={tool_id} from agent id={agent_id} by actor={actor}"
                 )

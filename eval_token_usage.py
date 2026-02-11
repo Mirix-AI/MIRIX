@@ -14,8 +14,9 @@ from io import BytesIO
 from pathlib import Path
 from typing import Iterable, List, Tuple
 
-from mirix import MirixClient
 from PIL import Image, ImageOps
+
+from mirix import MirixClient
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(
@@ -64,9 +65,7 @@ def get_images_from_set(set_path: Path) -> List[Path]:
         raise FileNotFoundError(f"Image directory does not exist: {set_path}")
 
     image_paths = sorted(
-        path
-        for path in set_path.iterdir()
-        if path.is_file() and path.suffix.lower() in SUPPORTED_IMAGE_EXTENSIONS
+        path for path in set_path.iterdir() if path.is_file() and path.suffix.lower() in SUPPORTED_IMAGE_EXTENSIONS
     )
 
     if not image_paths:
@@ -90,10 +89,7 @@ def add_images_to_memory(client: MirixClient, user_id: str, image_paths: Iterabl
                     "content": [
                         {
                             "type": "text",
-                            "text": (
-                                "Please store this reference image for later: "
-                                f"{image_path.name}"
-                            ),
+                            "text": ("Please store this reference image for later: " f"{image_path.name}"),
                         },
                         {
                             "type": "image_data",

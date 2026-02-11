@@ -27,9 +27,7 @@ class Tool(SqlalchemyBase, OrganizationMixin):
 
     # Add unique constraint on (name, _organization_id)
     # An organization should not have multiple tools with the same name
-    __table_args__ = (
-        UniqueConstraint("name", "organization_id", name="uix_name_organization"),
-    )
+    __table_args__ = (UniqueConstraint("name", "organization_id", name="uix_name_organization"),)
 
     name: Mapped[str] = mapped_column(doc="The display name of the tool.")
     tool_type: Mapped[ToolType] = mapped_column(
@@ -40,21 +38,15 @@ class Tool(SqlalchemyBase, OrganizationMixin):
     return_char_limit: Mapped[int] = mapped_column(
         nullable=True, doc="The maximum number of characters the tool can return."
     )
-    description: Mapped[Optional[str]] = mapped_column(
-        nullable=True, doc="The description of the tool."
-    )
+    description: Mapped[Optional[str]] = mapped_column(nullable=True, doc="The description of the tool.")
     tags: Mapped[List] = mapped_column(JSON, doc="Metadata tags used to filter tools.")
     source_type: Mapped[ToolSourceType] = mapped_column(
         String, doc="The type of the source code.", default=ToolSourceType.json
     )
-    source_code: Mapped[Optional[str]] = mapped_column(
-        String, doc="The source code of the function."
-    )
+    source_code: Mapped[Optional[str]] = mapped_column(String, doc="The source code of the function.")
     json_schema: Mapped[Optional[dict]] = mapped_column(
         JSON, default=lambda: {}, doc="The OAI compatable JSON schema of the function."
     )
 
     # relationships
-    organization: Mapped["Organization"] = relationship(
-        "Organization", back_populates="tools", lazy="selectin"
-    )
+    organization: Mapped["Organization"] = relationship("Organization", back_populates="tools", lazy="selectin")

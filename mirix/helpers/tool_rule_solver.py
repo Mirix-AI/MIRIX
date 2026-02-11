@@ -33,9 +33,7 @@ class ToolRulesSolver(BaseModel):
         default_factory=list,
         description="Terminal tool rules that end the agent loop if called.",
     )
-    last_tool_name: Optional[str] = Field(
-        None, description="The most recent tool used, updated with each tool call."
-    )
+    last_tool_name: Optional[str] = Field(None, description="The most recent tool used, updated with each tool call.")
 
     def __init__(self, tool_rules: List[BaseToolRule], **kwargs):
         super().__init__(**kwargs)
@@ -69,11 +67,7 @@ class ToolRulesSolver(BaseModel):
         else:
             # Find a matching ToolRule for the last tool used
             current_rule = next(
-                (
-                    rule
-                    for rule in self.tool_rules
-                    if rule.tool_name == self.last_tool_name
-                ),
+                (rule for rule in self.tool_rules if rule.tool_name == self.last_tool_name),
                 None,
             )
 
@@ -89,9 +83,7 @@ class ToolRulesSolver(BaseModel):
                     raise ValueError(
                         "Conditional tool rule requires an LLM response to determine which child tool to use"
                     )
-                next_tool = self.evaluate_conditional_tool(
-                    current_rule, last_function_response
-                )
+                next_tool = self.evaluate_conditional_tool(current_rule, last_function_response)
                 return [next_tool] if next_tool else []
 
             return current_rule.children if current_rule.children else []
@@ -115,14 +107,10 @@ class ToolRulesSolver(BaseModel):
             ToolRuleValidationError: If the rule is invalid
         """
         if len(rule.child_output_mapping) == 0:
-            raise ToolRuleValidationError(
-                "Conditional tool rule must have at least one child tool."
-            )
+            raise ToolRuleValidationError("Conditional tool rule must have at least one child tool.")
         return True
 
-    def evaluate_conditional_tool(
-        self, tool: ConditionalToolRule, last_function_response: str
-    ) -> str:
+    def evaluate_conditional_tool(self, tool: ConditionalToolRule, last_function_response: str) -> str:
         """
         Parse function response to determine which child tool to use based on the mapping
 
