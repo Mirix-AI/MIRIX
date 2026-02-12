@@ -111,7 +111,8 @@ def client(server, user):
             name=client_id,
             organization_id=user.organization_id,
             status="active",
-            scope="read_write",
+            write_scope="test",
+            read_scopes=["test"],
         )
     )
 
@@ -196,6 +197,7 @@ class TestDirectEpisodicMemory:
             summary="Attended team meeting",
             details="Weekly standup meeting with the development team",
             organization_id=user.organization_id,
+            user_id=user.id,
         )
 
         assert event is not None
@@ -712,7 +714,7 @@ class TestMetaMemoryParallelism:
             def __init__(self, agent_state, interface, actor, user, filter_tags=None, use_cache=True):
                 self.agent_state = agent_state
 
-            def step(self, input_messages, chaining, actor=None, user=None):
+            def step(self, input_messages, chaining, actor=None, user=None, topics=None, retrieved_memories=None):
                 memory_type = self.agent_state.agent_type.replace("_memory_agent", "")
                 with lock:
                     tracker["start_times"][memory_type] = time.perf_counter()

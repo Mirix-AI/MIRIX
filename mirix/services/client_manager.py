@@ -40,11 +40,13 @@ class ClientManager:
                 client = ClientModel.read(db_session=session, identifier=self.DEFAULT_CLIENT_ID)
             except NoResultFound:
                 # If it doesn't exist, make it
+                # Default client is read-only (no write_scope) with no read access
                 client = ClientModel(
                     id=self.DEFAULT_CLIENT_ID,
                     name=self.DEFAULT_CLIENT_NAME,
                     status="active",
-                    scope="",
+                    write_scope=None,
+                    read_scopes=[],
                     organization_id=org_id,
                 )
                 client.create(session)
@@ -630,7 +632,8 @@ class ClientManager:
                         organization_id=organization_id,
                         name=f"Local Client {client_id}",
                         status="active",
-                        scope="local",
+                        write_scope="local",
+                        read_scopes=["local"],
                     )
                 )
             # Otherwise return default client

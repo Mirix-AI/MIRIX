@@ -1463,7 +1463,8 @@ class CreateOrGetClientRequest(BaseModel):
     client_id: Optional[str] = None
     name: Optional[str] = None
     org_id: Optional[str] = None
-    scope: Optional[str] = "read_write"
+    write_scope: Optional[str] = None
+    read_scopes: List[str] = Field(default_factory=list)
     status: Optional[str] = "active"
 
 
@@ -1515,7 +1516,8 @@ async def create_or_get_client(
             name=request.name or client_id,
             organization_id=org_id,
             status=request.status or "active",
-            scope=request.scope or "read_write",
+            write_scope=request.write_scope,
+            read_scopes=request.read_scopes,
         )
     )
     logger.info("Created new client: %s", client_id)
@@ -1991,8 +1993,11 @@ async def add_memory(
         # Create new filter_tags if not provided
         filter_tags = {}
 
-    # Add or update the "scope" key with the client's scope
-    filter_tags["scope"] = client.scope
+    # Add or update the "scope" key with the client's write_scope for memory creation
+    # Memories are written with the client's write_scope
+    if client.write_scope is None:
+        raise HTTPException(status_code=403, detail="Client has no write_scope - cannot create memories")
+    filter_tags["scope"] = client.write_scope
 
     # Queue for async processing instead of synchronous execution
     # Note: actor is Client for org-level access control
@@ -2312,7 +2317,7 @@ async def retrieve_memory_with_conversation(
         user_id = ClientAuthManager.get_admin_user_id_for_client(client.id)
         logger.debug("No user_id provided, using admin user: %s", user_id)
 
-    # Add client scope to filter_tags (create if not provided)
+    # Add client read_scopes to filter_tags for memory retrieval
     if request.filter_tags is not None:
         # Create a copy to avoid modifying the original request
         filter_tags = dict(request.filter_tags)
@@ -2320,8 +2325,8 @@ async def retrieve_memory_with_conversation(
         # Create new filter_tags if not provided
         filter_tags = {}
 
-    # Add or update the "scope" key with the client's scope
-    filter_tags["scope"] = client.scope
+    # Add read_scopes for filtering - memories are readable if scope IN client.read_scopes
+    filter_tags["read_scopes"] = client.read_scopes
 
     # Get all agents for this client (automatically filtered by client via apply_access_predicate)
     all_agents = server.agent_manager.list_agents(actor=client, limit=1000)
@@ -2498,13 +2503,13 @@ async def retrieve_memory_with_topic(
                 "memories": {},
             }
 
-    # Add client scope to filter_tags (create if not provided)
+    # Add client read_scopes to filter_tags for memory retrieval
     if parsed_filter_tags is None:
         # Create new filter_tags if not provided
         parsed_filter_tags = {}
 
-    # Add or update the "scope" key with the client's scope
-    parsed_filter_tags["scope"] = client.scope
+    # Add read_scopes for filtering - memories are readable if scope IN client.read_scopes
+    parsed_filter_tags["read_scopes"] = client.read_scopes
 
     # Get all agents for this client (automatically filtered by client via apply_access_predicate)
     all_agents = server.agent_manager.list_agents(actor=client, limit=1000)
@@ -2681,12 +2686,12 @@ async def search_memory(
                 "count": 0,
             }
 
-    # Add client scope to filter_tags (create if not provided)
+    # Add client read_scopes to filter_tags for memory retrieval
     if parsed_filter_tags is None:
         parsed_filter_tags = {}
 
-    # Add or update the "scope" key with the client's scope
-    parsed_filter_tags["scope"] = client.scope
+    # Add read_scopes for filtering - memories are readable if scope IN client.read_scopes
+    parsed_filter_tags["read_scopes"] = client.read_scopes
 
     # Parse temporal filtering parameters
     parsed_start_date: Optional[datetime] = None
@@ -3167,15 +3172,15 @@ async def search_memory_all_users(
     else:
         filter_tags_dict = {}
 
-    # Add client scope to filter_tags (same pattern as retrieve_with_conversation)
-    # This filters memories where memory.filter_tags["scope"] == client.scope
-    filter_tags_dict["scope"] = client.scope
+    # Add client read_scopes to filter_tags for memory retrieval
+    # This filters memories where memory.filter_tags["scope"] IN client.read_scopes
+    filter_tags_dict["read_scopes"] = client.read_scopes
 
     logger.info(
-        "Cross-user search: client=%s, org=%s, client_scope=%s, filter_tags=%s, similarity_threshold=%s",
+        "Cross-user search: client=%s, org=%s, read_scopes=%s, filter_tags=%s, similarity_threshold=%s",
         effective_client_id,
         effective_org_id,
-        client.scope,
+        client.read_scopes,
         filter_tags_dict,
         similarity_threshold,
     )
@@ -3606,7 +3611,7 @@ async def search_memory_all_users(
         "count": len(all_results),
         "client_id": effective_client_id,
         "organization_id": effective_org_id,
-        "client_scope": client.scope,
+        "read_scopes": client.read_scopes,
         "filter_tags": filter_tags_dict,
     }
 
@@ -4540,9 +4545,10 @@ async def search_raw_memory(
         except NoResultFound:
             raise HTTPException(status_code=404, detail=f"User {user_id} not found")
 
-    # Process filter_tags: always set scope to client scope (overwrites any user-provided scope)
+    # Process filter_tags: use client's read_scopes for filtering
     filter_tags = dict[str, Any](request.filter_tags) if request.filter_tags is not None else {}
-    filter_tags["scope"] = client.scope
+    # Add read_scopes for filtering - memories are readable if scope IN client.read_scopes
+    filter_tags["read_scopes"] = client.read_scopes
 
     # Parse time_range from request, converting to UTC and stripping timezone for DB comparison
     time_range_dict = None
@@ -4857,7 +4863,8 @@ class DashboardClientResponse(BaseModel):
     id: str
     name: str
     email: Optional[str]
-    scope: str
+    write_scope: Optional[str]
+    read_scopes: List[str]
     status: str
     admin_user_id: str  # Admin user for memory operations
     created_at: Optional[datetime]
@@ -4968,7 +4975,7 @@ async def dashboard_register(request: DashboardRegisterRequest):
             name=request.name,
             email=request.email,
             password=request.password,
-            scope="admin",  # First/dashboard users get admin scope
+            write_scope="admin",  # First/dashboard users get admin scope
         )
 
         # Generate token
@@ -4982,7 +4989,8 @@ async def dashboard_register(request: DashboardRegisterRequest):
                 id=client.id,
                 name=client.name,
                 email=client.email,
-                scope=client.scope,
+                write_scope=client.write_scope,
+                read_scopes=client.read_scopes,
                 status=client.status,
                 admin_user_id=ClientAuthManager.get_admin_user_id_for_client(client.id),
                 created_at=client.created_at,
@@ -5019,7 +5027,8 @@ async def dashboard_login(request: DashboardLoginRequest):
             id=client.id,
             name=client.name,
             email=client.email,
-            scope=client.scope,
+            write_scope=client.write_scope,
+            read_scopes=client.read_scopes,
             status=client.status,
             admin_user_id=ClientAuthManager.get_admin_user_id_for_client(client.id),
             created_at=client.created_at,
@@ -5047,7 +5056,8 @@ async def dashboard_get_current_client(authorization: Optional[str] = Header(Non
         id=client.id,
         name=client.name,
         email=client.email,
-        scope=client.scope,
+        write_scope=client.write_scope,
+        read_scopes=client.read_scopes,
         status=client.status,
         admin_user_id=ClientAuthManager.get_admin_user_id_for_client(client.id),
         created_at=client.created_at,
@@ -5082,7 +5092,8 @@ async def list_dashboard_clients(
             id=c.id,
             name=c.name,
             email=c.email,
-            scope=c.scope,
+            write_scope=c.write_scope,
+            read_scopes=c.read_scopes,
             status=c.status,
             admin_user_id=ClientAuthManager.get_admin_user_id_for_client(c.id),
             created_at=c.created_at,

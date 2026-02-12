@@ -69,7 +69,8 @@ def test_actor():
                 id=client_id,
                 organization_id=org_id,
                 name="Test Client",
-                scope="read_write",
+                write_scope="test",
+                read_scopes=["test"],
             )
         )
 
@@ -149,7 +150,7 @@ def test_manager_create_raw_memory(raw_memory_manager, sample_raw_memory_data, t
 
     assert result.id is not None
     assert result.context == sample_raw_memory_data.context
-    assert result.filter_tags["scope"] == test_actor.scope  # Auto-injected from actor
+    assert result.filter_tags["scope"] == test_actor.write_scope  # Auto-injected from actor
     assert result.filter_tags["engagement_id"] == "tsk_1234"
     # Note: _created_by_id is tracked in ORM but not exposed in schema
 
@@ -176,7 +177,7 @@ def test_manager_create_raw_memory_auto_creates_user(raw_memory_manager, test_ac
     # Create raw memory with non-existent user_id - should auto-create user
     memory_data = RawMemoryItemCreate(
         context="Test context for auto-created user",
-        filter_tags={"scope": test_actor.scope, "test": "auto_creation"},
+        filter_tags={"scope": test_actor.write_scope, "test": "auto_creation"},
         user_id=user_id,
         organization_id=test_actor.organization_id,
     )
@@ -240,7 +241,7 @@ def test_manager_update_raw_memory_replace(raw_memory_manager, sample_raw_memory
         memory_id=created.id,
         actor=test_actor,
         new_context="Completely new context",
-        new_filter_tags={"scope": test_actor.scope, "status": "completed"},
+        new_filter_tags={"scope": test_actor.write_scope, "status": "completed"},
         context_update_mode="replace",
         tags_merge_mode="replace",
     )
@@ -269,7 +270,7 @@ def test_manager_update_raw_memory_replace_preserves_scope(
     )
 
     # Verify scope was set
-    assert created.filter_tags.get("scope") == test_actor.scope
+    assert created.filter_tags.get("scope") == test_actor.write_scope
 
     # Update with replace mode WITHOUT including scope in new_filter_tags
     updated = raw_memory_manager.update_raw_memory(
@@ -280,7 +281,7 @@ def test_manager_update_raw_memory_replace_preserves_scope(
     )
 
     # Scope should be preserved even though we didn't include it
-    assert updated.filter_tags.get("scope") == test_actor.scope, "Scope should be preserved during replace"
+    assert updated.filter_tags.get("scope") == test_actor.write_scope, "Scope should be preserved during replace"
     assert updated.filter_tags["status"] == "completed"
     assert updated.filter_tags["new_tag"] == "value"
     assert "engagement_id" not in updated.filter_tags  # Other tags replaced
@@ -288,7 +289,7 @@ def test_manager_update_raw_memory_replace_preserves_scope(
     # Verify we can still fetch the memory (scope-based queries work)
     fetched = raw_memory_manager.get_raw_memory_by_id(created.id, actor=test_actor)
     assert fetched is not None
-    assert fetched.filter_tags.get("scope") == test_actor.scope
+    assert fetched.filter_tags.get("scope") == test_actor.write_scope
 
 
 def test_manager_update_raw_memory_append(raw_memory_manager, sample_raw_memory_data, test_actor, test_user):
@@ -333,7 +334,7 @@ def test_manager_update_raw_memory_merge_tags(raw_memory_manager, sample_raw_mem
         tags_merge_mode="merge",
     )
 
-    assert updated.filter_tags["scope"] == test_actor.scope  # Original preserved (auto-injected)
+    assert updated.filter_tags["scope"] == test_actor.write_scope  # Original preserved (auto-injected)
     assert updated.filter_tags["engagement_id"] == "tsk_1234"  # Original
     assert updated.filter_tags["status"] == "completed"  # Updated
     assert updated.filter_tags["reviewed"] is True  # Added
@@ -373,7 +374,7 @@ def test_cleanup_job_deletes_stale_memories(raw_memory_manager, test_actor, test
         context="Old task context for cleanup test",
         user_id=test_user.id,
         organization_id=test_actor.organization_id,
-        filter_tags={"scope": test_actor.scope},
+        filter_tags={"scope": test_actor.write_scope},
     )
     old_memory = raw_memory_manager.create_raw_memory(
         raw_memory=old_memory_data,
@@ -402,7 +403,7 @@ def test_cleanup_job_deletes_stale_memories(raw_memory_manager, test_actor, test
         context="Recent task context",
         user_id=test_user.id,
         organization_id=test_actor.organization_id,
-        filter_tags={"scope": test_actor.scope},
+        filter_tags={"scope": test_actor.write_scope},
     )
     recent = raw_memory_manager.create_raw_memory(
         raw_memory=recent_memory_data,
@@ -433,7 +434,7 @@ def test_cleanup_job_respects_custom_threshold(raw_memory_manager, test_actor, t
         context="8-day-old task context",
         user_id=test_user.id,
         organization_id=test_actor.organization_id,
-        filter_tags={"scope": test_actor.scope},
+        filter_tags={"scope": test_actor.write_scope},
     )
     memory = raw_memory_manager.create_raw_memory(
         raw_memory=memory_data,
@@ -476,7 +477,7 @@ def test_raw_memory_create_with_redis(raw_memory_manager, test_actor, test_user,
         context="Redis test: Task context for caching verification",
         user_id=test_user.id,
         organization_id=test_actor.organization_id,
-        filter_tags={"scope": test_actor.scope, "test": "redis_create"},
+        filter_tags={"scope": test_actor.write_scope, "test": "redis_create"},
     )
 
     # Create memory (should cache by default)
@@ -495,7 +496,7 @@ def test_raw_memory_create_with_redis(raw_memory_manager, test_actor, test_user,
     assert cached_data is not None, "Raw memory should be cached in Redis JSON"
     assert cached_data["id"] == created.id
     assert cached_data["context"] == memory_data.context
-    assert cached_data["filter_tags"]["scope"] == test_actor.scope  # Auto-injected
+    assert cached_data["filter_tags"]["scope"] == test_actor.write_scope  # Auto-injected
     assert cached_data["filter_tags"]["test"] == "redis_create"
 
     # Cleanup
@@ -508,7 +509,7 @@ def test_raw_memory_cache_hit_performance(raw_memory_manager, test_actor, test_u
         context="Redis test: Performance testing context",
         user_id=test_user.id,
         organization_id=test_actor.organization_id,
-        filter_tags={"scope": test_actor.scope, "test": "cache_performance"},
+        filter_tags={"scope": test_actor.write_scope, "test": "cache_performance"},
     )
 
     # Create and cache
@@ -549,7 +550,7 @@ def test_raw_memory_update_invalidates_cache(raw_memory_manager, test_actor, tes
         context="Original context before update",
         user_id=test_user.id,
         organization_id=test_actor.organization_id,
-        filter_tags={"scope": test_actor.scope, "status": "draft"},
+        filter_tags={"scope": test_actor.write_scope, "status": "draft"},
     )
 
     # Create and cache
@@ -572,7 +573,7 @@ def test_raw_memory_update_invalidates_cache(raw_memory_manager, test_actor, tes
     updated = raw_memory_manager.update_raw_memory(
         memory_id=created.id,
         new_context="Updated context after modification",
-        new_filter_tags={"scope": test_actor.scope, "status": "completed"},
+        new_filter_tags={"scope": test_actor.write_scope, "status": "completed"},
         actor=test_actor,
         context_update_mode="replace",
         tags_merge_mode="replace",
@@ -606,7 +607,7 @@ def test_raw_memory_delete_removes_cache(raw_memory_manager, test_actor, test_us
         context="Context for deletion test",
         user_id=test_user.id,
         organization_id=test_actor.organization_id,
-        filter_tags={"scope": test_actor.scope, "test": "delete_cache"},
+        filter_tags={"scope": test_actor.write_scope, "test": "delete_cache"},
     )
 
     # Create and cache
@@ -639,7 +640,7 @@ def test_raw_memory_works_without_redis(raw_memory_manager, test_actor, test_use
         context="Context without Redis caching",
         user_id=test_user.id,
         organization_id=test_actor.organization_id,
-        filter_tags={"scope": test_actor.scope, "test": "no_redis"},
+        filter_tags={"scope": test_actor.write_scope, "test": "no_redis"},
     )
 
     # Create with cache disabled
@@ -770,7 +771,7 @@ def test_api_create_and_get_raw_memory(api_client, raw_memory_manager, test_acto
     sample_data = RawMemoryItemCreate(
         context="Integration test: Working on API endpoint testing. " "Status: Testing GET endpoint.",
         filter_tags={
-            "scope": test_actor.scope,
+            "scope": test_actor.write_scope,
             "engagement_id": "tsk_api_test",
             "priority": "high",
         },
@@ -794,7 +795,7 @@ def test_api_create_and_get_raw_memory(api_client, raw_memory_manager, test_acto
     assert data["success"] is True
     assert data["memory"]["id"] == created.id
     assert data["memory"]["context"] == sample_data.context
-    assert data["memory"]["filter_tags"]["scope"] == test_actor.scope  # Auto-injected
+    assert data["memory"]["filter_tags"]["scope"] == test_actor.write_scope  # Auto-injected
     assert data["memory"]["filter_tags"]["engagement_id"] == "tsk_api_test"
 
     print(f"\n[OK] GET /memory/raw/{created.id} successful")
@@ -812,7 +813,7 @@ def test_api_update_raw_memory_replace(api_client, raw_memory_manager, test_acto
     sample_data = RawMemoryItemCreate(
         context="Original context for PATCH test",
         filter_tags={
-            "scope": test_actor.scope,
+            "scope": test_actor.write_scope,
             "engagement_id": "tsk_patch_test",
             "status": "in_progress",
         },
@@ -831,7 +832,7 @@ def test_api_update_raw_memory_replace(api_client, raw_memory_manager, test_acto
     # Test PATCH endpoint with replace mode
     update_payload = {
         "context": "Updated context via API",
-        "filter_tags": {"scope": test_actor.scope, "status": "completed"},
+        "filter_tags": {"scope": test_actor.write_scope, "status": "completed"},
         "context_update_type": "replace",
         "tags_update_type": "replace",
     }
@@ -866,7 +867,7 @@ def test_api_update_raw_memory_append_and_merge(
     sample_data = RawMemoryItemCreate(
         context="Original context for append test",
         filter_tags={
-            "scope": test_actor.scope,
+            "scope": test_actor.write_scope,
             "engagement_id": "tsk_append_test",
             "priority": "high",
         },
@@ -901,7 +902,7 @@ def test_api_update_raw_memory_append_and_merge(
     assert data["success"] is True
     assert "Original context for append test" in data["memory"]["context"]
     assert "Appended via API" in data["memory"]["context"]
-    assert data["memory"]["filter_tags"]["scope"] == test_actor.scope  # Auto-injected
+    assert data["memory"]["filter_tags"]["scope"] == test_actor.write_scope  # Auto-injected
     assert data["memory"]["filter_tags"]["engagement_id"] == "tsk_append_test"  # Original
     assert data["memory"]["filter_tags"]["status"] == "completed"  # Merged
     assert data["memory"]["filter_tags"]["reviewed"] is True  # Merged
@@ -916,7 +917,7 @@ def test_api_delete_raw_memory(api_client, raw_memory_manager, test_actor, test_
     sample_data = RawMemoryItemCreate(
         context="Context for DELETE test",
         filter_tags={
-            "scope": test_actor.scope,
+            "scope": test_actor.write_scope,
             "engagement_id": "tsk_delete_test",
         },
         user_id=test_user.id,
@@ -980,7 +981,7 @@ def test_api_create_raw_memory(api_client, test_actor, test_user):
     assert data["success"] is True
     assert "memory" in data
     assert data["memory"]["context"] == create_payload["context"]
-    assert data["memory"]["filter_tags"]["scope"] == test_actor.scope  # Auto-injected
+    assert data["memory"]["filter_tags"]["scope"] == test_actor.write_scope  # Auto-injected
     assert data["memory"]["filter_tags"]["engagement_id"] == "tsk_api_create"
     assert data["memory"]["user_id"] == test_user.id
 
@@ -1071,7 +1072,7 @@ def test_raw_memory_concurrent_append(raw_memory_manager, test_actor, test_user)
     # Create a raw memory
     sample_data = RawMemoryItemCreate(
         context="Initial context",
-        filter_tags={"scope": test_actor.scope, "test": "concurrency"},
+        filter_tags={"scope": test_actor.write_scope, "test": "concurrency"},
         user_id=test_user.id,
         organization_id=test_actor.organization_id,
     )
@@ -1149,7 +1150,7 @@ def test_raw_memory_concurrent_tag_merge(raw_memory_manager, test_actor, test_us
     # Create a raw memory with initial tags
     sample_data = RawMemoryItemCreate(
         context="Context for tag merge test",
-        filter_tags={"scope": test_actor.scope, "initial_tag": "value0"},
+        filter_tags={"scope": test_actor.write_scope, "initial_tag": "value0"},
         user_id=test_user.id,
         organization_id=test_actor.organization_id,
     )
@@ -1484,7 +1485,7 @@ def test_search_raw_memories_filter_tags_multiple_keys(raw_memory_manager, test_
     mem1 = raw_memory_manager.create_raw_memory(
         raw_memory=RawMemoryItemCreate(
             context="Memory 1",
-            filter_tags={"scope": test_actor.scope, "priority": "high", "source": "iep"},
+            filter_tags={"scope": test_actor.write_scope, "priority": "high", "source": "iep"},
             user_id=test_user.id,
             organization_id=test_actor.organization_id,
             occurred_at=None,
@@ -1501,7 +1502,7 @@ def test_search_raw_memories_filter_tags_multiple_keys(raw_memory_manager, test_
     mem2 = raw_memory_manager.create_raw_memory(
         raw_memory=RawMemoryItemCreate(
             context="Memory 2",
-            filter_tags={"scope": test_actor.scope, "priority": "high", "source": "manual"},
+            filter_tags={"scope": test_actor.write_scope, "priority": "high", "source": "manual"},
             user_id=test_user.id,
             organization_id=test_actor.organization_id,
             occurred_at=None,
@@ -1518,7 +1519,7 @@ def test_search_raw_memories_filter_tags_multiple_keys(raw_memory_manager, test_
     mem3 = raw_memory_manager.create_raw_memory(
         raw_memory=RawMemoryItemCreate(
             context="Memory 3",
-            filter_tags={"scope": test_actor.scope, "priority": "low", "source": "iep"},
+            filter_tags={"scope": test_actor.write_scope, "priority": "low", "source": "iep"},
             user_id=test_user.id,
             organization_id=test_actor.organization_id,
             occurred_at=None,
@@ -1560,7 +1561,7 @@ def test_search_raw_memories_sorting_all_fields(raw_memory_manager, test_actor, 
     mem1 = raw_memory_manager.create_raw_memory(
         raw_memory=RawMemoryItemCreate(
             context="Memory 1",
-            filter_tags={"scope": test_actor.scope},
+            filter_tags={"scope": test_actor.write_scope},
             user_id=test_user.id,
             organization_id=test_actor.organization_id,
             occurred_at=base_time - timedelta(days=3),
@@ -1577,7 +1578,7 @@ def test_search_raw_memories_sorting_all_fields(raw_memory_manager, test_actor, 
     mem2 = raw_memory_manager.create_raw_memory(
         raw_memory=RawMemoryItemCreate(
             context="Memory 2",
-            filter_tags={"scope": test_actor.scope},
+            filter_tags={"scope": test_actor.write_scope},
             user_id=test_user.id,
             organization_id=test_actor.organization_id,
             occurred_at=base_time - timedelta(days=1),
@@ -1595,7 +1596,7 @@ def test_search_raw_memories_sorting_all_fields(raw_memory_manager, test_actor, 
     results, _ = raw_memory_manager.search_raw_memories(
         organization_id=test_user.organization_id,
         user_id=test_user.id,
-        filter_tags={"scope": test_actor.scope},
+        filter_tags={"scope": test_actor.write_scope},
         sort="updated_at",
         limit=10,
     )
@@ -1607,7 +1608,7 @@ def test_search_raw_memories_sorting_all_fields(raw_memory_manager, test_actor, 
     results, _ = raw_memory_manager.search_raw_memories(
         organization_id=test_user.organization_id,
         user_id=test_user.id,
-        filter_tags={"scope": test_actor.scope},
+        filter_tags={"scope": test_actor.write_scope},
         sort="-updated_at",
         limit=10,
     )
@@ -1619,7 +1620,7 @@ def test_search_raw_memories_sorting_all_fields(raw_memory_manager, test_actor, 
     results, _ = raw_memory_manager.search_raw_memories(
         organization_id=test_user.organization_id,
         user_id=test_user.id,
-        filter_tags={"scope": test_actor.scope},
+        filter_tags={"scope": test_actor.write_scope},
         sort="-created_at",
         limit=10,
     )
@@ -1630,7 +1631,7 @@ def test_search_raw_memories_sorting_all_fields(raw_memory_manager, test_actor, 
     results, _ = raw_memory_manager.search_raw_memories(
         organization_id=test_user.organization_id,
         user_id=test_user.id,
-        filter_tags={"scope": test_actor.scope},
+        filter_tags={"scope": test_actor.write_scope},
         sort="-occurred_at",
         limit=10,
     )
@@ -1655,7 +1656,7 @@ def test_search_raw_memories_cursor_pagination(raw_memory_manager, test_actor, t
         mem = raw_memory_manager.create_raw_memory(
             raw_memory=RawMemoryItemCreate(
                 context=f"Memory {i}",
-                filter_tags={"scope": test_actor.scope, "test_tag": test_tag},
+                filter_tags={"scope": test_actor.write_scope, "test_tag": test_tag},
                 user_id=test_user.id,
                 organization_id=test_actor.organization_id,
                 occurred_at=None,
@@ -1678,7 +1679,7 @@ def test_search_raw_memories_cursor_pagination(raw_memory_manager, test_actor, t
     results1, cursor1 = raw_memory_manager.search_raw_memories(
         organization_id=test_user.organization_id,
         user_id=test_user.id,
-        filter_tags={"scope": test_actor.scope, "test_tag": test_tag},
+        filter_tags={"scope": test_actor.write_scope, "test_tag": test_tag},
         sort="-updated_at",
         limit=2,
     )
@@ -1689,7 +1690,7 @@ def test_search_raw_memories_cursor_pagination(raw_memory_manager, test_actor, t
     results2, cursor2 = raw_memory_manager.search_raw_memories(
         organization_id=test_user.organization_id,
         user_id=test_user.id,
-        filter_tags={"scope": test_actor.scope, "test_tag": test_tag},
+        filter_tags={"scope": test_actor.write_scope, "test_tag": test_tag},
         sort="-updated_at",
         cursor=cursor1,
         limit=2,
@@ -1702,7 +1703,7 @@ def test_search_raw_memories_cursor_pagination(raw_memory_manager, test_actor, t
     results3, cursor3 = raw_memory_manager.search_raw_memories(
         organization_id=test_user.organization_id,
         user_id=test_user.id,
-        filter_tags={"scope": test_actor.scope, "test_tag": test_tag},
+        filter_tags={"scope": test_actor.write_scope, "test_tag": test_tag},
         sort="-updated_at",
         cursor=cursor2,
         limit=2,
@@ -1725,7 +1726,7 @@ def test_search_raw_memories_cursor_different_sort_fields(raw_memory_manager, te
     mem1 = raw_memory_manager.create_raw_memory(
         raw_memory=RawMemoryItemCreate(
             context="Memory 1",
-            filter_tags={"scope": test_actor.scope},
+            filter_tags={"scope": test_actor.write_scope},
             user_id=test_user.id,
             organization_id=test_actor.organization_id,
             occurred_at=base_time - timedelta(days=2),
@@ -1742,7 +1743,7 @@ def test_search_raw_memories_cursor_different_sort_fields(raw_memory_manager, te
     mem2 = raw_memory_manager.create_raw_memory(
         raw_memory=RawMemoryItemCreate(
             context="Memory 2",
-            filter_tags={"scope": test_actor.scope},
+            filter_tags={"scope": test_actor.write_scope},
             user_id=test_user.id,
             organization_id=test_actor.organization_id,
             occurred_at=base_time - timedelta(days=1),
@@ -1760,7 +1761,7 @@ def test_search_raw_memories_cursor_different_sort_fields(raw_memory_manager, te
     results1, cursor1 = raw_memory_manager.search_raw_memories(
         organization_id=test_user.organization_id,
         user_id=test_user.id,
-        filter_tags={"scope": test_actor.scope},
+        filter_tags={"scope": test_actor.write_scope},
         sort="-occurred_at",
         limit=1,
     )
@@ -1770,7 +1771,7 @@ def test_search_raw_memories_cursor_different_sort_fields(raw_memory_manager, te
     results2, _ = raw_memory_manager.search_raw_memories(
         organization_id=test_user.organization_id,
         user_id=test_user.id,
-        filter_tags={"scope": test_actor.scope},
+        filter_tags={"scope": test_actor.write_scope},
         sort="-occurred_at",
         cursor=cursor1,
         limit=1,
@@ -1793,7 +1794,7 @@ def test_search_raw_memories_time_range_filtering(raw_memory_manager, test_actor
     mem1 = raw_memory_manager.create_raw_memory(
         raw_memory=RawMemoryItemCreate(
             context="Memory 1",
-            filter_tags={"scope": test_actor.scope},
+            filter_tags={"scope": test_actor.write_scope},
             user_id=test_user.id,
             organization_id=test_actor.organization_id,
             occurred_at=base_time - timedelta(days=5),
@@ -1810,7 +1811,7 @@ def test_search_raw_memories_time_range_filtering(raw_memory_manager, test_actor
     mem2 = raw_memory_manager.create_raw_memory(
         raw_memory=RawMemoryItemCreate(
             context="Memory 2",
-            filter_tags={"scope": test_actor.scope},
+            filter_tags={"scope": test_actor.write_scope},
             user_id=test_user.id,
             organization_id=test_actor.organization_id,
             occurred_at=base_time - timedelta(days=2),
@@ -1827,7 +1828,7 @@ def test_search_raw_memories_time_range_filtering(raw_memory_manager, test_actor
     mem3 = raw_memory_manager.create_raw_memory(
         raw_memory=RawMemoryItemCreate(
             context="Memory 3",
-            filter_tags={"scope": test_actor.scope},
+            filter_tags={"scope": test_actor.write_scope},
             user_id=test_user.id,
             organization_id=test_actor.organization_id,
             occurred_at=base_time - timedelta(days=1),
@@ -1849,7 +1850,7 @@ def test_search_raw_memories_time_range_filtering(raw_memory_manager, test_actor
     results, _ = raw_memory_manager.search_raw_memories(
         organization_id=test_user.organization_id,
         user_id=test_user.id,
-        filter_tags={"scope": test_actor.scope},
+        filter_tags={"scope": test_actor.write_scope},
         time_range=time_range,
         limit=10,
     )
@@ -1866,7 +1867,7 @@ def test_search_raw_memories_time_range_filtering(raw_memory_manager, test_actor
     results, _ = raw_memory_manager.search_raw_memories(
         organization_id=test_user.organization_id,
         user_id=test_user.id,
-        filter_tags={"scope": test_actor.scope},
+        filter_tags={"scope": test_actor.write_scope},
         time_range=time_range,
         limit=10,
     )
@@ -1886,7 +1887,7 @@ def test_search_raw_memories_limit_enforcement(raw_memory_manager, test_actor, t
         mem = raw_memory_manager.create_raw_memory(
             raw_memory=RawMemoryItemCreate(
                 context=f"Memory {i}",
-                filter_tags={"scope": test_actor.scope},
+                filter_tags={"scope": test_actor.write_scope},
                 user_id=test_user.id,
                 organization_id=test_actor.organization_id,
                 occurred_at=None,
@@ -1905,7 +1906,7 @@ def test_search_raw_memories_limit_enforcement(raw_memory_manager, test_actor, t
     results, _ = raw_memory_manager.search_raw_memories(
         organization_id=test_user.organization_id,
         user_id=test_user.id,
-        filter_tags={"scope": test_actor.scope},
+        filter_tags={"scope": test_actor.write_scope},
         limit=2,
     )
     assert len(results) == 2
@@ -1914,7 +1915,7 @@ def test_search_raw_memories_limit_enforcement(raw_memory_manager, test_actor, t
     results, _ = raw_memory_manager.search_raw_memories(
         organization_id=test_user.organization_id,
         user_id=test_user.id,
-        filter_tags={"scope": test_actor.scope},
+        filter_tags={"scope": test_actor.write_scope},
         limit=200,
     )
     assert len(results) <= 100
@@ -1930,7 +1931,7 @@ def test_search_raw_memories_scope_handling(raw_memory_manager, test_actor, test
     mem = raw_memory_manager.create_raw_memory(
         raw_memory=RawMemoryItemCreate(
             context="Memory with scope",
-            filter_tags={"scope": test_actor.scope, "priority": "high"},
+            filter_tags={"scope": test_actor.write_scope, "priority": "high"},
             user_id=test_user.id,
             organization_id=test_actor.organization_id,
             occurred_at=None,
@@ -1948,7 +1949,7 @@ def test_search_raw_memories_scope_handling(raw_memory_manager, test_actor, test
     results, _ = raw_memory_manager.search_raw_memories(
         organization_id=test_user.organization_id,
         user_id=test_user.id,
-        filter_tags={"scope": test_actor.scope, "priority": "high"},
+        filter_tags={"scope": test_actor.write_scope, "priority": "high"},
         limit=10,
     )
     assert len(results) >= 1
@@ -1965,7 +1966,7 @@ def test_search_raw_memories_invalid_cursor(raw_memory_manager, test_actor, test
         raw_memory_manager.search_raw_memories(
             organization_id=test_user.organization_id,
             user_id=test_user.id,
-            filter_tags={"scope": test_actor.scope},
+            filter_tags={"scope": test_actor.write_scope},
             cursor="not-valid-base64!!!",
             limit=10,
         )
@@ -1978,7 +1979,7 @@ def test_search_raw_memories_invalid_cursor(raw_memory_manager, test_actor, test
         raw_memory_manager.search_raw_memories(
             organization_id=test_user.organization_id,
             user_id=test_user.id,
-            filter_tags={"scope": test_actor.scope},
+            filter_tags={"scope": test_actor.write_scope},
             cursor=invalid_json,
             limit=10,
         )
@@ -1991,7 +1992,7 @@ def test_search_raw_memories_invalid_cursor(raw_memory_manager, test_actor, test
         raw_memory_manager.search_raw_memories(
             organization_id=test_user.organization_id,
             user_id=test_user.id,
-            filter_tags={"scope": test_actor.scope},
+            filter_tags={"scope": test_actor.write_scope},
             sort="-updated_at",
             cursor=incomplete_cursor,
             limit=10,
@@ -2005,7 +2006,7 @@ def test_api_search_raw_memories_endpoint(api_client, raw_memory_manager, test_a
     mem1 = raw_memory_manager.create_raw_memory(
         raw_memory=RawMemoryItemCreate(
             context="API test memory 1",
-            filter_tags={"scope": test_actor.scope, "priority": "high"},
+            filter_tags={"scope": test_actor.write_scope, "priority": "high"},
             user_id=test_user.id,
             organization_id=test_actor.organization_id,
             occurred_at=None,
@@ -2022,7 +2023,7 @@ def test_api_search_raw_memories_endpoint(api_client, raw_memory_manager, test_a
     mem2 = raw_memory_manager.create_raw_memory(
         raw_memory=RawMemoryItemCreate(
             context="API test memory 2",
-            filter_tags={"scope": test_actor.scope, "priority": "low"},
+            filter_tags={"scope": test_actor.write_scope, "priority": "low"},
             user_id=test_user.id,
             organization_id=test_actor.organization_id,
             occurred_at=None,
@@ -2103,7 +2104,7 @@ def test_api_search_raw_memories_without_user_id(api_client, raw_memory_manager,
     mem = raw_memory_manager.create_raw_memory(
         raw_memory=RawMemoryItemCreate(
             context="No user filter test",
-            filter_tags={"scope": test_actor.scope},
+            filter_tags={"scope": test_actor.write_scope},
             user_id=test_user.id,
             organization_id=test_actor.organization_id,
             occurred_at=None,
@@ -2166,7 +2167,8 @@ def test_actor_different_scope():
                 id=client_id,
                 organization_id=org_id,
                 name="Test Client Different Scope",
-                scope="admin",  # Different scope than test_actor (which is read_write)
+                write_scope="admin",  # Different scope than test_actor (which is "test")
+                read_scopes=["admin"],
             )
         )
 
@@ -2192,7 +2194,7 @@ def test_scope_auto_injection_on_create(raw_memory_manager, test_actor, test_use
     # Verify scope was auto-injected from actor.scope
     assert result.filter_tags is not None
     assert "scope" in result.filter_tags
-    assert result.filter_tags["scope"] == test_actor.scope
+    assert result.filter_tags["scope"] == test_actor.write_scope
     assert result.filter_tags["custom_tag"] == "value"  # Other tags preserved
 
     # Cleanup
@@ -2218,7 +2220,7 @@ def test_scope_auto_injection_overwrites_provided_scope(raw_memory_manager, test
     )
 
     # Verify scope was overwritten by actor.scope
-    assert result.filter_tags["scope"] == test_actor.scope
+    assert result.filter_tags["scope"] == test_actor.write_scope
     assert result.filter_tags["scope"] != "wrong_scope"
 
     # Cleanup
@@ -2353,14 +2355,14 @@ def test_scope_tamper_prevention_on_update(raw_memory_manager, test_actor, test_
 
     # Verify scope was not changed
     fetched = raw_memory_manager.get_raw_memory_by_id(result.id, actor=test_actor)
-    assert fetched.filter_tags["scope"] == test_actor.scope
+    assert fetched.filter_tags["scope"] == test_actor.write_scope
     assert fetched.filter_tags["scope"] != "hacked_scope"
 
     # Verify updating with same scope works
     updated = raw_memory_manager.update_raw_memory(
         memory_id=result.id,
         actor=test_actor,
-        new_filter_tags={"scope": test_actor.scope, "custom_tag": "updated"},
+        new_filter_tags={"scope": test_actor.write_scope, "custom_tag": "updated"},
     )
     assert updated.filter_tags["custom_tag"] == "updated"
 
@@ -2508,7 +2510,7 @@ def test_search_raw_memories_filters_by_user_id(raw_memory_manager, test_actor, 
     mem1 = raw_memory_manager.create_raw_memory(
         raw_memory=RawMemoryItemCreate(
             context="User 1 memory",
-            filter_tags={"scope": test_actor.scope, "test_tag": "user_filter_test"},
+            filter_tags={"scope": test_actor.write_scope, "test_tag": "user_filter_test"},
             user_id=test_user.id,
             organization_id=test_actor.organization_id,
         ),
@@ -2522,7 +2524,7 @@ def test_search_raw_memories_filters_by_user_id(raw_memory_manager, test_actor, 
     mem2 = raw_memory_manager.create_raw_memory(
         raw_memory=RawMemoryItemCreate(
             context="User 2 memory",
-            filter_tags={"scope": test_actor.scope, "test_tag": "user_filter_test"},
+            filter_tags={"scope": test_actor.write_scope, "test_tag": "user_filter_test"},
             user_id=test_user_different.id,
             organization_id=test_actor.organization_id,
         ),
@@ -2536,7 +2538,7 @@ def test_search_raw_memories_filters_by_user_id(raw_memory_manager, test_actor, 
     results, _ = raw_memory_manager.search_raw_memories(
         organization_id=test_user.organization_id,
         user_id=test_user.id,
-        filter_tags={"scope": test_actor.scope, "test_tag": "user_filter_test"},
+        filter_tags={"scope": test_actor.write_scope, "test_tag": "user_filter_test"},
         limit=10,
     )
     assert len(results) == 1
@@ -2546,7 +2548,7 @@ def test_search_raw_memories_filters_by_user_id(raw_memory_manager, test_actor, 
     results, _ = raw_memory_manager.search_raw_memories(
         organization_id=test_user.organization_id,
         user_id=test_user_different.id,
-        filter_tags={"scope": test_actor.scope, "test_tag": "user_filter_test"},
+        filter_tags={"scope": test_actor.write_scope, "test_tag": "user_filter_test"},
         limit=10,
     )
     assert len(results) == 1
@@ -2556,7 +2558,7 @@ def test_search_raw_memories_filters_by_user_id(raw_memory_manager, test_actor, 
     results, _ = raw_memory_manager.search_raw_memories(
         organization_id=test_user.organization_id,
         user_id=None,
-        filter_tags={"scope": test_actor.scope, "test_tag": "user_filter_test"},
+        filter_tags={"scope": test_actor.write_scope, "test_tag": "user_filter_test"},
         limit=10,
     )
     result_ids = {r.id for r in results}

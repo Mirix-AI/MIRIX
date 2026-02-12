@@ -146,7 +146,8 @@ def test_client(test_organization):
         name="Test Client App",
         organization_id=test_organization.id,
         status="active",
-        scope="read_write",
+        write_scope="test",
+        read_scopes=["test"],
         created_at=datetime.now(dt_timezone.utc),
         updated_at=datetime.now(dt_timezone.utc),
         is_deleted=False,
@@ -214,8 +215,20 @@ def user_manager():
     return UserManager()
 
 
+@pytest.fixture(scope="module")
+def ensure_admin_user():
+    """Ensure the admin user exists in the database.
+    
+    This is needed because agent creation creates messages that default
+    to ADMIN_USER_ID when no user_id is provided.
+    """
+    user_mgr = UserManager()
+    user_mgr.get_admin_user()  # Creates admin user if it doesn't exist
+    yield
+
+
 @pytest.fixture
-def agent_manager():
+def agent_manager(ensure_admin_user):
     """Create agent manager instance."""
     return AgentManager()
 
@@ -387,17 +400,21 @@ class TestUserManagerRedis:
         assert cached_data["timezone"] == "Europe/London"
 
     def test_user_delete_removes_cache(self, user_manager, test_user, redis_client):
-        """Test deleting user removes from Redis cache."""
+        """Test deleting user soft-deletes in Redis cache."""
         # test_user fixture already creates the user
         # Verify in cache
         redis_key = f"{redis_client.USER_PREFIX}{test_user.id}"
-        assert redis_client.get_hash(redis_key) is not None
+        cached_data = redis_client.get_hash(redis_key)
+        assert cached_data is not None
+        assert cached_data.get("is_deleted") in (False, "False", None)
 
-        # Delete user
+        # Delete user (soft delete)
         user_manager.delete_user_by_id(test_user.id)
 
-        # Verify removed from cache
-        assert redis_client.get_hash(redis_key) is None
+        # Verify soft-deleted in cache (is_deleted=True, not removed)
+        cached_data = redis_client.get_hash(redis_key)
+        assert cached_data is not None, "Soft-deleted user should still be in cache"
+        assert cached_data.get("is_deleted") in (True, "True"), "User should be marked as deleted"
 
 
 # ============================================================================

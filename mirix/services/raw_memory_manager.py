@@ -120,10 +120,12 @@ class RawMemoryManager:
 
             raw_memory.id = generate_unique_short_id(self.session_maker, RawMemory, "raw_mem")
 
-        # Auto-inject scope from actor
+        # Auto-inject scope from actor's write_scope
+        if actor.write_scope is None:
+            raise ValueError("Client has no write_scope - cannot create memories")
         if raw_memory.filter_tags is None:
             raw_memory.filter_tags = {}
-        raw_memory.filter_tags["scope"] = actor.scope
+        raw_memory.filter_tags["scope"] = actor.write_scope
 
         logger.debug(
             "Creating raw memory: id=%s, client_id=%s, user_id=%s, filter_tags=%s",
@@ -217,9 +219,9 @@ class RawMemoryManager:
                     logger.debug("Cache HIT for raw memory %s", memory_id)
                     pydantic_memory = PydanticRawMemoryItem(**cached_data)
 
-                    # Validate scope
+                    # Validate scope - memory must be in actor's read_scopes
                     memory_scope = (pydantic_memory.filter_tags or {}).get("scope")
-                    if memory_scope != actor.scope:
+                    if memory_scope not in actor.read_scopes:
                         raise NoResultFound(f"Raw memory record with id {memory_id} not found.")
 
                     # Validate user_id if provided
@@ -243,9 +245,9 @@ class RawMemoryManager:
                 raw_memory_item = RawMemory.read(db_session=session, identifier=memory_id, actor=actor)
                 pydantic_memory = raw_memory_item.to_pydantic()
 
-                # Validate scope
+                # Validate scope - memory must be in actor's read_scopes
                 memory_scope = (pydantic_memory.filter_tags or {}).get("scope")
-                if memory_scope != actor.scope:
+                if memory_scope not in actor.read_scopes:
                     raise NoResultFound(f"Raw memory record with id {memory_id} not found.")
 
                 # Validate user_id if provided
@@ -330,11 +332,12 @@ class RawMemoryManager:
                     f"actor belongs to {actor.organization_id}"
                 )
 
-            # Perform scope access control check
+            # Perform scope access control check - must match actor's write_scope to update
             memory_scope = (raw_memory.filter_tags or {}).get("scope")
-            if memory_scope != actor.scope:
+            if memory_scope != actor.write_scope:
                 raise ValueError(
-                    f"Access denied: memory {memory_id} has scope '{memory_scope}', " f"actor has scope '{actor.scope}'"
+                    f"Access denied: memory {memory_id} has scope '{memory_scope}', "
+                    f"actor has write_scope '{actor.write_scope}'"
                 )
 
             # Perform user_id access control check if provided
@@ -343,8 +346,8 @@ class RawMemoryManager:
 
             # Prevent scope tampering in filter_tags updates
             if new_filter_tags is not None and "scope" in new_filter_tags:
-                if new_filter_tags["scope"] != actor.scope:
-                    raise ValueError("Cannot change memory scope - scope must match actor.scope")
+                if new_filter_tags["scope"] != actor.write_scope:
+                    raise ValueError("Cannot change memory scope - scope must match actor.write_scope")
 
             # Update context
             if new_context is not None:
@@ -444,12 +447,12 @@ class RawMemoryManager:
             try:
                 raw_memory = RawMemory.read(db_session=session, identifier=memory_id, actor=actor)
 
-                # Perform scope access control check
+                # Perform scope access control check - must match actor's write_scope to delete
                 memory_scope = (raw_memory.filter_tags or {}).get("scope")
-                if memory_scope != actor.scope:
+                if memory_scope != actor.write_scope:
                     raise ValueError(
                         f"Access denied: memory {memory_id} has scope '{memory_scope}', "
-                        f"actor has scope '{actor.scope}'"
+                        f"actor has write_scope '{actor.write_scope}'"
                     )
 
                 # Perform user_id access control check if provided
@@ -554,13 +557,20 @@ class RawMemoryManager:
             # Apply filter_tags (AND filter on top-level keys)
             if filter_tags:
                 for key, value in filter_tags.items():
-                    if key == "scope":
-                        # Scope matching: input value must be in memory's scope field
+                    if key == "read_scopes":
+                        # Multi-scope filtering: memory's scope must be IN the provided read_scopes list
+                        if isinstance(value, list) and value:
+                            scope_conditions = [
+                                RawMemory.filter_tags["scope"].as_string() == scope for scope in value
+                            ]
+                            base_query = base_query.where(or_(*scope_conditions))
+                        elif isinstance(value, list) and not value:
+                            # Empty read_scopes means no access - return no results
+                            base_query = base_query.where(False)
+                    elif key == "scope":
+                        # Single scope matching (backward compatibility)
                         base_query = base_query.where(
-                            or_(
-                                func.lower(RawMemory.filter_tags[key].as_string()).contains(str(value).lower()),
-                                RawMemory.filter_tags[key].as_string() == str(value),
-                            )
+                            RawMemory.filter_tags[key].as_string() == str(value)
                         )
                     else:
                         # Other keys: exact match

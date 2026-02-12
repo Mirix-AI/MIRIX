@@ -26,7 +26,8 @@ class Client(ClientBase):
         id (str): The unique identifier of the client.
         name (str): The name of the client application.
         status (str): Whether the client is active or not.
-        scope (str): Scope of client (read, write, read_write, admin).
+        write_scope (Optional[str]): Scope for writing memories (null = read-only).
+        read_scopes (List[str]): Scopes for reading memories.
         email (str): Optional email for dashboard login.
         password_hash (str): Optional password hash for dashboard login.
         created_at (datetime): The creation date of the client.
@@ -42,7 +43,8 @@ class Client(ClientBase):
     )
     name: str = Field(..., description="The name of the client application.")
     status: str = Field("active", description="Whether the client is active or not.")
-    scope: str = Field("read_write", description="Scope of client.")
+    write_scope: Optional[str] = Field(None, description="Scope for writing memories (null = read-only).")
+    read_scopes: List[str] = Field(default_factory=list, description="Scopes for reading memories.")
 
     # Dashboard authentication fields
     email: Optional[str] = Field(None, description="Email address for dashboard login.")
@@ -58,7 +60,8 @@ class ClientCreate(ClientBase):
     id: Optional[str] = Field(None, description="The unique identifier of the client.")
     name: str = Field(..., description="The name of the client application.")
     status: str = Field("active", description="Whether the client is active or not.")
-    scope: str = Field("read_write", description="Scope of client.")
+    write_scope: Optional[str] = Field(None, description="Scope for writing memories (null = read-only).")
+    read_scopes: List[str] = Field(default_factory=list, description="Scopes for reading memories.")
     organization_id: str = Field(..., description="The organization id of the client.")
 
 
@@ -66,5 +69,6 @@ class ClientUpdate(ClientBase):
     id: str = Field(..., description="The id of the client to update.")
     name: Optional[str] = Field(None, description="The new name of the client.")
     status: Optional[str] = Field(None, description="The new status of the client.")
-    scope: Optional[str] = Field(None, description="The new scope of the client.")
+    write_scope: Optional[str] = Field(None, description="The new write scope of the client.")
+    read_scopes: Optional[List[str]] = Field(None, description="The new read scopes of the client.")
     organization_id: Optional[str] = Field(None, description="The new organization id of the client.")

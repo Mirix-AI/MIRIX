@@ -1124,14 +1124,25 @@ class EpisodicMemoryManager:
             "limit_val": limit or 50,
         }
 
-        # Add filter_tags filtering (e.g., {"scope": "CARE"})
+        # Add filter_tags filtering (e.g., {"scope": "CARE"} or {"read_scopes": ["scope1", "scope2"]})
         # This allows clients to filter memories by custom tags for access control
         # CRITICAL: Without this filter, searches return 0 results when filter_tags are provided
         if filter_tags:
             for key, value in filter_tags.items():
-                # Use JSONB operator to filter by tag key-value pairs
-                where_clauses.append(f"filter_tags->>'{key}' = :filter_tag_{key}")
-                query_params[f"filter_tag_{key}"] = str(value)
+                if key == "read_scopes":
+                    # Multi-scope filtering: memory's scope must be IN the provided read_scopes list
+                    if isinstance(value, list) and value:
+                        scope_placeholders = [f":read_scope_{i}" for i in range(len(value))]
+                        where_clauses.append(f"filter_tags->>'scope' IN ({', '.join(scope_placeholders)})")
+                        for i, scope in enumerate(value):
+                            query_params[f"read_scope_{i}"] = scope
+                    elif isinstance(value, list) and not value:
+                        # Empty read_scopes means no access - add impossible condition
+                        where_clauses.append("1 = 0")
+                else:
+                    # Use JSONB operator to filter by tag key-value pairs
+                    where_clauses.append(f"filter_tags->>'{key}' = :filter_tag_{key}")
+                    query_params[f"filter_tag_{key}"] = str(value)
 
         # Add temporal filtering if provided
         if start_date is not None:
@@ -1410,7 +1421,7 @@ class EpisodicMemoryManager:
             search_method: Search method ('embedding', 'bm25', 'string_match', etc.)
             limit: Maximum number of results to return
             timezone_str: Timezone string for timestamp conversion
-            filter_tags: Filter tags dict (should include "scope": client.scope)
+            filter_tags: Filter tags dict (should include "read_scopes": client.read_scopes)
             use_cache: If True, try Redis cache first
             start_date: Optional start datetime for filtering by occurred_at
             end_date: Optional end datetime for filtering by occurred_at
@@ -1522,19 +1533,26 @@ class EpisodicMemoryManager:
             base_query = select(EpisodicEvent).where(EpisodicEvent.organization_id == organization_id)
 
             # Apply filter_tags (INCLUDING SCOPE)
-            # For scope: check if input value is contained in memory's scope
+            # For read_scopes: check if memory's scope is IN the provided list
             # For other keys: exact match
             if filter_tags:
                 from sqlalchemy import func, or_
 
                 for key, value in filter_tags.items():
-                    if key == "scope":
-                        # Scope matching: input value must be in memory's scope field
+                    if key == "read_scopes":
+                        # Multi-scope filtering: memory's scope must be IN the provided read_scopes list
+                        if isinstance(value, list) and value:
+                            scope_conditions = [
+                                EpisodicEvent.filter_tags["scope"].as_string() == scope for scope in value
+                            ]
+                            base_query = base_query.where(or_(*scope_conditions))
+                        elif isinstance(value, list) and not value:
+                            # Empty read_scopes means no access - return no results
+                            base_query = base_query.where(False)
+                    elif key == "scope":
+                        # Single scope matching (backward compatibility)
                         base_query = base_query.where(
-                            or_(
-                                func.lower(EpisodicEvent.filter_tags[key].as_string()).contains(str(value).lower()),
-                                EpisodicEvent.filter_tags[key].as_string() == str(value),
-                            )
+                            EpisodicEvent.filter_tags[key].as_string() == str(value)
                         )
                     else:
                         # Other keys: exact match

@@ -150,7 +150,8 @@ class ClientAuthManager:
             "sub": client.id,
             "name": client.name,
             "email": client.email,
-            "scope": client.scope,
+            "write_scope": client.write_scope,
+            "read_scopes": client.read_scopes,
             "admin_user_id": admin_user_id,  # For memory operations
             "exp": expire,
             "iat": datetime.now(timezone.utc),
@@ -182,7 +183,8 @@ class ClientAuthManager:
         email: str,
         password: str,
         organization_id: Optional[str] = None,
-        scope: str = "admin",
+        write_scope: str = "admin",
+        read_scopes: Optional[List[str]] = None,
     ) -> PydanticClient:
         """
         Register a new client with dashboard login credentials.
@@ -194,7 +196,8 @@ class ClientAuthManager:
             email: Email for dashboard login
             password: Password for dashboard login
             organization_id: Optional organization ID
-            scope: Client scope (default: admin for dashboard users)
+            write_scope: Client write scope (default: admin for dashboard users)
+            read_scopes: Client read scopes (default: [write_scope])
 
         Returns:
             The created client
@@ -232,7 +235,8 @@ class ClientAuthManager:
                 email=email.lower(),
                 password_hash=password_hash,
                 status="active",
-                scope=scope,
+                write_scope=write_scope,
+                read_scopes=read_scopes if read_scopes is not None else [write_scope],
                 organization_id=org_id,
             )
 
@@ -446,19 +450,44 @@ class ClientAuthManager:
     # =========================================================================
 
     @staticmethod
-    def can_manage_clients(scope: str) -> bool:
-        """Check if a scope can manage clients and API keys."""
-        return scope == "admin"
+    def can_manage_clients(write_scope: Optional[str]) -> bool:
+        """Check if a client can manage clients and API keys.
+
+        Args:
+            write_scope: The client's write_scope (None = read-only)
+
+        Returns:
+            True if the client has admin write_scope
+        """
+        return write_scope == "admin"
 
     @staticmethod
-    def can_manage_memories(scope: str) -> bool:
-        """Check if a scope can modify memories."""
-        return scope in ["admin", "read_write"]
+    def can_manage_memories(write_scope: Optional[str]) -> bool:
+        """Check if a client can modify memories.
+
+        A client can modify memories if it has a write_scope set (not None).
+
+        Args:
+            write_scope: The client's write_scope (None = read-only)
+
+        Returns:
+            True if the client has a write_scope
+        """
+        return write_scope is not None
 
     @staticmethod
-    def can_view_dashboard(scope: str) -> bool:
-        """Check if a scope can view the dashboard."""
-        return scope in ["admin", "read_write", "read"]
+    def can_view_dashboard(read_scopes: list) -> bool:
+        """Check if a client can view the dashboard.
+
+        A client can view the dashboard if it has any read_scopes.
+
+        Args:
+            read_scopes: The client's read_scopes list
+
+        Returns:
+            True if the client has at least one read_scope
+        """
+        return len(read_scopes) > 0 if read_scopes else False
 
 
 # Backward compatibility alias
