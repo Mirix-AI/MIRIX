@@ -54,11 +54,7 @@ from mirix.schemas.enums import MessageStreamStatus
 from mirix.schemas.llm_config import LLMConfig
 from mirix.schemas.memory import ContextWindowOverview, Memory, RecallMemorySummary
 from mirix.schemas.message import Message, MessageCreate, MessageUpdate
-from mirix.schemas.mirix_message import (
-    LegacyMirixMessage,
-    MirixMessage,
-    ToolReturnMessage,
-)
+from mirix.schemas.mirix_message import LegacyMirixMessage, MirixMessage, ToolReturnMessage
 from mirix.schemas.mirix_response import MirixResponse
 from mirix.schemas.organization import Organization
 from mirix.schemas.providers import (
@@ -415,11 +411,7 @@ except Exception as e:
 # This provides distributed tracing across API → Kafka → Worker processes
 
 try:
-    from mirix.observability import (
-        flush_langfuse,
-        initialize_langfuse,
-        shutdown_langfuse,
-    )
+    from mirix.observability import flush_langfuse, initialize_langfuse, shutdown_langfuse
 
     logger.info("Initializing LangFuse observability...")
     initialize_langfuse()

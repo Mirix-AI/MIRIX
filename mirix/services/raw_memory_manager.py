@@ -560,18 +560,14 @@ class RawMemoryManager:
                     if key == "read_scopes":
                         # Multi-scope filtering: memory's scope must be IN the provided read_scopes list
                         if isinstance(value, list) and value:
-                            scope_conditions = [
-                                RawMemory.filter_tags["scope"].as_string() == scope for scope in value
-                            ]
+                            scope_conditions = [RawMemory.filter_tags["scope"].as_string() == scope for scope in value]
                             base_query = base_query.where(or_(*scope_conditions))
                         elif isinstance(value, list) and not value:
                             # Empty read_scopes means no access - return no results
                             base_query = base_query.where(False)
                     elif key == "scope":
                         # Single scope matching (backward compatibility)
-                        base_query = base_query.where(
-                            RawMemory.filter_tags[key].as_string() == str(value)
-                        )
+                        base_query = base_query.where(RawMemory.filter_tags[key].as_string() == str(value))
                     else:
                         # Other keys: exact match
                         base_query = base_query.where(RawMemory.filter_tags[key].as_string() == str(value))

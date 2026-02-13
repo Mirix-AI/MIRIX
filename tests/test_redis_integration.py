@@ -218,7 +218,7 @@ def user_manager():
 @pytest.fixture(scope="module")
 def ensure_admin_user():
     """Ensure the admin user exists in the database.
-    
+
     This is needed because agent creation creates messages that default
     to ADMIN_USER_ID when no user_id is provided.
     """

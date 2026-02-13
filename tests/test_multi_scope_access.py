@@ -13,9 +13,10 @@ These tests cover the proposal:
 - read_scopes: List of scopes this client can read memories from
 """
 
-import pytest
 import uuid
 from datetime import datetime
+
+import pytest
 
 from mirix.orm.errors import NoResultFound
 from mirix.schemas.client import Client as PydanticClient
@@ -26,7 +27,6 @@ from mirix.services.client_manager import ClientManager
 from mirix.services.organization_manager import OrganizationManager
 from mirix.services.raw_memory_manager import RawMemoryManager
 from mirix.services.user_manager import UserManager
-
 
 # =============================================================================
 # Test Fixtures
@@ -43,13 +43,11 @@ def test_org():
     """Create a test organization for multi-scope tests."""
     org_mgr = OrganizationManager()
     org_id = generate_test_id("multi-scope-org")
-    
+
     try:
         return org_mgr.get_organization_by_id(org_id)
     except Exception:
-        return org_mgr.create_organization(
-            PydanticOrganization(id=org_id, name="Multi-Scope Test Org")
-        )
+        return org_mgr.create_organization(PydanticOrganization(id=org_id, name="Multi-Scope Test Org"))
 
 
 @pytest.fixture(scope="module")
@@ -57,7 +55,7 @@ def test_user(test_org):
     """Create a test user for multi-scope tests."""
     user_mgr = UserManager()
     user_id = generate_test_id("multi-scope-user")
-    
+
     try:
         return user_mgr.get_user_by_id(user_id)
     except Exception:
@@ -92,7 +90,7 @@ def client_manager():
 def read_only_client(test_org, client_manager):
     """
     Client with NO write access, can only read from 'shared' scope.
-    
+
     Example use case: Read-Only Sales Auto-BDR Client
     """
     client_id = generate_test_id("read-only-client")
@@ -114,7 +112,7 @@ def read_only_client(test_org, client_manager):
 def shared_writer_client(test_org, client_manager):
     """
     Client that writes to 'shared' scope, doesn't need to read.
-    
+
     Example use case: Primary Ingestion Pipeline
     """
     client_id = generate_test_id("shared-writer-client")
@@ -136,7 +134,7 @@ def shared_writer_client(test_org, client_manager):
 def private_client(test_org, client_manager):
     """
     Client with private scope - can read shared AND write to private.
-    
+
     Example use case: IEP Agent
     """
     client_id = generate_test_id("private-client")
@@ -202,9 +200,7 @@ def no_access_client(test_org, client_manager):
 class TestReadOnlyClient:
     """Tests for clients with write_scope=None."""
 
-    def test_read_only_client_cannot_create_memory(
-        self, raw_memory_manager, read_only_client, test_user
-    ):
+    def test_read_only_client_cannot_create_memory(self, raw_memory_manager, read_only_client, test_user):
         """Test that a read-only client (write_scope=None) cannot create memories."""
         memory_data = RawMemoryItemCreate(
             context="Attempting to create from read-only client",
@@ -245,9 +241,7 @@ class TestReadOnlyClient:
             assert created.filter_tags["scope"] == "shared"
 
             # Read-only client should be able to read it (has 'shared' in read_scopes)
-            fetched = raw_memory_manager.get_raw_memory_by_id(
-                created.id, actor=read_only_client
-            )
+            fetched = raw_memory_manager.get_raw_memory_by_id(created.id, actor=read_only_client)
             assert fetched.id == created.id
             assert fetched.context == memory_data.context
         finally:
@@ -300,14 +294,10 @@ class TestMultiScopeRead:
 
             # multi_read_client has read_scopes=["shared", "private", "multi-read-scope"]
             # It should be able to read both memories
-            fetched_shared = raw_memory_manager.get_raw_memory_by_id(
-                shared_memory.id, actor=multi_read_client
-            )
+            fetched_shared = raw_memory_manager.get_raw_memory_by_id(shared_memory.id, actor=multi_read_client)
             assert fetched_shared.id == shared_memory.id
 
-            fetched_private = raw_memory_manager.get_raw_memory_by_id(
-                private_memory.id, actor=multi_read_client
-            )
+            fetched_private = raw_memory_manager.get_raw_memory_by_id(private_memory.id, actor=multi_read_client)
             assert fetched_private.id == private_memory.id
         finally:
             # Cleanup
@@ -376,9 +366,7 @@ class TestMultiScopeRead:
 class TestSharedMemoryPool:
     """Tests for shared memory pool access patterns."""
 
-    def test_writer_creates_reader_reads(
-        self, raw_memory_manager, shared_writer_client, read_only_client, test_user
-    ):
+    def test_writer_creates_reader_reads(self, raw_memory_manager, shared_writer_client, read_only_client, test_user):
         """Test that one client writes to shared pool and another can read."""
         # Writer creates memory
         memory = raw_memory_manager.create_raw_memory(
@@ -398,9 +386,7 @@ class TestSharedMemoryPool:
             assert memory.filter_tags["scope"] == "shared"
 
             # Reader can read it
-            fetched = raw_memory_manager.get_raw_memory_by_id(
-                memory.id, actor=read_only_client
-            )
+            fetched = raw_memory_manager.get_raw_memory_by_id(memory.id, actor=read_only_client)
             assert fetched.id == memory.id
         finally:
             raw_memory_manager.delete_raw_memory(memory.id, shared_writer_client)
@@ -478,15 +464,11 @@ class TestPrivateAndSharedAccess:
 
         try:
             # Private client can read shared memory
-            fetched_shared = raw_memory_manager.get_raw_memory_by_id(
-                shared_memory.id, actor=private_client
-            )
+            fetched_shared = raw_memory_manager.get_raw_memory_by_id(shared_memory.id, actor=private_client)
             assert fetched_shared.id == shared_memory.id
 
             # Private client can read its own private memory
-            fetched_private = raw_memory_manager.get_raw_memory_by_id(
-                private_memory.id, actor=private_client
-            )
+            fetched_private = raw_memory_manager.get_raw_memory_by_id(private_memory.id, actor=private_client)
             assert fetched_private.id == private_memory.id
         finally:
             raw_memory_manager.delete_raw_memory(shared_memory.id, shared_writer_client)
@@ -525,9 +507,7 @@ class TestPrivateAndSharedAccess:
         finally:
             raw_memory_manager.delete_raw_memory(shared_memory.id, shared_writer_client)
 
-    def test_private_client_can_modify_own_scope(
-        self, raw_memory_manager, private_client, test_user
-    ):
+    def test_private_client_can_modify_own_scope(self, raw_memory_manager, private_client, test_user):
         """Test that private client can create, update, and delete in its own scope."""
         # Create in private scope
         memory = raw_memory_manager.create_raw_memory(
@@ -598,9 +578,7 @@ class TestEmptyReadScopes:
         finally:
             raw_memory_manager.delete_raw_memory(memory.id, shared_writer_client)
 
-    def test_no_access_client_cannot_create_memory(
-        self, raw_memory_manager, no_access_client, test_user
-    ):
+    def test_no_access_client_cannot_create_memory(self, raw_memory_manager, no_access_client, test_user):
         """Test that a client with no write_scope cannot create memories."""
         memory_data = RawMemoryItemCreate(
             context="Attempting to create from no-access client",
@@ -668,7 +646,7 @@ class TestScopeIsolation:
         """Test that a client cannot read memories outside its read_scopes."""
         # shared_writer_client has read_scopes=["shared"]
         # private_client has read_scopes=["shared", "private"]
-        
+
         # Create memory in 'private' scope
         private_memory = raw_memory_manager.create_raw_memory(
             raw_memory=RawMemoryItemCreate(
@@ -686,9 +664,7 @@ class TestScopeIsolation:
             # shared_writer_client only has read_scopes=["shared"]
             # It should NOT be able to read 'private' scope memory
             with pytest.raises(NoResultFound):
-                raw_memory_manager.get_raw_memory_by_id(
-                    private_memory.id, actor=shared_writer_client
-                )
+                raw_memory_manager.get_raw_memory_by_id(private_memory.id, actor=shared_writer_client)
         finally:
             raw_memory_manager.delete_raw_memory(private_memory.id, private_client)
 

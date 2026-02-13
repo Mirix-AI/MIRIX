@@ -1301,9 +1301,7 @@ class SemanticMemoryManager:
                             base_query = base_query.where(False)
                     elif key == "scope":
                         # Single scope matching (backward compatibility)
-                        base_query = base_query.where(
-                            SemanticMemoryItem.filter_tags[key].as_string() == str(value)
-                        )
+                        base_query = base_query.where(SemanticMemoryItem.filter_tags[key].as_string() == str(value))
                     else:
                         # Other keys: exact match
                         base_query = base_query.where(SemanticMemoryItem.filter_tags[key].as_string() == str(value))
