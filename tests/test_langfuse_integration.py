@@ -30,7 +30,7 @@ def reset_singleton():
 
 def test_langfuse_disabled_by_default():
     """Test LangFuse is disabled without configuration."""
-    with patch("mirix.observability.langfuse_client.settings") as mock_settings:
+    with patch("mirix.settings.settings") as mock_settings:
         mock_settings.langfuse_enabled = False
 
         client = initialize_langfuse()
@@ -40,7 +40,7 @@ def test_langfuse_disabled_by_default():
 
 def test_langfuse_initialization_with_credentials():
     """Test LangFuse initializes with valid credentials."""
-    with patch("mirix.observability.langfuse_client.settings") as mock_settings:
+    with patch("mirix.settings.settings") as mock_settings:
         mock_settings.langfuse_enabled = True
         mock_settings.langfuse_public_key = "pk-test"
         mock_settings.langfuse_secret_key = "sk-test"
@@ -48,7 +48,8 @@ def test_langfuse_initialization_with_credentials():
         mock_settings.langfuse_debug = False
         mock_settings.langfuse_flush_interval = 10
 
-        with patch("mirix.observability.langfuse_client.Langfuse") as MockLangfuse:
+        with patch("langfuse.Langfuse") as MockLangfuse, \
+             patch("opentelemetry.sdk.trace.TracerProvider"):
             mock_client = MagicMock()
             MockLangfuse.return_value = mock_client
 
@@ -62,7 +63,7 @@ def test_langfuse_initialization_with_credentials():
 
 def test_langfuse_missing_credentials():
     """Test LangFuse handles missing credentials gracefully."""
-    with patch("mirix.observability.langfuse_client.settings") as mock_settings:
+    with patch("mirix.settings.settings") as mock_settings:
         mock_settings.langfuse_enabled = True
         mock_settings.langfuse_public_key = None
         mock_settings.langfuse_secret_key = None
@@ -159,7 +160,7 @@ def test_graceful_degradation():
 
 def test_flush_langfuse_with_timeout():
     """Test flush respects timeout parameter."""
-    with patch("mirix.observability.langfuse_client.settings") as mock_settings:
+    with patch("mirix.settings.settings") as mock_settings:
         mock_settings.langfuse_enabled = True
         mock_settings.langfuse_public_key = "pk-test"
         mock_settings.langfuse_secret_key = "sk-test"
@@ -168,7 +169,8 @@ def test_flush_langfuse_with_timeout():
         mock_settings.langfuse_flush_interval = 10
         mock_settings.langfuse_flush_timeout = 5.0
 
-        with patch("mirix.observability.langfuse_client.Langfuse") as MockLangfuse:
+        with patch("langfuse.Langfuse") as MockLangfuse, \
+             patch("opentelemetry.sdk.trace.TracerProvider"):
             mock_client = MagicMock()
             MockLangfuse.return_value = mock_client
 
