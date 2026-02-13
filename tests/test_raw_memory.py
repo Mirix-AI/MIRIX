@@ -113,6 +113,13 @@ def redis_client():
     if client is None:
         pytest.skip("Redis not available")
 
+    # Ensure cache provider is registered (may have been cleared by other test modules)
+    from mirix.database.cache_provider import get_cache_provider, register_cache_provider
+    from mirix.database.redis_cache_provider import RedisCacheProvider
+
+    if get_cache_provider() is None:
+        register_cache_provider("redis", RedisCacheProvider(client))
+
     return client
 
 

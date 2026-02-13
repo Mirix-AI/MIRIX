@@ -22,6 +22,11 @@ import requests
 
 from mirix.client import MirixClient
 
+# Mark all tests as integration tests (require a running server)
+pytestmark = [
+    pytest.mark.integration,
+]
+
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
