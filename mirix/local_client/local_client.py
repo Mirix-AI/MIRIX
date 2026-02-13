@@ -163,7 +163,7 @@ class LocalClient(AbstractClient):
             # get default client
             self.client_id = self.server.client_manager.DEFAULT_CLIENT_ID
 
-        self.user = self.server.user_manager.get_user_or_default(self.user_id)
+        self.user = self.server.user_manager.get_user_or_admin(self.user_id)
         self.organization = self.server.get_organization_or_default(self.org_id)
         self.client = self.server.client_manager.get_client_or_default(self.client_id, self.org_id)
 
