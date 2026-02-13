@@ -48,8 +48,7 @@ def test_langfuse_initialization_with_credentials():
         mock_settings.langfuse_debug = False
         mock_settings.langfuse_flush_interval = 10
 
-        with patch("langfuse.Langfuse") as MockLangfuse, \
-             patch("opentelemetry.sdk.trace.TracerProvider"):
+        with patch("langfuse.Langfuse") as MockLangfuse, patch("opentelemetry.sdk.trace.TracerProvider"):
             mock_client = MagicMock()
             MockLangfuse.return_value = mock_client
 
@@ -169,8 +168,7 @@ def test_flush_langfuse_with_timeout():
         mock_settings.langfuse_flush_interval = 10
         mock_settings.langfuse_flush_timeout = 5.0
 
-        with patch("langfuse.Langfuse") as MockLangfuse, \
-             patch("opentelemetry.sdk.trace.TracerProvider"):
+        with patch("langfuse.Langfuse") as MockLangfuse, patch("opentelemetry.sdk.trace.TracerProvider"):
             mock_client = MagicMock()
             MockLangfuse.return_value = mock_client
 
