@@ -1,8 +1,9 @@
-from typing import TYPE_CHECKING, Optional, Type
+from typing import TYPE_CHECKING, List, Optional, Type
 
-from sqlalchemy import BigInteger, ForeignKey, Index, Integer, String, UniqueConstraint, event
+from sqlalchemy import JSON, BigInteger, Index, Integer, String, UniqueConstraint, event, or_, select, text
 from sqlalchemy.orm import (
     Mapped,
+    Session,
     declared_attr,
     mapped_column,
     relationship,
@@ -13,10 +14,10 @@ from mirix.orm.mixins import OrganizationMixin, UserMixin
 from mirix.orm.sqlalchemy_base import SqlalchemyBase
 from mirix.schemas.block import Block as PydanticBlock
 from mirix.schemas.block import Human, Persona
+from mirix.settings import settings
 
 if TYPE_CHECKING:
     from mirix.orm import Organization
-    from mirix.orm.agent import Agent
     from mirix.orm.user import User
 
 
@@ -25,9 +26,35 @@ class Block(OrganizationMixin, UserMixin, SqlalchemyBase):
 
     __tablename__ = "block"
     __pydantic_model__ = PydanticBlock
-    __table_args__ = (
-        UniqueConstraint("id", "label", name="unique_block_id_label"),
-        Index("idx_block_id_label", "id", "label", unique=True),
+    __table_args__ = tuple(
+        filter(
+            None,
+            [
+                UniqueConstraint("id", "label", name="unique_block_id_label"),
+                Index("idx_block_id_label", "id", "label", unique=True),
+                # GIN index on filter_tags for JSONB containment queries
+                (
+                    Index(
+                        "ix_block_filter_tags_gin",
+                        text("(filter_tags::jsonb)"),
+                        postgresql_using="gin",
+                    )
+                    if settings.mirix_pg_uri_no_default
+                    else None
+                ),
+                # Btree index on (organization_id, filter_tags->>'scope') for scope queries
+                (
+                    Index(
+                        "ix_block_org_filter_scope",
+                        "organization_id",
+                        text("((filter_tags->>'scope')::text)"),
+                        postgresql_using="btree",
+                    )
+                    if settings.mirix_pg_uri_no_default
+                    else None
+                ),
+            ],
+        )
     )
 
     label: Mapped[str] = mapped_column(doc="the type of memory block in use, ie 'human', 'persona', 'system'")
@@ -38,23 +65,13 @@ class Block(OrganizationMixin, UserMixin, SqlalchemyBase):
         doc="Character limit of the block.",
     )
 
-    # Foreign key to agent
-    agent_id: Mapped[Optional[str]] = mapped_column(
-        String,
-        ForeignKey("agents.id", ondelete="CASCADE"),
-        nullable=True,
-        doc="ID of the agent this block belongs to",
+    # Filter tags for scope-based access control (mirrors episodic/procedural/resource/semantic/knowledge_vault)
+    filter_tags: Mapped[Optional[dict]] = mapped_column(
+        JSON, nullable=True, default=None, doc="Custom filter tags including 'scope' for access control"
     )
 
     # relationships
     organization: Mapped[Optional["Organization"]] = relationship("Organization")
-
-    @declared_attr
-    def agent(cls) -> Mapped[Optional["Agent"]]:
-        """
-        Relationship to the Agent that owns this block.
-        """
-        return relationship("Agent", lazy="selectin")
 
     @declared_attr
     def user(cls) -> Mapped["User"]:
@@ -62,6 +79,49 @@ class Block(OrganizationMixin, UserMixin, SqlalchemyBase):
         Relationship to the User that owns this block.
         """
         return relationship("User", lazy="selectin")
+
+    @classmethod
+    def list_by_scopes(
+        cls,
+        db_session: Session,
+        user_id: str,
+        organization_id: str,
+        scopes: List[str],
+        label: Optional[str] = None,
+        id: Optional[str] = None,
+        limit: int = 50,
+    ) -> List["Block"]:
+        """
+        Query blocks filtered by scope at the SQL level.
+
+        Uses filter_tags->>'scope' IN (...) which hits the btree index
+        ix_block_org_filter_scope on PostgreSQL.
+
+        Args:
+            db_session: SQLAlchemy session
+            user_id: Owner user ID
+            organization_id: Organization ID
+            scopes: List of scope values to match (block.filter_tags.scope IN scopes)
+            label: Optional label filter
+            id: Optional block ID filter
+            limit: Max results
+        """
+        with db_session as session:
+            scope_conditions = [cls.filter_tags["scope"].as_string() == s for s in scopes]
+            query = (
+                select(cls)
+                .where(
+                    cls.organization_id == organization_id,
+                    cls.user_id == user_id,
+                    or_(*scope_conditions),
+                )
+                .limit(limit)
+            )
+            if label:
+                query = query.where(cls.label == label)
+            if id:
+                query = query.where(cls.id == id)
+            return list(session.execute(query).scalars())
 
     def to_pydantic(self) -> Type:
         if self.label == "human":

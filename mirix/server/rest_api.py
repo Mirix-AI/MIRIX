@@ -1107,13 +1107,17 @@ async def list_blocks(
     x_client_id: Optional[str] = Header(None),
     x_org_id: Optional[str] = Header(None),
 ):
-    """List all blocks."""
+    """List all blocks (filtered by client's read_scopes)."""
     server = get_server()
     client_id, org_id = get_client_and_org(x_client_id, x_org_id)
     client = server.client_manager.get_client_by_id(client_id)
-    # Get default user for block queries (blocks are user-scoped, not client-scoped)
     user = server.user_manager.get_admin_user()
-    return server.block_manager.get_blocks(user=user, label=label)
+    return server.block_manager.get_blocks(
+        user=user,
+        label=label,
+        any_scopes=client.read_scopes,
+        auto_create_from_default=False,
+    )
 
 
 @router.get("/blocks/{block_id}", response_model=Block)
@@ -1827,7 +1831,7 @@ class InitializeMetaAgentRequest(BaseModel):
     update_agents: Optional[bool] = False
 
 
-@router.post("/agents/meta/initialize", response_model=AgentState)
+@router.post("/agents/meta/initialize", response_model=Optional[AgentState])
 async def initialize_meta_agent(
     request: InitializeMetaAgentRequest,
     x_client_id: Optional[str] = Header(None),
@@ -1837,10 +1841,15 @@ async def initialize_meta_agent(
     Initialize a meta agent with configuration.
 
     This creates a meta memory agent that manages specialized memory agents.
+    Returns null if the client has no write_scope (read-only clients don't need agents).
     """
     server = get_server()
     client_id, org_id = get_client_and_org(x_client_id, x_org_id)
     client = server.client_manager.get_client_by_id(client_id)
+
+    # Read-only clients (no write_scope) don't create agents — return null
+    if not client.write_scope:
+        return None
 
     # Extract config components
     config = request.config
@@ -2267,28 +2276,37 @@ def retrieve_memories_by_keywords(
         logger.error("Error retrieving knowledge vault items: %s", e)
         memories["knowledge_vault"] = {"total_count": 0, "items": []}
 
-    # Get core memory blocks
+    # Get core memory blocks (filtered by client's read_scopes, grouped by scope)
     try:
         block_manager = server.block_manager
 
-        # Get all blocks for the user (these are the Human and Persona blocks)
-        # Note: blocks are user-scoped, not client-scoped
-        blocks = block_manager.get_blocks(user=user)
+        blocks = block_manager.get_blocks(
+            user=user,
+            any_scopes=client.read_scopes,
+            auto_create_from_default=False,
+        )
 
-        memories["core"] = {
-            "total_count": len(blocks),
-            "items": [
+        # Group blocks by scope
+        scopes_dict: Dict[str, list] = {}
+        for block in blocks:
+            scope = (block.filter_tags or {}).get("scope", "default")
+            if scope not in scopes_dict:
+                scopes_dict[scope] = []
+            scopes_dict[scope].append(
                 {
                     "id": block.id,
                     "label": block.label,
                     "value": block.value,
                 }
-                for block in blocks
-            ],
+            )
+
+        memories["core"] = {
+            "total_count": len(blocks),
+            "scopes": {scope: {"items": items} for scope, items in scopes_dict.items()},
         }
     except Exception as e:
         logger.error("Error retrieving core memory blocks: %s", e)
-        memories["core"] = {"total_count": 0, "items": []}
+        memories["core"] = {"total_count": 0, "scopes": {}}
 
     return memories
 
@@ -3806,17 +3824,29 @@ async def list_memory_components(
         }
 
     if fetch_all or memory_type == "core":
-        blocks = server.block_manager.get_blocks(user=user)
-        memories["core"] = {
-            "total_count": len(blocks),
-            "items": [
+        blocks = server.block_manager.get_blocks(
+            user=user,
+            any_scopes=client.read_scopes,
+            auto_create_from_default=False,
+        )
+
+        # Group blocks by scope
+        scopes_dict: Dict[str, list] = {}
+        for block in blocks[:limit]:
+            scope = (block.filter_tags or {}).get("scope", "default")
+            if scope not in scopes_dict:
+                scopes_dict[scope] = []
+            scopes_dict[scope].append(
                 {
                     "id": block.id,
                     "label": block.label,
                     "value": block.value,
                 }
-                for block in blocks[:limit]
-            ],
+            )
+
+        memories["core"] = {
+            "total_count": len(blocks),
+            "scopes": {scope: {"items": items} for scope, items in scopes_dict.items()},
         }
 
     return {

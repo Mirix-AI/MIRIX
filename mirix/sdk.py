@@ -143,13 +143,21 @@ class Mirix:
         if existing_meta_agent:
             self._meta_agent = existing_meta_agent
         else:
-            # Create meta agent
+            # Create meta agent (returns None if client has no write_scope)
             create_request = CreateMetaAgent(
                 system_prompts_folder=system_prompts_folder,
                 llm_config=llm_config,
                 embedding_config=embedding_config,
             )
             self._meta_agent = self._client.create_meta_agent(request=create_request)
+
+    def _require_meta_agent(self):
+        """Raise if meta agent is not available (e.g. client has no write_scope)."""
+        if not self._meta_agent:
+            raise RuntimeError(
+                "Meta agent is not available. This usually means the client has no write_scope configured. "
+                "A write_scope is required to create and use memory agents."
+            )
 
     def add(self, content: str, **kwargs) -> Dict[str, Any]:
         """
@@ -166,6 +174,7 @@ class Mirix:
             memory_agent.add("John likes pizza")
             memory_agent.add("Meeting at 3pm", metadata={"type": "appointment"})
         """
+        self._require_meta_agent()
         response = self._client.send_message(agent_id=self._meta_agent.id, role="user", message=content, **kwargs)
 
         # Extract the response text from MirixResponse
@@ -196,12 +205,14 @@ class Mirix:
         """
         Construct a system message from a message.
         """
+        self._require_meta_agent()
         return self._client.construct_system_message(agent_id=self._meta_agent.id, message=message, user_id=user_id)
 
     def extract_memory_for_system_prompt(self, message: str, user_id: str) -> str:
         """
         Extract memory for system prompt from a message.
         """
+        self._require_meta_agent()
         return self._client.extract_memory_for_system_prompt(
             agent_id=self._meta_agent.id, message=message, user_id=user_id
         )
@@ -283,6 +294,7 @@ class Mirix:
             else:
                 logger.debug("Failed to clear: %s", result['error'])
         """
+        self._require_meta_agent()
         try:
             if user_id is None:
                 # Clear all messages except system messages (original behavior)
@@ -638,6 +650,7 @@ class Mirix:
             logger.debug("Episodic memories: %s", len(memories['episodic']))
             logger.debug("Semantic memories: %s", len(memories['semantic']))
         """
+        self._require_meta_agent()
         try:
             # Find the target user
             if user_id:
@@ -928,6 +941,7 @@ class Mirix:
             else:
                 logger.debug("Update failed: %s", result['message'])
         """
+        self._require_meta_agent()
         try:
             # If user_id is provided, get the specific user
             if user_id:

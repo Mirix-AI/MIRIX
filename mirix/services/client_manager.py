@@ -477,12 +477,12 @@ class ClientManager:
 
                 block_count = len(block_ids)
                 if block_count > 0:
-                    # Invalidate agent caches for all blocks (before deletion)
+                    # Invalidate caches for all blocks (before deletion)
                     from mirix.services.block_manager import BlockManager
 
                     block_manager = BlockManager()
                     for block_id in block_ids:
-                        block_manager._invalidate_agent_caches_for_block(block_id)
+                        block_manager._invalidate_block_cache(block_id)
 
                     # Bulk delete in single query
                     session.query(BlockModel).filter(BlockModel._created_by_id == client_id).delete(

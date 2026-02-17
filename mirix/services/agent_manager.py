@@ -26,13 +26,7 @@ from mirix.orm import Block as BlockModel
 from mirix.orm import Tool as ToolModel
 from mirix.orm.errors import NoResultFound
 from mirix.schemas.agent import AgentState as PydanticAgentState
-from mirix.schemas.agent import (
-    AgentType,
-    CreateAgent,
-    CreateMetaAgent,
-    UpdateAgent,
-    UpdateMetaAgent,
-)
+from mirix.schemas.agent import AgentType, CreateAgent, CreateMetaAgent, UpdateAgent, UpdateMetaAgent
 from mirix.schemas.block import Block
 from mirix.schemas.block import Block as PydanticBlock
 from mirix.schemas.client import Client as PydanticClient
@@ -179,7 +173,6 @@ class AgentManager:
         self,
         meta_agent_create: CreateMetaAgent,
         actor: PydanticClient,
-        user_id: Optional[str] = None,  # NEW: user_id for block creation
     ) -> Dict[str, PydanticAgentState]:
         """
         Create a meta agent by first creating a meta_memory_agent as the parent,
@@ -189,7 +182,6 @@ class AgentManager:
         Args:
             meta_agent_create: CreateMetaAgent schema with configuration for all sub-agents
             actor: Client performing the action (for audit trail)
-            user_id: Optional user_id for block creation (uses default user if not provided)
 
         Returns:
             Dict[str, PydanticAgentState]: Dictionary mapping agent names to their agent states,
@@ -199,30 +191,16 @@ class AgentManager:
         if not meta_agent_create.llm_config or not meta_agent_create.embedding_config:
             raise ValueError("llm_config and embedding_config are required")
 
-        # NEW: Get or create organization-specific default user for block templates
+        # Get organization's default user to serve as the template for block seeding
         user_manager = UserManager()
-
-        if user_id:
-            # Specific user_id provided - use it
-            try:
-                user = user_manager.get_user_by_id(user_id)
-            except Exception as e:
-                logger.warning(
-                    "Failed to load user with id=%s, falling back to org default user: %s",
-                    user_id,
-                    e,
-                )
-                # Fall back to organization's default user (not global admin)
-                user = user_manager.get_or_create_org_default_user(org_id=actor.organization_id)
-        else:
-            # No user_id provided - use organization's default template user
-            # This user will serve as the template for copying blocks to new users
-            user = user_manager.get_or_create_org_default_user(org_id=actor.organization_id)
-            logger.debug(
-                "Using organization default user %s for block templates in org %s",
-                user.id,
-                actor.organization_id,
-            )
+        assert actor.organization_id is not None
+        assert actor.write_scope is not None
+        default_user = user_manager.get_or_create_org_default_user(org_id=actor.organization_id)
+        logger.debug(
+            "Using organization default user %s for block templates in org %s",
+            default_user.id,
+            actor.organization_id,
+        )
 
         # Ensure base tools are available in the database for this organization
         self.tool_manager.upsert_base_tools(actor=actor)
@@ -330,31 +308,27 @@ class AgentManager:
             created_agents[agent_name] = agent_state
             logger.debug(f"Created sub-agent: {agent_name} with id: {agent_state.id}, parent_id: {meta_agent_state.id}")
 
-            # FIX: Process agent-specific initialization (e.g., blocks for core_memory_agent)
-            # This handles any agent configuration provided in the meta_agent creation request
+            # Seed template blocks for this client's scope (e.g., blocks for core_memory_agent).
+            # These are created for the org's default user with the client's write_scope.
+            # When a real user first interacts via this scope, get_blocks() lazy-copies
+            # these templates to create the user's own blocks for that scope.
+            # Clients sharing the same write_scope share the same template blocks.
             if "blocks" in agent_config:
-                # Create memory blocks for this agent (typically core_memory_agent)
                 memory_block_configs = agent_config["blocks"]
-                for block in memory_block_configs:
-                    self.block_manager.create_or_update_block(
-                        block=Block(
-                            value=block["value"],
-                            limit=block.get("limit", CORE_MEMORY_BLOCK_CHAR_LIMIT),
-                            label=block["label"],
-                        ),
+                for block_cfg in memory_block_configs:
+                    self.block_manager.seed_template_block_for_actor_scope_if_necessary(
+                        label=block_cfg["label"],
+                        value=block_cfg["value"],
+                        limit=block_cfg.get("limit", CORE_MEMORY_BLOCK_CHAR_LIMIT),
                         actor=actor,
-                        agent_id=agent_state.id,  # Use child agent's ID, not parent's
-                        user=user,  # Pass user for block creation
+                        default_user=default_user,
                     )
                 logger.debug(
-                    f"Created {len(memory_block_configs)} memory blocks for {agent_name} (agent_id: {agent_state.id})"
+                    "Seeded %d template blocks for scope=%s, agent=%s",
+                    len(memory_block_configs),
+                    actor.write_scope,
+                    agent_name,
                 )
-
-                # Ensure blocks are committed to database before proceeding
-                # This is critical for template block copying to work correctly
-                logger.debug(f"Flushing database session to ensure blocks are committed for agent {agent_state.id}")
-                with self.block_manager.session_maker() as session:
-                    session.commit()  # Explicit commit to ensure blocks are visible to other sessions
 
             # Future: Add handling for other agent-specific configs here if needed
             # E.g., if 'initial_data' in agent_config: ...
@@ -960,8 +934,6 @@ class AgentManager:
         import json
 
         from mirix.database.redis_client import get_redis_client
-        from mirix.schemas.block import Block as PydanticBlock
-        from mirix.schemas.memory import Memory as PydanticMemory
         from mirix.schemas.tool import Tool as PydanticTool
 
         children_by_parent = {}
@@ -1067,35 +1039,6 @@ class AgentManager:
 
                 child_data["tools"] = tools
                 child_data.pop("tool_ids", None)
-
-                # Reconstruct memory from blocks
-                blocks = []
-                prompt_template = ""
-
-                if "memory_block_ids" in child_data and child_data["memory_block_ids"]:
-                    block_ids = (
-                        json.loads(child_data["memory_block_ids"])
-                        if isinstance(child_data["memory_block_ids"], (str, bytes))
-                        else child_data["memory_block_ids"]
-                    )
-                    prompt_template = child_data.get("memory_prompt_template", "")
-
-                    block_pipe = redis_client.client.pipeline()
-                    for block_id in block_ids:
-                        block_pipe.hgetall(f"{redis_client.BLOCK_PREFIX}{block_id}")
-                    block_results = block_pipe.execute()
-
-                    for block_data in block_results:
-                        if block_data:
-                            # Normalize block data: ensure 'value' is never None (use empty string instead)
-                            if "value" not in block_data or block_data["value"] is None:
-                                block_data["value"] = ""
-                            blocks.append(PydanticBlock(**block_data))
-
-                # Always create a Memory object (even if empty) - never None
-                memory = PydanticMemory(blocks=blocks, prompt_template=prompt_template)
-
-                child_data["memory"] = memory
                 child_data.pop("memory_block_ids", None)
                 child_data.pop("memory_prompt_template", None)
 
@@ -1414,46 +1357,6 @@ class AgentManager:
 
                     cached_data["tools"] = tools
                     cached_data.pop("tool_ids", None)  # Remove denormalized field
-
-                    # Reconstruct memory from block IDs
-                    from mirix.schemas.block import Block as PydanticBlock
-                    from mirix.schemas.memory import Memory as PydanticMemory
-
-                    blocks = []
-                    prompt_template = ""
-
-                    if "memory_block_ids" in cached_data and cached_data["memory_block_ids"]:
-                        block_ids = (
-                            json.loads(cached_data["memory_block_ids"])
-                            if isinstance(cached_data["memory_block_ids"], str)
-                            else cached_data["memory_block_ids"]
-                        )
-                        prompt_template = cached_data.get("memory_prompt_template", "")
-
-                        # Use pipeline for efficient parallel block retrieval
-                        pipe = redis_client.client.pipeline()
-                        for block_id in block_ids:
-                            pipe.hgetall(f"{redis_client.BLOCK_PREFIX}{block_id}")
-                        block_results = pipe.execute()
-
-                        # Reconstruct blocks
-                        for block_data in block_results:
-                            if block_data:
-                                # Normalize block data: ensure 'value' is never None (use empty string instead)
-                                if "value" not in block_data or block_data["value"] is None:
-                                    block_data["value"] = ""
-                                blocks.append(PydanticBlock(**block_data))
-
-                        logger.debug(
-                            "Reconstructed memory with %s blocks for agent %s",
-                            len(blocks),
-                            agent_id,
-                        )
-
-                    # Always create a Memory object (even if empty) - never None
-                    memory = PydanticMemory(blocks=blocks, prompt_template=prompt_template)
-
-                    cached_data["memory"] = memory
                     cached_data.pop("memory_block_ids", None)
                     cached_data.pop("memory_prompt_template", None)
 
@@ -1512,21 +1415,6 @@ class AgentManager:
                                 tool_data["tags"] = json.dumps(tool_data["tags"])
                             cache_provider.set_hash(tool_key, tool_data, ttl=settings.redis_ttl_tools)
 
-                    if "memory" in data and data["memory"]:
-                        memory_obj = data["memory"]
-                        if isinstance(memory_obj, dict) and "blocks" in memory_obj:
-                            block_ids = [
-                                block["id"] if isinstance(block, dict) else block.id for block in memory_obj["blocks"]
-                            ]
-                            data["memory_block_ids"] = json.dumps(block_ids)
-                            data["memory_prompt_template"] = memory_obj.get("prompt_template", "")
-
-                            if redis_client:
-                                for block_id in block_ids:
-                                    reverse_key = f"{redis_client.BLOCK_PREFIX}{block_id}:agents"
-                                    redis_client.client.sadd(reverse_key, agent_id)
-                                    redis_client.client.expire(reverse_key, settings.redis_ttl_agents)
-
                     if "children" in data and data["children"]:
                         children_ids = [
                             child["id"] if isinstance(child, dict) else child.id for child in data["children"]
@@ -1540,7 +1428,6 @@ class AgentManager:
                                 redis_client.client.expire(reverse_key, settings.redis_ttl_agents)
 
                     data.pop("tools", None)
-                    data.pop("memory", None)
                     data.pop("children", None)
 
                     agent_cache_key = f"{cache_provider.AGENT_PREFIX}{agent_id}"

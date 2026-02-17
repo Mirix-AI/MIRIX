@@ -625,39 +625,6 @@ class TestBlockManagement:
 
 
 # ============================================================================
-# TEST: MEMORY OPERATIONS
-# ============================================================================
-
-
-class TestMemoryOperations:
-    """Test memory-related operations."""
-
-    def test_get_core_memory(self, client_a, test_memory):
-        """Test getting agent's core memory."""
-        agent = client_a.create_agent(
-            name=f"test_memory_agent_{uuid.uuid4().hex[:8]}",
-            memory=test_memory,
-            system="Test system",
-        )
-
-        memory = client_a.get_core_memory(agent.id)
-        assert memory is not None
-        assert isinstance(memory, Memory)
-
-    def test_get_in_context_memory(self, client_a, test_memory):
-        """Test getting agent's in-context memory."""
-        agent = client_a.create_agent(
-            name=f"test_in_context_{uuid.uuid4().hex[:8]}",
-            memory=test_memory,
-            system="Test system",
-        )
-
-        memory = client_a.get_in_context_memory(agent.id)
-        assert memory is not None
-        assert isinstance(memory, Memory)
-
-
-# ============================================================================
 # TEST: FILE MANAGEMENT
 # ============================================================================
 

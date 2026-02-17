@@ -35,18 +35,12 @@ if TYPE_CHECKING:
 # Server-side imports
 import mirix.utils
 from mirix.client.client import AbstractClient
-from mirix.constants import (
-    BASE_TOOLS,
-    DEFAULT_HUMAN,
-    DEFAULT_PERSONA,
-    FUNCTION_RETURN_CHAR_LIMIT,
-    META_MEMORY_TOOLS,
-)
+from mirix.constants import BASE_TOOLS, DEFAULT_HUMAN, DEFAULT_PERSONA, FUNCTION_RETURN_CHAR_LIMIT, META_MEMORY_TOOLS
 from mirix.functions.functions import parse_source_code
 from mirix.interface import QueuingInterface
 from mirix.orm.errors import NoResultFound
 from mirix.schemas.agent import AgentState, AgentType, CreateAgent, CreateMetaAgent
-from mirix.schemas.block import Block, BlockUpdate, CreateBlock, Human, Persona
+from mirix.schemas.block import Block, BlockUpdate, Human, Persona
 from mirix.schemas.embedding_config import EmbeddingConfig
 from mirix.schemas.enums import MessageRole
 from mirix.schemas.environment_variables import (
@@ -590,20 +584,32 @@ class LocalClient(AbstractClient):
     def create_user(self, user_id: str, user_name: str) -> PydanticUser:
         return self.server.user_manager.create_user(UserCreate(id=user_id, name=user_name))
 
-    def create_meta_agent(self, config: dict):
+    def create_meta_agent(
+        self,
+        request: Optional[CreateMetaAgent] = None,
+        config: Optional[dict] = None,
+    ) -> Optional[AgentState]:
         """Create a MetaAgent for memory management operations.
 
         Args:
-            config (dict): Configuration dictionary for creating the MetaAgent.
+            request: CreateMetaAgent schema (preferred).
+            config: Configuration dict (alternative to request).
                 Can include: name, agents, system_prompts_folder, system_prompts,
                 llm_config, embedding_config, memory_blocks, description.
 
         Returns:
-            MetaAgent: The initialized MetaAgent instance
+            The meta agent's AgentState, or None if client has no write_scope.
         """
-        # Create MetaAgent through server
-        return self.server.create_meta_agent(
-            request=CreateMetaAgent(**config),
+        if not self.client.write_scope:
+            return None
+
+        if request is None:
+            if config is None:
+                raise ValueError("Either request or config must be provided")
+            request = CreateMetaAgent(**config)
+
+        return self.server.agent_manager.create_meta_agent(
+            meta_agent_create=request,
             actor=self.client,
         )
 
@@ -794,46 +800,6 @@ class LocalClient(AbstractClient):
             ).id
         except NoResultFound:
             return None
-
-    # memory
-    def get_in_context_memory(self, agent_id: str) -> Memory:
-        """
-        Get the in-context (i.e. core) memory of an agent
-
-        Args:
-            agent_id (str): ID of the agent
-
-        Returns:
-            memory (Memory): In-context memory of the agent
-        """
-        memory = self.server.get_agent_memory(
-            agent_id=agent_id,
-            actor=self.client,
-        )
-        return memory
-
-    def get_core_memory(self, agent_id: str) -> Memory:
-        return self.get_in_context_memory(agent_id)
-
-    def update_in_context_memory(self, agent_id: str, section: str, value: Union[List[str], str]) -> Memory:
-        """
-        Update the in-context memory of an agent
-
-        Args:
-            agent_id (str): ID of the agent
-
-        Returns:
-            memory (Memory): The updated in-context memory of the agent
-
-        """
-        # TODO: implement this (not sure what it should look like)
-        memory = self.server.update_agent_core_memory(
-            agent_id=agent_id,
-            label=section,
-            value=value,
-            actor=self.client,
-        )
-        return memory
 
     def get_archival_memory_summary(self, agent_id: str) -> ArchivalMemorySummary:
         """
@@ -1180,6 +1146,7 @@ class LocalClient(AbstractClient):
         block = self.server.block_manager.get_blocks(
             user=self.user,
             label=label,
+            any_scopes=self.client.read_scopes,
         )
         if not block:
             return None
@@ -1229,6 +1196,7 @@ class LocalClient(AbstractClient):
         return self.server.block_manager.get_blocks(
             user=self.user,
             label="human",
+            any_scopes=self.client.read_scopes,
         )
 
     def list_personas(self) -> List[Persona]:
@@ -1241,6 +1209,7 @@ class LocalClient(AbstractClient):
         return self.server.block_manager.get_blocks(
             user=self.user,
             label="persona",
+            any_scopes=self.client.read_scopes,
         )
 
     def update_human(self, human_id: str, text: str):
@@ -1342,6 +1311,7 @@ class LocalClient(AbstractClient):
         persona = self.server.block_manager.get_blocks(
             user=self.user,
             label="persona",
+            any_scopes=self.client.read_scopes,
         )
         if not persona:
             return None
@@ -1360,6 +1330,7 @@ class LocalClient(AbstractClient):
         human = self.server.block_manager.get_blocks(
             user=self.user,
             label="human",
+            any_scopes=self.client.read_scopes,
         )
         if not human:
             return None
@@ -1625,6 +1596,7 @@ class LocalClient(AbstractClient):
         blocks = self.server.block_manager.get_blocks(
             user=self.user,
             label=label,
+            any_scopes=self.client.read_scopes,
         )
         return blocks
 
@@ -1897,140 +1869,6 @@ class LocalClient(AbstractClient):
             dict: File statistics including total files, size, and types
         """
         return self.file_manager.get_file_stats(organization_id=self.org_id)
-
-    def update_agent_memory_block_label(self, agent_id: str, current_label: str, new_label: str) -> Memory:
-        """Rename a block in the agent's core memory
-
-        Args:
-            agent_id (str): The agent ID
-            current_label (str): The current label of the block
-            new_label (str): The new label of the block
-
-        Returns:
-            memory (Memory): The updated memory
-        """
-        block = self.get_agent_memory_block(agent_id, current_label)
-        return self.update_block(block.id, label=new_label)
-
-    # TODO: remove this
-    def add_agent_memory_block(self, agent_id: str, create_block: CreateBlock) -> Memory:
-        """
-        Create and link a memory block to an agent's core memory
-
-        Args:
-            agent_id (str): The agent ID
-            create_block (CreateBlock): The block to create
-
-        Returns:
-            memory (Memory): The updated memory
-        """
-        block_req = Block(**create_block.model_dump())
-        block = self.server.block_manager.create_or_update_block(actor=self.client, block=block_req, user=self.user)
-        # Link the block to the agent
-        agent = self.server.agent_manager.attach_block(
-            agent_id=agent_id,
-            block_id=block.id,
-            actor=self.client,
-        )
-        return agent.memory
-
-    def link_agent_memory_block(self, agent_id: str, block_id: str) -> Memory:
-        """
-        Link a block to an agent's core memory
-
-        Args:
-            agent_id (str): The agent ID
-            block_id (str): The block ID
-
-        Returns:
-            memory (Memory): The updated memory
-        """
-        return self.server.agent_manager.attach_block(
-            agent_id=agent_id,
-            block_id=block_id,
-            actor=self.client,
-        )
-
-    def remove_agent_memory_block(self, agent_id: str, block_label: str) -> Memory:
-        """
-        Unlike a block from the agent's core memory
-
-        Args:
-            agent_id (str): The agent ID
-            block_label (str): The block label
-
-        Returns:
-            memory (Memory): The updated memory
-        """
-        return self.server.agent_manager.detach_block_with_label(
-            agent_id=agent_id,
-            block_label=block_label,
-            actor=self.client,
-        )
-
-    def list_agent_memory_blocks(self, agent_id: str) -> List[Block]:
-        """
-        Get all the blocks in the agent's core memory
-
-        Args:
-            agent_id (str): The agent ID
-
-        Returns:
-            blocks (List[Block]): The blocks in the agent's core memory
-        """
-        agent = self.server.agent_manager.get_agent_by_id(
-            agent_id=agent_id,
-            actor=self.client,
-        )
-        return agent.memory.blocks
-
-    def get_agent_memory_block(self, agent_id: str, label: str) -> Block:
-        """
-        Get a block in the agent's core memory by its label
-
-        Args:
-            agent_id (str): The agent ID
-            label (str): The label in the agent's core memory
-
-        Returns:
-            block (Block): The block corresponding to the label
-        """
-        return self.server.agent_manager.get_block_with_label(
-            agent_id=agent_id,
-            block_label=label,
-            actor=self.client,
-        )
-
-    def update_agent_memory_block(
-        self,
-        agent_id: str,
-        label: str,
-        value: Optional[str] = None,
-        limit: Optional[int] = None,
-    ):
-        """
-        Update a block in the agent's core memory by specifying its label
-
-        Args:
-            agent_id (str): The agent ID
-            label (str): The label of the block
-            value (str): The new value of the block
-            limit (int): The new limit of the block
-
-        Returns:
-            block (Block): The updated block
-        """
-        block = self.get_agent_memory_block(agent_id, label)
-        data = {}
-        if value:
-            data["value"] = value
-        if limit:
-            data["limit"] = limit
-        return self.server.block_manager.update_block(
-            block.id,
-            actor=self.client,
-            block_update=BlockUpdate(**data),
-        )
 
     def update_block(
         self,

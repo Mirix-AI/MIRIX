@@ -663,11 +663,6 @@ class MirixClient(AbstractClient):
     # Memory Methods
     # ========================================================================
 
-    def get_in_context_memory(self, agent_id: str, headers: Optional[Dict[str, str]] = None) -> Memory:
-        """Get in-context memory of an agent."""
-        data = self._request("GET", f"/agents/{agent_id}/memory", headers=headers)
-        return Memory(**data)
-
     def update_in_context_memory(self, agent_id: str, section: str, value: Union[List[str], str]) -> Memory:
         """Update in-context memory."""
         raise NotImplementedError("update_in_context_memory not yet implemented in REST API")
@@ -1143,19 +1138,21 @@ class MirixClient(AbstractClient):
         config_path: Optional[str] = None,
         update_agents: Optional[bool] = False,
         headers: Optional[Dict[str, str]] = None,
-    ) -> AgentState:
+    ) -> Optional[AgentState]:
         """
         Initialize a meta agent with the given configuration.
 
         This creates a meta memory agent that manages multiple specialized memory agents
         (episodic, semantic, procedural, etc.) for the current project.
 
+        Returns None if the client has no write_scope (read-only clients don't need agents).
+
         Args:
             config: Configuration dictionary with llm_config, embedding_config, etc.
             config_path: Path to YAML config file (alternative to config dict)
 
         Returns:
-            AgentState: The initialized meta agent
+            AgentState if created/updated, None if client is read-only (no write_scope)
 
         Example:
             >>> client = MirixClient(api_key="your-api-key")
@@ -1197,6 +1194,12 @@ class MirixClient(AbstractClient):
 
         # Make API request to initialize meta agent
         data = self._request("POST", "/agents/meta/initialize", json=request_data, headers=headers)
+
+        # Server returns null for read-only clients (no write_scope)
+        if not data:
+            self._meta_agent = None
+            return None
+
         self._meta_agent = AgentState(**data)
         return self._meta_agent
 
@@ -1273,7 +1276,10 @@ class MirixClient(AbstractClient):
             }
         """
         if not self._meta_agent:
-            raise ValueError("Meta agent not initialized. Call initialize_meta_agent() first.")
+            raise ValueError(
+                "Meta agent not initialized. Call initialize_meta_agent() first. "
+                "If you already called it, the client may not have a write_scope configured."
+            )
 
         # Validate occurred_at format if provided
         if occurred_at is not None:
@@ -1376,7 +1382,10 @@ class MirixClient(AbstractClient):
             ... )
         """
         if not self._meta_agent:
-            raise ValueError("Meta agent not initialized. Call initialize_meta_agent() first.")
+            raise ValueError(
+                "Meta agent not initialized. Call initialize_meta_agent() first. "
+                "If you already called it, the client may not have a write_scope configured."
+            )
 
         self._ensure_user_exists(user_id)
 
@@ -1436,7 +1445,10 @@ class MirixClient(AbstractClient):
             ... )
         """
         if not self._meta_agent:
-            raise ValueError("Meta agent not initialized. Call initialize_meta_agent() first.")
+            raise ValueError(
+                "Meta agent not initialized. Call initialize_meta_agent() first. "
+                "If you already called it, the client may not have a write_scope configured."
+            )
 
         self._ensure_user_exists(user_id, headers=headers)
 
@@ -1561,7 +1573,10 @@ class MirixClient(AbstractClient):
             ... )
         """
         if not self._meta_agent:
-            raise ValueError("Meta agent not initialized. Call initialize_meta_agent() first.")
+            raise ValueError(
+                "Meta agent not initialized. Call initialize_meta_agent() first. "
+                "If you already called it, the client may not have a write_scope configured."
+            )
 
         self._ensure_user_exists(user_id, headers=headers)
 
@@ -1691,7 +1706,10 @@ class MirixClient(AbstractClient):
             ... )
         """
         if not self._meta_agent:
-            raise ValueError("Meta agent not initialized. Call initialize_meta_agent() first.")
+            raise ValueError(
+                "Meta agent not initialized. Call initialize_meta_agent() first. "
+                "If you already called it, the client may not have a write_scope configured."
+            )
 
         params = {
             "query": query,

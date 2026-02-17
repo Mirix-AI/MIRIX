@@ -1,7 +1,6 @@
 from mirix.orm.agent import Agent
 from mirix.orm.base import Base
 from mirix.orm.block import Block
-from mirix.orm.blocks_agents import BlocksAgents
 from mirix.orm.client import Client
 from mirix.orm.client_api_key import ClientApiKey
 from mirix.orm.cloud_file_mapping import CloudFileMapping
@@ -23,7 +22,6 @@ __all__ = [
     "Agent",
     "Base",
     "Block",
-    "BlocksAgents",
     "Client",
     "ClientApiKey",
     "CloudFileMapping",
