@@ -162,8 +162,10 @@ if [ "$START_SERVER" = true ]; then
         exit 1
     fi
     
-    # Build and start server container (always rebuild to pick up code changes)
-    $COMPOSE_CMD -f "$COMPOSE_FILE" up -d --build test_server
+    # Force rebuild server container without cache to pick up all code changes
+    # This ensures the container always runs the latest code (ORM models, schemas, etc.)
+    $COMPOSE_CMD -f "$COMPOSE_FILE" build --no-cache test_server
+    $COMPOSE_CMD -f "$COMPOSE_FILE" up -d test_server
     
     # Wait for server health check
     echo -e "${YELLOW}Waiting for server...${NC}"
