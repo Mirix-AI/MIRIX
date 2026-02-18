@@ -77,7 +77,8 @@ class QueueWorker:
             organization_id=(proto_user.organization_id if proto_user.organization_id else None),
             name=proto_user.name,
             status=proto_user.status,
-            scope="",  # Default scope
+            write_scope=None,  # Default: read-only
+            read_scopes=[],  # Default: no read access
             # Client doesn't have timezone field - it's only for User
             created_at=(proto_user.created_at.ToDatetime() if proto_user.HasField("created_at") else datetime.now()),
             updated_at=(proto_user.updated_at.ToDatetime() if proto_user.HasField("updated_at") else datetime.now()),

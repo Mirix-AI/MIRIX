@@ -40,9 +40,7 @@ def test_redis_provider_set_json(mock_redis_client):
     provider = RedisCacheProvider(mock_redis_client)
     result = provider.set_json("test_key", {"k": "v"}, ttl=300)
     assert result is True
-    mock_redis_client.set_json.assert_called_once_with(
-        "test_key", {"k": "v"}, ttl=300
-    )
+    mock_redis_client.set_json.assert_called_once_with("test_key", {"k": "v"}, ttl=300)
 
 
 def test_redis_provider_get_hash(mock_redis_client):
@@ -58,9 +56,7 @@ def test_redis_provider_set_hash(mock_redis_client):
     provider = RedisCacheProvider(mock_redis_client)
     result = provider.set_hash("test_key", {"a": 1}, ttl=60)
     assert result is True
-    mock_redis_client.set_hash.assert_called_once_with(
-        "test_key", {"a": 1}, ttl=60
-    )
+    mock_redis_client.set_hash.assert_called_once_with("test_key", {"a": 1}, ttl=60)
 
 
 def test_redis_provider_delete(mock_redis_client):

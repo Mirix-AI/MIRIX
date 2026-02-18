@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from pydantic import BaseModel, Field, model_validator
 from typing_extensions import Self
@@ -54,18 +54,20 @@ class Block(BaseBlock):
         value (str): The value of the block. This is the string that is represented in the context window.
         limit (int): The character limit of the block.
         user_id (str): The unique identifier of the user associated with the block.
-        agent_id (str): The unique identifier of the agent associated with the block.
+        filter_tags (dict): Filter tags including 'scope' for access control.
     """
 
     id: str = BaseBlock.generate_id_field()
 
-    # associated user/agent/organization
+    # associated user/organization
     user_id: Optional[str] = Field(None, description="The unique identifier of the user associated with the block.")
-    agent_id: Optional[str] = Field(None, description="The unique identifier of the agent associated with the block.")
     organization_id: Optional[str] = Field(
         None,
         description="The unique identifier of the organization associated with the block.",
     )
+
+    # Scope-based access control (mirrors episodic/procedural/resource/semantic/knowledge_vault)
+    filter_tags: Optional[Dict[str, Any]] = Field(None, description="Filter tags including 'scope' for access control.")
 
     # default orm fields
     created_by_id: Optional[str] = Field(None, description="The id of the user that made this Block.")

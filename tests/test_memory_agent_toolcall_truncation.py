@@ -22,7 +22,8 @@ def make_client(id="client-1", org_id="org-1"):
         organization_id=org_id,
         name="Test Client",
         status="active",
-        scope="test",
+        write_scope="test",
+        read_scopes=["test"],
         created_at=datetime.now(),
         updated_at=datetime.now(),
         is_deleted=False,
@@ -81,7 +82,7 @@ def test_memory_agent_truncates_extra_tool_calls_and_executes_only_first():
 
     # Build input/response messages
     input_message = Message.dict_to_message(
-        id="message-1",
+        id="message-12345678",
         agent_id=agent_state.id,
         model=agent.model,
         openai_message_dict={"role": "user", "content": "hi"},
@@ -106,7 +107,7 @@ def test_memory_agent_truncates_extra_tool_calls_and_executes_only_first():
         input_message=input_message,
         response_message=response_message,
         existing_file_uris=[],
-        response_message_id="message-2",
+        response_message_id="message-87654321",
         retrieved_memories=None,
         chaining=False,
     )

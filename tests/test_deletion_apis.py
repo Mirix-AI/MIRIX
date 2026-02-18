@@ -22,6 +22,11 @@ import requests
 
 from mirix.client import MirixClient
 
+# Mark all tests as integration tests (require a running server)
+pytestmark = [
+    pytest.mark.integration,
+]
+
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -404,8 +409,14 @@ def test_5_delete_client_memories(client):
     # Note: Messages are cached in Redis only, not in PostgreSQL, so we don't check them
 
     # Verify client still exists
-    response = requests.get(f"{BASE_URL}/clients/{TEST_CLIENT_ID}")
-    assert response.status_code == 200, "Client should still exist"
+    # (GET /clients/{id} requires JWT admin auth, so we check the DB directly)
+    from mirix.orm.client import Client as ClientModel
+    from mirix.server.server import db_context
+
+    with db_context() as session:
+        client_obj = session.query(ClientModel).filter(ClientModel.id == TEST_CLIENT_ID).first()
+        assert client_obj is not None, "Client should still exist"
+        logger.info("✓ Client verified in database: id=%s, is_deleted=%s", client_obj.id, client_obj.is_deleted)
 
     # Verify user still exists
     response = requests.get(f"{BASE_URL}/users/{TEST_USER_ID}")

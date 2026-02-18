@@ -45,7 +45,8 @@ def main():
                 id=CLIENT_ID,
                 name="Demo Client",
                 organization_id=ORG_ID,
-                scope="read_write",
+                write_scope="read_write",
+                read_scopes=["read_write"],
             )
         )
 

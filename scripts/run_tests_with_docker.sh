@@ -126,6 +126,24 @@ if [ $elapsed -eq $timeout ]; then
     exit 1
 fi
 
+# Wait for Redis to be healthy
+echo -e "${YELLOW}Waiting for Redis...${NC}"
+timeout=30
+elapsed=0
+
+while [ $elapsed -lt $timeout ]; do
+    if check_health "redis"; then
+        echo -e "${GREEN}✓ Redis ready${NC}"
+        break
+    fi
+    sleep 1
+    elapsed=$((elapsed + 1))
+done
+
+if [ $elapsed -eq $timeout ]; then
+    echo -e "${YELLOW}Warning: Redis may not be ready, Redis tests may be skipped${NC}"
+fi
+
 # Set test environment variables
 export MIRIX_PG_URI="postgresql+pg8000://test:test@localhost:5433/mirix_test"
 export MIRIX_REDIS_ENABLED="true"
@@ -144,8 +162,8 @@ if [ "$START_SERVER" = true ]; then
         exit 1
     fi
     
-    # Start server container
-    $COMPOSE_CMD -f "$COMPOSE_FILE" up -d test_server
+    # Build and start server container (always rebuild to pick up code changes)
+    $COMPOSE_CMD -f "$COMPOSE_FILE" up -d --build test_server
     
     # Wait for server health check
     echo -e "${YELLOW}Waiting for server...${NC}"
@@ -208,7 +226,11 @@ else
 fi
 
 if [ ${#PYTEST_ARGS[@]} -eq 0 ]; then
-    $PYTEST_CMD tests/ -v
+    if [ "$START_SERVER" = true ]; then
+        $PYTEST_CMD tests/ -v
+    else
+        $PYTEST_CMD tests/ -v -m "not integration"
+    fi
 else
     $PYTEST_CMD "${PYTEST_ARGS[@]}"
 fi

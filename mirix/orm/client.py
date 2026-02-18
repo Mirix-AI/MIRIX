@@ -1,6 +1,7 @@
 from datetime import datetime
 from typing import TYPE_CHECKING, List, Optional
 
+from sqlalchemy import JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from mirix.orm.mixins import OrganizationMixin
@@ -21,8 +22,11 @@ class Client(SqlalchemyBase, OrganizationMixin):
     # Basic fields
     name: Mapped[str] = mapped_column(nullable=False, doc="The display name of the client application.")
     status: Mapped[str] = mapped_column(nullable=False, doc="Whether the client is active or not.")
-    scope: Mapped[str] = mapped_column(
-        nullable=False, default="read_write", doc="Scope of client: read, write, read_write, admin"
+    write_scope: Mapped[Optional[str]] = mapped_column(
+        nullable=True, default=None, doc="Scope for writing memories (null = read-only)."
+    )
+    read_scopes: Mapped[List[str]] = mapped_column(
+        JSON, nullable=False, default=list, doc="Scopes for reading memories."
     )
 
     # Dashboard authentication fields

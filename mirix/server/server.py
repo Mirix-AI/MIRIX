@@ -45,20 +45,15 @@ from mirix.log import get_logger
 from mirix.orm import Base
 from mirix.orm.errors import NoResultFound
 from mirix.schemas.agent import AgentState, AgentType, CreateAgent, CreateMetaAgent
-from mirix.schemas.block import BlockUpdate
 from mirix.schemas.client import Client
 from mirix.schemas.embedding_config import EmbeddingConfig
 
 # openai schemas
 from mirix.schemas.enums import MessageStreamStatus
 from mirix.schemas.llm_config import LLMConfig
-from mirix.schemas.memory import ContextWindowOverview, Memory, RecallMemorySummary
+from mirix.schemas.memory import ContextWindowOverview, RecallMemorySummary
 from mirix.schemas.message import Message, MessageCreate, MessageUpdate
-from mirix.schemas.mirix_message import (
-    LegacyMirixMessage,
-    MirixMessage,
-    ToolReturnMessage,
-)
+from mirix.schemas.mirix_message import LegacyMirixMessage, MirixMessage, ToolReturnMessage
 from mirix.schemas.mirix_response import MirixResponse
 from mirix.schemas.organization import Organization
 from mirix.schemas.providers import (
@@ -110,18 +105,8 @@ class Server(object):
         raise NotImplementedError
 
     @abstractmethod
-    def get_agent_memory(self, user_id: str, agent_id: str) -> dict:
-        """Return the memory of an agent (core memory + non-core statistics)"""
-        raise NotImplementedError
-
-    @abstractmethod
     def get_server_config(self, user_id: str) -> dict:
         """Return the base config"""
-        raise NotImplementedError
-
-    @abstractmethod
-    def update_agent_core_memory(self, user_id: str, agent_id: str, label: str, actor: Client) -> Memory:
-        """Update the agents core memory block, return the new state"""
         raise NotImplementedError
 
     @abstractmethod
@@ -415,11 +400,7 @@ except Exception as e:
 # This provides distributed tracing across API → Kafka → Worker processes
 
 try:
-    from mirix.observability import (
-        flush_langfuse,
-        initialize_langfuse,
-        shutdown_langfuse,
-    )
+    from mirix.observability import flush_langfuse, initialize_langfuse, shutdown_langfuse
 
     logger.info("Initializing LangFuse observability...")
     initialize_langfuse()
@@ -535,7 +516,6 @@ class SyncServer(Server):
             self.default_org = self.organization_manager.create_default_organization()
             self.admin_user = self.user_manager.create_admin_user()
             self.default_client = self.client_manager.create_default_client()
-            # self.block_manager.add_default_blocks(actor=self.admin_user)
             self.tool_manager.upsert_base_tools(actor=self.default_client)
 
         # collect providers (always has Mirix as a default)
@@ -844,7 +824,10 @@ class SyncServer(Server):
             mirix_agent.interface.print_messages_raw(mirix_agent.messages)
 
         elif command.lower() == "memory":
-            ret_str = "\nDumping memory contents:\n" + f"\n{str(mirix_agent.agent_state.memory)}"
+            if mirix_agent.blocks_in_memory:
+                ret_str = "\nDumping memory contents:\n" + f"\n{str(mirix_agent.blocks_in_memory)}"
+            else:
+                ret_str = "\nNo blocks loaded (blocks are loaded dynamically during step)."
             return ret_str
 
         elif command.lower() == "pop" or command.lower().startswith("pop "):
@@ -1144,11 +1127,6 @@ class SyncServer(Server):
             actor=actor,
         )
 
-    # TODO: These can be moved to agent_manager
-    def get_agent_memory(self, agent_id: str, actor: Client) -> Memory:
-        """Return the memory of an agent (core memory)"""
-        return self.agent_manager.get_agent_by_id(agent_id=agent_id, actor=actor).memory
-
     def get_recall_memory_summary(self, agent_id: str, actor: Client) -> RecallMemorySummary:
         return RecallMemorySummary(size=self.message_manager.size(actor=actor, agent_id=agent_id))
 
@@ -1226,18 +1204,6 @@ class SyncServer(Server):
             response["defaults"] = clean_default_config
 
         return response
-
-    def update_agent_core_memory(self, agent_id: str, label: str, value: str, actor: Client) -> Memory:
-        """Update the value of a block in the agent's memory"""
-
-        # get the block id
-        block = self.agent_manager.get_block_with_label(agent_id=agent_id, block_label=label, actor=actor)
-
-        # update the block
-        self.block_manager.update_block(block_id=block.id, block_update=BlockUpdate(value=value), actor=actor)
-
-        # rebuild system prompt for agent, potentially changed
-        return self.agent_manager.rebuild_system_prompt(agent_id=agent_id, actor=actor).memory
 
     def update_agent_message(self, message_id: str, request: MessageUpdate, actor: Client) -> Message:
         """Update the details of a message associated with an agent"""

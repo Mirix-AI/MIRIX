@@ -8,7 +8,6 @@ from mirix.helpers import ToolRulesSolver
 from mirix.schemas.block import CreateBlock
 from mirix.schemas.embedding_config import EmbeddingConfig
 from mirix.schemas.llm_config import LLMConfig
-from mirix.schemas.memory import Memory
 from mirix.schemas.message import Message, MessageCreate
 from mirix.schemas.mirix_base import OrmMetadataBase
 from mirix.schemas.openai.chat_completion_response import UsageStatistics
@@ -44,8 +43,7 @@ class AgentState(OrmMetadataBase, validate_assignment=True):
         id (str): The unique identifier of the agent.
         name (str): The name of the agent (must be unique to the user).
         created_at (datetime): The datetime the agent was created.
-        memory (Memory): The in-context memory of the agent.
-        tools (List[str]): The tools used by the agent. This includes any memory editing functions specified in `memory`.
+        tools (List[str]): The tools used by the agent.
         system (str): The system prompt used by the agent.
         llm_config (LLMConfig): The LLM configuration used by the agent.
         embedding_config (EmbeddingConfig): The embedding configuration used by the agent.
@@ -89,7 +87,6 @@ class AgentState(OrmMetadataBase, validate_assignment=True):
         default=None, description="Child agents (sub-agents) if this is a parent agent."
     )
 
-    memory: Memory = Field(..., description="The in-context memory of the agent.")
     tools: List[Tool] = Field(..., description="The tools used by the agent.")
     mcp_tools: Optional[List[str]] = Field(
         default_factory=list,

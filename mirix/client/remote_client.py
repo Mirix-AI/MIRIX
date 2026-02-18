@@ -107,6 +107,8 @@ class MirixClient(AbstractClient):
         base_url: Optional[str] = None,
         client_name: Optional[str] = None,
         client_scope: str = "",
+        write_scope: Optional[str] = None,
+        read_scopes: Optional[List[str]] = None,
         client_id: Optional[str] = None,
         org_name: Optional[str] = None,
         org_id: Optional[str] = None,
@@ -127,7 +129,11 @@ class MirixClient(AbstractClient):
             api_key: API key for authentication (required; can also be set via MIRIX_API_KEY env var)
             base_url: Base URL of the Mirix API server (optional, can also be set via MIRIX_API_URL env var, default: "http://localhost:8000")
             client_name: Client name (optional, defaults to a generic label)
-            client_scope: Client scope (read, write, read_write, admin), default: "read_write"
+            client_scope: DEPRECATED - Use write_scope and read_scopes instead. For backward compatibility,
+                          if client_scope is provided and write_scope/read_scopes are not, it will be used
+                          as both write_scope and read_scopes[0].
+            write_scope: Scope for writing memories (None = read-only client)
+            read_scopes: List of scopes this client can read from
             debug: Whether to enable debug logging
             timeout: Request timeout in seconds
             max_retries: Number of retries for failed requests
@@ -138,7 +144,17 @@ class MirixClient(AbstractClient):
         # Get base URL from parameter or environment variable
         self.base_url = (base_url or os.environ.get("MIRIX_API_URL", "http://localhost:8531")).rstrip("/")
 
-        self.client_scope = client_scope
+        # Handle backward compatibility with client_scope
+        if write_scope is None and read_scopes is None and client_scope:
+            # Legacy mode: use client_scope for both write and read
+            self.write_scope = client_scope
+            self.read_scopes = [client_scope]
+        else:
+            self.write_scope = write_scope
+            self.read_scopes = read_scopes if read_scopes is not None else []
+
+        # Keep client_scope for backward compatibility in logging
+        self.client_scope = client_scope or write_scope or ""
         self.timeout = timeout
         self._known_users: Set[str] = set()
         self.api_key = api_key or os.environ.get("MIRIX_API_KEY")
@@ -235,17 +251,19 @@ class MirixClient(AbstractClient):
                     "client_id": self.client_id,
                     "name": self.client_name,
                     "org_id": self.org_id,
-                    "scope": self.client_scope,
+                    "write_scope": self.write_scope,
+                    "read_scopes": self.read_scopes,
                     "status": "active",
                 },
                 headers=headers,
             )
             if self.debug:
                 logger.debug(
-                    "[MirixClient] Client initialized: %s (name: %s, scope: %s)",
+                    "[MirixClient] Client initialized: %s (name: %s, write_scope: %s, read_scopes: %s)",
                     self.client_id,
                     self.client_name,
-                    self.client_scope,
+                    self.write_scope,
+                    self.read_scopes,
                 )
         except Exception as e:
             # Don't fail initialization if this fails - the server might handle it
@@ -644,11 +662,6 @@ class MirixClient(AbstractClient):
     # ========================================================================
     # Memory Methods
     # ========================================================================
-
-    def get_in_context_memory(self, agent_id: str, headers: Optional[Dict[str, str]] = None) -> Memory:
-        """Get in-context memory of an agent."""
-        data = self._request("GET", f"/agents/{agent_id}/memory", headers=headers)
-        return Memory(**data)
 
     def update_in_context_memory(self, agent_id: str, section: str, value: Union[List[str], str]) -> Memory:
         """Update in-context memory."""
@@ -1125,19 +1138,21 @@ class MirixClient(AbstractClient):
         config_path: Optional[str] = None,
         update_agents: Optional[bool] = False,
         headers: Optional[Dict[str, str]] = None,
-    ) -> AgentState:
+    ) -> Optional[AgentState]:
         """
         Initialize a meta agent with the given configuration.
 
         This creates a meta memory agent that manages multiple specialized memory agents
         (episodic, semantic, procedural, etc.) for the current project.
 
+        Returns None if the client has no write_scope (read-only clients don't need agents).
+
         Args:
             config: Configuration dictionary with llm_config, embedding_config, etc.
             config_path: Path to YAML config file (alternative to config dict)
 
         Returns:
-            AgentState: The initialized meta agent
+            AgentState if created/updated, None if client is read-only (no write_scope)
 
         Example:
             >>> client = MirixClient(api_key="your-api-key")
@@ -1179,6 +1194,12 @@ class MirixClient(AbstractClient):
 
         # Make API request to initialize meta agent
         data = self._request("POST", "/agents/meta/initialize", json=request_data, headers=headers)
+
+        # Server returns null for read-only clients (no write_scope)
+        if not data:
+            self._meta_agent = None
+            return None
+
         self._meta_agent = AgentState(**data)
         return self._meta_agent
 
@@ -1255,7 +1276,10 @@ class MirixClient(AbstractClient):
             }
         """
         if not self._meta_agent:
-            raise ValueError("Meta agent not initialized. Call initialize_meta_agent() first.")
+            raise ValueError(
+                "Meta agent not initialized. Call initialize_meta_agent() first. "
+                "If you already called it, the client may not have a write_scope configured."
+            )
 
         # Validate occurred_at format if provided
         if occurred_at is not None:
@@ -1358,7 +1382,10 @@ class MirixClient(AbstractClient):
             ... )
         """
         if not self._meta_agent:
-            raise ValueError("Meta agent not initialized. Call initialize_meta_agent() first.")
+            raise ValueError(
+                "Meta agent not initialized. Call initialize_meta_agent() first. "
+                "If you already called it, the client may not have a write_scope configured."
+            )
 
         self._ensure_user_exists(user_id)
 
@@ -1418,7 +1445,10 @@ class MirixClient(AbstractClient):
             ... )
         """
         if not self._meta_agent:
-            raise ValueError("Meta agent not initialized. Call initialize_meta_agent() first.")
+            raise ValueError(
+                "Meta agent not initialized. Call initialize_meta_agent() first. "
+                "If you already called it, the client may not have a write_scope configured."
+            )
 
         self._ensure_user_exists(user_id, headers=headers)
 
@@ -1543,7 +1573,10 @@ class MirixClient(AbstractClient):
             ... )
         """
         if not self._meta_agent:
-            raise ValueError("Meta agent not initialized. Call initialize_meta_agent() first.")
+            raise ValueError(
+                "Meta agent not initialized. Call initialize_meta_agent() first. "
+                "If you already called it, the client may not have a write_scope configured."
+            )
 
         self._ensure_user_exists(user_id, headers=headers)
 
@@ -1673,7 +1706,10 @@ class MirixClient(AbstractClient):
             ... )
         """
         if not self._meta_agent:
-            raise ValueError("Meta agent not initialized. Call initialize_meta_agent() first.")
+            raise ValueError(
+                "Meta agent not initialized. Call initialize_meta_agent() first. "
+                "If you already called it, the client may not have a write_scope configured."
+            )
 
         params = {
             "query": query,

@@ -358,9 +358,10 @@ def generate_schema(function, name: Optional[str] = None, description: Optional[
         if param.name in [
             "self",
             "agent_state",
+            "blocks_in_memory",
             "user_message",
             "timezone_str",
-        ]:  # Add agent_manager to excluded
+        ]:
             continue
 
         # Assert that the parameter has a type annotation

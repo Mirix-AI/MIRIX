@@ -173,14 +173,11 @@ class Agent(BaseAgent):
         use_cache: bool = True,  # Control Redis cache behavior for this request
         user: Optional[User] = None,  # End-user user
     ):
-        assert isinstance(
-            agent_state.memory, Memory
-        ), f"Memory object is not of type Memory: {type(agent_state.memory)}"
         # Hold a copy of the state that was used to init the agent
         self.agent_state = agent_state
-        assert isinstance(
-            self.agent_state.memory, Memory
-        ), f"Memory object is not of type Memory: {type(self.agent_state.memory)}"
+
+        # Runtime scratch pad for core memory blocks, populated during step()
+        self.blocks_in_memory: Optional[Memory] = None
 
         self.actor = actor
         # Store filter_tags as a COPY to prevent mutation across agent instances
@@ -191,6 +188,11 @@ class Agent(BaseAgent):
         self.use_cache = use_cache  # Store use_cache for memory operations
         self.user = user  # Store user for end-user tracking
         self.occurred_at = None  # Optional timestamp for episodic memory, set by server if provided
+
+        # Derive block scopes from filter_tags for block_manager.get_blocks() calls.
+        # filter_tags["scope"] is the client's write_scope, set by the server when queuing work.
+        scope = self.filter_tags.get("scope") if self.filter_tags else None
+        self._block_scopes: list[str] | None = [scope] if scope else None
 
         # Initialize logger early in constructor
         self.logger = logging.getLogger(f"Mirix.Agent.{self.agent_state.name}")
@@ -301,13 +303,15 @@ class Agent(BaseAgent):
         Returns:
             modified (bool): whether the memory was updated
         """
-        if self.agent_state.memory.compile() != new_memory.compile():
+        if self.blocks_in_memory is None:
+            return False
+        if self.blocks_in_memory.compile() != new_memory.compile():
             # update the blocks (LRW) in the DB
-            for label in self.agent_state.memory.list_block_labels():
+            for label in self.blocks_in_memory.list_block_labels():
                 updated_value = new_memory.get_block(label).value
-                if updated_value != self.agent_state.memory.get_block(label).value:
+                if updated_value != self.blocks_in_memory.get_block(label).value:
                     # update the block if it's changed
-                    block_id = self.agent_state.memory.get_block(label).id
+                    block_id = self.blocks_in_memory.get_block(label).id
                     block = self.block_manager.update_block(
                         block_id=block_id,
                         block_update=BlockUpdate(value=updated_value),
@@ -320,7 +324,7 @@ class Agent(BaseAgent):
                     )
 
             # refresh memory from DB (using block ids)
-            self.agent_state.memory = Memory(
+            self.blocks_in_memory = Memory(
                 blocks=[
                     self.block_manager.get_block_by_id(block.id, user=self.user)
                     for block in self.block_manager.get_blocks(
@@ -412,15 +416,12 @@ class Agent(BaseAgent):
         Note: only some agent state modifications will be persisted, such as data in the AgentState ORM and block data
         """
 
-        self.agent_state.memory = Memory(
-            blocks=[
-                self.block_manager.get_block_by_id(block.id, user=self.user)
-                for block in self.block_manager.get_blocks(
-                    user=self.user,
-                    agent_id=self.agent_state.id,
-                    auto_create_from_default=False,  # Don't auto-create here, only in step()
-                )
-            ]
+        self.blocks_in_memory = Memory(
+            blocks=self.block_manager.get_blocks(
+                user=self.user,
+                any_scopes=self._block_scopes,
+                auto_create_from_default=False,  # Don't auto-create here, only in step()
+            )
         )
 
         # Get Langfuse client for tracing tool executions
@@ -484,10 +485,10 @@ class Agent(BaseAgent):
                 elif target_mirix_tool.tool_type == ToolType.MIRIX_MEMORY_CORE:
                     callable_func = get_function_from_module(MIRIX_MEMORY_TOOL_MODULE_NAME, function_name)
                     if function_name in ["core_memory_append", "core_memory_rewrite"]:
-                        agent_state_copy = self.agent_state.__deepcopy__()
-                        function_args["agent_state"] = (
-                            agent_state_copy  # need to attach self to arg since it's dynamically linked
-                        )
+                        from copy import deepcopy
+
+                        memory_copy = deepcopy(self.blocks_in_memory)
+                        function_args["blocks_in_memory"] = memory_copy
                     if function_name in [
                         "check_episodic_memory",
                         "check_semantic_memory",
@@ -497,7 +498,7 @@ class Agent(BaseAgent):
 
                     function_response = callable_func(**function_args)
                     if function_name in ["core_memory_append", "core_memory_rewrite"]:
-                        self.update_memory_if_changed(agent_state_copy.memory)
+                        self.update_memory_if_changed(memory_copy)
 
                 elif target_mirix_tool.tool_type == ToolType.MIRIX_EXTRA:
                     callable_func = get_function_from_module(MIRIX_EXTRA_TOOL_MODULE_NAME, function_name)
@@ -1364,7 +1365,7 @@ class Agent(BaseAgent):
                             memory_item_str = memory_item_str.strip()
 
                     elif self.agent_state.name.endswith("core_memory_agent"):
-                        memory_item_str = self.agent_state.memory.compile()
+                        memory_item_str = self.blocks_in_memory.compile() if self.blocks_in_memory else ""
 
                     # Optionally create a summary message showing last edited memory item
                     if memory_item_str:
@@ -1475,23 +1476,12 @@ class Agent(BaseAgent):
             from mirix.schemas.agent import AgentType
 
             if self.agent_state.is_type(AgentType.core_memory_agent):
-                # Load existing blocks for this user
-                # Note: auto_create_from_default=True will create blocks if they don't exist
-                existing_blocks = self.block_manager.get_blocks(user=self.user, agent_id=self.agent_state.id)
-
-                # Special handling for core_memory_agent: ensure required blocks exist
-                # This automatically creates blocks on first use for each user
-                # NOTE: Block creation now happens automatically in BlockManager.get_blocks()
-                # via the auto_create_from_default parameter, so no need for manual creation here
+                # Load existing blocks for this user, scoped by the client's write_scope.
+                # auto_create_from_default=True will create blocks from template if they don't exist for this scope.
+                existing_blocks = self.block_manager.get_blocks(user=self.user, any_scopes=self._block_scopes)
 
                 # Load blocks into memory for core_memory_agent
-                self.agent_state.memory = Memory(
-                    blocks=[
-                        b
-                        for block in existing_blocks
-                        if (b := self.block_manager.get_block_by_id(block.id, user=self.user)) is not None
-                    ]
-                )
+                self.blocks_in_memory = Memory(blocks=existing_blocks)
 
         max_chaining_steps = max_chaining_steps or MAX_CHAINING_STEPS
 
@@ -2680,7 +2670,7 @@ These keywords have been used to retrieve relevant memories from the database.
 
         system_prompt = self.agent_state.system  # TODO is this the current system or the initial system?
         num_tokens_system = count_tokens(system_prompt)
-        core_memory = self.agent_state.memory.compile()
+        core_memory = self.blocks_in_memory.compile() if self.blocks_in_memory else ""
         num_tokens_core_memory = count_tokens(core_memory)
 
         # Grab the in-context messages
@@ -2785,7 +2775,6 @@ These keywords have been used to retrieve relevant memories from the database.
 def save_agent(agent: Agent):
     """Save agent to metadata store"""
     agent_state = agent.agent_state
-    assert isinstance(agent_state.memory, Memory), f"Memory is not a Memory object: {type(agent_state.memory)}"
 
     # TODO: move this to agent manager
     # TODO: Completely strip out metadata

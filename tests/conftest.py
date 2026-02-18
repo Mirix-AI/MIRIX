@@ -51,7 +51,8 @@ def api_key_factory():
                     id=client_id,
                     name=f"Test Client {client_id}",
                     organization_id=org_id,
-                    scope="read_write",
+                    write_scope="test",
+                    read_scopes=["test"],
                 )
             )
         api_key = _issue_key(client_id, org_id, client_mgr)

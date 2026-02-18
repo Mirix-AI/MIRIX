@@ -1068,7 +1068,7 @@ class ResourceMemoryManager:
             search_method: Search method ('embedding', 'bm25', 'string_match')
             limit: Maximum results
             timezone_str: Timezone
-            filter_tags: Filter tags dict (should include "scope": client.scope)
+            filter_tags: Filter tags dict (should include "read_scopes": client.read_scopes)
             use_cache: Whether to try Redis
 
         Returns:
@@ -1158,16 +1158,19 @@ class ResourceMemoryManager:
                 from sqlalchemy import func, or_
 
                 for key, value in filter_tags.items():
-                    if key == "scope":
-                        # Scope matching: input value must be in memory's scope field
-                        base_query = base_query.where(
-                            or_(
-                                func.lower(ResourceMemoryItem.filter_tags[key].as_string()).contains(
-                                    str(value).lower()
-                                ),
-                                ResourceMemoryItem.filter_tags[key].as_string() == str(value),
-                            )
-                        )
+                    if key == "read_scopes":
+                        # Multi-scope filtering: memory's scope must be IN the provided read_scopes list
+                        if isinstance(value, list) and value:
+                            scope_conditions = [
+                                ResourceMemoryItem.filter_tags["scope"].as_string() == scope for scope in value
+                            ]
+                            base_query = base_query.where(or_(*scope_conditions))
+                        elif isinstance(value, list) and not value:
+                            # Empty read_scopes means no access - return no results
+                            base_query = base_query.where(False)
+                    elif key == "scope":
+                        # Single scope matching (backward compatibility)
+                        base_query = base_query.where(ResourceMemoryItem.filter_tags[key].as_string() == str(value))
                     else:
                         # Other keys: exact match
                         base_query = base_query.where(ResourceMemoryItem.filter_tags[key].as_string() == str(value))

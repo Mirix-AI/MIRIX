@@ -101,9 +101,6 @@ class AbstractClient(object):
     def get_agent_id(self, agent_name: str) -> AgentState:
         raise NotImplementedError
 
-    def get_in_context_memory(self, agent_id: str) -> Memory:
-        raise NotImplementedError
-
     def update_in_context_memory(self, agent_id: str, section: str, value: Union[List[str], str]) -> Memory:
         raise NotImplementedError
 

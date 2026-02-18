@@ -1628,9 +1628,7 @@ def initialize_redis_client() -> Optional[RedisMemoryClient]:
             register_cache_provider("redis", redis_provider)
             logger.info("Auto-registered Redis cache provider")
         except ImportError:
-            logger.debug(
-                "Cache provider registry not available - skipping Redis auto-registration"
-            )
+            logger.debug("Cache provider registry not available - skipping Redis auto-registration")
 
         return _redis_client
 

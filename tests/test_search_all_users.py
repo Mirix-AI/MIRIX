@@ -22,6 +22,11 @@ import pytest
 
 from mirix.client import MirixClient
 
+# Mark all tests as integration tests (require a running server)
+pytestmark = [
+    pytest.mark.integration,
+]
+
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -189,7 +194,9 @@ class TestSearchAllUsers:
         # Initialize meta agent
         client.initialize_meta_agent(config_path=str(CONFIG_PATH), update_agents=True)
 
-        logger.info(f"✅ Client 1 initialized: client_id={client_id}, org_id={org1_id}, scope={client_scope_value}")
+        logger.info(
+            f"✅ Client 1 initialized: client_id={client_id}, org_id={org1_id}, write_scope={client_scope_value}"
+        )
         logger.info(f"   Connected to: {client.base_url}")
         return client
 
@@ -222,18 +229,18 @@ class TestSearchAllUsers:
 
     @pytest.fixture(scope="class")
     def client3(self, org1_id):
-        """Create third MirixClient instance in org1 with DIFFERENT scope."""
+        """Create third MirixClient instance in org1 with DIFFERENT write_scope."""
         logger.info("\n" + "=" * 80)
-        logger.info("Setting up Client 3 in Organization 1 (Different Scope)")
+        logger.info("Setting up Client 3 in Organization 1 (Different write_scope)")
         logger.info("=" * 80)
 
         client_id = f"test-client-3-{int(time.time())}"
-        # Different scope from client1 (read_write) - use read_only
+        # Different write_scope from client1 (read_write) - use read_only
         client = MirixClient(
             api_key=None,
             client_id=client_id,
             client_name="Test Client 3",
-            client_scope="read_only",  # DIFFERENT scope
+            client_scope="read_only",  # DIFFERENT write_scope
             org_id=org1_id,
             debug=True,
         )
@@ -241,13 +248,13 @@ class TestSearchAllUsers:
         # Initialize meta agent
         client.initialize_meta_agent(config_path=str(CONFIG_PATH), update_agents=True)
 
-        logger.info(f"✅ Client 3 initialized: client_id={client_id}, org_id={org1_id}, scope=read_only")
+        logger.info(f"✅ Client 3 initialized: client_id={client_id}, org_id={org1_id}, write_scope=read_only")
         logger.info(f"   Connected to: {client.base_url}")
         return client
 
     @pytest.fixture(scope="class")
     def client2(self, org2_id, client_scope_value):
-        """Create second MirixClient instance in org2 with same scope."""
+        """Create second MirixClient instance in org2 with same write_scope."""
         logger.info("\n" + "=" * 80)
         logger.info("Setting up Client 2 in Organization 2")
         logger.info("=" * 80)
@@ -258,7 +265,7 @@ class TestSearchAllUsers:
             api_key=None,
             client_id=client_id,
             client_name="Test Client 2",
-            client_scope=client_scope_value,  # Same scope as client1
+            client_scope=client_scope_value,  # Same write_scope as client1
             org_id=org2_id,
             debug=True,
         )
@@ -266,7 +273,9 @@ class TestSearchAllUsers:
         # Initialize meta agent
         client.initialize_meta_agent(config_path=str(CONFIG_PATH), update_agents=True)
 
-        logger.info(f"✅ Client 2 initialized: client_id={client_id}, org_id={org2_id}, scope={client_scope_value}")
+        logger.info(
+            f"✅ Client 2 initialized: client_id={client_id}, org_id={org2_id}, write_scope={client_scope_value}"
+        )
         logger.info(f"   Connected to: {client.base_url}")
         return client
 
@@ -286,22 +295,22 @@ class TestSearchAllUsers:
         logger.info("SETTING UP TEST MEMORIES")
         logger.info("=" * 80)
 
-        # User 1 & 2: Memories with scope='read_write' (via client1)
+        # User 1 & 2: Memories with write_scope='read_write' (via client1)
         filter_tags_with_scope = {"scope": client_scope_value, "test": "search_all"}
-        logger.info("\n📝 Adding memories for User 1 via Client 1 (scope=read_write)...")
+        logger.info("\n📝 Adding memories for User 1 via Client 1 (write_scope=read_write)...")
         add_all_memories(client1, user1_id, filter_tags_with_scope, prefix="[User1] ")
         logger.info("⏱️  Waiting 50 seconds for async memory processing (User 1)...")
         time.sleep(50)
 
-        logger.info("\n📝 Adding memories for User 2 via Client 1 (scope=read_write)...")
+        logger.info("\n📝 Adding memories for User 2 via Client 1 (write_scope=read_write)...")
         add_all_memories(client1, user2_id, filter_tags_with_scope, prefix="[User2] ")
         logger.info("⏱️  Waiting 50 seconds for async memory processing (User 2)...")
         time.sleep(30)
 
-        # User 3: Memories with DIFFERENT scope='read_only' (via client3)
-        # Server will auto-inject client3.scope='read_only' into filter_tags
-        filter_tags_different_scope = {"test": "search_all"}  # Client3's scope='read_only' will be auto-added
-        logger.info("\n📝 Adding memories for User 3 via Client 3 (scope=read_only - DIFFERENT)...")
+        # User 3: Memories with DIFFERENT write_scope='read_only' (via client3)
+        # Server will auto-inject client3.write_scope='read_only' into filter_tags
+        filter_tags_different_scope = {"test": "search_all"}  # Client3's write_scope='read_only' will be auto-added
+        logger.info("\n📝 Adding memories for User 3 via Client 3 (write_scope=read_only - DIFFERENT)...")
 
         # Create user via client3 first
         client3.create_or_get_user(user_id=user3_id, user_name="Test User 3", org_id=client3.org_id)
@@ -310,7 +319,7 @@ class TestSearchAllUsers:
         logger.info("⏱️  Waiting 50 seconds for async memory processing (User 3)...")
         time.sleep(30)
 
-        # User 4: Memories in different org with scope='read_write' (via client2)
+        # User 4: Memories in different org with write_scope='read_write' (via client2)
         filter_tags_org2 = {"scope": client_scope_value, "test": "search_all"}
         logger.info("\n📝 Adding memories for User 4 via Client 2 (Different Org)...")
         add_all_memories(client2, user4_id, filter_tags_org2, prefix="[User4-Org2] ")
@@ -319,9 +328,9 @@ class TestSearchAllUsers:
 
         logger.info("\n" + "=" * 80)
         logger.info("✅ All test memories created and processed")
-        logger.info("   - User 1 & 2: scope='read_write' (via client1)")
-        logger.info("   - User 3: scope='read_only' (via client3) - DIFFERENT")
-        logger.info("   - User 4: scope='read_write' (via client2) - DIFFERENT ORG")
+        logger.info("   - User 1 & 2: write_scope='read_write' (via client1)")
+        logger.info("   - User 3: write_scope='read_only' (via client3) - DIFFERENT")
+        logger.info("   - User 4: write_scope='read_write' (via client2) - DIFFERENT ORG")
         logger.info("=" * 80)
 
     def test_search_all_users_with_client_id_retrieves_both_users(
@@ -418,30 +427,30 @@ class TestSearchAllUsers:
         logger.info("✅ Test passed: Embedding search retrieved memories from both users with matching scope")
 
     def test_search_excludes_user3_without_matching_scope(self, client1, user3_id):
-        """Test 5: Search with client1 should NOT retrieve user3 memories (different scope: read_only vs read_write)."""
+        """Test 5: Search with client1 should NOT retrieve user3 memories (different write_scope: read_only vs read_write)."""
         logger.info("\n" + "=" * 80)
-        logger.info("TEST 5: User 3 excluded due to different scope (read_only vs read_write)")
+        logger.info("TEST 5: User 3 excluded due to different write_scope (read_only vs read_write)")
         logger.info("=" * 80)
 
         results = client1.search_all_users(
-            query="", memory_type="all", client_id=client1.client_id, limit=100  # client1 has scope='read_write'
+            query="", memory_type="all", client_id=client1.client_id, limit=100  # client1 has write_scope='read_write'
         )
 
         user_ids_in_results = set(result["user_id"] for result in results["results"])
         logger.info(f"User IDs in results: {user_ids_in_results}")
-        logger.info(f"Searching with client1 scope='read_write'")
-        logger.info(f"User 3 has scope='read_only' (via client3)")
+        logger.info(f"Searching with client1 write_scope='read_write'")
+        logger.info(f"User 3 has write_scope='read_only' (via client3)")
 
         assert (
             user3_id not in user_ids_in_results
-        ), "User 3 memories should be excluded (scope='read_only' doesn't match 'read_write')"
+        ), "User 3 memories should be excluded (write_scope='read_only' doesn't match 'read_write')"
 
-        logger.info("✅ Test passed: User 3 correctly excluded due to different scope")
+        logger.info("✅ Test passed: User 3 correctly excluded due to different write_scope")
 
     def test_search_excludes_user3_without_matching_scope_embedding(self, client1, user3_id):
-        """Test 5b: Embedding search with client1 should NOT retrieve user3 memories (different scope)."""
+        """Test 5b: Embedding search with client1 should NOT retrieve user3 memories (different write_scope)."""
         logger.info("\n" + "=" * 80)
-        logger.info("TEST 5b: Embedding search - User 3 excluded due to different scope")
+        logger.info("TEST 5b: Embedding search - User 3 excluded due to different write_scope")
         logger.info("=" * 80)
 
         results = client1.search_all_users(
@@ -459,17 +468,17 @@ class TestSearchAllUsers:
         assert results["search_method"] == "embedding"
         assert (
             user3_id not in user_ids_in_results
-        ), "User 3 memories should be excluded (scope='read_only' doesn't match 'read_write')"
+        ), "User 3 memories should be excluded (write_scope='read_only' doesn't match 'read_write')"
 
-        logger.info("✅ Test passed: Embedding search correctly excluded User 3 due to different scope")
+        logger.info("✅ Test passed: Embedding search correctly excluded User 3 due to different write_scope")
 
     def test_search_with_client3_retrieves_only_user3(self, client3, user3_id, user1_id, user2_id):
-        """Test 6: Search with client3 (scope=read_only) should only retrieve user3 memories."""
+        """Test 6: Search with client3 (write_scope=read_only) should only retrieve user3 memories."""
         logger.info("\n" + "=" * 80)
-        logger.info("TEST 6: Search with client3 (scope=read_only) retrieves only User 3")
+        logger.info("TEST 6: Search with client3 (write_scope=read_only) retrieves only User 3")
         logger.info("=" * 80)
 
-        # Search with client3 which has scope='read_only'
+        # Search with client3 which has write_scope='read_only'
         results = client3.search_all_users(query="", memory_type="all", client_id=client3.client_id, limit=100)
 
         logger.info(f"Results: {results['count']} memories found")
@@ -479,20 +488,20 @@ class TestSearchAllUsers:
         user_ids_in_results = set(result["user_id"] for result in results["results"])
         logger.info(f"User IDs in results: {user_ids_in_results}")
 
-        # Should only retrieve User 3 (scope='read_only'), not User 1 or 2 (scope='read_write')
-        assert user3_id in user_ids_in_results, "User 3 should be included (matching scope=read_only)"
-        assert user1_id not in user_ids_in_results, "User 1 should be excluded (different scope)"
-        assert user2_id not in user_ids_in_results, "User 2 should be excluded (different scope)"
+        # Should only retrieve User 3 (write_scope='read_only'), not User 1 or 2 (write_scope='read_write')
+        assert user3_id in user_ids_in_results, "User 3 should be included (matching write_scope=read_only)"
+        assert user1_id not in user_ids_in_results, "User 1 should be excluded (different write_scope)"
+        assert user2_id not in user_ids_in_results, "User 2 should be excluded (different write_scope)"
 
-        logger.info("✅ Test passed: Only User 3 retrieved with scope=read_only")
+        logger.info("✅ Test passed: Only User 3 retrieved with write_scope=read_only")
 
     def test_search_with_client3_retrieves_only_user3_embedding(self, client3, user3_id, user1_id, user2_id):
-        """Test 6b: Embedding search with client3 (scope=read_only) should only retrieve user3 memories."""
+        """Test 6b: Embedding search with client3 (write_scope=read_only) should only retrieve user3 memories."""
         logger.info("\n" + "=" * 80)
-        logger.info("TEST 6b: Embedding search with client3 (scope=read_only) retrieves only User 3")
+        logger.info("TEST 6b: Embedding search with client3 (write_scope=read_only) retrieves only User 3")
         logger.info("=" * 80)
 
-        # Search with client3 which has scope='read_only'
+        # Search with client3 which has write_scope='read_only'
         results = client3.search_all_users(
             query="software development",  # Semantic query
             memory_type="all",
@@ -508,13 +517,13 @@ class TestSearchAllUsers:
         user_ids_in_results = set(result["user_id"] for result in results["results"])
         logger.info(f"User IDs in results: {user_ids_in_results}")
 
-        # Should only retrieve User 3 (scope='read_only'), not User 1 or 2 (scope='read_write')
+        # Should only retrieve User 3 (write_scope='read_only'), not User 1 or 2 (write_scope='read_write')
         assert results["search_method"] == "embedding"
-        assert user3_id in user_ids_in_results, "User 3 should be included (matching scope=read_only)"
-        assert user1_id not in user_ids_in_results, "User 1 should be excluded (different scope)"
-        assert user2_id not in user_ids_in_results, "User 2 should be excluded (different scope)"
+        assert user3_id in user_ids_in_results, "User 3 should be included (matching write_scope=read_only)"
+        assert user1_id not in user_ids_in_results, "User 1 should be excluded (different write_scope)"
+        assert user2_id not in user_ids_in_results, "User 2 should be excluded (different write_scope)"
 
-        logger.info("✅ Test passed: Embedding search - Only User 3 retrieved with scope=read_only")
+        logger.info("✅ Test passed: Embedding search - Only User 3 retrieved with write_scope=read_only")
 
     def test_search_different_org_no_cross_contamination(
         self, client1, client2, user1_id, user2_id, user3_id, user4_id
@@ -662,8 +671,8 @@ class TestSearchAllUsers:
         logger.info(f"Results with filter_tags: {results['count']} memories")
         logger.info(f"Applied filter_tags: {results.get('filter_tags')}")
 
-        # Should have both "scope" and "test" in filter_tags
-        assert "scope" in results["filter_tags"], "Scope should be added automatically"
+        # Should have both "read_scopes" and "test" in filter_tags
+        assert "read_scopes" in results["filter_tags"], "read_scopes should be added automatically"
         assert "test" in results["filter_tags"], "Additional filter tag should be included"
 
         logger.info("✅ Test passed: Additional filter tags work correctly")
@@ -729,7 +738,7 @@ class TestSearchAllUsers:
         assert "count" in results
         assert "client_id" in results
         assert "organization_id" in results
-        assert "client_scope" in results
+        assert "read_scopes" in results
         assert "filter_tags" in results
 
         logger.info("Response fields: %s", list(results.keys()))

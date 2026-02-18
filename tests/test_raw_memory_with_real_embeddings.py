@@ -95,7 +95,8 @@ def main():
                 id=client_id,
                 organization_id=org_id,
                 name="Test Client for Embeddings",
-                scope="read_write",
+                write_scope="test",
+                read_scopes=["test"],
             )
         )
         print(f"[OK] Created client: {client_id}")
