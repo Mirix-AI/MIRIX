@@ -883,6 +883,7 @@ class LocalClient(AbstractClient):
         agent_id: str,
         messages: List[Union[Message | MessageCreate]],
         user_id: Optional[str] = None,  # End-user ID
+        block_filter_tags: Optional[Dict[str, Any]] = None,
     ):
         """
         Send pre-packed messages to an agent.
@@ -891,6 +892,7 @@ class LocalClient(AbstractClient):
             agent_id (str): ID of the agent
             messages (List[Union[Message | MessageCreate]]): List of messages to send
             user_id (str): Optional end-user ID for message attribution
+            block_filter_tags (dict): Optional; applied only when blocks are created from default template.
 
         Returns:
             response (MirixResponse): Response from the agent
@@ -915,6 +917,7 @@ class LocalClient(AbstractClient):
             agent_id=agent_id,
             input_messages=messages,
             user=target_user,  # Pass user object
+            block_filter_tags=block_filter_tags,
         )
 
         # format messages

@@ -125,6 +125,7 @@ class AbstractClient(object):
         stream_tokens: bool = False,
         chaining: Optional[bool] = None,
         verbose: Optional[bool] = None,
+        block_filter_tags: Optional[Dict[str, Any]] = None,
     ) -> MirixResponse:
         raise NotImplementedError
 

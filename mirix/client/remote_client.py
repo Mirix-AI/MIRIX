@@ -692,11 +692,14 @@ class MirixClient(AbstractClient):
         message: str,
         role: str,
         agent_id: Optional[str] = None,
+        agent_name: Optional[str] = None,
         user_id: Optional[str] = None,  # End-user ID for message attribution
         name: Optional[str] = None,
-        stream: Optional[bool] = False,
         stream_steps: bool = False,
         stream_tokens: bool = False,
+        chaining: Optional[bool] = None,
+        verbose: Optional[bool] = None,
+        block_filter_tags: Optional[Dict[str, Any]] = None,
         filter_tags: Optional[Dict[str, Any]] = None,
         use_cache: bool = True,
         headers: Optional[Dict[str, str]] = None,
@@ -711,11 +714,11 @@ class MirixClient(AbstractClient):
                     messages will be associated with the default user. This is critical
                     for multi-tenant applications to properly isolate user conversations.
             name: Optional name of the message sender
-            stream: Enable streaming (not yet implemented)
             stream_steps: Stream intermediate steps
             stream_tokens: Stream tokens as they are generated
             filter_tags: Optional filter tags for categorization and filtering.
                 Example: {"project_id": "proj-alpha", "session_id": "sess-123"}
+            block_filter_tags: Optional dict; applied only when blocks are created from default template.
             use_cache: Control Redis cache behavior (default: True)
             headers: Optional headers to include in the request
 
@@ -731,7 +734,7 @@ class MirixClient(AbstractClient):
             ...     filter_tags={"project": "alpha", "priority": "high"}
             ... )
         """
-        if stream or stream_steps or stream_tokens:
+        if stream_steps or stream_tokens:
             raise NotImplementedError("Streaming not yet implemented in REST API")
 
         request_data = {
@@ -750,6 +753,10 @@ class MirixClient(AbstractClient):
         if filter_tags is not None:
             request_data["filter_tags"] = filter_tags
 
+        # Include block_filter_tags if provided
+        if block_filter_tags is not None:
+            request_data["block_filter_tags"] = block_filter_tags
+
         # Include use_cache if not default
         if not use_cache:
             request_data["use_cache"] = use_cache
@@ -762,6 +769,7 @@ class MirixClient(AbstractClient):
         agent_id: str,
         message: str,
         user_id: Optional[str] = None,  # End-user ID
+        block_filter_tags: Optional[Dict[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
     ) -> MirixResponse:
         """Send a user message to an agent.
@@ -770,13 +778,19 @@ class MirixClient(AbstractClient):
             agent_id: The ID of the agent to send the message to
             message: The message text to send
             user_id: Optional end-user ID for message attribution
+            block_filter_tags: Optional dict; applied only when blocks are created from default template.
             headers: Optional headers to include in the request
 
         Returns:
             MirixResponse: The response from the agent
         """
         return self.send_message(
-            message=message, role="user", agent_id=agent_id, user_id=user_id, headers=headers  # Pass user_id
+            message=message,
+            role="user",
+            agent_id=agent_id,
+            user_id=user_id,
+            block_filter_tags=block_filter_tags,
+            headers=headers,
         )
 
     def get_messages(
