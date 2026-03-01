@@ -932,6 +932,8 @@ class LocalClient(AbstractClient):
         stream_tokens: bool = False,
         chaining: Optional[bool] = None,
         verbose: Optional[bool] = None,
+        block_filter_tags: Optional[Dict[str, Any]] = None,
+        **kwargs,
     ) -> MirixResponse:
         """
         Send a message to an agent
@@ -1094,6 +1096,7 @@ class LocalClient(AbstractClient):
             chaining=chaining,
             user=target_user,  # Pass user object instead of relying on default
             verbose=verbose,
+            block_filter_tags=block_filter_tags,
         )
 
         # format messages

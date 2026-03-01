@@ -81,6 +81,7 @@ def put_messages(
     user_id: Optional[str] = None,
     verbose: Optional[bool] = None,
     filter_tags: Optional[dict] = None,
+    block_filter_tags: Optional[dict] = None,
     use_cache: bool = True,
     occurred_at: Optional[str] = None,
 ):
@@ -96,6 +97,7 @@ def put_messages(
         user_id: Optional user ID (end-user ID)
         verbose: Enable verbose logging
         filter_tags: Filter tags dictionary
+        block_filter_tags: Optional dict; applied only when blocks are created (e.g. from default template)
         use_cache: Control Redis cache behavior
         occurred_at: Optional ISO 8601 timestamp string for episodic memory
     """
@@ -163,6 +165,10 @@ def put_messages(
     # Convert dict to Struct for filter_tags
     if filter_tags:
         queue_msg.filter_tags.update(filter_tags)
+
+    # Optional block_filter_tags (applied only when blocks are created)
+    if block_filter_tags:
+        queue_msg.block_filter_tags.update(block_filter_tags)
 
     # Set use_cache
     queue_msg.use_cache = use_cache

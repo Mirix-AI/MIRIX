@@ -830,7 +830,7 @@ class Mirix:
                 core_memory = Memory(
                     blocks=[
                         self._client.server.block_manager.get_block_by_id(block.id, actor=target_user)
-                        for block in self._client.server.block_manager.get_blocks(actor=target_user)
+                        for block in self._client.server.block_manager.get_blocks(user=target_user)
                     ]
                 )
 

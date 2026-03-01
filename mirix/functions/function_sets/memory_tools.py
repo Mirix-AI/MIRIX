@@ -833,6 +833,7 @@ def trigger_memory_update_with_instruction(
         + instruction,
         existing_file_uris=user_message["existing_file_uris"],
         retrieved_memories=user_message.get("retrieved_memories", None),
+        block_filter_tags=getattr(self, "block_filter_tags", None),
     )
     response += "[System Message] Agent " + matching_agent.name + " has been triggered to update the memory.\n"
 
@@ -923,11 +924,13 @@ def trigger_memory_update(self: "Agent", user_message: object, memory_types: Lis
             if agent_state is None:
                 raise ValueError(f"No agent found with type '{agent_type_str}'")
 
-            # Get filter_tags, use_cache, client_id, user_id, and occurred_at from parent agent instance
-            # Deep copy filter_tags to ensure complete isolation between child agents
+            # Get filter_tags, block_filter_tags, use_cache, client_id, user_id, and occurred_at from parent agent instance
+            # Deep copy filter_tags and block_filter_tags to ensure complete isolation between child agents
             parent_filter_tags = getattr(self, "filter_tags", None)
             # Don't use 'or {}' because empty dict {} is valid and different from None
             filter_tags = deepcopy(parent_filter_tags) if parent_filter_tags is not None else None
+            parent_block_filter_tags = getattr(self, "block_filter_tags", None)
+            block_filter_tags = deepcopy(parent_block_filter_tags) if parent_block_filter_tags is not None else None
             use_cache = getattr(self, "use_cache", True)
             actor = getattr(self, "actor", None)
             user = getattr(self, "user", None)
@@ -937,7 +940,7 @@ def trigger_memory_update(self: "Agent", user_message: object, memory_types: Lis
 
             logger = logging.getLogger(__name__)
             logger.info(
-                f"Creating {memory_type} agent with filter_tags={filter_tags}, client_id={actor.id if actor else None}, user_id={user.id if user else None}, occurred_at={occurred_at}"
+                f"Creating {memory_type} agent with filter_tags={filter_tags}, block_filter_tags={block_filter_tags}, client_id={actor.id if actor else None}, user_id={user.id if user else None}, occurred_at={occurred_at}"
             )
 
             memory_agent = agent_class(
@@ -946,6 +949,7 @@ def trigger_memory_update(self: "Agent", user_message: object, memory_types: Lis
                 actor=actor,
                 user=user,
                 filter_tags=filter_tags,
+                block_filter_tags=block_filter_tags,
                 use_cache=use_cache,
             )
 

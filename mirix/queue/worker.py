@@ -285,6 +285,14 @@ class QueueWorker:
             # Extract occurred_at
             occurred_at = message.occurred_at if message.HasField("occurred_at") else None
 
+            # Extract block_filter_tags
+            block_filter_tags = None
+            if hasattr(message, "block_filter_tags") and message.block_filter_tags:
+                try:
+                    block_filter_tags = dict(message.block_filter_tags)
+                except Exception as e:
+                    raise ValueError("block_filter_tags was provided but could not be parsed as a dict") from e
+
             # Log the processing
             logger.info(
                 "Processing message via server: agent_id=%s, client_id=%s (from actor), user_id=%s, input_messages_count=%s, use_cache=%s, filter_tags=%s, occurred_at=%s",
@@ -306,6 +314,7 @@ class QueueWorker:
                     chaining=chaining,
                     user=user,
                     filter_tags=filter_tags,
+                    block_filter_tags=block_filter_tags,
                     use_cache=use_cache,
                     occurred_at=occurred_at,
                 )

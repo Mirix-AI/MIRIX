@@ -1210,6 +1210,7 @@ class MirixClient(AbstractClient):
         chaining: bool = True,
         verbose: bool = False,
         filter_tags: Optional[Dict[str, Any]] = None,
+        block_filter_tags: Optional[Dict[str, Any]] = None,
         use_cache: bool = True,
         occurred_at: Optional[str] = None,
         headers: Optional[Dict[str, str]] = None,
@@ -1232,6 +1233,8 @@ class MirixClient(AbstractClient):
             verbose: If True, enable verbose output during memory processing
             filter_tags: Optional dict of tags for filtering and categorization.
                         Example: {"project_id": "proj-123", "session_id": "sess-456"}
+            block_filter_tags: Optional dict applied when creating new core (block) memory for this user.
+                              Only used at block creation time; e.g. {"env": "staging", "team": "platform"}.
             use_cache: Control Redis cache behavior (default: True)
             occurred_at: Optional ISO 8601 timestamp string for episodic memory.
                         If provided, episodic memories will use this timestamp instead of current time.
@@ -1298,6 +1301,9 @@ class MirixClient(AbstractClient):
 
         if filter_tags is not None:
             request_data["filter_tags"] = filter_tags
+
+        if block_filter_tags is not None:
+            request_data["block_filter_tags"] = block_filter_tags
 
         if not use_cache:
             request_data["use_cache"] = use_cache
@@ -1621,6 +1627,8 @@ class MirixClient(AbstractClient):
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
         org_id: Optional[str] = None,
+        include_core_memory: bool = False,
+        block_filter_tags: Optional[Dict[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         """
@@ -1655,6 +1663,9 @@ class MirixClient(AbstractClient):
                      Only episodic memories with occurred_at <= end_date will be returned.
                      Examples: "2025-12-05T23:59:59" or "2025-12-05T23:59:59Z"
             org_id: Optional organization scope (overridden by client's org if client_id provided)
+            include_core_memory: When True, include a "core" section with block memory (scoped by client).
+            block_filter_tags: When include_core_memory is True, only blocks whose filter_tags contain
+                              these keys/values are returned. Scope is auto-injected from client.
 
         Returns:
             Dict containing:
@@ -1745,6 +1756,13 @@ class MirixClient(AbstractClient):
             params["start_date"] = start_date
         if end_date is not None:
             params["end_date"] = end_date
+
+        if include_core_memory:
+            params["include_core_memory"] = "true"
+        if block_filter_tags is not None:
+            import json as _json
+
+            params["block_filter_tags"] = _json.dumps(block_filter_tags)
 
         return self._request("GET", "/memory/search_all_users", params=params, headers=headers)
 

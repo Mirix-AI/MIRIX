@@ -12,6 +12,7 @@ Covers:
 """
 
 import uuid
+from typing import Optional
 
 import pytest
 
@@ -23,7 +24,6 @@ from mirix.services.block_manager import BlockManager
 from mirix.services.client_manager import ClientManager
 from mirix.services.organization_manager import OrganizationManager
 from mirix.services.user_manager import UserManager
-
 
 # =============================================================================
 # Helpers
@@ -46,9 +46,7 @@ def test_org():
     try:
         return org_mgr.get_organization_by_id(org_id)
     except Exception:
-        return org_mgr.create_organization(
-            PydanticOrganization(id=org_id, name="Scoped Block Test Org")
-        )
+        return org_mgr.create_organization(PydanticOrganization(id=org_id, name="Scoped Block Test Org"))
 
 
 @pytest.fixture(scope="module")
@@ -163,14 +161,18 @@ def _create_block(
     label: str,
     value: str,
     scope: str,
+    extra_filter_tags: Optional[dict] = None,
 ) -> PydanticBlock:
-    """Create a block with explicit scope in filter_tags."""
+    """Create a block with explicit scope in filter_tags; optional extra_filter_tags merged at creation."""
+    filter_tags = {"scope": scope}
+    if extra_filter_tags:
+        filter_tags = {**filter_tags, **extra_filter_tags}
     block = PydanticBlock(
         label=label,
         value=value,
-        filter_tags={"scope": scope},
+        filter_tags=filter_tags,
     )
-    return block_manager.create_or_update_block(block, actor=actor, user=user)
+    return block_manager.create_or_update_block(block, actor=actor, user=user, filter_tags=filter_tags)
 
 
 # =============================================================================
@@ -306,9 +308,137 @@ class TestGetBlocksWithScopes:
         assert self._b1.id in ids
         assert self._b2.id in ids
 
-    def test_auto_create_from_default_single_scope(
-        self, block_manager, client_scope1, test_org, default_user
+    def test_get_blocks_org_wide_user_none(self, block_manager, test_user, test_org):
+        """get_blocks with user=None returns blocks for all users in the org (org-wide)."""
+        results = block_manager.get_blocks(
+            user=None,
+            organization_id=test_org.id,
+            any_scopes=["test-scope-1", "test-scope-2"],
+        )
+        ids = {b.id for b in results}
+        assert self._b1.id in ids
+        assert self._b2.id in ids
+        for b in results:
+            assert b.user_id is not None
+
+    def test_get_blocks_org_wide_empty_without_org_id(self, block_manager):
+        """get_blocks with user=None and no organization_id returns []."""
+        results = block_manager.get_blocks(
+            user=None,
+            organization_id=None,
+            any_scopes=["some-scope"],
+        )
+        assert results == []
+
+    def test_get_blocks_org_wide_with_filter_tags(self, block_manager, test_org, client_scope1):
+        """get_blocks with user=None and filter_tags returns only blocks whose filter_tags contain the given tags."""
+        user_with_tags = UserManager().create_user(
+            PydanticUser(
+                id=_test_id("user-org-ft"),
+                name="User For Org-Wide Filter",
+                organization_id=test_org.id,
+                timezone="UTC",
+            )
+        )
+        block_with_tags = _create_block(
+            block_manager,
+            client_scope1,
+            user_with_tags,
+            "block-org-ft",
+            "value",
+            "test-scope-1",
+            extra_filter_tags={"env": "staging"},
+        )
+        assert block_with_tags.filter_tags.get("env") == "staging"
+
+        results_all = block_manager.get_blocks(
+            user=None,
+            organization_id=test_org.id,
+            any_scopes=["test-scope-1"],
+        )
+        ids_all = {b.id for b in results_all}
+        assert block_with_tags.id in ids_all
+
+        results_filtered = block_manager.get_blocks(
+            user=None,
+            organization_id=test_org.id,
+            any_scopes=["test-scope-1"],
+            filter_tags={"env": "staging"},
+        )
+        ids_filtered = {b.id for b in results_filtered}
+        assert block_with_tags.id in ids_filtered
+
+        results_no_match = block_manager.get_blocks(
+            user=None,
+            organization_id=test_org.id,
+            any_scopes=["test-scope-1"],
+            filter_tags={"env": "production"},
+        )
+        ids_no_match = {b.id for b in results_no_match}
+        assert block_with_tags.id not in ids_no_match
+
+    def test_get_blocks_with_user_and_filter_tags_excludes_other_users_blocks(
+        self, block_manager, test_org, client_scope1
     ):
+        """get_blocks(user=A, filter_tags=...) returns only A's blocks, not B's blocks that match the same filter_tags."""
+        user_a = UserManager().create_user(
+            PydanticUser(
+                id=_test_id("user-a-ft"),
+                name="User A",
+                organization_id=test_org.id,
+                timezone="UTC",
+            )
+        )
+        user_b = UserManager().create_user(
+            PydanticUser(
+                id=_test_id("user-b-ft"),
+                name="User B",
+                organization_id=test_org.id,
+                timezone="UTC",
+            )
+        )
+        block_a = _create_block(
+            block_manager,
+            client_scope1,
+            user_a,
+            "block-user-a",
+            "value a",
+            "test-scope-1",
+            extra_filter_tags={"env": "staging"},
+        )
+        block_b = _create_block(
+            block_manager,
+            client_scope1,
+            user_b,
+            "block-user-b",
+            "value b",
+            "test-scope-1",
+            extra_filter_tags={"env": "staging"},
+        )
+        assert block_a.user_id == user_a.id
+        assert block_b.user_id == user_b.id
+
+        results_for_a = block_manager.get_blocks(
+            user=user_a,
+            any_scopes=["test-scope-1"],
+            filter_tags={"env": "staging"},
+        )
+        ids_for_a = {b.id for b in results_for_a}
+        assert block_a.id in ids_for_a
+        assert block_b.id not in ids_for_a
+        assert all(b.user_id == user_a.id for b in results_for_a)
+
+        results_for_b = block_manager.get_blocks(
+            user=user_b,
+            any_scopes=["test-scope-1"],
+            filter_tags={"env": "staging"},
+        )
+        ids_for_b = {b.id for b in results_for_b}
+        assert block_b.id in ids_for_b
+        assert block_a.id not in ids_for_b
+        assert all(b.user_id == user_b.id for b in results_for_b)
+
+    def test_auto_create_from_default_single_scope(self, block_manager, client_scope1, test_org, default_user):
         """Single-scope query auto-creates blocks from default user templates."""
         scope = "test-scope-autocreate"
         actor = ClientManager().create_client(
@@ -344,9 +474,48 @@ class TestGetBlocksWithScopes:
         assert len(results) >= 1
         assert any(b.label == "block-label-ac" for b in results)
 
-    def test_no_auto_create_for_multi_scope(
-        self, block_manager, client_scope1, test_org, default_user
-    ):
+    def test_auto_create_from_default_merges_block_filter_tags(self, block_manager, test_org, default_user):
+        """Blocks created from default user templates get block_filter_tags merged with scope."""
+        scope = "test-scope-user-ft"
+        actor = ClientManager().create_client(
+            PydanticClient(
+                id=_test_id("client-user-ft"),
+                organization_id=test_org.id,
+                name="BlockFilterTags Client",
+                write_scope=scope,
+                read_scopes=[scope],
+            )
+        )
+        block_manager.seed_template_block_for_actor_scope_if_necessary(
+            label="block-label-user-ft",
+            value="template val",
+            limit=2000,
+            actor=actor,
+            default_user=default_user,
+        )
+
+        block_filter_tags = {"env": "staging", "team": "platform"}
+        new_user = UserManager().create_user(
+            PydanticUser(
+                id=_test_id("user-user-ft"),
+                name="User For Block Filter Tags",
+                organization_id=test_org.id,
+                timezone="UTC",
+            )
+        )
+        results = block_manager.get_blocks(
+            user=new_user,
+            any_scopes=[scope],
+            auto_create_from_default=True,
+            filter_tags_set_on_create=block_filter_tags,
+        )
+        assert len(results) >= 1
+        block = next(b for b in results if b.label == "block-label-user-ft")
+        assert block.filter_tags.get("scope") == scope
+        for k, v in block_filter_tags.items():
+            assert block.filter_tags.get(k) == v
+
+    def test_no_auto_create_for_multi_scope(self, block_manager, client_scope1, test_org, default_user):
         """Multi-scope query does NOT auto-create from default user."""
         scope = "test-scope-noac"
         actor = ClientManager().create_client(
@@ -777,9 +946,7 @@ class TestBlockScopeIsolation:
             )
         )
         blocks_via_a = block_manager.get_blocks(user=target_user, any_scopes=[scope])
-        blocks_via_b = block_manager.get_blocks(
-            user=target_user, any_scopes=[scope], auto_create_from_default=False
-        )
+        blocks_via_b = block_manager.get_blocks(user=target_user, any_scopes=[scope], auto_create_from_default=False)
         assert {b.id for b in blocks_via_a} == {b.id for b in blocks_via_b}
 
     def test_reader_client_sees_multiple_scopes(
@@ -805,9 +972,7 @@ class TestBlockScopeIsolation:
         assert "test-scope-1" in scopes_found
         assert "test-scope-2" in scopes_found
 
-    def test_reader_client_cannot_see_ungranted_scope(
-        self, block_manager, client_scope1, client_scope2, test_org
-    ):
+    def test_reader_client_cannot_see_ungranted_scope(self, block_manager, client_scope1, client_scope2, test_org):
         """Reader with read_scopes=["test-scope-1"] cannot see test-scope-2 blocks."""
         restricted_reader = ClientManager().create_client(
             PydanticClient(

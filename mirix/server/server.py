@@ -606,6 +606,7 @@ class SyncServer(Server):
         actor: Client,
         interface: Union[AgentInterface, None] = None,
         filter_tags: Optional[dict] = None,
+        block_filter_tags: Optional[dict] = None,
         use_cache: bool = True,
         user: Optional[User] = None,
     ) -> Agent:
@@ -621,6 +622,7 @@ class SyncServer(Server):
                     interface=interface,
                     actor=actor,
                     filter_tags=filter_tags,
+                    block_filter_tags=block_filter_tags,
                     use_cache=use_cache,
                     user=user,
                 )
@@ -630,6 +632,7 @@ class SyncServer(Server):
                     interface=interface,
                     actor=actor,
                     filter_tags=filter_tags,
+                    block_filter_tags=block_filter_tags,
                     use_cache=use_cache,
                     user=user,
                 )
@@ -639,6 +642,7 @@ class SyncServer(Server):
                     interface=interface,
                     actor=actor,
                     filter_tags=filter_tags,
+                    block_filter_tags=block_filter_tags,
                     use_cache=use_cache,
                     user=user,
                 )
@@ -648,6 +652,7 @@ class SyncServer(Server):
                     interface=interface,
                     actor=actor,
                     filter_tags=filter_tags,
+                    block_filter_tags=block_filter_tags,
                     use_cache=use_cache,
                     user=user,
                 )
@@ -657,6 +662,7 @@ class SyncServer(Server):
                     interface=interface,
                     actor=actor,
                     filter_tags=filter_tags,
+                    block_filter_tags=block_filter_tags,
                     use_cache=use_cache,
                     user=user,
                 )
@@ -672,6 +678,7 @@ class SyncServer(Server):
                     interface=interface,
                     actor=actor,
                     filter_tags=filter_tags,
+                    block_filter_tags=block_filter_tags,
                     use_cache=use_cache,
                     user=user,
                 )
@@ -681,6 +688,7 @@ class SyncServer(Server):
                     interface=interface,
                     actor=actor,
                     filter_tags=filter_tags,
+                    block_filter_tags=block_filter_tags,
                     use_cache=use_cache,
                     user=user,
                 )
@@ -690,6 +698,7 @@ class SyncServer(Server):
                     interface=interface,
                     actor=actor,
                     filter_tags=filter_tags,
+                    block_filter_tags=block_filter_tags,
                     use_cache=use_cache,
                     user=user,
                 )
@@ -699,6 +708,7 @@ class SyncServer(Server):
                     interface=interface,
                     actor=actor,
                     filter_tags=filter_tags,
+                    block_filter_tags=block_filter_tags,
                     use_cache=use_cache,
                     user=user,
                 )
@@ -708,6 +718,7 @@ class SyncServer(Server):
                     interface=interface,
                     actor=actor,
                     filter_tags=filter_tags,
+                    block_filter_tags=block_filter_tags,
                     use_cache=use_cache,
                     user=user,
                 )
@@ -724,6 +735,7 @@ class SyncServer(Server):
         chaining: Optional[bool] = None,
         user: Optional[User] = None,
         filter_tags: Optional[dict] = None,
+        block_filter_tags: Optional[dict] = None,
         use_cache: bool = True,
         occurred_at: Optional[str] = None,
     ) -> MirixUsageStatistics:
@@ -736,6 +748,7 @@ class SyncServer(Server):
                 interface=None,
                 actor=actor,
                 filter_tags=filter_tags,
+                block_filter_tags=block_filter_tags,
                 use_cache=use_cache,
                 user=user,
             )
@@ -1047,6 +1060,7 @@ class SyncServer(Server):
         user: Optional[User] = None,
         verbose: Optional[bool] = None,
         filter_tags: Optional[dict] = None,
+        block_filter_tags: Optional[dict] = None,
         use_cache: bool = True,
         occurred_at: Optional[str] = None,
     ) -> MirixUsageStatistics:
@@ -1060,6 +1074,7 @@ class SyncServer(Server):
             user: Optional end-user for data scoping (default: None)
             verbose: Enable verbose logging
             filter_tags: Optional filter tags for memory operations
+            block_filter_tags: Optional dict; applied only when blocks are created (e.g. from default template)
             use_cache: Control Redis cache behavior (default: True)
             occurred_at: Optional ISO 8601 timestamp for episodic memory (default: None)
 
@@ -1082,6 +1097,7 @@ class SyncServer(Server):
                 chaining=chaining,
                 user=user,
                 filter_tags=filter_tags,
+                block_filter_tags=block_filter_tags,
                 use_cache=use_cache,
                 occurred_at=occurred_at,
             )
