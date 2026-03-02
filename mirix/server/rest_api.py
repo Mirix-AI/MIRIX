@@ -3219,12 +3219,14 @@ async def search_memory_all_users(
     filter_tags_dict["read_scopes"] = client.read_scopes
 
     logger.info(
-        "Cross-user search: client=%s, org=%s, read_scopes=%s, filter_tags=%s, similarity_threshold=%s",
+        "Cross-user search: client=%s, org=%s, read_scopes=%s, filter_tags=%s, similarity_threshold=%s, include_core_memory=%s, block_filter_tags=%s",
         effective_client_id,
         effective_org_id,
         client.read_scopes,
         filter_tags_dict,
         similarity_threshold,
+        include_core_memory,
+        block_filter_tags,
     )
 
     # Parse temporal filtering parameters
