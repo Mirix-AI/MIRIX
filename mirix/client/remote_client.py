@@ -692,11 +692,15 @@ class MirixClient(AbstractClient):
         message: str,
         role: str,
         agent_id: Optional[str] = None,
+        agent_name: Optional[str] = None,
         user_id: Optional[str] = None,  # End-user ID for message attribution
         name: Optional[str] = None,
         stream: Optional[bool] = False,
         stream_steps: bool = False,
         stream_tokens: bool = False,
+        chaining: Optional[bool] = None,
+        verbose: Optional[bool] = None,
+        block_filter_tags: Optional[Dict[str, Any]] = None,
         filter_tags: Optional[Dict[str, Any]] = None,
         use_cache: bool = True,
         headers: Optional[Dict[str, str]] = None,
@@ -716,6 +720,7 @@ class MirixClient(AbstractClient):
             stream_tokens: Stream tokens as they are generated
             filter_tags: Optional filter tags for categorization and filtering.
                 Example: {"project_id": "proj-alpha", "session_id": "sess-123"}
+            block_filter_tags: Optional dict; applied only when blocks are created from default template.
             use_cache: Control Redis cache behavior (default: True)
             headers: Optional headers to include in the request
 
@@ -750,6 +755,10 @@ class MirixClient(AbstractClient):
         if filter_tags is not None:
             request_data["filter_tags"] = filter_tags
 
+        # Include block_filter_tags if provided
+        if block_filter_tags is not None:
+            request_data["block_filter_tags"] = block_filter_tags
+
         # Include use_cache if not default
         if not use_cache:
             request_data["use_cache"] = use_cache
@@ -762,6 +771,7 @@ class MirixClient(AbstractClient):
         agent_id: str,
         message: str,
         user_id: Optional[str] = None,  # End-user ID
+        block_filter_tags: Optional[Dict[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
     ) -> MirixResponse:
         """Send a user message to an agent.
@@ -770,13 +780,19 @@ class MirixClient(AbstractClient):
             agent_id: The ID of the agent to send the message to
             message: The message text to send
             user_id: Optional end-user ID for message attribution
+            block_filter_tags: Optional dict; applied only when blocks are created from default template.
             headers: Optional headers to include in the request
 
         Returns:
             MirixResponse: The response from the agent
         """
         return self.send_message(
-            message=message, role="user", agent_id=agent_id, user_id=user_id, headers=headers  # Pass user_id
+            message=message,
+            role="user",
+            agent_id=agent_id,
+            user_id=user_id,
+            block_filter_tags=block_filter_tags,
+            headers=headers,
         )
 
     def get_messages(
@@ -1210,6 +1226,7 @@ class MirixClient(AbstractClient):
         chaining: bool = True,
         verbose: bool = False,
         filter_tags: Optional[Dict[str, Any]] = None,
+        block_filter_tags: Optional[Dict[str, Any]] = None,
         use_cache: bool = True,
         occurred_at: Optional[str] = None,
         headers: Optional[Dict[str, str]] = None,
@@ -1232,6 +1249,8 @@ class MirixClient(AbstractClient):
             verbose: If True, enable verbose output during memory processing
             filter_tags: Optional dict of tags for filtering and categorization.
                         Example: {"project_id": "proj-123", "session_id": "sess-456"}
+            block_filter_tags: Optional dict applied when creating new core (block) memory for this user.
+                              Only used at block creation time; e.g. {"env": "staging", "team": "platform"}.
             use_cache: Control Redis cache behavior (default: True)
             occurred_at: Optional ISO 8601 timestamp string for episodic memory.
                         If provided, episodic memories will use this timestamp instead of current time.
@@ -1298,6 +1317,9 @@ class MirixClient(AbstractClient):
 
         if filter_tags is not None:
             request_data["filter_tags"] = filter_tags
+
+        if block_filter_tags is not None:
+            request_data["block_filter_tags"] = block_filter_tags
 
         if not use_cache:
             request_data["use_cache"] = use_cache
@@ -1621,6 +1643,8 @@ class MirixClient(AbstractClient):
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
         org_id: Optional[str] = None,
+        include_core_memory: bool = False,
+        block_filter_tags: Optional[Dict[str, Any]] = None,
         headers: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         """
@@ -1655,6 +1679,9 @@ class MirixClient(AbstractClient):
                      Only episodic memories with occurred_at <= end_date will be returned.
                      Examples: "2025-12-05T23:59:59" or "2025-12-05T23:59:59Z"
             org_id: Optional organization scope (overridden by client's org if client_id provided)
+            include_core_memory: When True, include a "core" section with block memory (scoped by client).
+            block_filter_tags: When include_core_memory is True, only blocks whose filter_tags contain
+                              these keys/values are returned. Scope is auto-injected from client.
 
         Returns:
             Dict containing:
@@ -1745,6 +1772,13 @@ class MirixClient(AbstractClient):
             params["start_date"] = start_date
         if end_date is not None:
             params["end_date"] = end_date
+
+        if include_core_memory:
+            params["include_core_memory"] = "true"
+        if block_filter_tags is not None:
+            import json as _json
+
+            params["block_filter_tags"] = _json.dumps(block_filter_tags)
 
         return self._request("GET", "/memory/search_all_users", params=params, headers=headers)
 

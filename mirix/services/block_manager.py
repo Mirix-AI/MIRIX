@@ -41,8 +41,8 @@ class BlockManager:
             block: Block data to create
             actor: Client for audit trail and scope resolution
             user: Optional user for data scoping
-            filter_tags: Optional extra filter tags. Scope is auto-injected from
-                         actor.write_scope if not already present.
+            filter_tags: Optional extra filter tags (e.g. scope, env). Scope is auto-injected from
+                         actor.write_scope if not already present. Only used when creating a new block.
 
         Returns:
             PydanticBlock: The created or updated block
@@ -209,19 +209,22 @@ class BlockManager:
     @enforce_types
     def get_blocks(
         self,
-        user: PydanticUser,
+        user: Optional[PydanticUser] = None,
         any_scopes: Optional[List[str]] = None,
         label: Optional[str] = None,
         id: Optional[str] = None,
         cursor: Optional[str] = None,
         limit: Optional[int] = 50,
         auto_create_from_default: bool = True,
+        organization_id: Optional[str] = None,
+        filter_tags: Optional[Dict[str, Any]] = None,
+        filter_tags_set_on_create: Optional[Dict[str, Any]] = None,
     ) -> List[PydanticBlock]:
         """
         Retrieve blocks based on various optional filters.
 
         Args:
-            user: User to get blocks for
+            user: User to get blocks for. If None, org-wide query (requires organization_id and any_scopes).
             any_scopes: If provided, only return blocks whose scope matches any value
                         in this list. Pass a single-element list for exact scope match
                         (e.g. [client.write_scope]) or a multi-element list for read
@@ -232,9 +235,33 @@ class BlockManager:
             cursor: Pagination cursor
             limit: Max results
             auto_create_from_default: If True and any_scopes has exactly one scope,
-                                      copy default user's template blocks when none exist
+                                      copy default user's template blocks when none exist.
+                                      Ignored when user is None (org-wide).
+            organization_id: Required when user is None (org-wide query). Ignored when user is set.
+            filter_tags: Optional dict; when provided, only blocks whose filter_tags contain
+                         these keys/values are returned (passed to list_by_scopes).
+            filter_tags_set_on_create: Optional dict; applied only when new blocks are created (e.g. from
+                              default user template). Existing blocks are never updated.
         """
         with self.session_maker() as session:
+            # Org-wide path: user is None — require organization_id and any_scopes
+            if user is None:
+                if organization_id is None or any_scopes is None or not any_scopes:
+                    return []
+                blocks = BlockModel.list_by_scopes(
+                    db_session=session,
+                    user_id=None,
+                    organization_id=organization_id,
+                    scopes=any_scopes,
+                    label=label,
+                    id=id,
+                    limit=limit or 50,
+                    filter_tags=filter_tags,
+                )
+                return [block.to_pydantic() for block in blocks]
+
+            # Single-user path
+            org_id = user.organization_id
             if any_scopes is not None:
                 if not any_scopes:
                     return []
@@ -242,16 +269,17 @@ class BlockManager:
                 blocks = BlockModel.list_by_scopes(
                     db_session=session,
                     user_id=user.id,
-                    organization_id=user.organization_id,
+                    organization_id=org_id,
                     scopes=any_scopes,
                     label=label,
                     id=id,
                     limit=limit or 50,
+                    filter_tags=filter_tags,
                 )
             else:
                 # Unscoped query — returns all blocks for this user
                 filters = {
-                    "organization_id": user.organization_id,
+                    "organization_id": org_id,
                     "user_id": user.id,
                 }
                 if label:
@@ -264,7 +292,7 @@ class BlockManager:
             # Only auto-create when filtering by exactly one scope (write path).
             if not blocks and auto_create_from_default and any_scopes and len(any_scopes) == 1:
                 scope = any_scopes[0]
-                assert user.organization_id is not None
+                assert org_id is not None
                 logger.debug(
                     "No blocks found for user %s, scope %s. Creating from default user template.",
                     user.id,
@@ -274,13 +302,19 @@ class BlockManager:
                     session=session,
                     target_user=user,
                     scope=scope,
-                    organization_id=user.organization_id,
+                    organization_id=org_id,
+                    block_filter_tags=filter_tags_set_on_create,
                 )
 
             return [block.to_pydantic() for block in blocks]
 
     def _copy_blocks_from_default_user(
-        self, session, target_user: PydanticUser, scope: str, organization_id: str
+        self,
+        session,
+        target_user: PydanticUser,
+        scope: str,
+        organization_id: str,
+        block_filter_tags: Optional[Dict[str, Any]] = None,
     ) -> List[BlockModel]:
         """
         Copy template blocks from the default user to the target user for a given scope.
@@ -352,6 +386,7 @@ class BlockManager:
 
                 new_block_id = PydanticBlock._generate_id()
 
+                merged_tags = {"scope": scope, **(block_filter_tags or {})}
                 new_block = BlockModel(
                     id=new_block_id,
                     label=template_block.label,
@@ -359,7 +394,7 @@ class BlockManager:
                     limit=template_block.limit,
                     user_id=target_user.id,
                     organization_id=organization_id,
-                    filter_tags={"scope": scope},
+                    filter_tags=merged_tags,
                     created_by_id=target_user.id,
                     last_updated_by_id=target_user.id,
                 )

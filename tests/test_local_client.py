@@ -25,6 +25,7 @@ import time
 import uuid
 from pathlib import Path
 from typing import List
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -37,9 +38,12 @@ from mirix.local_client.local_client import LocalClient
 from mirix.orm.errors import NoResultFound
 from mirix.schemas.agent import AgentState, AgentType
 from mirix.schemas.block import Block, Human, Persona
+from mirix.schemas.enums import MessageRole
 from mirix.schemas.llm_config import LLMConfig
 from mirix.schemas.memory import Memory
+from mirix.schemas.message import MessageCreate
 from mirix.schemas.tool import Tool
+from mirix.schemas.usage import MirixUsageStatistics
 
 # Test configuration
 TEST_RUN_ID = uuid.uuid4().hex[:8]
@@ -691,6 +695,44 @@ class TestOrganizationManagement:
         orgs = default_client.list_orgs(limit=10)
         assert isinstance(orgs, list)
         assert len(orgs) >= 1
+
+
+# ============================================================================
+# TEST: MESSAGE OPERATIONS (block_filter_tags)
+# ============================================================================
+
+
+class TestSendMessagesBlockFilterTags:
+    """Test that send_messages passes block_filter_tags to server.send_messages."""
+
+    def test_send_messages_passes_block_filter_tags_to_server(self, client_a):
+        """LocalClient.send_messages(block_filter_tags=...) forwards to server.send_messages."""
+        block_filter_tags = {"env": "staging", "team": "platform"}
+        mock_send = Mock(return_value=MirixUsageStatistics())
+        # Patch MirixResponse so return path doesn't validate messages (MessageCreate != MirixMessageUnion)
+        with patch.object(client_a.server, "send_messages", mock_send), patch(
+            "mirix.local_client.local_client.MirixResponse", Mock
+        ):
+            messages = [MessageCreate(role=MessageRole.user, content="Hello")]
+            client_a.send_messages(
+                agent_id="test-agent-id",
+                messages=messages,
+                block_filter_tags=block_filter_tags,
+            )
+        mock_send.assert_called_once()
+        assert mock_send.call_args.kwargs.get("block_filter_tags") == block_filter_tags
+
+    def test_send_messages_passes_none_block_filter_tags(self, client_a):
+        """LocalClient.send_messages() without block_filter_tags passes None (or omits)."""
+        mock_send = Mock(return_value=MirixUsageStatistics())
+        with patch.object(client_a.server, "send_messages", mock_send), patch(
+            "mirix.local_client.local_client.MirixResponse", Mock
+        ):
+            messages = [MessageCreate(role=MessageRole.user, content="Hi")]
+            client_a.send_messages(agent_id="test-agent-id", messages=messages)
+        mock_send.assert_called_once()
+        # None is passed explicitly by our implementation
+        assert mock_send.call_args.kwargs.get("block_filter_tags") is None
 
 
 # ============================================================================

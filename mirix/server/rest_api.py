@@ -10,7 +10,7 @@ import json
 import traceback
 from contextlib import asynccontextmanager
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Literal, Optional, Union
 
 import requests
 from fastapi import APIRouter, Body, FastAPI, Header, HTTPException, Query, Request
@@ -974,6 +974,9 @@ class SendMessageRequest(BaseModel):
     stream_steps: bool = False
     stream_tokens: bool = False
     filter_tags: Optional[Dict[str, Any]] = None  # Filter tags support
+    block_filter_tags: Optional[Dict[str, Any]] = (
+        None  # Applied only when blocks are created (e.g. from default template)
+    )
     use_cache: bool = True  # Control Redis cache behavior
 
 
@@ -1006,6 +1009,9 @@ async def send_message_to_agent(
     client_id, org_id = get_client_and_org(x_client_id, x_org_id)
     client = server.client_manager.get_client_by_id(client_id)
 
+    if request.block_filter_tags is not None and not isinstance(request.block_filter_tags, dict):
+        raise HTTPException(status_code=400, detail="block_filter_tags must be a dict when provided")
+
     try:
         # Prepare the message
         message_create = MessageCreate(
@@ -1022,6 +1028,7 @@ async def send_message_to_agent(
             chaining=True,
             user_id=request.user_id,  # Pass user_id to queue
             filter_tags=request.filter_tags,  # Pass filter_tags to queue
+            block_filter_tags=request.block_filter_tags,
             use_cache=request.use_cache,  # Pass use_cache to queue
         )
 
@@ -1916,6 +1923,9 @@ class AddMemoryRequest(BaseModel):
     chaining: bool = True
     verbose: bool = False
     filter_tags: Optional[Dict[str, Any]] = None
+    block_filter_tags: Optional[Dict[str, Any]] = (
+        None  # Applied only when blocks are created (e.g. from default template)
+    )
     use_cache: bool = True  # Control Redis cache behavior
     occurred_at: Optional[str] = None  # Optional ISO 8601 timestamp string for episodic memory
 
@@ -2002,6 +2012,9 @@ async def add_memory(
         # Create new filter_tags if not provided
         filter_tags = {}
 
+    if request.block_filter_tags is not None and not isinstance(request.block_filter_tags, dict):
+        raise HTTPException(status_code=400, detail="block_filter_tags must be a dict when provided")
+
     # Add or update the "scope" key with the client's write_scope for memory creation
     # Memories are written with the client's write_scope
     if client.write_scope is None:
@@ -2019,6 +2032,7 @@ async def add_memory(
         user_id=user_id,  # End-user for data filtering (or admin user)
         verbose=request.verbose,
         filter_tags=filter_tags,
+        block_filter_tags=request.block_filter_tags,
         use_cache=request.use_cache,
         occurred_at=request.occurred_at,  # Optional timestamp for episodic memory
     )
@@ -3126,6 +3140,13 @@ async def search_memory_all_users(
     client_id: Optional[str] = Query(None),
     org_id: Optional[str] = Query(None),
     filter_tags: Optional[str] = Query(None),
+    include_core_memory: bool = Query(
+        False, description="When True, include a 'core' section with block memory in the response."
+    ),
+    block_filter_tags: Optional[str] = Query(
+        None,
+        description="Optional JSON string of filter tags applied when including core memory; only blocks whose filter_tags contain these are returned. Scope is auto-injected.",
+    ),
     similarity_threshold: Optional[float] = Query(None),
     start_date: Optional[str] = Query(None),
     end_date: Optional[str] = Query(None),
@@ -3150,6 +3171,9 @@ async def search_memory_all_users(
         client_id: Optional client ID (uses its org_id and scope)
         org_id: Optional organization ID (used if client_id not provided)
         filter_tags: Optional JSON string of additional filter tags
+        include_core_memory: When True, include core (block) memory in the response.
+        block_filter_tags: Optional JSON string; when including core memory, only blocks
+                          whose filter_tags contain these keys/values. Scope is auto-injected.
         similarity_threshold: Optional similarity threshold for embedding search (0.0-2.0)
         start_date: Optional start date/time for episodic memory filtering (ISO 8601 format)
         end_date: Optional end date/time for episodic memory filtering (ISO 8601 format)
@@ -3195,12 +3219,14 @@ async def search_memory_all_users(
     filter_tags_dict["read_scopes"] = client.read_scopes
 
     logger.info(
-        "Cross-user search: client=%s, org=%s, read_scopes=%s, filter_tags=%s, similarity_threshold=%s",
+        "Cross-user search: client=%s, org=%s, read_scopes=%s, filter_tags=%s, similarity_threshold=%s, include_core_memory=%s, block_filter_tags=%s",
         effective_client_id,
         effective_org_id,
         client.read_scopes,
         filter_tags_dict,
         similarity_threshold,
+        include_core_memory,
+        block_filter_tags,
     )
 
     # Parse temporal filtering parameters
@@ -3610,6 +3636,46 @@ async def search_memory_all_users(
             )
         except Exception as e:
             logger.error("Error searching semantic memories across organization: %s", e)
+
+    # Optionally include core memory (blocks) in the results array
+    if include_core_memory:
+        try:
+            block_filter_tags_parsed: Optional[Dict[str, Any]] = None
+            if block_filter_tags:
+                try:
+                    block_filter_tags_parsed = json.loads(block_filter_tags)
+                except json.JSONDecodeError:
+                    raise HTTPException(status_code=400, detail="Invalid block_filter_tags JSON format")
+            blocks = server.block_manager.get_blocks(
+                user=None,
+                organization_id=effective_org_id,
+                any_scopes=client.read_scopes,
+                filter_tags=block_filter_tags_parsed,
+                auto_create_from_default=False,
+                limit=limit or 50,
+            )
+            logger.info(
+                "Cross-user search core memory: found %d blocks for org=%s, scopes=%s, block_filter_tags=%s",
+                len(blocks),
+                effective_org_id,
+                client.read_scopes,
+                block_filter_tags_parsed,
+            )
+            for block in blocks:
+                all_results.append(
+                    {
+                        "memory_type": "core",
+                        "id": block.id,
+                        "user_id": block.user_id,
+                        "label": block.label,
+                        "value": block.value,
+                        "scope": (block.filter_tags or {}).get("scope", "default"),
+                    }
+                )
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error("Error retrieving core memory blocks for cross-user search: %s", e, exc_info=True)
 
     return {
         "success": True,

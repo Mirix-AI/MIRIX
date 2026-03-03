@@ -17,6 +17,7 @@ import logging
 import os
 import time
 from pathlib import Path
+from typing import Optional
 
 import pytest
 
@@ -38,7 +39,13 @@ BASE_URL = os.environ.get("MIRIX_API_URL", "http://localhost:8000")
 CONFIG_PATH = Path(__file__).parent.parent / "mirix" / "configs" / "examples" / "mirix_gemini.yaml"
 
 
-def add_all_memories(client: MirixClient, user_id: str, filter_tags: dict, prefix: str = ""):
+def add_all_memories(
+    client: MirixClient,
+    user_id: str,
+    filter_tags: dict,
+    prefix: str = "",
+    block_filter_tags: Optional[dict] = None,
+):
     """
     Add all types of memories for a user with given filter_tags.
 
@@ -47,8 +54,12 @@ def add_all_memories(client: MirixClient, user_id: str, filter_tags: dict, prefi
         user_id: User ID
         filter_tags: Filter tags including scope
         prefix: Prefix for memory content to distinguish users
+        block_filter_tags: Optional dict applied when creating new core (block) memory for this user
     """
     logger.info(f"Adding all memories for user {user_id} with filter_tags={filter_tags}")
+    add_kwargs = {"chaining": True, "filter_tags": filter_tags}
+    if block_filter_tags is not None:
+        add_kwargs["block_filter_tags"] = block_filter_tags
 
     # Add episodic memory
     result = client.add(
@@ -62,9 +73,8 @@ def add_all_memories(client: MirixClient, user_id: str, filter_tags: dict, prefi
             },
             {"role": "assistant", "content": [{"type": "text", "text": "Recorded team meeting event"}]},
         ],
-        chaining=True,
-        filter_tags=filter_tags,
         occurred_at="2025-11-20T14:00:00",
+        **add_kwargs,
     )
     logger.info(f"  ✓ Added episodic memory - Result: {result}")
 
@@ -83,9 +93,8 @@ def add_all_memories(client: MirixClient, user_id: str, filter_tags: dict, prefi
             },
             {"role": "assistant", "content": [{"type": "text", "text": "Saved code review procedure"}]},
         ],
-        chaining=True,
-        filter_tags=filter_tags,
         occurred_at="2025-11-20T14:05:00",
+        **add_kwargs,
     )
     logger.info(f"  ✓ Added procedural memory - Result: {result}")
 
@@ -104,9 +113,8 @@ def add_all_memories(client: MirixClient, user_id: str, filter_tags: dict, prefi
             },
             {"role": "assistant", "content": [{"type": "text", "text": "Saved semantic knowledge about Python"}]},
         ],
-        chaining=True,
-        filter_tags=filter_tags,
         occurred_at="2025-11-20T14:10:00",
+        **add_kwargs,
     )
     logger.info(f"  ✓ Added semantic memory - Result: {result}")
 
@@ -125,9 +133,8 @@ def add_all_memories(client: MirixClient, user_id: str, filter_tags: dict, prefi
             },
             {"role": "assistant", "content": [{"type": "text", "text": "Saved project documentation"}]},
         ],
-        chaining=True,
-        filter_tags=filter_tags,
         occurred_at="2025-11-20T14:15:00",
+        **add_kwargs,
     )
     logger.info(f"  ✓ Added resource memory - Result: {result}")
 
@@ -146,11 +153,39 @@ def add_all_memories(client: MirixClient, user_id: str, filter_tags: dict, prefi
                 "content": [{"type": "text", "text": "Saved database credentials to knowledge vault"}],
             },
         ],
-        chaining=True,
-        filter_tags=filter_tags,
         occurred_at="2025-11-20T14:20:00",
+        **add_kwargs,
     )
     logger.info(f"  ✓ Added knowledge vault memory - Result: {result}")
+
+    # Add core memory - personal user profile information that triggers the core_memory_agent.
+    # The meta_memory_agent LLM needs to see personal facts / preferences to include "core"
+    # in its trigger_memory_update call.
+    result = client.add(
+        user_id=user_id,
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": (
+                            f"{prefix}My name is Alex and I'm a senior software engineer. "
+                            "I prefer direct, concise communication and like technical details. "
+                            "I work remotely from Portland and enjoy hiking on weekends."
+                        ),
+                    }
+                ],
+            },
+            {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "Nice to meet you, Alex! I've noted your preferences."}],
+            },
+        ],
+        occurred_at="2025-11-20T14:25:00",
+        **add_kwargs,
+    )
+    logger.info(f"  ✓ Added core memory (personal profile) - Result: {result}")
 
     logger.info(f"✅ All memories added for user {user_id}")
 
@@ -759,6 +794,130 @@ class TestSearchAllUsers:
             assert result["user_id"] is not None, "user_id must not be None"
 
         logger.info("✅ Test passed: All results include user_id")
+
+    def test_search_all_users_include_core_memory_returns_core_section(self, client1):
+        """Cross-user search with include_core_memory=True returns core blocks in the results array."""
+        logger.info("\n" + "=" * 80)
+        logger.info("TEST: include_core_memory returns core blocks in results")
+        logger.info("=" * 80)
+
+        results = client1.search_all_users(
+            query="",
+            memory_type="all",
+            client_id=client1.client_id,
+            limit=10,
+            include_core_memory=True,
+        )
+
+        assert results["success"] is True
+        core_results = [r for r in results["results"] if r.get("memory_type") == "core"]
+        assert len(core_results) > 0, "Results should include items with memory_type='core' when include_core_memory=True"
+        for item in core_results:
+            assert "id" in item
+            assert "label" in item
+            assert "value" in item
+            assert "user_id" in item
+            assert "scope" in item
+        scopes = set(item["scope"] for item in core_results)
+        logger.info("Core blocks in results: count=%s, scopes=%s", len(core_results), scopes)
+        logger.info("✅ Test passed: Core blocks present in results array")
+
+    def test_search_all_users_include_core_memory_scope_isolation(self, client1, client3):
+        """Cross-user search with include_core_memory returns only blocks within the client's scope (no cross-scope leakage)."""
+        logger.info("\n" + "=" * 80)
+        logger.info("TEST: include_core_memory respects scope - expected blocks returned, others excluded")
+        logger.info("=" * 80)
+
+        # client1 has write_scope/read_scopes = "read_write". User1/User2 blocks are in "read_write"; User3's are "read_only".
+        # Searching with client1 must return blocks from "read_write" and must NOT return blocks from "read_only".
+        results = client1.search_all_users(
+            query="",
+            memory_type="all",
+            client_id=client1.client_id,
+            limit=100,
+            include_core_memory=True,
+        )
+
+        assert results["success"] is True
+        core_results = [r for r in results["results"] if r.get("memory_type") == "core"]
+        scopes_returned = set(r["scope"] for r in core_results)
+
+        assert "read_only" not in scopes_returned, (
+            "Blocks from scope 'read_only' must not be returned when searching with client1 (read_write). "
+            "Scope isolation violated. Scopes returned: %s" % scopes_returned
+        )
+
+        assert "read_write" in scopes_returned, (
+            "Blocks from scope 'read_write' (client1's scope) must be returned. Scopes returned: %s" % scopes_returned
+        )
+        read_write_items = [r for r in core_results if r["scope"] == "read_write"]
+        assert len(read_write_items) > 0, (
+            "At least one block from scope 'read_write' must be returned. core count=%s" % len(core_results)
+        )
+
+        logger.info(
+            "Scopes in core results: %s; read_write blocks: %s (read_only correctly excluded)",
+            scopes_returned,
+            len(read_write_items),
+        )
+        logger.info("✅ Test passed: Scope isolation - expected blocks returned, no blocks outside client scope")
+
+    def test_search_all_users_include_core_memory_block_filter_tags_returns_only_matching_blocks(
+        self, client1, org1_id
+    ):
+        """Cross-user search with block_filter_tags (non-scope tag) returns only blocks that have that tag."""
+        logger.info("\n" + "=" * 80)
+        logger.info("TEST: block_filter_tags filters blocks by tag (e.g. env); only matching blocks returned")
+        logger.info("=" * 80)
+
+        # Use dedicated users so their blocks are created FOR THE FIRST TIME with block_filter_tags.
+        # (user1/user2 already have blocks from class setup without env tag, so they never get env=staging.)
+        user_staging_id = f"test-user-staging-{int(time.time())}"
+        user_prod_id = f"test-user-prod-{int(time.time())}"
+        client1.create_or_get_user(user_id=user_staging_id, user_name="Staging User", org_id=org1_id)
+        client1.create_or_get_user(user_id=user_prod_id, user_name="Prod User", org_id=org1_id)
+
+        filter_tags = {"scope": "read_write", "test": "block_filter_tag_test"}
+        add_all_memories(
+            client1, user_staging_id, filter_tags, prefix="[Staging] ", block_filter_tags={"env": "staging"}
+        )
+        add_all_memories(client1, user_prod_id, filter_tags, prefix="[Prod] ", block_filter_tags={"env": "prod"})
+
+        logger.info("⏱️  Waiting 50 seconds for async memory processing (staging + prod users)...")
+        time.sleep(50)
+
+        results = client1.search_all_users(
+            query="",
+            memory_type="all",
+            client_id=client1.client_id,
+            limit=100,
+            include_core_memory=True,
+            block_filter_tags={"env": "staging"},
+        )
+
+        assert results is not None and results["success"] is True
+        core_results = [r for r in results["results"] if r.get("memory_type") == "core"]
+        assert len(core_results) > 0, (
+            "With block_filter_tags={'env': 'staging'}, at least one core block (staging user's) must be returned. "
+            "Got 0 core results after waiting 50s - processing may not have completed or blocks not created with env=staging."
+        )
+        for item in core_results:
+            logger.info(
+                "  Block: user_id=%s, label=%s, scope=%s",
+                item.get("user_id"),
+                item.get("label"),
+                item.get("scope"),
+            )
+            assert item["user_id"] == user_staging_id, (
+                "With block_filter_tags={'env': 'staging'}, only blocks from staging user should be returned. "
+                "Got user_id=%s" % item["user_id"]
+            )
+        logger.info(
+            "All %s core block(s) have user_id=%s (env=staging). No prod blocks returned.",
+            len(core_results),
+            user_staging_id,
+        )
+        logger.info("✅ Test passed: block_filter_tags filters by tag and returns only relevant blocks")
 
 
 if __name__ == "__main__":

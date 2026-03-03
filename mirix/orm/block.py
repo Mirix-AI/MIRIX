@@ -1,6 +1,7 @@
 from typing import TYPE_CHECKING, List, Optional, Type
 
-from sqlalchemy import JSON, BigInteger, Index, Integer, String, UniqueConstraint, event, or_, select, text
+from sqlalchemy import JSON, BigInteger, Index, Integer, String, UniqueConstraint, cast, event, or_, select, text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import (
     Mapped,
     Session,
@@ -84,12 +85,13 @@ class Block(OrganizationMixin, UserMixin, SqlalchemyBase):
     def list_by_scopes(
         cls,
         db_session: Session,
-        user_id: str,
+        user_id: Optional[str],
         organization_id: str,
         scopes: List[str],
         label: Optional[str] = None,
         id: Optional[str] = None,
         limit: int = 50,
+        filter_tags: Optional[dict] = None,
     ) -> List["Block"]:
         """
         Query blocks filtered by scope at the SQL level.
@@ -99,28 +101,33 @@ class Block(OrganizationMixin, UserMixin, SqlalchemyBase):
 
         Args:
             db_session: SQLAlchemy session
-            user_id: Owner user ID
+            user_id: Owner user ID, or None for org-wide (all users in organization).
             organization_id: Organization ID
             scopes: List of scope values to match (block.filter_tags.scope IN scopes)
             label: Optional label filter
             id: Optional block ID filter
             limit: Max results
+            filter_tags: Optional dict; when provided, only blocks whose filter_tags
+                         contain these keys/values are returned (JSONB containment).
         """
         with db_session as session:
             scope_conditions = [cls.filter_tags["scope"].as_string() == s for s in scopes]
-            query = (
-                select(cls)
-                .where(
-                    cls.organization_id == organization_id,
-                    cls.user_id == user_id,
-                    or_(*scope_conditions),
-                )
-                .limit(limit)
-            )
+            conditions = [
+                cls.organization_id == organization_id,
+                or_(*scope_conditions),
+            ]
+            if user_id is not None:
+                conditions.append(cls.user_id == user_id)
+            if hasattr(cls, "is_deleted"):
+                conditions.append(~cls.is_deleted)
+            query = select(cls).where(*conditions).limit(limit)
             if label:
                 query = query.where(cls.label == label)
             if id:
                 query = query.where(cls.id == id)
+            if filter_tags:
+                # JSON column: cast to JSONB so containment (@>) works (json ~~ text does not exist)
+                query = query.where(cast(cls.filter_tags, JSONB).contains(filter_tags))
             return list(session.execute(query).scalars())
 
     def to_pydantic(self) -> Type:

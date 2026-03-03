@@ -863,6 +863,27 @@ class TestQueueUtil:
         # Cleanup
         manager.cleanup()
 
+    def test_put_messages_with_block_filter_tags(self, clean_manager, sample_client, sample_messages):
+        """Test put_messages with block_filter_tags; enqueued message must carry them for block creation."""
+        manager = clean_manager
+        manager.initialize()
+
+        block_filter_tags = {"env": "staging", "team": "platform"}
+        put_messages(
+            actor=sample_client,
+            agent_id="agent-789",
+            input_messages=sample_messages,
+            block_filter_tags=block_filter_tags,
+        )
+
+        msg = manager._queue.get(timeout=1.0)
+        assert msg.agent_id == "agent-789"
+        assert hasattr(msg, "block_filter_tags") and msg.block_filter_tags
+        assert dict(msg.block_filter_tags) == block_filter_tags
+
+        # Cleanup
+        manager.cleanup()
+
     def test_put_messages_role_mapping(self, clean_manager, sample_client):
         """Test that message roles are correctly mapped"""
         manager = clean_manager
@@ -964,6 +985,30 @@ class TestQueueIntegration:
         # Verify call details
         call_args = mock_server.send_messages.call_args
         assert call_args.kwargs["agent_id"] == "agent-integration"
+
+        # Cleanup
+        manager.cleanup()
+
+    def test_block_filter_tags_passed_through_to_send_messages(
+        self, clean_manager, mock_server, sample_client, sample_messages
+    ):
+        """Save-level: put_messages with block_filter_tags results in send_messages called with block_filter_tags."""
+        manager = clean_manager
+        initialize_queue(mock_server)
+
+        block_filter_tags = {"env": "staging", "team": "platform"}
+        put_messages(
+            actor=sample_client,
+            agent_id="agent-block-tags",
+            input_messages=sample_messages,
+            block_filter_tags=block_filter_tags,
+        )
+
+        time.sleep(1.5)
+
+        assert mock_server.send_messages.call_count >= 1
+        call_args = mock_server.send_messages.call_args
+        assert call_args.kwargs.get("block_filter_tags") == block_filter_tags
 
         # Cleanup
         manager.cleanup()

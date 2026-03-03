@@ -170,6 +170,7 @@ class Agent(BaseAgent):
         # extras
         first_message_verify_mono: bool = True,  # TODO move to config?
         filter_tags: Optional[dict] = None,  # Filter tags for memory operations
+        block_filter_tags: Optional[dict] = None,  # Applied only when blocks are created (e.g. from default template)
         use_cache: bool = True,  # Control Redis cache behavior for this request
         user: Optional[User] = None,  # End-user user
     ):
@@ -185,6 +186,7 @@ class Agent(BaseAgent):
 
         # Keep None as None, don't convert to empty dict - they have different meanings
         self.filter_tags = deepcopy(filter_tags) if filter_tags is not None else None
+        self.block_filter_tags = deepcopy(block_filter_tags) if block_filter_tags is not None else None
         self.use_cache = use_cache  # Store use_cache for memory operations
         self.user = user  # Store user for end-user tracking
         self.occurred_at = None  # Optional timestamp for episodic memory, set by server if provided
@@ -1478,7 +1480,12 @@ class Agent(BaseAgent):
             if self.agent_state.is_type(AgentType.core_memory_agent):
                 # Load existing blocks for this user, scoped by the client's write_scope.
                 # auto_create_from_default=True will create blocks from template if they don't exist for this scope.
-                existing_blocks = self.block_manager.get_blocks(user=self.user, any_scopes=self._block_scopes)
+                # filter_tags_set_on_create is applied only when new blocks are created (e.g. from default template).
+                existing_blocks = self.block_manager.get_blocks(
+                    user=self.user,
+                    any_scopes=self._block_scopes,
+                    filter_tags_set_on_create=self.block_filter_tags,
+                )
 
                 # Load blocks into memory for core_memory_agent
                 self.blocks_in_memory = Memory(blocks=existing_blocks)
