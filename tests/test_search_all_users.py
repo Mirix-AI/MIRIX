@@ -796,9 +796,9 @@ class TestSearchAllUsers:
         logger.info("✅ Test passed: All results include user_id")
 
     def test_search_all_users_include_core_memory_returns_core_section(self, client1):
-        """Cross-user search with include_core_memory=True returns a core section with blocks (by scope)."""
+        """Cross-user search with include_core_memory=True returns core blocks in the results array."""
         logger.info("\n" + "=" * 80)
-        logger.info("TEST: include_core_memory returns core section")
+        logger.info("TEST: include_core_memory returns core blocks in results")
         logger.info("=" * 80)
 
         results = client1.search_all_users(
@@ -810,13 +810,17 @@ class TestSearchAllUsers:
         )
 
         assert results["success"] is True
-        assert "core" in results, "Response should include 'core' when include_core_memory=True"
-        core = results["core"]
-        assert "total_count" in core
-        assert "scopes" in core
-        assert isinstance(core["scopes"], dict)
-        logger.info("Core section: total_count=%s, scopes=%s", core["total_count"], list(core["scopes"].keys()))
-        logger.info("✅ Test passed: Core section present with total_count and scopes")
+        core_results = [r for r in results["results"] if r.get("memory_type") == "core"]
+        assert len(core_results) > 0, "Results should include items with memory_type='core' when include_core_memory=True"
+        for item in core_results:
+            assert "id" in item
+            assert "label" in item
+            assert "value" in item
+            assert "user_id" in item
+            assert "scope" in item
+        scopes = set(item["scope"] for item in core_results)
+        logger.info("Core blocks in results: count=%s, scopes=%s", len(core_results), scopes)
+        logger.info("✅ Test passed: Core blocks present in results array")
 
     def test_search_all_users_include_core_memory_scope_isolation(self, client1, client3):
         """Cross-user search with include_core_memory returns only blocks within the client's scope (no cross-scope leakage)."""
@@ -835,9 +839,8 @@ class TestSearchAllUsers:
         )
 
         assert results["success"] is True
-        assert "core" in results
-        core = results["core"]
-        scopes_returned = list(core["scopes"].keys())
+        core_results = [r for r in results["results"] if r.get("memory_type") == "core"]
+        scopes_returned = set(r["scope"] for r in core_results)
 
         assert "read_only" not in scopes_returned, (
             "Blocks from scope 'read_only' must not be returned when searching with client1 (read_write). "
@@ -847,13 +850,13 @@ class TestSearchAllUsers:
         assert "read_write" in scopes_returned, (
             "Blocks from scope 'read_write' (client1's scope) must be returned. Scopes returned: %s" % scopes_returned
         )
-        read_write_items = core["scopes"]["read_write"].get("items", [])
+        read_write_items = [r for r in core_results if r["scope"] == "read_write"]
         assert len(read_write_items) > 0, (
-            "At least one block from scope 'read_write' must be returned. total_count=%s" % core["total_count"]
+            "At least one block from scope 'read_write' must be returned. core count=%s" % len(core_results)
         )
 
         logger.info(
-            "Scopes in core: %s; read_write blocks: %s (read_only correctly excluded)",
+            "Scopes in core results: %s; read_write blocks: %s (read_only correctly excluded)",
             scopes_returned,
             len(read_write_items),
         )
@@ -893,27 +896,25 @@ class TestSearchAllUsers:
         )
 
         assert results is not None and results["success"] is True
-        assert "core" in results
-        core = results["core"]
-        assert core["total_count"] > 0, (
-            "With block_filter_tags={'env': 'staging'}, at least one block (staging user's) must be returned. "
-            "Got total_count=0 after waiting 50s - processing may not have completed or blocks not created with env=staging."
+        core_results = [r for r in results["results"] if r.get("memory_type") == "core"]
+        assert len(core_results) > 0, (
+            "With block_filter_tags={'env': 'staging'}, at least one core block (staging user's) must be returned. "
+            "Got 0 core results after waiting 50s - processing may not have completed or blocks not created with env=staging."
         )
-        for scope_name, scope_data in core["scopes"].items():
-            for item in scope_data.get("items", []):
-                logger.info(
-                    "  Block: user_id=%s, label=%s, filter_tags=%s",
-                    item.get("user_id"),
-                    item.get("label"),
-                    item.get("filter_tags"),
-                )
-                assert item["user_id"] == user_staging_id, (
-                    "With block_filter_tags={'env': 'staging'}, only blocks from staging user should be returned. "
-                    "Got user_id=%s" % item["user_id"]
-                )
+        for item in core_results:
+            logger.info(
+                "  Block: user_id=%s, label=%s, scope=%s",
+                item.get("user_id"),
+                item.get("label"),
+                item.get("scope"),
+            )
+            assert item["user_id"] == user_staging_id, (
+                "With block_filter_tags={'env': 'staging'}, only blocks from staging user should be returned. "
+                "Got user_id=%s" % item["user_id"]
+            )
         logger.info(
-            "All %s block(s) have user_id=%s (env=staging). No prod blocks returned.",
-            core["total_count"],
+            "All %s core block(s) have user_id=%s (env=staging). No prod blocks returned.",
+            len(core_results),
             user_staging_id,
         )
         logger.info("✅ Test passed: block_filter_tags filters by tag and returns only relevant blocks")

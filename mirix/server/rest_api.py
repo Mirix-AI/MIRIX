@@ -3637,8 +3637,7 @@ async def search_memory_all_users(
         except Exception as e:
             logger.error("Error searching semantic memories across organization: %s", e)
 
-    # Optionally include core memory (blocks) across the org
-    core_section: Optional[Dict[str, Any]] = None
+    # Optionally include core memory (blocks) in the results array
     if include_core_memory:
         try:
             block_filter_tags_parsed: Optional[Dict[str, Any]] = None
@@ -3655,30 +3654,30 @@ async def search_memory_all_users(
                 auto_create_from_default=False,
                 limit=limit or 50,
             )
-            scopes_dict_core: Dict[str, list] = {}
+            logger.info(
+                "Cross-user search core memory: found %d blocks for org=%s, scopes=%s, block_filter_tags=%s",
+                len(blocks),
+                effective_org_id,
+                client.read_scopes,
+                block_filter_tags_parsed,
+            )
             for block in blocks:
-                scope = (block.filter_tags or {}).get("scope", "default")
-                if scope not in scopes_dict_core:
-                    scopes_dict_core[scope] = []
-                scopes_dict_core[scope].append(
+                all_results.append(
                     {
-                        "user_id": block.user_id,
+                        "memory_type": "core",
                         "id": block.id,
+                        "user_id": block.user_id,
                         "label": block.label,
                         "value": block.value,
+                        "scope": (block.filter_tags or {}).get("scope", "default"),
                     }
                 )
-            core_section = {
-                "total_count": len(blocks),
-                "scopes": {scope: {"items": items} for scope, items in scopes_dict_core.items()},
-            }
         except HTTPException:
             raise
         except Exception as e:
-            logger.error("Error retrieving core memory blocks for cross-user search: %s", e)
-            core_section = {"total_count": 0, "scopes": {}}
+            logger.error("Error retrieving core memory blocks for cross-user search: %s", e, exc_info=True)
 
-    response: Dict[str, Any] = {
+    return {
         "success": True,
         "query": query,
         "memory_type": memory_type,
@@ -3699,9 +3698,6 @@ async def search_memory_all_users(
         "read_scopes": client.read_scopes,
         "filter_tags": filter_tags_dict,
     }
-    if core_section is not None:
-        response["core"] = core_section
-    return response
 
 
 @router.get("/memory/components")

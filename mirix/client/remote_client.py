@@ -695,6 +695,7 @@ class MirixClient(AbstractClient):
         agent_name: Optional[str] = None,
         user_id: Optional[str] = None,  # End-user ID for message attribution
         name: Optional[str] = None,
+        stream: Optional[bool] = False,
         stream_steps: bool = False,
         stream_tokens: bool = False,
         chaining: Optional[bool] = None,
@@ -714,6 +715,7 @@ class MirixClient(AbstractClient):
                     messages will be associated with the default user. This is critical
                     for multi-tenant applications to properly isolate user conversations.
             name: Optional name of the message sender
+            stream: Enable streaming (not yet implemented)
             stream_steps: Stream intermediate steps
             stream_tokens: Stream tokens as they are generated
             filter_tags: Optional filter tags for categorization and filtering.
@@ -734,7 +736,7 @@ class MirixClient(AbstractClient):
             ...     filter_tags={"project": "alpha", "priority": "high"}
             ... )
         """
-        if stream_steps or stream_tokens:
+        if stream or stream_steps or stream_tokens:
             raise NotImplementedError("Streaming not yet implemented in REST API")
 
         request_data = {
