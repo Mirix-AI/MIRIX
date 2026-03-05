@@ -170,7 +170,8 @@ class Agent(BaseAgent):
         # extras
         first_message_verify_mono: bool = True,  # TODO move to config?
         filter_tags: Optional[dict] = None,  # Filter tags for memory operations
-        block_filter_tags: Optional[dict] = None,  # Applied only when blocks are created (e.g. from default template)
+        block_filter_tags: Optional[dict] = None,  # Applied to block filter_tags when core memory agent runs
+        block_filter_tags_update_mode: Optional[str] = "merge",  # "merge" or "replace"
         use_cache: bool = True,  # Control Redis cache behavior for this request
         user: Optional[User] = None,  # End-user user
     ):
@@ -187,6 +188,7 @@ class Agent(BaseAgent):
         # Keep None as None, don't convert to empty dict - they have different meanings
         self.filter_tags = deepcopy(filter_tags) if filter_tags is not None else None
         self.block_filter_tags = deepcopy(block_filter_tags) if block_filter_tags is not None else None
+        self.block_filter_tags_update_mode = block_filter_tags_update_mode or "merge"
         self.use_cache = use_cache  # Store use_cache for memory operations
         self.user = user  # Store user for end-user tracking
         self.occurred_at = None  # Optional timestamp for episodic memory, set by server if provided
@@ -343,6 +345,37 @@ class Agent(BaseAgent):
             return True
 
         return False
+
+    def _apply_block_filter_tags(self, blocks: list) -> list:
+        """Apply self.block_filter_tags to loaded blocks using the configured update mode.
+
+        Mutates blocks in-place and persists only those whose filter_tags actually
+        changed.  ``scope`` is never overwritten — it is always preserved from the
+        existing block.
+
+        Returns the same list (for convenience).
+        """
+        safe_tags = {k: v for k, v in self.block_filter_tags.items() if k != "scope"}
+        for block in blocks:
+            existing_tags = block.filter_tags or {}
+            scope = existing_tags.get("scope")
+
+            if self.block_filter_tags_update_mode == "replace":
+                desired = {**safe_tags}
+                if scope is not None:
+                    desired["scope"] = scope
+            else:
+                desired = {**existing_tags, **safe_tags}
+
+            if desired != existing_tags:
+                block.filter_tags = desired
+                self.block_manager.update_block_filter_tags(
+                    block_id=block.id,
+                    new_filter_tags=desired,
+                    actor=self.actor,
+                    user=self.user,
+                )
+        return blocks
 
     def _execute_mcp_tool(
         self,
@@ -1486,6 +1519,12 @@ class Agent(BaseAgent):
                     any_scopes=self._block_scopes,
                     filter_tags_set_on_create=self.block_filter_tags,
                 )
+
+                # Apply block_filter_tags to existing blocks (merge or replace).
+                # Skips blocks whose filter_tags already match the desired state
+                # (e.g. blocks just created from template with the same tags).
+                if self.block_filter_tags and existing_blocks:
+                    existing_blocks = self._apply_block_filter_tags(existing_blocks)
 
                 # Load blocks into memory for core_memory_agent
                 self.blocks_in_memory = Memory(blocks=existing_blocks)

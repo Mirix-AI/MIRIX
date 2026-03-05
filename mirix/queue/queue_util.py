@@ -82,6 +82,7 @@ def put_messages(
     verbose: Optional[bool] = None,
     filter_tags: Optional[dict] = None,
     block_filter_tags: Optional[dict] = None,
+    block_filter_tags_update_mode: Optional[str] = "merge",
     use_cache: bool = True,
     occurred_at: Optional[str] = None,
 ):
@@ -98,6 +99,7 @@ def put_messages(
         verbose: Enable verbose logging
         filter_tags: Filter tags dictionary
         block_filter_tags: Optional dict; applied only when blocks are created (e.g. from default template)
+        block_filter_tags_update_mode: "merge" (default) or "replace" for existing block filter_tags
         use_cache: Control Redis cache behavior
         occurred_at: Optional ISO 8601 timestamp string for episodic memory
     """
@@ -169,6 +171,9 @@ def put_messages(
     # Optional block_filter_tags (applied only when blocks are created)
     if block_filter_tags:
         queue_msg.block_filter_tags.update(block_filter_tags)
+
+    if block_filter_tags_update_mode:
+        queue_msg.block_filter_tags_update_mode = block_filter_tags_update_mode
 
     # Set use_cache
     queue_msg.use_cache = use_cache

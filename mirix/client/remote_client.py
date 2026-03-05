@@ -701,6 +701,7 @@ class MirixClient(AbstractClient):
         chaining: Optional[bool] = None,
         verbose: Optional[bool] = None,
         block_filter_tags: Optional[Dict[str, Any]] = None,
+        block_filter_tags_update_mode: Optional[str] = "merge",
         filter_tags: Optional[Dict[str, Any]] = None,
         use_cache: bool = True,
         headers: Optional[Dict[str, str]] = None,
@@ -720,7 +721,8 @@ class MirixClient(AbstractClient):
             stream_tokens: Stream tokens as they are generated
             filter_tags: Optional filter tags for categorization and filtering.
                 Example: {"project_id": "proj-alpha", "session_id": "sess-123"}
-            block_filter_tags: Optional dict; applied only when blocks are created from default template.
+            block_filter_tags: Optional dict; applied to block filter_tags when core memory agent runs.
+            block_filter_tags_update_mode: "merge" (default) or "replace" for existing block filter_tags.
             use_cache: Control Redis cache behavior (default: True)
             headers: Optional headers to include in the request
 
@@ -755,9 +757,11 @@ class MirixClient(AbstractClient):
         if filter_tags is not None:
             request_data["filter_tags"] = filter_tags
 
-        # Include block_filter_tags if provided
         if block_filter_tags is not None:
             request_data["block_filter_tags"] = block_filter_tags
+
+        if block_filter_tags_update_mode != "merge":
+            request_data["block_filter_tags_update_mode"] = block_filter_tags_update_mode
 
         # Include use_cache if not default
         if not use_cache:
@@ -772,6 +776,7 @@ class MirixClient(AbstractClient):
         message: str,
         user_id: Optional[str] = None,  # End-user ID
         block_filter_tags: Optional[Dict[str, Any]] = None,
+        block_filter_tags_update_mode: Optional[str] = "merge",
         headers: Optional[Dict[str, str]] = None,
     ) -> MirixResponse:
         """Send a user message to an agent.
@@ -780,7 +785,8 @@ class MirixClient(AbstractClient):
             agent_id: The ID of the agent to send the message to
             message: The message text to send
             user_id: Optional end-user ID for message attribution
-            block_filter_tags: Optional dict; applied only when blocks are created from default template.
+            block_filter_tags: Optional dict; applied to block filter_tags when core memory agent runs.
+            block_filter_tags_update_mode: "merge" (default) or "replace" for existing block filter_tags.
             headers: Optional headers to include in the request
 
         Returns:
@@ -792,6 +798,7 @@ class MirixClient(AbstractClient):
             agent_id=agent_id,
             user_id=user_id,
             block_filter_tags=block_filter_tags,
+            block_filter_tags_update_mode=block_filter_tags_update_mode,
             headers=headers,
         )
 
@@ -1227,6 +1234,7 @@ class MirixClient(AbstractClient):
         verbose: bool = False,
         filter_tags: Optional[Dict[str, Any]] = None,
         block_filter_tags: Optional[Dict[str, Any]] = None,
+        block_filter_tags_update_mode: Optional[str] = "merge",
         use_cache: bool = True,
         occurred_at: Optional[str] = None,
         headers: Optional[Dict[str, str]] = None,
@@ -1249,8 +1257,9 @@ class MirixClient(AbstractClient):
             verbose: If True, enable verbose output during memory processing
             filter_tags: Optional dict of tags for filtering and categorization.
                         Example: {"project_id": "proj-123", "session_id": "sess-456"}
-            block_filter_tags: Optional dict applied when creating new core (block) memory for this user.
-                              Only used at block creation time; e.g. {"env": "staging", "team": "platform"}.
+            block_filter_tags: Optional dict applied to block filter_tags when core memory agent runs.
+                              e.g. {"env": "staging", "team": "platform"}.
+            block_filter_tags_update_mode: "merge" (default) or "replace" for existing block filter_tags.
             use_cache: Control Redis cache behavior (default: True)
             occurred_at: Optional ISO 8601 timestamp string for episodic memory.
                         If provided, episodic memories will use this timestamp instead of current time.
@@ -1320,6 +1329,9 @@ class MirixClient(AbstractClient):
 
         if block_filter_tags is not None:
             request_data["block_filter_tags"] = block_filter_tags
+
+        if block_filter_tags_update_mode != "merge":
+            request_data["block_filter_tags_update_mode"] = block_filter_tags_update_mode
 
         if not use_cache:
             request_data["use_cache"] = use_cache

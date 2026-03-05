@@ -7,6 +7,8 @@ import threading
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Optional
 
+from google.protobuf.json_format import MessageToDict
+
 from mirix.log import get_logger
 from mirix.observability import get_langfuse_client, mark_observation_as_child, restore_trace_from_queue_message
 from mirix.observability.context import clear_trace_context, get_trace_context
@@ -274,10 +276,10 @@ class QueueWorker:
                 user_manager = UserManager()
                 user = user_manager.get_admin_user()
 
-            # Extract filter_tags from protobuf Struct
+            # Extract filter_tags from protobuf Struct (deep conversion to avoid ListValue/Value remnants)
             filter_tags = None
             if message.HasField("filter_tags") and message.filter_tags:
-                filter_tags = dict(message.filter_tags)
+                filter_tags = MessageToDict(message.filter_tags)
 
             # Extract use_cache
             use_cache = message.use_cache if message.HasField("use_cache") else True
@@ -285,13 +287,19 @@ class QueueWorker:
             # Extract occurred_at
             occurred_at = message.occurred_at if message.HasField("occurred_at") else None
 
-            # Extract block_filter_tags
+            # Extract block_filter_tags (deep conversion to native Python types)
             block_filter_tags = None
             if hasattr(message, "block_filter_tags") and message.block_filter_tags:
                 try:
-                    block_filter_tags = dict(message.block_filter_tags)
+                    block_filter_tags = MessageToDict(message.block_filter_tags)
                 except Exception as e:
                     raise ValueError("block_filter_tags was provided but could not be parsed as a dict") from e
+
+            block_filter_tags_update_mode = (
+                message.block_filter_tags_update_mode
+                if message.HasField("block_filter_tags_update_mode")
+                else "merge"
+            )
 
             # Log the processing
             logger.info(
@@ -315,6 +323,7 @@ class QueueWorker:
                     user=user,
                     filter_tags=filter_tags,
                     block_filter_tags=block_filter_tags,
+                    block_filter_tags_update_mode=block_filter_tags_update_mode,
                     use_cache=use_cache,
                     occurred_at=occurred_at,
                 )

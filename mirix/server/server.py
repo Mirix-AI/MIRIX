@@ -607,6 +607,7 @@ class SyncServer(Server):
         interface: Union[AgentInterface, None] = None,
         filter_tags: Optional[dict] = None,
         block_filter_tags: Optional[dict] = None,
+        block_filter_tags_update_mode: Optional[str] = "merge",
         use_cache: bool = True,
         user: Optional[User] = None,
     ) -> Agent:
@@ -615,57 +616,26 @@ class SyncServer(Server):
         with agent_lock:
             agent_state = self.agent_manager.get_agent_by_id(agent_id=agent_id, actor=actor)
 
-            interface = interface or self.default_interface_factory()
+            common_kwargs = dict(
+                interface=interface or self.default_interface_factory(),
+                actor=actor,
+                filter_tags=filter_tags,
+                block_filter_tags=block_filter_tags,
+                block_filter_tags_update_mode=block_filter_tags_update_mode,
+                use_cache=use_cache,
+                user=user,
+            )
+
             if agent_state.agent_type == AgentType.chat_agent:
-                agent = Agent(
-                    agent_state=agent_state,
-                    interface=interface,
-                    actor=actor,
-                    filter_tags=filter_tags,
-                    block_filter_tags=block_filter_tags,
-                    use_cache=use_cache,
-                    user=user,
-                )
+                agent = Agent(agent_state=agent_state, **common_kwargs)
             elif agent_state.agent_type == AgentType.episodic_memory_agent:
-                agent = EpisodicMemoryAgent(
-                    agent_state=agent_state,
-                    interface=interface,
-                    actor=actor,
-                    filter_tags=filter_tags,
-                    block_filter_tags=block_filter_tags,
-                    use_cache=use_cache,
-                    user=user,
-                )
+                agent = EpisodicMemoryAgent(agent_state=agent_state, **common_kwargs)
             elif agent_state.agent_type == AgentType.knowledge_vault_memory_agent:
-                agent = KnowledgeVaultAgent(
-                    agent_state=agent_state,
-                    interface=interface,
-                    actor=actor,
-                    filter_tags=filter_tags,
-                    block_filter_tags=block_filter_tags,
-                    use_cache=use_cache,
-                    user=user,
-                )
+                agent = KnowledgeVaultAgent(agent_state=agent_state, **common_kwargs)
             elif agent_state.agent_type == AgentType.procedural_memory_agent:
-                agent = ProceduralMemoryAgent(
-                    agent_state=agent_state,
-                    interface=interface,
-                    actor=actor,
-                    filter_tags=filter_tags,
-                    block_filter_tags=block_filter_tags,
-                    use_cache=use_cache,
-                    user=user,
-                )
+                agent = ProceduralMemoryAgent(agent_state=agent_state, **common_kwargs)
             elif agent_state.agent_type == AgentType.resource_memory_agent:
-                agent = ResourceMemoryAgent(
-                    agent_state=agent_state,
-                    interface=interface,
-                    actor=actor,
-                    filter_tags=filter_tags,
-                    block_filter_tags=block_filter_tags,
-                    use_cache=use_cache,
-                    user=user,
-                )
+                agent = ResourceMemoryAgent(agent_state=agent_state, **common_kwargs)
             elif agent_state.agent_type == AgentType.meta_memory_agent:
                 logger.info(
                     "Loading MetaMemoryAgent with filter_tags=%s, client_id=%s, user_id=%s",
@@ -673,55 +643,15 @@ class SyncServer(Server):
                     actor.id,
                     user.id if user else None,
                 )
-                agent = MetaMemoryAgent(
-                    agent_state=agent_state,
-                    interface=interface,
-                    actor=actor,
-                    filter_tags=filter_tags,
-                    block_filter_tags=block_filter_tags,
-                    use_cache=use_cache,
-                    user=user,
-                )
+                agent = MetaMemoryAgent(agent_state=agent_state, **common_kwargs)
             elif agent_state.agent_type == AgentType.semantic_memory_agent:
-                agent = SemanticMemoryAgent(
-                    agent_state=agent_state,
-                    interface=interface,
-                    actor=actor,
-                    filter_tags=filter_tags,
-                    block_filter_tags=block_filter_tags,
-                    use_cache=use_cache,
-                    user=user,
-                )
+                agent = SemanticMemoryAgent(agent_state=agent_state, **common_kwargs)
             elif agent_state.agent_type == AgentType.core_memory_agent:
-                agent = CoreMemoryAgent(
-                    agent_state=agent_state,
-                    interface=interface,
-                    actor=actor,
-                    filter_tags=filter_tags,
-                    block_filter_tags=block_filter_tags,
-                    use_cache=use_cache,
-                    user=user,
-                )
+                agent = CoreMemoryAgent(agent_state=agent_state, **common_kwargs)
             elif agent_state.agent_type == AgentType.reflexion_agent:
-                agent = ReflexionAgent(
-                    agent_state=agent_state,
-                    interface=interface,
-                    actor=actor,
-                    filter_tags=filter_tags,
-                    block_filter_tags=block_filter_tags,
-                    use_cache=use_cache,
-                    user=user,
-                )
+                agent = ReflexionAgent(agent_state=agent_state, **common_kwargs)
             elif agent_state.agent_type == AgentType.background_agent:
-                agent = BackgroundAgent(
-                    agent_state=agent_state,
-                    interface=interface,
-                    actor=actor,
-                    filter_tags=filter_tags,
-                    block_filter_tags=block_filter_tags,
-                    use_cache=use_cache,
-                    user=user,
-                )
+                agent = BackgroundAgent(agent_state=agent_state, **common_kwargs)
             else:
                 raise ValueError(f"Invalid agent type {agent_state.agent_type}")
 
@@ -736,6 +666,7 @@ class SyncServer(Server):
         user: Optional[User] = None,
         filter_tags: Optional[dict] = None,
         block_filter_tags: Optional[dict] = None,
+        block_filter_tags_update_mode: Optional[str] = "merge",
         use_cache: bool = True,
         occurred_at: Optional[str] = None,
     ) -> MirixUsageStatistics:
@@ -749,6 +680,7 @@ class SyncServer(Server):
                 actor=actor,
                 filter_tags=filter_tags,
                 block_filter_tags=block_filter_tags,
+                block_filter_tags_update_mode=block_filter_tags_update_mode,
                 use_cache=use_cache,
                 user=user,
             )
@@ -1061,6 +993,7 @@ class SyncServer(Server):
         verbose: Optional[bool] = None,
         filter_tags: Optional[dict] = None,
         block_filter_tags: Optional[dict] = None,
+        block_filter_tags_update_mode: Optional[str] = "merge",
         use_cache: bool = True,
         occurred_at: Optional[str] = None,
     ) -> MirixUsageStatistics:
@@ -1074,7 +1007,8 @@ class SyncServer(Server):
             user: Optional end-user for data scoping (default: None)
             verbose: Enable verbose logging
             filter_tags: Optional filter tags for memory operations
-            block_filter_tags: Optional dict; applied only when blocks are created (e.g. from default template)
+            block_filter_tags: Optional dict; applied to block filter_tags when core memory agent runs
+            block_filter_tags_update_mode: "merge" (default) or "replace" for existing block filter_tags
             use_cache: Control Redis cache behavior (default: True)
             occurred_at: Optional ISO 8601 timestamp for episodic memory (default: None)
 
@@ -1098,6 +1032,7 @@ class SyncServer(Server):
                 user=user,
                 filter_tags=filter_tags,
                 block_filter_tags=block_filter_tags,
+                block_filter_tags_update_mode=block_filter_tags_update_mode,
                 use_cache=use_cache,
                 occurred_at=occurred_at,
             )

@@ -653,6 +653,7 @@ class EpisodicMemoryManager:
         limit: Optional[int] = 50,
         timezone_str: str = None,
         filter_tags: Optional[dict] = None,
+        scopes: Optional[List[str]] = None,
         use_cache: bool = True,
         start_date: Optional[datetime] = None,
         end_date: Optional[datetime] = None,
@@ -718,6 +719,7 @@ class EpisodicMemoryManager:
                         organization_id=organization_id,
                         sort_by="occurred_at_ts",  # Sort by occurred_at for episodic
                         filter_tags=filter_tags,
+                        scopes=scopes,
                         start_date=start_date,
                         end_date=end_date,
                     )
@@ -758,6 +760,7 @@ class EpisodicMemoryManager:
                         user_id=user.id,
                         organization_id=organization_id,
                         filter_tags=filter_tags,
+                        scopes=scopes,
                         start_date=start_date,
                         end_date=end_date,
                     )
@@ -783,6 +786,7 @@ class EpisodicMemoryManager:
                         user_id=user.id,
                         organization_id=organization_id,
                         filter_tags=filter_tags,
+                        scopes=scopes,
                         start_date=start_date,
                         end_date=end_date,
                     )
@@ -820,11 +824,9 @@ class EpisodicMemoryManager:
                     .order_by(EpisodicEvent.occurred_at.desc())
                 )
 
-                # Apply filter_tags if provided (e.g., {"scope": "CARE"})
-                # This allows clients to filter memories by custom tags for access control
-                if filter_tags:
-                    for key, value in filter_tags.items():
-                        query_stmt = query_stmt.where(EpisodicEvent.filter_tags[key].as_string() == str(value))
+                from mirix.database.filter_tags_query import apply_filter_tags_sqlalchemy
+
+                query_stmt = apply_filter_tags_sqlalchemy(query_stmt, EpisodicEvent, filter_tags, scopes=scopes)
 
                 # Apply temporal filtering if provided
                 if start_date is not None:
@@ -860,11 +862,9 @@ class EpisodicMemoryManager:
                     .where(EpisodicEvent.organization_id == organization_id)
                 )
 
-                # Apply filter_tags if provided (e.g., {"scope": "CARE"})
-                # This allows clients to filter memories by custom tags for access control
-                if filter_tags:
-                    for key, value in filter_tags.items():
-                        base_query = base_query.where(EpisodicEvent.filter_tags[key].as_string() == str(value))
+                from mirix.database.filter_tags_query import apply_filter_tags_sqlalchemy
+
+                base_query = apply_filter_tags_sqlalchemy(base_query, EpisodicEvent, filter_tags, scopes=scopes)
 
                 # Apply temporal filtering if provided
                 if start_date is not None:
@@ -903,6 +903,7 @@ class EpisodicMemoryManager:
                             limit,
                             user,
                             filter_tags=filter_tags,
+                            scopes=scopes,
                             start_date=start_date,
                             end_date=end_date,
                         )
@@ -1016,6 +1017,7 @@ class EpisodicMemoryManager:
         limit,
         user,
         filter_tags=None,
+        scopes: Optional[List[str]] = None,
         start_date=None,
         end_date=None,
     ):
@@ -1124,25 +1126,11 @@ class EpisodicMemoryManager:
             "limit_val": limit or 50,
         }
 
-        # Add filter_tags filtering (e.g., {"scope": "CARE"} or {"read_scopes": ["scope1", "scope2"]})
-        # This allows clients to filter memories by custom tags for access control
-        # CRITICAL: Without this filter, searches return 0 results when filter_tags are provided
-        if filter_tags:
-            for key, value in filter_tags.items():
-                if key == "read_scopes":
-                    # Multi-scope filtering: memory's scope must be IN the provided read_scopes list
-                    if isinstance(value, list) and value:
-                        scope_placeholders = [f":read_scope_{i}" for i in range(len(value))]
-                        where_clauses.append(f"filter_tags->>'scope' IN ({', '.join(scope_placeholders)})")
-                        for i, scope in enumerate(value):
-                            query_params[f"read_scope_{i}"] = scope
-                    elif isinstance(value, list) and not value:
-                        # Empty read_scopes means no access - add impossible condition
-                        where_clauses.append("1 = 0")
-                else:
-                    # Use JSONB operator to filter by tag key-value pairs
-                    where_clauses.append(f"filter_tags->>'{key}' = :filter_tag_{key}")
-                    query_params[f"filter_tag_{key}"] = str(value)
+        from mirix.database.filter_tags_query import build_filter_tags_raw_sql
+
+        ft_clauses, ft_params = build_filter_tags_raw_sql(filter_tags, scopes=scopes)
+        where_clauses.extend(ft_clauses)
+        query_params.update(ft_params)
 
         # Add temporal filtering if provided
         if start_date is not None:
@@ -1403,6 +1391,7 @@ class EpisodicMemoryManager:
         limit: Optional[int] = 50,
         timezone_str: str = None,
         filter_tags: Optional[dict] = None,
+        scopes: Optional[List[str]] = None,
         use_cache: bool = True,
         start_date: Optional[datetime] = None,
         end_date: Optional[datetime] = None,
@@ -1445,6 +1434,7 @@ class EpisodicMemoryManager:
                         organization_id=organization_id,
                         sort_by="occurred_at_ts",
                         filter_tags=filter_tags,
+                        scopes=scopes,
                         start_date=start_date,
                         end_date=end_date,
                     )
@@ -1484,6 +1474,7 @@ class EpisodicMemoryManager:
                         limit=limit or 50,
                         organization_id=organization_id,
                         filter_tags=filter_tags,
+                        scopes=scopes,
                         start_date=start_date,
                         end_date=end_date,
                     )
@@ -1506,6 +1497,7 @@ class EpisodicMemoryManager:
                         limit=limit or 50,
                         organization_id=organization_id,
                         filter_tags=filter_tags,
+                        scopes=scopes,
                         start_date=start_date,
                         end_date=end_date,
                     )
@@ -1532,29 +1524,9 @@ class EpisodicMemoryManager:
             # Return full EpisodicEvent objects, not individual columns
             base_query = select(EpisodicEvent).where(EpisodicEvent.organization_id == organization_id)
 
-            # Apply filter_tags (INCLUDING SCOPE)
-            # For read_scopes: check if memory's scope is IN the provided list
-            # For other keys: exact match
-            if filter_tags:
-                from sqlalchemy import func, or_
+            from mirix.database.filter_tags_query import apply_filter_tags_sqlalchemy
 
-                for key, value in filter_tags.items():
-                    if key == "read_scopes":
-                        # Multi-scope filtering: memory's scope must be IN the provided read_scopes list
-                        if isinstance(value, list) and value:
-                            scope_conditions = [
-                                EpisodicEvent.filter_tags["scope"].as_string() == scope for scope in value
-                            ]
-                            base_query = base_query.where(or_(*scope_conditions))
-                        elif isinstance(value, list) and not value:
-                            # Empty read_scopes means no access - return no results
-                            base_query = base_query.where(False)
-                    elif key == "scope":
-                        # Single scope matching (backward compatibility)
-                        base_query = base_query.where(EpisodicEvent.filter_tags[key].as_string() == str(value))
-                    else:
-                        # Other keys: exact match
-                        base_query = base_query.where(EpisodicEvent.filter_tags[key].as_string() == str(value))
+            base_query = apply_filter_tags_sqlalchemy(base_query, EpisodicEvent, filter_tags, scopes=scopes)
 
             # Apply temporal filtering if provided
             if start_date is not None:

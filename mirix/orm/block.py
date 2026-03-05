@@ -126,8 +126,9 @@ class Block(OrganizationMixin, UserMixin, SqlalchemyBase):
             if id:
                 query = query.where(cls.id == id)
             if filter_tags:
-                # JSON column: cast to JSONB so containment (@>) works (json ~~ text does not exist)
-                query = query.where(cast(cls.filter_tags, JSONB).contains(filter_tags))
+                from mirix.database.filter_tags_query import apply_filter_tags_sqlalchemy
+
+                query = apply_filter_tags_sqlalchemy(query, cls, filter_tags, scopes=None)
             return list(session.execute(query).scalars())
 
     def to_pydantic(self) -> Type:

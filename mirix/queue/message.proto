@@ -53,6 +53,9 @@ message QueueMessage {
 
   // Applied to blocks only when they are created (e.g. from default user template). Not applied on update.
   google.protobuf.Struct block_filter_tags = 14;
+
+  // How to apply block_filter_tags to existing blocks: "merge" (default) or "replace".
+  optional string block_filter_tags_update_mode = 15;
 }
 
 // User representation

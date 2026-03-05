@@ -126,6 +126,7 @@ class AbstractClient(object):
         chaining: Optional[bool] = None,
         verbose: Optional[bool] = None,
         block_filter_tags: Optional[Dict[str, Any]] = None,
+        block_filter_tags_update_mode: Optional[str] = "merge",
     ) -> MirixResponse:
         raise NotImplementedError
 

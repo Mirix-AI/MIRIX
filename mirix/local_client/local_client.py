@@ -884,6 +884,7 @@ class LocalClient(AbstractClient):
         messages: List[Union[Message | MessageCreate]],
         user_id: Optional[str] = None,  # End-user ID
         block_filter_tags: Optional[Dict[str, Any]] = None,
+        block_filter_tags_update_mode: Optional[str] = "merge",
     ):
         """
         Send pre-packed messages to an agent.
@@ -892,7 +893,8 @@ class LocalClient(AbstractClient):
             agent_id (str): ID of the agent
             messages (List[Union[Message | MessageCreate]]): List of messages to send
             user_id (str): Optional end-user ID for message attribution
-            block_filter_tags (dict): Optional; applied only when blocks are created from default template.
+            block_filter_tags (dict): Optional; applied to block filter_tags when core memory agent runs.
+            block_filter_tags_update_mode (str): "merge" (default) or "replace" for existing block filter_tags.
 
         Returns:
             response (MirixResponse): Response from the agent
@@ -916,8 +918,9 @@ class LocalClient(AbstractClient):
             actor=self.client,
             agent_id=agent_id,
             input_messages=messages,
-            user=target_user,  # Pass user object
+            user=target_user,
             block_filter_tags=block_filter_tags,
+            block_filter_tags_update_mode=block_filter_tags_update_mode,
         )
 
         # format messages
@@ -936,6 +939,7 @@ class LocalClient(AbstractClient):
         chaining: Optional[bool] = None,
         verbose: Optional[bool] = None,
         block_filter_tags: Optional[Dict[str, Any]] = None,
+        block_filter_tags_update_mode: Optional[str] = "merge",
         **kwargs,
     ) -> MirixResponse:
         """
@@ -1097,9 +1101,10 @@ class LocalClient(AbstractClient):
             agent_id=agent_id,
             input_messages=input_messages,
             chaining=chaining,
-            user=target_user,  # Pass user object instead of relying on default
+            user=target_user,
             verbose=verbose,
             block_filter_tags=block_filter_tags,
+            block_filter_tags_update_mode=block_filter_tags_update_mode,
         )
 
         # format messages

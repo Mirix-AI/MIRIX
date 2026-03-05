@@ -341,10 +341,8 @@ class TestMultiScopeRead:
             results, _ = raw_memory_manager.search_raw_memories(
                 organization_id=test_user.organization_id,
                 user_id=test_user.id,
-                filter_tags={
-                    "read_scopes": multi_read_client.read_scopes,
-                    "test_tag": test_tag,
-                },
+                filter_tags={"test_tag": test_tag},
+                scopes=multi_read_client.read_scopes,
                 limit=10,
             )
 
@@ -619,10 +617,8 @@ class TestEmptyReadScopes:
             results, _ = raw_memory_manager.search_raw_memories(
                 organization_id=test_user.organization_id,
                 user_id=test_user.id,
-                filter_tags={
-                    "read_scopes": no_access_client.read_scopes,  # Empty list
-                    "test_tag": test_tag,
-                },
+                filter_tags={"test_tag": test_tag},
+                scopes=no_access_client.read_scopes,  # Empty list
                 limit=10,
             )
 

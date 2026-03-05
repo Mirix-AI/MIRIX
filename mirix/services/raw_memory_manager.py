@@ -494,6 +494,7 @@ class RawMemoryManager:
         organization_id: str,
         user_id: Optional[str] = None,
         filter_tags: Optional[Dict[str, Any]] = None,
+        scopes: Optional[List[str]] = None,
         sort: str = "-updated_at",
         cursor: Optional[str] = None,
         time_range: Optional[Dict[str, Optional[datetime]]] = None,
@@ -554,23 +555,9 @@ class RawMemoryManager:
             if user_id:
                 base_query = base_query.where(RawMemory.user_id == user_id)
 
-            # Apply filter_tags (AND filter on top-level keys)
-            if filter_tags:
-                for key, value in filter_tags.items():
-                    if key == "read_scopes":
-                        # Multi-scope filtering: memory's scope must be IN the provided read_scopes list
-                        if isinstance(value, list) and value:
-                            scope_conditions = [RawMemory.filter_tags["scope"].as_string() == scope for scope in value]
-                            base_query = base_query.where(or_(*scope_conditions))
-                        elif isinstance(value, list) and not value:
-                            # Empty read_scopes means no access - return no results
-                            base_query = base_query.where(False)
-                    elif key == "scope":
-                        # Single scope matching (backward compatibility)
-                        base_query = base_query.where(RawMemory.filter_tags[key].as_string() == str(value))
-                    else:
-                        # Other keys: exact match
-                        base_query = base_query.where(RawMemory.filter_tags[key].as_string() == str(value))
+            from mirix.database.filter_tags_query import apply_filter_tags_sqlalchemy
+
+            base_query = apply_filter_tags_sqlalchemy(base_query, RawMemory, filter_tags, scopes=scopes)
 
             # Apply time range filtering
             if time_range:

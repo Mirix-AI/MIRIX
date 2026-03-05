@@ -853,46 +853,23 @@ class RedisMemoryClient:
             logger.error("Failed to delete key %s: %s", key, e)
             return False
 
-    def _build_filter_tags_query(self, filter_tags: Dict[str, Any]) -> str:
+    def _build_filter_tags_query(
+        self, filter_tags: Dict[str, Any], scopes: Optional[List[str]] = None
+    ) -> str:
         """
-        Build Redis Search query string from filter_tags dictionary.
+        Build Redis Search query string from filter_tags and scopes.
 
-        According to MEMORY_METADATA_IMPLEMENTATION_GUIDE.md,
-        filter_tags are indexed as TAG fields with names like:
-        - $.filter_tags.expert_id -> indexed as "filter_tags_expert_id"
-        - $.filter_tags.scope -> indexed as "filter_tags_scope"
+        Delegates to the shared filter_tags_query module which handles:
+        - scopes -> filter_tags_scope OR query
+        - Plain scalar keys -> @filter_tags_{key}:{value}
 
-        Args:
-            filter_tags: Dictionary of filter tag key-value pairs
-                        e.g., {"expert_id": "expert-123", "scope": "read"}
-
-        Returns:
-            Redis Search query string for filter_tags filters
-            e.g., "@filter_tags_expert_id:{expert\\-123} @filter_tags_scope:{read}"
-
-        Example:
-            filter_tags = {"expert_id": "expert-123", "scope": "read"}
-            # Returns: "@filter_tags_expert_id:{expert\\-123} @filter_tags_scope:{read}"
+        Returns empty string if filter_tags is empty/None and scopes is empty/None.
+        Callers should check can_redis_handle() BEFORE calling this to
+        avoid building queries for unsupported operator values.
         """
-        if not filter_tags:
-            return ""
+        from mirix.database.filter_tags_query import build_filter_tags_redis
 
-        import re
-
-        def escape_tag_value(value: str) -> str:
-            """Escape special characters for Redis TAG field values."""
-            # TAG fields need escaping for: - : . ( ) { } [ ] " ' , < > ; ! @ # $ % ^ & * + = ~
-            special_chars = r'[\-:.()\[\]{}"\',<>;!@#$%^&*+=~]'
-            return re.sub(special_chars, lambda m: f"\\{m.group(0)}", str(value))
-
-        query_parts = []
-        for key, value in filter_tags.items():
-            # Convert filter_tags.expert_id -> filter_tags_expert_id
-            field_name = f"filter_tags_{key}"
-            escaped_value = escape_tag_value(value)
-            query_parts.append(f"@{field_name}:{{{escaped_value}}}")
-
-        return " ".join(query_parts)
+        return build_filter_tags_redis(filter_tags, scopes=scopes)
 
     def search_text(
         self,
@@ -904,6 +881,7 @@ class RedisMemoryClient:
         organization_id: Optional[str] = None,
         return_fields: Optional[List[str]] = None,
         filter_tags: Optional[Dict[str, Any]] = None,
+        scopes: Optional[List[str]] = None,
         start_date: Optional[Any] = None,
         end_date: Optional[Any] = None,
     ) -> List[Dict[str, Any]]:
@@ -939,6 +917,12 @@ class RedisMemoryClient:
             )
         """
         try:
+            from mirix.database.filter_tags_query import can_redis_handle
+
+            if filter_tags and not can_redis_handle(filter_tags):
+                logger.debug("filter_tags contain operators unsupported by Redis, skipping Redis search_text")
+                return []
+
             import re
             from datetime import datetime
 
@@ -976,7 +960,7 @@ class RedisMemoryClient:
 
             # Add filter_tags filters
             if filter_tags:
-                filter_query = self._build_filter_tags_query(filter_tags)
+                filter_query = self._build_filter_tags_query(filter_tags, scopes=scopes)
                 if filter_query:
                     query_parts.append(filter_query)
 
@@ -1033,6 +1017,7 @@ class RedisMemoryClient:
         organization_id: Optional[str] = None,
         return_fields: Optional[List[str]] = None,
         filter_tags: Optional[Dict[str, Any]] = None,
+        scopes: Optional[List[str]] = None,
         start_date: Optional[Any] = None,
         end_date: Optional[Any] = None,
     ) -> List[Dict[str, Any]]:
@@ -1066,6 +1051,12 @@ class RedisMemoryClient:
             )
         """
         try:
+            from mirix.database.filter_tags_query import can_redis_handle
+
+            if filter_tags and not can_redis_handle(filter_tags):
+                logger.debug("filter_tags contain operators unsupported by Redis, skipping Redis search_vector")
+                return []
+
             from datetime import datetime
 
             import numpy as np
@@ -1097,7 +1088,7 @@ class RedisMemoryClient:
 
             # Add filter_tags filters
             if filter_tags:
-                filter_query = self._build_filter_tags_query(filter_tags)
+                filter_query = self._build_filter_tags_query(filter_tags, scopes=scopes)
                 if filter_query:
                     query_parts.append(filter_query)
 
@@ -1160,6 +1151,7 @@ class RedisMemoryClient:
         sort_by: str = "created_at_ts",
         return_fields: Optional[List[str]] = None,
         filter_tags: Optional[Dict[str, Any]] = None,
+        scopes: Optional[List[str]] = None,
         start_date: Optional[Any] = None,
         end_date: Optional[Any] = None,
     ) -> List[Dict[str, Any]]:
@@ -1193,6 +1185,12 @@ class RedisMemoryClient:
             )
         """
         try:
+            from mirix.database.filter_tags_query import can_redis_handle
+
+            if filter_tags and not can_redis_handle(filter_tags):
+                logger.debug("filter_tags contain operators unsupported by Redis, skipping Redis search_recent")
+                return []
+
             from datetime import datetime
 
             from redis.commands.search.query import Query
@@ -1220,7 +1218,7 @@ class RedisMemoryClient:
 
             # Add filter_tags filters
             if filter_tags:
-                filter_query = self._build_filter_tags_query(filter_tags)
+                filter_query = self._build_filter_tags_query(filter_tags, scopes=scopes)
                 if filter_query:
                     query_parts.append(filter_query)
 
@@ -1268,6 +1266,7 @@ class RedisMemoryClient:
         sort_by: str = "created_at_ts",
         return_fields: Optional[List[str]] = None,
         filter_tags: Optional[Dict[str, Any]] = None,
+        scopes: Optional[List[str]] = None,
         start_date: Optional[Any] = None,
         end_date: Optional[Any] = None,
     ) -> List[Dict[str, Any]]:
@@ -1288,6 +1287,12 @@ class RedisMemoryClient:
             List of recent documents sorted by timestamp (descending)
         """
         try:
+            from mirix.database.filter_tags_query import can_redis_handle
+
+            if filter_tags and not can_redis_handle(filter_tags):
+                logger.debug("filter_tags contain operators unsupported by Redis, skipping Redis search_recent_by_org")
+                return []
+
             import re
             from datetime import datetime
 
@@ -1317,7 +1322,7 @@ class RedisMemoryClient:
 
             # Add filter_tags filters (including scope)
             if filter_tags:
-                filter_query = self._build_filter_tags_query(filter_tags)
+                filter_query = self._build_filter_tags_query(filter_tags, scopes=scopes)
                 if filter_query:
                     query_parts.append(filter_query)
 
@@ -1352,6 +1357,7 @@ class RedisMemoryClient:
         organization_id: Optional[str] = None,
         return_fields: Optional[List[str]] = None,
         filter_tags: Optional[Dict[str, Any]] = None,
+        scopes: Optional[List[str]] = None,
         start_date: Optional[Any] = None,
         end_date: Optional[Any] = None,
     ) -> List[Dict[str, Any]]:
@@ -1373,6 +1379,12 @@ class RedisMemoryClient:
             List of documents sorted by similarity
         """
         try:
+            from mirix.database.filter_tags_query import can_redis_handle
+
+            if filter_tags and not can_redis_handle(filter_tags):
+                logger.debug("filter_tags contain operators unsupported by Redis, skipping Redis search_vector_by_org")
+                return []
+
             import re
             from datetime import datetime
 
@@ -1399,7 +1411,7 @@ class RedisMemoryClient:
 
             # Add filter_tags filters (including scope)
             if filter_tags:
-                filter_query = self._build_filter_tags_query(filter_tags)
+                filter_query = self._build_filter_tags_query(filter_tags, scopes=scopes)
                 if filter_query:
                     filter_parts.append(filter_query)
 
@@ -1439,6 +1451,7 @@ class RedisMemoryClient:
         limit: int = 10,
         organization_id: Optional[str] = None,
         filter_tags: Optional[Dict[str, Any]] = None,
+        scopes: Optional[List[str]] = None,
         start_date: Optional[Any] = None,
         end_date: Optional[Any] = None,
     ) -> List[Dict[str, Any]]:
@@ -1460,6 +1473,12 @@ class RedisMemoryClient:
             List of matching documents
         """
         try:
+            from mirix.database.filter_tags_query import can_redis_handle
+
+            if filter_tags and not can_redis_handle(filter_tags):
+                logger.debug("filter_tags contain operators unsupported by Redis, skipping Redis search_text_by_org")
+                return []
+
             import re
             from datetime import datetime
 
@@ -1486,7 +1505,7 @@ class RedisMemoryClient:
 
             # Add filter_tags filters (including scope)
             if filter_tags:
-                filter_query = self._build_filter_tags_query(filter_tags)
+                filter_query = self._build_filter_tags_query(filter_tags, scopes=scopes)
                 if filter_query:
                     query_parts.append(filter_query)
 

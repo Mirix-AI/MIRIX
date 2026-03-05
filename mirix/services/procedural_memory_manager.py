@@ -188,6 +188,7 @@ class ProceduralMemoryManager:
         limit,
         user,
         filter_tags=None,
+        scopes=None,
     ):
         """
         Efficient PostgreSQL-native full-text search using ts_rank_cd for BM25-like functionality.
@@ -276,11 +277,11 @@ class ProceduralMemoryManager:
             "limit_val": limit or 50,
         }
 
-        # Add filter_tags filtering (e.g., {"scope": "CARE"})
-        if filter_tags:
-            for key, value in filter_tags.items():
-                where_clauses.append(f"filter_tags->>'{key}' = :filter_tag_{key}")
-                query_params[f"filter_tag_{key}"] = str(value)
+        from mirix.database.filter_tags_query import build_filter_tags_raw_sql
+
+        ft_clauses, ft_params = build_filter_tags_raw_sql(filter_tags, scopes=scopes)
+        where_clauses.extend(ft_clauses)
+        query_params.update(ft_params)
 
         where_clause = " AND ".join(where_clauses)
 
@@ -560,6 +561,7 @@ class ProceduralMemoryManager:
         limit: Optional[int] = 50,
         timezone_str: str = None,
         filter_tags: Optional[dict] = None,
+        scopes: Optional[List[str]] = None,
         use_cache: bool = True,
         similarity_threshold: Optional[float] = None,
     ) -> List[PydanticProceduralMemoryItem]:
@@ -618,6 +620,7 @@ class ProceduralMemoryManager:
                         user_id=user.id,
                         organization_id=organization_id,
                         filter_tags=filter_tags,
+                        scopes=scopes,
                     )
                     logger.debug("Redis search_recent returned %d results", len(results) if results else 0)
                     if results:
@@ -644,6 +647,7 @@ class ProceduralMemoryManager:
                         user_id=user.id,
                         organization_id=organization_id,
                         filter_tags=filter_tags,
+                        scopes=scopes,
                     )
                     if results:
                         logger.debug("Redis vector search HIT: found %d procedural items", len(results))
@@ -662,6 +666,7 @@ class ProceduralMemoryManager:
                         user_id=user.id,
                         organization_id=organization_id,
                         filter_tags=filter_tags,
+                        scopes=scopes,
                     )
                     if results:
                         logger.debug("Redis text search HIT: found %d procedural items", len(results))
@@ -687,10 +692,9 @@ class ProceduralMemoryManager:
                     .order_by(ProceduralMemoryItem.created_at.desc())
                 )
 
-                # Apply filter_tags if provided
-                if filter_tags:
-                    for key, value in filter_tags.items():
-                        query_stmt = query_stmt.where(ProceduralMemoryItem.filter_tags[key].as_string() == str(value))
+                from mirix.database.filter_tags_query import apply_filter_tags_sqlalchemy
+
+                query_stmt = apply_filter_tags_sqlalchemy(query_stmt, ProceduralMemoryItem, filter_tags, scopes=scopes)
 
                 if limit:
                     query_stmt = query_stmt.limit(limit)
@@ -718,10 +722,9 @@ class ProceduralMemoryManager:
                     .where(ProceduralMemoryItem.organization_id == organization_id)
                 )
 
-                # Apply filter_tags if provided
-                if filter_tags:
-                    for key, value in filter_tags.items():
-                        base_query = base_query.where(ProceduralMemoryItem.filter_tags[key].as_string() == str(value))
+                from mirix.database.filter_tags_query import apply_filter_tags_sqlalchemy
+
+                base_query = apply_filter_tags_sqlalchemy(base_query, ProceduralMemoryItem, filter_tags, scopes=scopes)
 
                 if search_method == "embedding":
                     main_query = build_query(
@@ -765,6 +768,7 @@ class ProceduralMemoryManager:
                             limit,
                             user,
                             filter_tags=filter_tags,
+                            scopes=scopes,
                         )
                     else:
                         # Fallback to in-memory BM25 for SQLite (legacy method)
@@ -1146,6 +1150,7 @@ class ProceduralMemoryManager:
         limit: Optional[int] = 50,
         timezone_str: str = None,
         filter_tags: Optional[dict] = None,
+        scopes: Optional[List[str]] = None,
         use_cache: bool = True,
         similarity_threshold: Optional[float] = None,
     ) -> List[PydanticProceduralMemoryItem]:
@@ -1165,6 +1170,7 @@ class ProceduralMemoryManager:
                         organization_id=organization_id,
                         sort_by="created_at_ts",
                         filter_tags=filter_tags,
+                        scopes=scopes,
                     )
                     if results:
                         logger.debug("Redis: %d procedural memories for org %s", len(results), organization_id)
@@ -1194,6 +1200,7 @@ class ProceduralMemoryManager:
                         limit=limit or 50,
                         organization_id=organization_id,
                         filter_tags=filter_tags,
+                        scopes=scopes,
                     )
                     if results:
                         logger.debug("Redis vector: %d results", len(results))
@@ -1209,6 +1216,7 @@ class ProceduralMemoryManager:
                         limit=limit or 50,
                         organization_id=organization_id,
                         filter_tags=filter_tags,
+                        scopes=scopes,
                     )
                     if results:
                         logger.debug("Redis text: %d results", len(results))
@@ -1220,26 +1228,9 @@ class ProceduralMemoryManager:
         with self.session_maker() as session:
             base_query = select(ProceduralMemoryItem).where(ProceduralMemoryItem.organization_id == organization_id)
 
-            if filter_tags:
-                from sqlalchemy import func, or_
+            from mirix.database.filter_tags_query import apply_filter_tags_sqlalchemy
 
-                for key, value in filter_tags.items():
-                    if key == "read_scopes":
-                        # Multi-scope filtering: memory's scope must be IN the provided read_scopes list
-                        if isinstance(value, list) and value:
-                            scope_conditions = [
-                                ProceduralMemoryItem.filter_tags["scope"].as_string() == scope for scope in value
-                            ]
-                            base_query = base_query.where(or_(*scope_conditions))
-                        elif isinstance(value, list) and not value:
-                            # Empty read_scopes means no access - return no results
-                            base_query = base_query.where(False)
-                    elif key == "scope":
-                        # Single scope matching (backward compatibility)
-                        base_query = base_query.where(ProceduralMemoryItem.filter_tags[key].as_string() == str(value))
-                    else:
-                        # Other keys: exact match
-                        base_query = base_query.where(ProceduralMemoryItem.filter_tags[key].as_string() == str(value))
+            base_query = apply_filter_tags_sqlalchemy(base_query, ProceduralMemoryItem, filter_tags, scopes=scopes)
 
             # Handle empty query - fall back to recent sort
             if not query or query == "":

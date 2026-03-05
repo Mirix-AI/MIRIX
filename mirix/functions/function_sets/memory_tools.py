@@ -834,6 +834,7 @@ def trigger_memory_update_with_instruction(
         existing_file_uris=user_message["existing_file_uris"],
         retrieved_memories=user_message.get("retrieved_memories", None),
         block_filter_tags=getattr(self, "block_filter_tags", None),
+        block_filter_tags_update_mode=getattr(self, "block_filter_tags_update_mode", "merge"),
     )
     response += "[System Message] Agent " + matching_agent.name + " has been triggered to update the memory.\n"
 
@@ -931,6 +932,7 @@ def trigger_memory_update(self: "Agent", user_message: object, memory_types: Lis
             filter_tags = deepcopy(parent_filter_tags) if parent_filter_tags is not None else None
             parent_block_filter_tags = getattr(self, "block_filter_tags", None)
             block_filter_tags = deepcopy(parent_block_filter_tags) if parent_block_filter_tags is not None else None
+            block_filter_tags_update_mode = getattr(self, "block_filter_tags_update_mode", "merge")
             use_cache = getattr(self, "use_cache", True)
             actor = getattr(self, "actor", None)
             user = getattr(self, "user", None)
@@ -950,6 +952,7 @@ def trigger_memory_update(self: "Agent", user_message: object, memory_types: Lis
                 user=user,
                 filter_tags=filter_tags,
                 block_filter_tags=block_filter_tags,
+                block_filter_tags_update_mode=block_filter_tags_update_mode,
                 use_cache=use_cache,
             )
 

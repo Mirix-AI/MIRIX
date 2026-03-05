@@ -188,6 +188,23 @@ class BlockManager:
 
             return block.to_pydantic()
 
+    def update_block_filter_tags(
+        self,
+        block_id: str,
+        new_filter_tags: Dict[str, Any],
+        actor: PydanticClient,
+        user: Optional["PydanticUser"] = None,
+    ) -> None:
+        """
+        Update only the filter_tags on a block and persist to DB + cache.
+        """
+        with self.session_maker() as session:
+            block = BlockModel.read(
+                db_session=session, identifier=block_id, actor=actor, user=user, access_type=AccessType.USER
+            )
+            block.filter_tags = new_filter_tags
+            block.update_with_redis(db_session=session, actor=actor)
+
     @enforce_types
     def delete_block(self, block_id: str, actor: PydanticClient) -> PydanticBlock:
         """Delete a block by its ID (removes from cache)."""
@@ -386,7 +403,8 @@ class BlockManager:
 
                 new_block_id = PydanticBlock._generate_id()
 
-                merged_tags = {"scope": scope, **(block_filter_tags or {})}
+                sanitized_bft = {k: v for k, v in (block_filter_tags or {}).items() if k != "scope"}
+                merged_tags = {**sanitized_bft, "scope": scope}
                 new_block = BlockModel(
                     id=new_block_id,
                     label=template_block.label,
