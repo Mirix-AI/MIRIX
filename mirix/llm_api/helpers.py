@@ -5,7 +5,7 @@ import warnings
 from collections import OrderedDict
 from typing import Any, List, Union
 
-import requests
+import httpx
 
 from mirix.constants import OPENAI_CONTEXT_WINDOW_ERROR_SUBSTRING
 from mirix.schemas.enums import MessageRole
@@ -136,10 +136,12 @@ def convert_to_structured_output(openai_function: dict, allow_optional: bool = F
     return structured_output
 
 
-def make_post_request(url: str, headers: dict[str, str], data: dict[str, Any]) -> dict[str, Any]:
+async def make_post_request(url: str, headers: dict[str, str], data: dict[str, Any]) -> dict[str, Any]:
+    """Async HTTP POST using httpx. Call with await."""
     printd(f"Sending request to {url}")
     try:
-        response = requests.post(url, headers=headers, json=data)
+        async with httpx.AsyncClient() as client:
+            response = await client.post(url, headers=headers, json=data)
         printd(f"Response status code: {response.status_code}")
 
         # Raise for 4XX/5XX HTTP errors
@@ -149,10 +151,9 @@ def make_post_request(url: str, headers: dict[str, str], data: dict[str, Any]) -
         content_type = response.headers.get("Content-Type", "")
         if "application/json" in content_type.lower():
             try:
-                response_data = response.json()  # Attempt to parse the response as JSON
+                response_data = response.json()
                 printd(f"Response JSON: {response_data}")
             except ValueError as json_err:
-                # Handle the case where the content type says JSON but the body is invalid
                 error_message = f"Failed to parse JSON despite Content-Type being {content_type}: {json_err}"
                 printd(error_message)
                 raise ValueError(error_message) from json_err
@@ -160,37 +161,31 @@ def make_post_request(url: str, headers: dict[str, str], data: dict[str, Any]) -
             error_message = f"Unexpected content type returned: {response.headers.get('Content-Type')}"
             printd(error_message)
             raise ValueError(error_message)
-        # Process the response using the callback function
         return response_data
 
-    except requests.exceptions.HTTPError as http_err:
-        # HTTP errors (4XX, 5XX)
+    except httpx.HTTPStatusError as http_err:
         error_message = f"HTTP error occurred: {http_err}"
         if http_err.response is not None:
             error_message += f" | Status code: {http_err.response.status_code}, Message: {http_err.response.text}"
         printd(error_message)
-        raise requests.exceptions.HTTPError(error_message) from http_err
+        raise httpx.HTTPStatusError(error_message, request=http_err.request, response=http_err.response) from http_err
 
-    except requests.exceptions.Timeout as timeout_err:
-        # Handle timeout errors
+    except httpx.TimeoutException as timeout_err:
         error_message = f"Request timed out: {timeout_err}"
         printd(error_message)
-        raise requests.exceptions.Timeout(error_message) from timeout_err
+        raise httpx.TimeoutException(error_message) from timeout_err
 
-    except requests.exceptions.RequestException as req_err:
-        # Non-HTTP errors (e.g., connection, SSL errors)
+    except httpx.RequestError as req_err:
         error_message = f"Request failed: {req_err}"
         printd(error_message)
-        raise requests.exceptions.RequestException(error_message) from req_err
+        raise httpx.RequestError(error_message) from req_err
 
     except ValueError as val_err:
-        # Handle content-type or non-JSON response issues
         error_message = f"ValueError: {val_err}"
         printd(error_message)
         raise ValueError(error_message) from val_err
 
     except Exception as e:
-        # Catch any other unknown exceptions
         error_message = f"An unexpected error occurred: {e}"
         printd(error_message)
         raise Exception(error_message) from e
@@ -261,44 +256,34 @@ def get_token_counts_for_messages(in_context_messages: List[Message]) -> List[in
 
 
 def is_context_overflow_error(
-    exception: Union[requests.exceptions.RequestException, Exception],
+    exception: Union[httpx.HTTPError, Exception],
 ) -> bool:
-    """Checks if an exception is due to context overflow (based on common OpenAI response messages)"""
+    """Checks if an exception is due to context overflow (based on common OpenAI response messages)."""
     from mirix.utils import printd
 
     match_string = OPENAI_CONTEXT_WINDOW_ERROR_SUBSTRING
 
-    # Backwards compatibility with openai python package/client v0.28 (pre-v1 client migration)
     if match_string in str(exception):
         printd(f"Found '{match_string}' in str(exception)={(str(exception))}")
         return True
 
-    # Based on python requests + OpenAI REST API (/v1)
-    elif isinstance(exception, requests.exceptions.HTTPError):
-        if exception.response is not None and "application/json" in exception.response.headers.get("Content-Type", ""):
+    if isinstance(exception, httpx.HTTPStatusError) and exception.response is not None:
+        ct = exception.response.headers.get("Content-Type", "")
+        if "application/json" in ct:
             try:
                 error_details = exception.response.json()
                 if "error" not in error_details:
                     printd(f"HTTPError occurred, but couldn't find error field: {error_details}")
                     return False
-                else:
-                    error_details = error_details["error"]
-
-                # Check for the specific error code
+                error_details = error_details["error"]
                 if error_details.get("code") == "context_length_exceeded":
                     printd(f"HTTPError occurred, caught error code {error_details.get('code')}")
                     return True
-                # Soft-check for "maximum context length" inside of the message
-                elif error_details.get("message") and "maximum context length" in error_details.get("message"):
+                if error_details.get("message") and "maximum context length" in error_details.get("message", ""):
                     printd(f"HTTPError occurred, found '{match_string}' in error message contents ({error_details})")
                     return True
-                else:
-                    printd(f"HTTPError occurred, but unknown error message: {error_details}")
-                    return False
+                printd(f"HTTPError occurred, but unknown error message: {error_details}")
+                return False
             except ValueError:
-                # JSON decoding failed
                 printd(f"HTTPError occurred ({exception}), but no JSON error message.")
-
-    # Generic fail
-    else:
-        return False
+    return False

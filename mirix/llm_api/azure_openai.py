@@ -1,6 +1,6 @@
-from collections import defaultdict
+from typing import List
 
-import requests
+import httpx
 
 from mirix.llm_api.helpers import make_post_request
 from mirix.schemas.llm_config import LLMConfig
@@ -29,62 +29,52 @@ def get_azure_deployment_list_endpoint(base_url: str):
     return f"{base_url}/openai/deployments?api-version=2023-03-15-preview"
 
 
-def azure_openai_get_deployed_model_list(base_url: str, api_key: str, api_version: str) -> list:
-    """https://learn.microsoft.com/en-us/rest/api/azureopenai/models/list?view=rest-azureopenai-2023-05-15&tabs=HTTP"""
-
-    # https://xxx.openai.azure.com/openai/models?api-version=xxx
+async def azure_openai_get_deployed_model_list(
+    base_url: str, api_key: str, api_version: str
+) -> List[dict]:
+    """Returns list of deployed models using httpx."""
     headers = {"Content-Type": "application/json"}
     if api_key is not None:
-        headers["api-key"] = f"{api_key}"
+        headers["api-key"] = api_key
 
     # 1. Get all available models
     url = get_azure_model_list_endpoint(base_url, api_version)
-    try:
-        response = requests.get(url, headers=headers)
+    async with httpx.AsyncClient() as client:
+        response = await client.get(url, headers=headers)
         response.raise_for_status()
-    except requests.RequestException as e:
-        raise RuntimeError(f"Failed to retrieve model list: {e}")
-    all_available_models = response.json().get("data", [])
+        all_available_models = response.json().get("data", [])
 
     # 2. Get all the deployed models
     url = get_azure_deployment_list_endpoint(base_url)
-    try:
-        response = requests.get(url, headers=headers)
+    async with httpx.AsyncClient() as client:
+        response = await client.get(url, headers=headers)
         response.raise_for_status()
-    except requests.RequestException as e:
-        raise RuntimeError(f"Failed to retrieve model list: {e}")
+        deployed_models = response.json().get("data", [])
 
-    deployed_models = response.json().get("data", [])
-    deployed_model_names = set([m["id"] for m in deployed_models])
-
-    # 3. Only return the models in available models if they have been deployed
+    deployed_model_names = {m["id"] for m in deployed_models}
     deployed_models = [m for m in all_available_models if m["id"] in deployed_model_names]
 
-    # 4. Remove redundant deployments, only include the ones with the latest deployment
-    # Create a dictionary to store the latest model for each ID
-    latest_models = defaultdict()
-
-    # Iterate through the models and update the dictionary with the most recent model
+    # 3. Remove redundant deployments
+    latest_models = {}
     for model in deployed_models:
         model_id = model["id"]
         updated_at = model["created_at"]
-
-        # If the model ID is new or the current model has a more recent created_at, update the dictionary
         if model_id not in latest_models or updated_at > latest_models[model_id]["created_at"]:
             latest_models[model_id] = model
 
-    # Extract the unique models
     return list(latest_models.values())
 
 
-def azure_openai_get_chat_completion_model_list(base_url: str, api_key: str, api_version: str) -> list:
-    model_list = azure_openai_get_deployed_model_list(base_url, api_key, api_version)
+async def azure_openai_get_chat_completion_model_list(
+    base_url: str, api_key: str, api_version: str
+) -> list:
+    model_list = await azure_openai_get_deployed_model_list(base_url, api_key, api_version)
     # Extract models that support text generation
     model_options = [m for m in model_list if m.get("capabilities").get("chat_completion")]
     return model_options
 
 
-def azure_openai_get_embeddings_model_list(
+async def azure_openai_get_embeddings_model_list(
     base_url: str,
     api_key: str,
     api_version: str,
@@ -97,7 +87,7 @@ def azure_openai_get_embeddings_model_list(
 
         return m.get("capabilities").get("embeddings") and valid_name
 
-    model_list = azure_openai_get_deployed_model_list(base_url, api_key, api_version)
+    model_list = await azure_openai_get_deployed_model_list(base_url, api_key, api_version)
     # Extract models that support embeddings
 
     model_options = [m for m in model_list if valid_embedding_model(m)]
@@ -105,7 +95,7 @@ def azure_openai_get_embeddings_model_list(
     return model_options
 
 
-def azure_openai_chat_completions_request(
+async def azure_openai_chat_completions_request(
     model_settings: ModelSettings,
     llm_config: LLMConfig,
     api_key: str,
@@ -132,7 +122,7 @@ def azure_openai_chat_completions_request(
         llm_config.model,
         model_settings.azure_api_version,
     )
-    response_json = make_post_request(url, headers, data)
+    response_json = await make_post_request(url, headers, data)
     # NOTE: azure openai does not include "content" in the response when it is None, so we need to add it
     if "content" not in response_json["choices"][0].get("message"):
         response_json["choices"][0]["message"]["content"] = None
@@ -142,7 +132,7 @@ def azure_openai_chat_completions_request(
     return response
 
 
-def azure_openai_embeddings_request(
+async def azure_openai_embeddings_request(
     resource_name: str, deployment_id: str, api_version: str, api_key: str, data: dict
 ) -> EmbeddingResponse:
     """https://learn.microsoft.com/en-us/azure/ai-services/openai/reference#embeddings"""
@@ -150,5 +140,5 @@ def azure_openai_embeddings_request(
     url = f"https://{resource_name}.openai.azure.com/openai/deployments/{deployment_id}/embeddings?api-version={api_version}"
     headers = {"Content-Type": "application/json", "api-key": f"{api_key}"}
 
-    response_json = make_post_request(url, headers, data)
+    response_json = await make_post_request(url, headers, data)
     return EmbeddingResponse(**response_json)

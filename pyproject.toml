@@ -47,6 +47,9 @@ dependencies = [
     "pathvalidate",
     "docstring_parser",
     "sqlalchemy",
+    "asyncpg",
+    "aiosqlite",
+    "httpx",
     "pydantic-settings",
     "jinja2",
     "humps",
@@ -77,17 +80,18 @@ dependencies = [
     "mcp",  # MCP (Model Context Protocol) client
     "google-auth",  # Google authentication library
     "google-auth-oauthlib",  # Google OAuth library
-    "google-auth-httplib2",  # Google HTTP library
-    "google-api-python-client",  # Google API client library
+    "aiogoogle",  # Async Google API client (Gmail, Drive, etc.)
     "pytest (>=8.4.2,<9.0.0)",
     "ruff (>=0.13.3,<0.14.0)",
     "pyright (>=1.1.406,<2.0.0)",
     "ipdb (>=0.13.13,<0.14.0)",
     "protobuf (>=5.0.0,<6.0.0)",
-    "redis[hiredis] (>=7.0.1,<8.0.0)",
+    "redis[hiredis] (>=7.0.1,<8.0.0)",  # async client only (redis.asyncio); no sync redis
     "bcrypt (>=4.0.0)",
     "PyJWT (>=2.10.1)",
     "langfuse (>=3.11.0,<4.0.0)",
+    "aiokafka (>=0.13.0,<0.14.0)",
+    "asyncddgs",
 ]
 
 [project.optional-dependencies]
@@ -209,6 +213,8 @@ python_files = ["test_*.py", "*_test.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 addopts = "-v --tb=short"
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "session"
 
 
 [tool.poetry.group.dev.dependencies]

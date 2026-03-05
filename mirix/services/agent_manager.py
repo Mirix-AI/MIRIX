@@ -98,7 +98,7 @@ class AgentManager:
     # Basic CRUD operations
     # ======================================================================================================================
     @enforce_types
-    def create_agent(
+    async def create_agent(
         self,
         agent_create: CreateAgent,
         actor: PydanticClient,
@@ -143,7 +143,7 @@ class AgentManager:
 
         tool_ids = agent_create.tool_ids or []
         for tool_name in tool_names:
-            tool = self.tool_manager.get_tool_by_name(tool_name=tool_name, actor=actor)
+            tool = await self.tool_manager.get_tool_by_name(tool_name=tool_name, actor=actor)
             if tool:
                 tool_ids.append(tool.id)
             else:
@@ -153,7 +153,7 @@ class AgentManager:
         tool_ids = list(set(tool_ids))
 
         # Create the agent
-        agent_state = self._create_agent(
+        agent_state = await self._create_agent(
             name=agent_create.name,
             system=system,
             agent_type=agent_create.agent_type,
@@ -165,11 +165,11 @@ class AgentManager:
             actor=actor,
         )
 
-        return self.append_initial_message_sequence_to_in_context_messages(
+        return await self.append_initial_message_sequence_to_in_context_messages(
             actor, agent_state, agent_create.initial_message_sequence
         )
 
-    def create_meta_agent(
+    async def create_meta_agent(
         self,
         meta_agent_create: CreateMetaAgent,
         actor: PydanticClient,
@@ -195,7 +195,7 @@ class AgentManager:
         user_manager = UserManager()
         assert actor.organization_id is not None
         assert actor.write_scope is not None
-        default_user = user_manager.get_or_create_org_default_user(org_id=actor.organization_id)
+        default_user = await user_manager.get_or_create_org_default_user(org_id=actor.organization_id)
         logger.debug(
             "Using organization default user %s for block templates in org %s",
             default_user.id,
@@ -203,7 +203,7 @@ class AgentManager:
         )
 
         # Ensure base tools are available in the database for this organization
-        self.tool_manager.upsert_base_tools(actor=actor)
+        await self.tool_manager.upsert_base_tools(actor=actor)
 
         # Map agent names to their corresponding AgentType
         agent_name_to_type = {
@@ -247,7 +247,7 @@ class AgentManager:
             include_base_tools=True,
         )
 
-        meta_agent_state = self.create_agent(
+        meta_agent_state = await self.create_agent(
             agent_create=meta_agent_create_schema,
             actor=actor,
         )
@@ -301,7 +301,7 @@ class AgentManager:
             )
 
             # Create the agent
-            agent_state = self.create_agent(
+            agent_state = await self.create_agent(
                 agent_create=agent_create,
                 actor=actor,
             )
@@ -316,7 +316,7 @@ class AgentManager:
             if "blocks" in agent_config:
                 memory_block_configs = agent_config["blocks"]
                 for block_cfg in memory_block_configs:
-                    self.block_manager.seed_template_block_for_actor_scope_if_necessary(
+                    await self.block_manager.seed_template_block_for_actor_scope_if_necessary(
                         label=block_cfg["label"],
                         value=block_cfg["value"],
                         limit=block_cfg.get("limit", CORE_MEMORY_BLOCK_CHAR_LIMIT),
@@ -337,7 +337,7 @@ class AgentManager:
             meta_agent_state.children = list(created_agents.values())
         return meta_agent_state
 
-    def update_meta_agent(
+    async def update_meta_agent(
         self,
         meta_agent_id: str,
         meta_agent_update: UpdateMetaAgent,
@@ -355,7 +355,7 @@ class AgentManager:
             PydanticAgentState: The updated meta agent state with children
         """
         # Get the existing meta agent
-        meta_agent_state = self.get_agent_by_id(agent_id=meta_agent_id, actor=actor)
+        meta_agent_state = await self.get_agent_by_id(agent_id=meta_agent_id, actor=actor)
 
         # Verify this is actually a meta_memory_agent
         if meta_agent_state.agent_type != AgentType.meta_memory_agent:
@@ -397,24 +397,24 @@ class AgentManager:
 
         # Update meta agent with all fields at once
         if meta_agent_update_fields:
-            self.update_agent(
+            await self.update_agent(
                 agent_id=meta_agent_id,
                 agent_update=UpdateAgent(**meta_agent_update_fields),
                 actor=actor,
             )
-            meta_agent_state = self.get_agent_by_id(agent_id=meta_agent_id, actor=actor)
+            meta_agent_state = await self.get_agent_by_id(agent_id=meta_agent_id, actor=actor)
 
         # Update meta agent's system prompt if provided (separate call needed for rebuild_system_prompt)
         if meta_agent_update.system_prompts and "meta_memory_agent" in meta_agent_update.system_prompts:
-            self.update_system_prompt(
+            await self.update_system_prompt(
                 agent_id=meta_agent_id,
                 system_prompt=meta_agent_update.system_prompts["meta_memory_agent"],
                 actor=actor,
             )
-            meta_agent_state = self.get_agent_by_id(agent_id=meta_agent_id, actor=actor)
+            meta_agent_state = await self.get_agent_by_id(agent_id=meta_agent_id, actor=actor)
 
         # Get existing sub-agents
-        existing_children = self.list_agents(actor=actor, parent_id=meta_agent_id)
+        existing_children = await self.list_agents(actor=actor, parent_id=meta_agent_id)
         existing_agent_names = set()
         existing_agents_by_name = {}
 
@@ -458,7 +458,7 @@ class AgentManager:
                 if agent_name in existing_agents_by_name:
                     child_agent = existing_agents_by_name[agent_name]
                     logger.debug("Deleting sub-agent: %s with id: %s", agent_name, child_agent.id)
-                    self.delete_agent(agent_id=child_agent.id, actor=actor)
+                    await self.delete_agent(agent_id=child_agent.id, actor=actor)
 
             # Create new agents
             for agent_name in agents_to_create:
@@ -490,7 +490,7 @@ class AgentManager:
                 )
 
                 # Create the agent
-                new_agent_state = self.create_agent(
+                new_agent_state = await self.create_agent(
                     agent_create=agent_create,
                     actor=actor,
                 )
@@ -510,7 +510,7 @@ class AgentManager:
                     child_agent = existing_agents_by_name[agent_name]
                     if child_agent.system != system_prompt:
                         logger.debug("Updating system prompt for sub-agent: %s", agent_name)
-                        self.update_system_prompt(
+                        await self.update_system_prompt(
                             agent_id=child_agent.id,
                             system_prompt=system_prompt,
                             actor=actor,
@@ -527,31 +527,31 @@ class AgentManager:
 
                 if update_fields:
                     logger.debug("Updating configs for sub-agent: %s", agent_name)
-                    self.update_agent(
+                    await self.update_agent(
                         agent_id=child_agent.id,
                         agent_update=UpdateAgent(**update_fields),
                         actor=actor,
                     )
 
         # Refresh the meta agent state with updated children
-        meta_agent_state = self.get_agent_by_id(agent_id=meta_agent_id, actor=actor)
-        updated_children = self.list_agents(actor=actor, parent_id=meta_agent_id)
+        meta_agent_state = await self.get_agent_by_id(agent_id=meta_agent_id, actor=actor)
+        updated_children = await self.list_agents(actor=actor, parent_id=meta_agent_id)
         meta_agent_state.children = updated_children
 
         return meta_agent_state
 
-    def update_agent_tools_and_system_prompts(
+    async def update_agent_tools_and_system_prompts(
         self,
         agent_id: str,
         actor: PydanticClient,
         system_prompt: Optional[str] = None,
     ):
-        agent_state = self.get_agent_by_id(agent_id=agent_id, actor=actor)
+        agent_state = await self.get_agent_by_id(agent_id=agent_id, actor=actor)
 
         # update the system prompt
         if system_prompt is not None:
             if not agent_state.system == system_prompt:
-                self.update_system_prompt(agent_id=agent_id, system_prompt=system_prompt, actor=actor)
+                await self.update_system_prompt(agent_id=agent_id, system_prompt=system_prompt, actor=actor)
 
         # update the tools
         ## get the new tool names
@@ -604,7 +604,7 @@ class AgentManager:
         # Add new tools
         if len(new_tool_names) > 0:
             for tool_name in new_tool_names:
-                tool = self.tool_manager.get_tool_by_name(tool_name=tool_name, actor=actor)
+                tool = await self.tool_manager.get_tool_by_name(tool_name=tool_name, actor=actor)
                 if tool:
                     tool_ids.append(tool.id)
 
@@ -612,7 +612,7 @@ class AgentManager:
         if len(tool_names_to_remove) > 0:
             tools_to_remove_ids = []
             for tool_name in tool_names_to_remove:
-                tool = self.tool_manager.get_tool_by_name(tool_name=tool_name, actor=actor)
+                tool = await self.tool_manager.get_tool_by_name(tool_name=tool_name, actor=actor)
                 if tool:
                     tools_to_remove_ids.append(tool.id)
 
@@ -621,7 +621,7 @@ class AgentManager:
 
         # Update the agent if there are any changes
         if len(new_tool_names) > 0 or len(tool_names_to_remove) > 0:
-            self.update_agent(
+            await self.update_agent(
                 agent_id=agent_id,
                 agent_update=UpdateAgent(tool_ids=tool_ids),
                 actor=actor,
@@ -671,7 +671,7 @@ class AgentManager:
         return init_messages
 
     @enforce_types
-    def append_initial_message_sequence_to_in_context_messages(
+    async def append_initial_message_sequence_to_in_context_messages(
         self,
         actor: PydanticClient,
         agent_state: PydanticAgentState,
@@ -681,10 +681,10 @@ class AgentManager:
         init_messages = self._generate_initial_message_sequence(
             actor, agent_state, initial_message_sequence, user_id=user_id
         )
-        return self.append_to_in_context_messages(init_messages, agent_id=agent_state.id, actor=actor, user_id=user_id)
+        return await self.append_to_in_context_messages(init_messages, agent_id=agent_state.id, actor=actor, user_id=user_id)
 
     @enforce_types
-    def _create_agent(
+    async def _create_agent(
         self,
         actor: PydanticClient,
         name: str,
@@ -697,7 +697,7 @@ class AgentManager:
         parent_id: Optional[str] = None,
     ) -> PydanticAgentState:
         """Create a new agent."""
-        with self.session_maker() as session:
+        async with self.session_maker() as session:
             # Generate a random name if none provided
             if name is None:
                 name = create_random_username()
@@ -716,8 +716,8 @@ class AgentManager:
 
             # Create the new agent using SqlalchemyBase.create_with_redis
             new_agent = AgentModel(**data)
-            _process_relationship(session, new_agent, "tools", ToolModel, tool_ids, replace=True)
-            new_agent.create_with_redis(session, actor=actor)  # Auto-caches to Redis
+            await _process_relationship(session, new_agent, "tools", ToolModel, tool_ids, replace=True)
+            await new_agent.create_with_redis(session, actor=actor)  # Auto-caches to Redis
 
             # Invalidate parent cache if this is a child agent
             if parent_id:
@@ -727,18 +727,18 @@ class AgentManager:
             return new_agent.to_pydantic()
 
     @enforce_types
-    def update_agent(self, agent_id: str, agent_update: UpdateAgent, actor: PydanticClient) -> PydanticAgentState:
+    async def update_agent(self, agent_id: str, agent_update: UpdateAgent, actor: PydanticClient) -> PydanticAgentState:
         # Get current state BEFORE update to detect changes
         old_agent_state = None
         if agent_update.system:
-            old_agent_state = self.get_agent_by_id(agent_id=agent_id, actor=actor)
+            old_agent_state = await self.get_agent_by_id(agent_id=agent_id, actor=actor)
 
         # Update agent (including system field in database)
-        agent_state = self._update_agent(agent_id=agent_id, agent_update=agent_update, actor=actor)
+        agent_state = await self._update_agent(agent_id=agent_id, agent_update=agent_update, actor=actor)
 
         # Rebuild the system prompt if it changed
         if agent_update.system and old_agent_state and agent_update.system != old_agent_state.system:
-            agent_state = self.rebuild_system_prompt(
+            agent_state = await self.rebuild_system_prompt(
                 agent_id=agent_state.id,
                 system_prompt=agent_update.system,  # Pass the new system prompt
                 actor=actor,
@@ -748,22 +748,22 @@ class AgentManager:
         return agent_state
 
     @enforce_types
-    def update_llm_config(self, agent_id: str, llm_config: LLMConfig, actor: PydanticClient) -> PydanticAgentState:
-        return self.update_agent(
+    async def update_llm_config(self, agent_id: str, llm_config: LLMConfig, actor: PydanticClient) -> PydanticAgentState:
+        return await self.update_agent(
             agent_id=agent_id,
             agent_update=UpdateAgent(llm_config=llm_config),
             actor=actor,
         )
 
     @enforce_types
-    def update_system_prompt(self, agent_id: str, system_prompt: str, actor: PydanticClient) -> PydanticAgentState:
-        agent_state = self.update_agent(
+    async def update_system_prompt(self, agent_id: str, system_prompt: str, actor: PydanticClient) -> PydanticAgentState:
+        agent_state = await self.update_agent(
             agent_id=agent_id,
             agent_update=UpdateAgent(system=system_prompt),
             actor=actor,
         )
         # Rebuild the system prompt if it's different
-        agent_state = self.rebuild_system_prompt(
+        agent_state = await self.rebuild_system_prompt(
             agent_id=agent_state.id,
             system_prompt=system_prompt,
             actor=actor,
@@ -772,7 +772,7 @@ class AgentManager:
         return agent_state
 
     @enforce_types
-    def update_mcp_tools(
+    async def update_mcp_tools(
         self,
         agent_id: str,
         mcp_tools: List[str],
@@ -780,14 +780,14 @@ class AgentManager:
         tool_ids: List[str],
     ) -> PydanticAgentState:
         """Update the MCP tools connected to an agent."""
-        return self.update_agent(
+        return await self.update_agent(
             agent_id=agent_id,
             agent_update=UpdateAgent(mcp_tools=mcp_tools, tool_ids=tool_ids),
             actor=actor,
         )
 
     @enforce_types
-    def add_mcp_tool(
+    async def add_mcp_tool(
         self,
         agent_id: str,
         mcp_tool_name: str,
@@ -796,13 +796,13 @@ class AgentManager:
     ) -> PydanticAgentState:
         """Add a single MCP tool to an agent."""
         # First get the current agent state
-        agent_state = self.get_agent_by_id(agent_id=agent_id, actor=actor)
+        agent_state = await self.get_agent_by_id(agent_id=agent_id, actor=actor)
         current_mcp_tools = agent_state.mcp_tools or []
 
         # Add the new MCP tool if not already present
         if mcp_tool_name not in current_mcp_tools:
             current_mcp_tools.append(mcp_tool_name)
-            return self.update_mcp_tools(
+            return await self.update_mcp_tools(
                 agent_id=agent_id,
                 mcp_tools=current_mcp_tools,
                 actor=actor,
@@ -812,7 +812,7 @@ class AgentManager:
         return agent_state
 
     @enforce_types
-    def _update_agent(self, agent_id: str, agent_update: UpdateAgent, actor: PydanticClient) -> PydanticAgentState:
+    async def _update_agent(self, agent_id: str, agent_update: UpdateAgent, actor: PydanticClient) -> PydanticAgentState:
         """
         Update an existing agent.
 
@@ -824,9 +824,9 @@ class AgentManager:
         Returns:
             PydanticAgentState: The updated agent as a Pydantic model.
         """
-        with self.session_maker() as session:
+        async with self.session_maker() as session:
             # Retrieve the existing agent
-            agent = AgentModel.read(db_session=session, identifier=agent_id, actor=actor)
+            agent = await AgentModel.read(db_session=session, identifier=agent_id, actor=actor)
 
             # Track old parent_id for cache invalidation
             old_parent_id = agent.parent_id
@@ -849,7 +849,7 @@ class AgentManager:
 
             # Update relationships using _process_relationship
             if agent_update.tool_ids is not None:
-                _process_relationship(
+                await _process_relationship(
                     session,
                     agent,
                     "tools",
@@ -859,18 +859,18 @@ class AgentManager:
                 )
 
             # Commit and refresh the agent, update Redis cache
-            agent.update_with_redis(session, actor=actor)  # Updates Redis cache
+            await agent.update_with_redis(session, actor=actor)  # Updates Redis cache
 
             # Invalidate parent caches if parent_id changed or agent has a parent
             if old_parent_id:
-                self._invalidate_parent_cache_for_child(agent_id, old_parent_id)
+                await self._invalidate_parent_cache_for_child(agent_id, old_parent_id)
             if agent.parent_id and agent.parent_id != old_parent_id:
-                self._invalidate_parent_cache_for_child(agent_id, agent.parent_id)
+                await self._invalidate_parent_cache_for_child(agent_id, agent.parent_id)
 
             # Convert to PydanticAgentState and return
             return agent.to_pydantic()
 
-    def _invalidate_parent_cache_for_child(self, child_agent_id: str, parent_id: Optional[str] = None) -> None:
+    async def _invalidate_parent_cache_for_child(self, child_agent_id: str, parent_id: Optional[str] = None) -> None:
         """
         Invalidate parent agent cache when a child agent is created/updated/deleted.
 
@@ -889,7 +889,7 @@ class AgentManager:
             # If parent_id not provided, try to get it from reverse mapping
             if not parent_id:
                 reverse_key = f"{redis_client.AGENT_PREFIX}{child_agent_id}:parent"
-                parent_id_bytes = redis_client.client.get(reverse_key)
+                parent_id_bytes = await redis_client.client.get(reverse_key)
                 if parent_id_bytes:
                     parent_id = (
                         parent_id_bytes.decode("utf-8") if isinstance(parent_id_bytes, bytes) else parent_id_bytes
@@ -898,7 +898,7 @@ class AgentManager:
             # Invalidate parent agent cache
             if parent_id:
                 parent_key = f"{redis_client.AGENT_PREFIX}{parent_id}"
-                redis_client.delete(parent_key)
+                await redis_client.delete(parent_key)
                 logger.debug(
                     "Invalidated parent agent %s cache due to child %s change",
                     parent_id,
@@ -907,13 +907,13 @@ class AgentManager:
 
                 # Clean up reverse mapping if this is a deletion
                 reverse_key = f"{redis_client.AGENT_PREFIX}{child_agent_id}:parent"
-                redis_client.delete(reverse_key)
+                await redis_client.delete(reverse_key)
 
         except Exception as e:
             # Log but don't fail the operation if cache invalidation fails
             logger.warning("Failed to invalidate parent cache for child %s: %s", child_agent_id, e)
 
-    def _reconstruct_children_from_cache(
+    async def _reconstruct_children_from_cache(
         self,
         agent_states: List[PydanticAgentState],
         session: Session,
@@ -943,13 +943,13 @@ class AgentManager:
             redis_client = get_redis_client()
             if not redis_client:
                 # Redis not available, fall back to PostgreSQL
-                return self._get_children_from_db(parent_ids, session, actor)
+                return await self._get_children_from_db(parent_ids, session, actor)
 
             # Step 1: Fetch parent agents from Redis to get children_ids
             pipe = redis_client.client.pipeline()
             for parent_id in parent_ids:
                 pipe.hgetall(f"{redis_client.AGENT_PREFIX}{parent_id}")
-            parent_results = pipe.execute()
+            parent_results = await pipe.execute()
 
             # Extract all children IDs
             all_children_ids = []
@@ -971,7 +971,7 @@ class AgentManager:
             pipe = redis_client.client.pipeline()
             for child_id in all_children_ids:
                 pipe.hgetall(f"{redis_client.AGENT_PREFIX}{child_id}")
-            child_results = pipe.execute()
+            child_results = await pipe.execute()
 
             # Build mapping of child_id -> reconstructed child agent
             children_cache = {}
@@ -1027,7 +1027,7 @@ class AgentManager:
                     tool_pipe = redis_client.client.pipeline()
                     for tool_id in tool_ids:
                         tool_pipe.hgetall(f"{redis_client.TOOL_PREFIX}{tool_id}")
-                    tool_results = tool_pipe.execute()
+                    tool_results = await tool_pipe.execute()
 
                     for tool_data in tool_results:
                         if tool_data:
@@ -1057,7 +1057,7 @@ class AgentManager:
                     "Some children not found in Redis cache (%s missing), falling back to PostgreSQL",
                     len(missing_child_ids),
                 )
-                return self._get_children_from_db(parent_ids, session, actor)
+                return await self._get_children_from_db(parent_ids, session, actor)
 
             # Step 3: Group children by parent_id
             for parent_id, children_ids in parent_to_children_ids.items():
@@ -1074,9 +1074,9 @@ class AgentManager:
         except Exception as e:
             # Log error and fall back to PostgreSQL
             logger.warning("Failed to reconstruct children from Redis cache: %s", e)
-            return self._get_children_from_db(parent_ids, session, actor)
+            return await self._get_children_from_db(parent_ids, session, actor)
 
-    def _get_children_from_db(self, parent_ids: List[str], session: Session, actor: PydanticClient) -> dict:
+    async def _get_children_from_db(self, parent_ids: List[str], session: Session, actor: PydanticClient) -> dict:
         """
         Fallback method to get children from PostgreSQL with client-level filtering.
 
@@ -1089,7 +1089,7 @@ class AgentManager:
             Dictionary mapping parent_id -> list of child agents
         """
         # Query all agents for this client (triggers client-level filtering via apply_access_predicate)
-        children = AgentModel.list(
+        children = await AgentModel.list(
             db_session=session,
             actor=actor,  # Triggers client-level filtering (organization_id + _created_by_id)
         )
@@ -1108,7 +1108,7 @@ class AgentManager:
         )
         return children_by_parent
 
-    def _get_children_from_redis(self, parent_id: str, actor: PydanticClient) -> Optional[List[PydanticAgentState]]:
+    async def _get_children_from_redis(self, parent_id: str, actor: PydanticClient) -> Optional[List[PydanticAgentState]]:
         """
         Fetch children from Redis cache using parent's children_ids.
 
@@ -1130,7 +1130,7 @@ class AgentManager:
 
             # Get parent's cache to retrieve children_ids
             parent_key = f"{redis_client.AGENT_PREFIX}{parent_id}"
-            parent_data = redis_client.get_hash(parent_key)
+            parent_data = await redis_client.get_hash(parent_key)
 
             if not parent_data or "children_ids" not in parent_data:
                 # Parent not in cache or doesn't have children_ids
@@ -1150,7 +1150,7 @@ class AgentManager:
             children = []
             for child_id in children_ids:
                 try:
-                    child = self.get_agent_by_id(child_id, actor)
+                    child = await self.get_agent_by_id(child_id, actor)
                     children.append(child)
                 except NoResultFound:
                     # Child not found - cache inconsistency
@@ -1173,7 +1173,7 @@ class AgentManager:
             logger.warning("Failed to get children from Redis for parent %s: %s", parent_id, e)
             return None
 
-    def _cache_children_ids_for_parents(self, agent_states: List[PydanticAgentState]) -> None:
+    async def _cache_children_ids_for_parents(self, agent_states: List[PydanticAgentState]) -> None:
         """
         Cache children_ids for parent agents that have children populated.
         This enables future list_agents(parent_id=X) calls to use Redis cache.
@@ -1198,13 +1198,13 @@ class AgentManager:
 
                     # Update parent's cache with children_ids
                     parent_key = f"{redis_client.AGENT_PREFIX}{agent_state.id}"
-                    redis_client.client.hset(parent_key, "children_ids", json.dumps(children_ids))
+                    await redis_client.client.hset(parent_key, "children_ids", json.dumps(children_ids))
 
                     # Maintain reverse mapping for cache invalidation
                     for child_id in children_ids:
                         reverse_key = f"{redis_client.AGENT_PREFIX}{child_id}:parent"
-                        redis_client.client.set(reverse_key, agent_state.id)
-                        redis_client.client.expire(reverse_key, settings.redis_ttl_agents)
+                        await redis_client.client.set(reverse_key, agent_state.id)
+                        await redis_client.client.expire(reverse_key, settings.redis_ttl_agents)
 
             logger.debug(
                 "Cached children_ids for %s parent agents",
@@ -1215,7 +1215,7 @@ class AgentManager:
             logger.warning("Failed to cache children_ids for parent agents: %s", e)
 
     @enforce_types
-    def list_agents(
+    async def list_agents(
         self,
         actor: PydanticClient,
         match_all_tags: bool = False,
@@ -1236,7 +1236,7 @@ class AgentManager:
         """
         # Optimization: Use Redis cache for list_agents(parent_id=X)
         if parent_id is not None:
-            cached_children = self._get_children_from_redis(parent_id, actor)
+            cached_children = await self._get_children_from_redis(parent_id, actor)
             if cached_children is not None:
                 logger.debug("Redis cache HIT for children of parent %s", parent_id)
                 return cached_children
@@ -1246,10 +1246,10 @@ class AgentManager:
                 parent_id,
             )
 
-        with self.session_maker() as session:
+        async with self.session_maker() as session:
             # Get agents filtered by parent_id (None for top-level agents, or specific parent_id)
             # Actor triggers apply_access_predicate which filters by both organization_id and _created_by_id (client isolation)
-            agents = AgentModel.list(
+            agents = await AgentModel.list(
                 db_session=session,
                 actor=actor,  # Triggers client-level filtering via apply_access_predicate
                 match_all_tags=match_all_tags,
@@ -1269,19 +1269,19 @@ class AgentManager:
 
             # Only populate children if we're listing top-level agents (parent_id is None)
             if parent_id is None:
-                children_by_parent = self._reconstruct_children_from_cache(agent_states, session, actor)
+                children_by_parent = await self._reconstruct_children_from_cache(agent_states, session, actor)
 
                 # Assign children to their parent agents
                 for agent_state in agent_states:
                     agent_state.children = children_by_parent.get(agent_state.id, [])
 
                 # Cache children_ids for future list_agents(parent_id=X) calls
-                self._cache_children_ids_for_parents(agent_states)
+                await self._cache_children_ids_for_parents(agent_states)
 
             return agent_states
 
     @enforce_types
-    def get_agent_by_id(self, agent_id: str, actor: PydanticClient) -> PydanticAgentState:
+    async def get_agent_by_id(self, agent_id: str, actor: PydanticClient) -> PydanticAgentState:
         """Fetch an agent by its ID (with cache and Redis pipeline for tools/blocks)."""
         import json
 
@@ -1297,7 +1297,7 @@ class AgentManager:
         try:
             if cache_provider:
                 cache_key = f"{cache_provider.AGENT_PREFIX}{agent_id}"
-                cached_data = cache_provider.get_hash(cache_key)
+                cached_data = await cache_provider.get_hash(cache_key)
                 if cached_data and redis_client:
                     logger.debug("Cache HIT for agent %s", agent_id)
 
@@ -1346,7 +1346,7 @@ class AgentManager:
                         pipe = redis_client.client.pipeline()
                         for tool_id in tool_ids:
                             pipe.hgetall(f"{redis_client.TOOL_PREFIX}{tool_id}")
-                        tool_results = pipe.execute()
+                        tool_results = await pipe.execute()
 
                         # Deserialize tool data
                         for tool_data in tool_results:
@@ -1380,10 +1380,10 @@ class AgentManager:
             logger.warning("Cache read failed for agent %s: %s", agent_id, e)
 
         # Cache MISS or no cache - fetch from PostgreSQL with client filtering
-        with self.session_maker() as session:
+        async with self.session_maker() as session:
             # AgentModel.read calls apply_access_predicate, which now filters by client (organization_id + _created_by_id)
             # If agent doesn't belong to this client, read() will raise NoResultFound automatically
-            agent = AgentModel.read(
+            agent = await AgentModel.read(
                 db_session=session,
                 identifier=agent_id,
                 actor=actor,  # Triggers client-level filtering via apply_access_predicate
@@ -1419,7 +1419,7 @@ class AgentManager:
                                 tool_data["json_schema"] = json.dumps(tool_data["json_schema"])
                             if "tags" in tool_data and tool_data["tags"]:
                                 tool_data["tags"] = json.dumps(tool_data["tags"])
-                            cache_provider.set_hash(tool_key, tool_data, ttl=settings.redis_ttl_tools)
+                            await cache_provider.set_hash(tool_key, tool_data, ttl=settings.redis_ttl_tools)
 
                     if "children" in data and data["children"]:
                         children_ids = [
@@ -1430,14 +1430,14 @@ class AgentManager:
                         if redis_client:
                             for child_id in children_ids:
                                 reverse_key = f"{redis_client.AGENT_PREFIX}{child_id}:parent"
-                                redis_client.client.set(reverse_key, agent_id)
-                                redis_client.client.expire(reverse_key, settings.redis_ttl_agents)
+                                await redis_client.client.set(reverse_key, agent_id)
+                                await redis_client.client.expire(reverse_key, settings.redis_ttl_agents)
 
                     data.pop("tools", None)
                     data.pop("children", None)
 
                     agent_cache_key = f"{cache_provider.AGENT_PREFIX}{agent_id}"
-                    cache_provider.set_hash(agent_cache_key, data, ttl=settings.redis_ttl_agents)
+                    await cache_provider.set_hash(agent_cache_key, data, ttl=settings.redis_ttl_agents)
                     logger.debug("Populated cache for agent %s with tools", agent_id)
             except Exception as e:
                 logger.warning("Failed to populate cache for agent %s: %s", agent_id, e)
@@ -1445,14 +1445,14 @@ class AgentManager:
             return pydantic_agent
 
     @enforce_types
-    def get_agent_by_name(self, agent_name: str, actor: PydanticClient) -> PydanticAgentState:
+    async def get_agent_by_name(self, agent_name: str, actor: PydanticClient) -> PydanticAgentState:
         """Fetch an agent by its ID."""
-        with self.session_maker() as session:
-            agent = AgentModel.read(db_session=session, name=agent_name, actor=actor)
+        async with self.session_maker() as session:
+            agent = await AgentModel.read(db_session=session, name=agent_name, actor=actor)
             return agent.to_pydantic()
 
     @enforce_types
-    def delete_agent(self, agent_id: str, actor: PydanticClient) -> None:
+    async def delete_agent(self, agent_id: str, actor: PydanticClient) -> None:
         """
         Deletes an agent and its associated relationships.
         Ensures proper permission checks and cascades where applicable.
@@ -1464,9 +1464,9 @@ class AgentManager:
         Raises:
             NoResultFound: If agent doesn't exist
         """
-        with self.session_maker() as session:
+        async with self.session_maker() as session:
             # Retrieve the agent
-            agent = AgentModel.read(db_session=session, identifier=agent_id, actor=actor)
+            agent = await AgentModel.read(db_session=session, identifier=agent_id, actor=actor)
 
             # Track parent_id for cache invalidation
             parent_id = agent.parent_id
@@ -1480,7 +1480,7 @@ class AgentManager:
                 cache_provider = get_cache_provider()
                 if cache_provider:
                     cache_key = f"{cache_provider.AGENT_PREFIX}{agent_id}"
-                    cache_provider.delete(cache_key)
+                    await cache_provider.delete(cache_key)
                     logger.debug("Removed agent %s from cache", agent_id)
             except Exception as e:
                 from mirix.log import get_logger
@@ -1488,11 +1488,11 @@ class AgentManager:
                 logger = get_logger(__name__)
                 logger.warning("Failed to remove agent %s from cache: %s", agent_id, e)
 
-            agent.hard_delete(session)
+            await agent.hard_delete(session)
 
             # Invalidate parent cache if this was a child agent
             if parent_id:
-                self._invalidate_parent_cache_for_child(agent_id, parent_id)
+                await self._invalidate_parent_cache_for_child(agent_id, parent_id)
 
     # ======================================================================================================================
     # In Context Messages Management
@@ -1506,7 +1506,7 @@ class AgentManager:
     # def get_in_context_messages(
     #     self, agent_id: str, actor: PydanticClient
     # ) -> List[PydanticMessage]:
-    #     message_ids = self.get_agent_by_id(agent_id=agent_id, actor=actor).message_ids
+    #     message_ids = await self.get_agent_by_id(agent_id=agent_id, actor=actor).message_ids
     #     messages = self.message_manager.get_messages_by_ids(
     #         message_ids=message_ids, actor=actor
     #     )
@@ -1515,14 +1515,14 @@ class AgentManager:
     #     ]
     #     return messages
     @enforce_types
-    def get_in_context_messages(
+    async def get_in_context_messages(
         self,
         agent_state: PydanticAgentState,
         actor: PydanticClient,
         user: Optional[PydanticUser] = None,
     ) -> List[PydanticMessage]:
         message_ids = agent_state.message_ids
-        messages = self.message_manager.get_messages_by_ids(message_ids=message_ids, actor=actor)
+        messages = await self.message_manager.get_messages_by_ids(message_ids=message_ids, actor=actor)
         # Handle empty message list (e.g., after deletion)
         if not messages:
             return []
@@ -1533,45 +1533,45 @@ class AgentManager:
         return messages
 
     @enforce_types
-    def get_system_message(self, agent_id: str, actor: PydanticClient) -> PydanticMessage:
-        agent_state = self.get_agent_by_id(agent_id=agent_id, actor=actor)
+    async def get_system_message(self, agent_id: str, actor: PydanticClient) -> PydanticMessage:
+        agent_state = await self.get_agent_by_id(agent_id=agent_id, actor=actor)
         message_ids = agent_state.message_ids
 
         # Handle empty message_ids (e.g., after deletion)
         if not message_ids:
             return None
 
-        return self.message_manager.get_message_by_id(message_id=message_ids[0], actor=actor)
+        return await self.message_manager.get_message_by_id(message_id=message_ids[0], actor=actor)
 
     @enforce_types
-    def rebuild_system_prompt(
+    async def rebuild_system_prompt(
         self, agent_id: str, system_prompt: str, actor: PydanticClient, force=False
     ) -> PydanticAgentState:
         """Rebuld the system prompt, put the system_prompt at the first position in the list of messages."""
 
-        agent_state = self.get_agent_by_id(agent_id=agent_id, actor=actor)
+        agent_state = await self.get_agent_by_id(agent_id=agent_id, actor=actor)
         # Swap the system message out (only if there is a diff)
         message = PydanticMessage.dict_to_message(
             agent_id=agent_id,
             model=agent_state.llm_config.model,
             openai_message_dict={"role": "system", "content": system_prompt},
         )
-        message = self.message_manager.create_message(message, actor=actor)
+        message = await self.message_manager.create_message(message, actor=actor)
         message_ids = [message.id] + agent_state.message_ids[1:]  # swap index 0 (system)
-        return self.set_in_context_messages(agent_id=agent_id, message_ids=message_ids, actor=actor)
+        return await self.set_in_context_messages(agent_id=agent_id, message_ids=message_ids, actor=actor)
 
     @enforce_types
-    def set_in_context_messages(
+    async def set_in_context_messages(
         self, agent_id: str, message_ids: List[str], actor: PydanticClient
     ) -> PydanticAgentState:
-        return self.update_agent(
+        return await self.update_agent(
             agent_id=agent_id,
             agent_update=UpdateAgent(message_ids=message_ids),
             actor=actor,
         )
 
     @enforce_types
-    def trim_older_in_context_messages(
+    async def trim_older_in_context_messages(
         self,
         num: int,
         agent_id: str,
@@ -1588,15 +1588,15 @@ class AgentManager:
             actor: The Client performing the operation.
             user_id: The user whose messages to trim. If None, trims all non-system messages.
         """
-        message_ids = self.get_agent_by_id(agent_id=agent_id, actor=actor).message_ids
+        message_ids = await self.get_agent_by_id(agent_id=agent_id, actor=actor).message_ids
         system_message_id = message_ids[0]
         message_ids = message_ids[1:]
 
-        message_id_indices_belonging_to_user = [
-            idx
-            for idx, message_id in enumerate(message_ids)
-            if self.message_manager.get_message_by_id(message_id=message_id, actor=actor).user_id == user_id
-        ]
+        message_id_indices_belonging_to_user = []
+        for idx, message_id in enumerate(message_ids):
+            msg = await self.message_manager.get_message_by_id(message_id=message_id, actor=actor)
+            if msg and msg.user_id == user_id:
+                message_id_indices_belonging_to_user.append(idx)
         message_ids_belonging_to_user = [message_ids[idx] for idx in message_id_indices_belonging_to_user]
         message_ids_to_keep = [message_ids[idx] for idx in message_id_indices_belonging_to_user[num - 1 :]]
 
@@ -1609,10 +1609,10 @@ class AgentManager:
             for msg_id in message_ids
             if (msg_id not in message_ids_belonging_to_user or msg_id in message_ids_to_keep)
         ]
-        return self.set_in_context_messages(agent_id=agent_id, message_ids=new_messages, actor=actor)
+        return await self.set_in_context_messages(agent_id=agent_id, message_ids=new_messages, actor=actor)
 
     @enforce_types
-    def trim_all_in_context_messages_except_system(
+    async def trim_all_in_context_messages_except_system(
         self, agent_id: str, actor: PydanticClient, user_id: Optional[str] = None
     ) -> PydanticAgentState:
         """
@@ -1624,46 +1624,47 @@ class AgentManager:
             actor: The Client performing the operation.
             user_id: The user whose messages to remove. If None, removes all non-system messages.
         """
-        message_ids = self.get_agent_by_id(agent_id=agent_id, actor=actor).message_ids
+        message_ids = await self.get_agent_by_id(agent_id=agent_id, actor=actor).message_ids
         system_message_id = message_ids[0]  # 0 is system message
 
         # Keep system message and only filter out messages belonging to the specified user
         new_message_ids = [system_message_id]
         for message_id in message_ids[1:]:  # Skip system message
-            message = self.message_manager.get_message_by_id(message_id=message_id, actor=actor)
+            message = await self.message_manager.get_message_by_id(message_id=message_id, actor=actor)
             if message.user_id != user_id:
                 new_message_ids.append(message_id)
 
-        return self.set_in_context_messages(agent_id=agent_id, message_ids=new_message_ids, actor=actor)
+        return await self.set_in_context_messages(agent_id=agent_id, message_ids=new_message_ids, actor=actor)
 
     @enforce_types
-    def prepend_to_in_context_messages(
+    async def prepend_to_in_context_messages(
         self,
         messages: List[PydanticMessage],
         agent_id: str,
         actor: PydanticClient,
         user_id: Optional[str] = None,
     ) -> PydanticAgentState:
-        message_ids = self.get_agent_by_id(agent_id=agent_id, actor=actor).message_ids
-        new_messages = self.message_manager.create_many_messages(messages, actor=actor, user_id=user_id)
+        message_ids = await self.get_agent_by_id(agent_id=agent_id, actor=actor).message_ids
+        new_messages = await self.message_manager.create_many_messages(messages, actor=actor, user_id=user_id)
         message_ids = [message_ids[0]] + [m.id for m in new_messages] + message_ids[1:]
-        return self.set_in_context_messages(agent_id=agent_id, message_ids=message_ids, actor=actor)
+        return await self.set_in_context_messages(agent_id=agent_id, message_ids=message_ids, actor=actor)
 
     @enforce_types
-    def append_to_in_context_messages(
+    async def append_to_in_context_messages(
         self,
         messages: List[PydanticMessage],
         agent_id: str,
         actor: PydanticClient,
         user_id: Optional[str] = None,
     ) -> PydanticAgentState:
-        messages = self.message_manager.create_many_messages(messages, actor=actor, user_id=user_id)
-        message_ids = self.get_agent_by_id(agent_id=agent_id, actor=actor).message_ids or []
+        messages = await self.message_manager.create_many_messages(messages, actor=actor, user_id=user_id)
+        agent_state = await self.get_agent_by_id(agent_id=agent_id, actor=actor)
+        message_ids = list(agent_state.message_ids or [])
         message_ids += [m.id for m in messages]
-        return self.set_in_context_messages(agent_id=agent_id, message_ids=message_ids, actor=actor)
+        return await self.set_in_context_messages(agent_id=agent_id, message_ids=message_ids, actor=actor)
 
     @enforce_types
-    def reset_messages(
+    async def reset_messages(
         self,
         agent_id: str,
         actor: PydanticClient,
@@ -1685,9 +1686,9 @@ class AgentManager:
         Returns:
             PydanticAgentState: The updated agent state with user's messages removed.
         """
-        with self.session_maker() as session:
+        async with self.session_maker() as session:
             # Retrieve the existing agent (will raise NoResultFound if invalid)
-            agent = AgentModel.read(db_session=session, identifier=agent_id, actor=actor)
+            agent = await AgentModel.read(db_session=session, identifier=agent_id, actor=actor)
 
             # Get current messages to filter
             current_messages = agent.messages
@@ -1717,12 +1718,12 @@ class AgentManager:
             agent.message_ids = [msg.id for msg in messages_to_keep]
 
             # Commit the update
-            agent.update(db_session=session, actor=actor)
+            await agent.update(db_session=session, actor=actor)
 
             agent_state = agent.to_pydantic()
 
         if add_default_initial_messages:
-            return self.append_initial_message_sequence_to_in_context_messages(actor, agent_state, user_id=user_id)
+            return await self.append_initial_message_sequence_to_in_context_messages(actor, agent_state, user_id=user_id)
         else:
             # We still want to always have a system message
             init_messages = initialize_message_sequence(
@@ -1736,13 +1737,13 @@ class AgentManager:
                 model=agent_state.llm_config.model,
                 openai_message_dict=init_messages[0],
             )
-            return self.append_to_in_context_messages([system_message], agent_id=agent_state.id, actor=actor)
+            return await self.append_to_in_context_messages([system_message], agent_id=agent_state.id, actor=actor)
 
     # ======================================================================================================================
     # Tool Management
     # ======================================================================================================================
     @enforce_types
-    def attach_tool(self, agent_id: str, tool_id: str, actor: PydanticClient) -> PydanticAgentState:
+    async def attach_tool(self, agent_id: str, tool_id: str, actor: PydanticClient) -> PydanticAgentState:
         """
         Attaches a tool to an agent.
 
@@ -1757,27 +1758,26 @@ class AgentManager:
         Returns:
             PydanticAgentState: The updated agent state.
         """
-        with self.session_maker() as session:
+        async with self.session_maker() as session:
             # Verify the agent exists and user has permission to access it
-            agent = AgentModel.read(db_session=session, identifier=agent_id, actor=actor)
+            agent = await AgentModel.read(db_session=session, identifier=agent_id, actor=actor)
 
-            # Use the _process_relationship helper to attach the tool
-            _process_relationship(
+            await _process_relationship(
                 session=session,
                 agent=agent,
                 relationship_name="tools",
                 model_class=ToolModel,
                 item_ids=[tool_id],
-                allow_partial=False,  # Ensure the tool exists
-                replace=False,  # Extend the existing tools
+                allow_partial=False,
+                replace=False,
             )
 
             # Commit and refresh the agent
-            agent.update(session, actor=actor)
+            await agent.update(session, actor=actor)
             return agent.to_pydantic()
 
     @enforce_types
-    def detach_tool(self, agent_id: str, tool_id: str, actor: PydanticClient) -> PydanticAgentState:
+    async def detach_tool(self, agent_id: str, tool_id: str, actor: PydanticClient) -> PydanticAgentState:
         """
         Detaches a tool from an agent.
 
@@ -1792,9 +1792,9 @@ class AgentManager:
         Returns:
             PydanticAgentState: The updated agent state.
         """
-        with self.session_maker() as session:
+        async with self.session_maker() as session:
             # Verify the agent exists and user has permission to access it
-            agent = AgentModel.read(db_session=session, identifier=agent_id, actor=actor)
+            agent = await AgentModel.read(db_session=session, identifier=agent_id, actor=actor)
 
             # Filter out the tool to be detached
             remaining_tools = [tool for tool in agent.tools if tool.id != tool_id]
@@ -1808,5 +1808,5 @@ class AgentManager:
             agent.tools = remaining_tools
 
             # Commit and refresh the agent
-            agent.update(session, actor=actor)
+            await agent.update(session, actor=actor)
             return agent.to_pydantic()

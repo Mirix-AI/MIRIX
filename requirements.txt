@@ -44,8 +44,7 @@ anyio>=4.7.0
 mcp
 google-auth
 google-auth-oauthlib
-google-auth-httplib2
-google-api-python-client
+aiogoogle
 ruff
 nodeenv
 pyright

@@ -1,6 +1,6 @@
+import asyncio
 import os
 import re
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from copy import deepcopy
 from typing import TYPE_CHECKING, List, Optional
 
@@ -26,7 +26,7 @@ from mirix.schemas.semantic_memory import SemanticMemoryItemBase
 logger = get_logger(__name__)
 
 
-def core_memory_append(
+async def core_memory_append(
     self: "Agent", blocks_in_memory: "Memory", label: str, content: str
 ) -> Optional[str]:  # type: ignore
     """
@@ -70,7 +70,7 @@ def core_memory_append(
     return None
 
 
-def core_memory_rewrite(
+async def core_memory_rewrite(
     self: "Agent", blocks_in_memory: "Memory", label: str, content: str
 ) -> Optional[str]:  # type: ignore
     """
@@ -108,7 +108,7 @@ def core_memory_rewrite(
     return None
 
 
-def episodic_memory_insert(self: "Agent", items: List[EpisodicEventForLLM]):
+async def episodic_memory_insert(self: "Agent", items: List[EpisodicEventForLLM]):
     """
     The tool to update episodic memory. The item being inserted into the episodic memory is an event either happened on the user or the assistant.
 
@@ -137,7 +137,7 @@ def episodic_memory_insert(self: "Agent", items: List[EpisodicEventForLLM]):
 
             timestamp = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
 
-        self.episodic_memory_manager.insert_event(
+        await self.episodic_memory_manager.insert_event(
             actor=self.actor,
             agent_state=self.agent_state,
             agent_id=agent_id,
@@ -155,7 +155,7 @@ def episodic_memory_insert(self: "Agent", items: List[EpisodicEventForLLM]):
     return response
 
 
-def episodic_memory_merge(
+async def episodic_memory_merge(
     self: "Agent",
     event_id: str,
     combined_summary: str = None,
@@ -173,7 +173,7 @@ def episodic_memory_merge(
         Optional[str]: None is always returned as this function does not produce a response.
     """
 
-    episodic_memory = self.episodic_memory_manager.update_event(
+    episodic_memory = await self.episodic_memory_manager.update_event(
         event_id=event_id,
         new_summary=combined_summary,
         new_details=combined_details,
@@ -195,7 +195,7 @@ def episodic_memory_merge(
     return response
 
 
-def episodic_memory_replace(self: "Agent", event_ids: List[str], new_items: List[EpisodicEventForLLM]):
+async def episodic_memory_replace(self: "Agent", event_ids: List[str], new_items: List[EpisodicEventForLLM]):
     """
     The tool to replace or delete items in the episodic memory. To replace the memory, set the event_ids to be the ids of the events that needs to be replaced and new_items as the updated events. Note that the number of new items does not need to be the same as the number of event_ids as it is not a one-to-one mapping. To delete the memory, set the event_ids to be the ids of the events that needs to be deleted and new_items as an empty list. To insert new events, use episodic_memory_insert function.
 
@@ -220,10 +220,10 @@ def episodic_memory_replace(self: "Agent", event_ids: List[str], new_items: List
 
     for event_id in event_ids:
         # It will raise an error if the event_id is not found in the episodic memory.
-        self.episodic_memory_manager.get_episodic_memory_by_id(event_id, user=self.user)
+        await self.episodic_memory_manager.get_episodic_memory_by_id(event_id, user=self.user)
 
     for event_id in event_ids:
-        self.episodic_memory_manager.delete_event_by_id(event_id, actor=self.actor)
+        await self.episodic_memory_manager.delete_event_by_id(event_id, actor=self.actor)
 
     for new_item in new_items:
         # Use occurred_at_override if provided, otherwise use LLM-extracted timestamp
@@ -235,7 +235,7 @@ def episodic_memory_replace(self: "Agent", event_ids: List[str], new_items: List
 
             timestamp = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
 
-        self.episodic_memory_manager.insert_event(
+        await self.episodic_memory_manager.insert_event(
             actor=self.actor,
             agent_state=self.agent_state,
             agent_id=agent_id,
@@ -251,7 +251,7 @@ def episodic_memory_replace(self: "Agent", event_ids: List[str], new_items: List
         )
 
 
-def check_episodic_memory(self: "Agent", event_ids: List[str], timezone_str: str) -> List[EpisodicEventForLLM]:
+async def check_episodic_memory(self: "Agent", event_ids: List[str], timezone_str: str) -> List[EpisodicEventForLLM]:
     """
     The tool to check the episodic memory. This function will return the episodic events with the given event_ids.
 
@@ -265,7 +265,7 @@ def check_episodic_memory(self: "Agent", event_ids: List[str], timezone_str: str
         raise ValueError("User is required to check episodic memory")
 
     episodic_memory = [
-        self.episodic_memory_manager.get_episodic_memory_by_id(event_id, user=self.user, timezone_str=timezone_str)
+        await self.episodic_memory_manager.get_episodic_memory_by_id(event_id, user=self.user, timezone_str=timezone_str)
         for event_id in event_ids
     ]
 
@@ -284,7 +284,7 @@ def check_episodic_memory(self: "Agent", event_ids: List[str], timezone_str: str
     return formatted_results
 
 
-def resource_memory_insert(self: "Agent", items: List[ResourceMemoryItemBase]):
+async def resource_memory_insert(self: "Agent", items: List[ResourceMemoryItemBase]):
     """
     The tool to insert new items into resource memory.
 
@@ -310,7 +310,7 @@ def resource_memory_insert(self: "Agent", items: List[ResourceMemoryItemBase]):
 
     for item in items:
         # Check for existing similar resources (by title, summary, and filter_tags)
-        existing_resources = self.resource_memory_manager.list_resources(
+        existing_resources = await self.resource_memory_manager.list_resources(
             agent_state=self.agent_state,
             user=self.user,  # User for read operations (data filtering)
             query="",  # Get all resources
@@ -333,7 +333,7 @@ def resource_memory_insert(self: "Agent", items: List[ResourceMemoryItemBase]):
                 break
 
         if not is_duplicate:
-            self.resource_memory_manager.insert_resource(
+            await self.resource_memory_manager.insert_resource(
                 actor=self.actor,
                 agent_state=self.agent_state,
                 agent_id=agent_id,
@@ -360,7 +360,7 @@ def resource_memory_insert(self: "Agent", items: List[ResourceMemoryItemBase]):
         return "No resources were inserted."
 
 
-def resource_memory_update(self: "Agent", old_ids: List[str], new_items: List[ResourceMemoryItemBase]):
+async def resource_memory_update(self: "Agent", old_ids: List[str], new_items: List[ResourceMemoryItemBase]):
     """
     The tool to update and delete items in the resource memory. To update the memory, set the old_ids to be the ids of the items that needs to be updated and new_items as the updated items. Note that the number of new items does not need to be the same as the number of old ids as it is not a one-to-one mapping. To delete the memory, set the old_ids to be the ids of the items that needs to be deleted and new_items as an empty list.
 
@@ -377,10 +377,10 @@ def resource_memory_update(self: "Agent", old_ids: List[str], new_items: List[Re
     user_id = getattr(self, "user_id", None)
 
     for old_id in old_ids:
-        self.resource_memory_manager.delete_resource_by_id(resource_id=old_id, actor=self.actor)
+        await self.resource_memory_manager.delete_resource_by_id(resource_id=old_id, actor=self.actor)
 
     for item in new_items:
-        self.resource_memory_manager.insert_resource(
+        await self.resource_memory_manager.insert_resource(
             actor=self.actor,
             agent_state=self.agent_state,
             agent_id=agent_id,
@@ -395,7 +395,7 @@ def resource_memory_update(self: "Agent", old_ids: List[str], new_items: List[Re
         )
 
 
-def procedural_memory_insert(self: "Agent", items: List[ProceduralMemoryItemBase]):
+async def procedural_memory_insert(self: "Agent", items: List[ProceduralMemoryItemBase]):
     """
     The tool to insert new procedures into procedural memory. Note that the `summary` should not be a general term such as "guide" or "workflow" but rather a more informative description of the procedure.
 
@@ -419,7 +419,7 @@ def procedural_memory_insert(self: "Agent", items: List[ProceduralMemoryItemBase
 
     for item in items:
         # Check for existing similar procedures (by summary and filter_tags)
-        existing_procedures = self.procedural_memory_manager.list_procedures(
+        existing_procedures = await self.procedural_memory_manager.list_procedures(
             agent_state=self.agent_state,
             user=self.user,  # User for read operations (data filtering)
             query="",  # Get all procedures
@@ -438,7 +438,7 @@ def procedural_memory_insert(self: "Agent", items: List[ProceduralMemoryItemBase
                 break
 
         if not is_duplicate:
-            self.procedural_memory_manager.insert_procedure(
+            await self.procedural_memory_manager.insert_procedure(
                 agent_state=self.agent_state,
                 agent_id=agent_id,
                 entry_type=item["entry_type"],
@@ -464,7 +464,7 @@ def procedural_memory_insert(self: "Agent", items: List[ProceduralMemoryItemBase
         return "No procedures were inserted."
 
 
-def procedural_memory_update(self: "Agent", old_ids: List[str], new_items: List[ProceduralMemoryItemBase]):
+async def procedural_memory_update(self: "Agent", old_ids: List[str], new_items: List[ProceduralMemoryItemBase]):
     """
     The tool to update/delete items in the procedural memory. To update the memory, set the old_ids to be the ids of the items that needs to be updated and new_items as the updated items. Note that the number of new items does not need to be the same as the number of old ids as it is not a one-to-one mapping. To delete the memory, set the old_ids to be the ids of the items that needs to be deleted and new_items as an empty list.
 
@@ -484,10 +484,10 @@ def procedural_memory_update(self: "Agent", old_ids: List[str], new_items: List[
     user_id = getattr(self, "user_id", None)
 
     for old_id in old_ids:
-        self.procedural_memory_manager.delete_procedure_by_id(procedure_id=old_id, actor=self.actor)
+        await self.procedural_memory_manager.delete_procedure_by_id(procedure_id=old_id, actor=self.actor)
 
     for item in new_items:
-        self.procedural_memory_manager.insert_procedure(
+        await self.procedural_memory_manager.insert_procedure(
             agent_state=self.agent_state,
             agent_id=agent_id,
             entry_type=item["entry_type"],
@@ -501,7 +501,7 @@ def procedural_memory_update(self: "Agent", old_ids: List[str], new_items: List[
         )
 
 
-def check_semantic_memory(
+async def check_semantic_memory(
     self: "Agent", semantic_item_ids: List[str], timezone_str: str
 ) -> List[SemanticMemoryItemBase]:
     """
@@ -514,7 +514,7 @@ def check_semantic_memory(
         List[SemanticMemoryItemBase]: List of semantic memory items with the given ids.
     """
     semantic_memory = [
-        self.semantic_memory_manager.get_semantic_item_by_id(
+        await self.semantic_memory_manager.get_semantic_item_by_id(
             semantic_memory_id=id, user=self.user, timezone_str=timezone_str
         )
         for id in semantic_item_ids
@@ -534,7 +534,7 @@ def check_semantic_memory(
     return formatted_results
 
 
-def semantic_memory_insert(self: "Agent", items: List[SemanticMemoryItemBase]):
+async def semantic_memory_insert(self: "Agent", items: List[SemanticMemoryItemBase]):
     """
     The tool to insert items into semantic memory.
 
@@ -558,7 +558,7 @@ def semantic_memory_insert(self: "Agent", items: List[SemanticMemoryItemBase]):
 
     for item in items:
         # Check for existing similar semantic items (by name, summary, and filter_tags)
-        existing_items = self.semantic_memory_manager.list_semantic_items(
+        existing_items = await self.semantic_memory_manager.list_semantic_items(
             agent_state=self.agent_state,
             user=self.user,  # User for read operations (data filtering)
             query="",  # Get all items
@@ -581,7 +581,7 @@ def semantic_memory_insert(self: "Agent", items: List[SemanticMemoryItemBase]):
                 break
 
         if not is_duplicate:
-            self.semantic_memory_manager.insert_semantic_item(
+            await self.semantic_memory_manager.insert_semantic_item(
                 agent_state=self.agent_state,
                 agent_id=agent_id,
                 name=item["name"],
@@ -608,7 +608,7 @@ def semantic_memory_insert(self: "Agent", items: List[SemanticMemoryItemBase]):
         return "No semantic items were inserted."
 
 
-def semantic_memory_update(
+async def semantic_memory_update(
     self: "Agent",
     old_semantic_item_ids: List[str],
     new_items: List[SemanticMemoryItemBase],
@@ -632,11 +632,11 @@ def semantic_memory_update(
     user_id = getattr(self, "user_id", None)
 
     for old_id in old_semantic_item_ids:
-        self.semantic_memory_manager.delete_semantic_item_by_id(semantic_memory_id=old_id, actor=self.actor)
+        await self.semantic_memory_manager.delete_semantic_item_by_id(semantic_memory_id=old_id, actor=self.actor)
 
     new_ids = []
     for item in new_items:
-        inserted_item = self.semantic_memory_manager.insert_semantic_item(
+        inserted_item = await self.semantic_memory_manager.insert_semantic_item(
             agent_state=self.agent_state,
             agent_id=agent_id,
             name=item["name"],
@@ -659,7 +659,7 @@ def semantic_memory_update(
     return message_to_return
 
 
-def knowledge_vault_insert(self: "Agent", items: List[KnowledgeVaultItemBase]):
+async def knowledge_vault_insert(self: "Agent", items: List[KnowledgeVaultItemBase]):
     """
     The tool to update knowledge vault.
 
@@ -683,7 +683,7 @@ def knowledge_vault_insert(self: "Agent", items: List[KnowledgeVaultItemBase]):
 
     for item in items:
         # Check for existing similar knowledge vault items (by caption, source, and filter_tags)
-        existing_items = self.knowledge_vault_manager.list_knowledge(
+        existing_items = await self.knowledge_vault_manager.list_knowledge(
             agent_state=self.agent_state,
             user=self.user,  # User for read operations (data filtering)
             query="",  # Get all items
@@ -706,7 +706,7 @@ def knowledge_vault_insert(self: "Agent", items: List[KnowledgeVaultItemBase]):
                 break
 
         if not is_duplicate:
-            self.knowledge_vault_manager.insert_knowledge(
+            await self.knowledge_vault_manager.insert_knowledge(
                 actor=self.actor,
                 agent_state=self.agent_state,
                 agent_id=agent_id,
@@ -734,7 +734,7 @@ def knowledge_vault_insert(self: "Agent", items: List[KnowledgeVaultItemBase]):
         return "No knowledge vault items were inserted."
 
 
-def knowledge_vault_update(self: "Agent", old_ids: List[str], new_items: List[KnowledgeVaultItemBase]):
+async def knowledge_vault_update(self: "Agent", old_ids: List[str], new_items: List[KnowledgeVaultItemBase]):
     """
     The tool to update/delete items in the knowledge vault. To update the knowledge_vault, set the old_ids to be the ids of the items that needs to be updated and new_items as the updated items. Note that the number of new items does not need to be the same as the number of old ids as it is not a one-to-one mapping. To delete the memory, set the old_ids to be the ids of the items that needs to be deleted and new_items as an empty list.
 
@@ -754,10 +754,10 @@ def knowledge_vault_update(self: "Agent", old_ids: List[str], new_items: List[Kn
     user_id = getattr(self, "user_id", None)
 
     for old_id in old_ids:
-        self.knowledge_vault_manager.delete_knowledge_by_id(knowledge_vault_item_id=old_id, actor=self.actor)
+        await self.knowledge_vault_manager.delete_knowledge_by_id(knowledge_vault_item_id=old_id, actor=self.actor)
 
     for item in new_items:
-        self.knowledge_vault_manager.insert_knowledge(
+        await self.knowledge_vault_manager.insert_knowledge(
             actor=self.actor,
             agent_state=self.agent_state,
             agent_id=agent_id,
@@ -773,7 +773,7 @@ def knowledge_vault_update(self: "Agent", old_ids: List[str], new_items: List[Kn
         )
 
 
-def trigger_memory_update_with_instruction(
+async def trigger_memory_update_with_instruction(
     self: "Agent", user_message: object, instruction: str, memory_type: str
 ) -> Optional[str]:
     """
@@ -789,15 +789,8 @@ def trigger_memory_update_with_instruction(
 
     from mirix.local_client import create_client
 
-    client = create_client()
-    agents = client.list_agents()
-
-    # Validate that user_message is a dictionary
     if not isinstance(user_message, dict):
         raise TypeError(f"user_message must be a dictionary, got {type(user_message).__name__}: {user_message}")
-
-    # Fallback to sequential processing for backward compatibility
-    response = ""
 
     if memory_type == "core":
         agent_type = "core_memory_agent"
@@ -816,16 +809,16 @@ def trigger_memory_update_with_instruction(
             f"Memory type '{memory_type}' is not supported. Please choose from 'core', 'episodic', 'resource', 'procedural', 'knowledge_vault', 'semantic'."
         )
 
+    client = await create_client()
+    agents = await client.list_agents()
     matching_agent = None
     for agent in agents:
         if agent.agent_type == agent_type:
             matching_agent = agent
             break
-
     if matching_agent is None:
         raise ValueError(f"No agent found with type '{agent_type}'")
-
-    client.send_message(
+    await client.send_message(
         role="user",
         user_id=self.user.id,
         agent_id=matching_agent.id,
@@ -836,12 +829,11 @@ def trigger_memory_update_with_instruction(
         block_filter_tags=getattr(self, "block_filter_tags", None),
         block_filter_tags_update_mode=getattr(self, "block_filter_tags_update_mode", "merge"),
     )
-    response += "[System Message] Agent " + matching_agent.name + " has been triggered to update the memory.\n"
+    result = "[System Message] Agent " + matching_agent.name + " has been triggered to update the memory.\n"
+    return result.strip()
 
-    return response.strip()
 
-
-def trigger_memory_update(self: "Agent", user_message: object, memory_types: List[str]) -> Optional[str]:
+async def trigger_memory_update(self: "Agent", user_message: object, memory_types: List[str]) -> Optional[str]:
     """
     Choose which memory to update. This function will trigger another memory agent which is specifically in charge of handling the corresponding memory to update its memory. Trigger all necessary memory updates at once. Put the explanations in the `internal_monologue` field.
 
@@ -895,21 +887,29 @@ def trigger_memory_update(self: "Agent", user_message: object, memory_types: Lis
             )
 
     # Get child agents
-    child_agent_states = self.agent_manager.list_agents(parent_id=self.agent_state.id, actor=self.actor)
+    child_agent_states = await self.agent_manager.list_agents(parent_id=self.agent_state.id, actor=self.actor)
 
-    # Map agent types to agent states
-    agent_type_to_state = {agent_state.agent_type: agent_state for agent_state in child_agent_states}
+    # Map agent types to agent states (key by string so lookup works for enum or deserialized string)
+    def _agent_type_key(at):
+        return at.value if hasattr(at, "value") else str(at)
 
-    # Capture trace context from main thread BEFORE spawning worker threads
-    # ContextVars don't automatically propagate to ThreadPoolExecutor workers
+    agent_type_to_state = {
+        _agent_type_key(agent_state.agent_type): agent_state for agent_state in child_agent_states
+    }
+
+    if not child_agent_states:
+        raise ValueError(
+            "No child memory agents found for the meta agent. "
+            "Ensure the meta agent has been initialized (e.g. via POST /agents/meta/initialize)."
+        )
+
+    # Capture trace context before spawning concurrent tasks
     parent_trace_context = get_trace_context()
     langfuse = get_langfuse_client()
 
-    def _run_single_memory_update(memory_type: str) -> str:
-        # ThreadPoolExecutor reuses worker threads; ContextVars can leak between runs unless cleared.
+    async def _run_single_memory_update(memory_type: str) -> str:
         try:
-            # Restore trace context in worker thread (ContextVars are thread-local)
-            # This is for LangFuse hierarchical tracing
+            # Restore trace context in each coroutine for LangFuse hierarchical tracing
             if parent_trace_context.get("trace_id"):
                 set_trace_context(
                     trace_id=parent_trace_context.get("trace_id"),
@@ -1012,7 +1012,6 @@ def trigger_memory_update(self: "Agent", user_message: object, memory_types: Lis
                 if parent_span_id:
                     trace_context_dict["parent_span_id"] = parent_span_id
 
-                # Use context manager for proper OTel context propagation
                 with langfuse.start_as_current_observation(
                     name=span_name,
                     as_type="agent",
@@ -1039,7 +1038,7 @@ def trigger_memory_update(self: "Agent", user_message: object, memory_types: Lis
                             session_id=parent_trace_context.get("session_id"),
                         )
 
-                    memory_agent.step(
+                    await memory_agent.step(
                         input_messages=message_copy,
                         chaining=user_message.get("chaining", False),
                         actor=actor,
@@ -1049,7 +1048,7 @@ def trigger_memory_update(self: "Agent", user_message: object, memory_types: Lis
                     )
             else:
                 # No tracing available, run directly
-                memory_agent.step(
+                await memory_agent.step(
                     input_messages=message_copy,
                     chaining=user_message.get("chaining", False),
                     actor=actor,
@@ -1062,36 +1061,29 @@ def trigger_memory_update(self: "Agent", user_message: object, memory_types: Lis
         finally:
             clear_trace_context()
 
-    max_workers = min(len(memory_types), max(os.cpu_count() or 1, 1))
     responses: dict[int, str] = {}
 
     if not memory_types:
         return ""
 
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_to_index = {
-            executor.submit(_run_single_memory_update, memory_type): index
-            for index, memory_type in enumerate(memory_types)
-        }
-        for future in as_completed(future_to_index):
-            index = future_to_index[future]
-            memory_type = memory_types[index]
-            try:
-                responses[index] = future.result()
-            except Exception as exc:
-                raise RuntimeError(f"Failed to trigger memory update for '{memory_type}'") from exc
+    tasks = [_run_single_memory_update(memory_type) for memory_type in memory_types]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    for i, result in enumerate(results):
+        if isinstance(result, Exception):
+            raise RuntimeError(f"Failed to trigger memory update for '{memory_types[i]}'") from result
+        responses[i] = result
 
     ordered_responses = [responses[i] for i in range(len(memory_types)) if i in responses]
     return "".join(ordered_responses).strip()
 
 
-def finish_memory_update(self: "Agent"):
+async def finish_memory_update(self: "Agent") -> str:
     """
     Finish the memory update process. This function should be called after the Memory is updated.
 
     Note: This function takes no parameters. Call it without any arguments.
 
     Returns:
-        Optional[str]: None is always returned as this function does not produce a response.
+        str: Empty string (no response content).
     """
-    return None
+    return ""

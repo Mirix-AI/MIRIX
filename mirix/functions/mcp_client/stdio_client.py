@@ -2,7 +2,6 @@
 Stdio MCP Client - adapted from Letta with working implementation
 """
 
-import asyncio
 import sys
 from contextlib import asynccontextmanager
 
@@ -13,7 +12,7 @@ from anyio.streams.text import TextReceiveStream
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import get_default_environment
 
-from .base_client import BaseAsyncMCPClient, BaseMCPClient
+from .base_client import BaseMCPClient
 from .types import StdioServerConfig
 
 logger = __import__("logging").getLogger(__name__)
@@ -21,36 +20,6 @@ logger = __import__("logging").getLogger(__name__)
 
 class StdioMCPClient(BaseMCPClient):
     """MCP client using stdio transport"""
-
-    def _initialize_connection(self, server_config: StdioServerConfig, timeout: float) -> bool:
-        """Initialize stdio connection to MCP server"""
-        try:
-            server_params = StdioServerParameters(
-                command=server_config.command,
-                args=server_config.args,
-                env=server_config.env or get_default_environment(),
-            )
-
-            stdio_cm = forked_stdio_client(server_params)
-            stdio_transport = self.loop.run_until_complete(asyncio.wait_for(stdio_cm.__aenter__(), timeout=timeout))
-            self.stdio, self.write = stdio_transport
-            self.cleanup_funcs.append(lambda: self.loop.run_until_complete(stdio_cm.__aexit__(None, None, None)))
-
-            session_cm = ClientSession(self.stdio, self.write)
-            self.session = self.loop.run_until_complete(asyncio.wait_for(session_cm.__aenter__(), timeout=timeout))
-            self.cleanup_funcs.append(lambda: self.loop.run_until_complete(session_cm.__aexit__(None, None, None)))
-            return True
-
-        except asyncio.TimeoutError:
-            logger.error(f"Timed out while establishing stdio connection (timeout={timeout}s).")
-            return False
-        except Exception as e:
-            logger.exception(f"Exception occurred while initializing stdio client session: {e}")
-            return False
-
-
-class AsyncStdioMCPClient(BaseAsyncMCPClient):
-    """Async MCP client using stdio transport"""
 
     async def _initialize_connection(self, server_config: StdioServerConfig, timeout: float) -> bool:
         """Asynchronously initialize stdio connection"""
@@ -64,11 +33,19 @@ class AsyncStdioMCPClient(BaseAsyncMCPClient):
             stdio_cm = forked_stdio_client(server_params)
             stdio_transport = await stdio_cm.__aenter__()
             self.stdio, self.write = stdio_transport
-            self.cleanup_funcs.append(lambda: stdio_cm.__aexit__(None, None, None))
+
+            async def _cleanup_stdio():
+                await stdio_cm.__aexit__(None, None, None)
+
+            self.cleanup_funcs.append(_cleanup_stdio)
 
             session_cm = ClientSession(self.stdio, self.write)
             self.session = await session_cm.__aenter__()
-            self.cleanup_funcs.append(lambda: session_cm.__aexit__(None, None, None))
+
+            async def _cleanup_session():
+                await session_cm.__aexit__(None, None, None)
+
+            self.cleanup_funcs.append(_cleanup_session)
             return True
 
         except Exception as e:

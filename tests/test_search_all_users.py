@@ -13,6 +13,7 @@ Prerequisites:
 - Optional: Set MIRIX_API_URL in .env file (defaults to http://localhost:8000)
 """
 
+import asyncio
 import logging
 import os
 import time
@@ -20,6 +21,7 @@ from pathlib import Path
 from typing import Optional
 
 import pytest
+import pytest_asyncio
 
 from mirix.client import MirixClient
 
@@ -39,7 +41,7 @@ BASE_URL = os.environ.get("MIRIX_API_URL", "http://localhost:8000")
 CONFIG_PATH = Path(__file__).parent.parent / "mirix" / "configs" / "examples" / "mirix_gemini.yaml"
 
 
-def add_all_memories(
+async def add_all_memories(
     client: MirixClient,
     user_id: str,
     filter_tags: dict,
@@ -62,7 +64,7 @@ def add_all_memories(
         add_kwargs["block_filter_tags"] = block_filter_tags
 
     # Add episodic memory
-    result = client.add(
+    result = await client.add(
         user_id=user_id,
         messages=[
             {
@@ -79,7 +81,7 @@ def add_all_memories(
     logger.info(f"  ✓ Added episodic memory - Result: {result}")
 
     # Add procedural memory
-    result = client.add(
+    result = await client.add(
         user_id=user_id,
         messages=[
             {
@@ -99,7 +101,7 @@ def add_all_memories(
     logger.info(f"  ✓ Added procedural memory - Result: {result}")
 
     # Add semantic memory
-    result = client.add(
+    result = await client.add(
         user_id=user_id,
         messages=[
             {
@@ -119,7 +121,7 @@ def add_all_memories(
     logger.info(f"  ✓ Added semantic memory - Result: {result}")
 
     # Add resource memory
-    result = client.add(
+    result = await client.add(
         user_id=user_id,
         messages=[
             {
@@ -139,7 +141,7 @@ def add_all_memories(
     logger.info(f"  ✓ Added resource memory - Result: {result}")
 
     # Add knowledge vault memory
-    result = client.add(
+    result = await client.add(
         user_id=user_id,
         messages=[
             {
@@ -161,7 +163,7 @@ def add_all_memories(
     # Add core memory - personal user profile information that triggers the core_memory_agent.
     # The meta_memory_agent LLM needs to see personal facts / preferences to include "core"
     # in its trigger_memory_update call.
-    result = client.add(
+    result = await client.add(
         user_id=user_id,
         messages=[
             {
@@ -193,6 +195,15 @@ def add_all_memories(
 class TestSearchAllUsers:
     """Test suite for search_all_users API."""
 
+    pytestmark = [pytest.mark.asyncio(loop_scope="class")]
+
+    @pytest.fixture(scope="class")
+    def event_loop(self):
+        """Single event loop for the test class so all clients and tests share one loop."""
+        loop = asyncio.new_event_loop()
+        yield loop
+        loop.close()
+
     @pytest.fixture(scope="class")
     def client_scope_value(self):
         """Client scope value used for testing."""
@@ -208,16 +219,15 @@ class TestSearchAllUsers:
         """Organization 2 ID."""
         return f"test-org-2-{int(time.time())}"
 
-    @pytest.fixture(scope="class")
-    def client1(self, org1_id, client_scope_value):
+    @pytest_asyncio.fixture(scope="class")
+    async def client1(self, org1_id, client_scope_value):
         """Create first MirixClient instance in org1."""
         logger.info("\n" + "=" * 80)
         logger.info("Setting up Client 1 in Organization 1")
         logger.info("=" * 80)
 
         client_id = f"test-client-1-{int(time.time())}"
-        # MirixClient will use MIRIX_API_URL from environment or default to http://localhost:8000
-        client = MirixClient(
+        c = await MirixClient.create(
             api_key=None,
             client_id=client_id,
             client_name="Test Client 1",
@@ -225,106 +235,98 @@ class TestSearchAllUsers:
             org_id=org1_id,
             debug=True,
         )
-
-        # Initialize meta agent
-        client.initialize_meta_agent(config_path=str(CONFIG_PATH), update_agents=True)
+        await c.initialize_meta_agent(config_path=str(CONFIG_PATH), update_agents=True)
 
         logger.info(
             f"✅ Client 1 initialized: client_id={client_id}, org_id={org1_id}, write_scope={client_scope_value}"
         )
-        logger.info(f"   Connected to: {client.base_url}")
-        return client
+        logger.info(f"   Connected to: {c.base_url}")
+        return c
 
-    @pytest.fixture(scope="class")
-    def user1_id(self, client1, org1_id):
+    @pytest_asyncio.fixture(scope="class")
+    async def user1_id(self, client1, org1_id):
         """Create first user in org1."""
         user_id = f"test-user-1-{int(time.time())}"
-        client1.create_or_get_user(user_id=user_id, user_name="Test User 1", org_id=org1_id)
+        await client1.create_or_get_user(user_id=user_id, user_name="Test User 1", org_id=org1_id)
         logger.info(f"✅ User 1 created: {user_id}")
-        time.sleep(0.5)  # Small delay to ensure unique timestamps
+        await asyncio.sleep(0.5)
         return user_id
 
-    @pytest.fixture(scope="class")
-    def user2_id(self, client1, org1_id):
+    @pytest_asyncio.fixture(scope="class")
+    async def user2_id(self, client1, org1_id):
         """Create second user in org1."""
         user_id = f"test-user-2-{int(time.time())}"
-        client1.create_or_get_user(user_id=user_id, user_name="Test User 2", org_id=org1_id)
+        await client1.create_or_get_user(user_id=user_id, user_name="Test User 2", org_id=org1_id)
         logger.info(f"✅ User 2 created: {user_id}")
-        time.sleep(0.5)
+        await asyncio.sleep(0.5)
         return user_id
 
     @pytest.fixture(scope="class")
     def user3_id(self, org1_id):
         """Create third user in org1 (will use different scope via client3)."""
         user_id = f"test-user-3-{int(time.time())}"
-        # Note: User creation doesn't need a specific client, we'll use client3 for adding memories
         logger.info(f"✅ User 3 ID prepared: {user_id}")
-        time.sleep(0.5)
         return user_id
 
-    @pytest.fixture(scope="class")
-    def client3(self, org1_id):
+    @pytest_asyncio.fixture(scope="class")
+    async def client3(self, org1_id):
         """Create third MirixClient instance in org1 with DIFFERENT write_scope."""
         logger.info("\n" + "=" * 80)
         logger.info("Setting up Client 3 in Organization 1 (Different write_scope)")
         logger.info("=" * 80)
 
         client_id = f"test-client-3-{int(time.time())}"
-        # Different write_scope from client1 (read_write) - use read_only
-        client = MirixClient(
+        c = await MirixClient.create(
             api_key=None,
             client_id=client_id,
             client_name="Test Client 3",
-            client_scope="read_only",  # DIFFERENT write_scope
+            client_scope="read_only",
             org_id=org1_id,
             debug=True,
         )
-
-        # Initialize meta agent
-        client.initialize_meta_agent(config_path=str(CONFIG_PATH), update_agents=True)
+        await c.initialize_meta_agent(config_path=str(CONFIG_PATH), update_agents=True)
 
         logger.info(f"✅ Client 3 initialized: client_id={client_id}, org_id={org1_id}, write_scope=read_only")
-        logger.info(f"   Connected to: {client.base_url}")
-        return client
+        logger.info(f"   Connected to: {c.base_url}")
+        return c
 
-    @pytest.fixture(scope="class")
-    def client2(self, org2_id, client_scope_value):
+    @pytest_asyncio.fixture(scope="class")
+    async def client2(self, org2_id, client_scope_value):
         """Create second MirixClient instance in org2 with same write_scope."""
         logger.info("\n" + "=" * 80)
         logger.info("Setting up Client 2 in Organization 2")
         logger.info("=" * 80)
 
         client_id = f"test-client-2-{int(time.time())}"
-        # MirixClient will use MIRIX_API_URL from environment or default to http://localhost:8000
-        client = MirixClient(
+        c = await MirixClient.create(
             api_key=None,
             client_id=client_id,
             client_name="Test Client 2",
-            client_scope=client_scope_value,  # Same write_scope as client1
+            client_scope=client_scope_value,
             org_id=org2_id,
             debug=True,
         )
-
-        # Initialize meta agent
-        client.initialize_meta_agent(config_path=str(CONFIG_PATH), update_agents=True)
+        await c.initialize_meta_agent(config_path=str(CONFIG_PATH), update_agents=True)
 
         logger.info(
             f"✅ Client 2 initialized: client_id={client_id}, org_id={org2_id}, write_scope={client_scope_value}"
         )
-        logger.info(f"   Connected to: {client.base_url}")
-        return client
+        logger.info(f"   Connected to: {c.base_url}")
+        return c
 
-    @pytest.fixture(scope="class")
-    def user4_id(self, client2, org2_id):
+    @pytest_asyncio.fixture(scope="class")
+    async def user4_id(self, client2, org2_id):
         """Create fourth user in org2."""
         user_id = f"test-user-4-{int(time.time())}"
-        client2.create_or_get_user(user_id=user_id, user_name="Test User 4", org_id=org2_id)
+        await client2.create_or_get_user(user_id=user_id, user_name="Test User 4", org_id=org2_id)
         logger.info(f"✅ User 4 created: {user_id}")
-        time.sleep(0.5)
+        await asyncio.sleep(0.5)
         return user_id
 
-    @pytest.fixture(scope="class", autouse=True)
-    def setup_memories(self, client1, client2, client3, user1_id, user2_id, user3_id, user4_id, client_scope_value):
+    @pytest_asyncio.fixture(scope="class", autouse=True)
+    async def setup_memories(
+        self, client1, client2, client3, user1_id, user2_id, user3_id, user4_id, client_scope_value
+    ):
         """Setup all memories for all users."""
         logger.info("\n" + "=" * 80)
         logger.info("SETTING UP TEST MEMORIES")
@@ -333,33 +335,29 @@ class TestSearchAllUsers:
         # User 1 & 2: Memories with write_scope='read_write' (via client1)
         filter_tags_with_scope = {"scope": client_scope_value, "test": "search_all"}
         logger.info("\n📝 Adding memories for User 1 via Client 1 (write_scope=read_write)...")
-        add_all_memories(client1, user1_id, filter_tags_with_scope, prefix="[User1] ")
+        await add_all_memories(client1, user1_id, filter_tags_with_scope, prefix="[User1] ")
         logger.info("⏱️  Waiting 50 seconds for async memory processing (User 1)...")
-        time.sleep(50)
+        await asyncio.sleep(50)
 
         logger.info("\n📝 Adding memories for User 2 via Client 1 (write_scope=read_write)...")
-        add_all_memories(client1, user2_id, filter_tags_with_scope, prefix="[User2] ")
+        await add_all_memories(client1, user2_id, filter_tags_with_scope, prefix="[User2] ")
         logger.info("⏱️  Waiting 50 seconds for async memory processing (User 2)...")
-        time.sleep(30)
+        await asyncio.sleep(30)
 
         # User 3: Memories with DIFFERENT write_scope='read_only' (via client3)
-        # Server will auto-inject client3.write_scope='read_only' into filter_tags
-        filter_tags_different_scope = {"test": "search_all"}  # Client3's write_scope='read_only' will be auto-added
+        filter_tags_different_scope = {"test": "search_all"}
         logger.info("\n📝 Adding memories for User 3 via Client 3 (write_scope=read_only - DIFFERENT)...")
-
-        # Create user via client3 first
-        client3.create_or_get_user(user_id=user3_id, user_name="Test User 3", org_id=client3.org_id)
-
-        add_all_memories(client3, user3_id, filter_tags_different_scope, prefix="[User3] ")
+        await client3.create_or_get_user(user_id=user3_id, user_name="Test User 3", org_id=client3.org_id)
+        await add_all_memories(client3, user3_id, filter_tags_different_scope, prefix="[User3] ")
         logger.info("⏱️  Waiting 50 seconds for async memory processing (User 3)...")
-        time.sleep(30)
+        await asyncio.sleep(30)
 
         # User 4: Memories in different org with write_scope='read_write' (via client2)
         filter_tags_org2 = {"scope": client_scope_value, "test": "search_all"}
         logger.info("\n📝 Adding memories for User 4 via Client 2 (Different Org)...")
-        add_all_memories(client2, user4_id, filter_tags_org2, prefix="[User4-Org2] ")
+        await add_all_memories(client2, user4_id, filter_tags_org2, prefix="[User4-Org2] ")
         logger.info("⏱️  Waiting 50 seconds for async memory processing (User 4)...")
-        time.sleep(30)
+        await asyncio.sleep(30)
 
         logger.info("\n" + "=" * 80)
         logger.info("✅ All test memories created and processed")
@@ -368,7 +366,7 @@ class TestSearchAllUsers:
         logger.info("   - User 4: write_scope='read_write' (via client2) - DIFFERENT ORG")
         logger.info("=" * 80)
 
-    def test_search_all_users_with_client_id_retrieves_both_users(
+    async def test_search_all_users_with_client_id_retrieves_both_users(
         self, client1, user1_id, user2_id, user3_id, user4_id
     ):
         """Test 3: Search with client_id should retrieve memories from both user1 and user2."""
@@ -376,7 +374,7 @@ class TestSearchAllUsers:
         logger.info("TEST 3: Search with client_id retrieves both users with matching scope")
         logger.info("=" * 80)
 
-        results = client1.search_all_users(
+        results = await client1.search_all_users(
             query="Python",  # Search for "Python" which should appear in semantic memories for both users
             memory_type="all",
             client_id=client1.client_id,
@@ -415,7 +413,7 @@ class TestSearchAllUsers:
 
         logger.info(f"✅ Test passed: Retrieved memories from users with matching scope ({user_ids_in_results})")
 
-    def test_search_all_users_with_client_id_retrieves_both_users_embedding(
+    async def test_search_all_users_with_client_id_retrieves_both_users_embedding(
         self, client1, user1_id, user2_id, user3_id, user4_id
     ):
         """Test 3b: Embedding search with client_id should retrieve memories from both user1 and user2."""
@@ -423,7 +421,7 @@ class TestSearchAllUsers:
         logger.info("TEST 3b: Embedding search with client_id retrieves both users with matching scope")
         logger.info("=" * 80)
 
-        results = client1.search_all_users(
+        results = await client1.search_all_users(
             query="group discussion",  # Semantic query for "team meeting"
             memory_type="all",
             search_method="embedding",
@@ -461,13 +459,13 @@ class TestSearchAllUsers:
 
         logger.info("✅ Test passed: Embedding search retrieved memories from both users with matching scope")
 
-    def test_search_excludes_user3_without_matching_scope(self, client1, user3_id):
+    async def test_search_excludes_user3_without_matching_scope(self, client1, user3_id):
         """Test 5: Search with client1 should NOT retrieve user3 memories (different write_scope: read_only vs read_write)."""
         logger.info("\n" + "=" * 80)
         logger.info("TEST 5: User 3 excluded due to different write_scope (read_only vs read_write)")
         logger.info("=" * 80)
 
-        results = client1.search_all_users(
+        results = await client1.search_all_users(
             query="", memory_type="all", client_id=client1.client_id, limit=100  # client1 has write_scope='read_write'
         )
 
@@ -482,13 +480,13 @@ class TestSearchAllUsers:
 
         logger.info("✅ Test passed: User 3 correctly excluded due to different write_scope")
 
-    def test_search_excludes_user3_without_matching_scope_embedding(self, client1, user3_id):
+    async def test_search_excludes_user3_without_matching_scope_embedding(self, client1, user3_id):
         """Test 5b: Embedding search with client1 should NOT retrieve user3 memories (different write_scope)."""
         logger.info("\n" + "=" * 80)
         logger.info("TEST 5b: Embedding search - User 3 excluded due to different write_scope")
         logger.info("=" * 80)
 
-        results = client1.search_all_users(
+        results = await client1.search_all_users(
             query="programming language",  # Semantic query
             memory_type="all",
             search_method="embedding",
@@ -507,14 +505,14 @@ class TestSearchAllUsers:
 
         logger.info("✅ Test passed: Embedding search correctly excluded User 3 due to different write_scope")
 
-    def test_search_with_client3_retrieves_only_user3(self, client3, user3_id, user1_id, user2_id):
+    async def test_search_with_client3_retrieves_only_user3(self, client3, user3_id, user1_id, user2_id):
         """Test 6: Search with client3 (write_scope=read_only) should only retrieve user3 memories."""
         logger.info("\n" + "=" * 80)
         logger.info("TEST 6: Search with client3 (write_scope=read_only) retrieves only User 3")
         logger.info("=" * 80)
 
         # Search with client3 which has write_scope='read_only'
-        results = client3.search_all_users(query="", memory_type="all", client_id=client3.client_id, limit=100)
+        results = await client3.search_all_users(query="", memory_type="all", client_id=client3.client_id, limit=100)
 
         logger.info(f"Results: {results['count']} memories found")
         logger.info(f"Filter Tags: {results.get('filter_tags')}")
@@ -530,14 +528,14 @@ class TestSearchAllUsers:
 
         logger.info("✅ Test passed: Only User 3 retrieved with write_scope=read_only")
 
-    def test_search_with_client3_retrieves_only_user3_embedding(self, client3, user3_id, user1_id, user2_id):
+    async def test_search_with_client3_retrieves_only_user3_embedding(self, client3, user3_id, user1_id, user2_id):
         """Test 6b: Embedding search with client3 (write_scope=read_only) should only retrieve user3 memories."""
         logger.info("\n" + "=" * 80)
         logger.info("TEST 6b: Embedding search with client3 (write_scope=read_only) retrieves only User 3")
         logger.info("=" * 80)
 
         # Search with client3 which has write_scope='read_only'
-        results = client3.search_all_users(
+        results = await client3.search_all_users(
             query="software development",  # Semantic query
             memory_type="all",
             search_method="embedding",
@@ -560,7 +558,7 @@ class TestSearchAllUsers:
 
         logger.info("✅ Test passed: Embedding search - Only User 3 retrieved with write_scope=read_only")
 
-    def test_search_different_org_no_cross_contamination(
+    async def test_search_different_org_no_cross_contamination(
         self, client1, client2, user1_id, user2_id, user3_id, user4_id
     ):
         """Test 8: Different organization - no cross-contamination even with matching scope."""
@@ -569,7 +567,7 @@ class TestSearchAllUsers:
         logger.info("=" * 80)
 
         # Search with client2 (in org2)
-        results = client2.search_all_users(query="", memory_type="all", client_id=client2.client_id, limit=100)
+        results = await client2.search_all_users(query="", memory_type="all", client_id=client2.client_id, limit=100)
 
         user_ids_in_results = set(result["user_id"] for result in results["results"])
         logger.info(f"Client 2 search - User IDs in results: {user_ids_in_results}")
@@ -583,7 +581,7 @@ class TestSearchAllUsers:
 
         logger.info("✅ Test passed: Organization isolation working correctly")
 
-    def test_search_different_org_no_cross_contamination_embedding(
+    async def test_search_different_org_no_cross_contamination_embedding(
         self, client1, client2, user1_id, user2_id, user3_id, user4_id
     ):
         """Test 8b: Embedding search - Different organization, no cross-contamination even with matching scope."""
@@ -592,7 +590,7 @@ class TestSearchAllUsers:
         logger.info("=" * 80)
 
         # Search with client2 (in org2)
-        results = client2.search_all_users(
+        results = await client2.search_all_users(
             query="database information",  # Semantic query
             memory_type="all",
             search_method="embedding",
@@ -614,13 +612,13 @@ class TestSearchAllUsers:
 
         logger.info("✅ Test passed: Embedding search - Organization isolation working correctly")
 
-    def test_search_all_memory_types(self, client1):
+    async def test_search_all_memory_types(self, client1):
         """Test search across all memory types."""
         logger.info("\n" + "=" * 80)
         logger.info("TEST: Search all memory types")
         logger.info("=" * 80)
 
-        results = client1.search_all_users(query="", memory_type="all", client_id=client1.client_id, limit=50)
+        results = await client1.search_all_users(query="", memory_type="all", client_id=client1.client_id, limit=50)
 
         # Count by memory type
         memory_types = {}
@@ -635,13 +633,13 @@ class TestSearchAllUsers:
 
         logger.info("✅ Test passed: Multiple memory types retrieved")
 
-    def test_search_specific_memory_type(self, client1, user1_id, user2_id):
+    async def test_search_specific_memory_type(self, client1, user1_id, user2_id):
         """Test search for specific memory type only."""
         logger.info("\n" + "=" * 80)
         logger.info("TEST: Search specific memory type (episodic)")
         logger.info("=" * 80)
 
-        results = client1.search_all_users(query="team", memory_type="episodic", client_id=client1.client_id, limit=20)
+        results = await client1.search_all_users(query="team", memory_type="episodic", client_id=client1.client_id, limit=20)
 
         logger.info(f"Results: {results['count']} episodic memories found")
 
@@ -658,13 +656,13 @@ class TestSearchAllUsers:
 
         logger.info("✅ Test passed: Specific memory type search working")
 
-    def test_search_specific_memory_type_embedding(self, client1, user1_id, user2_id):
+    async def test_search_specific_memory_type_embedding(self, client1, user1_id, user2_id):
         """Test embedding search for specific memory type only."""
         logger.info("\n" + "=" * 80)
         logger.info("TEST: Embedding search specific memory type (semantic)")
         logger.info("=" * 80)
 
-        results = client1.search_all_users(
+        results = await client1.search_all_users(
             query="programming language concepts",  # Semantic query for semantic memories
             memory_type="semantic",
             search_method="embedding",
@@ -672,8 +670,34 @@ class TestSearchAllUsers:
             limit=20,
         )
 
+        max_wait_s = 90
+        interval_s = 15
+        elapsed = 0
+        while results["count"] == 0 and elapsed < max_wait_s:
+            logger.info(
+                "Semantic embedding search returned 0; waiting %ss before retry (elapsed=%ds)...",
+                interval_s,
+                elapsed,
+            )
+            await asyncio.sleep(interval_s)
+            elapsed += interval_s
+            results = await client1.search_all_users(
+                query="programming language concepts",
+                memory_type="semantic",
+                search_method="embedding",
+                client_id=client1.client_id,
+                limit=20,
+            )
+
         logger.info(f"Results: {results['count']} semantic memories found")
         logger.info(f"Search Method: {results.get('search_method')}")
+
+        assert results["success"] is True
+        assert results["search_method"] == "embedding"
+        assert results["count"] > 0, (
+            "Semantic embedding search still 0 results after waiting %ds (index may not be ready)."
+            % max_wait_s
+        )
 
         # All results should be semantic type
         for result in results["results"]:
@@ -683,19 +707,15 @@ class TestSearchAllUsers:
         user_ids = set(result["user_id"] for result in results["results"])
         logger.info(f"User IDs: {user_ids}")
 
-        assert results["success"] is True
-        assert results["search_method"] == "embedding"
-        assert results["count"] > 0
-
         logger.info("✅ Test passed: Embedding search for specific memory type working")
 
-    def test_search_with_additional_filter_tags(self, client1):
+    async def test_search_with_additional_filter_tags(self, client1):
         """Test search with additional filter tags beyond scope."""
         logger.info("\n" + "=" * 80)
         logger.info("TEST: Search with additional filter tags")
         logger.info("=" * 80)
 
-        results = client1.search_all_users(
+        results = await client1.search_all_users(
             query="",
             memory_type="all",
             client_id=client1.client_id,
@@ -712,13 +732,13 @@ class TestSearchAllUsers:
 
         logger.info("✅ Test passed: Additional filter tags work correctly")
 
-    def test_search_with_bm25(self, client1):
+    async def test_search_with_bm25(self, client1):
         """Test BM25 search method."""
         logger.info("\n" + "=" * 80)
         logger.info("TEST: BM25 search method")
         logger.info("=" * 80)
 
-        results = client1.search_all_users(
+        results = await client1.search_all_users(
             query="team meeting project",
             memory_type="episodic",
             search_method="bm25",
@@ -733,13 +753,13 @@ class TestSearchAllUsers:
 
         logger.info("✅ Test passed: BM25 search working")
 
-    def test_search_with_embedding(self, client1):
+    async def test_search_with_embedding(self, client1):
         """Test embedding search method explicitly."""
         logger.info("\n" + "=" * 80)
         logger.info("TEST: Embedding search method")
         logger.info("=" * 80)
 
-        results = client1.search_all_users(
+        results = await client1.search_all_users(
             query="collaborative work meeting",  # Semantic query
             memory_type="episodic",
             search_method="embedding",
@@ -755,13 +775,13 @@ class TestSearchAllUsers:
 
         logger.info("✅ Test passed: Embedding search working")
 
-    def test_response_includes_metadata(self, client1):
+    async def test_response_includes_metadata(self, client1):
         """Test that response includes all expected metadata."""
         logger.info("\n" + "=" * 80)
         logger.info("TEST: Response metadata completeness")
         logger.info("=" * 80)
 
-        results = client1.search_all_users(query="test", memory_type="all", client_id=client1.client_id, limit=10)
+        results = await client1.search_all_users(query="test", memory_type="all", client_id=client1.client_id, limit=10)
 
         # Check all expected fields in response
         assert "success" in results
@@ -779,13 +799,13 @@ class TestSearchAllUsers:
         logger.info("Response fields: %s", list(results.keys()))
         logger.info("✅ Test passed: All metadata fields present")
 
-    def test_each_result_includes_user_id(self, client1):
+    async def test_each_result_includes_user_id(self, client1):
         """Test that each result includes user_id field."""
         logger.info("\n" + "=" * 80)
         logger.info("TEST: Each result includes user_id")
         logger.info("=" * 80)
 
-        results = client1.search_all_users(query="", memory_type="all", client_id=client1.client_id, limit=20)
+        results = await client1.search_all_users(query="", memory_type="all", client_id=client1.client_id, limit=20)
 
         # Check each result has user_id
         for result in results["results"]:
@@ -795,13 +815,13 @@ class TestSearchAllUsers:
 
         logger.info("✅ Test passed: All results include user_id")
 
-    def test_search_all_users_include_core_memory_returns_core_section(self, client1):
+    async def test_search_all_users_include_core_memory_returns_core_section(self, client1):
         """Cross-user search with include_core_memory=True returns core blocks in the results array."""
         logger.info("\n" + "=" * 80)
         logger.info("TEST: include_core_memory returns core blocks in results")
         logger.info("=" * 80)
 
-        results = client1.search_all_users(
+        results = await client1.search_all_users(
             query="",
             memory_type="all",
             client_id=client1.client_id,
@@ -822,7 +842,7 @@ class TestSearchAllUsers:
         logger.info("Core blocks in results: count=%s, scopes=%s", len(core_results), scopes)
         logger.info("✅ Test passed: Core blocks present in results array")
 
-    def test_search_all_users_include_core_memory_scope_isolation(self, client1, client3):
+    async def test_search_all_users_include_core_memory_scope_isolation(self, client1, client3):
         """Cross-user search with include_core_memory returns only blocks within the client's scope (no cross-scope leakage)."""
         logger.info("\n" + "=" * 80)
         logger.info("TEST: include_core_memory respects scope - expected blocks returned, others excluded")
@@ -830,7 +850,7 @@ class TestSearchAllUsers:
 
         # client1 has write_scope/read_scopes = "read_write". User1/User2 blocks are in "read_write"; User3's are "read_only".
         # Searching with client1 must return blocks from "read_write" and must NOT return blocks from "read_only".
-        results = client1.search_all_users(
+        results = await client1.search_all_users(
             query="",
             memory_type="all",
             client_id=client1.client_id,
@@ -862,7 +882,7 @@ class TestSearchAllUsers:
         )
         logger.info("✅ Test passed: Scope isolation - expected blocks returned, no blocks outside client scope")
 
-    def test_search_all_users_include_core_memory_block_filter_tags_returns_only_matching_blocks(
+    async def test_search_all_users_include_core_memory_block_filter_tags_returns_only_matching_blocks(
         self, client1, org1_id
     ):
         """Cross-user search with block_filter_tags (non-scope tag) returns only blocks that have that tag."""
@@ -874,19 +894,19 @@ class TestSearchAllUsers:
         # (user1/user2 already have blocks from class setup without env tag, so they never get env=staging.)
         user_staging_id = f"test-user-staging-{int(time.time())}"
         user_prod_id = f"test-user-prod-{int(time.time())}"
-        client1.create_or_get_user(user_id=user_staging_id, user_name="Staging User", org_id=org1_id)
-        client1.create_or_get_user(user_id=user_prod_id, user_name="Prod User", org_id=org1_id)
+        await client1.create_or_get_user(user_id=user_staging_id, user_name="Staging User", org_id=org1_id)
+        await client1.create_or_get_user(user_id=user_prod_id, user_name="Prod User", org_id=org1_id)
 
         filter_tags = {"scope": "read_write", "test": "block_filter_tag_test"}
-        add_all_memories(
+        await add_all_memories(
             client1, user_staging_id, filter_tags, prefix="[Staging] ", block_filter_tags={"env": "staging"}
         )
-        add_all_memories(client1, user_prod_id, filter_tags, prefix="[Prod] ", block_filter_tags={"env": "prod"})
+        await add_all_memories(client1, user_prod_id, filter_tags, prefix="[Prod] ", block_filter_tags={"env": "prod"})
 
         logger.info("⏱️  Waiting 50 seconds for async memory processing (staging + prod users)...")
-        time.sleep(50)
+        await asyncio.sleep(50)
 
-        results = client1.search_all_users(
+        results = await client1.search_all_users(
             query="",
             memory_type="all",
             client_id=client1.client_id,
@@ -897,9 +917,23 @@ class TestSearchAllUsers:
 
         assert results is not None and results["success"] is True
         core_results = [r for r in results["results"] if r.get("memory_type") == "core"]
+
+        if len(core_results) == 0:
+            logger.info("No core results after 50s; waiting 40s and retrying once for slow queue processing...")
+            await asyncio.sleep(40)
+            results = await client1.search_all_users(
+                query="",
+                memory_type="all",
+                client_id=client1.client_id,
+                limit=100,
+                include_core_memory=True,
+                block_filter_tags={"env": "staging"},
+            )
+            core_results = [r for r in results["results"] if r.get("memory_type") == "core"]
+
         assert len(core_results) > 0, (
             "With block_filter_tags={'env': 'staging'}, at least one core block (staging user's) must be returned. "
-            "Got 0 core results after waiting 50s - processing may not have completed or blocks not created with env=staging."
+            "Got 0 core results after waiting - processing may not have completed or blocks not created with env=staging."
         )
         for item in core_results:
             logger.info(

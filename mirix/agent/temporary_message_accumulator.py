@@ -1,12 +1,9 @@
+import asyncio
 import copy
 import logging
 import os
-import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
-
-from tqdm import tqdm
 
 from mirix.agent.app_constants import (
     GEMINI_MODELS,
@@ -64,7 +61,7 @@ class TemporaryMessageAccumulator:
         self.needs_upload = model_name in GEMINI_MODELS
 
         # Initialize locks for thread safety
-        self._temporary_messages_lock = threading.Lock()
+        self._temporary_messages_lock = asyncio.Lock()
 
         # Initialize temporary message storage
         self.temporary_messages = []  # Flat list of (timestamp, item) tuples
@@ -76,19 +73,18 @@ class TemporaryMessageAccumulator:
         # Upload tracking for cleanup
         self.upload_start_times = {}  # Track when uploads started for cleanup purposes
 
-    def add_message(self, full_message, timestamp, delete_after_upload=True, async_upload=True):
+    async def add_message(self, full_message, timestamp, delete_after_upload=True, async_upload=True):
         """Add a message to temporary storage."""
         if self.needs_upload and self.upload_manager is not None:
             if "image_uris" in full_message and full_message["image_uris"]:
-                # Handle image uploads with optional sources information
                 if async_upload:
                     image_file_ref_placeholders = [
-                        self.upload_manager.upload_file_async(image_uri, timestamp)
+                        await self.upload_manager.upload_file_async(image_uri, timestamp)
                         for image_uri in full_message["image_uris"]
                     ]
                 else:
                     image_file_ref_placeholders = [
-                        self.upload_manager.upload_file(image_uri, timestamp)
+                        await self.upload_manager.upload_file(image_uri, timestamp)
                         for image_uri in full_message["image_uris"]
                     ]
                 # Track upload start times for timeout detection
@@ -119,7 +115,7 @@ class TemporaryMessageAccumulator:
             else:
                 audio_segment = None
 
-            with self._temporary_messages_lock:
+            async with self._temporary_messages_lock:
                 sources = full_message.get("sources")
                 self.temporary_messages.append(
                     (
@@ -134,14 +130,12 @@ class TemporaryMessageAccumulator:
                 )
 
             if delete_after_upload and full_message["image_uris"]:
-                threading.Thread(
-                    target=self._cleanup_file_after_upload,
-                    args=(full_message["image_uris"], image_file_ref_placeholders),
-                    daemon=True,
-                ).start()
+                asyncio.create_task(
+                    self._cleanup_file_after_upload(full_message["image_uris"], image_file_ref_placeholders)
+                )
 
         else:
-            with self._temporary_messages_lock:
+            async with self._temporary_messages_lock:
                 sources = full_message.get("sources")
                 image_uris = full_message.get("image_uris", [])
                 self.temporary_messages.append(
@@ -171,11 +165,11 @@ class TemporaryMessageAccumulator:
             ]
         )
 
-    def should_absorb_content(self):
+    async def should_absorb_content(self):
         """Check if content should be absorbed into memory and return ready messages."""
 
         if self.needs_upload:
-            with self._temporary_messages_lock:
+            async with self._temporary_messages_lock:
                 ready_messages = []
 
                 # Process messages in temporal order
@@ -192,7 +186,7 @@ class TemporaryMessageAccumulator:
                         for j, file_ref in enumerate(item["image_uris"]):
                             if isinstance(file_ref, dict) and file_ref.get("pending"):
                                 # Get upload status
-                                upload_status = self.upload_manager.get_upload_status(file_ref)
+                                upload_status = await self.upload_manager.get_upload_status(file_ref)
 
                                 if upload_status["status"] == "completed":
                                     # Upload completed, use the resolved reference
@@ -234,7 +228,7 @@ class TemporaryMessageAccumulator:
                     return []
         else:
             # For non-GEMINI models: no uploads needed, just check message count
-            with self._temporary_messages_lock:
+            async with self._temporary_messages_lock:
                 # Since there are no pending uploads to wait for, all messages are ready
                 if len(self.temporary_messages) >= self.temporary_message_limit:
                     # Return all messages as ready for processing
@@ -246,13 +240,13 @@ class TemporaryMessageAccumulator:
                 else:
                     return []
 
-    def get_recent_images_for_chat(self, current_timestamp):
+    async def get_recent_images_for_chat(self, current_timestamp):
         """Get the most recent images for chat context (non-blocking).
 
         Returns:
             List of tuples: (timestamp, file_ref, sources) where sources may be None
         """
-        with self._temporary_messages_lock:
+        async with self._temporary_messages_lock:
             # Get the most recent content
             recent_limit = min(self.temporary_message_limit, len(self.temporary_messages))
             most_recent_content = self.temporary_messages[-recent_limit:] if recent_limit > 0 else []
@@ -293,7 +287,7 @@ class TemporaryMessageAccumulator:
                             # For GEMINI models: Resolve pending uploads for immediate use (non-blocking check)
                             if isinstance(file_ref, dict) and file_ref.get("pending"):
                                 # Get upload status
-                                upload_status = self.upload_manager.get_upload_status(file_ref)
+                                upload_status = await self.upload_manager.get_upload_status(file_ref)
 
                                 if upload_status["status"] == "completed":
                                     file_ref = upload_status["result"]
@@ -316,7 +310,7 @@ class TemporaryMessageAccumulator:
 
             return most_recent_images
 
-    def absorb_content_into_memory(self, agent_states, ready_messages=None, user_id=None):
+    async def absorb_content_into_memory(self, agent_states, ready_messages=None, user_id=None):
         """Process accumulated content and send to memory agents."""
 
         if ready_messages is not None:
@@ -324,7 +318,7 @@ class TemporaryMessageAccumulator:
             ready_to_process = ready_messages
 
             # Remove the processed messages from temporary_messages and clean up placeholders
-            with self._temporary_messages_lock:
+            async with self._temporary_messages_lock:
                 # Remove processed messages from the beginning (they were processed in temporal order)
                 num_to_remove = len(ready_messages)
 
@@ -337,13 +331,13 @@ class TemporaryMessageAccumulator:
                                 if isinstance(file_ref, dict) and file_ref.get("pending"):
                                     placeholder_id = id(file_ref)
                                     # Clean up upload manager status and local tracking
-                                    self.upload_manager.cleanup_resolved_upload(file_ref)
+                                    await self.upload_manager.cleanup_resolved_upload(file_ref)
                                     self.upload_start_times.pop(placeholder_id, None)
 
                 self.temporary_messages = self.temporary_messages[num_to_remove:]
         else:
             # Use the existing logic to separate and process messages
-            with self._temporary_messages_lock:
+            async with self._temporary_messages_lock:
                 # Separate uploaded images, pending images, and text content
                 ready_to_process = []  # Items that are ready to be processed
                 pending_items = []  # Items that need to stay for next cycle
@@ -361,18 +355,18 @@ class TemporaryMessageAccumulator:
                                 if isinstance(file_ref, dict) and file_ref.get("pending"):
                                     placeholder_id = id(file_ref)
                                     # Get upload status
-                                    upload_status = self.upload_manager.get_upload_status(file_ref)
+                                    upload_status = await self.upload_manager.get_upload_status(file_ref)
 
                                     if upload_status["status"] == "completed":
                                         # Upload completed, use the result
                                         processed_image_uris.append(upload_status["result"])
                                         # Clean up both upload manager and local tracking
-                                        self.upload_manager.cleanup_resolved_upload(file_ref)
+                                        await self.upload_manager.cleanup_resolved_upload(file_ref)
                                         self.upload_start_times.pop(placeholder_id, None)
                                     elif upload_status["status"] == "failed":
                                         # Upload failed, skip this image but continue processing
                                         # Clean up both upload manager and local tracking
-                                        self.upload_manager.cleanup_resolved_upload(file_ref)
+                                        await self.upload_manager.cleanup_resolved_upload(file_ref)
                                         self.upload_start_times.pop(placeholder_id, None)
                                         continue
                                     elif upload_status["status"] == "unknown":
@@ -472,16 +466,14 @@ class TemporaryMessageAccumulator:
 
         t1 = time.time()
         if SKIP_META_MEMORY_MANAGER:
-            # Send to memory agents in parallel
-            self._send_to_memory_agents_separately(
+            await self._send_to_memory_agents_separately(
                 message,
                 set(list(self.uri_to_create_time.keys())),
                 agent_states,
                 user_id=user_id,
             )
         else:
-            # Send to meta memory agent
-            response, agent_type = self._send_to_meta_memory_agent(
+            response, agent_type = await self._send_to_meta_memory_agent(
                 message,
                 set(list(self.uri_to_create_time.keys())),
                 agent_states,
@@ -506,8 +498,7 @@ class TemporaryMessageAccumulator:
         #         agent_type
         #     )
 
-        # Clean up processed content
-        self._cleanup_processed_content(ready_to_process, user_message_added)
+        await self._cleanup_processed_content(ready_to_process, user_message_added)
 
     def _build_memory_message(self, ready_to_process, voice_content):
         """Build the message content for memory agents."""
@@ -651,7 +642,7 @@ class TemporaryMessageAccumulator:
             user_message_added = True
         return message, user_message_added
 
-    def _send_to_meta_memory_agent(self, message, existing_file_uris, agent_states, user_id=None):
+    async def _send_to_meta_memory_agent(self, message, existing_file_uris, agent_states, user_id=None):
         """Send the processed content to the meta memory agent."""
 
         payloads = {
@@ -662,7 +653,7 @@ class TemporaryMessageAccumulator:
             "user_id": user_id,
         }
 
-        response, agent_type = self.message_queue.send_message_in_queue(
+        response, agent_type = await self.message_queue.send_message_in_queue(
             self.client,
             agent_states.meta_memory_agent_state.id,
             payloads,
@@ -670,7 +661,7 @@ class TemporaryMessageAccumulator:
         )
         return response, agent_type
 
-    def _send_to_memory_agents_separately(self, message, existing_file_uris, agent_states, user_id=None):
+    async def _send_to_memory_agents_separately(self, message, existing_file_uris, agent_states, user_id=None):
         """Send the processed content to all memory agents in parallel."""
 
         payloads = {
@@ -680,7 +671,6 @@ class TemporaryMessageAccumulator:
             "user_id": user_id,
         }
 
-        responses = []
         memory_agent_types = [
             "episodic_memory",
             "procedural_memory",
@@ -690,23 +680,22 @@ class TemporaryMessageAccumulator:
             "resource_memory",
         ]
 
-        with ThreadPoolExecutor(max_workers=6) as pool:
-            futures = [
-                pool.submit(
-                    self.message_queue.send_message_in_queue,
-                    self.client,
-                    self.message_queue._get_agent_id_for_type(agent_states, agent_type),
-                    payloads,
-                    agent_type,
-                )
-                for agent_type in memory_agent_types
-            ]
+        tasks = [
+            self.message_queue.send_message_in_queue(
+                self.client,
+                self.message_queue._get_agent_id_for_type(agent_states, agent_type),
+                payloads,
+                agent_type,
+            )
+            for agent_type in memory_agent_types
+        ]
 
-            for future in tqdm(as_completed(futures), total=len(futures)):
-                response, agent_type = future.result()
-                responses.append(response)
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for result in results:
+            if isinstance(result, Exception):
+                logger.error("Error sending to memory agent: %s", result)
 
-    def _cleanup_processed_content(self, ready_to_process, user_message_added):
+    async def _cleanup_processed_content(self, ready_to_process, user_message_added):
         """Clean up processed content and mark files as processed."""
         # Mark processed files as processed in database and cleanup upload results (only for GEMINI models)
         if self.needs_upload and self.upload_manager is not None:
@@ -715,7 +704,7 @@ class TemporaryMessageAccumulator:
                     for file_ref in item["image_uris"]:
                         if hasattr(file_ref, "name"):
                             try:
-                                self.client.server.cloud_file_mapping_manager.set_processed(cloud_file_id=file_ref.name)
+                                await self.client.server.cloud_file_mapping_manager.set_processed(cloud_file_id=file_ref.name)
                             except Exception:
                                 pass
 
@@ -734,14 +723,14 @@ class TemporaryMessageAccumulator:
                     for image_uri in item["image_uris"]:
                         # Only delete if it's a local file path (string)
                         if isinstance(image_uri, str):
-                            self._delete_local_image_file(image_uri)
+                            await self._delete_local_image_file(image_uri)
 
         # Clean up user messages if added
         if user_message_added:
             if len(self.temporary_user_messages) > 1:
                 self.temporary_user_messages.pop(0)
 
-    def _delete_local_image_file(self, image_path):
+    async def _delete_local_image_file(self, image_path):
         """Delete a local image file with retry logic."""
         try:
             max_retries = 10
@@ -758,7 +747,7 @@ class TemporaryMessageAccumulator:
                 except Exception as e:
                     retry_count += 1
                     if retry_count < max_retries:
-                        time.sleep(0.1)
+                        await asyncio.sleep(0.1)
                     else:
                         self.logger.warning(
                             f"Failed to delete image file {image_path} after {max_retries} attempts: {e}"
@@ -766,7 +755,7 @@ class TemporaryMessageAccumulator:
         except Exception as e:
             self.logger.error(f"Error while trying to delete image file {image_path}: {e}")
 
-    def _cleanup_file_after_upload(self, filenames, placeholders):
+    async def _cleanup_file_after_upload(self, filenames, placeholders):
         """Clean up local file after upload completes."""
 
         if self.upload_manager is None:
@@ -776,8 +765,7 @@ class TemporaryMessageAccumulator:
             placeholder_id = id(placeholder) if isinstance(placeholder, dict) else None
 
             try:
-                # Wait for upload to complete with timeout
-                upload_successful = self.upload_manager.wait_for_upload(placeholder, timeout=60)
+                upload_successful = await self.upload_manager.wait_for_upload(placeholder, timeout=60)
 
                 if upload_successful:
                     # Clean up tracking
@@ -804,7 +792,7 @@ class TemporaryMessageAccumulator:
                     except Exception:
                         retry_count += 1
                         if retry_count < max_retries:
-                            time.sleep(0.1)
+                            await asyncio.sleep(0.1)
                         else:
                             pass
 
@@ -816,12 +804,12 @@ class TemporaryMessageAccumulator:
                 except Exception:
                     pass
 
-    def get_message_count(self):
+    async def get_message_count(self):
         """Get the current count of temporary messages."""
-        with self._temporary_messages_lock:
+        async with self._temporary_messages_lock:
             return len(self.temporary_messages)
 
-    def get_upload_status_summary(self):
+    async def get_upload_status_summary(self):
         """Get a summary of current upload statuses for debugging."""
         summary = {
             "total_messages": len(self.temporary_messages),
@@ -829,7 +817,7 @@ class TemporaryMessageAccumulator:
 
         # Get upload manager status if available
         if self.upload_manager and hasattr(self.upload_manager, "get_upload_status_summary"):
-            summary["upload_manager_status"] = self.upload_manager.get_upload_status_summary()
+            summary["upload_manager_status"] = await self.upload_manager.get_upload_status_summary()
 
         return summary
 

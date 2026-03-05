@@ -2,9 +2,9 @@ from typing import TYPE_CHECKING, List, Optional, Type
 
 from sqlalchemy import JSON, BigInteger, Index, Integer, String, UniqueConstraint, cast, event, or_, select, text
 from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import (
     Mapped,
-    Session,
     declared_attr,
     mapped_column,
     relationship,
@@ -82,9 +82,9 @@ class Block(OrganizationMixin, UserMixin, SqlalchemyBase):
         return relationship("User", lazy="selectin")
 
     @classmethod
-    def list_by_scopes(
+    async def list_by_scopes(
         cls,
-        db_session: Session,
+        db_session: AsyncSession,
         user_id: Optional[str],
         organization_id: str,
         scopes: List[str],
@@ -94,13 +94,13 @@ class Block(OrganizationMixin, UserMixin, SqlalchemyBase):
         filter_tags: Optional[dict] = None,
     ) -> List["Block"]:
         """
-        Query blocks filtered by scope at the SQL level.
+        Query blocks filtered by scope at the SQL level (async).
 
         Uses filter_tags->>'scope' IN (...) which hits the btree index
         ix_block_org_filter_scope on PostgreSQL.
 
         Args:
-            db_session: SQLAlchemy session
+            db_session: SQLAlchemy async session
             user_id: Owner user ID, or None for org-wide (all users in organization).
             organization_id: Organization ID
             scopes: List of scope values to match (block.filter_tags.scope IN scopes)
@@ -108,28 +108,29 @@ class Block(OrganizationMixin, UserMixin, SqlalchemyBase):
             id: Optional block ID filter
             limit: Max results
             filter_tags: Optional dict; when provided, only blocks whose filter_tags
-                         contain these keys/values are returned (JSONB containment).
+                         contain these keys/values are returned (via apply_filter_tags_sqlalchemy).
         """
-        with db_session as session:
-            scope_conditions = [cls.filter_tags["scope"].as_string() == s for s in scopes]
-            conditions = [
-                cls.organization_id == organization_id,
-                or_(*scope_conditions),
-            ]
-            if user_id is not None:
-                conditions.append(cls.user_id == user_id)
-            if hasattr(cls, "is_deleted"):
-                conditions.append(~cls.is_deleted)
-            query = select(cls).where(*conditions).limit(limit)
-            if label:
-                query = query.where(cls.label == label)
-            if id:
-                query = query.where(cls.id == id)
-            if filter_tags:
-                from mirix.database.filter_tags_query import apply_filter_tags_sqlalchemy
+        session = db_session
+        scope_conditions = [cls.filter_tags["scope"].as_string() == s for s in scopes]
+        conditions = [
+            cls.organization_id == organization_id,
+            or_(*scope_conditions),
+        ]
+        if user_id is not None:
+            conditions.append(cls.user_id == user_id)
+        if hasattr(cls, "is_deleted"):
+            conditions.append(~cls.is_deleted)
+        query = select(cls).where(*conditions).limit(limit)
+        if label:
+            query = query.where(cls.label == label)
+        if id:
+            query = query.where(cls.id == id)
+        if filter_tags:
+            from mirix.database.filter_tags_query import apply_filter_tags_sqlalchemy
 
-                query = apply_filter_tags_sqlalchemy(query, cls, filter_tags, scopes=None)
-            return list(session.execute(query).scalars())
+            query = apply_filter_tags_sqlalchemy(query, cls, filter_tags, scopes=None)
+        result = await session.execute(query)
+        return list(result.scalars().all())
 
     def to_pydantic(self) -> Type:
         if self.label == "human":

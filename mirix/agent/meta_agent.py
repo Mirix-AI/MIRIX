@@ -173,25 +173,16 @@ class MetaAgent(BaseAgent):
         embedding_config: Optional[EmbeddingConfig] = None,
         system_prompts: Optional[Dict[str, str]] = None,
         interface: Optional[AgentInterface] = None,
-        filter_tags: Optional[dict] = None,  # Filter tags for memory operations
-        use_cache: bool = True,  # Control Redis cache behavior
-        client_id: Optional[str] = None,  # Client application identifier
+        filter_tags: Optional[dict] = None,
+        use_cache: bool = True,
+        client_id: Optional[str] = None,
     ):
         """
-        Initialize MetaAgent with memory sub-agents.
+        Initialize MetaAgent (sync-safe portion only).
 
-        Args:
-            server: The Mirix server instance
-            user: The user associated with this meta agent
-            memory: The shared memory object for all sub-agents
-            llm_config: LLM configuration for sub-agents
-            embedding_config: Embedding configuration for sub-agents
-            system_prompts: Pre-loaded system prompts dict (agent_name -> prompt_text)
-            filter_tags: Optional dict of tags for filtering and categorization
-            use_cache: Control Redis cache behavior (default: True)
-            interface: Optional interface for agent interactions
+        Callers MUST call ``await instance.initialize()`` (or use the
+        ``MetaAgent.create(...)`` classmethod) before using the agent.
         """
-        # Initialize logger
         self.logger = logging.getLogger(f"Mirix.MetaAgent.{user.id}")
         self.logger.setLevel(logging.INFO)
 
@@ -202,15 +193,12 @@ class MetaAgent(BaseAgent):
         self.interface = interface
         self.system_prompts = system_prompts or {}
 
-        # Store filter_tags as a COPY to prevent mutation across agent instances
         from copy import deepcopy
 
-        # Keep None as None, don't convert to empty dict - they have different meanings
         self.filter_tags = deepcopy(filter_tags) if filter_tags is not None else None
-        self.use_cache = use_cache  # Store use_cache for memory operations
-        self.client_id = client_id  # Store client_id for multi-tenant isolation
+        self.use_cache = use_cache
+        self.client_id = client_id
 
-        # Set default configs if not provided
         if llm_config is None:
             llm_config = LLMConfig.default_config("gpt-4o-mini")
         self.llm_config = llm_config
@@ -219,41 +207,69 @@ class MetaAgent(BaseAgent):
             embedding_config = EmbeddingConfig.default_config("text-embedding-004")
         self.embedding_config = embedding_config
 
-        # Initialize container for memory agent states
         self.memory_agent_states = MemoryAgentStates()
-
-        # Initialize message queue for coordinating agent operations
         self.message_queue = MessageQueue()
 
-        # Initialize or load memory sub-agents
-        self._initialize_memory_agents()
-
-        # Initialize individual Agent instances for each sub-agent
+    async def initialize(self):
+        """
+        Async initialization: load or create memory sub-agents and build
+        Agent instances.  Must be called after ``__init__``.
+        """
+        await self._initialize_memory_agents_async()
         self._initialize_agent_instances()
 
         printv(
-            f"[Mirix.Agent.{self.agent_state.name}] INFO: MetaAgent initialized with {len(MEMORY_AGENT_CONFIGS)} memory sub-agents"
+            f"[Mirix.Agent.{self.agent_state.name}] INFO: MetaAgent initialized "
+            f"with {len(MEMORY_AGENT_CONFIGS)} memory sub-agents"
         )
 
-    def _initialize_memory_agents(self):
+    @classmethod
+    async def create(
+        cls,
+        server: "SyncServer",
+        user: User,
+        actor: Client,
+        memory: Memory,
+        llm_config: Optional[LLMConfig] = None,
+        embedding_config: Optional[EmbeddingConfig] = None,
+        system_prompts: Optional[Dict[str, str]] = None,
+        interface: Optional[AgentInterface] = None,
+        filter_tags: Optional[dict] = None,
+        use_cache: bool = True,
+        client_id: Optional[str] = None,
+    ) -> "MetaAgent":
+        """Async factory: create a MetaAgent and run async initialization."""
+        instance = cls(
+            server=server,
+            user=user,
+            actor=actor,
+            memory=memory,
+            llm_config=llm_config,
+            embedding_config=embedding_config,
+            system_prompts=system_prompts,
+            interface=interface,
+            filter_tags=filter_tags,
+            use_cache=use_cache,
+            client_id=client_id,
+        )
+        await instance.initialize()
+        return instance
+
+    async def _initialize_memory_agents_async(self):
         """
-        Initialize all memory-related sub-agents.
+        Initialize all memory-related sub-agents (async).
         Either loads existing agents from server or creates new ones.
         """
-        # Check if agents already exist
-        existing_agents = self.server.agent_manager.list_agents(actor=self.actor)
+        existing_agents = await self.server.agent_manager.list_agents(actor=self.actor)
 
         printv(f"[Mirix.Agent.{self.agent_state.name}] INFO: Found {len(existing_agents)} existing agents")
 
         if existing_agents:
-            # Load existing agents
             self._load_existing_agents(existing_agents)
         else:
-            # Create new agents
-            self._create_new_agents()
+            await self._create_new_agents_async()
 
-        # Ensure all agents have correct system prompts and configurations
-        self._update_agent_configurations()
+        await self._update_agent_configurations()
 
     def _load_existing_agents(self, existing_agents: List[AgentState]):
         """Load existing memory agent states from the server."""
@@ -280,18 +296,14 @@ class MetaAgent(BaseAgent):
 
         printv(f"[Mirix.Agent.{self.agent_state.name}] INFO: Loaded existing memory agent states")
 
-    def _create_new_agents(self):
-        """Create new memory agent states."""
+    async def _create_new_agents_async(self):
+        """Create new memory agent states (async)."""
         printv(f"[Mirix.Agent.{self.agent_state.name}] INFO: Creating new memory agents...")
 
-        # Ensure base tools are available
-        self.server.tool_manager.upsert_base_tools(self.actor)
+        await self.server.tool_manager.upsert_base_tools(self.actor)
 
         for config in MEMORY_AGENT_CONFIGS:
-            # Get system prompt
             system_prompt = self._get_system_prompt_for_agent(config["name"])
-
-            # Create agent state
             agent_create = CreateAgent(
                 name=config["name"],
                 agent_type=config["agent_type"],
@@ -300,14 +312,11 @@ class MetaAgent(BaseAgent):
                 embedding_config=self.embedding_config,
                 include_base_tools=config["include_base_tools"],
             )
-            agent_state = self.server.agent_manager.create_agent(
+            agent_state = await self.server.agent_manager.create_agent(
                 agent_create=agent_create,
                 actor=self.actor,
             )
-
-            # Store the agent state
             setattr(self.memory_agent_states, config["attr_name"], agent_state)
-
             printv(f"[Mirix.Agent.{self.agent_state.name}] INFO: Created memory agent: {config['name']}")
 
     def _get_system_prompt_for_agent(self, agent_name: str) -> str:
@@ -335,7 +344,7 @@ class MetaAgent(BaseAgent):
         # Priority 3: Fallback to base system prompts
         return gpt_system.get_system_text(f"base/{agent_name}")
 
-    def _update_agent_configurations(self):
+    async def _update_agent_configurations(self):
         """Update all agent configurations with current settings."""
         for agent_state in self.memory_agent_states.get_all_agent_states_list():
             if agent_state is None:
@@ -345,14 +354,14 @@ class MetaAgent(BaseAgent):
             system_prompt = self._get_system_prompt_for_agent(agent_state.name)
 
             # Update agent
-            self.server.agent_manager.update_agent_tools_and_system_prompts(
+            await self.server.agent_manager.update_agent_tools_and_system_prompts(
                 agent_id=agent_state.id,
                 actor=self.actor,
                 system_prompt=system_prompt,
             )
 
             # Update LLM config
-            self.server.agent_manager.update_llm_config(
+            await self.server.agent_manager.update_llm_config(
                 agent_id=agent_state.id,
                 llm_config=self.llm_config,
                 actor=self.actor,
@@ -385,7 +394,7 @@ class MetaAgent(BaseAgent):
             f"[Mirix.Agent.{self.agent_state.name}] INFO: Initialized {len(self.agents)} Agent instances for sub-agents"
         )
 
-    def step(
+    async def step(
         self,
         messages: Union[Message, List[Message]],
         agent_name: Optional[str] = None,
@@ -408,15 +417,15 @@ class MetaAgent(BaseAgent):
                 raise ValueError(f"Unknown memory agent: {agent_name}")
 
             agent = self.agents[agent_name]
-            return agent.step(messages, **kwargs)
+            return await agent.step(messages, **kwargs)
         else:
             # Default behavior: route to meta_memory_agent for coordination
             if "meta_memory_agent" in self.agents:
-                return self.agents["meta_memory_agent"].step(messages, **kwargs)
+                return await self.agents["meta_memory_agent"].step(messages, **kwargs)
             else:
                 raise RuntimeError("No meta_memory_agent available for coordination")
 
-    def send_message_to_agent(self, agent_name: str, message: Union[str, dict], **kwargs) -> tuple:
+    async def send_message_to_agent(self, agent_name: str, message: Union[str, dict], **kwargs) -> tuple:
         """
         Send a message to a specific memory agent through the message queue.
 
@@ -428,12 +437,10 @@ class MetaAgent(BaseAgent):
         Returns:
             Tuple of (response, usage_statistics)
         """
-        # Get agent state
         agent_state = self.memory_agent_states.get_agent_state(f"{agent_name}_state")
         if agent_state is None:
             raise ValueError(f"Agent state not found for: {agent_name}")
 
-        # Determine agent type for message queue
         agent_type_map = {
             "episodic_memory_agent": "episodic_memory",
             "procedural_memory_agent": "procedural_memory",
@@ -448,15 +455,13 @@ class MetaAgent(BaseAgent):
 
         agent_type = agent_type_map.get(agent_name, agent_name)
 
-        # Format message
         if isinstance(message, str):
             message_data = {"message": message}
         else:
             message_data = message
 
-        # Send through message queue
-        response, usage = self.message_queue.send_message_in_queue(
-            client=self.server,  # Pass server directly
+        response, usage = await self.message_queue.send_message_in_queue(
+            client=self.server,
             agent_id=agent_state.id,
             message_data=message_data,
             agent_type=agent_type,
@@ -465,7 +470,7 @@ class MetaAgent(BaseAgent):
 
         return response, usage
 
-    def update_llm_config(self, llm_config: LLMConfig):
+    async def update_llm_config(self, llm_config: LLMConfig):
         """
         Update the LLM configuration for all memory agents.
 
@@ -476,7 +481,7 @@ class MetaAgent(BaseAgent):
 
         for agent_state in self.memory_agent_states.get_all_agent_states_list():
             if agent_state is not None:
-                self.server.agent_manager.update_llm_config(
+                await self.server.agent_manager.update_llm_config(
                     agent_id=agent_state.id,
                     llm_config=llm_config,
                     actor=self.actor,
@@ -486,7 +491,7 @@ class MetaAgent(BaseAgent):
             f"[Mirix.Agent.{self.agent_state.name}] INFO: Updated LLM config for all memory agents to model: {llm_config.model}"
         )
 
-    def update_embedding_config(self, embedding_config: EmbeddingConfig):
+    async def update_embedding_config(self, embedding_config: EmbeddingConfig):
         """
         Update the embedding configuration for all memory agents.
 
@@ -495,18 +500,17 @@ class MetaAgent(BaseAgent):
         """
         self.embedding_config = embedding_config
 
-        # Get Client object for actor parameter (needed for write operations)
         actor = None
         if self.client_id:
-            actor = self.server.client_manager.get_client_by_id(self.client_id)
+            actor = await self.server.client_manager.get_client_by_id(
+                self.client_id
+            )
 
         for agent_state in self.memory_agent_states.get_all_agent_states_list():
             if agent_state is not None:
-                self.server.agent_manager.update_agent(
+                await self.server.agent_manager.update_agent(
                     agent_id=agent_state.id,
-                    actor=actor,  # Client for write operations (audit trail)
-                    # Note: Would need UpdateAgent schema to include embedding_config
-                    # For now, this is a placeholder
+                    actor=actor,
                 )
 
         printv(f"[Mirix.Agent.{self.agent_state.name}] INFO: Updated embedding config for all memory agents")
@@ -532,12 +536,12 @@ class MetaAgent(BaseAgent):
         """
         return [config["name"] for config in MEMORY_AGENT_CONFIGS]
 
-    def refresh_agents(self):
+    async def refresh_agents(self):
         """
         Refresh all agent states from the server.
         Useful after external modifications to agent configurations.
         """
-        existing_agents = self.server.agent_manager.list_agents(actor=self.actor)
+        existing_agents = await self.server.agent_manager.list_agents(actor=self.actor)
         self._load_existing_agents(existing_agents)
         self._initialize_agent_instances()
         printv(f"[Mirix.Agent.{self.agent_state.name}] INFO: Refreshed all memory agent states")

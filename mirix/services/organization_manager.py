@@ -18,16 +18,15 @@ class OrganizationManager:
         self.session_maker = db_context
 
     @enforce_types
-    def get_default_organization(self) -> PydanticOrganization:
+    async def get_default_organization(self) -> PydanticOrganization:
         """Fetch the default organization, creating it if it doesn't exist."""
         try:
-            return self.get_organization_by_id(self.DEFAULT_ORG_ID)
+            return await self.get_organization_by_id(self.DEFAULT_ORG_ID)
         except NoResultFound:
-            # Default organization doesn't exist, create it
-            return self.create_default_organization()
+            return await self.create_default_organization()
 
     @enforce_types
-    def get_organization_by_id(self, org_id: str) -> Optional[PydanticOrganization]:
+    async def get_organization_by_id(self, org_id: str) -> Optional[PydanticOrganization]:
         """Fetch an organization by ID (with cache - Redis or IPS Cache)."""
         from mirix.log import get_logger
 
@@ -40,15 +39,15 @@ class OrganizationManager:
 
             if cache_provider:
                 cache_key = f"{cache_provider.ORGANIZATION_PREFIX}{org_id}"
-                cached_data = cache_provider.get_hash(cache_key)
+                cached_data = await cache_provider.get_hash(cache_key)
                 if cached_data:
                     logger.debug("Cache HIT for organization %s", org_id)
                     return PydanticOrganization(**cached_data)
         except Exception as e:
             logger.warning("Cache read failed for organization %s: %s", org_id, e)
 
-        with self.session_maker() as session:
-            organization = OrganizationModel.read(db_session=session, identifier=org_id)
+        async with self.session_maker() as session:
+            organization = await OrganizationModel.read(db_session=session, identifier=org_id)
             pydantic_org = organization.to_pydantic()
 
             try:
@@ -57,7 +56,7 @@ class OrganizationManager:
 
                     cache_key = f"{cache_provider.ORGANIZATION_PREFIX}{org_id}"
                     data = pydantic_org.model_dump(mode="json")
-                    cache_provider.set_hash(cache_key, data, ttl=settings.redis_ttl_organizations)
+                    await cache_provider.set_hash(cache_key, data, ttl=settings.redis_ttl_organizations)
                     logger.debug("Populated cache for organization %s", org_id)
             except Exception as e:
                 logger.warning("Failed to populate cache for organization %s: %s", org_id, e)
@@ -65,48 +64,50 @@ class OrganizationManager:
             return pydantic_org
 
     @enforce_types
-    def create_organization(self, pydantic_org: PydanticOrganization) -> PydanticOrganization:
+    async def create_organization(self, pydantic_org: PydanticOrganization) -> PydanticOrganization:
         """Create a new organization."""
         try:
-            org = self.get_organization_by_id(pydantic_org.id)
+            org = await self.get_organization_by_id(pydantic_org.id)
             return org
         except NoResultFound:
-            return self._create_organization(pydantic_org=pydantic_org)
+            return await self._create_organization(pydantic_org=pydantic_org)
 
     @enforce_types
-    def _create_organization(self, pydantic_org: PydanticOrganization) -> PydanticOrganization:
-        with self.session_maker() as session:
-            # Generate a random name if none provided
+    async def _create_organization(self, pydantic_org: PydanticOrganization) -> PydanticOrganization:
+        async with self.session_maker() as session:
             org_data = pydantic_org.model_dump()
             if org_data.get("name") is None:
                 org_data["name"] = create_random_username()
 
             org = OrganizationModel(**org_data)
-            org.create_with_redis(session, actor=None)  # Auto-caches to Redis
+            await org.create_with_redis(session, actor=None)
             return org.to_pydantic()
 
     @enforce_types
-    def create_default_organization(self) -> PydanticOrganization:
+    async def create_default_organization(self) -> PydanticOrganization:
         """Create the default organization."""
-        return self.create_organization(PydanticOrganization(name=self.DEFAULT_ORG_NAME, id=self.DEFAULT_ORG_ID))
+        return await self.create_organization(
+            PydanticOrganization(name=self.DEFAULT_ORG_NAME, id=self.DEFAULT_ORG_ID)
+        )
 
     @enforce_types
-    def update_organization_name_using_id(self, org_id: str, name: Optional[str] = None) -> PydanticOrganization:
+    async def update_organization_name_using_id(
+        self, org_id: str, name: Optional[str] = None
+    ) -> PydanticOrganization:
         """Update an organization (with cache invalidation)."""
-        with self.session_maker() as session:
-            org = OrganizationModel.read(db_session=session, identifier=org_id)
+        async with self.session_maker() as session:
+            org = await OrganizationModel.read(db_session=session, identifier=org_id)
             if name:
                 org.name = name
-            org.update_with_redis(session, actor=None)  # Updates Redis cache
+            await org.update_with_redis(session, actor=None)
             return org.to_pydantic()
 
     @enforce_types
-    def delete_organization_by_id(self, org_id: str):
+    async def delete_organization_by_id(self, org_id: str) -> None:
         """Delete an organization (removes from cache)."""
-        with self.session_maker() as session:
-            organization = OrganizationModel.read(db_session=session, identifier=org_id)
+        async with self.session_maker() as session:
+            organization = await OrganizationModel.read(db_session=session, identifier=org_id)
 
-            # Remove from cache before hard delete
             try:
                 from mirix.database.cache_provider import get_cache_provider
                 from mirix.log import get_logger
@@ -115,7 +116,7 @@ class OrganizationManager:
                 cache_provider = get_cache_provider()
                 if cache_provider:
                     cache_key = f"{cache_provider.ORGANIZATION_PREFIX}{org_id}"
-                    cache_provider.delete(cache_key)
+                    await cache_provider.delete(cache_key)
                     logger.debug("Removed organization %s from cache", org_id)
             except Exception as e:
                 from mirix.log import get_logger
@@ -123,11 +124,13 @@ class OrganizationManager:
                 logger = get_logger(__name__)
                 logger.warning("Failed to remove organization %s from cache: %s", org_id, e)
 
-            organization.hard_delete(session)
+            await organization.hard_delete(session)
 
     @enforce_types
-    def list_organizations(self, cursor: Optional[str] = None, limit: Optional[int] = 50) -> List[PydanticOrganization]:
+    async def list_organizations(
+        self, cursor: Optional[str] = None, limit: Optional[int] = 50
+    ) -> List[PydanticOrganization]:
         """List organizations with pagination based on cursor (org_id) and limit."""
-        with self.session_maker() as session:
-            results = OrganizationModel.list(db_session=session, cursor=cursor, limit=limit)
+        async with self.session_maker() as session:
+            results = await OrganizationModel.list(db_session=session, cursor=cursor, limit=limit)
             return [org.to_pydantic() for org in results]

@@ -58,7 +58,7 @@ def _format_summary_history(message_history: List[Message]):
     return "\n\n".join([f"{m.role}: {format_message(m)}" for m in message_history])
 
 
-def summarize_messages(
+async def summarize_messages(
     agent_state: AgentState,
     message_sequence_to_summarize: List[Message],
     existing_file_uris: Optional[List[str]] = None,
@@ -77,7 +77,7 @@ def summarize_messages(
         cutoff = int(len(message_sequence_to_summarize) * trunc_ratio)
         summary_input = str(
             [
-                summarize_messages(
+                await summarize_messages(
                     agent_state,
                     message_sequence_to_summarize=message_sequence_to_summarize[:cutoff],
                 )
@@ -108,7 +108,7 @@ def summarize_messages(
     llm_client = LLMClient.create(
         llm_config=agent_state.llm_config.model_copy(deep=True),
     )
-    response = llm_client.send_llm_request(
+    response = await llm_client.send_llm_request(
         messages=message_sequence,
         existing_file_uris=existing_file_uris,
     )

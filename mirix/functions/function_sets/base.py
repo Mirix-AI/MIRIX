@@ -4,7 +4,7 @@ from mirix.agent import Agent, AgentState
 from mirix.utils import convert_timezone_to_utc
 
 
-def send_message(self: "Agent", agent_state: "AgentState", message: str) -> Optional[str]:
+async def send_message(self: "Agent", agent_state: "AgentState", message: str) -> Optional[str]:
     """
     Sends a message to the human user. Meanwhile, whenever this function is called, the agent needs to include the `topic` of the current focus. It can be the same as before, it can also be updated when the agent is focusing on something different.
 
@@ -15,16 +15,14 @@ def send_message(self: "Agent", agent_state: "AgentState", message: str) -> Opti
     Returns:
         Optional[str]: None is always returned as this function does not produce a response.
     """
-    # FIXME passing of msg_obj here is a hack, unclear if guaranteed to be the correct reference
-    self.interface.assistant_message(message)  # , msg_obj=self._messages[-1])
+    self.interface.assistant_message(message)
     return None
 
 
-def send_intermediate_message(
+async def send_intermediate_message(
     self: "Agent",
     agent_state: "AgentState",
     message: str,
-    # topic: str = None
 ) -> Optional[str]:
     """
     Sends an intermediate message to the human user. Meanwhile, whenever this function is called, the agent needs to include the `topic` of the current focus. It should NEVER be any questions or requests for the user but only the agent's current progress on the task.
@@ -36,13 +34,11 @@ def send_intermediate_message(
     Returns:
         Optional[str]: None is always returned as this function does not produce a response.
     """
-    # FIXME passing of msg_obj here is a hack, unclear if guaranteed to be the correct reference
-    self.interface.assistant_message(message)  # , msg_obj=self._messages[-1])
-    # agent_state.topic = topic
+    self.interface.assistant_message(message)
     return None
 
 
-def conversation_search(self: "Agent", query: str, page: Optional[int] = 0) -> Optional[str]:
+async def conversation_search(self: "Agent", query: str, page: Optional[int] = 0) -> Optional[str]:
     """
     Search prior conversation history using case-insensitive string matching.
 
@@ -68,7 +64,7 @@ def conversation_search(self: "Agent", query: str, page: Optional[int] = 0) -> O
     count = RETRIEVAL_QUERY_DEFAULT_PAGE_SIZE
     # TODO: add paging by page number. currently cursor only works with strings.
     # original: start=page * count
-    messages = self.message_manager.list_user_messages_for_agent(
+    messages = await self.message_manager.list_user_messages_for_agent(
         agent_id=self.agent_state.id,
         actor=self.actor,
         query_text=query,
@@ -85,7 +81,7 @@ def conversation_search(self: "Agent", query: str, page: Optional[int] = 0) -> O
     return results_str
 
 
-def search_in_memory(
+async def search_in_memory(
     self: "Agent",
     memory_type: str,
     query: str,
@@ -127,7 +123,7 @@ def search_in_memory(
         from mirix.constants import MAX_EMBEDDING_DIM
         from mirix.embeddings import embedding_model
 
-        embedded_text = embedding_model(self.agent_state.embedding_config).get_text_embedding(query)
+        embedded_text = await (await embedding_model(self.agent_state.embedding_config)).get_text_embedding(query)
         # Pad for episodic memory which requires MAX_EMBEDDING_DIM
         embedded_text_padded = np.pad(
             np.array(embedded_text), (0, MAX_EMBEDDING_DIM - len(embedded_text)), mode="constant"
@@ -140,7 +136,7 @@ def search_in_memory(
         return "", 0
 
     if memory_type == "episodic" or memory_type == "all":
-        episodic_memory = self.episodic_memory_manager.list_episodic_memory(
+        episodic_memory = await self.episodic_memory_manager.list_episodic_memory(
             user=self.user,
             agent_state=self.agent_state,
             query=query,
@@ -166,7 +162,7 @@ def search_in_memory(
             return formatted_results_from_episodic, len(formatted_results_from_episodic)
 
     if memory_type == "resource" or memory_type == "all":
-        resource_memories = self.resource_memory_manager.list_resources(
+        resource_memories = await self.resource_memory_manager.list_resources(
             user=self.user,
             agent_state=self.agent_state,
             query=query,
@@ -192,7 +188,7 @@ def search_in_memory(
             return formatted_results_resource, len(formatted_results_resource)
 
     if memory_type == "procedural" or memory_type == "all":
-        procedural_memories = self.procedural_memory_manager.list_procedures(
+        procedural_memories = await self.procedural_memory_manager.list_procedures(
             user=self.user,
             agent_state=self.agent_state,
             query=query,
@@ -216,7 +212,7 @@ def search_in_memory(
             return formatted_results_procedural, len(formatted_results_procedural)
 
     if memory_type == "knowledge_vault" or memory_type == "all":
-        knowledge_vault_memories = self.knowledge_vault_manager.list_knowledge(
+        knowledge_vault_memories = await self.knowledge_vault_manager.list_knowledge(
             user=self.user,
             agent_state=self.agent_state,
             query=query,
@@ -242,7 +238,7 @@ def search_in_memory(
             return formatted_results_knowledge_vault, len(formatted_results_knowledge_vault)
 
     if memory_type == "semantic" or memory_type == "all":
-        semantic_memories = self.semantic_memory_manager.list_semantic_items(
+        semantic_memories = await self.semantic_memory_manager.list_semantic_items(
             user=self.user,
             agent_state=self.agent_state,
             query=query,
@@ -285,7 +281,7 @@ def search_in_memory(
     )
 
 
-def list_memory_within_timerange(
+async def list_memory_within_timerange(
     self: "Agent", memory_type: str, start_time: str, end_time: str, timezone_str: str
 ) -> Optional[str]:
     """
@@ -303,7 +299,7 @@ def list_memory_within_timerange(
         raise ValueError("Can not list memory within timerange. User is not set")
 
     if memory_type == "episodic" or memory_type == "all":
-        episodic_memory = self.episodic_memory_manager.list_episodic_memory_around_timestamp(
+        episodic_memory = await self.episodic_memory_manager.list_episodic_memory_around_timestamp(
             user=self.user,
             agent_state=self.agent_state,
             start_time=start_time,

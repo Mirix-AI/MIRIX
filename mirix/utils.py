@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import contextvars
 import copy
@@ -13,7 +14,6 @@ import random
 import re
 import shutil
 import string
-import subprocess
 import sys
 import uuid
 import warnings
@@ -38,7 +38,7 @@ from urllib.parse import urljoin, urlparse
 
 import demjson3 as demjson
 import pytz
-import requests
+import httpx
 import tiktoken
 from pathvalidate import sanitize_filename as pathvalidate_sanitize_filename
 
@@ -834,7 +834,7 @@ def suppress_stdout():
         sys.stdout = old_stdout
 
 
-def open_folder_in_explorer(folder_path):
+async def open_folder_in_explorer(folder_path):
     """
     Opens the specified folder in the system's native file explorer.
 
@@ -843,21 +843,19 @@ def open_folder_in_explorer(folder_path):
     if not os.path.exists(folder_path):
         raise ValueError(f"The specified folder {folder_path} does not exist.")
 
-    # Determine the operating system
     os_name = platform.system()
 
-    # Open the folder based on the operating system
     if os_name == "Windows":
-        # Windows: use 'explorer' command
-        subprocess.run(["explorer", folder_path], check=True)
+        cmd = ["explorer", folder_path]
     elif os_name == "Darwin":
-        # macOS: use 'open' command
-        subprocess.run(["open", folder_path], check=True)
+        cmd = ["open", folder_path]
     elif os_name == "Linux":
-        # Linux: use 'xdg-open' command (works for most Linux distributions)
-        subprocess.run(["xdg-open", folder_path], check=True)
+        cmd = ["xdg-open", folder_path]
     else:
         raise OSError(f"Unsupported operating system {os_name}.")
+
+    process = await asyncio.create_subprocess_exec(*cmd)
+    await process.communicate()
 
 
 # Custom unpickler
@@ -1507,35 +1505,34 @@ def generate_short_id(prefix="id", length=4):
 
 def generate_unique_short_id(session_maker, model_class, prefix="id", length=4, max_attempts=10):
     """
-    Generate a unique short, LLM-friendly ID with collision detection.
-
-    Args:
-        session_maker: SQLAlchemy session maker for database access
-        model_class: The SQLAlchemy model class to check for ID uniqueness
-        prefix: The prefix for the ID (e.g., "sem", "res", "proc")
-        length: The length of the random part (default 4)
-        max_attempts: Maximum attempts to find a unique ID before fallback
-
-    Returns:
-        A unique short ID like "sem_A7K9", "res_B3X2", etc.
-
-    Examples:
-        >>> generate_unique_short_id(session_maker, SemanticMemoryItem, "sem", 4)
-        "sem_A7K9"
-        >>> generate_unique_short_id(session_maker, ResourceMemoryItem, "res", 4)
-        "res_B3X2"
+    Generate a unique short, LLM-friendly ID with collision detection (sync).
+    Prefer generate_unique_short_id_async when in async context.
     """
     from sqlalchemy import select
 
     for _ in range(max_attempts):
         candidate_id = generate_short_id(prefix, length)
-        # Check if this ID already exists
         with session_maker() as temp_session:
             existing = temp_session.execute(select(model_class).where(model_class.id == candidate_id)).first()
             if not existing:
                 return candidate_id
+    return generate_short_id(prefix, length + 2)
 
-    # If we can't find a unique ID after max_attempts, fall back to longer ID
+
+async def generate_unique_short_id_async(session_maker, model_class, prefix="id", length=4, max_attempts=10):
+    """
+    Generate a unique short, LLM-friendly ID with collision detection (async).
+    session_maker must be an async context manager (e.g. db_context from server).
+    """
+    from sqlalchemy import select
+
+    for _ in range(max_attempts):
+        candidate_id = generate_short_id(prefix, length)
+        async with session_maker() as temp_session:
+            result = await temp_session.execute(select(model_class).where(model_class.id == candidate_id))
+            existing = result.scalar_one_or_none()
+            if not existing:
+                return candidate_id
     return generate_short_id(prefix, length + 2)
 
 
@@ -1601,7 +1598,7 @@ def _save_image_from_base64(
         raise ValueError(f"Failed to save base64 image: {str(e)}") from e
 
 
-def _save_image_from_url(
+async def _save_image_from_url(
     url: str,
     file_manager: "FileManager",
     org_id: str,
@@ -1611,7 +1608,8 @@ def _save_image_from_url(
     """Download and save an image from URL and return FileMetadata."""
     del detail  # detail currently unused but kept for signature parity
     try:
-        response = requests.get(url, stream=True, timeout=30)
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, timeout=30)
         response.raise_for_status()
 
         content_type = response.headers.get("content-type", "image/jpeg")

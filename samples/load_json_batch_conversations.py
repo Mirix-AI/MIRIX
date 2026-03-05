@@ -21,6 +21,7 @@ Examples:
 """
 
 import argparse
+import asyncio
 import json
 import logging
 import sys
@@ -178,8 +179,12 @@ def transform_message_format(messages: List[Dict[str, Any]]) -> List[Dict[str, A
     return transformed
 
 
-def add_conversation_to_mirix(
-    client: MirixClient, user_id: str, messages: List[Dict[str, Any]], filter_tags: Dict[str, Any], occurred_at: str
+async def add_conversation_to_mirix(
+    client: MirixClient,
+    user_id: str,
+    messages: List[Dict[str, Any]],
+    filter_tags: Dict[str, Any],
+    occurred_at: str,
 ) -> bool:
     """
     Add a single conversation to Mirix.
@@ -195,7 +200,7 @@ def add_conversation_to_mirix(
         True if successful, False otherwise
     """
     try:
-        result = client.add(
+        result = await client.add(
             user_id=user_id, messages=messages, chaining=True, filter_tags=filter_tags, occurred_at=occurred_at
         )
         return result.get("success", False)
@@ -204,7 +209,7 @@ def add_conversation_to_mirix(
         return False
 
 
-def process_conversations(
+async def process_conversations(
     client: MirixClient, conversations: List[Dict[str, Any]], batch_size: int, delay: float, dry_run: bool = False
 ):
     """
@@ -245,7 +250,7 @@ def process_conversations(
         logger.info("Creating/verifying %d users...", len(unique_users))
         for user_id in unique_users:
             try:
-                client.create_or_get_user(
+                await client.create_or_get_user(
                     user_id=user_id, user_name="Sales User {}".format(user_id), org_id=LoadConfig.ORG_ID
                 )
                 logger.info("  ✓ User ready: %s", user_id)
@@ -270,8 +275,7 @@ def process_conversations(
                 success_count += 1
                 batch_success += 1
             else:
-                # Actually add to Mirix
-                if add_conversation_to_mirix(
+                if await add_conversation_to_mirix(
                     client, conv["user_id"], transformed_messages, conv["filter_tags"], conv["occurred_at"]
                 ):
                     success_count += 1
@@ -314,9 +318,8 @@ def process_conversations(
     logger.info("=" * 80)
 
 
-def main():
+async def main():
     """Main execution function."""
-    # Parse arguments
     args = parse_arguments()
 
     logger.info("=" * 80)
@@ -354,7 +357,7 @@ def main():
     if not args.dry_run:
         logger.info("\nInitializing MirixClient...")
         try:
-            client = MirixClient(
+            client = await MirixClient.create(
                 api_key=None,
                 client_id=LoadConfig.CLIENT_ID,
                 client_name="Sales Samples Loader",
@@ -364,12 +367,10 @@ def main():
             )
             logger.info("✓ Client initialized")
 
-            # Initialize meta agent
             logger.info("Initializing meta agent...")
             project_root = Path(__file__).parent.parent
             config_path = project_root / "mirix" / "configs" / "examples" / "mirix_gemini.yaml"
-
-            client.initialize_meta_agent(config_path=str(config_path), update_agents=False)
+            await client.initialize_meta_agent(config_path=str(config_path), update_agents=False)
             logger.info("✓ Meta agent initialized")
         except Exception as e:  # pylint: disable=broad-except
             logger.error("✗ Failed to initialize: %s", e)
@@ -391,9 +392,8 @@ def main():
             logger.info("Loading cancelled by user")
             sys.exit(0)
 
-    # Process conversations
     try:
-        process_conversations(client, conversations, args.batch_size, args.delay, args.dry_run)
+        await process_conversations(client, conversations, args.batch_size, args.delay, args.dry_run)
     except KeyboardInterrupt:
         logger.info("\n\nProcessing interrupted by user")
         sys.exit(1)
@@ -406,4 +406,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

@@ -29,18 +29,18 @@ KAFKA_SSL_KEYFILE = os.environ.get("KAFKA_SSL_KEYFILE")
 # Note: Changing group_id + setting auto_offset_reset='latest' can effectively "clear the queue"
 KAFKA_AUTO_OFFSET_RESET = os.environ.get("KAFKA_AUTO_OFFSET_RESET", "earliest")
 
-# consumer_timeout_ms: Timeout for polling messages (milliseconds)
-# After this timeout, the consumer iterator will raise StopIteration
+# consumer_timeout_ms: Default timeout for consumer.getone() (milliseconds)
+# Used as the default timeout when polling for messages via aiokafka
 KAFKA_CONSUMER_TIMEOUT_MS = int(os.environ.get("KAFKA_CONSUMER_TIMEOUT_MS", "1000"))
 
 # max_poll_interval_ms: Maximum time between poll() calls before consumer is considered failed (milliseconds)
 # Increased to 15 minutes to accommodate long-running memory agent operations
-# Default kafka-python value is 5 minutes (300000)
+# Default aiokafka/Kafka value is 5 minutes (300000)
 KAFKA_MAX_POLL_INTERVAL_MS = int(os.environ.get("KAFKA_MAX_POLL_INTERVAL_MS", "900000"))
 
 # session_timeout_ms: Timeout for detecting consumer failures (milliseconds)
 # If no heartbeat is received within this time, the consumer is removed from the group
-# Increased to 30 seconds from kafka-python default of 10 seconds
+# Increased to 30 seconds from default of 10 seconds
 KAFKA_SESSION_TIMEOUT_MS = int(os.environ.get("KAFKA_SESSION_TIMEOUT_MS", "30000"))
 
 NUM_WORKERS = int(os.environ.get("MIRIX_MEMORY_QUEUE_NUM_WORKERS", 1))

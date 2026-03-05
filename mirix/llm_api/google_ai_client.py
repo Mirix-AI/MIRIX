@@ -2,7 +2,7 @@ import json
 import uuid
 from typing import List, Optional, Tuple
 
-import requests
+import httpx
 from google.genai.types import (
     FunctionCallingConfig,
     FunctionCallingConfigMode,
@@ -38,16 +38,13 @@ logger = get_logger(__name__)
 
 
 class GoogleAIClient(LLMClientBase):
-    def request(self, request_data: dict) -> dict:
+    async def request(self, request_data: dict) -> dict:
         """
-        Performs underlying request to llm and returns raw response.
+        Performs underlying request to LLM and returns raw response (native async).
         """
-        # logger.debug("[google_ai request]", json.dumps(request_data, indent=2))
-
-        # Check for database-stored API key first, fall back to model_settings
-        override_key = ProviderManager().get_gemini_override_key()
+        pm = ProviderManager()
+        override_key = await pm.get_gemini_override_key()
         api_key = str(override_key) if override_key else str(model_settings.gemini_api_key)
-
         url, headers = get_gemini_endpoint_and_headers(
             base_url=str(self.llm_config.model_endpoint),
             model=self.llm_config.model,
@@ -55,9 +52,9 @@ class GoogleAIClient(LLMClientBase):
             key_in_header=True,
             generate_content=True,
         )
-        return make_post_request(url, headers, request_data)
+        return await make_post_request(url, headers, request_data)
 
-    def build_request_data(
+    async def build_request_data(
         self,
         messages: List[PydanticMessage],
         llm_config: LLMConfig,
@@ -94,7 +91,7 @@ class GoogleAIClient(LLMClientBase):
         contents = self.combine_tool_responses(contents)
 
         request_data = {
-            "contents": self.fill_image_content_in_messages(contents, existing_file_uris=existing_file_uris),
+            "contents": await self.fill_image_content_in_messages(contents, existing_file_uris=existing_file_uris),
             "tools": tools,
             "generation_config": generation_config,
         }
@@ -141,7 +138,7 @@ class GoogleAIClient(LLMClientBase):
             idx += 1
         return new_contents
 
-    def fill_image_content_in_messages(self, google_ai_message_list, existing_file_uris: Optional[List[str]] = None):
+    async def fill_image_content_in_messages(self, google_ai_message_list, existing_file_uris: Optional[List[str]] = None):
         """
         Converts image URIs in the message to base64 format.
         """
@@ -178,14 +175,12 @@ class GoogleAIClient(LLMClientBase):
                         )
                     else:
                         message_parts.append({"text": f"<image {global_image_idx}>"})
-                        file = self.file_manager.get_file_metadata_by_id(part["image_id"])
+                        file = await self.file_manager.get_file_metadata_by_id(part["image_id"])
                         if file.source_url is not None:
-                            # For Google AI, we need to convert URL to base64
-                            import requests
-
-                            response = requests.get(file.source_url)
                             import base64
 
+                            async with httpx.AsyncClient() as client:
+                                response = await client.get(file.source_url)
                             base64_data = base64.b64encode(response.content).decode("utf-8")
                             # Determine mime type from URL or default to jpeg
                             mime_type = file.file_type
@@ -217,7 +212,7 @@ class GoogleAIClient(LLMClientBase):
                         global_image_idx += 1
                         has_image = True
                 elif "cloud_file_uri" in part:
-                    file = self.file_manager.get_file_metadata_by_id(part["cloud_file_uri"])
+                    file = await self.file_manager.get_file_metadata_by_id(part["cloud_file_uri"])
                     if existing_file_uris is not None and file.google_cloud_url not in existing_file_uris:
                         message_parts.append(
                             {
@@ -525,79 +520,67 @@ def get_gemini_endpoint_and_headers(
     return url, headers
 
 
-def google_ai_get_model_list(base_url: str, api_key: str, key_in_header: bool = True) -> List[dict]:
+async def google_ai_get_model_list(base_url: str, api_key: str, key_in_header: bool = True) -> List[dict]:
     from mirix.utils import printd
 
     url, headers = get_gemini_endpoint_and_headers(base_url, None, api_key, key_in_header)
 
     try:
-        response = requests.get(url, headers=headers)
-        response.raise_for_status()  # Raises HTTPError for 4XX/5XX status
-        response = response.json()  # convert to dict from string
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, headers=headers)
+        response.raise_for_status()
+        data = response.json()
 
-        # Grab the models out
-        model_list = response["models"]
+        model_list = data["models"]
         return model_list
 
-    except requests.exceptions.HTTPError as http_err:
-        # Handle HTTP errors (e.g., response 4XX, 5XX)
+    except httpx.HTTPStatusError as http_err:
         printd(f"Got HTTPError, exception={http_err}")
-        # Print the HTTP status code
         logger.debug("HTTP Error: %s", http_err.response.status_code)
-        # Print the response content (error message from server)
         logger.debug("Message: %s", http_err.response.text)
         raise http_err
 
-    except requests.exceptions.RequestException as req_err:
-        # Handle other requests-related errors (e.g., connection error)
+    except httpx.RequestError as req_err:
         printd(f"Got RequestException, exception={req_err}")
         raise req_err
 
     except Exception as e:
-        # Handle other potential errors
         printd(f"Got unknown Exception, exception={e}")
         raise e
 
 
-def google_ai_get_model_details(base_url: str, api_key: str, model: str, key_in_header: bool = True) -> List[dict]:
+async def google_ai_get_model_details(base_url: str, api_key: str, model: str, key_in_header: bool = True) -> List[dict]:
     from mirix.utils import printd
 
     url, headers = get_gemini_endpoint_and_headers(base_url, model, api_key, key_in_header)
 
     try:
-        response = requests.get(url, headers=headers)
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, headers=headers)
         printd(f"response = {response}")
-        response.raise_for_status()  # Raises HTTPError for 4XX/5XX status
-        response = response.json()  # convert to dict from string
-        printd(f"response.json = {response}")
+        response.raise_for_status()
+        data = response.json()
+        printd(f"response.json = {data}")
 
-        # Grab the models out
-        return response
+        return data
 
-    except requests.exceptions.HTTPError as http_err:
-        # Handle HTTP errors (e.g., response 4XX, 5XX)
+    except httpx.HTTPStatusError as http_err:
         printd(f"Got HTTPError, exception={http_err}")
-        # Print the HTTP status code
         logger.debug("HTTP Error: %s", http_err.response.status_code)
-        # Print the response content (error message from server)
         logger.debug("Message: %s", http_err.response.text)
         raise http_err
 
-    except requests.exceptions.RequestException as req_err:
-        # Handle other requests-related errors (e.g., connection error)
+    except httpx.RequestError as req_err:
         printd(f"Got RequestException, exception={req_err}")
         raise req_err
 
     except Exception as e:
-        # Handle other potential errors
         printd(f"Got unknown Exception, exception={e}")
         raise e
 
 
-def google_ai_get_model_context_window(base_url: str, api_key: str, model: str, key_in_header: bool = True) -> int:
-    model_details = google_ai_get_model_details(
+async def google_ai_get_model_context_window(base_url: str, api_key: str, model: str, key_in_header: bool = True) -> int:
+    model_details = await google_ai_get_model_details(
         base_url=base_url, api_key=api_key, model=model, key_in_header=key_in_header
     )
-    # TODO should this be:
-    # return model_details["inputTokenLimit"] + model_details["outputTokenLimit"]
     return int(model_details["inputTokenLimit"])

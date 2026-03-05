@@ -1,5 +1,7 @@
+from datetime import datetime, timezone
+
 from sqlalchemy import JSON
-from sqlalchemy.types import BINARY, TypeDecorator
+from sqlalchemy.types import BINARY, DateTime, TypeDecorator
 
 from mirix.helpers.converters import (
     deserialize_agent_step_state,
@@ -25,6 +27,23 @@ from mirix.helpers.converters import (
     serialize_tool_rules,
     serialize_vector,
 )
+
+
+class DateTimeNaiveUTC(TypeDecorator):
+    """
+    DateTime that always binds as naive UTC (for TIMESTAMP WITHOUT TIME ZONE).
+    Converts timezone-aware values to naive UTC to avoid asyncpg DataError.
+    """
+
+    impl = DateTime
+    cache_ok = True
+
+    def process_bind_param(self, value, dialect):
+        if value is None:
+            return None
+        if getattr(value, "tzinfo", None) is not None:
+            return value.astimezone(timezone.utc).replace(tzinfo=None)
+        return value
 
 
 class EmbeddingConfigColumn(TypeDecorator):

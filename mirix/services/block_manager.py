@@ -1,5 +1,7 @@
 from typing import Any, Dict, List, Optional
 
+from sqlalchemy import select
+
 from mirix.log import get_logger
 from mirix.orm.block import Block as BlockModel
 from mirix.orm.enums import AccessType
@@ -23,7 +25,7 @@ class BlockManager:
         self.session_maker = db_context
 
     @enforce_types
-    def create_or_update_block(
+    async def create_or_update_block(
         self,
         block: Block,
         actor: PydanticClient,
@@ -52,12 +54,12 @@ class BlockManager:
         if "scope" not in filter_tags and actor.write_scope:
             filter_tags["scope"] = actor.write_scope
 
-        db_block = self.get_block_by_id(block.id, user=None)
+        db_block = await self.get_block_by_id(block.id, user=None)
         if db_block:
             update_data = BlockUpdate(**block.model_dump(exclude_none=True))
-            return self.update_block(block.id, update_data, actor, user=user)
+            return await self.update_block(block.id, update_data, actor, user=user)
         else:
-            with self.session_maker() as session:
+            async with self.session_maker() as session:
                 data = block.model_dump(
                     exclude_none=True,
                     exclude={"organization_id", "user_id", "filter_tags"},
@@ -76,12 +78,12 @@ class BlockManager:
                     user_id=final_user_id,
                     filter_tags=filter_tags or None,
                 )
-                block.create_with_redis(session, actor=actor)
+                await block.create_with_redis(session, actor=actor)
                 logger.debug("Block %s created with user_id=%s, scope=%s", block.id, block.user_id, scope)
             return block.to_pydantic()
 
     @enforce_types
-    def seed_template_block_for_actor_scope_if_necessary(
+    async def seed_template_block_for_actor_scope_if_necessary(
         self,
         label: str,
         value: str,
@@ -108,7 +110,7 @@ class BlockManager:
         scope = actor.write_scope
 
         # Look for existing block by key: (user_id, scope, label)
-        existing = self.get_blocks(
+        existing = await self.get_blocks(
             user=default_user,
             any_scopes=[scope],
             label=label,
@@ -134,14 +136,14 @@ class BlockManager:
             scope,
             default_user.id,
         )
-        return self.create_or_update_block(
+        return await self.create_or_update_block(
             block=new_block,
             actor=actor,
             user=default_user,
         )
 
     @enforce_types
-    def _invalidate_block_cache(self, block_id: str) -> None:
+    async def _invalidate_block_cache(self, block_id: str) -> None:
         """
         Invalidate caches for a block.
         Called when a block is updated or deleted to maintain cache consistency.
@@ -152,11 +154,12 @@ class BlockManager:
             cache_provider = get_cache_provider()
             if cache_provider:
                 cache_key = f"{cache_provider.BLOCK_PREFIX}{block_id}"
-                cache_provider.delete(cache_key)
+                await cache_provider.delete(cache_key)
         except Exception as e:
             logger.warning("Failed to invalidate cache for block %s: %s", block_id, e)
 
-    def update_block(
+    @enforce_types
+    async def update_block(
         self,
         block_id: str,
         block_update: BlockUpdate,
@@ -172,8 +175,8 @@ class BlockManager:
             actor: Client for audit trail (last_updated_by_id)
             user: Optional user if updating user field
         """
-        with self.session_maker() as session:
-            block = BlockModel.read(
+        async with self.session_maker() as session:
+            block = await BlockModel.read(
                 db_session=session, identifier=block_id, actor=actor, user=user, access_type=AccessType.USER
             )
             update_data = block_update.model_dump(exclude_unset=True, exclude_none=True)
@@ -184,7 +187,7 @@ class BlockManager:
             if user is not None:
                 block.user_id = user.id
 
-            block.update_with_redis(db_session=session, actor=actor)
+            await block.update_with_redis(db_session=session, actor=actor)
 
             return block.to_pydantic()
 
@@ -206,25 +209,25 @@ class BlockManager:
             block.update_with_redis(db_session=session, actor=actor)
 
     @enforce_types
-    def delete_block(self, block_id: str, actor: PydanticClient) -> PydanticBlock:
+    async def delete_block(self, block_id: str, actor: PydanticClient) -> PydanticBlock:
         """Delete a block by its ID (removes from cache)."""
         from mirix.database.cache_provider import get_cache_provider
 
-        with self.session_maker() as session:
-            block = BlockModel.read(db_session=session, identifier=block_id)
+        async with self.session_maker() as session:
+            block = await BlockModel.read(db_session=session, identifier=block_id)
 
             cache_provider = get_cache_provider()
             if cache_provider:
                 cache_key = f"{cache_provider.BLOCK_PREFIX}{block_id}"
-                cache_provider.delete(cache_key)
+                await cache_provider.delete(cache_key)
 
-            self._invalidate_block_cache(block_id)
+            await self._invalidate_block_cache(block_id)
 
-            block.hard_delete(db_session=session, actor=actor)
+            await block.hard_delete(db_session=session, actor=actor)
             return block.to_pydantic()
 
     @enforce_types
-    def get_blocks(
+    async def get_blocks(
         self,
         user: Optional[PydanticUser] = None,
         any_scopes: Optional[List[str]] = None,
@@ -260,12 +263,12 @@ class BlockManager:
             filter_tags_set_on_create: Optional dict; applied only when new blocks are created (e.g. from
                               default user template). Existing blocks are never updated.
         """
-        with self.session_maker() as session:
+        async with self.session_maker() as session:
             # Org-wide path: user is None — require organization_id and any_scopes
             if user is None:
                 if organization_id is None or any_scopes is None or not any_scopes:
                     return []
-                blocks = BlockModel.list_by_scopes(
+                blocks = await BlockModel.list_by_scopes(
                     db_session=session,
                     user_id=None,
                     organization_id=organization_id,
@@ -283,7 +286,7 @@ class BlockManager:
                 if not any_scopes:
                     return []
                 # Scope-filtered query — pushed into SQL, hits the btree index
-                blocks = BlockModel.list_by_scopes(
+                blocks = await BlockModel.list_by_scopes(
                     db_session=session,
                     user_id=user.id,
                     organization_id=org_id,
@@ -303,7 +306,7 @@ class BlockManager:
                     filters["label"] = label
                 if id:
                     filters["id"] = id
-                blocks = BlockModel.list(db_session=session, cursor=cursor, limit=limit, **filters)
+                blocks = await BlockModel.list(db_session=session, cursor=cursor, limit=limit, **filters)
 
             # Auto-create from default user template if no blocks found.
             # Only auto-create when filtering by exactly one scope (write path).
@@ -315,7 +318,7 @@ class BlockManager:
                     user.id,
                     scope,
                 )
-                blocks = self._copy_blocks_from_default_user(
+                blocks = await self._copy_blocks_from_default_user(
                     session=session,
                     target_user=user,
                     scope=scope,
@@ -325,7 +328,7 @@ class BlockManager:
 
             return [block.to_pydantic() for block in blocks]
 
-    def _copy_blocks_from_default_user(
+    async def _copy_blocks_from_default_user(
         self,
         session,
         target_user: PydanticUser,
@@ -353,7 +356,7 @@ class BlockManager:
 
         user_manager = UserManager()
         try:
-            org_default_user = user_manager.get_or_create_org_default_user(org_id=organization_id)
+            org_default_user = await user_manager.get_or_create_org_default_user(org_id=organization_id)
             default_user_id = org_default_user.id
             logger.debug(
                 "Using organization default user %s as template for user %s in org %s",
@@ -366,7 +369,7 @@ class BlockManager:
             default_user_id = UserManager.ADMIN_USER_ID
 
         # Find template blocks for this scope on the default user (SQL-level scope filter)
-        default_blocks = BlockModel.list_by_scopes(
+        default_blocks = await BlockModel.list_by_scopes(
             db_session=session,
             user_id=default_user_id,
             organization_id=organization_id,
@@ -418,11 +421,11 @@ class BlockManager:
                 )
 
                 session.add(new_block)
-                session.commit()
-                session.refresh(new_block)
+                await session.commit()
+                await session.refresh(new_block)
 
                 try:
-                    new_block._update_redis_cache(operation="create", actor=None)
+                    await new_block._update_redis_cache(operation="create", actor=None)
                     logger.debug("Cached copied block %s to cache", new_block.id)
                 except Exception as e:
                     logger.warning("Failed to cache block %s to cache: %s", new_block.id, e)
@@ -441,7 +444,7 @@ class BlockManager:
                 logger.error(
                     "Failed to copy block %s for user %s: %s", template_block.id, target_user.id, e, exc_info=True
                 )
-                session.rollback()
+                await session.rollback()
                 continue
 
         logger.info(
@@ -454,7 +457,7 @@ class BlockManager:
         return new_blocks
 
     @enforce_types
-    def get_block_by_id(self, block_id: str, user: Optional[PydanticUser] = None) -> Optional[PydanticBlock]:
+    async def get_block_by_id(self, block_id: str, user: Optional[PydanticUser] = None) -> Optional[PydanticBlock]:
         """Retrieve a block by its ID (with cache - Redis or IPS Cache)."""
         cache_provider = None
         try:
@@ -464,7 +467,7 @@ class BlockManager:
 
             if cache_provider:
                 cache_key = f"{cache_provider.BLOCK_PREFIX}{block_id}"
-                cached_data = cache_provider.get_hash(cache_key)
+                cached_data = await cache_provider.get_hash(cache_key)
                 if cached_data:
                     if "value" not in cached_data or cached_data["value"] is None:
                         cached_data["value"] = ""
@@ -472,9 +475,9 @@ class BlockManager:
         except Exception as e:
             logger.warning("Cache read failed for block %s: %s", block_id, e)
 
-        with self.session_maker() as session:
+        async with self.session_maker() as session:
             try:
-                block = BlockModel.read(
+                block = await BlockModel.read(
                     db_session=session,
                     identifier=block_id,
                     user=user,
@@ -488,7 +491,7 @@ class BlockManager:
 
                         cache_key = f"{cache_provider.BLOCK_PREFIX}{block_id}"
                         data = pydantic_block.model_dump(mode="json")
-                        cache_provider.set_hash(cache_key, data, ttl=settings.redis_ttl_blocks)
+                        await cache_provider.set_hash(cache_key, data, ttl=settings.redis_ttl_blocks)
                 except Exception as e:
                     logger.warning("Failed to populate cache for block %s: %s", block_id, e)
 
@@ -497,14 +500,16 @@ class BlockManager:
                 return None
 
     @enforce_types
-    def get_all_blocks_by_ids(self, block_ids: List[str], user: Optional[PydanticUser] = None) -> List[PydanticBlock]:
+    async def get_all_blocks_by_ids(
+        self, block_ids: List[str], user: Optional[PydanticUser] = None
+    ) -> List[PydanticBlock]:
         blocks = []
         for block_id in block_ids:
-            block = self.get_block_by_id(block_id, user=user)
+            block = await self.get_block_by_id(block_id, user=user)
             blocks.append(block)
         return blocks
 
-    def soft_delete_by_user_id(self, user_id: str) -> int:
+    async def soft_delete_by_user_id(self, user_id: str) -> int:
         """
         Bulk soft delete all blocks for a user (updates Redis cache).
 
@@ -516,10 +521,13 @@ class BlockManager:
         """
         from mirix.database.redis_client import get_redis_client
 
-        with self.session_maker() as session:
-            blocks = (
-                session.query(BlockModel).filter(BlockModel.user_id == user_id, BlockModel.is_deleted == False).all()
+        async with self.session_maker() as session:
+            stmt = select(BlockModel).where(
+                BlockModel.user_id == user_id,
+                BlockModel.is_deleted == False,
             )
+            result = await session.execute(stmt)
+            blocks = result.scalars().all()
 
             count = len(blocks)
             if count == 0:
@@ -531,23 +539,23 @@ class BlockManager:
                 block.is_deleted = True
                 block.set_updated_at()
 
-            session.commit()
+            await session.commit()
 
         for block_id in block_ids:
-            self._invalidate_block_cache(block_id)
+            await self._invalidate_block_cache(block_id)
 
         redis_client = get_redis_client()
         if redis_client:
             for block_id in block_ids:
                 redis_key = f"{redis_client.BLOCK_PREFIX}{block_id}"
                 try:
-                    redis_client.client.hset(redis_key, "is_deleted", "true")
+                    await redis_client.client.hset(redis_key, "is_deleted", "true")
                 except Exception:
-                    redis_client.delete(redis_key)
+                    await redis_client.delete(redis_key)
 
         return count
 
-    def delete_by_user_id(self, user_id: str) -> int:
+    async def delete_by_user_id(self, user_id: str) -> int:
         """
         Bulk hard delete all blocks for a user (removes from Redis cache).
 
@@ -558,20 +566,22 @@ class BlockManager:
             Number of records deleted
         """
         from mirix.database.redis_client import get_redis_client
+        from sqlalchemy import delete
 
-        with self.session_maker() as session:
-            block_ids = [row[0] for row in session.query(BlockModel.id).filter(BlockModel.user_id == user_id).all()]
+        async with self.session_maker() as session:
+            stmt = select(BlockModel.id).where(BlockModel.user_id == user_id)
+            result = await session.execute(stmt)
+            block_ids = [row[0] for row in result.all()]
 
             count = len(block_ids)
             if count == 0:
                 return 0
 
             for block_id in block_ids:
-                self._invalidate_block_cache(block_id)
+                await self._invalidate_block_cache(block_id)
 
-            session.query(BlockModel).filter(BlockModel.user_id == user_id).delete(synchronize_session=False)
-
-            session.commit()
+            await session.execute(delete(BlockModel).where(BlockModel.user_id == user_id))
+            await session.commit()
 
         redis_client = get_redis_client()
         if redis_client and block_ids:
@@ -580,6 +590,6 @@ class BlockManager:
             BATCH_SIZE = 1000
             for i in range(0, len(redis_keys), BATCH_SIZE):
                 batch = redis_keys[i : i + BATCH_SIZE]
-                redis_client.client.delete(*batch)
+                await redis_client.client.delete(*batch)
 
         return count

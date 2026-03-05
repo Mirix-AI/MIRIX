@@ -1,5 +1,4 @@
-import threading
-import time
+import asyncio
 import traceback
 import uuid
 
@@ -16,9 +15,9 @@ class MessageQueue:
 
     def __init__(self):
         self.message_queue = {}
-        self._message_queue_lock = threading.Lock()
+        self._message_queue_lock = asyncio.Lock()
 
-    def send_message_in_queue(self, client, agent_id, kwargs, agent_type="chat"):
+    async def send_message_in_queue(self, client, agent_id, kwargs, agent_type="chat"):
         """
         Queue a message to be sent to a specific agent type.
 
@@ -33,7 +32,7 @@ class MessageQueue:
         """
         message_uuid = uuid.uuid4()
 
-        with self._message_queue_lock:
+        async with self._message_queue_lock:
             self.message_queue[message_uuid] = {
                 "kwargs": kwargs,
                 "started": False,
@@ -41,15 +40,14 @@ class MessageQueue:
                 "type": agent_type,
             }
 
-        # Wait for earlier requests of the same type to finish
-        while not self._check_if_earlier_requests_are_finished(message_uuid):
-            time.sleep(0.1)
+        while not await self._check_if_earlier_requests_are_finished(message_uuid):
+            await asyncio.sleep(0.1)
 
-        with self._message_queue_lock:
+        async with self._message_queue_lock:
             self.message_queue[message_uuid]["started"] = True
 
         try:
-            response = client.send_message(
+            response = await client.send_message(
                 agent_id=agent_id,
                 role="user",
                 **self.message_queue[message_uuid]["kwargs"],
@@ -60,26 +58,22 @@ class MessageQueue:
             logger.debug("agent_type: ", agent_type, "gets error. agent_id: ", agent_id, "ERROR")
             response = "ERROR"
 
-        with self._message_queue_lock:
+        async with self._message_queue_lock:
             self.message_queue[message_uuid]["finished"] = True
             del self.message_queue[message_uuid]
 
         return response, agent_type
 
-    def _check_if_earlier_requests_are_finished(self, message_uuid):
+    async def _check_if_earlier_requests_are_finished(self, message_uuid):
         """Check if all earlier requests of the same type have finished."""
-        with self._message_queue_lock:
+        async with self._message_queue_lock:
             if message_uuid not in self.message_queue:
                 raise ValueError("Message not found in the queue.")
 
-            # Get current message type
             current_message_type = self.message_queue[message_uuid]["type"]
-
-            # Find index of current message
             message_keys = list(self.message_queue.keys())
             idx = message_keys.index(message_uuid)
 
-            # Check earlier messages of the same type
             for i in range(idx):
                 earlier_message = self.message_queue[message_keys[i]]
                 if earlier_message["type"] == current_message_type:
@@ -99,7 +93,7 @@ class MessageQueue:
             "semantic_memory": "semantic_memory_agent_state",
             "core_memory": "core_memory_agent_state",
             "resource_memory": "resource_memory_agent_state",
-            "meta_memory_agent": "meta_memory_agent_state",  # Alias
+            "meta_memory_agent": "meta_memory_agent_state",
         }
 
         state_name = agent_type_to_state_mapping.get(agent_type)
@@ -111,7 +105,7 @@ class MessageQueue:
 
         return getattr(agent_states, state_name).id
 
-    def get_queue_length(self):
+    async def get_queue_length(self):
         """Get the current length of the message queue."""
-        with self._message_queue_lock:
+        async with self._message_queue_lock:
             return len(self.message_queue)

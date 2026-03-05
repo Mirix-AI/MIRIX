@@ -8,6 +8,7 @@ Prerequisites:
 - Start the server first: python scripts/start_server.py --reload
 """
 
+import asyncio
 import logging
 import sys
 from pathlib import Path
@@ -20,7 +21,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(level
 logger = logging.getLogger(__name__)
 
 
-def test_core_memory(client: MirixClient, user_id: str, filter_tags: Optional[dict] = None):
+async def test_core_memory(client: MirixClient, user_id: str, filter_tags: Optional[dict] = None):
     """Add core memory."""
     logger.info("\n%s", "=" * 80)
     logger.info("TEST 1: ADDING CORE MEMORY")
@@ -29,7 +30,7 @@ def test_core_memory(client: MirixClient, user_id: str, filter_tags: Optional[di
     logger.info("%s", "=" * 80)
 
     try:
-        result = client.add(
+        result = await client.add(
             user_id=user_id,
             messages=[
                 {
@@ -60,7 +61,7 @@ def test_core_memory(client: MirixClient, user_id: str, filter_tags: Optional[di
         traceback.print_exc()
 
 
-def test_episodic_memory(client: MirixClient, user_id: str, filter_tags: Optional[dict] = None):
+async def test_episodic_memory(client: MirixClient, user_id: str, filter_tags: Optional[dict] = None):
     """Add episodic memory."""
     logger.info("\n%s", "=" * 80)
     logger.info("TEST 2: ADDING EPISODIC MEMORY")
@@ -69,7 +70,7 @@ def test_episodic_memory(client: MirixClient, user_id: str, filter_tags: Optiona
     logger.info("%s", "=" * 80)
 
     try:
-        result = client.add(
+        result = await client.add(
             user_id=user_id,
             messages=[
                 {
@@ -103,7 +104,7 @@ def test_episodic_memory(client: MirixClient, user_id: str, filter_tags: Optiona
         traceback.print_exc()
 
 
-def test_procedural_memory(client: MirixClient, user_id: str, filter_tags: Optional[dict] = None):
+async def test_procedural_memory(client: MirixClient, user_id: str, filter_tags: Optional[dict] = None):
     """Add procedural memory."""
     logger.info("\n%s", "=" * 80)
     logger.info("TEST 3: ADDING PROCEDURAL MEMORY")
@@ -112,7 +113,7 @@ def test_procedural_memory(client: MirixClient, user_id: str, filter_tags: Optio
     logger.info("%s", "=" * 80)
 
     try:
-        result = client.add(
+        result = await client.add(
             user_id=user_id,
             messages=[
                 {
@@ -143,7 +144,7 @@ def test_procedural_memory(client: MirixClient, user_id: str, filter_tags: Optio
         traceback.print_exc()
 
 
-def test_semantic_memory(client: MirixClient, user_id: str, filter_tags: Optional[dict] = None):
+async def test_semantic_memory(client: MirixClient, user_id: str, filter_tags: Optional[dict] = None):
     """Add semantic memory."""
     logger.info("\n%s", "=" * 80)
     logger.info("TEST 4: ADDING SEMANTIC MEMORY")
@@ -152,7 +153,7 @@ def test_semantic_memory(client: MirixClient, user_id: str, filter_tags: Optiona
     logger.info("%s", "=" * 80)
 
     try:
-        result = client.add(
+        result = await client.add(
             user_id=user_id,
             messages=[
                 {
@@ -183,7 +184,7 @@ def test_semantic_memory(client: MirixClient, user_id: str, filter_tags: Optiona
         traceback.print_exc()
 
 
-def test_resource_memory(client: MirixClient, user_id: str, filter_tags: Optional[dict] = None):
+async def test_resource_memory(client: MirixClient, user_id: str, filter_tags: Optional[dict] = None):
     """Add resource memory."""
     logger.info("\n%s", "=" * 80)
     logger.info("TEST 5: ADDING RESOURCE MEMORY")
@@ -192,7 +193,6 @@ def test_resource_memory(client: MirixClient, user_id: str, filter_tags: Optiona
     logger.info("%s", "=" * 80)
 
     try:
-        # Provide a realistic document with full content (not a placeholder)
         document_content = """# Q4 AI Assistant Rollout Plan
 
 ## Project Overview
@@ -235,7 +235,7 @@ Total estimated cost: $150K
 - Product Manager: Alex Wong (alex.wong@company.com)
 """
 
-        result = client.add(
+        result = await client.add(
             user_id=user_id,
             messages=[
                 {
@@ -269,7 +269,7 @@ Total estimated cost: $150K
         traceback.print_exc()
 
 
-def test_knowledge_vault(client: MirixClient, user_id: str, filter_tags: Optional[dict] = None):
+async def test_knowledge_vault(client: MirixClient, user_id: str, filter_tags: Optional[dict] = None):
     """Add knowledge vault memory."""
     logger.info("\n%s", "=" * 80)
     logger.info("TEST 6: ADDING KNOWLEDGE VAULT MEMORY")
@@ -278,9 +278,7 @@ def test_knowledge_vault(client: MirixClient, user_id: str, filter_tags: Optiona
     logger.info("%s", "=" * 80)
 
     try:
-        # Provide structured, discrete data points that can be looked up later
-        # These are credentials and connection strings - perfect for Knowledge Vault
-        result = client.add(
+        result = await client.add(
             user_id=user_id,
             messages=[
                 {
@@ -319,69 +317,57 @@ def test_knowledge_vault(client: MirixClient, user_id: str, filter_tags: Optiona
         traceback.print_exc()
 
 
-def main():
+async def main():
     """Main test execution."""
     logger.info("\n%s", "=" * 80)
     logger.info("MIRIX MEMORY TEST - ADDING MEMORIES")
     logger.info("%s", "=" * 80)
 
-    # Create client
-    client_id = "demo-client-app"  # Identifies the client application
-    user_id = "demo-user"  # Identifies the end-user within the client app
+    client_id = "demo-client-app"
+    user_id = "demo-user"
     org_id = "demo-org"
 
     logger.info("\nInitializing MirixClient...")
-    client = MirixClient(
+    client = await MirixClient.create(
         api_key=None,
         client_id=client_id,
         client_name="Demo Client Application",
         client_scope="Sales",
         org_id=org_id,
-        debug=False,  # Reduce noise in output
+        debug=False,
     )
     logger.info("✓ Client initialized: %s", client_id)
 
-    # Create or get user (ensures user exists in backend database)
     logger.info("Creating/getting user: %s", user_id)
     try:
-        user_id = client.create_or_get_user(user_id=user_id, user_name="Demo User", org_id=org_id)
+        user_id = await client.create_or_get_user(user_id=user_id, user_name="Demo User", org_id=org_id)
         logger.info("✓ User ready: %s", user_id)
     except Exception as e:  # pylint: disable=broad-except
         logger.error("Failed to create/get user: %s", e)
         sys.exit(1)
 
-    # Initialize meta agent
     logger.info("Initializing meta agent...")
     try:
-        # Compute config path relative to project root (parent of samples/)
         project_root = Path(__file__).parent.parent
         config_path = project_root / "mirix" / "configs" / "examples" / "mirix_gemini.yaml"
-
-        client.initialize_meta_agent(config_path=str(config_path), update_agents=True)
+        await client.initialize_meta_agent(config_path=str(config_path), update_agents=True)
         logger.info("Meta agent initialized")
     except Exception as e:  # pylint: disable=broad-except
         logger.error("Failed to initialize meta agent: %s", e)
         sys.exit(1)
 
-    # Run tests
     try:
-        test_core_memory(client, user_id)
-
-        # Test out different filter tags
+        await test_core_memory(client, user_id)
         filter_tags = {"expert_id": "expert-123", "scope": "read"}
-        test_episodic_memory(client, user_id, filter_tags)
-
+        await test_episodic_memory(client, user_id, filter_tags)
         filter_tags = {"expert_id": "expert-123", "scope": "write"}
-        test_procedural_memory(client, user_id, filter_tags)
-
+        await test_procedural_memory(client, user_id, filter_tags)
         filter_tags = {"expert_id": "expert-123"}
-        test_semantic_memory(client, user_id, filter_tags)
-
+        await test_semantic_memory(client, user_id, filter_tags)
         filter_tags = {"expert_id": "expert-234", "scope": "read"}
-        test_resource_memory(client, user_id, filter_tags)
-
+        await test_resource_memory(client, user_id, filter_tags)
         filter_tags = {"expert_id": "expert-234", "scope": "write"}
-        test_knowledge_vault(client, user_id, filter_tags)
+        await test_knowledge_vault(client, user_id, filter_tags)
     except KeyboardInterrupt:
         logger.info("\n\nTest interrupted by user")
         sys.exit(1)
@@ -408,4 +394,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
