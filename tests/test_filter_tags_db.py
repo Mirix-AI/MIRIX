@@ -6,23 +6,32 @@ Tests write rows with various filter_tags shapes and query using
 $contains, $exists, $in operators via the RawMemoryManager against real PG.
 
 Run:
-    pytest tests/test_filter_tags_db.py -v
+    pytest tests/test_filter_tags_db.py -v -m integration
 """
 
+import asyncio
 import sys
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+import pytest_asyncio
 
 pytestmark = [
     pytest.mark.integration,
-    pytest.mark.asyncio,
+    pytest.mark.asyncio(loop_scope="module"),
 ]
 
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
+
+# One event loop per module to avoid "another operation is in progress".
+@pytest_asyncio.fixture(scope="module")
+def event_loop():
+    loop = asyncio.new_event_loop()
+    yield loop
+    loop.close()
 
 from mirix.schemas.client import Client as PydanticClient
 from mirix.schemas.raw_memory import RawMemoryItemCreate
@@ -39,7 +48,7 @@ def raw_memory_manager():
     return RawMemoryManager()
 
 
-@pytest.fixture
+@pytest_asyncio.fixture(scope="module")
 async def test_actor():
     from mirix.schemas.organization import Organization as PydanticOrganization
     from mirix.services.client_manager import ClientManager
@@ -71,7 +80,7 @@ async def test_actor():
         )
 
 
-@pytest.fixture
+@pytest_asyncio.fixture(scope="module")
 async def test_user(test_actor):
     from mirix.services.user_manager import UserManager
 

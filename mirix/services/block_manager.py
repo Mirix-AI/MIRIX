@@ -191,7 +191,8 @@ class BlockManager:
 
             return block.to_pydantic()
 
-    def update_block_filter_tags(
+    @enforce_types
+    async def update_block_filter_tags(
         self,
         block_id: str,
         new_filter_tags: Dict[str, Any],
@@ -201,12 +202,12 @@ class BlockManager:
         """
         Update only the filter_tags on a block and persist to DB + cache.
         """
-        with self.session_maker() as session:
-            block = BlockModel.read(
+        async with self.session_maker() as session:
+            block = await BlockModel.read(
                 db_session=session, identifier=block_id, actor=actor, user=user, access_type=AccessType.USER
             )
             block.filter_tags = new_filter_tags
-            block.update_with_redis(db_session=session, actor=actor)
+            await block.update_with_redis(db_session=session, actor=actor)
 
     @enforce_types
     async def delete_block(self, block_id: str, actor: PydanticClient) -> PydanticBlock:

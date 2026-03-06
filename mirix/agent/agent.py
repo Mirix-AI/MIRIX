@@ -347,7 +347,7 @@ class Agent(BaseAgent):
 
         return False
 
-    def _apply_block_filter_tags(self, blocks: list) -> list:
+    async def _apply_block_filter_tags(self, blocks: list) -> list:
         """Apply self.block_filter_tags to loaded blocks using the configured update mode.
 
         Mutates blocks in-place and persists only those whose filter_tags actually
@@ -370,7 +370,7 @@ class Agent(BaseAgent):
 
             if desired != existing_tags:
                 block.filter_tags = desired
-                self.block_manager.update_block_filter_tags(
+                await self.block_manager.update_block_filter_tags(
                     block_id=block.id,
                     new_filter_tags=desired,
                     actor=self.actor,
@@ -1511,7 +1511,7 @@ class Agent(BaseAgent):
                 # Skips blocks whose filter_tags already match the desired state
                 # (e.g. blocks just created from template with the same tags).
                 if self.block_filter_tags and existing_blocks:
-                    existing_blocks = self._apply_block_filter_tags(existing_blocks)
+                    existing_blocks = await self._apply_block_filter_tags(existing_blocks)
 
                 # Load blocks into memory for core_memory_agent
                 self.blocks_in_memory = Memory(blocks=existing_blocks)

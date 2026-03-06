@@ -440,18 +440,25 @@ class UserManager:
         except NoResultFound:
             pass
 
-        # Create the default user
-        async with self.session_maker() as session:
-            user = UserModel(
-                id=default_user_id,
-                name=self.DEFAULT_USER_NAME,
-                status="active",
-                timezone=self.DEFAULT_TIME_ZONE,
-                organization_id=org_id,
-            )
-            await user.create(session)
-            logger.info("Created default template user %s for organization %s", default_user_id, org_id)
-            return user.to_pydantic()
+        # Create the default user (handle race condition from concurrent requests)
+        try:
+            async with self.session_maker() as session:
+                user = UserModel(
+                    id=default_user_id,
+                    name=self.DEFAULT_USER_NAME,
+                    status="active",
+                    timezone=self.DEFAULT_TIME_ZONE,
+                    organization_id=org_id,
+                )
+                await user.create(session)
+                logger.info("Created default template user %s for organization %s", default_user_id, org_id)
+                return user.to_pydantic()
+        except Exception as create_err:
+            error_msg = str(create_err).lower()
+            if "unique" in error_msg or "duplicate" in error_msg or "already exists" in error_msg:
+                logger.debug("Default user creation race condition, retrying lookup: %s", create_err)
+                return await self.get_user_by_id(default_user_id)
+            raise
 
     @enforce_types
     async def get_user_or_admin(self, user_id: Optional[str] = None):

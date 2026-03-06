@@ -721,7 +721,7 @@ class AgentManager:
 
             # Invalidate parent cache if this is a child agent
             if parent_id:
-                self._invalidate_parent_cache_for_child(new_agent.id, parent_id)
+                await self._invalidate_parent_cache_for_child(new_agent.id, parent_id)
 
             # Convert to PydanticAgentState and return
             return new_agent.to_pydantic()

@@ -725,9 +725,11 @@ class TestSearchAllUsers:
 
         logger.info(f"Results with filter_tags: {results['count']} memories")
         logger.info(f"Applied filter_tags: {results.get('filter_tags')}")
+        logger.info(f"read_scopes: {results.get('read_scopes')}")
 
-        # Should have both "read_scopes" and "test" in filter_tags
-        assert "read_scopes" in results["filter_tags"], "read_scopes should be added automatically"
+        # API returns read_scopes at top level; filter_tags contains user-provided tags
+        assert "read_scopes" in results, "read_scopes should be returned (used for scope filtering)"
+        assert results["read_scopes"] is not None, "read_scopes should be set from client"
         assert "test" in results["filter_tags"], "Additional filter tag should be included"
 
         logger.info("✅ Test passed: Additional filter tags work correctly")

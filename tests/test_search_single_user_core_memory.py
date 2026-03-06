@@ -35,7 +35,7 @@ BASE_URL = os.environ.get("MIRIX_API_URL", "http://localhost:8000")
 CONFIG_PATH = Path(__file__).parent.parent / "mirix" / "configs" / "examples" / "mirix_gemini.yaml"
 
 
-@pytest.mark.asyncio
+@pytest.mark.asyncio(loop_scope="class")
 class TestSearchSingleUserCoreMemory:
     """Test suite for single-user search with include_core_memory."""
 

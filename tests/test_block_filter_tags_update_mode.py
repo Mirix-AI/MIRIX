@@ -25,9 +25,18 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
+import pytest_asyncio
 
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
+
+# One event loop per module for integration tests (avoids "Future attached to
+# a different loop" / "another operation is in progress").
+@pytest_asyncio.fixture(scope="module")
+def event_loop():
+    loop = asyncio.new_event_loop()
+    yield loop
+    loop.close()
 
 from mirix.queue.queue_util import put_messages
 from mirix.schemas.client import Client
@@ -50,7 +59,7 @@ def _test_id(prefix: str) -> str:
 QUEUE_TEST_ORG_ID = "org-bft-update-mode"
 
 
-@pytest.fixture
+@pytest_asyncio.fixture(scope="module")
 async def ensure_queue_org():
     from mirix.schemas.organization import Organization as PydanticOrganization
     from mirix.services.organization_manager import OrganizationManager
@@ -65,7 +74,7 @@ async def ensure_queue_org():
     return QUEUE_TEST_ORG_ID
 
 
-@pytest.fixture
+@pytest_asyncio.fixture(scope="module")
 async def queue_sample_client(ensure_queue_org):
     return Client(
         id="client-bft-queue",
@@ -94,7 +103,7 @@ def queue_mock_server():
     return server
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def queue_clean_manager():
     from mirix.queue.manager import get_manager
 
@@ -459,7 +468,7 @@ class TestProtobufUpdateMode:
 
 
 @pytest.mark.integration
-@pytest.mark.asyncio
+@pytest.mark.asyncio(loop_scope="module")
 class TestQueueUpdateMode:
     """block_filter_tags_update_mode is serialized/deserialized through protobuf."""
 
@@ -509,6 +518,12 @@ class TestQueueUpdateMode:
         """End-to-end: put_messages -> worker -> server.send_messages receives update_mode."""
         from mirix.queue import initialize_queue
 
+        # Worker resolves actor via server.client_manager.get_client_by_id; provide it.
+        queue_mock_server.client_manager = Mock()
+        queue_mock_server.client_manager.get_client_by_id = AsyncMock(
+            return_value=queue_sample_client
+        )
+
         manager = queue_clean_manager
         await initialize_queue(queue_mock_server)
 
@@ -535,11 +550,11 @@ class TestQueueUpdateMode:
 
 
 @pytest.mark.integration
-@pytest.mark.asyncio
+@pytest.mark.asyncio(loop_scope="module")
 class TestBlockManagerUpdateFilterTags:
     """Integration tests for BlockManager.update_block_filter_tags."""
 
-    @pytest.fixture
+    @pytest_asyncio.fixture(scope="module")
     async def setup(self):
         from mirix.schemas.block import Block as PydanticBlock
         from mirix.schemas.client import Client as PydanticClient
@@ -571,7 +586,12 @@ class TestBlockManagerUpdateFilterTags:
         client_mgr = ClientManager()
         client_id = _test_id("bft-client")
         client = await client_mgr.create_client(
-            PydanticClient(id=client_id, organization_id=org.id, write_scope="bft-scope")
+            PydanticClient(
+                id=client_id,
+                organization_id=org.id,
+                name="BFT Test Client",
+                write_scope="bft-scope",
+            )
         )
 
         bm = BlockManager()
@@ -585,6 +605,7 @@ class TestBlockManagerUpdateFilterTags:
                 filter_tags={"scope": "bft-scope", "env": "prod"},
             ),
             actor=client,
+            user=user,
         )
 
         return SimpleNamespace(bm=bm, block=block, client=client, user=user)
@@ -592,7 +613,7 @@ class TestBlockManagerUpdateFilterTags:
     async def test_update_filter_tags_persists(self, setup):
         """update_block_filter_tags writes new tags to DB."""
         new_tags = {"scope": "bft-scope", "env": "staging", "team": "platform"}
-        setup.bm.update_block_filter_tags(
+        await setup.bm.update_block_filter_tags(
             block_id=setup.block.id,
             new_filter_tags=new_tags,
             actor=setup.client,
@@ -605,7 +626,7 @@ class TestBlockManagerUpdateFilterTags:
     async def test_update_filter_tags_replaces_completely(self, setup):
         """filter_tags is fully replaced, not merged at the DB level."""
         new_tags = {"scope": "bft-scope", "new_key": "new_val"}
-        setup.bm.update_block_filter_tags(
+        await setup.bm.update_block_filter_tags(
             block_id=setup.block.id,
             new_filter_tags=new_tags,
             actor=setup.client,
