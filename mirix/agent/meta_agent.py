@@ -22,7 +22,7 @@ from mirix.schemas.usage import MirixUsageStatistics
 from mirix.utils import printv
 
 if TYPE_CHECKING:
-    from mirix.server.server import SyncServer
+    from mirix.server.server import AsyncServer
 
 
 class MemoryAgentStates:
@@ -165,7 +165,7 @@ class MetaAgent(BaseAgent):
 
     def __init__(
         self,
-        server: "SyncServer",
+        server: "AsyncServer",
         user: User,
         actor: Client,
         memory: Memory,
@@ -226,7 +226,7 @@ class MetaAgent(BaseAgent):
     @classmethod
     async def create(
         cls,
-        server: "SyncServer",
+        server: "AsyncServer",
         user: User,
         actor: Client,
         memory: Memory,

@@ -919,7 +919,7 @@ class TestWriteScopeGuards:
         This test calls the server-level logic directly (same path as the REST endpoint)
         rather than spinning up a full HTTP server.
         """
-        from mirix.server.server import SyncServer
+        from mirix.server.server import AsyncServer
 
         reader_client_id = _test_id("rest-reader")
         await ClientManager().create_client(
@@ -931,7 +931,7 @@ class TestWriteScopeGuards:
                 read_scopes=["test-scope-1"],
             )
         )
-        server = SyncServer()
+        server = AsyncServer()
         client = await server.client_manager.get_client_by_id(reader_client_id)
         # Simulate the REST endpoint guard: if not client.write_scope, return None
         if not client.write_scope:

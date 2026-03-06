@@ -12,10 +12,10 @@ Features:
 
 Usage:
     >>> from mirix.queue import initialize_queue, save, QueueMessage
-    >>> from mirix.server.server import SyncServer
+    >>> from mirix.server.server import AsyncServer
     >>>
     >>> # Initialize with server instance (call from async context)
-    >>> server = SyncServer()
+    >>> server = AsyncServer()
     >>> await initialize_queue(server)
     >>>
     >>> # Enqueue messages
@@ -87,9 +87,9 @@ async def process_external_message(raw_message: bytes) -> None:
     """
     if not _manager.is_initialized:
         logger.info("Queue not initialized, auto-initializing with server for external message processing")
-        from mirix.server.server import SyncServer
+        from mirix.server.server import AsyncServer
 
-        server = SyncServer()
+        server = AsyncServer()
         await _manager.initialize(server=server)
         logger.info("Queue initialized with server instance")
 

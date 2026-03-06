@@ -1,14 +1,14 @@
 """
 Memory System Server-Side Tests for Mirix
 
-Tests memory operations using SyncServer directly (no network, fast).
+Tests memory operations using AsyncServer directly (no network, fast).
 Automatically initializes users and agents on first run.
 
 Prerequisites:
     export GEMINI_API_KEY=your_api_key_here
 
 Test Coverage:
-- Direct memory operations via SyncServer managers
+- Direct memory operations via AsyncServer managers
 - All 5 memory types (Episodic, Procedural, Resource, Knowledge Vault, Semantic)
 - All search methods (bm25, embedding) across relevant fields
 - Retrieve with conversation and topic
@@ -41,7 +41,7 @@ sys.path.insert(0, str(project_root))
 
 from mirix.schemas.agent import AgentType
 from mirix.schemas.client import Client
-from mirix.server.server import SyncServer
+from mirix.server.server import AsyncServer
 
 # Skip all tests if no API key; use one event loop per module so fixtures and tests share it.
 pytestmark = [
@@ -53,7 +53,7 @@ pytestmark = [
 @pytest.fixture(scope="module")
 def server():
     """Create server instance for all tests."""
-    return SyncServer()
+    return AsyncServer()
 
 
 @pytest_asyncio.fixture(scope="module", loop_scope="module")

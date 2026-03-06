@@ -448,8 +448,8 @@ async def sse_async_generator(generator, usage_task=None, finish_message=True):
         await usage_task
 
 
-class SyncServer(Server):
-    """Simple single-threaded / blocking server process"""
+class AsyncServer(Server):
+    """Async-native in-process server"""
 
     def __init__(
         self,
@@ -1482,3 +1482,7 @@ class SyncServer(Server):
 
             traceback.print_exc()
             raise HTTPException(status_code=500, detail=f"{e}")
+
+
+# Backward-compatible alias (deprecated; use AsyncServer)
+SyncServer = AsyncServer

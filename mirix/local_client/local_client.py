@@ -97,7 +97,7 @@ class LocalClient(AbstractClient):
         organization (Organization): The organization object.
         debug (bool): Whether to print debug information.
         interface (QueuingInterface): The interface for the client.
-        server (SyncServer): The server for the client.
+        server (AsyncServer): The server for the client.
     """
 
     def __init__(
@@ -121,7 +121,7 @@ class LocalClient(AbstractClient):
             default_embedding_config (EmbeddingConfig): Default embedding configuration.
         """
 
-        from mirix.server.server import SyncServer
+        from mirix.server.server import AsyncServer
 
         # set logging levels
         mirix.utils.DEBUG = debug
@@ -133,7 +133,7 @@ class LocalClient(AbstractClient):
 
         # create server
         self.interface = QueuingInterface(debug=debug)
-        self.server = SyncServer(default_interface_factory=lambda: self.interface)
+        self.server = AsyncServer(default_interface_factory=lambda: self.interface)
 
         # initialize file manager
         from mirix.services.file_manager import FileManager

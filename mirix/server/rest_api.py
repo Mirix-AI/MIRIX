@@ -1,6 +1,6 @@
 """
 FastAPI REST API server for Mirix.
-This provides HTTP endpoints that wrap the SyncServer functionality,
+This provides HTTP endpoints that wrap the AsyncServer functionality,
 allowing MirixClient instances to communicate with a cloud-hosted server.
 """
 
@@ -59,7 +59,7 @@ from mirix.schemas.semantic_memory import SemanticMemoryItemUpdate
 from mirix.schemas.tool import Tool, ToolCreate, ToolUpdate
 from mirix.schemas.tool_rule import BaseToolRule
 from mirix.schemas.user import User
-from mirix.server.server import SyncServer, ensure_tables_created
+from mirix.server.server import AsyncServer, ensure_tables_created
 from mirix.settings import model_settings, settings
 from mirix.utils import convert_message_to_mirix_message
 
@@ -71,15 +71,15 @@ from mirix.queue.manager import get_manager as get_queue_manager
 from mirix.queue.queue_util import put_messages
 
 # Initialize server (single instance shared across all requests)
-_server: Optional[SyncServer] = None
+_server: Optional[AsyncServer] = None
 
 
-def get_server() -> SyncServer:
-    """Get or create the singleton SyncServer instance."""
+def get_server() -> AsyncServer:
+    """Get or create the singleton AsyncServer instance."""
     global _server
     if _server is None:
-        logger.info("Creating SyncServer instance")
-        _server = SyncServer()
+        logger.info("Creating AsyncServer instance")
+        _server = AsyncServer()
     return _server
 
 
@@ -108,14 +108,14 @@ async def initialize():
     except Exception as e:
         logger.warning("Redis async init failed: %s", e)
 
-    # Initialize SyncServer (singleton) and create default org/user/client
+    # Initialize AsyncServer (singleton) and create default org/user/client
     server = get_server()
     await server.ensure_defaults()
-    logger.info("SyncServer initialized")
+    logger.info("AsyncServer initialized")
 
     # Initialize queue with server reference
     await initialize_queue(server)
-    logger.info("Queue service started with SyncServer integration")
+    logger.info("Queue service started with AsyncServer integration")
 
     # Initialize LangFuse observability (async)
     try:
@@ -2143,7 +2143,7 @@ class RetrieveMemoryRequest(BaseModel):
 
 
 async def retrieve_memories_by_keywords(
-    server: SyncServer,
+    server: AsyncServer,
     client: Client,
     user_id: str,
     agent_state: AgentState,

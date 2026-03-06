@@ -66,7 +66,7 @@ async def ensure_organization():
 
 @pytest.fixture
 def mock_server(sample_client):
-    """Create a mock SyncServer with async send_messages and client_manager so workers can resolve actor/user."""
+    """Create a mock AsyncServer with async send_messages and client_manager so workers can resolve actor/user."""
     server = Mock()
     server.send_messages = AsyncMock(
         return_value=Mock(model_dump=Mock(return_value={"completion_tokens": 100, "prompt_tokens": 50}))
