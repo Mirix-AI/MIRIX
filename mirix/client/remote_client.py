@@ -1512,6 +1512,7 @@ class MirixClient(AbstractClient):
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
         org_id: Optional[str] = None,
+        include_core_memory: bool = False,
         headers: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         """
@@ -1553,6 +1554,9 @@ class MirixClient(AbstractClient):
                      Only episodic memories with occurred_at <= end_date will be returned.
                      Examples: "2025-12-05T23:59:59" or "2025-12-05T23:59:59Z"
             org_id: Optional organization scope override (defaults to client's org)
+            include_core_memory: When True, include core (block) memory in the results.
+                                Core memory items have memory_type="core" with id, user_id,
+                                label, value, and scope fields. Default: False
 
         Returns:
             Dict containing:
@@ -1562,7 +1566,8 @@ class MirixClient(AbstractClient):
                 - search_field: str (the field searched)
                 - search_method: str (the search method used)
                 - date_range: dict (applied date range, if any)
-                - results: List[Dict] (flat list of results from all memory types)
+                - results: List[Dict] (flat list of results from all memory types;
+                  may include memory_type="core" items when include_core_memory=True)
                 - count: int (total number of results)
 
         Example:
@@ -1639,6 +1644,9 @@ class MirixClient(AbstractClient):
             params["start_date"] = start_date
         if end_date is not None:
             params["end_date"] = end_date
+
+        if include_core_memory:
+            params["include_core_memory"] = True
 
         return self._request("GET", "/memory/search", params=params, headers=headers)
 

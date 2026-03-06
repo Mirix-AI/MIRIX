@@ -2629,6 +2629,7 @@ async def search_memory(
     similarity_threshold: Optional[float] = Query(None),
     start_date: Optional[str] = Query(None),
     end_date: Optional[str] = Query(None),
+    include_core_memory: bool = Query(False, description="When True, include core (block) memory in the response."),
     x_client_id: Optional[str] = Header(None),
     x_org_id: Optional[str] = Header(None),
 ):
@@ -2941,20 +2942,41 @@ async def search_memory(
                 logger.error("Error searching semantic memories: %s", e)
                 return []
 
+        async def search_core():
+            try:
+                blocks = await asyncio.to_thread(
+                    server.block_manager.get_blocks,
+                    user=user,
+                    any_scopes=client.read_scopes,
+                    auto_create_from_default=False,
+                    limit=limit or 50,
+                )
+                return [
+                    {
+                        "memory_type": "core",
+                        "id": block.id,
+                        "user_id": block.user_id,
+                        "label": block.label,
+                        "value": block.value,
+                        "scope": (block.filter_tags or {}).get("scope", "default"),
+                    }
+                    for block in blocks
+                ]
+            except Exception as e:
+                logger.error("Error retrieving core memory blocks: %s", e, exc_info=True)
+                return []
+
         # Run all searches concurrently
-        results = await asyncio.gather(
-            search_episodic(),
-            search_resource(),
-            search_procedural(),
-            search_knowledge(),
-            search_semantic(),
-        )
+        tasks = [search_episodic(), search_resource(), search_procedural(), search_knowledge(), search_semantic()]
+        if include_core_memory:
+            tasks.append(search_core())
+        results = await asyncio.gather(*tasks)
 
         # Flatten results
         for result_list in results:
             all_results.extend(result_list)
 
-    # Single memory type searches (run serially as before)
+    # Single memory type searches (run serially)
     elif memory_type == "episodic":
         try:
             episodic_memories = server.episodic_memory_manager.list_episodic_memory(
@@ -3120,6 +3142,29 @@ async def search_memory(
             )
         except Exception as e:
             logger.error("Error searching semantic memories: %s", e)
+
+    # For single memory type searches, fetch core memory sequentially if requested
+    if include_core_memory and memory_type != "all":
+        try:
+            blocks = server.block_manager.get_blocks(
+                user=user,
+                any_scopes=client.read_scopes,
+                auto_create_from_default=False,
+                limit=limit or 50,
+            )
+            for block in blocks:
+                all_results.append(
+                    {
+                        "memory_type": "core",
+                        "id": block.id,
+                        "user_id": block.user_id,
+                        "label": block.label,
+                        "value": block.value,
+                        "scope": (block.filter_tags or {}).get("scope", "default"),
+                    }
+                )
+        except Exception as e:
+            logger.error("Error retrieving core memory blocks for single-user search: %s", e, exc_info=True)
 
     return {
         "success": True,

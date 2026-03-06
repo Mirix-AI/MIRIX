@@ -199,9 +199,10 @@ class TestApplyBlockFilterTags:
         agent.block_filter_tags = block_filter_tags
         agent.block_filter_tags_update_mode = update_mode
         agent.actor = SimpleNamespace(id="test-client")
+        agent.user = None
         agent.block_manager = Mock()
 
-        def _mock_update(block_id, new_filter_tags, actor):
+        def _mock_update(block_id, new_filter_tags, actor, user=None):
             return PydanticBlock(
                 id=block_id,
                 label="test",
