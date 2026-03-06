@@ -15,13 +15,14 @@ Run all (requires docker PG):
     pytest tests/test_block_filter_tags_update_mode.py -v
 """
 
+import asyncio
 import sys
 import time
 import uuid
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
@@ -50,20 +51,22 @@ QUEUE_TEST_ORG_ID = "org-bft-update-mode"
 
 
 @pytest.fixture
-def ensure_queue_org():
+async def ensure_queue_org():
     from mirix.schemas.organization import Organization as PydanticOrganization
     from mirix.services.organization_manager import OrganizationManager
 
     org_mgr = OrganizationManager()
     try:
-        org_mgr.get_organization_by_id(QUEUE_TEST_ORG_ID)
+        await org_mgr.get_organization_by_id(QUEUE_TEST_ORG_ID)
     except Exception:
-        org_mgr.create_organization(PydanticOrganization(id=QUEUE_TEST_ORG_ID, name="BFT Queue Test Org"))
+        await org_mgr.create_organization(
+            PydanticOrganization(id=QUEUE_TEST_ORG_ID, name="BFT Queue Test Org")
+        )
     return QUEUE_TEST_ORG_ID
 
 
 @pytest.fixture
-def queue_sample_client(ensure_queue_org):
+async def queue_sample_client(ensure_queue_org):
     return Client(
         id="client-bft-queue",
         organization_id=ensure_queue_org,
@@ -85,19 +88,19 @@ def queue_sample_messages():
 @pytest.fixture
 def queue_mock_server():
     server = Mock()
-    server.send_messages = Mock(
+    server.send_messages = AsyncMock(
         return_value=Mock(model_dump=Mock(return_value={"completion_tokens": 10, "prompt_tokens": 5}))
     )
     return server
 
 
 @pytest.fixture
-def queue_clean_manager():
+async def queue_clean_manager():
     from mirix.queue.manager import get_manager
 
     manager = get_manager()
     if manager.is_initialized:
-        manager.cleanup()
+        await manager.cleanup()
     return manager
 
 
@@ -110,19 +113,20 @@ def queue_clean_manager():
 def remote_client():
     from mirix.client import MirixClient
 
-    with patch.object(MirixClient, "_request") as mock_request:
+    with patch.object(MirixClient, "_request", new_callable=AsyncMock) as mock_request:
         mock_request.return_value = {"messages": [], "usage": {}}
         c = MirixClient(api_key="test-key", debug=False)
         yield c
 
 
+@pytest.mark.asyncio
 class TestRemoteClientUpdateMode:
     """MirixClient passes block_filter_tags_update_mode in request body."""
 
-    def test_send_message_default_merge_not_sent(self, remote_client):
+    async def test_send_message_default_merge_not_sent(self, remote_client):
         """Default 'merge' is not explicitly included (server defaults)."""
-        remote_client._request = Mock(return_value={"messages": [], "usage": {}})
-        remote_client.send_message(
+        remote_client._request = AsyncMock(return_value={"messages": [], "usage": {}})
+        await remote_client.send_message(
             message="Hello",
             role="user",
             agent_id="agent-1",
@@ -131,10 +135,10 @@ class TestRemoteClientUpdateMode:
         body = remote_client._request.call_args.kwargs["json"]
         assert "block_filter_tags_update_mode" not in body
 
-    def test_send_message_replace_mode_sent(self, remote_client):
+    async def test_send_message_replace_mode_sent(self, remote_client):
         """When 'replace' is specified, it's included in the request body."""
-        remote_client._request = Mock(return_value={"messages": [], "usage": {}})
-        remote_client.send_message(
+        remote_client._request = AsyncMock(return_value={"messages": [], "usage": {}})
+        await remote_client.send_message(
             message="Hello",
             role="user",
             agent_id="agent-1",
@@ -144,10 +148,10 @@ class TestRemoteClientUpdateMode:
         body = remote_client._request.call_args.kwargs["json"]
         assert body["block_filter_tags_update_mode"] == "replace"
 
-    def test_user_message_forwards_update_mode(self, remote_client):
+    async def test_user_message_forwards_update_mode(self, remote_client):
         """user_message forwards block_filter_tags_update_mode to send_message."""
-        remote_client._request = Mock(return_value={"messages": [], "usage": {}})
-        remote_client.user_message(
+        remote_client._request = AsyncMock(return_value={"messages": [], "usage": {}})
+        await remote_client.user_message(
             agent_id="agent-2",
             message="Hi",
             block_filter_tags={"env": "staging"},
@@ -156,12 +160,12 @@ class TestRemoteClientUpdateMode:
         body = remote_client._request.call_args.kwargs["json"]
         assert body["block_filter_tags_update_mode"] == "replace"
 
-    def test_add_memory_replace_mode_sent(self, remote_client):
+    async def test_add_memory_replace_mode_sent(self, remote_client):
         """add() includes block_filter_tags_update_mode when not default."""
         remote_client._meta_agent = SimpleNamespace(id="meta-1")
-        remote_client._ensure_user_exists = Mock()
-        remote_client._request = Mock(return_value={"success": True})
-        remote_client.add(
+        remote_client._ensure_user_exists = AsyncMock()
+        remote_client._request = AsyncMock(return_value={"success": True})
+        await remote_client.add(
             user_id="user-1",
             messages=[{"role": "user", "content": "hi"}],
             block_filter_tags={"team": "core"},
@@ -170,12 +174,12 @@ class TestRemoteClientUpdateMode:
         body = remote_client._request.call_args.kwargs["json"]
         assert body["block_filter_tags_update_mode"] == "replace"
 
-    def test_add_memory_default_merge_not_sent(self, remote_client):
+    async def test_add_memory_default_merge_not_sent(self, remote_client):
         """add() with default merge does not include update_mode."""
         remote_client._meta_agent = SimpleNamespace(id="meta-1")
-        remote_client._ensure_user_exists = Mock()
-        remote_client._request = Mock(return_value={"success": True})
-        remote_client.add(
+        remote_client._ensure_user_exists = AsyncMock()
+        remote_client._request = AsyncMock(return_value={"success": True})
+        await remote_client.add(
             user_id="user-1",
             messages=[{"role": "user", "content": "hi"}],
             block_filter_tags={"team": "core"},
@@ -199,9 +203,10 @@ class TestApplyBlockFilterTags:
         agent.block_filter_tags = block_filter_tags
         agent.block_filter_tags_update_mode = update_mode
         agent.actor = SimpleNamespace(id="test-client")
+        agent.user = SimpleNamespace(id="test-user")
         agent.block_manager = Mock()
 
-        def _mock_update(block_id, new_filter_tags, actor):
+        def _mock_update(block_id, new_filter_tags, actor, user=None):
             return PydanticBlock(
                 id=block_id,
                 label="test",
@@ -339,17 +344,18 @@ class TestApplyBlockFilterTags:
 
 
 @pytest.mark.integration
+@pytest.mark.asyncio
 class TestQueueUpdateMode:
     """block_filter_tags_update_mode is serialized/deserialized through protobuf."""
 
-    def test_put_messages_serializes_update_mode(
+    async def test_put_messages_serializes_update_mode(
         self, queue_clean_manager, queue_sample_client, queue_sample_messages
     ):
         """put_messages with update_mode='replace' stores it in the protobuf message."""
         manager = queue_clean_manager
-        manager.initialize()
+        await manager.initialize()
 
-        put_messages(
+        await put_messages(
             actor=queue_sample_client,
             agent_id="agent-update-mode",
             input_messages=queue_sample_messages,
@@ -357,41 +363,41 @@ class TestQueueUpdateMode:
             block_filter_tags_update_mode="replace",
         )
 
-        msg = manager._queue.get(timeout=1.0)
+        msg = await manager._queue.get(timeout=1.0)
         assert msg.agent_id == "agent-update-mode"
         assert msg.block_filter_tags_update_mode == "replace"
 
-        manager.cleanup()
+        await manager.cleanup()
 
-    def test_put_messages_default_merge(
+    async def test_put_messages_default_merge(
         self, queue_clean_manager, queue_sample_client, queue_sample_messages
     ):
         """put_messages without explicit update_mode defaults to 'merge'."""
         manager = queue_clean_manager
-        manager.initialize()
+        await manager.initialize()
 
-        put_messages(
+        await put_messages(
             actor=queue_sample_client,
             agent_id="agent-default-mode",
             input_messages=queue_sample_messages,
             block_filter_tags={"env": "prod"},
         )
 
-        msg = manager._queue.get(timeout=1.0)
+        msg = await manager._queue.get(timeout=1.0)
         assert msg.block_filter_tags_update_mode == "merge"
 
-        manager.cleanup()
+        await manager.cleanup()
 
-    def test_update_mode_passed_through_to_send_messages(
+    async def test_update_mode_passed_through_to_send_messages(
         self, queue_clean_manager, queue_mock_server, queue_sample_client, queue_sample_messages
     ):
         """End-to-end: put_messages -> worker -> server.send_messages receives update_mode."""
         from mirix.queue import initialize_queue
 
         manager = queue_clean_manager
-        initialize_queue(queue_mock_server)
+        await initialize_queue(queue_mock_server)
 
-        put_messages(
+        await put_messages(
             actor=queue_sample_client,
             agent_id="agent-e2e-mode",
             input_messages=queue_sample_messages,
@@ -399,13 +405,13 @@ class TestQueueUpdateMode:
             block_filter_tags_update_mode="replace",
         )
 
-        time.sleep(1.5)
+        await asyncio.sleep(1.5)
 
         assert queue_mock_server.send_messages.call_count >= 1
         call_args = queue_mock_server.send_messages.call_args
         assert call_args.kwargs.get("block_filter_tags_update_mode") == "replace"
 
-        manager.cleanup()
+        await manager.cleanup()
 
 
 # ============================================================================
@@ -414,11 +420,12 @@ class TestQueueUpdateMode:
 
 
 @pytest.mark.integration
+@pytest.mark.asyncio
 class TestBlockManagerUpdateFilterTags:
     """Integration tests for BlockManager.update_block_filter_tags."""
 
     @pytest.fixture
-    def setup(self):
+    async def setup(self):
         from mirix.schemas.block import Block as PydanticBlock
         from mirix.schemas.client import Client as PydanticClient
         from mirix.schemas.organization import Organization as PydanticOrganization
@@ -431,27 +438,29 @@ class TestBlockManagerUpdateFilterTags:
         org_id = _test_id("bft-org")
         org_mgr = OrganizationManager()
         try:
-            org = org_mgr.get_organization_by_id(org_id)
+            org = await org_mgr.get_organization_by_id(org_id)
         except Exception:
-            org = org_mgr.create_organization(PydanticOrganization(id=org_id, name="BFT Test Org"))
+            org = await org_mgr.create_organization(
+                PydanticOrganization(id=org_id, name="BFT Test Org")
+            )
 
         user_mgr = UserManager()
         user_id = _test_id("bft-user")
         try:
-            user = user_mgr.get_user_by_id(user_id)
+            user = await user_mgr.get_user_by_id(user_id)
         except Exception:
-            user = user_mgr.create_user(
+            user = await user_mgr.create_user(
                 PydanticUser(id=user_id, name="BFT User", organization_id=org.id, timezone="UTC")
             )
 
         client_mgr = ClientManager()
         client_id = _test_id("bft-client")
-        client = client_mgr.create_client(
+        client = await client_mgr.create_client(
             PydanticClient(id=client_id, organization_id=org.id, write_scope="bft-scope")
         )
 
         bm = BlockManager()
-        block = bm.create_or_update_block(
+        block = await bm.create_or_update_block(
             PydanticBlock(
                 id=PydanticBlock._generate_id(),
                 label="human",
@@ -465,26 +474,29 @@ class TestBlockManagerUpdateFilterTags:
 
         return SimpleNamespace(bm=bm, block=block, client=client, user=user)
 
-    def test_update_filter_tags_persists(self, setup):
+    async def test_update_filter_tags_persists(self, setup):
         """update_block_filter_tags writes new tags to DB."""
         new_tags = {"scope": "bft-scope", "env": "staging", "team": "platform"}
-        updated = setup.bm.update_block_filter_tags(
+        setup.bm.update_block_filter_tags(
             block_id=setup.block.id,
             new_filter_tags=new_tags,
             actor=setup.client,
+            user=setup.user,
         )
-        assert updated.filter_tags == new_tags
 
-        reloaded = setup.bm.get_block_by_id(setup.block.id)
+        reloaded = await setup.bm.get_block_by_id(setup.block.id)
         assert reloaded.filter_tags == new_tags
 
-    def test_update_filter_tags_replaces_completely(self, setup):
+    async def test_update_filter_tags_replaces_completely(self, setup):
         """filter_tags is fully replaced, not merged at the DB level."""
         new_tags = {"scope": "bft-scope", "new_key": "new_val"}
-        updated = setup.bm.update_block_filter_tags(
+        setup.bm.update_block_filter_tags(
             block_id=setup.block.id,
             new_filter_tags=new_tags,
             actor=setup.client,
+            user=setup.user,
         )
-        assert "env" not in updated.filter_tags
-        assert updated.filter_tags["new_key"] == "new_val"
+
+        reloaded = await setup.bm.get_block_by_id(setup.block.id)
+        assert "env" not in reloaded.filter_tags
+        assert reloaded.filter_tags["new_key"] == "new_val"
