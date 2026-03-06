@@ -144,6 +144,7 @@ class ResourceMemoryManager:
         limit,
         user_id,
         filter_tags=None,
+        scopes=None,
     ):
         """
         Efficient PostgreSQL-native full-text search using ts_rank_cd for BM25-like functionality.
@@ -157,11 +158,14 @@ class ResourceMemoryManager:
             limit: Maximum number of results to return
             user_id: User ID to filter by
             filter_tags: Optional dict of tag key-value pairs to filter by (e.g., {"scope": "CARE"})
+            scopes: Optional list of scope strings the caller is authorized to read.
 
         Returns:
             List of ResourceMemoryItem objects ranked by relevance
         """
         from sqlalchemy import func
+
+        from mirix.database.filter_tags_query import build_filter_tags_raw_sql
 
         # Clean and prepare the search query
         cleaned_query = self._clean_text_for_search(query_text)
@@ -235,11 +239,9 @@ class ResourceMemoryManager:
             "limit_val": limit or 50,
         }
 
-        # Add filter_tags filtering (e.g., {"scope": "CARE"})
-        if filter_tags:
-            for key, value in filter_tags.items():
-                where_clauses.append(f"filter_tags->>'{key}' = :filter_tag_{key}")
-                query_params[f"filter_tag_{key}"] = str(value)
+        ft_clauses, ft_params = build_filter_tags_raw_sql(filter_tags, scopes=scopes)
+        where_clauses.extend(ft_clauses)
+        query_params.update(ft_params)
 
         where_clause = " AND ".join(where_clauses)
 
@@ -516,6 +518,7 @@ class ResourceMemoryManager:
         limit: Optional[int] = 50,
         timezone_str: str = None,
         filter_tags: Optional[dict] = None,
+        scopes: Optional[List[str]] = None,
         use_cache: bool = True,
         similarity_threshold: Optional[float] = None,
     ) -> List[PydanticResourceMemoryItem]:
@@ -572,6 +575,7 @@ class ResourceMemoryManager:
                         user_id=user.id,
                         organization_id=organization_id,
                         filter_tags=filter_tags,
+                        scopes=scopes,
                     )
                     if results:
                         logger.debug("Redis cache HIT: returned %d resource items", len(results))
@@ -605,6 +609,7 @@ class ResourceMemoryManager:
                         user_id=user.id,
                         organization_id=organization_id,
                         filter_tags=filter_tags,
+                        scopes=scopes,
                     )
                     if results:
                         logger.debug("Redis vector search HIT: found %d resource items", len(results))
@@ -623,6 +628,7 @@ class ResourceMemoryManager:
                         user_id=user.id,
                         organization_id=organization_id,
                         filter_tags=filter_tags,
+                        scopes=scopes,
                     )
                     if results:
                         logger.debug("Redis text search HIT: found %d resource items", len(results))
@@ -656,10 +662,11 @@ class ResourceMemoryManager:
                     )
                 )
 
-                # Apply filter_tags if provided
-                if filter_tags:
-                    for key, value in filter_tags.items():
-                        query_stmt = query_stmt.where(ResourceMemoryItem.filter_tags[key].as_string() == str(value))
+                from mirix.database.filter_tags_query import apply_filter_tags_sqlalchemy
+
+                query_stmt = apply_filter_tags_sqlalchemy(
+                    query_stmt, ResourceMemoryItem, filter_tags, scopes=scopes
+                )
 
                 if limit:
                     query_stmt = query_stmt.limit(limit)
@@ -686,10 +693,11 @@ class ResourceMemoryManager:
                 .where(ResourceMemoryItem.organization_id == organization_id)
             )
 
-            # Apply filter_tags if provided
-            if filter_tags:
-                for key, value in filter_tags.items():
-                    base_query = base_query.where(ResourceMemoryItem.filter_tags[key].as_string() == str(value))
+            from mirix.database.filter_tags_query import apply_filter_tags_sqlalchemy
+
+            base_query = apply_filter_tags_sqlalchemy(
+                base_query, ResourceMemoryItem, filter_tags, scopes=scopes
+            )
 
             if search_method == "string_match":
                 main_query = base_query.where(
@@ -723,6 +731,7 @@ class ResourceMemoryManager:
                         limit,
                         user.id,
                         filter_tags=filter_tags,
+                        scopes=scopes,
                     )
                 else:
                     # Fallback to in-memory BM25 for SQLite (legacy method)
@@ -1061,6 +1070,7 @@ class ResourceMemoryManager:
         limit: Optional[int] = 50,
         timezone_str: str = None,
         filter_tags: Optional[dict] = None,
+        scopes: Optional[List[str]] = None,
         use_cache: bool = True,
         similarity_threshold: Optional[float] = None,
     ) -> List[PydanticResourceMemoryItem]:
@@ -1098,6 +1108,7 @@ class ResourceMemoryManager:
                         organization_id=organization_id,
                         sort_by="created_at_ts",
                         filter_tags=filter_tags,
+                        scopes=scopes,
                     )
                     if results:
                         logger.debug("Redis: %d resource memories for org %s", len(results), organization_id)
@@ -1129,6 +1140,7 @@ class ResourceMemoryManager:
                         limit=limit or 50,
                         organization_id=organization_id,
                         filter_tags=filter_tags,
+                        scopes=scopes,
                     )
                     if results:
                         logger.debug("Redis vector: %d results for org %s", len(results), organization_id)
@@ -1145,6 +1157,7 @@ class ResourceMemoryManager:
                         limit=limit or 50,
                         organization_id=organization_id,
                         filter_tags=filter_tags,
+                        scopes=scopes,
                     )
                     if results:
                         logger.debug("Redis text: %d results for org %s", len(results), organization_id)
@@ -1161,27 +1174,11 @@ class ResourceMemoryManager:
             # Return full ResourceMemoryItem objects, not individual columns
             base_query = select(ResourceMemoryItem).where(ResourceMemoryItem.organization_id == organization_id)
 
-            # Apply filter_tags (INCLUDING SCOPE)
-            if filter_tags:
-                from sqlalchemy import func, or_
+            from mirix.database.filter_tags_query import apply_filter_tags_sqlalchemy
 
-                for key, value in filter_tags.items():
-                    if key == "read_scopes":
-                        # Multi-scope filtering: memory's scope must be IN the provided read_scopes list
-                        if isinstance(value, list) and value:
-                            scope_conditions = [
-                                ResourceMemoryItem.filter_tags["scope"].as_string() == scope for scope in value
-                            ]
-                            base_query = base_query.where(or_(*scope_conditions))
-                        elif isinstance(value, list) and not value:
-                            # Empty read_scopes means no access - return no results
-                            base_query = base_query.where(False)
-                    elif key == "scope":
-                        # Single scope matching (backward compatibility)
-                        base_query = base_query.where(ResourceMemoryItem.filter_tags[key].as_string() == str(value))
-                    else:
-                        # Other keys: exact match
-                        base_query = base_query.where(ResourceMemoryItem.filter_tags[key].as_string() == str(value))
+            base_query = apply_filter_tags_sqlalchemy(
+                base_query, ResourceMemoryItem, filter_tags, scopes=scopes
+            )
 
             # Handle empty query - fall back to recent sort
             if not query or query == "":
