@@ -247,6 +247,7 @@ def _apply_block_filter_tags_standalone(self_obj, blocks):
                 block_id=block.id,
                 new_filter_tags=desired,
                 actor=self_obj.actor,
+                user=self_obj.user,
             )
     return blocks
 
@@ -263,6 +264,7 @@ class TestApplyBlockFilterTags:
         agent.block_filter_tags = block_filter_tags
         agent.block_filter_tags_update_mode = update_mode
         agent.actor = SimpleNamespace(id="test-client")
+        agent.user = SimpleNamespace(id="test-user")
         agent.block_manager = Mock()
         agent.block_manager.update_block_filter_tags = Mock(return_value=None)
         return agent
