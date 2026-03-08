@@ -117,6 +117,8 @@ async def _ensure_server_and_redis_in_loop():
             expire_on_commit=False,
         )
 
+    await server_module.ensure_tables_created()
+
     yield
 
 

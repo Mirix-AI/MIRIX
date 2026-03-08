@@ -51,6 +51,13 @@ def event_loop():
     loop.close()
 
 
+@pytest_asyncio.fixture(scope="module", autouse=True)
+async def _init_db():
+    """Create all DB tables before any test in this module touches the database."""
+    from mirix.server.server import ensure_tables_created
+    await ensure_tables_created()
+
+
 @pytest_asyncio.fixture(scope="module")
 async def ensure_organization():
     """Ensure the test organization exists in the database (once per module)."""
