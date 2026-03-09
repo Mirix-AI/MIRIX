@@ -1,6 +1,8 @@
 from datetime import datetime
 from unittest.mock import MagicMock
 
+import pytest
+
 from mirix.agent.agent import Agent
 from mirix.schemas.agent import AgentState, AgentType
 from mirix.schemas.client import Client
@@ -30,7 +32,8 @@ def make_client(id="client-1", org_id="org-1"):
     )
 
 
-def test_memory_agent_truncates_extra_tool_calls_and_executes_only_first():
+@pytest.mark.asyncio
+async def test_memory_agent_truncates_extra_tool_calls_and_executes_only_first():
     """
     Regression test for memory-agent multi-tool-call bug:
     If the LLM returns multiple tool calls in one response, memory agents must
@@ -103,7 +106,7 @@ def test_memory_agent_truncates_extra_tool_calls_and_executes_only_first():
         ],
     )
 
-    agent._handle_ai_response(
+    await agent._handle_ai_response(
         input_message=input_message,
         response_message=response_message,
         existing_file_uris=[],

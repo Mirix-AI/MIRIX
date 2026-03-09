@@ -14,12 +14,14 @@ Run tests:
     Terminal 2: pytest tests/test_agent_prompt_update.py -v -m integration -s
 """
 
+import asyncio
 import os
 import sys
 import time
 from pathlib import Path
 
 import pytest
+import pytest_asyncio
 import requests
 from dotenv import load_dotenv
 
@@ -32,9 +34,10 @@ sys.path.insert(0, str(project_root))
 
 from mirix.client import MirixClient
 
-# Mark all tests as integration tests
+# Mark all tests as integration tests and asyncio
 pytestmark = [
     pytest.mark.integration,
+    pytest.mark.asyncio,
     pytest.mark.skipif(not os.getenv("GEMINI_API_KEY"), reason="GEMINI_API_KEY not set"),
 ]
 
@@ -60,10 +63,10 @@ def server_check():
     )
 
 
-@pytest.fixture(scope="module")
-def client(server_check, api_auth):
+@pytest_asyncio.fixture
+async def client(server_check, api_auth):
     """
-    Create a client connected to the test server.
+    Create a client connected to the test server (in the test's event loop).
 
     Follows the same initialization pattern as samples/add_test_memory.py:
     1. Create client with full parameters
@@ -72,49 +75,21 @@ def client(server_check, api_auth):
     """
     print("\n[SETUP] Creating MirixClient...")
 
-    # Create client with same parameters as add_test_memory.py
-    client = MirixClient(
-        api_key=api_auth["api_key"],
-        client_name="Demo Client Application",
-        client_scope="Sales",
-        debug=False,
-    )
-    print("[SETUP] Client created via API key")
-
-    # Create or get user (ensures user exists in backend database)
-    print(f"[SETUP] Creating/getting user: demo-user")
     try:
-        user_id = client.create_or_get_user(
-            user_id="demo-user",
-            user_name="Demo User",
+        c = await MirixClient.create(
+            api_key=api_auth["api_key"],
+            client_name="Demo Client Application",
+            client_scope="Sales",
+            debug=False,
         )
+        user_id = await c.create_or_get_user(user_id="demo-user", user_name="Demo User")
         print(f"[SETUP] User ready: {user_id}")
-    except Exception as e:
-        import traceback
-
-        error_details = traceback.format_exc()
-        print(f"\n[ERROR] Failed to create/get user:")
-        print(f"  Exception: {e}")
-        print(f"  Details:\n{error_details}")
-        pytest.skip(f"Failed to create/get user: {e}")
-
-    # Initialize meta agent with all sub-agents
-    print("[SETUP] Initializing meta agent...")
-    config_path = project_root / "mirix" / "configs" / "examples" / "mirix_gemini.yaml"
-
-    try:
-        result = client.initialize_meta_agent(
-            config_path=str(config_path), update_agents=True  # This should create all sub-agents
-        )
-        # result is an AgentState object, not a dict
+        config_path = project_root / "mirix" / "configs" / "examples" / "mirix_gemini.yaml"
+        result = await c.initialize_meta_agent(config_path=str(config_path), update_agents=True)
         agent_id = result.id if hasattr(result, "id") else "N/A"
         print(f"[SETUP] ✓ Meta agent initialized: {agent_id}")
-
-        # Trigger sub-agent creation by sending a test message
-        # Sub-agents are created lazily during message processing
-        print("[SETUP] Triggering sub-agent creation by adding a test memory...")
         try:
-            test_result = client.add(
+            test_result = await c.add(
                 user_id="demo-user",
                 messages=[
                     {"role": "user", "content": [{"type": "text", "text": "Test message to trigger agent creation"}]},
@@ -125,13 +100,16 @@ def client(server_check, api_auth):
             print(f"[SETUP] ✓ Test memory added: {test_result.get('success', False)}")
         except Exception as e:
             print(f"[SETUP] ⚠ Warning: Test memory addition failed: {e}")
+    except Exception as e:
+        import traceback
+        print(f"\n[ERROR] Failed to create/get user: {e}")
+        pytest.skip(f"Failed to create/get user: {e}")
 
-        # Wait for sub-agents to be created
-        print("[SETUP] Waiting 10 seconds for sub-agent creation...")
-        time.sleep(10)
+    print("[SETUP] Waiting 10 seconds for sub-agent creation...")
+    await asyncio.sleep(10)
 
-        # Verify agents were created - need to list both top-level and sub-agents
-        top_level_agents = client.list_agents()
+    try:
+        top_level_agents = await c.list_agents()
         print(f"[SETUP] ✓ Found {len(top_level_agents)} top-level agents")
 
         # Get meta agent and its sub-agents
@@ -145,7 +123,7 @@ def client(server_check, api_auth):
         if meta_agent:
             # Fetch sub-agents using parent_id
             try:
-                response = client._request("GET", f"/agents?parent_id={meta_agent.id}&limit=1000")
+                response = await c._request("GET", f"/agents?parent_id={meta_agent.id}&limit=1000")
                 sub_agents_data = response if isinstance(response, list) else response.get("agents", [])
                 from mirix.schemas.agent import AgentState
 
@@ -186,10 +164,10 @@ def client(server_check, api_auth):
         print(f"  Details:\n{error_details}")
         pytest.skip(f"Failed to initialize meta agent: {e}")
 
-    return client
+    return c
 
 
-def get_agent_direct_from_api(client: MirixClient, agent_name: str):
+async def get_agent_direct_from_api(client: MirixClient, agent_name: str):
     """
     Get agent directly from REST API to verify database state.
 
@@ -200,8 +178,7 @@ def get_agent_direct_from_api(client: MirixClient, agent_name: str):
     Returns:
         dict: Agent data from API
     """
-    # First, get the meta agent to find its ID
-    top_level_agents = client.list_agents()
+    top_level_agents = await client.list_agents()
     meta_agent = None
     for agent in top_level_agents:
         if agent.name == "meta_memory_agent":
@@ -214,7 +191,7 @@ def get_agent_direct_from_api(client: MirixClient, agent_name: str):
     # Now list all sub-agents by specifying the parent_id
     # Use the internal _request method to query sub-agents
     try:
-        response = client._request("GET", f"/agents?parent_id={meta_agent.id}&limit=1000")
+        response = await client._request("GET", f"/agents?parent_id={meta_agent.id}&limit=1000")
         sub_agents = response if isinstance(response, list) else response.get("agents", [])
 
         # Try exact match first
@@ -278,7 +255,7 @@ AGENT_NAMES = [
 
 
 @pytest.mark.parametrize("agent_name", AGENT_NAMES)
-def test_update_agent_system_prompt(client, agent_name):
+async def test_update_agent_system_prompt(client, agent_name):
     """
     Test updating system prompt for a specific agent type.
 
@@ -298,7 +275,7 @@ def test_update_agent_system_prompt(client, agent_name):
 
     # Step 1: Get original agent state
     print(f"\n[Step 1] Getting original state for '{agent_name}' agent...")
-    original_agent = get_agent_direct_from_api(client, agent_name)
+    original_agent = await get_agent_direct_from_api(client, agent_name)
 
     if not original_agent:
         pytest.skip(f"Agent '{agent_name}' not found. Skipping test.")
@@ -326,7 +303,7 @@ Test ID: {agent_name}-test-{int(time.time())}
 """
 
     try:
-        updated_agent = client.update_system_prompt(agent_name=agent_name, system_prompt=new_system_prompt)
+        updated_agent = await client.update_system_prompt(agent_name=agent_name, system_prompt=new_system_prompt)
         print(f"[OK] Update request successful")
         print(f"     Updated system prompt: {updated_agent.system[:80]}...")
 
@@ -352,7 +329,7 @@ Test ID: {agent_name}-test-{int(time.time())}
     # Step 5: Verify persistence by fetching agent again (tests Redis cache)
     print(f"\n[Step 5] Fetching agent again to verify persistence (Redis cache)...")
 
-    refetched_agent = get_agent_direct_from_api(client, agent_name)
+    refetched_agent = await get_agent_direct_from_api(client, agent_name)
     assert refetched_agent is not None, "Agent should still exist after update"
 
     assert refetched_agent.system == new_system_prompt, "System prompt should persist in cache/database"
@@ -382,7 +359,7 @@ Test ID: {agent_name}-test-{int(time.time())}
     print("=" * 70)
 
 
-def test_update_all_agents_sequentially(client):
+async def test_update_all_agents_sequentially(client):
     """
     Test updating all agents sequentially to ensure no conflicts.
 
@@ -401,7 +378,7 @@ def test_update_all_agents_sequentially(client):
         print(f"\n[Updating {agent_name}]")
 
         # Get original state
-        original_agent = get_agent_direct_from_api(client, agent_name)
+        original_agent = await get_agent_direct_from_api(client, agent_name)
         if not original_agent:
             print(f"  ⚠ Agent '{agent_name}' not found, skipping")
             continue
@@ -411,7 +388,7 @@ def test_update_all_agents_sequentially(client):
 
         # Update
         try:
-            updated = client.update_system_prompt(agent_name=agent_name, system_prompt=new_prompt)
+            updated = await client.update_system_prompt(agent_name=agent_name, system_prompt=new_prompt)
             updated_agents[agent_name] = {
                 "agent": updated,
                 "prompt": new_prompt,
@@ -430,7 +407,7 @@ def test_update_all_agents_sequentially(client):
     all_verified = True
 
     for agent_name, data in updated_agents.items():
-        refetched = get_agent_direct_from_api(client, agent_name)
+        refetched = await get_agent_direct_from_api(client, agent_name)
         if refetched and refetched.system == data["prompt"]:
             print(f"  ✓ {agent_name}: Verified")
         else:
@@ -442,7 +419,7 @@ def test_update_all_agents_sequentially(client):
     print("=" * 70)
 
 
-def test_update_same_agent_multiple_times(client):
+async def test_update_same_agent_multiple_times(client):
     """
     Test updating the same agent multiple times in succession.
 
@@ -468,7 +445,7 @@ def test_update_same_agent_multiple_times(client):
         new_prompt = f"Multi-update test {i}/3 for {agent_name} at {time.time()}"
 
         # Update
-        updated = client.update_system_prompt(agent_name=agent_name, system_prompt=new_prompt)
+        updated = await client.update_system_prompt(agent_name=agent_name, system_prompt=new_prompt)
 
         # Verify prompt changed
         assert updated.system == new_prompt, f"Update {i} should apply new prompt"
@@ -493,7 +470,7 @@ def test_update_same_agent_multiple_times(client):
 
     # Final verification
     print(f"\n[Final Verification] Fetching agent to verify last update...")
-    final_agent = get_agent_direct_from_api(client, agent_name)
+    final_agent = await get_agent_direct_from_api(client, agent_name)
 
     assert final_agent.system == previous_prompt, "Final prompt should match last update"
     print(f"  ✓ Final prompt matches last update")
@@ -502,7 +479,7 @@ def test_update_same_agent_multiple_times(client):
     print("=" * 70)
 
 
-def test_error_handling_nonexistent_agent(client):
+async def test_error_handling_nonexistent_agent(client):
     """
     Test error handling when trying to update a non-existent agent.
 
@@ -521,7 +498,7 @@ def test_error_handling_nonexistent_agent(client):
     fake_agent_name = "nonexistent_fake_agent_12345"
 
     with pytest.raises(Exception) as exc_info:
-        client.update_system_prompt(agent_name=fake_agent_name, system_prompt="This should fail")
+        await client.update_system_prompt(agent_name=fake_agent_name, system_prompt="This should fail")
 
     print(f"  ✓ Exception raised: {type(exc_info.value).__name__}")
     error_message = str(exc_info.value)
@@ -541,7 +518,7 @@ def test_error_handling_nonexistent_agent(client):
     typo_agent_name = "episodick"  # Common typo
 
     with pytest.raises(Exception) as exc_info:
-        client.update_system_prompt(agent_name=typo_agent_name, system_prompt="This should also fail")
+        await client.update_system_prompt(agent_name=typo_agent_name, system_prompt="This should also fail")
 
     print(f"  ✓ Exception raised for typo: {type(exc_info.value).__name__}")
     error_message = str(exc_info.value)
@@ -554,7 +531,7 @@ def test_error_handling_nonexistent_agent(client):
     partial_agent_name = "memory"  # Too vague
 
     with pytest.raises(Exception) as exc_info:
-        client.update_system_prompt(agent_name=partial_agent_name, system_prompt="This should fail too")
+        await client.update_system_prompt(agent_name=partial_agent_name, system_prompt="This should fail too")
 
     print(f"  ✓ Exception raised for partial name: {type(exc_info.value).__name__}")
 
@@ -563,7 +540,7 @@ def test_error_handling_nonexistent_agent(client):
     wrong_case_name = "EPISODIC"  # All caps
 
     with pytest.raises(Exception) as exc_info:
-        client.update_system_prompt(agent_name=wrong_case_name, system_prompt="This should fail - case sensitive")
+        await client.update_system_prompt(agent_name=wrong_case_name, system_prompt="This should fail - case sensitive")
 
     print(f"  ✓ Exception raised for wrong case: {type(exc_info.value).__name__}")
     print(f"    Note: Agent names are case-sensitive")
@@ -572,7 +549,7 @@ def test_error_handling_nonexistent_agent(client):
     print("\n[Test Case 5] Attempting to update with empty agent name...")
 
     with pytest.raises(Exception) as exc_info:
-        client.update_system_prompt(agent_name="", system_prompt="This should fail - empty name")
+        await client.update_system_prompt(agent_name="", system_prompt="This should fail - empty name")
 
     print(f"  ✓ Exception raised for empty name: {type(exc_info.value).__name__}")
 

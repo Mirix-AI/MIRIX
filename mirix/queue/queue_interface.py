@@ -1,6 +1,6 @@
 """
-Abstract base class for queue implementations
-Defines the interface that all queue implementations must follow
+Abstract base class for queue implementations.
+All queue methods are async-native.
 """
 
 import logging
@@ -13,22 +13,29 @@ logger = logging.getLogger(__name__)
 
 
 class QueueInterface(ABC):
-    """Abstract base class for queue implementations"""
+    """Abstract base class for async queue implementations"""
+
+    async def start(self) -> None:
+        """
+        Start the queue (connect to brokers, etc.).
+        No-op for in-memory queues; required for external systems like Kafka.
+        Called by QueueManager after construction.
+        """
 
     @abstractmethod
-    def put(self, message: QueueMessage) -> None:
+    async def put(self, message: QueueMessage) -> None:
         """
-        Add a message to the queue
+        Add a message to the queue.
 
         Args:
             message: QueueMessage protobuf message to add to the queue
         """
-        pass
+        ...
 
     @abstractmethod
-    def get(self, timeout: Optional[float] = None) -> QueueMessage:
+    async def get(self, timeout: Optional[float] = None) -> QueueMessage:
         """
-        Retrieve a message from the queue
+        Retrieve a message from the queue.
 
         Args:
             timeout: Optional timeout in seconds to wait for a message
@@ -37,11 +44,11 @@ class QueueInterface(ABC):
             QueueMessage protobuf message from the queue
 
         Raises:
-            Exception if no message available within timeout
+            asyncio.QueueEmpty or TimeoutError if no message within timeout
         """
-        pass
+        ...
 
     @abstractmethod
-    def close(self) -> None:
+    async def close(self) -> None:
         """Clean up resources and close connections"""
-        pass
+        ...

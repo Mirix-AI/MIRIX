@@ -3,15 +3,14 @@ MirixClient implementation for Mirix.
 This client communicates with a remote Mirix server via REST API.
 """
 
+import asyncio
 import json
 import os
 import re
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional, Set, Union
 
-import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
+import httpx
 
 from mirix.client.client import AbstractClient
 from mirix.constants import FUNCTION_RETURN_CHAR_LIMIT
@@ -75,6 +74,41 @@ def _validate_occurred_at(occurred_at: Optional[str]) -> Optional[datetime]:
         return dt
     except ValueError as e:
         raise ValueError(f"Invalid occurred_at datetime: {occurred_at}. Error: {str(e)}")
+
+
+class RetryTransport(httpx.AsyncBaseTransport):
+    """Async HTTP transport with retry on specific status codes."""
+
+    RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+
+    def __init__(
+        self,
+        *,
+        max_retries: int = 3,
+        backoff_factor: float = 1.0,
+        wrapped_transport: Optional[httpx.AsyncBaseTransport] = None,
+    ):
+        self._max_retries = max_retries
+        self._backoff_factor = backoff_factor
+        self._wrapped = wrapped_transport or httpx.AsyncHTTPTransport()
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        last_exc: Optional[Exception] = None
+        for attempt in range(self._max_retries + 1):
+            try:
+                response = await self._wrapped.handle_async_request(request)
+                if response.status_code not in self.RETRYABLE_STATUS_CODES or attempt == self._max_retries:
+                    return response
+            except (httpx.ConnectError, httpx.ReadTimeout) as exc:
+                last_exc = exc
+                if attempt == self._max_retries:
+                    raise
+            delay = self._backoff_factor * (2 ** attempt)
+            await asyncio.sleep(delay)
+        raise last_exc  # type: ignore[misc]
+
+    async def aclose(self) -> None:
+        await self._wrapped.aclose()
 
 
 class MirixClient(AbstractClient):
@@ -158,66 +192,86 @@ class MirixClient(AbstractClient):
         self.timeout = timeout
         self._known_users: Set[str] = set()
         self.api_key = api_key or os.environ.get("MIRIX_API_KEY")
+        self._init_headers = headers
+        self.max_retries = max_retries
 
-        # Create session with retry logic
-        self.session = requests.Session()
+        if not self.api_key:
+            import uuid
 
-        # If no api_key, check for client_id and org_id for backwards compatibility with older versions of the client
-
-        # if not self.api_key:
-        #    raise ValueError("api_key is required; set MIRIX_API_KEY or pass api_key to MirixClient.")
-
-        if self.api_key:
-            # Set headers - API key identifies client and org
-            self.session.headers.update({"X-API-Key": self.api_key})
-        else:
-            # Generate IDs if not provided
-            # Using client_id and org_id for backwards compatibility with older versions of the client
             if not client_id:
-                import uuid
-
                 client_id = f"client-{uuid.uuid4().hex[:8]}"
-
             if not org_id:
-                import uuid
-
                 org_id = f"org-{uuid.uuid4().hex[:8]}"
 
         self.client_id = client_id
-        self.client_name = client_name or client_id
-        self.session.headers.update({"X-Client-ID": self.client_id})
+        self.client_name = client_name or (client_id or "client")
         self.org_id = org_id
-        self.org_name = org_name or self.org_id
-        self.session.headers.update({"X-Org-ID": self.org_id})
+        self.org_name = org_name or (org_id or "org")
 
-        # Create organization and client if they don't exist
-        self._ensure_org_and_client_exist(headers=headers)
+        # Build headers for the async HTTP client
+        client_headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            client_headers["X-API-Key"] = self.api_key
+        else:
+            client_headers["X-Client-ID"] = self.client_id
+            client_headers["X-Org-ID"] = self.org_id
+
+        transport = RetryTransport(
+            max_retries=max_retries,
+            backoff_factor=1.0,
+            wrapped_transport=httpx.AsyncHTTPTransport(),
+        )
+        self._client = httpx.AsyncClient(
+            base_url=self.base_url,
+            timeout=timeout,
+            transport=transport,
+            headers=client_headers,
+        )
 
         # Track initialized meta agent for this project
         self._meta_agent: Optional[AgentState] = None
 
-        # Configure retries
-        retry_strategy = Retry(
-            total=max_retries,
-            backoff_factor=1,
-            status_forcelist=[429, 500, 502, 503, 504],
-            allowed_methods=[
-                "HEAD",
-                "GET",
-                "PUT",
-                "DELETE",
-                "OPTIONS",
-                "TRACE",
-                "POST",
-            ],
+    @classmethod
+    async def create(
+        cls,
+        api_key: Optional[str] = None,
+        base_url: Optional[str] = None,
+        client_name: Optional[str] = None,
+        client_scope: str = "",
+        write_scope: Optional[str] = None,
+        read_scopes: Optional[List[str]] = None,
+        client_id: Optional[str] = None,
+        org_name: Optional[str] = None,
+        org_id: Optional[str] = None,
+        debug: bool = False,
+        timeout: int = 60,
+        max_retries: int = 3,
+        headers: Optional[Dict[str, str]] = None,
+    ) -> "MirixClient":
+        """Create and initialize a MirixClient. Use this instead of __init__ for async usage."""
+        inst = cls(
+            api_key=api_key,
+            base_url=base_url,
+            client_name=client_name,
+            client_scope=client_scope,
+            write_scope=write_scope,
+            read_scopes=read_scopes,
+            client_id=client_id,
+            org_name=org_name,
+            org_id=org_id,
+            debug=debug,
+            timeout=timeout,
+            max_retries=max_retries,
+            headers=headers,
         )
-        adapter = HTTPAdapter(max_retries=retry_strategy)
-        self.session.mount("http://", adapter)
-        self.session.mount("https://", adapter)
+        await inst._ensure_org_and_client_exist(headers=inst._init_headers)
+        return inst
 
-        self.session.headers.update({"Content-Type": "application/json"})
+    async def close(self) -> None:
+        """Close the underlying HTTP client."""
+        await self._client.aclose()
 
-    def _ensure_org_and_client_exist(self, headers: Optional[Dict[str, str]] = None):
+    async def _ensure_org_and_client_exist(self, headers: Optional[Dict[str, str]] = None) -> None:
         """
         Ensure that the organization and client exist on the server.
         Creates them if they don't exist.
@@ -229,8 +283,7 @@ class MirixClient(AbstractClient):
             headers: Optional headers to include in the request
         """
         try:
-            # Create or get organization first
-            org_response = self._request(
+            await self._request(
                 "POST",
                 "/organizations/create_or_get",
                 json={"org_id": self.org_id, "name": self.org_name},
@@ -242,9 +295,7 @@ class MirixClient(AbstractClient):
                     self.org_id,
                     self.org_name,
                 )
-
-            # Create or get client
-            client_response = self._request(
+            await self._request(
                 "POST",
                 "/clients/create_or_get",
                 json={
@@ -266,16 +317,15 @@ class MirixClient(AbstractClient):
                     self.read_scopes,
                 )
         except Exception as e:
-            # Don't fail initialization if this fails - the server might handle it
             if self.debug:
                 logger.debug("[MirixClient] Note: Could not pre-create org/client: %s", e)
                 logger.debug("[MirixClient] Server will create them on first request if needed")
 
-    def create_or_get_user(
+    async def create_or_get_user(
         self,
         user_id: Optional[str] = None,
         user_name: Optional[str] = None,
-        org_id: Optional[str] = None,  # For backwards compatibility with older versions of the client
+        org_id: Optional[str] = None,
         headers: Optional[Dict[str, str]] = None,
     ) -> str:
         """
@@ -290,80 +340,35 @@ class MirixClient(AbstractClient):
         Args:
             user_id: Optional user ID. If not provided, a random ID will be generated.
             user_name: Optional user name. Defaults to user_id if not provided.
-            org_id: Optional organization ID. Defaults to client's org_id if not provided. For backwards compatibility with older versions of the client.
+            org_id: Optional organization ID. Defaults to client's org_id if not provided.
 
         Returns:
             str: The user_id (either existing or newly created)
-
-        Example:
-            >>> client = MirixClient(api_key="your-key")
-            >>>
-            >>> # Create user with specific ID
-            >>> user_id = client.create_or_get_user(
-            ...     user_id="demo-user",
-            ...     user_name="Demo User"
-            ... )
-            >>> print(f"User ready: {user_id}")
-            >>>
-            >>> # Create user with auto-generated ID
-            >>> user_id = client.create_or_get_user(user_name="Alice")
-            >>> print(f"User created with ID: {user_id}")
-            >>>
-            >>> # Now use the user_id for memory operations
-            >>> result = client.add(
-            ...     user_id=user_id,
-            ...     messages=[...]
-            ... )
         """
-        # Prepare request data - org is determined from API key on server side
-        request_data = {
-            "user_id": user_id,
-            "name": user_name,
-        }
+        request_data = {"user_id": user_id, "name": user_name}
+        if not (headers and "X-API-Key" in headers) and (org_id or self.org_id):
+            request_data["org_id"] = org_id or self.org_id
 
-        # Check if X-API-Key is set in headers
-        has_api_key = False
-        if headers and "X-API-Key" in headers:
-            has_api_key = True
-
-        # If no X-API-Key, include org_id in request data
-        if not has_api_key:
-            # Use passed in org_id, or fall back to self.org_id
-            effective_org_id = org_id if org_id else getattr(self, "org_id", None)
-            if effective_org_id:
-                request_data["org_id"] = effective_org_id
-
-        # Make API request
-        response = self._request("POST", "/users/create_or_get", json=request_data, headers=headers)
-
-        # Extract and return user_id from response
+        response = await self._request(
+            "POST", "/users/create_or_get", json=request_data, headers=headers
+        )
         if isinstance(response, dict) and "id" in response:
-            created_user_id = response["id"]
             if self.debug:
-                logger.debug("User ready: %s", created_user_id)
-            return created_user_id
-        else:
-            raise ValueError(f"Unexpected response from /users/create_or_get: {response}")
+                logger.debug("User ready: %s", response["id"])
+            return response["id"]
+        raise ValueError(f"Unexpected response from /users/create_or_get: {response}")
 
-    def _ensure_user_exists(self, user_id: Optional[str] = None, headers: Optional[Dict[str, str]] = None):
-        """Ensure that the given user exists for the client's organization.
-
-        Args:
-            user_id: User ID to ensure exists
-            headers: Optional headers to include in the request
-        """
-        if not user_id:
-            return
-        if user_id in self._known_users:
+    async def _ensure_user_exists(
+        self, user_id: Optional[str] = None, headers: Optional[Dict[str, str]] = None
+    ) -> None:
+        """Ensure that the given user exists for the client's organization."""
+        if not user_id or user_id in self._known_users:
             return
         try:
-            self._request(
+            await self._request(
                 "POST",
                 "/users/create_or_get",
-                json={
-                    "user_id": user_id,
-                    "name": user_id,
-                },
+                json={"user_id": user_id, "name": user_id},
                 headers=headers,
             )
             self._known_users.add(user_id)
@@ -373,7 +378,7 @@ class MirixClient(AbstractClient):
             if self.debug:
                 logger.debug("[MirixClient] Note: Could not ensure user %s: %s", user_id, e)
 
-    def _request(
+    async def _request(
         self,
         method: str,
         endpoint: str,
@@ -395,35 +400,27 @@ class MirixClient(AbstractClient):
             Response data (parsed JSON)
 
         Raises:
-            requests.HTTPError: If the request fails
+            httpx.HTTPStatusError: If the request fails
         """
         url = f"{self.base_url}{endpoint}"
-
         if self.debug:
             logger.debug("[MirixClient] %s %s", method, url)
             if json:
                 logger.debug("[MirixClient] Request body: %s", json)
 
-        response = self.session.request(
-            method=method,
-            url=url,
-            json=json,
-            params=params,
-            timeout=self.timeout,
-            headers=headers,
+        response = await self._client.request(
+            method=method, url=url, json=json, params=params, headers=headers
         )
-
         try:
             response.raise_for_status()
-        except requests.HTTPError as e:
-            # Try to extract error message from response
+        except httpx.HTTPStatusError as e:
             try:
                 error_detail = response.json().get("detail", str(e))
-            except:
+            except Exception:
                 error_detail = str(e)
-            raise requests.HTTPError(f"API request failed: {error_detail}") from e
-
-        # Return parsed JSON if there's content
+            raise httpx.HTTPStatusError(
+                error_detail, request=e.request, response=e.response
+            ) from e
         if response.content:
             return response.json()
         return None
@@ -432,7 +429,7 @@ class MirixClient(AbstractClient):
     # Agent Methods
     # ========================================================================
 
-    def list_agents(
+    async def list_agents(
         self,
         query_text: Optional[str] = None,
         tags: Optional[List[str]] = None,
@@ -452,10 +449,10 @@ class MirixClient(AbstractClient):
         if parent_id:
             params["parent_id"] = parent_id
 
-        data = self._request("GET", "/agents", params=params, headers=headers)
+        data = await self._request("GET", "/agents", params=params, headers=headers)
         return [AgentState(**agent) for agent in data]
 
-    def agent_exists(
+    async def agent_exists(
         self,
         agent_id: Optional[str] = None,
         agent_name: Optional[str] = None,
@@ -467,13 +464,13 @@ class MirixClient(AbstractClient):
         if agent_id and agent_name:
             raise ValueError("Only one of agent_id or agent_name can be provided")
 
-        existing = self.list_agents(headers=headers)
+        existing = await self.list_agents(headers=headers)
         if agent_id:
             return str(agent_id) in [str(agent.id) for agent in existing]
         else:
             return agent_name in [str(agent.name) for agent in existing]
 
-    def create_agent(
+    async def create_agent(
         self,
         name: Optional[str] = None,
         agent_type: Optional[AgentType] = AgentType.chat_agent,
@@ -513,10 +510,10 @@ class MirixClient(AbstractClient):
             "tags": tags,
         }
 
-        data = self._request("POST", "/agents", json=request_data, headers=headers)
+        data = await self._request("POST", "/agents", json=request_data, headers=headers)
         return AgentState(**data)
 
-    def update_agent(
+    async def update_agent(
         self,
         agent_id: str,
         name: Optional[str] = None,
@@ -545,10 +542,10 @@ class MirixClient(AbstractClient):
             "tags": tags,
         }
 
-        data = self._request("PATCH", f"/agents/{agent_id}", json=request_data, headers=headers)
+        data = await self._request("PATCH", f"/agents/{agent_id}", json=request_data, headers=headers)
         return AgentState(**data)
 
-    def update_system_prompt(
+    async def update_system_prompt(
         self,
         agent_name: str,
         system_prompt: str,
@@ -622,40 +619,40 @@ class MirixClient(AbstractClient):
             - "meta_memory_agent" (the parent meta agent)
         """
         request_data = {"system_prompt": system_prompt}
-        data = self._request("PATCH", f"/agents/by-name/{agent_name}/system", json=request_data, headers=headers)
+        data = await self._request("PATCH", f"/agents/by-name/{agent_name}/system", json=request_data, headers=headers)
         return AgentState(**data)
 
-    def get_agent(self, agent_id: str, headers: Optional[Dict[str, str]] = None) -> AgentState:
+    async def get_agent(self, agent_id: str, headers: Optional[Dict[str, str]] = None) -> AgentState:
         """Get an agent by ID."""
-        data = self._request("GET", f"/agents/{agent_id}", headers=headers)
+        data = await self._request("GET", f"/agents/{agent_id}", headers=headers)
         return AgentState(**data)
 
-    def get_agent_id(self, agent_name: str, headers: Optional[Dict[str, str]] = None) -> Optional[str]:
+    async def get_agent_id(self, agent_name: str, headers: Optional[Dict[str, str]] = None) -> Optional[str]:
         """Get agent ID by name."""
-        agents = self.list_agents(headers=headers)
+        agents = await self.list_agents(headers=headers)
         for agent in agents:
             if agent.name == agent_name:
                 return agent.id
         return None
 
-    def delete_agent(self, agent_id: str, headers: Optional[Dict[str, str]] = None):
+    async def delete_agent(self, agent_id: str, headers: Optional[Dict[str, str]] = None) -> None:
         """Delete an agent."""
-        self._request("DELETE", f"/agents/{agent_id}", headers=headers)
+        await self._request("DELETE", f"/agents/{agent_id}", headers=headers)
 
-    def rename_agent(self, agent_id: str, new_name: str, headers: Optional[Dict[str, str]] = None):
+    async def rename_agent(self, agent_id: str, new_name: str, headers: Optional[Dict[str, str]] = None) -> None:
         """Rename an agent."""
-        self.update_agent(agent_id, name=new_name, headers=headers)
+        await self.update_agent(agent_id, name=new_name, headers=headers)
 
-    def get_tools_from_agent(self, agent_id: str, headers: Optional[Dict[str, str]] = None) -> List[Tool]:
+    async def get_tools_from_agent(self, agent_id: str, headers: Optional[Dict[str, str]] = None) -> List[Tool]:
         """Get tools from an agent."""
-        agent = self.get_agent(agent_id, headers=headers)
+        agent = await self.get_agent(agent_id, headers=headers)
         return agent.tools
 
-    def add_tool_to_agent(self, agent_id: str, tool_id: str):
+    async def add_tool_to_agent(self, agent_id: str, tool_id: str) -> None:
         """Add a tool to an agent."""
         raise NotImplementedError("add_tool_to_agent not yet implemented in REST API")
 
-    def remove_tool_from_agent(self, agent_id: str, tool_id: str):
+    async def remove_tool_from_agent(self, agent_id: str, tool_id: str) -> None:
         """Remove a tool from an agent."""
         raise NotImplementedError("remove_tool_from_agent not yet implemented in REST API")
 
@@ -663,23 +660,23 @@ class MirixClient(AbstractClient):
     # Memory Methods
     # ========================================================================
 
-    def update_in_context_memory(self, agent_id: str, section: str, value: Union[List[str], str]) -> Memory:
+    async def update_in_context_memory(self, agent_id: str, section: str, value: Union[List[str], str]) -> Memory:
         """Update in-context memory."""
         raise NotImplementedError("update_in_context_memory not yet implemented in REST API")
 
-    def get_archival_memory_summary(
+    async def get_archival_memory_summary(
         self, agent_id: str, headers: Optional[Dict[str, str]] = None
     ) -> ArchivalMemorySummary:
         """Get archival memory summary."""
-        data = self._request("GET", f"/agents/{agent_id}/memory/archival", headers=headers)
+        data = await self._request("GET", f"/agents/{agent_id}/memory/archival", headers=headers)
         return ArchivalMemorySummary(**data)
 
-    def get_recall_memory_summary(self, agent_id: str, headers: Optional[Dict[str, str]] = None) -> RecallMemorySummary:
+    async def get_recall_memory_summary(self, agent_id: str, headers: Optional[Dict[str, str]] = None) -> RecallMemorySummary:
         """Get recall memory summary."""
-        data = self._request("GET", f"/agents/{agent_id}/memory/recall", headers=headers)
+        data = await self._request("GET", f"/agents/{agent_id}/memory/recall", headers=headers)
         return RecallMemorySummary(**data)
 
-    def get_in_context_messages(self, agent_id: str) -> List[Message]:
+    async def get_in_context_messages(self, agent_id: str) -> List[Message]:
         """Get in-context messages."""
         raise NotImplementedError("get_in_context_messages not yet implemented in REST API")
 
@@ -687,7 +684,7 @@ class MirixClient(AbstractClient):
     # Message Methods
     # ========================================================================
 
-    def send_message(
+    async def send_message(
         self,
         message: str,
         role: str,
@@ -740,6 +737,13 @@ class MirixClient(AbstractClient):
         """
         if stream or stream_steps or stream_tokens:
             raise NotImplementedError("Streaming not yet implemented in REST API")
+        if not (agent_id or agent_name):
+            raise ValueError("Either agent_id or agent_name must be provided")
+        if agent_id and agent_name:
+            raise ValueError("Only one of agent_id or agent_name can be provided")
+        resolved_agent_id = (await self.get_agent_id(agent_name, headers=headers)) if agent_name else agent_id
+        if not resolved_agent_id:
+            raise ValueError(f"Agent not found: {agent_name!r}")
 
         request_data = {
             "message": message,
@@ -767,10 +771,12 @@ class MirixClient(AbstractClient):
         if not use_cache:
             request_data["use_cache"] = use_cache
 
-        data = self._request("POST", f"/agents/{agent_id}/messages", json=request_data, headers=headers)
+        data = await self._request(
+            "POST", f"/agents/{resolved_agent_id}/messages", json=request_data, headers=headers
+        )
         return MirixResponse(**data)
 
-    def user_message(
+    async def user_message(
         self,
         agent_id: str,
         message: str,
@@ -792,7 +798,7 @@ class MirixClient(AbstractClient):
         Returns:
             MirixResponse: The response from the agent
         """
-        return self.send_message(
+        return await self.send_message(
             message=message,
             role="user",
             agent_id=agent_id,
@@ -802,7 +808,7 @@ class MirixClient(AbstractClient):
             headers=headers,
         )
 
-    def get_messages(
+    async def get_messages(
         self,
         agent_id: str,
         before: Optional[str] = None,
@@ -829,14 +835,14 @@ class MirixClient(AbstractClient):
         if not use_cache:
             params["use_cache"] = "false"
 
-        data = self._request("GET", f"/agents/{agent_id}/messages", params=params, headers=headers)
+        data = await self._request("GET", f"/agents/{agent_id}/messages", params=params, headers=headers)
         return [Message(**msg) for msg in data]
 
     # ========================================================================
     # Tool Methods
     # ========================================================================
 
-    def list_tools(
+    async def list_tools(
         self,
         cursor: Optional[str] = None,
         limit: Optional[int] = 50,
@@ -847,15 +853,15 @@ class MirixClient(AbstractClient):
         if cursor:
             params["cursor"] = cursor
 
-        data = self._request("GET", "/tools", params=params, headers=headers)
+        data = await self._request("GET", "/tools", params=params, headers=headers)
         return [Tool(**tool) for tool in data]
 
-    def get_tool(self, id: str, headers: Optional[Dict[str, str]] = None) -> Tool:
+    async def get_tool(self, id: str, headers: Optional[Dict[str, str]] = None) -> Tool:
         """Get a tool by ID."""
-        data = self._request("GET", f"/tools/{id}", headers=headers)
+        data = await self._request("GET", f"/tools/{id}", headers=headers)
         return Tool(**data)
 
-    def create_tool(
+    async def create_tool(
         self,
         func,
         name: Optional[str] = None,
@@ -867,7 +873,7 @@ class MirixClient(AbstractClient):
             "create_tool with function not supported in MirixClient. " "Tools must be created on the server side."
         )
 
-    def create_or_update_tool(
+    async def create_or_update_tool(
         self,
         func,
         name: Optional[str] = None,
@@ -880,7 +886,7 @@ class MirixClient(AbstractClient):
             "Tools must be created on the server side."
         )
 
-    def update_tool(
+    async def update_tool(
         self,
         id: str,
         name: Optional[str] = None,
@@ -892,19 +898,19 @@ class MirixClient(AbstractClient):
         """Update a tool."""
         raise NotImplementedError("update_tool not yet implemented in REST API")
 
-    def delete_tool(self, id: str, headers: Optional[Dict[str, str]] = None):
+    async def delete_tool(self, id: str, headers: Optional[Dict[str, str]] = None) -> None:
         """Delete a tool."""
-        self._request("DELETE", f"/tools/{id}", headers=headers)
+        await self._request("DELETE", f"/tools/{id}", headers=headers)
 
-    def get_tool_id(self, name: str, headers: Optional[Dict[str, str]] = None) -> Optional[str]:
+    async def get_tool_id(self, name: str, headers: Optional[Dict[str, str]] = None) -> Optional[str]:
         """Get tool ID by name."""
-        tools = self.list_tools(headers=headers)
+        tools = await self.list_tools(headers=headers)
         for tool in tools:
             if tool.name == name:
                 return tool.id
         return None
 
-    def upsert_base_tools(self) -> List[Tool]:
+    async def upsert_base_tools(self) -> List[Tool]:
         """Upsert base tools."""
         raise NotImplementedError("upsert_base_tools must be done on server side")
 
@@ -912,7 +918,7 @@ class MirixClient(AbstractClient):
     # Block Methods
     # ========================================================================
 
-    def list_blocks(
+    async def list_blocks(
         self,
         label: Optional[str] = None,
         templates_only: Optional[bool] = True,
@@ -923,15 +929,15 @@ class MirixClient(AbstractClient):
         if label:
             params["label"] = label
 
-        data = self._request("GET", "/blocks", params=params, headers=headers)
+        data = await self._request("GET", "/blocks", params=params, headers=headers)
         return [Block(**block) for block in data]
 
-    def get_block(self, block_id: str, headers: Optional[Dict[str, str]] = None) -> Block:
+    async def get_block(self, block_id: str, headers: Optional[Dict[str, str]] = None) -> Block:
         """Get a block by ID."""
-        data = self._request("GET", f"/blocks/{block_id}", headers=headers)
+        data = await self._request("GET", f"/blocks/{block_id}", headers=headers)
         return Block(**data)
 
-    def create_block(
+    async def create_block(
         self,
         label: str,
         value: str,
@@ -946,103 +952,103 @@ class MirixClient(AbstractClient):
         }
 
         block = Block(**block_data)
-        data = self._request("POST", "/blocks", json=block.model_dump(), headers=headers)
+        data = await self._request("POST", "/blocks", json=block.model_dump(), headers=headers)
         return Block(**data)
 
-    def delete_block(self, id: str, headers: Optional[Dict[str, str]] = None) -> Block:
+    async def delete_block(self, id: str, headers: Optional[Dict[str, str]] = None) -> None:
         """Delete a block."""
-        self._request("DELETE", f"/blocks/{id}", headers=headers)
+        await self._request("DELETE", f"/blocks/{id}", headers=headers)
 
     # ========================================================================
     # Human/Persona Methods
     # ========================================================================
 
-    def create_human(self, name: str, text: str, headers: Optional[Dict[str, str]] = None) -> Human:
+    async def create_human(self, name: str, text: str, headers: Optional[Dict[str, str]] = None) -> Human:
         """Create a human block."""
         human = Human(value=text)
-        data = self._request("POST", "/blocks", json=human.model_dump(), headers=headers)
+        data = await self._request("POST", "/blocks", json=human.model_dump(), headers=headers)
         return Human(**data)
 
-    def create_persona(self, name: str, text: str, headers: Optional[Dict[str, str]] = None) -> Persona:
+    async def create_persona(self, name: str, text: str, headers: Optional[Dict[str, str]] = None) -> Persona:
         """Create a persona block."""
         persona = Persona(value=text)
-        data = self._request("POST", "/blocks", json=persona.model_dump(), headers=headers)
+        data = await self._request("POST", "/blocks", json=persona.model_dump(), headers=headers)
         return Persona(**data)
 
-    def list_humans(self, headers: Optional[Dict[str, str]] = None) -> List[Human]:
+    async def list_humans(self, headers: Optional[Dict[str, str]] = None) -> List[Human]:
         """List human blocks."""
-        blocks = self.list_blocks(label="human", headers=headers)
+        blocks = await self.list_blocks(label="human", headers=headers)
         return [Human(**block.model_dump()) for block in blocks]
 
-    def list_personas(self, headers: Optional[Dict[str, str]] = None) -> List[Persona]:
+    async def list_personas(self, headers: Optional[Dict[str, str]] = None) -> List[Persona]:
         """List persona blocks."""
-        blocks = self.list_blocks(label="persona", headers=headers)
+        blocks = await self.list_blocks(label="persona", headers=headers)
         return [Persona(**block.model_dump()) for block in blocks]
 
-    def update_human(self, human_id: str, text: str, headers: Optional[Dict[str, str]] = None) -> Human:
+    async def update_human(self, human_id: str, text: str, headers: Optional[Dict[str, str]] = None) -> Human:
         """Update a human block."""
         raise NotImplementedError("update_human not yet implemented in REST API")
 
-    def update_persona(self, persona_id: str, text: str, headers: Optional[Dict[str, str]] = None) -> Persona:
+    async def update_persona(self, persona_id: str, text: str, headers: Optional[Dict[str, str]] = None) -> Persona:
         """Update a persona block."""
         raise NotImplementedError("update_persona not yet implemented in REST API")
 
-    def get_persona(self, id: str, headers: Optional[Dict[str, str]] = None) -> Persona:
+    async def get_persona(self, id: str, headers: Optional[Dict[str, str]] = None) -> Persona:
         """Get a persona block."""
-        data = self._request("GET", f"/blocks/{id}", headers=headers)
+        data = await self._request("GET", f"/blocks/{id}", headers=headers)
         return Persona(**data)
 
-    def get_human(self, id: str, headers: Optional[Dict[str, str]] = None) -> Human:
+    async def get_human(self, id: str, headers: Optional[Dict[str, str]] = None) -> Human:
         """Get a human block."""
-        data = self._request("GET", f"/blocks/{id}", headers=headers)
+        data = await self._request("GET", f"/blocks/{id}", headers=headers)
         return Human(**data)
 
-    def get_persona_id(self, name: str, headers: Optional[Dict[str, str]] = None) -> str:
+    async def get_persona_id(self, name: str, headers: Optional[Dict[str, str]] = None) -> Optional[str]:
         """Get persona ID by name."""
-        personas = self.list_personas(headers=headers)
+        personas = await self.list_personas(headers=headers)
         if personas:
             return personas[0].id
         return None
 
-    def get_human_id(self, name: str, headers: Optional[Dict[str, str]] = None) -> str:
+    async def get_human_id(self, name: str, headers: Optional[Dict[str, str]] = None) -> Optional[str]:
         """Get human ID by name."""
-        humans = self.list_humans(headers=headers)
+        humans = await self.list_humans(headers=headers)
         if humans:
             return humans[0].id
         return None
 
-    def delete_persona(self, id: str, headers: Optional[Dict[str, str]] = None):
+    async def delete_persona(self, id: str, headers: Optional[Dict[str, str]] = None) -> None:
         """Delete a persona."""
-        self.delete_block(id, headers=headers)
+        await self.delete_block(id, headers=headers)
 
-    def delete_human(self, id: str, headers: Optional[Dict[str, str]] = None):
+    async def delete_human(self, id: str, headers: Optional[Dict[str, str]] = None) -> None:
         """Delete a human."""
-        self.delete_block(id, headers=headers)
+        await self.delete_block(id, headers=headers)
 
     # ========================================================================
     # Configuration Methods
     # ========================================================================
 
-    def list_model_configs(self, headers: Optional[Dict[str, str]] = None) -> List[LLMConfig]:
+    async def list_model_configs(self, headers: Optional[Dict[str, str]] = None) -> List[LLMConfig]:
         """List available LLM configurations."""
-        data = self._request("GET", "/config/llm", headers=headers)
+        data = await self._request("GET", "/config/llm", headers=headers)
         return [LLMConfig(**config) for config in data]
 
-    def list_embedding_configs(self, headers: Optional[Dict[str, str]] = None) -> List[EmbeddingConfig]:
+    async def list_embedding_configs(self, headers: Optional[Dict[str, str]] = None) -> List[EmbeddingConfig]:
         """List available embedding configurations."""
-        data = self._request("GET", "/config/embedding", headers=headers)
+        data = await self._request("GET", "/config/embedding", headers=headers)
         return [EmbeddingConfig(**config) for config in data]
 
     # ========================================================================
     # Organization Methods
     # ========================================================================
 
-    def create_org(self, name: Optional[str] = None, headers: Optional[Dict[str, str]] = None) -> Organization:
+    async def create_org(self, name: Optional[str] = None, headers: Optional[Dict[str, str]] = None) -> Organization:
         """Create an organization."""
-        data = self._request("POST", "/organizations", json={"name": name}, headers=headers)
+        data = await self._request("POST", "/organizations", json={"name": name}, headers=headers)
         return Organization(**data)
 
-    def list_orgs(
+    async def list_orgs(
         self,
         cursor: Optional[str] = None,
         limit: Optional[int] = 50,
@@ -1053,10 +1059,10 @@ class MirixClient(AbstractClient):
         if cursor:
             params["cursor"] = cursor
 
-        data = self._request("GET", "/organizations", params=params, headers=headers)
+        data = await self._request("GET", "/organizations", params=params, headers=headers)
         return [Organization(**org) for org in data]
 
-    def delete_org(self, org_id: str) -> Organization:
+    async def delete_org(self, org_id: str) -> Organization:
         """Delete an organization."""
         raise NotImplementedError("delete_org not yet implemented in REST API")
 
@@ -1064,11 +1070,11 @@ class MirixClient(AbstractClient):
     # Sandbox Methods (Not Implemented)
     # ========================================================================
 
-    def create_sandbox_config(self, config: Union[LocalSandboxConfig, E2BSandboxConfig]) -> SandboxConfig:
+    async def create_sandbox_config(self, config: Union[LocalSandboxConfig, E2BSandboxConfig]) -> SandboxConfig:
         """Create sandbox config."""
         raise NotImplementedError("Sandbox config not yet implemented in REST API")
 
-    def update_sandbox_config(
+    async def update_sandbox_config(
         self,
         sandbox_config_id: str,
         config: Union[LocalSandboxConfig, E2BSandboxConfig],
@@ -1076,15 +1082,15 @@ class MirixClient(AbstractClient):
         """Update sandbox config."""
         raise NotImplementedError("Sandbox config not yet implemented in REST API")
 
-    def delete_sandbox_config(self, sandbox_config_id: str) -> None:
+    async def delete_sandbox_config(self, sandbox_config_id: str) -> None:
         """Delete sandbox config."""
         raise NotImplementedError("Sandbox config not yet implemented in REST API")
 
-    def list_sandbox_configs(self, limit: int = 50, cursor: Optional[str] = None) -> List[SandboxConfig]:
+    async def list_sandbox_configs(self, limit: int = 50, cursor: Optional[str] = None) -> List[SandboxConfig]:
         """List sandbox configs."""
         raise NotImplementedError("Sandbox config not yet implemented in REST API")
 
-    def create_sandbox_env_var(
+    async def create_sandbox_env_var(
         self,
         sandbox_config_id: str,
         key: str,
@@ -1094,7 +1100,7 @@ class MirixClient(AbstractClient):
         """Create sandbox environment variable."""
         raise NotImplementedError("Sandbox env vars not yet implemented in REST API")
 
-    def update_sandbox_env_var(
+    async def update_sandbox_env_var(
         self,
         env_var_id: str,
         key: Optional[str] = None,
@@ -1104,11 +1110,11 @@ class MirixClient(AbstractClient):
         """Update sandbox environment variable."""
         raise NotImplementedError("Sandbox env vars not yet implemented in REST API")
 
-    def delete_sandbox_env_var(self, env_var_id: str) -> None:
+    async def delete_sandbox_env_var(self, env_var_id: str) -> None:
         """Delete sandbox environment variable."""
         raise NotImplementedError("Sandbox env vars not yet implemented in REST API")
 
-    def list_sandbox_env_vars(
+    async def list_sandbox_env_vars(
         self, sandbox_config_id: str, limit: int = 50, cursor: Optional[str] = None
     ) -> List[SandboxEnvironmentVariable]:
         """List sandbox environment variables."""
@@ -1155,7 +1161,7 @@ class MirixClient(AbstractClient):
 
         return prompts
 
-    def initialize_meta_agent(
+    async def initialize_meta_agent(
         self,
         config: Optional[Dict[str, Any]] = None,
         config_path: Optional[str] = None,
@@ -1216,7 +1222,7 @@ class MirixClient(AbstractClient):
         }
 
         # Make API request to initialize meta agent
-        data = self._request("POST", "/agents/meta/initialize", json=request_data, headers=headers)
+        data = await self._request("POST", "/agents/meta/initialize", json=request_data, headers=headers)
 
         # Server returns null for read-only clients (no write_scope)
         if not data:
@@ -1226,7 +1232,7 @@ class MirixClient(AbstractClient):
         self._meta_agent = AgentState(**data)
         return self._meta_agent
 
-    def add(
+    async def add(
         self,
         user_id: str,
         messages: List[Dict[str, Any]],
@@ -1313,7 +1319,7 @@ class MirixClient(AbstractClient):
         if occurred_at is not None:
             _validate_occurred_at(occurred_at)  # Raises ValueError if invalid
 
-        self._ensure_user_exists(user_id, headers=headers)
+        await self._ensure_user_exists(user_id, headers=headers)
 
         # Prepare request data - org is determined from API key on server side
         request_data = {
@@ -1339,9 +1345,9 @@ class MirixClient(AbstractClient):
         if occurred_at is not None:
             request_data["occurred_at"] = occurred_at
 
-        return self._request("POST", "/memory/add", json=request_data, headers=headers)
+        return await self._request("POST", "/memory/add", json=request_data, headers=headers)
 
-    def retrieve_with_conversation(
+    async def retrieve_with_conversation(
         self,
         user_id: str,
         messages: List[Dict[str, Any]],
@@ -1421,7 +1427,7 @@ class MirixClient(AbstractClient):
                 "If you already called it, the client may not have a write_scope configured."
             )
 
-        self._ensure_user_exists(user_id)
+        await self._ensure_user_exists(user_id, headers=headers)
 
         # Prepare request data - org is determined from API key on server side
         request_data = {
@@ -1443,9 +1449,9 @@ class MirixClient(AbstractClient):
         if end_date is not None:
             request_data["end_date"] = end_date
 
-        return self._request("POST", "/memory/retrieve/conversation", json=request_data, headers=headers)
+        return await self._request("POST", "/memory/retrieve/conversation", json=request_data, headers=headers)
 
-    def retrieve_with_topic(
+    async def retrieve_with_topic(
         self,
         user_id: str,
         topic: str,
@@ -1484,7 +1490,7 @@ class MirixClient(AbstractClient):
                 "If you already called it, the client may not have a write_scope configured."
             )
 
-        self._ensure_user_exists(user_id, headers=headers)
+        await self._ensure_user_exists(user_id, headers=headers)
 
         params = {
             "user_id": user_id,
@@ -1497,9 +1503,9 @@ class MirixClient(AbstractClient):
         if filter_tags is not None:
             params["filter_tags"] = json.dumps(filter_tags)
 
-        return self._request("GET", "/memory/retrieve/topic", params=params, headers=headers)
+        return await self._request("GET", "/memory/retrieve/topic", params=params, headers=headers)
 
-    def search(
+    async def search(
         self,
         user_id: str,
         query: str,
@@ -1617,7 +1623,7 @@ class MirixClient(AbstractClient):
                 "If you already called it, the client may not have a write_scope configured."
             )
 
-        self._ensure_user_exists(user_id, headers=headers)
+        await self._ensure_user_exists(user_id, headers=headers)
 
         # Prepare params - org is determined from API key on server side
         params = {
@@ -1648,9 +1654,9 @@ class MirixClient(AbstractClient):
         if include_core_memory:
             params["include_core_memory"] = True
 
-        return self._request("GET", "/memory/search", params=params, headers=headers)
+        return await self._request("GET", "/memory/search", params=params, headers=headers)
 
-    def search_all_users(
+    async def search_all_users(
         self,
         query: str,
         memory_type: str = "all",
@@ -1800,7 +1806,7 @@ class MirixClient(AbstractClient):
 
             params["block_filter_tags"] = _json.dumps(block_filter_tags)
 
-        return self._request("GET", "/memory/search_all_users", params=params, headers=headers)
+        return await self._request("GET", "/memory/search_all_users", params=params, headers=headers)
 
     # ========================================================================
     # LangChain/Composio/CrewAI Integration (Not Supported)

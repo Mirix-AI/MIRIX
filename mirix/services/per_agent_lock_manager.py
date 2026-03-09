@@ -1,18 +1,18 @@
-import threading
+import asyncio
 from collections import defaultdict
 
 
 class PerAgentLockManager:
-    """Manages per-agent locks."""
+    """Manages per-agent async locks for concurrent agent processing."""
 
     def __init__(self):
-        self.locks = defaultdict(threading.Lock)
+        self.locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
-    def get_lock(self, agent_id: str) -> threading.Lock:
+    def get_lock(self, agent_id: str) -> asyncio.Lock:
         """Retrieve the lock for a specific agent_id."""
         return self.locks[agent_id]
 
-    def clear_lock(self, agent_id: str):
+    def clear_lock(self, agent_id: str) -> None:
         """Optionally remove a lock if no longer needed (to prevent unbounded growth)."""
         if agent_id in self.locks:
             del self.locks[agent_id]

@@ -1,7 +1,7 @@
 import uuid
 from typing import List, Optional, Tuple
 
-import requests
+import httpx
 
 from mirix.constants import MAX_IMAGES_TO_PROCESS, NON_USER_MSG_PREFIX
 from mirix.llm_api.helpers import make_post_request
@@ -57,22 +57,23 @@ def get_gemini_endpoint_and_headers(
     return url, headers
 
 
-def google_ai_get_model_details(base_url: str, api_key: str, model: str, key_in_header: bool = True) -> List[dict]:
+async def google_ai_get_model_details(base_url: str, api_key: str, model: str, key_in_header: bool = True) -> List[dict]:
     from mirix.utils import printd
 
     url, headers = get_gemini_endpoint_and_headers(base_url, model, api_key, key_in_header)
 
     try:
-        response = requests.get(url, headers=headers)
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, headers=headers)
         printd(f"response = {response}")
         response.raise_for_status()  # Raises HTTPError for 4XX/5XX status
-        response = response.json()  # convert to dict from string
-        printd(f"response.json = {response}")
+        data = response.json()  # convert to dict from string
+        printd(f"response.json = {data}")
 
         # Grab the models out
-        return response
+        return data
 
-    except requests.exceptions.HTTPError as http_err:
+    except httpx.HTTPStatusError as http_err:
         # Handle HTTP errors (e.g., response 4XX, 5XX)
         printd(f"Got HTTPError, exception={http_err}")
         # Print the HTTP status code
@@ -81,7 +82,7 @@ def google_ai_get_model_details(base_url: str, api_key: str, model: str, key_in_
         logger.debug("Message: %s", http_err.response.text)
         raise http_err
 
-    except requests.exceptions.RequestException as req_err:
+    except httpx.RequestError as req_err:
         # Handle other requests-related errors (e.g., connection error)
         printd(f"Got RequestException, exception={req_err}")
         raise req_err
@@ -92,8 +93,8 @@ def google_ai_get_model_details(base_url: str, api_key: str, model: str, key_in_
         raise e
 
 
-def google_ai_get_model_context_window(base_url: str, api_key: str, model: str, key_in_header: bool = True) -> int:
-    model_details = google_ai_get_model_details(
+async def google_ai_get_model_context_window(base_url: str, api_key: str, model: str, key_in_header: bool = True) -> int:
+    model_details = await google_ai_get_model_details(
         base_url=base_url, api_key=api_key, model=model, key_in_header=key_in_header
     )
     # TODO should this be:
@@ -101,21 +102,22 @@ def google_ai_get_model_context_window(base_url: str, api_key: str, model: str, 
     return int(model_details["inputTokenLimit"])
 
 
-def google_ai_get_model_list(base_url: str, api_key: str, key_in_header: bool = True) -> List[dict]:
+async def google_ai_get_model_list(base_url: str, api_key: str, key_in_header: bool = True) -> List[dict]:
     from mirix.utils import printd
 
     url, headers = get_gemini_endpoint_and_headers(base_url, None, api_key, key_in_header)
 
     try:
-        response = requests.get(url, headers=headers)
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, headers=headers)
         response.raise_for_status()  # Raises HTTPError for 4XX/5XX status
-        response = response.json()  # convert to dict from string
+        data = response.json()  # convert to dict from string
 
         # Grab the models out
-        model_list = response["models"]
+        model_list = data["models"]
         return model_list
 
-    except requests.exceptions.HTTPError as http_err:
+    except httpx.HTTPStatusError as http_err:
         # Handle HTTP errors (e.g., response 4XX, 5XX)
         printd(f"Got HTTPError, exception={http_err}")
         # Print the HTTP status code
@@ -124,7 +126,7 @@ def google_ai_get_model_list(base_url: str, api_key: str, key_in_header: bool = 
         logger.debug("Message: %s", http_err.response.text)
         raise http_err
 
-    except requests.exceptions.RequestException as req_err:
+    except httpx.RequestError as req_err:
         # Handle other requests-related errors (e.g., connection error)
         printd(f"Got RequestException, exception={req_err}")
         raise req_err
@@ -420,7 +422,7 @@ def extract_content(content):
 
 
 # TODO convert 'data' type to pydantic
-def google_ai_chat_completions_request(
+async def google_ai_chat_completions_request(
     base_url: str,
     model: str,
     api_key: str,
@@ -498,7 +500,7 @@ def google_ai_chat_completions_request(
     import time
 
     s1 = time.time()
-    response_json = make_post_request(url, headers, data)
+    response_json = await make_post_request(url, headers, data)
     s2 = time.time()
     logger.debug("Query Takes time:", s2 - s1)
 

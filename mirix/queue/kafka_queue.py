@@ -1,10 +1,11 @@
 """
-Kafka queue implementation
-Requires kafka-python and protobuf libraries to be installed
-Supports both Protocol Buffers and JSON serialization
+Kafka queue implementation using aiokafka (async-native).
+Supports both Protocol Buffers and JSON serialization.
 """
 
+import asyncio
 import logging
+import ssl
 from typing import Optional
 
 from mirix.queue.message_pb2 import QueueMessage
@@ -15,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 class KafkaQueue(QueueInterface):
-    """Kafka-based queue implementation supporting Protobuf and JSON serialization"""
+    """Async-native Kafka queue using aiokafka"""
 
     def __init__(
         self,
@@ -33,31 +34,30 @@ class KafkaQueue(QueueInterface):
         session_timeout_ms: int = 30000,
     ):
         """
-        Initialize Kafka producer and consumer with configurable serialization
+        Store Kafka configuration. Actual connection happens in start().
 
         Args:
             bootstrap_servers: Kafka broker address(es)
             topic: Kafka topic name
             group_id: Consumer group ID
             serialization_format: 'protobuf' or 'json' (default: 'protobuf')
-            security_protocol: Kafka security protocol - 'PLAINTEXT', 'SSL', 'SASL_PLAINTEXT', 'SASL_SSL'
-            ssl_cafile: Path to CA certificate file for SSL/TLS verification
+            security_protocol: 'PLAINTEXT', 'SSL', 'SASL_PLAINTEXT', 'SASL_SSL'
+            ssl_cafile: Path to CA certificate file
             ssl_certfile: Path to client certificate file for mTLS
             ssl_keyfile: Path to client private key file for mTLS
-            auto_offset_reset: Where to start consuming if no offset exists ('earliest' or 'latest')
-                              - 'earliest': Start from beginning (default - ensures no messages missed)
-                              - 'latest': Start from end (only new messages) - useful for "clearing queue"
-                              Note: Changing group_id + setting to 'latest' can effectively clear the queue
-            consumer_timeout_ms: Timeout for polling messages (milliseconds). Default: 1000
-            max_poll_interval_ms: Max time between poll() calls before consumer is considered failed.
-                                  Default: 900000 (15 minutes) to accommodate long-running memory agent ops
-            session_timeout_ms: Timeout for detecting consumer failures. Default: 30000 (30 seconds)
-
-        Note:
-            enable_auto_commit is hardcoded to True and not configurable. This is coupled with the
-            code's message processing logic - changing it would require manual commit implementation.
-            (We should change it though.)
+            auto_offset_reset: 'earliest' (default) or 'latest'
+            consumer_timeout_ms: Kept for config compatibility (used as getone timeout)
+            max_poll_interval_ms: Max time between poll() calls. Default: 900000 (15 min)
+            session_timeout_ms: Timeout for detecting consumer failures. Default: 30000
         """
+        try:
+            from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
+        except ImportError:
+            raise ImportError(
+                "aiokafka is required for Kafka support. "
+                "Install it with: pip install aiokafka"
+            )
+
         logger.info(
             "Initializing Kafka queue: servers=%s, topic=%s, group=%s, format=%s, security=%s",
             bootstrap_servers,
@@ -66,26 +66,11 @@ class KafkaQueue(QueueInterface):
             serialization_format,
             security_protocol,
         )
-        logger.info(
-            "Kafka consumer config: auto_offset_reset=%s, consumer_timeout_ms=%d, max_poll_interval_ms=%d, session_timeout_ms=%d",
-            auto_offset_reset,
-            consumer_timeout_ms,
-            max_poll_interval_ms,
-            session_timeout_ms,
-        )
-
-        try:
-            from kafka import KafkaConsumer, KafkaProducer
-        except ImportError:
-            logger.error("kafka-python not installed")
-            raise ImportError(
-                "kafka-python is required for Kafka support. " "Install it with: pip install queue-sample[kafka]"
-            )
 
         self.topic = topic
         self.serialization_format = serialization_format.lower()
+        self._consumer_timeout_s = consumer_timeout_ms / 1000.0
 
-        # Configure message serialization format
         value_serializer = lambda msg: serialize_queue_message(msg, format=self.serialization_format)
         value_deserializer = lambda data: deserialize_queue_message(data, format=self.serialization_format)
 
@@ -94,70 +79,56 @@ class KafkaQueue(QueueInterface):
             self.serialization_format.upper(),
         )
 
-        # Build Kafka producer/consumer config with optional SSL
-        kafka_config = {
-            "bootstrap_servers": bootstrap_servers,
-        }
-
-        # Add SSL configuration if security protocol is SSL
+        ssl_context = None
         if security_protocol.upper() in ["SSL", "SASL_SSL"]:
-            kafka_config["security_protocol"] = security_protocol.upper()
-            if ssl_cafile:
-                kafka_config["ssl_cafile"] = ssl_cafile
-            if ssl_certfile:
-                kafka_config["ssl_certfile"] = ssl_certfile
-            if ssl_keyfile:
-                kafka_config["ssl_keyfile"] = ssl_keyfile
+            ssl_context = ssl.create_default_context(cafile=ssl_cafile)
+            if ssl_certfile and ssl_keyfile:
+                ssl_context.load_cert_chain(ssl_certfile, ssl_keyfile)
             logger.info("Kafka SSL/TLS configured: protocol=%s", security_protocol)
 
-        # Initialize Kafka producer with selected serializer and key serializer
-        # Key serializer enables partition key routing for consistent message ordering per user
-        self.producer = KafkaProducer(
-            **kafka_config,
-            key_serializer=lambda k: k.encode("utf-8"),  # Encode partition key to bytes
+        self.producer = AIOKafkaProducer(
+            bootstrap_servers=bootstrap_servers,
+            security_protocol=security_protocol.upper(),
+            ssl_context=ssl_context,
+            key_serializer=lambda k: k.encode("utf-8"),
             value_serializer=value_serializer,
         )
 
-        # Initialize Kafka consumer with selected deserializer
-        # Use configurable timeouts for long-running operations (memory agent chains)
-        self.consumer = KafkaConsumer(
+        self.consumer = AIOKafkaConsumer(
             topic,
-            **kafka_config,
+            bootstrap_servers=bootstrap_servers,
             group_id=group_id,
+            security_protocol=security_protocol.upper(),
+            ssl_context=ssl_context,
             value_deserializer=value_deserializer,
             auto_offset_reset=auto_offset_reset,
             enable_auto_commit=True,
             max_poll_interval_ms=max_poll_interval_ms,
             session_timeout_ms=session_timeout_ms,
-            consumer_timeout_ms=consumer_timeout_ms,
         )
 
         logger.info(
-            "Kafka consumer configured: auto_offset_reset=%s, max_poll_interval=%dms (%.1f min), session_timeout=%dms, consumer_timeout=%dms",
+            "Kafka consumer configured: auto_offset_reset=%s, max_poll_interval=%dms (%.1f min), session_timeout=%dms",
             auto_offset_reset,
             max_poll_interval_ms,
             max_poll_interval_ms / 60000,
             session_timeout_ms,
-            consumer_timeout_ms,
         )
 
-    def put(self, message: QueueMessage) -> None:
+    async def start(self) -> None:
+        """Connect producer and consumer to Kafka brokers."""
+        logger.info("Starting aiokafka producer and consumer...")
+        await self.producer.start()
+        await self.consumer.start()
+        logger.info("Kafka producer and consumer started")
+
+    async def put(self, message: QueueMessage) -> None:
         """
         Send a message to Kafka topic with user_id as partition key.
 
-        This ensures all messages for the same user go to the same partition,
+        Ensures all messages for the same user go to the same partition,
         guaranteeing single-worker processing and message ordering per user.
-
-        Implementation:
-        - Uses user_id (or actor.id as fallback) as partition key
-        - Kafka assigns partition via: hash(key) % num_partitions
-        - Consumer group ensures only one worker per partition
-        - Result: Same user always processed by same worker (no race conditions)
-
-        Args:
-            message: QueueMessage protobuf message to send
         """
-        # Extract partition key: prefer user_id, then client_id
         if message.user_id:
             partition_key = message.user_id
         elif message.client_id:
@@ -172,48 +143,48 @@ class KafkaQueue(QueueInterface):
             partition_key,
         )
 
-        # Send message with partition key - ensures consistent partitioning
-        # Kafka will route this to: partition = hash(partition_key) % num_partitions
-        future = self.producer.send(
+        await self.producer.send_and_wait(
             self.topic,
-            key=partition_key,  # Partition key for consistent routing
+            key=partition_key,
             value=message,
         )
-        future.get(timeout=10)  # Wait up to 10 seconds for confirmation
 
         logger.debug("Message sent to Kafka successfully with partition key: %s", partition_key)
 
-    def get(self, timeout: Optional[float] = None) -> QueueMessage:
+    async def get(self, timeout: Optional[float] = None) -> QueueMessage:
         """
-        Retrieve a message from Kafka
+        Retrieve a message from Kafka.
 
         Args:
-            timeout: Not used for Kafka (uses consumer_timeout_ms instead)
-
-        Returns:
-            QueueMessage protobuf message from Kafka
+            timeout: Timeout in seconds (defaults to consumer_timeout_ms from config)
 
         Raises:
-            StopIteration: If no message available
+            asyncio.TimeoutError: If no message available within timeout
         """
-        logger.debug("Polling Kafka topic %s for messages", self.topic)
+        effective_timeout = timeout if timeout is not None else self._consumer_timeout_s
+        logger.debug("Polling Kafka topic %s for messages (timeout=%.1fs)", self.topic, effective_timeout)
 
-        # Poll for messages
-        for message in self.consumer:
-            logger.debug("Retrieved message from Kafka: agent_id=%s", message.value.agent_id)
-            return message.value
+        try:
+            record = await asyncio.wait_for(
+                self.consumer.getone(), timeout=effective_timeout
+            )
+        except asyncio.TimeoutError:
+            logger.debug("No message available from Kafka within timeout")
+            raise
 
-        # If no message received, raise exception (similar to queue.Empty)
-        logger.debug("No message available from Kafka")
-        raise StopIteration("No message available")
+        logger.debug("Retrieved message from Kafka: agent_id=%s", record.value.agent_id)
+        return record.value
 
-    def close(self) -> None:
-        """Close Kafka producer and consumer connections"""
+    async def close(self) -> None:
+        """Stop Kafka producer and consumer gracefully."""
         logger.info("Closing Kafka connections")
-
-        if hasattr(self, "producer"):
-            self.producer.close()
-            logger.debug("Kafka producer closed")
-        if hasattr(self, "consumer"):
-            self.consumer.close()
-            logger.debug("Kafka consumer closed")
+        try:
+            await self.producer.stop()
+            logger.debug("Kafka producer stopped")
+        except Exception as e:
+            logger.warning("Error stopping Kafka producer: %s", e)
+        try:
+            await self.consumer.stop()
+            logger.debug("Kafka consumer stopped")
+        except Exception as e:
+            logger.warning("Error stopping Kafka consumer: %s", e)

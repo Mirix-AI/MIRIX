@@ -8,6 +8,7 @@ Prerequisites:
 - Or set MIRIX_API_URL environment variable to your server URL
 """
 
+import asyncio
 import logging
 import os
 from pathlib import Path
@@ -224,7 +225,7 @@ def convert_search_results_to_memory_format(search_results):
     return converted
 
 
-def test_retrieve_with_conversation(client, user_id):
+async def test_retrieve_with_conversation(client, user_id):
     """Test the retrieve_with_conversation API.
 
     Args:
@@ -236,7 +237,7 @@ def test_retrieve_with_conversation(client, user_id):
     try:
         filter_tags = {}  # {"expert_id": "expert-234"}
 
-        memories = client.retrieve_with_conversation(
+        memories = await client.retrieve_with_conversation(
             user_id=user_id,
             messages=[
                 {
@@ -349,36 +350,28 @@ def test_search_all_users(client):
     print()
 
 
-def main():
-
+async def main():
     # Resolve config path relative to project root
-    # Get the directory where this script is located (samples/)
     script_dir = Path(__file__).parent
-    # Navigate to project root (parent of samples/)
     project_root = script_dir.parent
-    # Build path to config file
     config_path = project_root / "mirix" / "configs" / "examples" / "mirix_gemini.yaml"
 
-    # Verify the config file exists
     if not config_path.exists():
         raise FileNotFoundError(f"Config file not found: {config_path}")
 
-    # Create MirixClient (connects to server via REST API)
-    client_id = "sales-loader-client"  #'demo-client-app'  # Identifies the client application
-    user_id = "caring cathy"  #'demo-user'  # Identifies the end-user within the client app
+    client_id = "sales-loader-client"
+    user_id = "caring cathy"
     org_id = "demo-org"
 
-    client = MirixClient(
-        # api_key=api_key,
+    client = await MirixClient.create(
         client_id="sales-loader-client",
         client_scope="Sales",
         org_id="demo-org",
         debug=True,
     )
 
-    client.initialize_meta_agent(
+    await client.initialize_meta_agent(
         config_path=str(config_path),
-        # Alternative: config_path=str(project_root / "mirix/configs/examples/mirix_openai.yaml"),
         update_agents=False,
     )
 
@@ -412,7 +405,7 @@ def main():
     """
 
     # 4. Example: Retrieve memories using new API
-    test_retrieve_with_conversation(client, user_id)
+    await test_retrieve_with_conversation(client, user_id)
 
     # 5. Example: Search memories using BM25
     # test_search(client, user_id)
@@ -482,4 +475,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

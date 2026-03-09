@@ -1,15 +1,12 @@
+import asyncio
 import ast
 import base64
-import io
 import os
 import pickle
-import runpy
-import subprocess
 import sys
 import tempfile
 import traceback
 import uuid
-import venv
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from mirix.log import get_logger
@@ -18,10 +15,10 @@ from mirix.observability.langfuse_client import get_langfuse_client
 
 if TYPE_CHECKING:
     try:
-        from e2b_code_interpreter import Execution, Sandbox
+        from e2b_code_interpreter import AsyncSandbox, Execution
     except ImportError:
         Execution = Any  # type: ignore
-        Sandbox = Any  # type: ignore
+        AsyncSandbox = Any  # type: ignore
 from mirix.schemas.agent import AgentState
 from mirix.schemas.client import Client
 from mirix.schemas.sandbox_config import SandboxConfig, SandboxRunResult, SandboxType
@@ -57,23 +54,19 @@ class ToolExecutionSandbox:
         self.tool_name = tool_name
         self.args = args
         self.actor = actor
+        self.tool = tool_object
+        self.force_recreate = force_recreate
 
-        # If a tool object is provided, we use it directly, otherwise pull via name
-        if tool_object is not None:
-            self.tool = tool_object
-        else:
-            # Get the tool via name
-            # TODO: So in theory, it's possible this retrieves a tool not provisioned to the agent
-            # TODO: That would probably imply that agent_state is incorrectly configured
-            self.tool = ToolManager().get_tool_by_name(tool_name=tool_name, actor=self.actor)
+    async def _ensure_tool(self) -> None:
+        """Resolve the tool object asynchronously if not provided at init."""
+        if self.tool is None:
+            self.tool = await ToolManager().get_tool_by_name(tool_name=self.tool_name, actor=self.actor)
             if not self.tool:
                 raise ValueError(
                     f"Agent attempted to invoke tool {self.tool_name} that does not exist for organization {self.actor.organization_id}"
                 )
 
-        self.force_recreate = force_recreate
-
-    def run(
+    async def run(
         self,
         agent_state: Optional[AgentState] = None,
         additional_env_vars: Optional[Dict] = None,
@@ -86,37 +79,32 @@ class ToolExecutionSandbox:
             additional_env_vars (Optional[Dict]): Environment variables to inject into the sandbox
 
         Returns:
-            Tuple[Any, Optional[AgentState]]: Tuple containing (tool_result, agent_state)
+            SandboxRunResult containing tool result and agent state
         """
-        # Determine sandbox type for tracing
         sandbox_type = "e2b" if tool_settings.e2b_api_key else "local"
 
-        # Get Langfuse client for tracing
         langfuse = get_langfuse_client()
         trace_context = get_trace_context() if langfuse else {}
         trace_id = trace_context.get("trace_id") if trace_context else None
         parent_span_id = trace_context.get("observation_id") if trace_context else None
 
-        def _execute_tool() -> SandboxRunResult:
+        async def _execute_tool() -> SandboxRunResult:
             if tool_settings.e2b_api_key:
                 logger.debug("Using e2b sandbox to execute %s", self.tool_name)
-                return self.run_e2b_sandbox(agent_state=agent_state, additional_env_vars=additional_env_vars)
+                return await self.run_e2b_sandbox(agent_state=agent_state, additional_env_vars=additional_env_vars)
             else:
                 logger.debug("Using local sandbox to execute %s", self.tool_name)
-                return self.run_local_dir_sandbox(agent_state=agent_state, additional_env_vars=additional_env_vars)
+                return await self.run_local_dir_sandbox(agent_state=agent_state, additional_env_vars=additional_env_vars)
 
-        # Execute with Langfuse tracing if available
         if langfuse and trace_id:
             from typing import cast
 
             from langfuse.types import TraceContext
 
-            # Build trace context
             trace_context_dict: dict = {"trace_id": trace_id}
             if parent_span_id:
                 trace_context_dict["parent_span_id"] = parent_span_id
 
-            # Sanitize args for tracing
             args_for_trace = {key: str(value) for key, value in self.args.items()}
 
             try:
@@ -130,9 +118,8 @@ class ToolExecutionSandbox:
                         "tool_name": self.tool_name,
                     },
                 ) as span:
-                    result = _execute_tool()
+                    result = await _execute_tool()
 
-                    # Update span with result info
                     span.update(
                         output={
                             "status": result.status,
@@ -148,33 +135,18 @@ class ToolExecutionSandbox:
                     )
             except Exception as e:
                 logger.debug(f"Langfuse tool execution trace failed: {e}")
-                result = _execute_tool()
+                result = await _execute_tool()
         else:
-            result = _execute_tool()
+            result = await _execute_tool()
 
-        # Log out any stdout/stderr from the tool run
         logger.debug(f"Executed tool '{self.tool_name}', logging output from tool run: \n")
         for log_line in (result.stdout or []) + (result.stderr or []):
             logger.debug("%s", log_line)
         logger.debug("Ending output log from tool run.")
 
-        # Return result
         return result
 
-    # local sandbox specific functions
-    from contextlib import contextmanager
-
-    @contextmanager
-    def temporary_env_vars(self, env_vars: dict):
-        original_env = os.environ.copy()  # Backup original environment variables
-        os.environ.update(env_vars)  # Update with the new variables
-        try:
-            yield
-        finally:
-            os.environ.clear()
-            os.environ.update(original_env)  # Restore original environment variables
-
-    def run_local_dir_sandbox(
+    async def run_local_dir_sandbox(
         self,
         agent_state: Optional[AgentState] = None,
         additional_env_vars: Optional[Dict] = None,
@@ -184,164 +156,180 @@ class ToolExecutionSandbox:
         )
         local_configs = sbx_config.get_local_config()
 
-        # Get environment variables for the sandbox
         env = os.environ.copy()
         env_vars = self.sandbox_config_manager.get_sandbox_env_vars_as_dict(
             sandbox_config_id=sbx_config.id, actor=self.actor, limit=100
         )
         env.update(env_vars)
 
-        # Get environment variables for this agent specifically
         if agent_state:
             env.update(agent_state.get_agent_env_vars_as_dict())
 
-        # Finally, get any that are passed explicitly into the `run` function call
         if additional_env_vars:
             env.update(additional_env_vars)
 
-        # Safety checks
         if not os.path.exists(local_configs.sandbox_dir) or not os.path.isdir(local_configs.sandbox_dir):
             logger.warning(f"Sandbox directory does not exist, creating: {local_configs.sandbox_dir}")
             os.makedirs(local_configs.sandbox_dir)
 
-        # Write the code to a temp file in the sandbox_dir
         with tempfile.NamedTemporaryFile(
             mode="w", dir=local_configs.sandbox_dir, suffix=".py", delete=False
         ) as temp_file:
-            if local_configs.use_venv:
-                # If using venv, we need to wrap with special string markers to separate out the output and the stdout (since it is all in stdout)
-                code = self.generate_execution_script(agent_state=agent_state, wrap_print_with_markers=True)
-            else:
-                code = self.generate_execution_script(agent_state=agent_state)
-
+            code = self.generate_execution_script(
+                agent_state=agent_state, wrap_print_with_markers=True
+            )
             temp_file.write(code)
             temp_file.flush()
             temp_file_path = temp_file.name
 
         try:
             if local_configs.use_venv:
-                return self.run_local_dir_sandbox_venv(sbx_config, env, temp_file_path)
+                return await self.run_local_dir_sandbox_venv(sbx_config, env, temp_file_path)
             else:
-                return self.run_local_dir_sandbox_runpy(sbx_config, env, temp_file_path)
+                return await self.run_local_dir_sandbox_runpy(sbx_config, env, temp_file_path)
         except Exception as e:
             logger.error(f"Executing tool {self.tool_name} has an unexpected error: {e}")
             logger.error(f"Logging out tool {self.tool_name} auto-generated code for debugging: \n\n{code}")
             raise e
         finally:
-            # Clean up the temp file
             os.remove(temp_file_path)
 
-    def run_local_dir_sandbox_venv(
+    async def run_local_dir_sandbox_venv(
         self, sbx_config: SandboxConfig, env: Dict[str, str], temp_file_path: str
     ) -> SandboxRunResult:
         local_configs = sbx_config.get_local_config()
         venv_path = os.path.join(local_configs.sandbox_dir, local_configs.venv_name)
 
-        # Safety checks for the venv: verify that the venv path exists and is a directory
         if not os.path.isdir(venv_path):
             logger.warning(f"Virtual environment directory does not exist at: {venv_path}, creating one now...")
-            self.create_venv_for_local_sandbox(sandbox_dir_path=local_configs.sandbox_dir, venv_path=venv_path, env=env)
+            await self.create_venv_for_local_sandbox(
+                sandbox_dir_path=local_configs.sandbox_dir, venv_path=venv_path, env=env
+            )
 
-        # Ensure the python interpreter exists in the virtual environment
         python_executable = os.path.join(venv_path, "bin", "python3")
         if not os.path.isfile(python_executable):
             raise FileNotFoundError(f"Python executable not found in virtual environment: {python_executable}")
 
-        # Set up env for venv
         env["VIRTUAL_ENV"] = venv_path
         env["PATH"] = os.path.join(venv_path, "bin") + ":" + env["PATH"]
-        # Suppress all warnings
         env["PYTHONWARNINGS"] = "ignore"
 
-        # Execute the code in a restricted subprocess
         try:
-            result = subprocess.run(
-                [os.path.join(venv_path, "bin", "python3"), temp_file_path],
+            process = await asyncio.create_subprocess_exec(
+                os.path.join(venv_path, "bin", "python3"),
+                temp_file_path,
                 env=env,
-                cwd=local_configs.sandbox_dir,  # Restrict execution to sandbox_dir
-                timeout=60,
-                capture_output=True,
-                text=True,
+                cwd=local_configs.sandbox_dir,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
             )
-            func_result, stdout = self.parse_out_function_results_markers(result.stdout)
+            stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                process.communicate(), timeout=60
+            )
+            stdout_text = stdout_bytes.decode() if stdout_bytes else ""
+            stderr_text = stderr_bytes.decode() if stderr_bytes else ""
+
+            if process.returncode != 0:
+                logger.error("Executing tool %s failed with return code %d", self.tool_name, process.returncode)
+                func_return = get_friendly_error_msg(
+                    function_name=self.tool_name,
+                    exception_name="SubprocessError",
+                    exception_message=f"Process exited with code {process.returncode}: {stderr_text}",
+                )
+                return SandboxRunResult(
+                    func_return=func_return,
+                    agent_state=None,
+                    stdout=[stdout_text] if stdout_text else [],
+                    stderr=[stderr_text] if stderr_text else [],
+                    status="error",
+                    sandbox_config_fingerprint=sbx_config.fingerprint(),
+                )
+
+            func_result, stdout_parsed = self.parse_out_function_results_markers(stdout_text)
             func_return, agent_state = self.parse_best_effort(func_result)
             return SandboxRunResult(
                 func_return=func_return,
                 agent_state=agent_state,
-                stdout=[stdout] if stdout else [],
-                stderr=[result.stderr] if result.stderr else [],
+                stdout=[stdout_parsed] if stdout_parsed else [],
+                stderr=[stderr_text] if stderr_text else [],
                 status="success",
-                sandbox_config_fingerprint=sbx_config.fingerlogger.debug(),
+                sandbox_config_fingerprint=sbx_config.fingerprint(),
             )
 
-        except subprocess.CalledProcessError as e:
-            logger.error("Executing tool %s has process error: %s", self.tool_name, e)
-            func_return = get_friendly_error_msg(
-                function_name=self.tool_name,
-                exception_name=type(e).__name__,
-                exception_message=str(e),
-            )
-            return SandboxRunResult(
-                func_return=func_return,
-                agent_state=None,
-                stdout=[e.stdout] if e.stdout else [],
-                stderr=[e.stderr] if e.stderr else [],
-                status="error",
-                sandbox_config_fingerprint=sbx_config.fingerlogger.debug(),
-            )
-
-        except subprocess.TimeoutExpired:
+        except asyncio.TimeoutError:
             raise TimeoutError(f"Executing tool {self.tool_name} has timed out.")
 
         except Exception as e:
             logger.error(f"Executing tool {self.tool_name} has an unexpected error: {e}")
             raise e
 
-    def run_local_dir_sandbox_runpy(
+    async def run_local_dir_sandbox_runpy(
         self, sbx_config: SandboxConfig, env: Dict[str, str], temp_file_path: str
     ) -> SandboxRunResult:
-        status = "success"
-        agent_state = None
-
-        # Redirect stdout and stderr to capture script output
-        old_stdout = sys.stdout
-        old_stderr = sys.stderr
-        captured_stdout, captured_stderr = io.StringIO(), io.StringIO()
-        sys.stdout = captured_stdout
-        sys.stderr = captured_stderr
+        """Run tool script via async subprocess (no thread pool, no GIL contention)."""
+        cwd = os.path.dirname(temp_file_path)
 
         try:
-            # Execute the temp file
-            with self.temporary_env_vars(env):
-                result = runpy.run_path(temp_file_path, init_globals=env)
+            process = await asyncio.create_subprocess_exec(
+                sys.executable,
+                temp_file_path,
+                env=env,
+                cwd=cwd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                process.communicate(), timeout=60
+            )
+            stdout_text = stdout_bytes.decode() if stdout_bytes else ""
+            stderr_text = stderr_bytes.decode() if stderr_bytes else ""
 
-            # Fetch the result
-            func_result = result.get(self.LOCAL_SANDBOX_RESULT_VAR_NAME)
+            if process.returncode != 0:
+                logger.error(
+                    "Executing tool %s failed with return code %d",
+                    self.tool_name, process.returncode,
+                )
+                func_return = get_friendly_error_msg(
+                    function_name=self.tool_name,
+                    exception_name="SubprocessError",
+                    exception_message=(
+                        f"Process exited with code {process.returncode}: "
+                        f"{stderr_text}"
+                    ),
+                )
+                return SandboxRunResult(
+                    func_return=func_return,
+                    agent_state=None,
+                    stdout=[stdout_text] if stdout_text else [],
+                    stderr=[stderr_text] if stderr_text else [],
+                    status="error",
+                    sandbox_config_fingerprint=sbx_config.fingerprint(),
+                )
+
+            func_result, stdout_parsed = (
+                self.parse_out_function_results_markers(stdout_text)
+            )
             func_return, agent_state = self.parse_best_effort(func_result)
+            return SandboxRunResult(
+                func_return=func_return,
+                agent_state=agent_state,
+                stdout=[stdout_parsed] if stdout_parsed else [],
+                stderr=[stderr_text] if stderr_text else [],
+                status="success",
+                sandbox_config_fingerprint=sbx_config.fingerprint(),
+            )
+
+        except asyncio.TimeoutError:
+            raise TimeoutError(
+                f"Executing tool {self.tool_name} has timed out."
+            )
 
         except Exception as e:
-            func_return = get_friendly_error_msg(
-                function_name=self.tool_name,
-                exception_name=type(e).__name__,
-                exception_message=str(e),
+            logger.error(
+                f"Executing tool {self.tool_name} has an unexpected "
+                f"error: {e}"
             )
-            traceback.print_exc(file=sys.stderr)
-            status = "error"
-
-        # Restore stdout and stderr and collect captured output
-        sys.stdout = old_stdout
-        sys.stderr = old_stderr
-        stdout_output = [captured_stdout.getvalue()] if captured_stdout.getvalue() else []
-        stderr_output = [captured_stderr.getvalue()] if captured_stderr.getvalue() else []
-
-        return SandboxRunResult(
-            func_return=func_return,
-            agent_state=agent_state,
-            stdout=stdout_output,
-            stderr=stderr_output,
-            status=status,
-            sandbox_config_fingerprint=sbx_config.fingerprint(),
-        )
+            raise e
 
     def parse_out_function_results_markers(self, text: str):
         if self.LOCAL_SANDBOX_RESULT_START_MARKER not in text:
@@ -354,38 +342,58 @@ class ToolExecutionSandbox:
             text[: start_index - marker_len] + text[end_index + +marker_len :],
         )
 
-    def create_venv_for_local_sandbox(self, sandbox_dir_path: str, venv_path: str, env: Dict[str, str]):
-        # Step 1: Create the virtual environment
-        venv.create(venv_path, with_pip=True)
+    async def create_venv_for_local_sandbox(self, sandbox_dir_path: str, venv_path: str, env: Dict[str, str]):
+        process = await asyncio.create_subprocess_exec(
+            sys.executable, "-m", "venv", "--with-pip", venv_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await process.communicate()
+        if process.returncode != 0:
+            raise RuntimeError(
+                f"venv creation failed: {stderr.decode() if stderr else ''}"
+            )
 
         pip_path = os.path.join(venv_path, "bin", "pip")
         try:
-            # Step 2: Upgrade pip
             logger.info("Upgrading pip in the virtual environment...")
-            subprocess.run([pip_path, "install", "--upgrade", "pip"], env=env, check=True)
+            process = await asyncio.create_subprocess_exec(
+                pip_path, "install", "--upgrade", "pip",
+                env=env,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _, stderr = await process.communicate()
+            if process.returncode != 0:
+                raise RuntimeError(f"pip upgrade failed: {stderr.decode() if stderr else ''}")
 
-            # Step 3: Install packages from requirements.txt if provided
             requirements_txt_path = os.path.join(sandbox_dir_path, self.REQUIREMENT_TXT_NAME)
             if os.path.isfile(requirements_txt_path):
                 logger.info(f"Installing packages from requirements file: {requirements_txt_path}")
-                subprocess.run(
-                    [pip_path, "install", "-r", requirements_txt_path],
+                process = await asyncio.create_subprocess_exec(
+                    pip_path, "install", "-r", requirements_txt_path,
                     env=env,
-                    check=True,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
                 )
+                _, stderr = await process.communicate()
+                if process.returncode != 0:
+                    raise RuntimeError(f"pip install failed: {stderr.decode() if stderr else ''}")
                 logger.info("Successfully installed packages from requirements.txt")
             else:
                 logger.warning(
                     "No requirements.txt file provided or the file does not exist. Skipping package installation."
                 )
 
-        except subprocess.CalledProcessError as e:
+        except RuntimeError:
+            raise
+        except Exception as e:
             logger.error("Error while setting up the virtual environment: %s", e)
             raise RuntimeError(f"Failed to set up the virtual environment: {e}")
 
     # e2b sandbox specific functions
 
-    def run_e2b_sandbox(
+    async def run_e2b_sandbox(
         self,
         agent_state: Optional[AgentState] = None,
         additional_env_vars: Optional[Dict] = None,
@@ -393,34 +401,29 @@ class ToolExecutionSandbox:
         sbx_config = self.sandbox_config_manager.get_or_create_default_sandbox_config(
             sandbox_type=SandboxType.E2B, actor=self.actor
         )
-        sbx = self.get_running_e2b_sandbox_with_same_state(sbx_config)
+        sbx = await self.get_running_e2b_sandbox_with_same_state(sbx_config)
         if not sbx or self.force_recreate:
             if not sbx:
                 logger.info(f"No running e2b sandbox found with the same state: {sbx_config}")
             else:
                 logger.info("Force recreated e2b sandbox with state: %s", sbx_config)
-            sbx = self.create_e2b_sandbox_with_metadata_hash(sandbox_config=sbx_config)
+            sbx = await self.create_e2b_sandbox_with_metadata_hash(sandbox_config=sbx_config)
 
         logger.info("E2B Sandbox configurations: %s", sbx_config)
         logger.info("E2B Sandbox ID: %s", sbx.sandbox_id)
 
-        # Since this sandbox was used, we extend its lifecycle by the timeout
-        sbx.set_timeout(sbx_config.get_e2b_config().timeout)
+        await sbx.set_timeout(sbx_config.get_e2b_config().timeout)
 
-        # Get environment variables for the sandbox
-        # TODO: We set limit to 100 here, but maybe we want it uncapped? Realistically this should be fine.
         env_vars = self.sandbox_config_manager.get_sandbox_env_vars_as_dict(
             sandbox_config_id=sbx_config.id, actor=self.actor, limit=100
         )
-        # Get environment variables for this agent specifically
         if agent_state:
             env_vars.update(agent_state.get_agent_env_vars_as_dict())
 
-        # Finally, get any that are passed explicitly into the `run` function call
         if additional_env_vars:
             env_vars.update(additional_env_vars)
         code = self.generate_execution_script(agent_state=agent_state)
-        execution = sbx.run_code(code, envs=env_vars)
+        execution = await sbx.run_code(code, envs=env_vars)
 
         if execution.results:
             func_return, agent_state = self.parse_best_effort(execution.results[0].text)
@@ -449,55 +452,49 @@ class ToolExecutionSandbox:
 
     def parse_exception_from_e2b_execution(self, e2b_execution: "Execution") -> Exception:
         builtins_dict = __builtins__ if isinstance(__builtins__, dict) else vars(__builtins__)
-        # Dynamically fetch the exception class from builtins, defaulting to Exception if not found
         exception_class = builtins_dict.get(e2b_execution.error.name, Exception)
         return exception_class(e2b_execution.error.value)
 
-    def get_running_e2b_sandbox_with_same_state(self, sandbox_config: SandboxConfig) -> Optional["Sandbox"]:
-        from e2b_code_interpreter import Sandbox
+    async def get_running_e2b_sandbox_with_same_state(self, sandbox_config: SandboxConfig) -> Optional["AsyncSandbox"]:
+        from e2b_code_interpreter import AsyncSandbox
 
-        # List running sandboxes and access metadata.
-        running_sandboxes = self.list_running_e2b_sandboxes()
+        running_sandboxes = await self.list_running_e2b_sandboxes()
 
-        # Hash the config to check the state
         state_hash = sandbox_config.fingerprint()
         for sandbox in running_sandboxes:
             if (
                 self.METADATA_CONFIG_STATE_KEY in sandbox.metadata
                 and sandbox.metadata[self.METADATA_CONFIG_STATE_KEY] == state_hash
             ):
-                return Sandbox.connect(sandbox.sandbox_id)
+                return await AsyncSandbox.connect(sandbox.sandbox_id)
 
         return None
 
-    def create_e2b_sandbox_with_metadata_hash(self, sandbox_config: SandboxConfig) -> "Sandbox":
-        from e2b_code_interpreter import Sandbox
+    async def create_e2b_sandbox_with_metadata_hash(self, sandbox_config: SandboxConfig) -> "AsyncSandbox":
+        from e2b_code_interpreter import AsyncSandbox
 
         state_hash = sandbox_config.fingerprint()
         e2b_config = sandbox_config.get_e2b_config()
         if e2b_config.template:
-            sbx = Sandbox(
+            sbx = await AsyncSandbox.create(
                 sandbox_config.get_e2b_config().template,
                 metadata={self.METADATA_CONFIG_STATE_KEY: state_hash},
             )
         else:
-            # no template
-            sbx = Sandbox(
+            sbx = await AsyncSandbox.create(
                 metadata={self.METADATA_CONFIG_STATE_KEY: state_hash},
                 **e2b_config.model_dump(exclude={"pip_requirements"}),
             )
 
-        # install pip requirements
         if e2b_config.pip_requirements:
             for package in e2b_config.pip_requirements:
-                sbx.commands.run(f"pip install {package}")
+                await sbx.commands.run(f"pip install {package}")
         return sbx
 
-    def list_running_e2b_sandboxes(self):
-        from e2b_code_interpreter import Sandbox
+    async def list_running_e2b_sandboxes(self):
+        from e2b_code_interpreter import AsyncSandbox
 
-        # List running sandboxes and access metadata.
-        return Sandbox.list()
+        return await AsyncSandbox.list()
 
     # general utility functions
 

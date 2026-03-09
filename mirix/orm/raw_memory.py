@@ -6,14 +6,15 @@ task sharing use cases with a 14-day TTL.
 """
 
 import datetime as dt
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import JSON, Column, DateTime, Index, String, Text, text
+from sqlalchemy import JSON, Column, Index, String, Text, text
+from sqlalchemy.event import listens_for
 from sqlalchemy.orm import Mapped, declared_attr, mapped_column, relationship
 
 from mirix.constants import MAX_EMBEDDING_DIM
-from mirix.orm.custom_columns import CommonVector, EmbeddingConfigColumn
+from mirix.orm.custom_columns import CommonVector, DateTimeNaiveUTC, EmbeddingConfigColumn
 from mirix.orm.mixins import OrganizationMixin, UserMixin
 from mirix.orm.sqlalchemy_base import SqlalchemyBase
 from mirix.schemas.raw_memory import RawMemoryItem as PydanticRawMemoryItem
@@ -83,22 +84,30 @@ class RawMemory(SqlalchemyBase, OrganizationMixin, UserMixin):
     else:
         context_embedding = Column(CommonVector, nullable=True)
 
-    # Timestamps
+    # Timestamps (DateTimeNaiveUTC ensures bind params are naive for TIMESTAMP WITHOUT TIME ZONE)
     occurred_at: Mapped[datetime] = mapped_column(
-        DateTime,
+        DateTimeNaiveUTC(),
         nullable=False,
         doc="When the event occurred or was recorded",
     )
     created_at: Mapped[datetime] = mapped_column(
-        DateTime,
+        DateTimeNaiveUTC(),
         nullable=False,
         doc="When record was created",
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime,
+        DateTimeNaiveUTC(),
         nullable=False,
         doc="When record was last updated",
     )
+
+    def set_updated_at(self, timestamp: Optional[datetime] = None) -> None:
+        """
+        Set updated_at to naive UTC (RawMemory uses TIMESTAMP WITHOUT TIME ZONE).
+        Overrides mixin to avoid asyncpg "offset-naive and offset-aware" errors.
+        """
+        now = timestamp or datetime.now(timezone.utc)
+        self.updated_at = now.replace(tzinfo=None) if now.tzinfo else now
 
     # Note: Audit fields (_created_by_id, _last_updated_by_id) are inherited
     # from CommonSqlalchemyMetaMixins via SqlalchemyBase
@@ -161,3 +170,21 @@ class RawMemory(SqlalchemyBase, OrganizationMixin, UserMixin):
     def user(cls) -> Mapped["User"]:
         """Relationship to the User."""
         return relationship("User", lazy="selectin")
+
+
+def _naive_utc(dt_val: Optional[datetime]) -> Optional[datetime]:
+    """Return naive UTC datetime for TIMESTAMP WITHOUT TIME ZONE columns."""
+    if dt_val is None:
+        return None
+    if dt_val.tzinfo is not None:
+        return dt_val.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt_val
+
+
+@listens_for(RawMemory, "before_update")
+def _raw_memory_before_update(mapper, connection, target: RawMemory) -> None:
+    """Ensure timestamp columns are naive UTC before UPDATE (asyncpg compatibility)."""
+    for attr in ("occurred_at", "created_at", "updated_at"):
+        val = getattr(target, attr, None)
+        if val is not None and getattr(val, "tzinfo", None) is not None:
+            setattr(target, attr, _naive_utc(val))

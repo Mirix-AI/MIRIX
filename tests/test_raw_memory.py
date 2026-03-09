@@ -15,12 +15,17 @@ Run tests:
     pytest tests/test_raw_memory.py -k redis -v  # Redis tests only
 """
 
+import asyncio
 import sys
 import time
+import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+import pytest_asyncio
+
+pytestmark = [pytest.mark.asyncio(loop_scope="module")]
 
 # Add project root to path
 project_root = Path(__file__).parent.parent
@@ -36,14 +41,16 @@ from mirix.services.raw_memory_manager import RawMemoryManager
 # =================================================================
 
 
+
+
 @pytest.fixture
 def raw_memory_manager():
     """Provide a RawMemoryManager instance."""
     return RawMemoryManager()
 
 
-@pytest.fixture(scope="module")
-def test_actor():
+@pytest_asyncio.fixture(scope="module")
+async def test_actor():
     """Provide a test client actor (creates organization and client in DB)."""
     from mirix.schemas.organization import Organization as PydanticOrganization
     from mirix.services.client_manager import ClientManager
@@ -55,16 +62,16 @@ def test_actor():
     # Create organization if it doesn't exist
     org_id = "test-org-456"
     try:
-        org_mgr.get_organization_by_id(org_id)
+        await org_mgr.get_organization_by_id(org_id)
     except Exception:
-        org_mgr.create_organization(PydanticOrganization(id=org_id, name="Test Organization"))
+        await org_mgr.create_organization(PydanticOrganization(id=org_id, name="Test Organization"))
 
     # Create client if it doesn't exist
     client_id = "test-client-123"
     try:
-        return client_mgr.get_client_by_id(client_id)
+        return await client_mgr.get_client_by_id(client_id)
     except Exception:
-        return client_mgr.create_client(
+        return await client_mgr.create_client(
             PydanticClient(
                 id=client_id,
                 organization_id=org_id,
@@ -75,8 +82,8 @@ def test_actor():
         )
 
 
-@pytest.fixture(scope="module")
-def test_user():
+@pytest_asyncio.fixture(scope="module")
+async def test_user():
     """Provide a test user (creates user in DB)."""
     from mirix.services.user_manager import UserManager
 
@@ -85,9 +92,9 @@ def test_user():
     # Create user if it doesn't exist
     user_id = "test-user-789"
     try:
-        return user_mgr.get_user_by_id(user_id)
+        return await user_mgr.get_user_by_id(user_id)
     except Exception:
-        return user_mgr.create_user(
+        return await user_mgr.create_user(
             PydanticUser(
                 id=user_id,
                 organization_id="test-org-456",
@@ -145,9 +152,9 @@ def sample_raw_memory_data(test_user, test_actor):
 # =================================================================
 
 
-def test_manager_create_raw_memory(raw_memory_manager, sample_raw_memory_data, test_actor, test_user):
+async def test_manager_create_raw_memory(raw_memory_manager, sample_raw_memory_data, test_actor, test_user):
     """Test creating raw memory via manager."""
-    result = raw_memory_manager.create_raw_memory(
+    result = await raw_memory_manager.create_raw_memory(
         raw_memory=sample_raw_memory_data,
         actor=test_actor,
         client_id=test_actor.id,
@@ -162,7 +169,7 @@ def test_manager_create_raw_memory(raw_memory_manager, sample_raw_memory_data, t
     # Note: _created_by_id is tracked in ORM but not exposed in schema
 
 
-def test_manager_create_raw_memory_auto_creates_user(raw_memory_manager, test_actor):
+async def test_manager_create_raw_memory_auto_creates_user(raw_memory_manager, test_actor):
     """Test that creating raw memory with non-existent user_id auto-creates the user."""
     import uuid
 
@@ -175,7 +182,7 @@ def test_manager_create_raw_memory_auto_creates_user(raw_memory_manager, test_ac
 
     # Verify user does NOT exist yet
     try:
-        user_mgr.get_user_by_id(user_id)
+        await user_mgr.get_user_by_id(user_id)
         # If we get here, user exists - delete it for test
         pytest.fail(f"User {user_id} should not exist for this test")
     except NoResultFound:
@@ -189,7 +196,7 @@ def test_manager_create_raw_memory_auto_creates_user(raw_memory_manager, test_ac
         organization_id=test_actor.organization_id,
     )
 
-    result = raw_memory_manager.create_raw_memory(
+    result = await raw_memory_manager.create_raw_memory(
         raw_memory=memory_data,
         actor=test_actor,
         client_id=test_actor.id,
@@ -203,7 +210,7 @@ def test_manager_create_raw_memory_auto_creates_user(raw_memory_manager, test_ac
     assert result.context == memory_data.context
 
     # Verify user was auto-created
-    created_user = user_mgr.get_user_by_id(user_id)
+    created_user = await user_mgr.get_user_by_id(user_id)
     assert created_user.id == user_id
     assert created_user.organization_id == test_actor.organization_id
     assert created_user.name == user_id  # Default name is user_id
@@ -211,13 +218,13 @@ def test_manager_create_raw_memory_auto_creates_user(raw_memory_manager, test_ac
     assert created_user.is_admin is False
 
     # Cleanup
-    raw_memory_manager.delete_raw_memory(result.id, test_actor)
+    await raw_memory_manager.delete_raw_memory(result.id, test_actor)
 
 
-def test_manager_get_raw_memory_by_id(raw_memory_manager, sample_raw_memory_data, test_actor, test_user):
+async def test_manager_get_raw_memory_by_id(raw_memory_manager, sample_raw_memory_data, test_actor, test_user):
     """Test fetching raw memory by ID via manager."""
     # Create first
-    created = raw_memory_manager.create_raw_memory(
+    created = await raw_memory_manager.create_raw_memory(
         raw_memory=sample_raw_memory_data,
         actor=test_actor,
         client_id=test_actor.id,
@@ -226,16 +233,16 @@ def test_manager_get_raw_memory_by_id(raw_memory_manager, sample_raw_memory_data
     )
 
     # Fetch back
-    fetched = raw_memory_manager.get_raw_memory_by_id(created.id, actor=test_actor)
+    fetched = await raw_memory_manager.get_raw_memory_by_id(created.id, actor=test_actor)
 
     assert fetched.id == created.id
     assert fetched.context == sample_raw_memory_data.context
 
 
-def test_manager_update_raw_memory_replace(raw_memory_manager, sample_raw_memory_data, test_actor, test_user):
+async def test_manager_update_raw_memory_replace(raw_memory_manager, sample_raw_memory_data, test_actor, test_user):
     """Test updating raw memory with replace mode."""
     # Create
-    created = raw_memory_manager.create_raw_memory(
+    created = await raw_memory_manager.create_raw_memory(
         raw_memory=sample_raw_memory_data,
         actor=test_actor,
         client_id=test_actor.id,
@@ -244,7 +251,7 @@ def test_manager_update_raw_memory_replace(raw_memory_manager, sample_raw_memory
     )
 
     # Update with replace
-    updated = raw_memory_manager.update_raw_memory(
+    updated = await raw_memory_manager.update_raw_memory(
         memory_id=created.id,
         actor=test_actor,
         new_context="Completely new context",
@@ -259,7 +266,7 @@ def test_manager_update_raw_memory_replace(raw_memory_manager, sample_raw_memory
     # Note: _last_updated_by_id is tracked in ORM but not exposed in schema
 
 
-def test_manager_update_raw_memory_replace_preserves_scope(
+async def test_manager_update_raw_memory_replace_preserves_scope(
     raw_memory_manager, sample_raw_memory_data, test_actor, test_user
 ):
     """Test that replace mode preserves scope even when not included in new filter_tags.
@@ -268,7 +275,7 @@ def test_manager_update_raw_memory_replace_preserves_scope(
     if the user didn't include it in the new_filter_tags.
     """
     # Create memory with scope
-    created = raw_memory_manager.create_raw_memory(
+    created = await raw_memory_manager.create_raw_memory(
         raw_memory=sample_raw_memory_data,
         actor=test_actor,
         client_id=test_actor.id,
@@ -280,7 +287,7 @@ def test_manager_update_raw_memory_replace_preserves_scope(
     assert created.filter_tags.get("scope") == test_actor.write_scope
 
     # Update with replace mode WITHOUT including scope in new_filter_tags
-    updated = raw_memory_manager.update_raw_memory(
+    updated = await raw_memory_manager.update_raw_memory(
         memory_id=created.id,
         actor=test_actor,
         new_filter_tags={"status": "completed", "new_tag": "value"},  # No scope!
@@ -294,15 +301,15 @@ def test_manager_update_raw_memory_replace_preserves_scope(
     assert "engagement_id" not in updated.filter_tags  # Other tags replaced
 
     # Verify we can still fetch the memory (scope-based queries work)
-    fetched = raw_memory_manager.get_raw_memory_by_id(created.id, actor=test_actor)
+    fetched = await raw_memory_manager.get_raw_memory_by_id(created.id, actor=test_actor)
     assert fetched is not None
     assert fetched.filter_tags.get("scope") == test_actor.write_scope
 
 
-def test_manager_update_raw_memory_append(raw_memory_manager, sample_raw_memory_data, test_actor, test_user):
+async def test_manager_update_raw_memory_append(raw_memory_manager, sample_raw_memory_data, test_actor, test_user):
     """Test updating raw memory with append mode."""
     # Create
-    created = raw_memory_manager.create_raw_memory(
+    created = await raw_memory_manager.create_raw_memory(
         raw_memory=sample_raw_memory_data,
         actor=test_actor,
         client_id=test_actor.id,
@@ -311,7 +318,7 @@ def test_manager_update_raw_memory_append(raw_memory_manager, sample_raw_memory_
     )
 
     # Update with append
-    updated = raw_memory_manager.update_raw_memory(
+    updated = await raw_memory_manager.update_raw_memory(
         memory_id=created.id,
         new_context="Additional context appended",
         actor=test_actor,
@@ -322,10 +329,10 @@ def test_manager_update_raw_memory_append(raw_memory_manager, sample_raw_memory_
     assert "Additional context appended" in updated.context
 
 
-def test_manager_update_raw_memory_merge_tags(raw_memory_manager, sample_raw_memory_data, test_actor, test_user):
+async def test_manager_update_raw_memory_merge_tags(raw_memory_manager, sample_raw_memory_data, test_actor, test_user):
     """Test updating raw memory with tag merge mode."""
     # Create
-    created = raw_memory_manager.create_raw_memory(
+    created = await raw_memory_manager.create_raw_memory(
         raw_memory=sample_raw_memory_data,
         actor=test_actor,
         client_id=test_actor.id,
@@ -334,7 +341,7 @@ def test_manager_update_raw_memory_merge_tags(raw_memory_manager, sample_raw_mem
     )
 
     # Update with merge
-    updated = raw_memory_manager.update_raw_memory(
+    updated = await raw_memory_manager.update_raw_memory(
         memory_id=created.id,
         new_filter_tags={"status": "completed", "reviewed": True},
         actor=test_actor,
@@ -347,10 +354,10 @@ def test_manager_update_raw_memory_merge_tags(raw_memory_manager, sample_raw_mem
     assert updated.filter_tags["reviewed"] is True  # Added
 
 
-def test_manager_delete_raw_memory(raw_memory_manager, sample_raw_memory_data, test_actor, test_user):
+async def test_manager_delete_raw_memory(raw_memory_manager, sample_raw_memory_data, test_actor, test_user):
     """Test deleting raw memory via manager."""
     # Create
-    created = raw_memory_manager.create_raw_memory(
+    created = await raw_memory_manager.create_raw_memory(
         raw_memory=sample_raw_memory_data,
         actor=test_actor,
         client_id=test_actor.id,
@@ -359,14 +366,14 @@ def test_manager_delete_raw_memory(raw_memory_manager, sample_raw_memory_data, t
     )
 
     # Delete
-    deleted = raw_memory_manager.delete_raw_memory(created.id, test_actor)
+    deleted = await raw_memory_manager.delete_raw_memory(created.id, test_actor)
     assert deleted is True
 
     # Verify deletion
     from mirix.orm.errors import NoResultFound
 
     with pytest.raises(NoResultFound):
-        raw_memory_manager.get_raw_memory_by_id(created.id, actor=test_actor)
+        await raw_memory_manager.get_raw_memory_by_id(created.id, actor=test_actor)
 
 
 # =================================================================
@@ -374,7 +381,7 @@ def test_manager_delete_raw_memory(raw_memory_manager, sample_raw_memory_data, t
 # =================================================================
 
 
-def test_cleanup_job_deletes_stale_memories(raw_memory_manager, test_actor, test_user):
+async def test_cleanup_job_deletes_stale_memories(raw_memory_manager, test_actor, test_user):
     """Test that cleanup job deletes memories older than threshold."""
     # Create an old memory via the manager
     old_memory_data = RawMemoryItemCreate(
@@ -383,7 +390,7 @@ def test_cleanup_job_deletes_stale_memories(raw_memory_manager, test_actor, test
         organization_id=test_actor.organization_id,
         filter_tags={"scope": test_actor.write_scope},
     )
-    old_memory = raw_memory_manager.create_raw_memory(
+    old_memory = await raw_memory_manager.create_raw_memory(
         raw_memory=old_memory_data,
         actor=test_actor,
         client_id=test_actor.id,
@@ -391,19 +398,20 @@ def test_cleanup_job_deletes_stale_memories(raw_memory_manager, test_actor, test
         use_cache=False,
     )
 
-    # Manually set updated_at to 15 days ago
-    with raw_memory_manager.session_maker() as session:
+    # Manually set updated_at to 15 days ago (naive UTC for TIMESTAMP WITHOUT TIME ZONE)
+    async with raw_memory_manager.session_maker() as session:
         from sqlalchemy import update
 
         from mirix.orm.raw_memory import RawMemory
 
+        naive_utc_15_days_ago = (datetime.now(UTC).replace(tzinfo=None) - timedelta(days=15))
         stmt = (
             update(RawMemory)
             .where(RawMemory.id == old_memory.id)
-            .values(updated_at=datetime.now(UTC) - timedelta(days=15))
+            .values(updated_at=naive_utc_15_days_ago)
         )
-        session.execute(stmt)
-        session.commit()
+        await session.execute(stmt)
+        await session.commit()
 
     # Create a recent memory (should not be deleted)
     recent_memory_data = RawMemoryItemCreate(
@@ -412,7 +420,7 @@ def test_cleanup_job_deletes_stale_memories(raw_memory_manager, test_actor, test
         organization_id=test_actor.organization_id,
         filter_tags={"scope": test_actor.write_scope},
     )
-    recent = raw_memory_manager.create_raw_memory(
+    recent = await raw_memory_manager.create_raw_memory(
         raw_memory=recent_memory_data,
         actor=test_actor,
         client_id=test_actor.id,
@@ -421,20 +429,20 @@ def test_cleanup_job_deletes_stale_memories(raw_memory_manager, test_actor, test
     )
 
     # Manually delete old memory using the test client (simulating cleanup job behavior)
-    raw_memory_manager.delete_raw_memory(old_memory.id, test_actor)
+    await raw_memory_manager.delete_raw_memory(old_memory.id, test_actor)
 
     # Verify old memory is deleted
     from mirix.orm.errors import NoResultFound
 
     with pytest.raises(NoResultFound):
-        raw_memory_manager.get_raw_memory_by_id(old_memory.id, actor=test_actor)
+        await raw_memory_manager.get_raw_memory_by_id(old_memory.id, actor=test_actor)
 
     # Verify recent memory still exists
-    fetched_recent = raw_memory_manager.get_raw_memory_by_id(recent.id, actor=test_actor)
+    fetched_recent = await raw_memory_manager.get_raw_memory_by_id(recent.id, actor=test_actor)
     assert fetched_recent.id == recent.id
 
 
-def test_cleanup_job_respects_custom_threshold(raw_memory_manager, test_actor, test_user):
+async def test_cleanup_job_respects_custom_threshold(raw_memory_manager, test_actor, test_user):
     """Test cleanup deletion logic with different age thresholds."""
     # Create memory 8 days old
     memory_data = RawMemoryItemCreate(
@@ -443,7 +451,7 @@ def test_cleanup_job_respects_custom_threshold(raw_memory_manager, test_actor, t
         organization_id=test_actor.organization_id,
         filter_tags={"scope": test_actor.write_scope},
     )
-    memory = raw_memory_manager.create_raw_memory(
+    memory = await raw_memory_manager.create_raw_memory(
         raw_memory=memory_data,
         actor=test_actor,
         client_id=test_actor.id,
@@ -451,26 +459,27 @@ def test_cleanup_job_respects_custom_threshold(raw_memory_manager, test_actor, t
         use_cache=False,
     )
 
-    # Manually set updated_at to 8 days ago
-    with raw_memory_manager.session_maker() as session:
+    # Manually set updated_at to 8 days ago (naive UTC for TIMESTAMP WITHOUT TIME ZONE)
+    async with raw_memory_manager.session_maker() as session:
         from sqlalchemy import update
 
         from mirix.orm.raw_memory import RawMemory
 
+        naive_utc_8_days_ago = (datetime.now(UTC).replace(tzinfo=None) - timedelta(days=8))
         stmt = (
-            update(RawMemory).where(RawMemory.id == memory.id).values(updated_at=datetime.now(UTC) - timedelta(days=8))
+            update(RawMemory).where(RawMemory.id == memory.id).values(updated_at=naive_utc_8_days_ago)
         )
-        session.execute(stmt)
-        session.commit()
+        await session.execute(stmt)
+        await session.commit()
 
     # Simulate 7-day threshold cleanup (should delete 8-day-old memory)
-    raw_memory_manager.delete_raw_memory(memory.id, test_actor)
+    await raw_memory_manager.delete_raw_memory(memory.id, test_actor)
 
     # Verify memory is deleted
     from mirix.orm.errors import NoResultFound
 
     with pytest.raises(NoResultFound):
-        raw_memory_manager.get_raw_memory_by_id(memory.id, actor=test_actor)
+        await raw_memory_manager.get_raw_memory_by_id(memory.id, actor=test_actor)
 
 
 # =================================================================
@@ -478,7 +487,7 @@ def test_cleanup_job_respects_custom_threshold(raw_memory_manager, test_actor, t
 # =================================================================
 
 
-def test_raw_memory_create_with_redis(raw_memory_manager, test_actor, test_user, redis_client):
+async def test_raw_memory_create_with_redis(raw_memory_manager, test_actor, test_user, redis_client):
     """Test creating raw memory caches to Redis JSON."""
     memory_data = RawMemoryItemCreate(
         context="Redis test: Task context for caching verification",
@@ -488,7 +497,7 @@ def test_raw_memory_create_with_redis(raw_memory_manager, test_actor, test_user,
     )
 
     # Create memory (should cache by default)
-    created = raw_memory_manager.create_raw_memory(
+    created = await raw_memory_manager.create_raw_memory(
         raw_memory=memory_data,
         actor=test_actor,
         client_id=test_actor.id,
@@ -498,7 +507,7 @@ def test_raw_memory_create_with_redis(raw_memory_manager, test_actor, test_user,
 
     # Verify in Redis JSON
     redis_key = f"{redis_client.RAW_MEMORY_PREFIX}{created.id}"
-    cached_data = redis_client.get_json(redis_key)
+    cached_data = await redis_client.get_json(redis_key)
 
     assert cached_data is not None, "Raw memory should be cached in Redis JSON"
     assert cached_data["id"] == created.id
@@ -507,10 +516,10 @@ def test_raw_memory_create_with_redis(raw_memory_manager, test_actor, test_user,
     assert cached_data["filter_tags"]["test"] == "redis_create"
 
     # Cleanup
-    raw_memory_manager.delete_raw_memory(created.id, test_actor)
+    await raw_memory_manager.delete_raw_memory(created.id, test_actor)
 
 
-def test_raw_memory_cache_hit_performance(raw_memory_manager, test_actor, test_user):
+async def test_raw_memory_cache_hit_performance(raw_memory_manager, test_actor, test_user):
     """Test cache hit performance for raw memory reads."""
     memory_data = RawMemoryItemCreate(
         context="Redis test: Performance testing context",
@@ -520,7 +529,7 @@ def test_raw_memory_cache_hit_performance(raw_memory_manager, test_actor, test_u
     )
 
     # Create and cache
-    created = raw_memory_manager.create_raw_memory(
+    created = await raw_memory_manager.create_raw_memory(
         raw_memory=memory_data,
         actor=test_actor,
         client_id=test_actor.id,
@@ -529,13 +538,13 @@ def test_raw_memory_cache_hit_performance(raw_memory_manager, test_actor, test_u
     )
 
     # Warm up cache with first read
-    raw_memory_manager.get_raw_memory_by_id(created.id, actor=test_actor)
+    await raw_memory_manager.get_raw_memory_by_id(created.id, actor=test_actor)
 
     # Measure 10 cached reads
     times = []
     for _ in range(10):
         start = time.time()
-        result = raw_memory_manager.get_raw_memory_by_id(created.id, actor=test_actor)
+        result = await raw_memory_manager.get_raw_memory_by_id(created.id, actor=test_actor)
         elapsed = time.time() - start
         times.append(elapsed)
         assert result.id == created.id
@@ -548,10 +557,10 @@ def test_raw_memory_cache_hit_performance(raw_memory_manager, test_actor, test_u
     print(f"\n[OK] Average cache hit time: {avg_time*1000:.2f}ms (target: <10ms)")
 
     # Cleanup
-    raw_memory_manager.delete_raw_memory(created.id, test_actor)
+    await raw_memory_manager.delete_raw_memory(created.id, test_actor)
 
 
-def test_raw_memory_update_invalidates_cache(raw_memory_manager, test_actor, test_user, redis_client):
+async def test_raw_memory_update_invalidates_cache(raw_memory_manager, test_actor, test_user, redis_client):
     """Test that updating raw memory invalidates Redis cache."""
     memory_data = RawMemoryItemCreate(
         context="Original context before update",
@@ -561,7 +570,7 @@ def test_raw_memory_update_invalidates_cache(raw_memory_manager, test_actor, tes
     )
 
     # Create and cache
-    created = raw_memory_manager.create_raw_memory(
+    created = await raw_memory_manager.create_raw_memory(
         raw_memory=memory_data,
         actor=test_actor,
         client_id=test_actor.id,
@@ -572,12 +581,12 @@ def test_raw_memory_update_invalidates_cache(raw_memory_manager, test_actor, tes
     redis_key = f"{redis_client.RAW_MEMORY_PREFIX}{created.id}"
 
     # Verify initial cache
-    cached_before = redis_client.get_json(redis_key)
+    cached_before = await redis_client.get_json(redis_key)
     assert cached_before is not None
     assert cached_before["context"] == "Original context before update"
 
     # Update the memory
-    updated = raw_memory_manager.update_raw_memory(
+    updated = await raw_memory_manager.update_raw_memory(
         memory_id=created.id,
         new_context="Updated context after modification",
         new_filter_tags={"scope": test_actor.write_scope, "status": "completed"},
@@ -587,7 +596,7 @@ def test_raw_memory_update_invalidates_cache(raw_memory_manager, test_actor, tes
     )
 
     # Cache should be invalidated (deleted)
-    cached_after_update = redis_client.get_json(redis_key)
+    cached_after_update = await redis_client.get_json(redis_key)
     # Cache might be None (deleted) or repopulated with new data
     # If repopulated, verify it has new data
     if cached_after_update is not None:
@@ -595,20 +604,20 @@ def test_raw_memory_update_invalidates_cache(raw_memory_manager, test_actor, tes
         pass  # Manager doesn't auto-repopulate on update
 
     # Fetch again (should repopulate cache with new data)
-    fetched = raw_memory_manager.get_raw_memory_by_id(created.id, actor=test_actor)
+    fetched = await raw_memory_manager.get_raw_memory_by_id(created.id, actor=test_actor)
     assert fetched.context == "Updated context after modification"
     assert fetched.filter_tags["status"] == "completed"
 
     # Verify cache now has updated data
-    cached_final = redis_client.get_json(redis_key)
+    cached_final = await redis_client.get_json(redis_key)
     assert cached_final is not None
     assert cached_final["context"] == "Updated context after modification"
 
     # Cleanup
-    raw_memory_manager.delete_raw_memory(created.id, test_actor)
+    await raw_memory_manager.delete_raw_memory(created.id, test_actor)
 
 
-def test_raw_memory_delete_removes_cache(raw_memory_manager, test_actor, test_user, redis_client):
+async def test_raw_memory_delete_removes_cache(raw_memory_manager, test_actor, test_user, redis_client):
     """Test that deleting raw memory removes it from Redis cache."""
     memory_data = RawMemoryItemCreate(
         context="Context for deletion test",
@@ -618,7 +627,7 @@ def test_raw_memory_delete_removes_cache(raw_memory_manager, test_actor, test_us
     )
 
     # Create and cache
-    created = raw_memory_manager.create_raw_memory(
+    created = await raw_memory_manager.create_raw_memory(
         raw_memory=memory_data,
         actor=test_actor,
         client_id=test_actor.id,
@@ -629,19 +638,19 @@ def test_raw_memory_delete_removes_cache(raw_memory_manager, test_actor, test_us
     redis_key = f"{redis_client.RAW_MEMORY_PREFIX}{created.id}"
 
     # Verify cached
-    cached_before = redis_client.get_json(redis_key)
+    cached_before = await redis_client.get_json(redis_key)
     assert cached_before is not None
 
     # Delete the memory
-    deleted = raw_memory_manager.delete_raw_memory(created.id, test_actor)
+    deleted = await raw_memory_manager.delete_raw_memory(created.id, test_actor)
     assert deleted is True
 
     # Verify cache is removed
-    cached_after = redis_client.get_json(redis_key)
+    cached_after = await redis_client.get_json(redis_key)
     assert cached_after is None, "Cache should be removed after deletion"
 
 
-def test_raw_memory_works_without_redis(raw_memory_manager, test_actor, test_user):
+async def test_raw_memory_works_without_redis(raw_memory_manager, test_actor, test_user):
     """Test that raw memory operations work when Redis is unavailable."""
     memory_data = RawMemoryItemCreate(
         context="Context without Redis caching",
@@ -651,7 +660,7 @@ def test_raw_memory_works_without_redis(raw_memory_manager, test_actor, test_use
     )
 
     # Create with cache disabled
-    created = raw_memory_manager.create_raw_memory(
+    created = await raw_memory_manager.create_raw_memory(
         raw_memory=memory_data,
         actor=test_actor,
         client_id=test_actor.id,
@@ -663,12 +672,12 @@ def test_raw_memory_works_without_redis(raw_memory_manager, test_actor, test_use
     assert created.context == memory_data.context
 
     # Read (should work via PostgreSQL)
-    fetched = raw_memory_manager.get_raw_memory_by_id(created.id, actor=test_actor)
+    fetched = await raw_memory_manager.get_raw_memory_by_id(created.id, actor=test_actor)
     assert fetched.id == created.id
     assert fetched.context == memory_data.context
 
     # Update (should work without Redis)
-    updated = raw_memory_manager.update_raw_memory(
+    updated = await raw_memory_manager.update_raw_memory(
         memory_id=created.id,
         new_context="Updated without Redis",
         actor=test_actor,
@@ -677,7 +686,7 @@ def test_raw_memory_works_without_redis(raw_memory_manager, test_actor, test_use
     assert updated.context == "Updated without Redis"
 
     # Delete (should work without Redis)
-    deleted = raw_memory_manager.delete_raw_memory(created.id, test_actor)
+    deleted = await raw_memory_manager.delete_raw_memory(created.id, test_actor)
     assert deleted is True
 
 
@@ -711,8 +720,8 @@ def server_check():
     )
 
 
-@pytest.fixture(scope="module")
-def api_client(server_check, test_actor):
+@pytest_asyncio.fixture(scope="module")
+async def api_client(server_check, test_actor):
     """Create an API client for integration tests with test_actor's API key."""
     import requests
 
@@ -726,16 +735,16 @@ def api_client(server_check, test_actor):
     # Generate and set API key for test client
     client_mgr = ClientManager()
     api_key = generate_api_key()
-    client_mgr.set_client_api_key(test_actor.id, api_key)
+    await client_mgr.set_client_api_key(test_actor.id, api_key)
 
     # Ensure admin user exists for this client
     user_mgr = UserManager()
     admin_user_id = ClientAuthManager.get_admin_user_id_for_client(test_actor.id)
     try:
-        user_mgr.get_user_by_id(admin_user_id)
+        await user_mgr.get_user_by_id(admin_user_id)
     except NoResultFound:
         # Create admin user if it doesn't exist
-        user_mgr.create_user(
+        await user_mgr.create_user(
             PydanticUser(
                 id=admin_user_id,
                 name="Admin",
@@ -772,7 +781,7 @@ def api_client(server_check, test_actor):
 
 
 @pytest.mark.integration
-def test_api_create_and_get_raw_memory(api_client, raw_memory_manager, test_actor, test_user):
+async def test_api_create_and_get_raw_memory(api_client, raw_memory_manager, test_actor, test_user):
     """Test creating raw memory via manager and fetching via GET API."""
     # Create a raw memory using the manager (simulating backend operation)
     sample_data = RawMemoryItemCreate(
@@ -786,7 +795,7 @@ def test_api_create_and_get_raw_memory(api_client, raw_memory_manager, test_acto
         organization_id=test_actor.organization_id,
     )
 
-    created = raw_memory_manager.create_raw_memory(
+    created = await raw_memory_manager.create_raw_memory(
         raw_memory=sample_data,
         actor=test_actor,
         client_id=test_actor.id,
@@ -809,12 +818,13 @@ def test_api_create_and_get_raw_memory(api_client, raw_memory_manager, test_acto
 
 
 @pytest.mark.integration
-def test_api_update_raw_memory_replace(api_client, raw_memory_manager, test_actor, test_user, mock_embedding_model):
+async def test_api_update_raw_memory_replace(api_client, raw_memory_manager, test_actor, test_user, mock_embedding_model):
     """Test PATCH /memory/raw/{memory_id} endpoint with replace mode."""
     import os
 
-    if not os.getenv("GOOGLE_API_KEY") and not os.getenv("MIRIX_GOOGLE_API_KEY"):
-        pytest.skip("Skipping API test with embeddings - no Google API key")
+    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or os.getenv("MIRIX_GOOGLE_API_KEY")
+    if not api_key:
+        pytest.skip("Skipping API test with embeddings - no Google/Gemini API key (set GEMINI_API_KEY, GOOGLE_API_KEY, or MIRIX_GOOGLE_API_KEY)")
 
     # Create a raw memory first
     sample_data = RawMemoryItemCreate(
@@ -828,7 +838,7 @@ def test_api_update_raw_memory_replace(api_client, raw_memory_manager, test_acto
         organization_id=test_actor.organization_id,
     )
 
-    created = raw_memory_manager.create_raw_memory(
+    created = await raw_memory_manager.create_raw_memory(
         raw_memory=sample_data,
         actor=test_actor,
         client_id=test_actor.id,
@@ -861,14 +871,15 @@ def test_api_update_raw_memory_replace(api_client, raw_memory_manager, test_acto
 
 
 @pytest.mark.integration
-def test_api_update_raw_memory_append_and_merge(
+async def test_api_update_raw_memory_append_and_merge(
     api_client, raw_memory_manager, test_actor, test_user, mock_embedding_model
 ):
     """Test PATCH /memory/raw/{memory_id} endpoint with append and merge modes."""
     import os
 
-    if not os.getenv("GOOGLE_API_KEY") and not os.getenv("MIRIX_GOOGLE_API_KEY"):
-        pytest.skip("Skipping API test with embeddings - no Google API key")
+    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or os.getenv("MIRIX_GOOGLE_API_KEY")
+    if not api_key:
+        pytest.skip("Skipping API test with embeddings - no Google/Gemini API key (set GEMINI_API_KEY, GOOGLE_API_KEY, or MIRIX_GOOGLE_API_KEY)")
 
     # Create a raw memory first
     sample_data = RawMemoryItemCreate(
@@ -882,7 +893,7 @@ def test_api_update_raw_memory_append_and_merge(
         organization_id=test_actor.organization_id,
     )
 
-    created = raw_memory_manager.create_raw_memory(
+    created = await raw_memory_manager.create_raw_memory(
         raw_memory=sample_data,
         actor=test_actor,
         client_id=test_actor.id,
@@ -918,30 +929,28 @@ def test_api_update_raw_memory_append_and_merge(
 
 
 @pytest.mark.integration
-def test_api_delete_raw_memory(api_client, raw_memory_manager, test_actor, test_user):
-    """Test DELETE /memory/raw/{memory_id} endpoint."""
-    # Create a raw memory first
-    sample_data = RawMemoryItemCreate(
-        context="Context for DELETE test",
-        filter_tags={
+async def test_api_delete_raw_memory(api_client, test_actor, test_user):
+    """Test DELETE /memory/raw/{memory_id} endpoint.
+
+    Create via POST so create/delete/get all go through the same server (same DB and cache).
+    """
+    # Create a raw memory via API so server owns the record and cache
+    create_payload = {
+        "context": "Context for DELETE test",
+        "filter_tags": {
             "scope": test_actor.write_scope,
             "engagement_id": "tsk_delete_test",
         },
-        user_id=test_user.id,
-        organization_id=test_actor.organization_id,
+    }
+    create_resp = api_client.post(
+        "/memory/raw",
+        json=create_payload,
+        params={"user_id": test_user.id},
     )
+    assert create_resp.status_code == 200, f"POST create failed: {create_resp.text}"
+    memory_id = create_resp.json()["memory"]["id"]
 
-    created = raw_memory_manager.create_raw_memory(
-        raw_memory=sample_data,
-        actor=test_actor,
-        client_id=test_actor.id,
-        user_id=test_user.id,
-        use_cache=False,
-    )
-
-    memory_id = created.id
-
-    # Test DELETE endpoint
+    # Delete via API
     response = api_client.delete(f"/memory/raw/{memory_id}")
 
     assert response.status_code == 200, f"DELETE failed: {response.text}"
@@ -949,15 +958,17 @@ def test_api_delete_raw_memory(api_client, raw_memory_manager, test_actor, test_
     assert data["success"] is True
     assert "deleted" in data["message"].lower()
 
-    # Verify deletion by trying to GET
+    # GET after DELETE must return 404 (same server DB and cache)
     get_response = api_client.get(f"/memory/raw/{memory_id}", params={"user_id": test_user.id})
-    assert get_response.status_code == 404  # Should be not found
+    assert get_response.status_code == 404, (
+        f"GET after DELETE should return 404, got {get_response.status_code}: {get_response.text}"
+    )
 
     print(f"\n[OK] DELETE /memory/raw/{memory_id} successful")
 
 
 @pytest.mark.integration
-def test_api_get_nonexistent_memory(api_client, test_user):
+async def test_api_get_nonexistent_memory(api_client, test_user):
     """Test GET /memory/raw/{memory_id} with nonexistent ID returns 404."""
     response = api_client.get("/memory/raw/raw_mem_nonexistent", params={"user_id": test_user.id})
 
@@ -966,7 +977,7 @@ def test_api_get_nonexistent_memory(api_client, test_user):
 
 
 @pytest.mark.integration
-def test_api_create_raw_memory(api_client, test_actor, test_user, test_agent):
+async def test_api_create_raw_memory(api_client, test_actor, test_user, test_agent):
     """Test POST /memory/raw endpoint to create a new raw memory."""
     # Test creating raw memory via API
     create_payload = {
@@ -1000,7 +1011,7 @@ def test_api_create_raw_memory(api_client, test_actor, test_user, test_agent):
 
 
 @pytest.mark.integration
-def test_api_create_raw_memory_missing_user_id(api_client):
+async def test_api_create_raw_memory_missing_user_id(api_client):
     """Test POST /memory/raw returns 422 when user_id is missing."""
     create_payload = {
         "context": "Test missing user_id",
@@ -1014,7 +1025,7 @@ def test_api_create_raw_memory_missing_user_id(api_client):
 
 
 @pytest.mark.integration
-def test_api_create_raw_memory_missing_context(api_client, test_user):
+async def test_api_create_raw_memory_missing_context(api_client, test_user):
     """Test POST /memory/raw returns 422 when context is missing."""
     create_payload = {
         "filter_tags": {"tag": "value"},
@@ -1031,7 +1042,7 @@ def test_api_create_raw_memory_missing_context(api_client, test_user):
 
 
 @pytest.mark.integration
-def test_api_create_raw_memory_auto_creates_user(api_client, test_actor, test_agent):
+async def test_api_create_raw_memory_auto_creates_user(api_client, test_actor, test_agent):
     """Test POST /memory/raw auto-creates user if user_id doesn't exist."""
     import uuid
 
@@ -1066,16 +1077,13 @@ def test_api_create_raw_memory_auto_creates_user(api_client, test_actor, test_ag
 # =================================================================
 
 
-def test_raw_memory_concurrent_append(raw_memory_manager, test_actor, test_user):
+async def test_raw_memory_concurrent_append(raw_memory_manager, test_actor, test_user):
     """
     Test that concurrent appends don't lose updates.
 
-    This test verifies that the SELECT FOR UPDATE locking prevents
-    race conditions when multiple threads/agents append to the same
-    raw memory simultaneously.
+    Uses asyncio concurrency (same event loop) to avoid DB connection
+    issues; verifies SELECT FOR UPDATE locking prevents race conditions.
     """
-    import threading
-
     # Create a raw memory
     sample_data = RawMemoryItemCreate(
         context="Initial context",
@@ -1084,7 +1092,7 @@ def test_raw_memory_concurrent_append(raw_memory_manager, test_actor, test_user)
         organization_id=test_actor.organization_id,
     )
 
-    created = raw_memory_manager.create_raw_memory(
+    created = await raw_memory_manager.create_raw_memory(
         raw_memory=sample_data,
         actor=test_actor,
         client_id=test_actor.id,
@@ -1095,65 +1103,41 @@ def test_raw_memory_concurrent_append(raw_memory_manager, test_actor, test_user)
     memory_id = created.id
     print(f"\n[Concurrency Test] Created memory {memory_id}")
 
-    # Track which updates succeeded
-    results = {"thread_1": False, "thread_2": False, "errors": []}
+    # Run two appends concurrently in the same event loop
+    async def append_context(context_text: str):
+        await raw_memory_manager.update_raw_memory(
+            memory_id=memory_id,
+            new_context=context_text,
+            actor=test_actor,
+            context_update_mode="append",
+        )
 
-    def append_context(thread_name: str, context_text: str):
-        """Helper function to append context in a thread."""
-        try:
-            raw_memory_manager.update_raw_memory(
-                memory_id=memory_id,
-                new_context=context_text,
-                actor=test_actor,
-                context_update_mode="append",
-            )
-            results[thread_name] = True
-            print(f"[{thread_name}] Successfully appended: {context_text}")
-        except Exception as e:
-            results["errors"].append(f"{thread_name}: {e}")
-            print(f"[{thread_name}] ERROR: {e}")
-
-    # Create two threads that will append concurrently
-    thread1 = threading.Thread(target=append_context, args=("thread_1", "Update from thread 1"))
-    thread2 = threading.Thread(target=append_context, args=("thread_2", "Update from thread 2"))
-
-    # Start both threads simultaneously
-    thread1.start()
-    thread2.start()
-
-    # Wait for both to complete
-    thread1.join()
-    thread2.join()
-
-    # Verify both updates succeeded
-    assert results["thread_1"], "Thread 1 update failed"
-    assert results["thread_2"], "Thread 2 update failed"
-    assert len(results["errors"]) == 0, f"Errors occurred: {results['errors']}"
+    await asyncio.gather(
+        append_context("Update from task 1"),
+        append_context("Update from task 2"),
+    )
 
     # Retrieve the final state
-    final_memory = raw_memory_manager.get_raw_memory_by_id(memory_id=memory_id, actor=test_actor)
+    final_memory = await raw_memory_manager.get_raw_memory_by_id(memory_id=memory_id, actor=test_actor)
 
     assert final_memory is not None
     final_context = final_memory.context
 
-    # Verify BOTH updates are present in the final context
+    # Verify initial and both updates are present in the final context
     assert "Initial context" in final_context, "Initial context missing"
-    assert "Update from thread 1" in final_context, "Thread 1 update lost!"
-    assert "Update from thread 2" in final_context, "Thread 2 update lost!"
+    assert "Update from task 1" in final_context, "Task 1 update lost!"
+    assert "Update from task 2" in final_context, "Task 2 update lost!"
 
     print(f"\n[OK] Concurrent appends preserved both updates")
     print(f"Final context length: {len(final_context)} chars")
-    print(f"Final context:\n{final_context}")
 
 
-def test_raw_memory_concurrent_tag_merge(raw_memory_manager, test_actor, test_user):
+async def test_raw_memory_concurrent_tag_merge(raw_memory_manager, test_actor, test_user):
     """
     Test that concurrent filter_tags merges don't lose updates.
 
-    Similar to append test but for tag merging operations.
+    Uses asyncio concurrency (same event loop) to avoid DB connection issues.
     """
-    import threading
-
     # Create a raw memory with initial tags
     sample_data = RawMemoryItemCreate(
         context="Context for tag merge test",
@@ -1162,7 +1146,7 @@ def test_raw_memory_concurrent_tag_merge(raw_memory_manager, test_actor, test_us
         organization_id=test_actor.organization_id,
     )
 
-    created = raw_memory_manager.create_raw_memory(
+    created = await raw_memory_manager.create_raw_memory(
         raw_memory=sample_data,
         actor=test_actor,
         client_id=test_actor.id,
@@ -1173,43 +1157,21 @@ def test_raw_memory_concurrent_tag_merge(raw_memory_manager, test_actor, test_us
     memory_id = created.id
     print(f"\n[Tag Merge Test] Created memory {memory_id}")
 
-    # Track results
-    results = {"thread_1": False, "thread_2": False, "errors": []}
+    async def merge_tags(new_tags: dict):
+        await raw_memory_manager.update_raw_memory(
+            memory_id=memory_id,
+            new_filter_tags=new_tags,
+            actor=test_actor,
+            tags_merge_mode="merge",
+        )
 
-    def merge_tags(thread_name: str, new_tags: dict):
-        """Helper function to merge tags in a thread."""
-        try:
-            raw_memory_manager.update_raw_memory(
-                memory_id=memory_id,
-                new_filter_tags=new_tags,
-                actor=test_actor,
-                tags_merge_mode="merge",
-            )
-            results[thread_name] = True
-            print(f"[{thread_name}] Successfully merged tags: {new_tags}")
-        except Exception as e:
-            results["errors"].append(f"{thread_name}: {e}")
-            print(f"[{thread_name}] ERROR: {e}")
-
-    # Create two threads that will merge tags concurrently
-    thread1 = threading.Thread(target=merge_tags, args=("thread_1", {"tag1": "from_thread_1"}))
-    thread2 = threading.Thread(target=merge_tags, args=("thread_2", {"tag2": "from_thread_2"}))
-
-    # Start both threads simultaneously
-    thread1.start()
-    thread2.start()
-
-    # Wait for both to complete
-    thread1.join()
-    thread2.join()
-
-    # Verify both updates succeeded
-    assert results["thread_1"], "Thread 1 update failed"
-    assert results["thread_2"], "Thread 2 update failed"
-    assert len(results["errors"]) == 0, f"Errors occurred: {results['errors']}"
+    await asyncio.gather(
+        merge_tags({"tag1": "from_task_1"}),
+        merge_tags({"tag2": "from_task_2"}),
+    )
 
     # Retrieve the final state
-    final_memory = raw_memory_manager.get_raw_memory_by_id(memory_id=memory_id, actor=test_actor)
+    final_memory = await raw_memory_manager.get_raw_memory_by_id(memory_id=memory_id, actor=test_actor)
 
     assert final_memory is not None
     final_tags = final_memory.filter_tags
@@ -1218,10 +1180,10 @@ def test_raw_memory_concurrent_tag_merge(raw_memory_manager, test_actor, test_us
     assert final_tags is not None
     assert "scope" in final_tags, "Original scope tag missing"
     assert "initial_tag" in final_tags, "Initial tag missing"
-    assert "tag1" in final_tags, "Thread 1 tag lost!"
-    assert "tag2" in final_tags, "Thread 2 tag lost!"
-    assert final_tags["tag1"] == "from_thread_1"
-    assert final_tags["tag2"] == "from_thread_2"
+    assert "tag1" in final_tags, "Task 1 tag lost!"
+    assert "tag2" in final_tags, "Task 2 tag lost!"
+    assert final_tags["tag1"] == "from_task_1"
+    assert final_tags["tag2"] == "from_task_2"
 
     print(f"\n[OK] Concurrent tag merges preserved both updates")
     print(f"Final tags: {final_tags}")
@@ -1232,8 +1194,8 @@ def test_raw_memory_concurrent_tag_merge(raw_memory_manager, test_actor, test_us
 # =================================================================
 
 
-@pytest.fixture(scope="module")
-def test_agent(test_actor):
+@pytest_asyncio.fixture(scope="module")
+async def test_agent(test_actor):
     """Provide a test agent with Gemini embedding configuration."""
     from pathlib import Path
 
@@ -1247,14 +1209,14 @@ def test_agent(test_actor):
 
     # Ensure admin user exists (required for agent creation messages)
     user_mgr = UserManager()
-    user_mgr.get_admin_user()  # Creates admin user if it doesn't exist
+    await user_mgr.get_admin_user()  # Creates admin user if it doesn't exist
 
     agent_mgr = AgentManager()
 
     # Create an agent with Gemini embedding config (from examples/mirix_gemini.yaml)
     agent_id = "test-agent-raw-mem-gemini"
     try:
-        return agent_mgr.get_agent_by_id(agent_id, actor=test_actor)
+        return await agent_mgr.get_agent_by_id(agent_id, actor=test_actor)
     except Exception:
         # Load config from mirix_gemini.yaml (same pattern as test_memory_server.py)
         config_path = Path("mirix/configs/examples/mirix_gemini.yaml")
@@ -1262,7 +1224,7 @@ def test_agent(test_actor):
             config = yaml.safe_load(f)
 
         # Create agent with both llm_config and embedding_config using Gemini
-        agent = agent_mgr.create_agent(
+        agent = await agent_mgr.create_agent(
             CreateAgent(
                 name="Test Agent for Raw Memory Gemini",
                 description="Test agent with Gemini embeddings",
@@ -1281,14 +1243,14 @@ def mock_embedding_model(monkeypatch):
 
     import numpy as np
 
-    def mock_get_text_embedding(text):
+    async def mock_get_text_embedding(text):
         # Return a fake embedding vector matching Gemini's dimension (768)
         return np.random.rand(768).tolist()
 
     mock_embed_model = Mock()
     mock_embed_model.get_text_embedding = mock_get_text_embedding
 
-    def mock_embedding_model_factory(config):
+    async def mock_embedding_model_factory(config):
         return mock_embed_model
 
     # Patch the embeddings module directly (where it's imported from)
@@ -1297,7 +1259,7 @@ def mock_embedding_model(monkeypatch):
     return mock_embed_model
 
 
-def test_create_raw_memory_with_embeddings(
+async def test_create_raw_memory_with_embeddings(
     raw_memory_manager, sample_raw_memory_data, test_actor, test_user, test_agent, mock_embedding_model
 ):
     """Test creating raw memory with embeddings when agent_state is provided."""
@@ -1306,7 +1268,7 @@ def test_create_raw_memory_with_embeddings(
     if not BUILD_EMBEDDINGS_FOR_MEMORY:
         pytest.skip("BUILD_EMBEDDINGS_FOR_MEMORY is disabled")
 
-    result = raw_memory_manager.create_raw_memory(
+    result = await raw_memory_manager.create_raw_memory(
         raw_memory=sample_raw_memory_data,
         actor=test_actor,
         agent_state=test_agent,
@@ -1323,12 +1285,12 @@ def test_create_raw_memory_with_embeddings(
     assert result.embedding_config.embedding_model == "gemini-embedding-001"  # Gemini embedding model
 
     # Cleanup
-    raw_memory_manager.delete_raw_memory(result.id, test_actor)
+    await raw_memory_manager.delete_raw_memory(result.id, test_actor)
 
 
-def test_create_raw_memory_without_agent_state(raw_memory_manager, sample_raw_memory_data, test_actor, test_user):
+async def test_create_raw_memory_without_agent_state(raw_memory_manager, sample_raw_memory_data, test_actor, test_user):
     """Test creating raw memory without embeddings when agent_state is not provided."""
-    result = raw_memory_manager.create_raw_memory(
+    result = await raw_memory_manager.create_raw_memory(
         raw_memory=sample_raw_memory_data,
         actor=test_actor,
         agent_state=None,  # No agent state
@@ -1342,10 +1304,10 @@ def test_create_raw_memory_without_agent_state(raw_memory_manager, sample_raw_me
     assert result.embedding_config is None
 
     # Cleanup
-    raw_memory_manager.delete_raw_memory(result.id, test_actor)
+    await raw_memory_manager.delete_raw_memory(result.id, test_actor)
 
 
-def test_update_raw_memory_regenerates_embeddings(
+async def test_update_raw_memory_regenerates_embeddings(
     raw_memory_manager, sample_raw_memory_data, test_actor, test_user, test_agent, mock_embedding_model
 ):
     """Test updating raw memory regenerates embeddings when context changes."""
@@ -1355,7 +1317,7 @@ def test_update_raw_memory_regenerates_embeddings(
         pytest.skip("BUILD_EMBEDDINGS_FOR_MEMORY is disabled")
 
     # Create with embeddings
-    created = raw_memory_manager.create_raw_memory(
+    created = await raw_memory_manager.create_raw_memory(
         raw_memory=sample_raw_memory_data,
         actor=test_actor,
         agent_state=test_agent,
@@ -1367,7 +1329,7 @@ def test_update_raw_memory_regenerates_embeddings(
     original_embedding = created.context_embedding
 
     # Update context (should regenerate embedding)
-    updated = raw_memory_manager.update_raw_memory(
+    updated = await raw_memory_manager.update_raw_memory(
         memory_id=created.id,
         new_context="Completely new context that should have different embedding",
         actor=test_actor,
@@ -1380,10 +1342,10 @@ def test_update_raw_memory_regenerates_embeddings(
     assert updated.embedding_config is not None
 
     # Cleanup
-    raw_memory_manager.delete_raw_memory(created.id, test_actor)
+    await raw_memory_manager.delete_raw_memory(created.id, test_actor)
 
 
-def test_update_raw_memory_without_agent_state_preserves_embeddings(
+async def test_update_raw_memory_without_agent_state_preserves_embeddings(
     raw_memory_manager, sample_raw_memory_data, test_actor, test_user, test_agent, mock_embedding_model
 ):
     """Test updating raw memory without agent_state doesn't regenerate embeddings."""
@@ -1393,7 +1355,7 @@ def test_update_raw_memory_without_agent_state_preserves_embeddings(
         pytest.skip("BUILD_EMBEDDINGS_FOR_MEMORY is disabled")
 
     # Create with embeddings
-    created = raw_memory_manager.create_raw_memory(
+    created = await raw_memory_manager.create_raw_memory(
         raw_memory=sample_raw_memory_data,
         actor=test_actor,
         agent_state=test_agent,
@@ -1405,7 +1367,7 @@ def test_update_raw_memory_without_agent_state_preserves_embeddings(
     original_embedding = created.context_embedding
 
     # Update context WITHOUT agent_state (should NOT regenerate embedding)
-    updated = raw_memory_manager.update_raw_memory(
+    updated = await raw_memory_manager.update_raw_memory(
         memory_id=created.id,
         new_context="New context but no agent_state",
         actor=test_actor,
@@ -1418,10 +1380,10 @@ def test_update_raw_memory_without_agent_state_preserves_embeddings(
     # Note: The embedding won't be updated since we didn't provide agent_state
 
     # Cleanup
-    raw_memory_manager.delete_raw_memory(created.id, test_actor)
+    await raw_memory_manager.delete_raw_memory(created.id, test_actor)
 
 
-def test_embedding_padding_validation(
+async def test_embedding_padding_validation(
     raw_memory_manager, sample_raw_memory_data, test_actor, test_user, test_agent, mock_embedding_model
 ):
     """Test that embeddings are padded to MAX_EMBEDDING_DIM."""
@@ -1430,7 +1392,7 @@ def test_embedding_padding_validation(
     if not BUILD_EMBEDDINGS_FOR_MEMORY:
         pytest.skip("BUILD_EMBEDDINGS_FOR_MEMORY is disabled")
 
-    result = raw_memory_manager.create_raw_memory(
+    result = await raw_memory_manager.create_raw_memory(
         raw_memory=sample_raw_memory_data,
         actor=test_actor,
         agent_state=test_agent,
@@ -1443,10 +1405,10 @@ def test_embedding_padding_validation(
     assert len(result.context_embedding) == MAX_EMBEDDING_DIM
 
     # Cleanup
-    raw_memory_manager.delete_raw_memory(result.id, test_actor)
+    await raw_memory_manager.delete_raw_memory(result.id, test_actor)
 
 
-def test_raw_memory_embeddings_cache_to_redis(
+async def test_raw_memory_embeddings_cache_to_redis(
     raw_memory_manager, sample_raw_memory_data, test_actor, test_user, test_agent, redis_client, mock_embedding_model
 ):
     """Test that raw memory embeddings are properly cached in Redis."""
@@ -1456,7 +1418,7 @@ def test_raw_memory_embeddings_cache_to_redis(
         pytest.skip("BUILD_EMBEDDINGS_FOR_MEMORY is disabled")
 
     # Create with embeddings and caching enabled
-    created = raw_memory_manager.create_raw_memory(
+    created = await raw_memory_manager.create_raw_memory(
         raw_memory=sample_raw_memory_data,
         actor=test_actor,
         agent_state=test_agent,
@@ -1467,7 +1429,7 @@ def test_raw_memory_embeddings_cache_to_redis(
 
     # Verify in Redis JSON
     redis_key = f"{redis_client.RAW_MEMORY_PREFIX}{created.id}"
-    cached_data = redis_client.get_json(redis_key)
+    cached_data = await redis_client.get_json(redis_key)
 
     assert cached_data is not None
     assert cached_data["id"] == created.id
@@ -1478,7 +1440,7 @@ def test_raw_memory_embeddings_cache_to_redis(
     assert cached_data["embedding_config"] is not None
 
     # Cleanup
-    raw_memory_manager.delete_raw_memory(created.id, test_actor)
+    await raw_memory_manager.delete_raw_memory(created.id, test_actor)
 
 
 # =================================================================
@@ -1486,13 +1448,14 @@ def test_raw_memory_embeddings_cache_to_redis(
 # =================================================================
 
 
-def test_search_raw_memories_filter_tags_multiple_keys(raw_memory_manager, test_actor, test_user):
+async def test_search_raw_memories_filter_tags_multiple_keys(raw_memory_manager, test_actor, test_user):
     """Test filter_tags with multiple keys (AND filtering)."""
-    # Create memories with different filter_tags
-    mem1 = raw_memory_manager.create_raw_memory(
+    run_id = str(uuid.uuid4())
+    # Create memories with different filter_tags (run_id isolates from other test runs)
+    mem1 = await raw_memory_manager.create_raw_memory(
         raw_memory=RawMemoryItemCreate(
             context="Memory 1",
-            filter_tags={"scope": test_actor.write_scope, "priority": "high", "source": "iep"},
+            filter_tags={"scope": test_actor.write_scope, "priority": "high", "source": "iep", "run_id": run_id},
             user_id=test_user.id,
             organization_id=test_actor.organization_id,
             occurred_at=None,
@@ -1506,10 +1469,10 @@ def test_search_raw_memories_filter_tags_multiple_keys(raw_memory_manager, test_
         use_cache=False,
     )
 
-    mem2 = raw_memory_manager.create_raw_memory(
+    mem2 = await raw_memory_manager.create_raw_memory(
         raw_memory=RawMemoryItemCreate(
             context="Memory 2",
-            filter_tags={"scope": test_actor.write_scope, "priority": "high", "source": "manual"},
+            filter_tags={"scope": test_actor.write_scope, "priority": "high", "source": "manual", "run_id": run_id},
             user_id=test_user.id,
             organization_id=test_actor.organization_id,
             occurred_at=None,
@@ -1523,10 +1486,10 @@ def test_search_raw_memories_filter_tags_multiple_keys(raw_memory_manager, test_
         use_cache=False,
     )
 
-    mem3 = raw_memory_manager.create_raw_memory(
+    mem3 = await raw_memory_manager.create_raw_memory(
         raw_memory=RawMemoryItemCreate(
             context="Memory 3",
-            filter_tags={"scope": test_actor.write_scope, "priority": "low", "source": "iep"},
+            filter_tags={"scope": test_actor.write_scope, "priority": "low", "source": "iep", "run_id": run_id},
             user_id=test_user.id,
             organization_id=test_actor.organization_id,
             occurred_at=None,
@@ -1540,11 +1503,11 @@ def test_search_raw_memories_filter_tags_multiple_keys(raw_memory_manager, test_
         use_cache=False,
     )
 
-    # Search with multiple filter_tags (AND filtering)
-    results, cursor = raw_memory_manager.search_raw_memories(
+    # Search with multiple filter_tags (AND filtering); run_id isolates to this test's data
+    results, cursor = await raw_memory_manager.search_raw_memories(
         organization_id=test_user.organization_id,
         user_id=test_user.id,
-        filter_tags={"priority": "high", "source": "iep"},
+        filter_tags={"priority": "high", "source": "iep", "run_id": run_id},
         limit=10,
     )
 
@@ -1553,19 +1516,19 @@ def test_search_raw_memories_filter_tags_multiple_keys(raw_memory_manager, test_
     assert results[0].id == mem1.id
 
     # Cleanup
-    raw_memory_manager.delete_raw_memory(mem1.id, test_actor)
-    raw_memory_manager.delete_raw_memory(mem2.id, test_actor)
-    raw_memory_manager.delete_raw_memory(mem3.id, test_actor)
+    await raw_memory_manager.delete_raw_memory(mem1.id, test_actor)
+    await raw_memory_manager.delete_raw_memory(mem2.id, test_actor)
+    await raw_memory_manager.delete_raw_memory(mem3.id, test_actor)
 
 
-def test_search_raw_memories_sorting_all_fields(raw_memory_manager, test_actor, test_user):
+async def test_search_raw_memories_sorting_all_fields(raw_memory_manager, test_actor, test_user):
     """Test sorting in both directions for all three fields."""
     from datetime import timedelta
 
     base_time = datetime.now(UTC)
 
     # Create memories with different timestamps
-    mem1 = raw_memory_manager.create_raw_memory(
+    mem1 = await raw_memory_manager.create_raw_memory(
         raw_memory=RawMemoryItemCreate(
             context="Memory 1",
             filter_tags={"scope": test_actor.write_scope},
@@ -1582,7 +1545,7 @@ def test_search_raw_memories_sorting_all_fields(raw_memory_manager, test_actor, 
         use_cache=False,
     )
 
-    mem2 = raw_memory_manager.create_raw_memory(
+    mem2 = await raw_memory_manager.create_raw_memory(
         raw_memory=RawMemoryItemCreate(
             context="Memory 2",
             filter_tags={"scope": test_actor.write_scope},
@@ -1600,7 +1563,7 @@ def test_search_raw_memories_sorting_all_fields(raw_memory_manager, test_actor, 
     )
 
     # Test ascending sort by updated_at
-    results, _ = raw_memory_manager.search_raw_memories(
+    results, _ = await raw_memory_manager.search_raw_memories(
         organization_id=test_user.organization_id,
         user_id=test_user.id,
         filter_tags={"scope": test_actor.write_scope},
@@ -1612,7 +1575,7 @@ def test_search_raw_memories_sorting_all_fields(raw_memory_manager, test_actor, 
     assert results[0].updated_at <= results[1].updated_at
 
     # Test descending sort by updated_at
-    results, _ = raw_memory_manager.search_raw_memories(
+    results, _ = await raw_memory_manager.search_raw_memories(
         organization_id=test_user.organization_id,
         user_id=test_user.id,
         filter_tags={"scope": test_actor.write_scope},
@@ -1624,7 +1587,7 @@ def test_search_raw_memories_sorting_all_fields(raw_memory_manager, test_actor, 
     assert results[0].updated_at >= results[1].updated_at
 
     # Test sorting by created_at
-    results, _ = raw_memory_manager.search_raw_memories(
+    results, _ = await raw_memory_manager.search_raw_memories(
         organization_id=test_user.organization_id,
         user_id=test_user.id,
         filter_tags={"scope": test_actor.write_scope},
@@ -1635,7 +1598,7 @@ def test_search_raw_memories_sorting_all_fields(raw_memory_manager, test_actor, 
     assert results[0].created_at >= results[1].created_at
 
     # Test sorting by occurred_at
-    results, _ = raw_memory_manager.search_raw_memories(
+    results, _ = await raw_memory_manager.search_raw_memories(
         organization_id=test_user.organization_id,
         user_id=test_user.id,
         filter_tags={"scope": test_actor.write_scope},
@@ -1646,11 +1609,11 @@ def test_search_raw_memories_sorting_all_fields(raw_memory_manager, test_actor, 
     assert results[0].occurred_at >= results[1].occurred_at
 
     # Cleanup
-    raw_memory_manager.delete_raw_memory(mem1.id, test_actor)
-    raw_memory_manager.delete_raw_memory(mem2.id, test_actor)
+    await raw_memory_manager.delete_raw_memory(mem1.id, test_actor)
+    await raw_memory_manager.delete_raw_memory(mem2.id, test_actor)
 
 
-def test_search_raw_memories_cursor_pagination(raw_memory_manager, test_actor, test_user):
+async def test_search_raw_memories_cursor_pagination(raw_memory_manager, test_actor, test_user):
     """Test cursor pagination across multiple pages."""
     import uuid
 
@@ -1660,7 +1623,7 @@ def test_search_raw_memories_cursor_pagination(raw_memory_manager, test_actor, t
     # Create multiple memories
     memories = []
     for i in range(5):
-        mem = raw_memory_manager.create_raw_memory(
+        mem = await raw_memory_manager.create_raw_memory(
             raw_memory=RawMemoryItemCreate(
                 context=f"Memory {i}",
                 filter_tags={"scope": test_actor.write_scope, "test_tag": test_tag},
@@ -1683,7 +1646,7 @@ def test_search_raw_memories_cursor_pagination(raw_memory_manager, test_actor, t
         time.sleep(0.01)
 
     # First page (limit=2) - filter by unique test_tag to isolate
-    results1, cursor1 = raw_memory_manager.search_raw_memories(
+    results1, cursor1 = await raw_memory_manager.search_raw_memories(
         organization_id=test_user.organization_id,
         user_id=test_user.id,
         filter_tags={"scope": test_actor.write_scope, "test_tag": test_tag},
@@ -1694,7 +1657,7 @@ def test_search_raw_memories_cursor_pagination(raw_memory_manager, test_actor, t
     assert cursor1 is not None  # Should have next cursor
 
     # Second page using cursor
-    results2, cursor2 = raw_memory_manager.search_raw_memories(
+    results2, cursor2 = await raw_memory_manager.search_raw_memories(
         organization_id=test_user.organization_id,
         user_id=test_user.id,
         filter_tags={"scope": test_actor.write_scope, "test_tag": test_tag},
@@ -1707,7 +1670,7 @@ def test_search_raw_memories_cursor_pagination(raw_memory_manager, test_actor, t
     assert results1[1].id != results2[0].id  # No duplicates
 
     # Third page
-    results3, cursor3 = raw_memory_manager.search_raw_memories(
+    results3, cursor3 = await raw_memory_manager.search_raw_memories(
         organization_id=test_user.organization_id,
         user_id=test_user.id,
         filter_tags={"scope": test_actor.write_scope, "test_tag": test_tag},
@@ -1720,17 +1683,17 @@ def test_search_raw_memories_cursor_pagination(raw_memory_manager, test_actor, t
 
     # Cleanup
     for mem in memories:
-        raw_memory_manager.delete_raw_memory(mem.id, test_actor)
+        await raw_memory_manager.delete_raw_memory(mem.id, test_actor)
 
 
-def test_search_raw_memories_cursor_different_sort_fields(raw_memory_manager, test_actor, test_user):
+async def test_search_raw_memories_cursor_different_sort_fields(raw_memory_manager, test_actor, test_user):
     """Test cursor with different sort fields."""
     from datetime import timedelta
 
     base_time = datetime.now(UTC)
 
     # Create memories with different occurred_at times
-    mem1 = raw_memory_manager.create_raw_memory(
+    mem1 = await raw_memory_manager.create_raw_memory(
         raw_memory=RawMemoryItemCreate(
             context="Memory 1",
             filter_tags={"scope": test_actor.write_scope},
@@ -1747,7 +1710,7 @@ def test_search_raw_memories_cursor_different_sort_fields(raw_memory_manager, te
         use_cache=False,
     )
 
-    mem2 = raw_memory_manager.create_raw_memory(
+    mem2 = await raw_memory_manager.create_raw_memory(
         raw_memory=RawMemoryItemCreate(
             context="Memory 2",
             filter_tags={"scope": test_actor.write_scope},
@@ -1765,7 +1728,7 @@ def test_search_raw_memories_cursor_different_sort_fields(raw_memory_manager, te
     )
 
     # Get cursor with occurred_at sort
-    results1, cursor1 = raw_memory_manager.search_raw_memories(
+    results1, cursor1 = await raw_memory_manager.search_raw_memories(
         organization_id=test_user.organization_id,
         user_id=test_user.id,
         filter_tags={"scope": test_actor.write_scope},
@@ -1775,7 +1738,7 @@ def test_search_raw_memories_cursor_different_sort_fields(raw_memory_manager, te
     assert cursor1 is not None
 
     # Use cursor with same sort field
-    results2, _ = raw_memory_manager.search_raw_memories(
+    results2, _ = await raw_memory_manager.search_raw_memories(
         organization_id=test_user.organization_id,
         user_id=test_user.id,
         filter_tags={"scope": test_actor.write_scope},
@@ -1787,18 +1750,18 @@ def test_search_raw_memories_cursor_different_sort_fields(raw_memory_manager, te
     assert results2[0].id != results1[0].id
 
     # Cleanup
-    raw_memory_manager.delete_raw_memory(mem1.id, test_actor)
-    raw_memory_manager.delete_raw_memory(mem2.id, test_actor)
+    await raw_memory_manager.delete_raw_memory(mem1.id, test_actor)
+    await raw_memory_manager.delete_raw_memory(mem2.id, test_actor)
 
 
-def test_search_raw_memories_time_range_filtering(raw_memory_manager, test_actor, test_user):
+async def test_search_raw_memories_time_range_filtering(raw_memory_manager, test_actor, test_user):
     """Test time range filtering with various combinations."""
     from datetime import timedelta
 
     base_time = datetime.now(UTC)
 
     # Create memories at different times
-    mem1 = raw_memory_manager.create_raw_memory(
+    mem1 = await raw_memory_manager.create_raw_memory(
         raw_memory=RawMemoryItemCreate(
             context="Memory 1",
             filter_tags={"scope": test_actor.write_scope},
@@ -1815,7 +1778,7 @@ def test_search_raw_memories_time_range_filtering(raw_memory_manager, test_actor
         use_cache=False,
     )
 
-    mem2 = raw_memory_manager.create_raw_memory(
+    mem2 = await raw_memory_manager.create_raw_memory(
         raw_memory=RawMemoryItemCreate(
             context="Memory 2",
             filter_tags={"scope": test_actor.write_scope},
@@ -1832,7 +1795,7 @@ def test_search_raw_memories_time_range_filtering(raw_memory_manager, test_actor
         use_cache=False,
     )
 
-    mem3 = raw_memory_manager.create_raw_memory(
+    mem3 = await raw_memory_manager.create_raw_memory(
         raw_memory=RawMemoryItemCreate(
             context="Memory 3",
             filter_tags={"scope": test_actor.write_scope},
@@ -1854,7 +1817,7 @@ def test_search_raw_memories_time_range_filtering(raw_memory_manager, test_actor
         "occurred_at_gte": (base_time - timedelta(days=3)).replace(tzinfo=None),
         "occurred_at_lte": (base_time - timedelta(days=0)).replace(tzinfo=None),
     }
-    results, _ = raw_memory_manager.search_raw_memories(
+    results, _ = await raw_memory_manager.search_raw_memories(
         organization_id=test_user.organization_id,
         user_id=test_user.id,
         filter_tags={"scope": test_actor.write_scope},
@@ -1871,7 +1834,7 @@ def test_search_raw_memories_time_range_filtering(raw_memory_manager, test_actor
     time_range = {
         "updated_at_gte": (base_time - timedelta(days=3)).replace(tzinfo=None),
     }
-    results, _ = raw_memory_manager.search_raw_memories(
+    results, _ = await raw_memory_manager.search_raw_memories(
         organization_id=test_user.organization_id,
         user_id=test_user.id,
         filter_tags={"scope": test_actor.write_scope},
@@ -1881,17 +1844,17 @@ def test_search_raw_memories_time_range_filtering(raw_memory_manager, test_actor
     assert len(results) >= 2
 
     # Cleanup
-    raw_memory_manager.delete_raw_memory(mem1.id, test_actor)
-    raw_memory_manager.delete_raw_memory(mem2.id, test_actor)
-    raw_memory_manager.delete_raw_memory(mem3.id, test_actor)
+    await raw_memory_manager.delete_raw_memory(mem1.id, test_actor)
+    await raw_memory_manager.delete_raw_memory(mem2.id, test_actor)
+    await raw_memory_manager.delete_raw_memory(mem3.id, test_actor)
 
 
-def test_search_raw_memories_limit_enforcement(raw_memory_manager, test_actor, test_user):
+async def test_search_raw_memories_limit_enforcement(raw_memory_manager, test_actor, test_user):
     """Test limit enforcement (max 100)."""
     # Create many memories
     memories = []
     for i in range(5):
-        mem = raw_memory_manager.create_raw_memory(
+        mem = await raw_memory_manager.create_raw_memory(
             raw_memory=RawMemoryItemCreate(
                 context=f"Memory {i}",
                 filter_tags={"scope": test_actor.write_scope},
@@ -1907,10 +1870,10 @@ def test_search_raw_memories_limit_enforcement(raw_memory_manager, test_actor, t
             user_id=test_user.id,
             use_cache=False,
         )
-        memories.append(mem)
+        memories.append(mem    )
 
     # Test limit=2
-    results, _ = raw_memory_manager.search_raw_memories(
+    results, _ = await raw_memory_manager.search_raw_memories(
         organization_id=test_user.organization_id,
         user_id=test_user.id,
         filter_tags={"scope": test_actor.write_scope},
@@ -1919,7 +1882,7 @@ def test_search_raw_memories_limit_enforcement(raw_memory_manager, test_actor, t
     assert len(results) == 2
 
     # Test limit > 100 (should be capped at 100)
-    results, _ = raw_memory_manager.search_raw_memories(
+    results, _ = await raw_memory_manager.search_raw_memories(
         organization_id=test_user.organization_id,
         user_id=test_user.id,
         filter_tags={"scope": test_actor.write_scope},
@@ -1929,13 +1892,13 @@ def test_search_raw_memories_limit_enforcement(raw_memory_manager, test_actor, t
 
     # Cleanup
     for mem in memories:
-        raw_memory_manager.delete_raw_memory(mem.id, test_actor)
+        await raw_memory_manager.delete_raw_memory(mem.id, test_actor)
 
 
-def test_search_raw_memories_scope_handling(raw_memory_manager, test_actor, test_user):
+async def test_search_raw_memories_scope_handling(raw_memory_manager, test_actor, test_user):
     """Test scope handling (ignore provided scope, always use client scope)."""
     # Create memory with client scope
-    mem = raw_memory_manager.create_raw_memory(
+    mem = await raw_memory_manager.create_raw_memory(
         raw_memory=RawMemoryItemCreate(
             context="Memory with scope",
             filter_tags={"scope": test_actor.write_scope, "priority": "high"},
@@ -1953,7 +1916,7 @@ def test_search_raw_memories_scope_handling(raw_memory_manager, test_actor, test
     )
 
     # Search with scope in filter_tags - should find it
-    results, _ = raw_memory_manager.search_raw_memories(
+    results, _ = await raw_memory_manager.search_raw_memories(
         organization_id=test_user.organization_id,
         user_id=test_user.id,
         filter_tags={"scope": test_actor.write_scope, "priority": "high"},
@@ -1963,14 +1926,14 @@ def test_search_raw_memories_scope_handling(raw_memory_manager, test_actor, test
     assert any(r.id == mem.id for r in results)
 
     # Cleanup
-    raw_memory_manager.delete_raw_memory(mem.id, test_actor)
+    await raw_memory_manager.delete_raw_memory(mem.id, test_actor)
 
 
-def test_search_raw_memories_invalid_cursor(raw_memory_manager, test_actor, test_user):
+async def test_search_raw_memories_invalid_cursor(raw_memory_manager, test_actor, test_user):
     """Test invalid cursor format (should handle gracefully)."""
     # Test invalid base64
     with pytest.raises(ValueError, match="Invalid cursor format"):
-        raw_memory_manager.search_raw_memories(
+        await raw_memory_manager.search_raw_memories(
             organization_id=test_user.organization_id,
             user_id=test_user.id,
             filter_tags={"scope": test_actor.write_scope},
@@ -1983,7 +1946,7 @@ def test_search_raw_memories_invalid_cursor(raw_memory_manager, test_actor, test
 
     invalid_json = base64.b64encode(b"not json").decode()
     with pytest.raises(ValueError, match="Invalid cursor format"):
-        raw_memory_manager.search_raw_memories(
+        await raw_memory_manager.search_raw_memories(
             organization_id=test_user.organization_id,
             user_id=test_user.id,
             filter_tags={"scope": test_actor.write_scope},
@@ -1996,7 +1959,7 @@ def test_search_raw_memories_invalid_cursor(raw_memory_manager, test_actor, test
 
     incomplete_cursor = base64.b64encode(json.dumps({"id": "test"}).encode()).decode()
     with pytest.raises(ValueError, match="Invalid cursor format"):
-        raw_memory_manager.search_raw_memories(
+        await raw_memory_manager.search_raw_memories(
             organization_id=test_user.organization_id,
             user_id=test_user.id,
             filter_tags={"scope": test_actor.write_scope},
@@ -2007,10 +1970,10 @@ def test_search_raw_memories_invalid_cursor(raw_memory_manager, test_actor, test
 
 
 @pytest.mark.integration
-def test_api_search_raw_memories_endpoint(api_client, raw_memory_manager, test_actor, test_user):
+async def test_api_search_raw_memories_endpoint(api_client, raw_memory_manager, test_actor, test_user):
     """Test the POST /memory/search_raw endpoint."""
     # Create test memories
-    mem1 = raw_memory_manager.create_raw_memory(
+    mem1 = await raw_memory_manager.create_raw_memory(
         raw_memory=RawMemoryItemCreate(
             context="API test memory 1",
             filter_tags={"scope": test_actor.write_scope, "priority": "high"},
@@ -2027,7 +1990,7 @@ def test_api_search_raw_memories_endpoint(api_client, raw_memory_manager, test_a
         use_cache=False,
     )
 
-    mem2 = raw_memory_manager.create_raw_memory(
+    mem2 = await raw_memory_manager.create_raw_memory(
         raw_memory=RawMemoryItemCreate(
             context="API test memory 2",
             filter_tags={"scope": test_actor.write_scope, "priority": "low"},
@@ -2100,15 +2063,15 @@ def test_api_search_raw_memories_endpoint(api_client, raw_memory_manager, test_a
     assert response.status_code == 422
 
     # Cleanup
-    raw_memory_manager.delete_raw_memory(mem1.id, test_actor)
-    raw_memory_manager.delete_raw_memory(mem2.id, test_actor)
+    await raw_memory_manager.delete_raw_memory(mem1.id, test_actor)
+    await raw_memory_manager.delete_raw_memory(mem2.id, test_actor)
 
 
 @pytest.mark.integration
-def test_api_search_raw_memories_without_user_id(api_client, raw_memory_manager, test_actor, test_user):
+async def test_api_search_raw_memories_without_user_id(api_client, raw_memory_manager, test_actor, test_user):
     """Test search endpoint without user_id (should return all memories for org, no user filtering)."""
     # Create memory for test_user
-    mem = raw_memory_manager.create_raw_memory(
+    mem = await raw_memory_manager.create_raw_memory(
         raw_memory=RawMemoryItemCreate(
             context="No user filter test",
             filter_tags={"scope": test_actor.write_scope},
@@ -2139,7 +2102,7 @@ def test_api_search_raw_memories_without_user_id(api_client, raw_memory_manager,
     assert any(item["id"] == mem.id for item in data["items"])
 
     # Cleanup
-    raw_memory_manager.delete_raw_memory(mem.id, test_actor)
+    await raw_memory_manager.delete_raw_memory(mem.id, test_actor)
 
 
 # =================================================================
@@ -2147,8 +2110,8 @@ def test_api_search_raw_memories_without_user_id(api_client, raw_memory_manager,
 # =================================================================
 
 
-@pytest.fixture(scope="module")
-def test_actor_different_scope():
+@pytest_asyncio.fixture(scope="module")
+async def test_actor_different_scope():
     """Provide a second test client actor with a different scope."""
     from mirix.schemas.organization import Organization as PydanticOrganization
     from mirix.services.client_manager import ClientManager
@@ -2160,16 +2123,16 @@ def test_actor_different_scope():
     # Use same org as test_actor
     org_id = "test-org-456"
     try:
-        org_mgr.get_organization_by_id(org_id)
+        await org_mgr.get_organization_by_id(org_id)
     except Exception:
-        org_mgr.create_organization(PydanticOrganization(id=org_id, name="Test Organization"))
+        await org_mgr.create_organization(PydanticOrganization(id=org_id, name="Test Organization"))
 
     # Create client with DIFFERENT scope
     client_id = "test-client-different-scope"
     try:
-        return client_mgr.get_client_by_id(client_id)
+        return await client_mgr.get_client_by_id(client_id)
     except Exception:
-        return client_mgr.create_client(
+        return await client_mgr.create_client(
             PydanticClient(
                 id=client_id,
                 organization_id=org_id,
@@ -2180,7 +2143,7 @@ def test_actor_different_scope():
         )
 
 
-def test_scope_auto_injection_on_create(raw_memory_manager, test_actor, test_user):
+async def test_scope_auto_injection_on_create(raw_memory_manager, test_actor, test_user):
     """Test that scope is automatically injected from actor when creating raw memory."""
     # Create memory WITHOUT specifying scope in filter_tags
     memory_data = RawMemoryItemCreate(
@@ -2190,7 +2153,7 @@ def test_scope_auto_injection_on_create(raw_memory_manager, test_actor, test_use
         organization_id=test_actor.organization_id,
     )
 
-    result = raw_memory_manager.create_raw_memory(
+    result = await raw_memory_manager.create_raw_memory(
         raw_memory=memory_data,
         actor=test_actor,
         client_id=test_actor.id,
@@ -2205,10 +2168,10 @@ def test_scope_auto_injection_on_create(raw_memory_manager, test_actor, test_use
     assert result.filter_tags["custom_tag"] == "value"  # Other tags preserved
 
     # Cleanup
-    raw_memory_manager.delete_raw_memory(result.id, test_actor)
+    await raw_memory_manager.delete_raw_memory(result.id, test_actor)
 
 
-def test_scope_auto_injection_overwrites_provided_scope(raw_memory_manager, test_actor, test_user):
+async def test_scope_auto_injection_overwrites_provided_scope(raw_memory_manager, test_actor, test_user):
     """Test that provided scope is overwritten by actor.scope."""
     # Create memory WITH a different scope in filter_tags
     memory_data = RawMemoryItemCreate(
@@ -2218,7 +2181,7 @@ def test_scope_auto_injection_overwrites_provided_scope(raw_memory_manager, test
         organization_id=test_actor.organization_id,
     )
 
-    result = raw_memory_manager.create_raw_memory(
+    result = await raw_memory_manager.create_raw_memory(
         raw_memory=memory_data,
         actor=test_actor,
         client_id=test_actor.id,
@@ -2231,10 +2194,10 @@ def test_scope_auto_injection_overwrites_provided_scope(raw_memory_manager, test
     assert result.filter_tags["scope"] != "wrong_scope"
 
     # Cleanup
-    raw_memory_manager.delete_raw_memory(result.id, test_actor)
+    await raw_memory_manager.delete_raw_memory(result.id, test_actor)
 
 
-def test_get_denied_for_wrong_scope(raw_memory_manager, test_actor, test_actor_different_scope, test_user):
+async def test_get_denied_for_wrong_scope(raw_memory_manager, test_actor, test_actor_different_scope, test_user):
     """Test that GET returns not found when scope doesn't match."""
     from mirix.orm.errors import NoResultFound
 
@@ -2246,7 +2209,7 @@ def test_get_denied_for_wrong_scope(raw_memory_manager, test_actor, test_actor_d
         organization_id=test_actor.organization_id,
     )
 
-    result = raw_memory_manager.create_raw_memory(
+    result = await raw_memory_manager.create_raw_memory(
         raw_memory=memory_data,
         actor=test_actor,
         client_id=test_actor.id,
@@ -2255,18 +2218,18 @@ def test_get_denied_for_wrong_scope(raw_memory_manager, test_actor, test_actor_d
     )
 
     # Verify original actor can read it
-    fetched = raw_memory_manager.get_raw_memory_by_id(result.id, actor=test_actor)
+    fetched = await raw_memory_manager.get_raw_memory_by_id(result.id, actor=test_actor)
     assert fetched.id == result.id
 
     # Verify different-scope actor cannot read it
     with pytest.raises(NoResultFound):
-        raw_memory_manager.get_raw_memory_by_id(result.id, actor=test_actor_different_scope)
+        await raw_memory_manager.get_raw_memory_by_id(result.id, actor=test_actor_different_scope)
 
     # Cleanup
-    raw_memory_manager.delete_raw_memory(result.id, test_actor)
+    await raw_memory_manager.delete_raw_memory(result.id, test_actor)
 
 
-def test_update_denied_for_wrong_scope(raw_memory_manager, test_actor, test_actor_different_scope, test_user):
+async def test_update_denied_for_wrong_scope(raw_memory_manager, test_actor, test_actor_different_scope, test_user):
     """Test that UPDATE fails when scope doesn't match."""
     # Create memory with test_actor's scope
     memory_data = RawMemoryItemCreate(
@@ -2276,7 +2239,7 @@ def test_update_denied_for_wrong_scope(raw_memory_manager, test_actor, test_acto
         organization_id=test_actor.organization_id,
     )
 
-    result = raw_memory_manager.create_raw_memory(
+    result = await raw_memory_manager.create_raw_memory(
         raw_memory=memory_data,
         actor=test_actor,
         client_id=test_actor.id,
@@ -2286,14 +2249,14 @@ def test_update_denied_for_wrong_scope(raw_memory_manager, test_actor, test_acto
 
     # Verify different-scope actor cannot update it
     with pytest.raises(ValueError, match="Access denied.*scope"):
-        raw_memory_manager.update_raw_memory(
+        await raw_memory_manager.update_raw_memory(
             memory_id=result.id,
             actor=test_actor_different_scope,
             new_context="Attempting unauthorized update",
         )
 
     # Verify original actor can still update it
-    updated = raw_memory_manager.update_raw_memory(
+    updated = await raw_memory_manager.update_raw_memory(
         memory_id=result.id,
         actor=test_actor,
         new_context="Authorized update",
@@ -2301,10 +2264,10 @@ def test_update_denied_for_wrong_scope(raw_memory_manager, test_actor, test_acto
     assert updated.context == "Authorized update"
 
     # Cleanup
-    raw_memory_manager.delete_raw_memory(result.id, test_actor)
+    await raw_memory_manager.delete_raw_memory(result.id, test_actor)
 
 
-def test_delete_denied_for_wrong_scope(raw_memory_manager, test_actor, test_actor_different_scope, test_user):
+async def test_delete_denied_for_wrong_scope(raw_memory_manager, test_actor, test_actor_different_scope, test_user):
     """Test that DELETE fails when scope doesn't match."""
     # Create memory with test_actor's scope
     memory_data = RawMemoryItemCreate(
@@ -2314,7 +2277,7 @@ def test_delete_denied_for_wrong_scope(raw_memory_manager, test_actor, test_acto
         organization_id=test_actor.organization_id,
     )
 
-    result = raw_memory_manager.create_raw_memory(
+    result = await raw_memory_manager.create_raw_memory(
         raw_memory=memory_data,
         actor=test_actor,
         client_id=test_actor.id,
@@ -2324,17 +2287,17 @@ def test_delete_denied_for_wrong_scope(raw_memory_manager, test_actor, test_acto
 
     # Verify different-scope actor cannot delete it
     with pytest.raises(ValueError, match="Access denied.*scope"):
-        raw_memory_manager.delete_raw_memory(result.id, test_actor_different_scope)
+        await raw_memory_manager.delete_raw_memory(result.id, test_actor_different_scope)
 
     # Verify memory still exists
-    fetched = raw_memory_manager.get_raw_memory_by_id(result.id, actor=test_actor)
+    fetched = await raw_memory_manager.get_raw_memory_by_id(result.id, actor=test_actor)
     assert fetched.id == result.id
 
     # Cleanup - original actor can delete
-    raw_memory_manager.delete_raw_memory(result.id, test_actor)
+    await raw_memory_manager.delete_raw_memory(result.id, test_actor)
 
 
-def test_scope_tamper_prevention_on_update(raw_memory_manager, test_actor, test_user):
+async def test_scope_tamper_prevention_on_update(raw_memory_manager, test_actor, test_user):
     """Test that scope cannot be changed via filter_tags update."""
     # Create memory
     memory_data = RawMemoryItemCreate(
@@ -2344,7 +2307,7 @@ def test_scope_tamper_prevention_on_update(raw_memory_manager, test_actor, test_
         organization_id=test_actor.organization_id,
     )
 
-    result = raw_memory_manager.create_raw_memory(
+    result = await raw_memory_manager.create_raw_memory(
         raw_memory=memory_data,
         actor=test_actor,
         client_id=test_actor.id,
@@ -2354,19 +2317,19 @@ def test_scope_tamper_prevention_on_update(raw_memory_manager, test_actor, test_
 
     # Try to change scope via filter_tags update - should fail
     with pytest.raises(ValueError, match="Cannot change memory scope"):
-        raw_memory_manager.update_raw_memory(
+        await raw_memory_manager.update_raw_memory(
             memory_id=result.id,
             actor=test_actor,
             new_filter_tags={"scope": "hacked_scope", "custom_tag": "updated"},
         )
 
     # Verify scope was not changed
-    fetched = raw_memory_manager.get_raw_memory_by_id(result.id, actor=test_actor)
+    fetched = await raw_memory_manager.get_raw_memory_by_id(result.id, actor=test_actor)
     assert fetched.filter_tags["scope"] == test_actor.write_scope
     assert fetched.filter_tags["scope"] != "hacked_scope"
 
     # Verify updating with same scope works
-    updated = raw_memory_manager.update_raw_memory(
+    updated = await raw_memory_manager.update_raw_memory(
         memory_id=result.id,
         actor=test_actor,
         new_filter_tags={"scope": test_actor.write_scope, "custom_tag": "updated"},
@@ -2374,7 +2337,7 @@ def test_scope_tamper_prevention_on_update(raw_memory_manager, test_actor, test_
     assert updated.filter_tags["custom_tag"] == "updated"
 
     # Cleanup
-    raw_memory_manager.delete_raw_memory(result.id, test_actor)
+    await raw_memory_manager.delete_raw_memory(result.id, test_actor)
 
 
 # =================================================================
@@ -2382,8 +2345,8 @@ def test_scope_tamper_prevention_on_update(raw_memory_manager, test_actor, test_
 # =================================================================
 
 
-@pytest.fixture(scope="module")
-def test_user_different():
+@pytest_asyncio.fixture(scope="module")
+async def test_user_different():
     """Provide a second test user for user_id filtering tests."""
     from mirix.services.user_manager import UserManager
 
@@ -2392,9 +2355,9 @@ def test_user_different():
     # Create a different user in the same organization
     user_id = "test-user-different-456"
     try:
-        return user_mgr.get_user_by_id(user_id)
+        return await user_mgr.get_user_by_id(user_id)
     except Exception:
-        return user_mgr.create_user(
+        return await user_mgr.create_user(
             PydanticUser(
                 id=user_id,
                 organization_id="test-org-456",
@@ -2404,7 +2367,7 @@ def test_user_different():
         )
 
 
-def test_get_raw_memory_filters_by_user_id(raw_memory_manager, test_actor, test_user, test_user_different):
+async def test_get_raw_memory_filters_by_user_id(raw_memory_manager, test_actor, test_user, test_user_different):
     """Test that get_raw_memory_by_id returns 404 when user_id doesn't match."""
     from mirix.orm.errors import NoResultFound
 
@@ -2416,7 +2379,7 @@ def test_get_raw_memory_filters_by_user_id(raw_memory_manager, test_actor, test_
         organization_id=test_actor.organization_id,
     )
 
-    result = raw_memory_manager.create_raw_memory(
+    result = await raw_memory_manager.create_raw_memory(
         raw_memory=memory_data,
         actor=test_actor,
         client_id=test_actor.id,
@@ -2425,22 +2388,22 @@ def test_get_raw_memory_filters_by_user_id(raw_memory_manager, test_actor, test_
     )
 
     # Verify owner can read it (with user_id filter)
-    fetched = raw_memory_manager.get_raw_memory_by_id(result.id, actor=test_actor, user_id=test_user.id)
+    fetched = await raw_memory_manager.get_raw_memory_by_id(result.id, actor=test_actor, user_id=test_user.id)
     assert fetched.id == result.id
 
     # Verify different user cannot read it (with user_id filter)
     with pytest.raises(NoResultFound):
-        raw_memory_manager.get_raw_memory_by_id(result.id, actor=test_actor, user_id=test_user_different.id)
+        await raw_memory_manager.get_raw_memory_by_id(result.id, actor=test_actor, user_id=test_user_different.id)
 
     # Verify reading without user_id filter still works (org-level access)
-    fetched_no_filter = raw_memory_manager.get_raw_memory_by_id(result.id, actor=test_actor)
+    fetched_no_filter = await raw_memory_manager.get_raw_memory_by_id(result.id, actor=test_actor)
     assert fetched_no_filter.id == result.id
 
     # Cleanup
-    raw_memory_manager.delete_raw_memory(result.id, test_actor)
+    await raw_memory_manager.delete_raw_memory(result.id, test_actor)
 
 
-def test_update_raw_memory_filters_by_user_id(raw_memory_manager, test_actor, test_user, test_user_different):
+async def test_update_raw_memory_filters_by_user_id(raw_memory_manager, test_actor, test_user, test_user_different):
     """Test that update_raw_memory returns error when user_id doesn't match."""
     # Create memory owned by test_user
     memory_data = RawMemoryItemCreate(
@@ -2450,7 +2413,7 @@ def test_update_raw_memory_filters_by_user_id(raw_memory_manager, test_actor, te
         organization_id=test_actor.organization_id,
     )
 
-    result = raw_memory_manager.create_raw_memory(
+    result = await raw_memory_manager.create_raw_memory(
         raw_memory=memory_data,
         actor=test_actor,
         client_id=test_actor.id,
@@ -2459,7 +2422,7 @@ def test_update_raw_memory_filters_by_user_id(raw_memory_manager, test_actor, te
     )
 
     # Verify owner can update it (with user_id filter)
-    updated = raw_memory_manager.update_raw_memory(
+    updated = await raw_memory_manager.update_raw_memory(
         memory_id=result.id,
         actor=test_actor,
         new_context="Updated by owner",
@@ -2469,7 +2432,7 @@ def test_update_raw_memory_filters_by_user_id(raw_memory_manager, test_actor, te
 
     # Verify different user cannot update it (with user_id filter)
     with pytest.raises(ValueError, match="not found"):
-        raw_memory_manager.update_raw_memory(
+        await raw_memory_manager.update_raw_memory(
             memory_id=result.id,
             actor=test_actor,
             new_context="Updated by wrong user",
@@ -2477,10 +2440,10 @@ def test_update_raw_memory_filters_by_user_id(raw_memory_manager, test_actor, te
         )
 
     # Cleanup
-    raw_memory_manager.delete_raw_memory(result.id, test_actor)
+    await raw_memory_manager.delete_raw_memory(result.id, test_actor)
 
 
-def test_delete_raw_memory_filters_by_user_id(raw_memory_manager, test_actor, test_user, test_user_different):
+async def test_delete_raw_memory_filters_by_user_id(raw_memory_manager, test_actor, test_user, test_user_different):
     """Test that delete_raw_memory returns False when user_id doesn't match."""
     # Create memory owned by test_user
     memory_data = RawMemoryItemCreate(
@@ -2490,7 +2453,7 @@ def test_delete_raw_memory_filters_by_user_id(raw_memory_manager, test_actor, te
         organization_id=test_actor.organization_id,
     )
 
-    result = raw_memory_manager.create_raw_memory(
+    result = await raw_memory_manager.create_raw_memory(
         raw_memory=memory_data,
         actor=test_actor,
         client_id=test_actor.id,
@@ -2499,25 +2462,26 @@ def test_delete_raw_memory_filters_by_user_id(raw_memory_manager, test_actor, te
     )
 
     # Verify different user cannot delete it (with user_id filter) - returns False
-    deleted = raw_memory_manager.delete_raw_memory(result.id, test_actor, user_id=test_user_different.id)
+    deleted = await raw_memory_manager.delete_raw_memory(result.id, test_actor, user_id=test_user_different.id)
     assert deleted is False
 
     # Verify memory still exists
-    fetched = raw_memory_manager.get_raw_memory_by_id(result.id, actor=test_actor)
+    fetched = await raw_memory_manager.get_raw_memory_by_id(result.id, actor=test_actor)
     assert fetched.id == result.id
 
     # Verify owner can delete it (with user_id filter)
-    deleted = raw_memory_manager.delete_raw_memory(result.id, test_actor, user_id=test_user.id)
+    deleted = await raw_memory_manager.delete_raw_memory(result.id, test_actor, user_id=test_user.id)
     assert deleted is True
 
 
-def test_search_raw_memories_filters_by_user_id(raw_memory_manager, test_actor, test_user, test_user_different):
+async def test_search_raw_memories_filters_by_user_id(raw_memory_manager, test_actor, test_user, test_user_different):
     """Test that search_raw_memories filters by user_id when provided."""
-    # Create memory for test_user
-    mem1 = raw_memory_manager.create_raw_memory(
+    run_id = str(uuid.uuid4())
+    # Create memory for test_user (run_id isolates from other test runs)
+    mem1 = await raw_memory_manager.create_raw_memory(
         raw_memory=RawMemoryItemCreate(
             context="User 1 memory",
-            filter_tags={"scope": test_actor.write_scope, "test_tag": "user_filter_test"},
+            filter_tags={"scope": test_actor.write_scope, "test_tag": "user_filter_test", "run_id": run_id},
             user_id=test_user.id,
             organization_id=test_actor.organization_id,
         ),
@@ -2528,10 +2492,10 @@ def test_search_raw_memories_filters_by_user_id(raw_memory_manager, test_actor, 
     )
 
     # Create memory for test_user_different
-    mem2 = raw_memory_manager.create_raw_memory(
+    mem2 = await raw_memory_manager.create_raw_memory(
         raw_memory=RawMemoryItemCreate(
             context="User 2 memory",
-            filter_tags={"scope": test_actor.write_scope, "test_tag": "user_filter_test"},
+            filter_tags={"scope": test_actor.write_scope, "test_tag": "user_filter_test", "run_id": run_id},
             user_id=test_user_different.id,
             organization_id=test_actor.organization_id,
         ),
@@ -2542,30 +2506,30 @@ def test_search_raw_memories_filters_by_user_id(raw_memory_manager, test_actor, 
     )
 
     # Search with user_id filter for test_user - should only return mem1
-    results, _ = raw_memory_manager.search_raw_memories(
+    results, _ = await raw_memory_manager.search_raw_memories(
         organization_id=test_user.organization_id,
         user_id=test_user.id,
-        filter_tags={"scope": test_actor.write_scope, "test_tag": "user_filter_test"},
+        filter_tags={"scope": test_actor.write_scope, "test_tag": "user_filter_test", "run_id": run_id},
         limit=10,
     )
     assert len(results) == 1
     assert results[0].id == mem1.id
 
     # Search with user_id filter for test_user_different - should only return mem2
-    results, _ = raw_memory_manager.search_raw_memories(
+    results, _ = await raw_memory_manager.search_raw_memories(
         organization_id=test_user.organization_id,
         user_id=test_user_different.id,
-        filter_tags={"scope": test_actor.write_scope, "test_tag": "user_filter_test"},
+        filter_tags={"scope": test_actor.write_scope, "test_tag": "user_filter_test", "run_id": run_id},
         limit=10,
     )
     assert len(results) == 1
     assert results[0].id == mem2.id
 
     # Search without user_id filter - should return both
-    results, _ = raw_memory_manager.search_raw_memories(
+    results, _ = await raw_memory_manager.search_raw_memories(
         organization_id=test_user.organization_id,
         user_id=None,
-        filter_tags={"scope": test_actor.write_scope, "test_tag": "user_filter_test"},
+        filter_tags={"scope": test_actor.write_scope, "test_tag": "user_filter_test", "run_id": run_id},
         limit=10,
     )
     result_ids = {r.id for r in results}
@@ -2573,11 +2537,11 @@ def test_search_raw_memories_filters_by_user_id(raw_memory_manager, test_actor, 
     assert mem2.id in result_ids
 
     # Cleanup
-    raw_memory_manager.delete_raw_memory(mem1.id, test_actor)
-    raw_memory_manager.delete_raw_memory(mem2.id, test_actor)
+    await raw_memory_manager.delete_raw_memory(mem1.id, test_actor)
+    await raw_memory_manager.delete_raw_memory(mem2.id, test_actor)
 
 
-def test_create_raw_memory_requires_user_id(raw_memory_manager, test_actor):
+async def test_create_raw_memory_requires_user_id(raw_memory_manager, test_actor):
     """Test that create_raw_memory raises error when user_id is not provided."""
     memory_data = RawMemoryItemCreate(
         context="Test missing user_id",
@@ -2588,7 +2552,7 @@ def test_create_raw_memory_requires_user_id(raw_memory_manager, test_actor):
 
     # Verify error is raised when user_id is empty string
     with pytest.raises(ValueError, match="user_id is required"):
-        raw_memory_manager.create_raw_memory(
+        await raw_memory_manager.create_raw_memory(
             raw_memory=memory_data,
             actor=test_actor,
             client_id=test_actor.id,

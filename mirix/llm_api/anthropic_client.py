@@ -47,19 +47,16 @@ logger = get_logger(__name__)
 
 
 class AnthropicClient(LLMClientBase):
-    def request(self, request_data: dict) -> dict:
-        client = self._get_anthropic_client(async_client=False)
-        response = client.beta.messages.create(**request_data, betas=["tools-2024-04-04"])
-        return response.model_dump()
-
-    async def request_async(self, request_data: dict) -> dict:
-        client = self._get_anthropic_client(async_client=True)
-        response = await client.beta.messages.create(**request_data, betas=["tools-2024-04-04"])
+    async def request(self, request_data: dict) -> dict:
+        client = await self._get_anthropic_client(async_client=True)
+        response = await client.beta.messages.create(
+            **request_data, betas=["tools-2024-04-04"]
+        )
         return response.model_dump()
 
     @trace_method
     async def stream_async(self, request_data: dict) -> AsyncStream[BetaRawMessageStreamEvent]:
-        client = self._get_anthropic_client(async_client=True)
+        client = await self._get_anthropic_client(async_client=True)
         request_data["stream"] = True
         return await client.beta.messages.create(**request_data, betas=["tools-2024-04-04"])
 
@@ -90,16 +87,15 @@ class AnthropicClient(LLMClientBase):
             raise ValueError("Agent mappings for messages and tools must use the same agent_ids.")
 
         try:
-            requests = {
-                agent_id: self.build_request_data(
+            requests = {}
+            for agent_id in agent_messages_mapping:
+                requests[agent_id] = await self.build_request_data(
                     messages=agent_messages_mapping[agent_id],
                     llm_config=agent_llm_config_mapping[agent_id],
                     tools=agent_tools_mapping[agent_id],
                 )
-                for agent_id in agent_messages_mapping
-            }
 
-            client = self._get_anthropic_client(async_client=True)
+            client = await self._get_anthropic_client(async_client=True)
 
             anthropic_requests = [
                 Request(custom_id=agent_id, params=MessageCreateParamsNonStreaming(**params))
@@ -116,14 +112,14 @@ class AnthropicClient(LLMClientBase):
             raise self.handle_llm_error(e)
 
     @trace_method
-    def _get_anthropic_client(self, async_client: bool = False) -> Union[anthropic.AsyncAnthropic, anthropic.Anthropic]:
-        override_key = ProviderManager().get_anthropic_override_key()
+    async def _get_anthropic_client(self, async_client: bool = False) -> Union[anthropic.AsyncAnthropic, anthropic.Anthropic]:
+        override_key = await ProviderManager().get_anthropic_override_key()
         if async_client:
             return anthropic.AsyncAnthropic(api_key=override_key) if override_key else anthropic.AsyncAnthropic()
         return anthropic.Anthropic(api_key=override_key) if override_key else anthropic.Anthropic()
 
     @trace_method
-    def build_request_data(
+    async def build_request_data(
         self,
         messages: List[PydanticMessage],
         llm_config: LLMConfig,
@@ -210,7 +206,7 @@ class AnthropicClient(LLMClientBase):
             for m in messages[1:]
         ]
 
-        data["messages"] = self.fill_image_content_in_messages(data["messages"])
+        data["messages"] = await self.fill_image_content_in_messages(data["messages"])
 
         # Ensure first message is user
         if data["messages"][0]["role"] != "user":
@@ -231,7 +227,7 @@ class AnthropicClient(LLMClientBase):
 
         return data
 
-    def fill_image_content_in_messages(self, messages: List[dict]) -> List[dict]:
+    async def fill_image_content_in_messages(self, messages: List[dict]) -> List[dict]:
         """
         Converts image URIs in the message to base64 format.
         """
@@ -268,7 +264,7 @@ class AnthropicClient(LLMClientBase):
                         )
 
                     else:
-                        file = self.file_manager.get_file_metadata_by_id(m["image_id"])
+                        file = await self.file_manager.get_file_metadata_by_id(m["image_id"])
                         if file.source_url is not None:
                             message_content.append(
                                 {
@@ -304,8 +300,8 @@ class AnthropicClient(LLMClientBase):
                         # global_image_idx += 1
                         has_image = True
                 elif m["type"] == "cloud_file_uri":
-                    file = self.file_manager.get_file_metadata_by_id(m["cloud_file_uri"])
-                    local_path = self.cloud_file_mapping_manager.get_local_file(file.google_cloud_url)
+                    file = await self.file_manager.get_file_metadata_by_id(m["cloud_file_uri"])
+                    local_path = await self.cloud_file_mapping_manager.get_local_file(file.google_cloud_url)
 
                     import base64
                     import mimetypes

@@ -1,10 +1,9 @@
 import json
 import warnings
-from typing import TYPE_CHECKING, Generator, List, Optional, Union
+from typing import TYPE_CHECKING, AsyncGenerator, List, Optional, Union
 
 import httpx
-import requests
-from httpx_sse import connect_sse
+from httpx_sse import aconnect_sse
 from httpx_sse._exceptions import SSEError
 
 from mirix.constants import (
@@ -57,7 +56,7 @@ from mirix.utils import (
 OPENAI_SSE_DONE = "[DONE]"
 
 
-def openai_get_model_list(
+async def openai_get_model_list(
     url: str,
     api_key: Union[str, None],
     fix_url: Optional[bool] = False,
@@ -66,9 +65,6 @@ def openai_get_model_list(
     """https://platform.openai.com/docs/api-reference/models/list"""
     from mirix.utils import printd
 
-    # In some cases we may want to double-check the URL and do basic correction, eg:
-    # In Mirix config the address for vLLM is w/o a /v1 suffix for simplicity
-    # However if we're treating the server as an OpenAI proxy we want the /v1 suffix on our model hit
     if fix_url:
         if not url.endswith("/v1"):
             url = smart_urljoin(url, "v1")
@@ -80,40 +76,21 @@ def openai_get_model_list(
         headers["Authorization"] = f"Bearer {api_key}"
 
     printd(f"Sending request to {url}")
-    response = None
     try:
-        # TODO add query param "tool" to be true
-        response = requests.get(url, headers=headers, params=extra_params)
-        response.raise_for_status()  # Raises HTTPError for 4XX/5XX status
-        response = response.json()  # convert to dict from string
-        printd(f"response = {response}")
-        return response
-    except requests.exceptions.HTTPError as http_err:
-        # Handle HTTP errors (e.g., response 4XX, 5XX)
-        try:
-            if response:
-                response = response.json()
-        except Exception:
-            pass
-        printd(f"Got HTTPError, exception={http_err}, response={response}")
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, headers=headers, params=extra_params)
+        response.raise_for_status()
+        data = response.json()
+        printd(f"response = {data}")
+        return data
+    except httpx.HTTPStatusError as http_err:
+        printd(f"Got HTTPStatusError, exception={http_err}")
         raise http_err
-    except requests.exceptions.RequestException as req_err:
-        # Handle other requests-related errors (e.g., connection error)
-        try:
-            if response:
-                response = response.json()
-        except Exception:
-            pass
-        printd(f"Got RequestException, exception={req_err}, response={response}")
+    except httpx.RequestError as req_err:
+        printd(f"Got RequestError, exception={req_err}")
         raise req_err
     except Exception as e:
-        # Handle other potential errors
-        try:
-            if response:
-                response = response.json()
-        except Exception:
-            pass
-        printd(f"Got unknown Exception, exception={e}, response={response}")
+        printd(f"Got unknown Exception, exception={e}")
         raise e
 
 
@@ -167,7 +144,7 @@ def build_openai_chat_completions_request(
     return data
 
 
-def openai_chat_completions_process_stream(
+async def openai_chat_completions_process_stream(
     url: str,
     api_key: str,
     chat_completion_request: ChatCompletionRequest,
@@ -239,12 +216,11 @@ def openai_chat_completions_process_stream(
 
     n_chunks = 0  # approx == n_tokens
     try:
-        for chunk_idx, chat_completion_chunk in enumerate(
-            openai_chat_completions_request_stream(
-                url=url,
-                api_key=api_key,
-                chat_completion_request=chat_completion_request,
-            )
+        chunk_idx = 0
+        async for chat_completion_chunk in openai_chat_completions_request_stream(
+            url=url,
+            api_key=api_key,
+            chat_completion_request=chat_completion_request,
         ):
             assert isinstance(chat_completion_chunk, ChatCompletionChunkResponse), type(chat_completion_chunk)
 
@@ -372,6 +348,7 @@ def openai_chat_completions_process_stream(
 
             # increment chunk counter
             n_chunks += 1
+            chunk_idx += 1
 
     except Exception as e:
         if stream_interface:
@@ -404,87 +381,69 @@ def openai_chat_completions_process_stream(
     return chat_completion_response
 
 
-def _sse_post(url: str, data: dict, headers: dict) -> Generator[ChatCompletionChunkResponse, None, None]:
-    with httpx.Client() as client:
-        with connect_sse(client, method="POST", url=url, json=data, headers=headers) as event_source:
-            # Inspect for errors before iterating (see https://github.com/florimondmanca/httpx-sse/pull/12)
+async def _sse_post(url: str, data: dict, headers: dict) -> AsyncGenerator[ChatCompletionChunkResponse, None]:
+    async with httpx.AsyncClient() as client:
+        async with aconnect_sse(client, method="POST", url=url, json=data, headers=headers) as event_source:
             if not event_source.response.is_success:
-                # handle errors
                 from mirix.utils import printd
 
                 printd(
                     "Caught error before iterating SSE request:",
                     vars(event_source.response),
                 )
-                printd(event_source.response.read())
+                response_bytes = await event_source.response.aread()
+                printd(response_bytes)
 
                 try:
-                    response_bytes = event_source.response.read()
                     response_dict = json.loads(response_bytes.decode("utf-8"))
                     error_message = response_dict["error"]["message"]
-                    # e.g.: This model's maximum context length is 8192 tokens. However, your messages resulted in 8198 tokens (7450 in the messages, 748 in the functions). Please reduce the length of the messages or functions.
                     if OPENAI_CONTEXT_WINDOW_ERROR_SUBSTRING in error_message:
                         raise LLMError(error_message)
                 except LLMError:
                     raise
                 except Exception:
-                    logger.eror("Failed to parse SSE message, throwing SSE HTTP error up the stack")
+                    logger.error("Failed to parse SSE message, throwing SSE HTTP error up the stack")
                     event_source.response.raise_for_status()
 
             try:
-                for sse in event_source.iter_sse():
-                    # printd(sse.event, sse.data, sse.id, sse.retry)
+                async for sse in event_source.aiter_sse():
                     if sse.data == OPENAI_SSE_DONE:
-                        # logger.debug("finished")
                         break
                     else:
                         chunk_data = json.loads(sse.data)
-                        # logger.debug("chunk_data::", chunk_data)
                         chunk_object = ChatCompletionChunkResponse(**chunk_data)
-                        # logger.debug("chunk_object::", chunk_object)
-                        # id=chunk_data["id"],
-                        # choices=[ChunkChoice],
-                        # model=chunk_data["model"],
-                        # system_fingerprint=chunk_data["system_fingerprint"]
-                        # )
                         yield chunk_object
 
             except SSEError as e:
-                logger.error("Caught an error while iterating the SSE stream:", str(e))
-                if "application/json" in str(e):  # Check if the error is because of JSON response
-                    # TODO figure out a better way to catch the error other than re-trying with a POST
-                    response = client.post(
-                        url=url, json=data, headers=headers
-                    )  # Make the request again to get the JSON response
+                logger.error("Caught an error while iterating the SSE stream: %s", str(e))
+                if "application/json" in str(e):
+                    response = await client.post(url=url, json=data, headers=headers)
                     if response.headers["Content-Type"].startswith("application/json"):
-                        error_details = response.json()  # Parse the JSON to get the error message
-                        logger.debug("Request:", vars(response.request))
-                        logger.debug("POST Error:", error_details)
-                        logger.debug("Original SSE Error:", str(e))
+                        error_details = response.json()
+                        logger.debug("Request: %s", vars(response.request))
+                        logger.debug("POST Error: %s", error_details)
+                        logger.debug("Original SSE Error: %s", str(e))
                     else:
                         logger.debug("Failed to retrieve JSON error message via retry.")
                 else:
                     logger.debug("SSEError not related to 'application/json' content type.")
-
-                # Optionally re-raise the exception if you need to propagate it
                 raise e
 
             except Exception as e:
                 if event_source.response.request is not None:
-                    logger.error("HTTP Request:", vars(event_source.response.request))
+                    logger.error("HTTP Request: %s", vars(event_source.response.request))
                 if event_source.response is not None:
-                    logger.error("HTTP Status:", event_source.response.status_code)
-                    logger.error("HTTP Headers:", event_source.response.headers)
-                    # logger.debug("HTTP Body:", event_source.response.text)
-                logger.error("Exception message:", str(e))
+                    logger.error("HTTP Status: %s", event_source.response.status_code)
+                    logger.error("HTTP Headers: %s", event_source.response.headers)
+                logger.error("Exception message: %s", str(e))
                 raise e
 
 
-def openai_chat_completions_request_stream(
+async def openai_chat_completions_request_stream(
     url: str,
     api_key: str,
     chat_completion_request: ChatCompletionRequest,
-) -> Generator[ChatCompletionChunkResponse, None, None]:
+) -> AsyncGenerator[ChatCompletionChunkResponse, None]:
     from mirix.utils import printd
 
     url = smart_urljoin(url, "chat/completions")
@@ -493,18 +452,16 @@ def openai_chat_completions_request_stream(
 
     printd("Request:\n", json.dumps(data, indent=2))
 
-    # If functions == None, strip from the payload
     if "functions" in data and data["functions"] is None:
         data.pop("functions")
-        data.pop("function_call", None)  # extra safe,  should exist always (default="auto")
+        data.pop("function_call", None)
 
     if "tools" in data and data["tools"] is None:
         data.pop("tools")
-        data.pop("tool_choice", None)  # extra safe,  should exist always (default="auto")
+        data.pop("tool_choice", None)
 
     if "tools" in data:
         for tool in data["tools"]:
-            # tool["strict"] = True
             try:
                 tool["function"] = convert_to_structured_output(tool["function"])
             except ValueError as e:
@@ -513,20 +470,8 @@ def openai_chat_completions_request_stream(
     logger.debug("\n\n\n\nData[tools]: %s", json.dumps(data["tools"], indent=2))
 
     printd(f"Sending request to {url}")
-    try:
-        return _sse_post(url=url, data=data, headers=headers)
-    except requests.exceptions.HTTPError as http_err:
-        # Handle HTTP errors (e.g., response 4XX, 5XX)
-        printd(f"Got HTTPError, exception={http_err}, payload={data}")
-        raise http_err
-    except requests.exceptions.RequestException as req_err:
-        # Handle other requests-related errors (e.g., connection error)
-        printd(f"Got RequestException, exception={req_err}")
-        raise req_err
-    except Exception as e:
-        # Handle other potential errors
-        printd(f"Got unknown Exception, exception={e}")
-        raise e
+    async for chunk in _sse_post(url=url, data=data, headers=headers):
+        yield chunk
 
 
 def extract_content(content):
@@ -545,7 +490,7 @@ def extract_content(content):
     return result
 
 
-def openai_chat_completions_request(
+async def openai_chat_completions_request(
     url: str,
     api_key: str,
     chat_completion_request: ChatCompletionRequest,
@@ -589,15 +534,15 @@ def openai_chat_completions_request(
     if get_input_data_for_debugging:
         return data
 
-    response_json = make_post_request(url, headers, data)
+    response_json = await make_post_request(url, headers, data)
 
     return ChatCompletionResponse(**response_json)
 
 
-def openai_embeddings_request(url: str, api_key: str, data: dict) -> EmbeddingResponse:
+async def openai_embeddings_request(url: str, api_key: str, data: dict) -> EmbeddingResponse:
     """https://platform.openai.com/docs/api-reference/embeddings/create"""
 
     url = smart_urljoin(url, "embeddings")
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
-    response_json = make_post_request(url, headers, data)
+    response_json = await make_post_request(url, headers, data)
     return EmbeddingResponse(**response_json)

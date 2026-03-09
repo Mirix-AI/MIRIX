@@ -73,7 +73,7 @@ def deserialize_queue_message(serialized_msg: bytes, format: str = "protobuf") -
         raise ValueError(f"Failed to deserialize message ({format} format): {e}") from e
 
 
-def put_messages(
+async def put_messages(
     actor: Client,
     agent_id: str,
     input_messages: List[MessageCreate],
@@ -192,5 +192,5 @@ def put_messages(
         len(input_messages),
         occurred_at,
     )
-    queue.save(queue_msg)
+    await queue.save(queue_msg)
     logger.debug("Message successfully sent to queue")

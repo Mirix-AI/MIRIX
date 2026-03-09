@@ -13,12 +13,14 @@ Prerequisites:
 - Optional: Set MIRIX_API_URL in .env file (defaults to http://localhost:8000)
 """
 
+import asyncio
 import logging
 import os
 import time
 from pathlib import Path
 
 import pytest
+import pytest_asyncio
 
 from mirix.client import MirixClient
 
@@ -33,6 +35,7 @@ BASE_URL = os.environ.get("MIRIX_API_URL", "http://localhost:8000")
 CONFIG_PATH = Path(__file__).parent.parent / "mirix" / "configs" / "examples" / "mirix_gemini.yaml"
 
 
+@pytest.mark.asyncio(loop_scope="class")
 class TestSearchSingleUserCoreMemory:
     """Test suite for single-user search with include_core_memory."""
 
@@ -40,10 +43,10 @@ class TestSearchSingleUserCoreMemory:
     def org_id(self):
         return f"test-org-single-search-{int(time.time())}"
 
-    @pytest.fixture(scope="class")
-    def client1(self, org_id):
+    @pytest_asyncio.fixture(scope="class")
+    async def client1(self, org_id):
         client_id = f"test-client-single-1-{int(time.time())}"
-        client = MirixClient(
+        client = await MirixClient.create(
             api_key=None,
             client_id=client_id,
             client_name="Test Client Single 1",
@@ -51,15 +54,15 @@ class TestSearchSingleUserCoreMemory:
             org_id=org_id,
             debug=True,
         )
-        client.initialize_meta_agent(config_path=str(CONFIG_PATH), update_agents=True)
+        await client.initialize_meta_agent(config_path=str(CONFIG_PATH), update_agents=True)
         logger.info("Client 1 initialized: client_id=%s, org_id=%s, scope=scope_a", client_id, org_id)
         return client
 
-    @pytest.fixture(scope="class")
-    def client2(self, org_id):
+    @pytest_asyncio.fixture(scope="class")
+    async def client2(self, org_id):
         """Second client in the same org with a different scope."""
         client_id = f"test-client-single-2-{int(time.time())}"
-        client = MirixClient(
+        client = await MirixClient.create(
             api_key=None,
             client_id=client_id,
             client_name="Test Client Single 2",
@@ -67,22 +70,22 @@ class TestSearchSingleUserCoreMemory:
             org_id=org_id,
             debug=True,
         )
-        client.initialize_meta_agent(config_path=str(CONFIG_PATH), update_agents=True)
+        await client.initialize_meta_agent(config_path=str(CONFIG_PATH), update_agents=True)
         logger.info("Client 2 initialized: client_id=%s, org_id=%s, scope=scope_b", client_id, org_id)
         return client
 
-    @pytest.fixture(scope="class")
-    def user_id(self, client1, org_id):
+    @pytest_asyncio.fixture(scope="class")
+    async def user_id(self, client1, org_id):
         uid = f"test-user-single-{int(time.time())}"
-        client1.create_or_get_user(user_id=uid, user_name="Test User Single", org_id=org_id)
+        await client1.create_or_get_user(user_id=uid, user_name="Test User Single", org_id=org_id)
         logger.info("User created: %s", uid)
         return uid
 
-    @pytest.fixture(scope="class", autouse=True)
-    def setup_memories(self, client1, client2, user_id, org_id):
+    @pytest_asyncio.fixture(scope="class", autouse=True)
+    async def setup_memories(self, client1, client2, user_id, org_id):
         """Add personal profile messages so the core_memory_agent creates blocks."""
         logger.info("Adding memories for user %s via client1 (scope_a)...", user_id)
-        client1.add(
+        await client1.add(
             user_id=user_id,
             messages=[
                 {
@@ -107,11 +110,11 @@ class TestSearchSingleUserCoreMemory:
             filter_tags={"scope": "scope_a"},
         )
         logger.info("Waiting 50 seconds for async memory processing...")
-        time.sleep(50)
+        await asyncio.sleep(50)
 
         # Also create user for client2 so blocks exist under scope_b
-        client2.create_or_get_user(user_id=user_id, user_name="Test User Single", org_id=org_id)
-        client2.add(
+        await client2.create_or_get_user(user_id=user_id, user_name="Test User Single", org_id=org_id)
+        await client2.add(
             user_id=user_id,
             messages=[
                 {
@@ -136,12 +139,12 @@ class TestSearchSingleUserCoreMemory:
             filter_tags={"scope": "scope_b"},
         )
         logger.info("Waiting 50 seconds for async memory processing (client2)...")
-        time.sleep(50)
+        await asyncio.sleep(50)
         logger.info("Setup complete.")
 
-    def test_default_no_core_memory(self, client1, user_id):
+    async def test_default_no_core_memory(self, client1, user_id):
         """By default (include_core_memory=False), no core blocks are returned."""
-        results = client1.search(
+        results = await client1.search(
             user_id=user_id,
             query="",
             memory_type="all",
@@ -153,9 +156,9 @@ class TestSearchSingleUserCoreMemory:
         assert len(core_results) == 0, "Core memory should not be returned when include_core_memory is not set"
         logger.info("Test passed: No core blocks returned by default")
 
-    def test_include_core_memory_returns_blocks(self, client1, user_id):
+    async def test_include_core_memory_returns_blocks(self, client1, user_id):
         """include_core_memory=True returns core blocks for the user."""
-        results = client1.search(
+        results = await client1.search(
             user_id=user_id,
             query="",
             memory_type="all",
@@ -177,16 +180,16 @@ class TestSearchSingleUserCoreMemory:
 
         logger.info("Test passed: %d core blocks returned with correct shape", len(core_results))
 
-    def test_core_memory_scope_isolation(self, client1, client2, user_id):
+    async def test_core_memory_scope_isolation(self, client1, client2, user_id):
         """Core blocks returned are scoped to the calling client's read_scopes."""
-        results_a = client1.search(
+        results_a = await client1.search(
             user_id=user_id,
             query="",
             memory_type="all",
             limit=50,
             include_core_memory=True,
         )
-        results_b = client2.search(
+        results_b = await client2.search(
             user_id=user_id,
             query="",
             memory_type="all",
@@ -218,9 +221,9 @@ class TestSearchSingleUserCoreMemory:
             scopes_b,
         )
 
-    def test_include_core_memory_with_specific_memory_type(self, client1, user_id):
+    async def test_include_core_memory_with_specific_memory_type(self, client1, user_id):
         """include_core_memory=True works even when searching a specific memory type (not 'all')."""
-        results = client1.search(
+        results = await client1.search(
             user_id=user_id,
             query="",
             memory_type="episodic",

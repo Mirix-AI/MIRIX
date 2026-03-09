@@ -1,12 +1,12 @@
 """
 LangFuse client singleton implementation.
 
-Thread-safe singleton pattern optimized for containerized deployment.
+Async-native singleton pattern optimized for containerized deployment.
 Each container instance gets its own singleton client.
 """
 
+import asyncio
 import atexit
-import threading
 from typing import TYPE_CHECKING, Optional
 
 from mirix.log import get_logger
@@ -16,21 +16,19 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
-# Thread lock for initialization
-_init_lock = threading.Lock()
+_init_lock = asyncio.Lock()
 
-# Global singleton instance (per container/process)
 _langfuse_client: Optional["Langfuse"] = None
 _langfuse_enabled: bool = False
 _initialization_attempted: bool = False
 
 
-def initialize_langfuse(force: bool = False) -> Optional["Langfuse"]:
+async def initialize_langfuse(force: bool = False) -> Optional["Langfuse"]:
     """
-    Initialize LangFuse client from settings (thread-safe).
+    Initialize LangFuse client from settings (async, coroutine-safe).
 
-    Called during server startup. Uses double-checked locking pattern
-    for thread-safe lazy initialization.
+    Called during server startup via the FastAPI lifespan hook.
+    Uses double-checked locking pattern with asyncio.Lock.
 
     Args:
         force: Force re-initialization even if already initialized
@@ -40,13 +38,10 @@ def initialize_langfuse(force: bool = False) -> Optional["Langfuse"]:
     """
     global _langfuse_client, _langfuse_enabled, _initialization_attempted
 
-    # Fast path: already initialized
     if _initialization_attempted and not force:
         return _langfuse_client
 
-    # Thread-safe initialization
-    with _init_lock:
-        # Double-check inside lock
+    async with _init_lock:
         if _initialization_attempted and not force:
             return _langfuse_client
 
@@ -75,11 +70,8 @@ def initialize_langfuse(force: bool = False) -> Optional["Langfuse"]:
             from langfuse import Langfuse
             from opentelemetry.sdk.trace import TracerProvider
 
-            # LangFuse 3.x removed the 'enabled' parameter
-            # Client is enabled by default when instantiated
-            # The 'environment' parameter provides native environment filtering in Langfuse
-            # (environment must match regex: ^(?!langfuse)[a-z0-9-_]+$ with max 40 chars)
-            _langfuse_client = Langfuse(
+            _langfuse_client = await asyncio.to_thread(
+                Langfuse,
                 public_key=settings.langfuse_public_key,
                 secret_key=settings.langfuse_secret_key,
                 host=settings.langfuse_host,
@@ -92,18 +84,15 @@ def initialize_langfuse(force: bool = False) -> Optional["Langfuse"]:
 
             _langfuse_enabled = True
 
-            # Register cleanup on process exit
-            atexit.register(flush_langfuse)
+            atexit.register(_sync_flush_for_atexit)
 
-            # Verify connection with initial flush
             try:
-                _langfuse_client.flush()
+                await asyncio.to_thread(_langfuse_client.flush)
                 logger.info(
                     f"LangFuse observability initialized and verified successfully (environment: {environment})"
                 )
             except Exception as health_error:
                 logger.warning(f"LangFuse initialized but health check failed: {health_error}")
-                # Continue anyway - will retry on actual use
 
             return _langfuse_client
 
@@ -116,22 +105,18 @@ def initialize_langfuse(force: bool = False) -> Optional["Langfuse"]:
 
 def get_langfuse_client() -> Optional["Langfuse"]:
     """
-    Get the global LangFuse client instance (lazy initialization).
+    Get the global LangFuse client instance.
 
-    Thread-safe and efficient - only initializes once per container.
-    Each container instance has its own singleton client.
+    Returns the cached singleton. Initialization must have been called
+    via ``await initialize_langfuse()`` during server startup; if not
+    yet initialized this returns None.
 
     Returns:
         Langfuse client or None if not initialized/disabled
     """
-    global _langfuse_client, _initialization_attempted
-
-    # Fast path: already initialized
-    if _initialization_attempted:
-        return _langfuse_client if _langfuse_enabled else None
-
-    # Lazy initialization on first use
-    return initialize_langfuse()
+    if _langfuse_enabled and _langfuse_client is not None:
+        return _langfuse_client
+    return None
 
 
 def is_langfuse_enabled() -> bool:
@@ -144,12 +129,18 @@ def is_langfuse_enabled() -> bool:
     return _langfuse_enabled and _langfuse_client is not None
 
 
-def flush_langfuse(timeout: Optional[float] = None) -> bool:
-    """
-    Flush all pending LangFuse traces synchronously.
+def _sync_flush_for_atexit() -> None:
+    """Synchronous flush for the atexit handler (runs outside the event loop)."""
+    if _langfuse_client and _langfuse_enabled:
+        try:
+            _langfuse_client.flush()
+        except Exception:
+            pass
 
-    Critical for container shutdown - ensures traces are sent before
-    process termination.
+
+async def flush_langfuse(timeout: Optional[float] = None) -> bool:
+    """
+    Flush all pending LangFuse traces asynchronously.
 
     Args:
         timeout: Maximum time to wait for flush (seconds).
@@ -158,8 +149,6 @@ def flush_langfuse(timeout: Optional[float] = None) -> bool:
     Returns:
         True if flush successful, False otherwise
     """
-    global _langfuse_client
-
     if not _langfuse_client or not _langfuse_enabled:
         return True
 
@@ -168,12 +157,12 @@ def flush_langfuse(timeout: Optional[float] = None) -> bool:
             from mirix.settings import settings
 
             timeout = settings.langfuse_flush_timeout
-        except:
-            timeout = 10.0  # Default fallback
+        except Exception:
+            timeout = 10.0
 
     try:
         logger.info(f"Flushing LangFuse traces (timeout: {timeout}s)...")
-        _langfuse_client.flush()
+        await asyncio.to_thread(_langfuse_client.flush)
         logger.info("LangFuse traces flushed successfully")
         return True
     except Exception as e:
@@ -181,25 +170,23 @@ def flush_langfuse(timeout: Optional[float] = None) -> bool:
         return False
 
 
-def shutdown_langfuse() -> None:
+async def shutdown_langfuse() -> None:
     """
     Shutdown LangFuse client and clean up resources.
 
     Should be called on application shutdown to ensure all traces
     are sent and resources are properly released.
     """
-    global _langfuse_client, _langfuse_enabled, _initialization_attempted
+    global _langfuse_client, _langfuse_enabled
 
     if _langfuse_client:
         try:
             logger.info("Shutting down LangFuse client...")
 
-            # Final flush with timeout
-            flush_langfuse()
+            await flush_langfuse()
 
-            # Close client if SDK provides shutdown method
             if hasattr(_langfuse_client, "shutdown"):
-                _langfuse_client.shutdown()
+                await asyncio.to_thread(_langfuse_client.shutdown)
 
             logger.info("LangFuse client shutdown complete")
         except Exception as e:
@@ -207,10 +194,9 @@ def shutdown_langfuse() -> None:
         finally:
             _langfuse_client = None
             _langfuse_enabled = False
-            # Keep _initialization_attempted = True to prevent re-init after shutdown
 
 
-def _reset_for_testing() -> None:
+async def _reset_for_testing() -> None:
     """
     Reset singleton state for testing.
 
@@ -220,8 +206,8 @@ def _reset_for_testing() -> None:
 
     if _langfuse_client:
         try:
-            _langfuse_client.flush()
-        except:
+            await asyncio.to_thread(_langfuse_client.flush)
+        except Exception:
             pass
 
     _langfuse_client = None

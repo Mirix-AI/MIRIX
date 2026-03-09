@@ -21,6 +21,7 @@ Examples:
 """
 
 import argparse
+import asyncio
 import json
 import logging
 import random
@@ -187,8 +188,12 @@ def prepare_messages_with_timestamps(
     return messages_with_timestamps
 
 
-def add_message_to_mirix(
-    client: MirixClient, user_id: str, message_text: str, filter_tags: Dict[str, Any], occurred_at: str
+async def add_message_to_mirix(
+    client: MirixClient,
+    user_id: str,
+    message_text: str,
+    filter_tags: Dict[str, Any],
+    occurred_at: str,
 ) -> bool:
     """
     Add a single message to Mirix system.
@@ -204,7 +209,7 @@ def add_message_to_mirix(
         True if successful, False otherwise
     """
     try:
-        result = client.add(
+        result = await client.add(
             user_id=user_id,
             messages=[
                 {"role": "user", "content": [{"type": "text", "text": message_text}]},
@@ -220,7 +225,7 @@ def add_message_to_mirix(
         return False
 
 
-def run_load_test(client: MirixClient, messages: List[Tuple[str, str, str, Dict[str, Any], str]], org_id: str):
+async def run_load_test(client: MirixClient, messages: List[Tuple[str, str, str, Dict[str, Any], str]], org_id: str):
     """
     Execute load test by adding all messages.
 
@@ -243,7 +248,7 @@ def run_load_test(client: MirixClient, messages: List[Tuple[str, str, str, Dict[
     logger.info("Creating/verifying %d users...", len(unique_users))
     for user_id in unique_users:
         try:
-            client.create_or_get_user(user_id=user_id, user_name=f"Load Test User {user_id}", org_id=org_id)
+            await client.create_or_get_user(user_id=user_id, user_name=f"Load Test User {user_id}", org_id=org_id)
             logger.info("  ✓ User ready: %s", user_id)
         except Exception as e:  # pylint: disable=broad-except
             logger.error("  ✗ Failed to create user %s: %s", user_id, e)
@@ -263,7 +268,7 @@ def run_load_test(client: MirixClient, messages: List[Tuple[str, str, str, Dict[
         batch_success = 0
 
         for user_id, _, message_text, filter_tags, occurred_at in batch:
-            if add_message_to_mirix(client, user_id, message_text, filter_tags, occurred_at):
+            if await add_message_to_mirix(client, user_id, message_text, filter_tags, occurred_at):
                 success_count += 1
                 batch_success += 1
             else:
@@ -361,7 +366,7 @@ Examples:
     return args
 
 
-def main():
+async def main():
     """Main execution function."""
     # Parse command-line arguments
     args = parse_arguments()
@@ -431,7 +436,7 @@ def main():
     org_id = "demo-org"
 
     logger.info("\nInitializing MirixClient...")
-    client = MirixClient(
+    client = await MirixClient.create(
         api_key=None,
         client_id=client_id,
         client_name="Load Test Client",
@@ -441,10 +446,9 @@ def main():
     )
     logger.info("✓ Client initialized")
 
-    # Initialize meta agent
     logger.info("Initializing meta agent from %s", config_path)
     try:
-        client.initialize_meta_agent(config_path=str(config_path), update_agents=False)
+        await client.initialize_meta_agent(config_path=str(config_path), update_agents=False)
         logger.info("✓ Meta agent initialized")
     except Exception as e:  # pylint: disable=broad-except
         logger.error("Failed to initialize meta agent: %s", e)
@@ -467,9 +471,8 @@ def main():
         logger.info("Load test cancelled by user")
         sys.exit(0)
 
-    # Run load test
     try:
-        run_load_test(client, messages, org_id)
+        await run_load_test(client, messages, org_id)
     except KeyboardInterrupt:
         logger.info("\n\nLoad test interrupted by user")
         sys.exit(1)
@@ -482,4 +485,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

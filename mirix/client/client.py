@@ -41,10 +41,10 @@ class AbstractClient(object):
     ):
         self.debug = debug
 
-    def agent_exists(self, agent_id: Optional[str] = None, agent_name: Optional[str] = None) -> bool:
+    async def agent_exists(self, agent_id: Optional[str] = None, agent_name: Optional[str] = None) -> bool:
         raise NotImplementedError
 
-    def create_agent(
+    async def create_agent(
         self,
         name: Optional[str] = None,
         agent_type: Optional[AgentType] = AgentType.chat_agent,
@@ -64,7 +64,7 @@ class AbstractClient(object):
     ) -> AgentState:
         raise NotImplementedError
 
-    def update_agent(
+    async def update_agent(
         self,
         agent_id: str,
         name: Optional[str] = None,
@@ -80,40 +80,40 @@ class AbstractClient(object):
     ):
         raise NotImplementedError
 
-    def get_tools_from_agent(self, agent_id: str):
+    async def get_tools_from_agent(self, agent_id: str):
         raise NotImplementedError
 
-    def add_tool_to_agent(self, agent_id: str, tool_id: str):
+    async def add_tool_to_agent(self, agent_id: str, tool_id: str):
         raise NotImplementedError
 
-    def remove_tool_from_agent(self, agent_id: str, tool_id: str):
+    async def remove_tool_from_agent(self, agent_id: str, tool_id: str):
         raise NotImplementedError
 
-    def rename_agent(self, agent_id: str, new_name: str):
+    async def rename_agent(self, agent_id: str, new_name: str):
         raise NotImplementedError
 
-    def delete_agent(self, agent_id: str):
+    async def delete_agent(self, agent_id: str):
         raise NotImplementedError
 
-    def get_agent(self, agent_id: str) -> AgentState:
+    async def get_agent(self, agent_id: str) -> AgentState:
         raise NotImplementedError
 
-    def get_agent_id(self, agent_name: str) -> AgentState:
+    async def get_agent_id(self, agent_name: str) -> AgentState:
         raise NotImplementedError
 
-    def update_in_context_memory(self, agent_id: str, section: str, value: Union[List[str], str]) -> Memory:
+    async def update_in_context_memory(self, agent_id: str, section: str, value: Union[List[str], str]) -> Memory:
         raise NotImplementedError
 
-    def get_archival_memory_summary(self, agent_id: str) -> ArchivalMemorySummary:
+    async def get_archival_memory_summary(self, agent_id: str) -> ArchivalMemorySummary:
         raise NotImplementedError
 
-    def get_recall_memory_summary(self, agent_id: str) -> RecallMemorySummary:
+    async def get_recall_memory_summary(self, agent_id: str) -> RecallMemorySummary:
         raise NotImplementedError
 
-    def get_in_context_messages(self, agent_id: str) -> List[Message]:
+    async def get_in_context_messages(self, agent_id: str) -> List[Message]:
         raise NotImplementedError
 
-    def send_message(
+    async def send_message(
         self,
         message: str,
         role: str,
@@ -130,56 +130,56 @@ class AbstractClient(object):
     ) -> MirixResponse:
         raise NotImplementedError
 
-    def user_message(self, agent_id: str, message: str) -> MirixResponse:
+    async def user_message(self, agent_id: str, message: str) -> MirixResponse:
         raise NotImplementedError
 
-    def create_human(self, name: str, text: str) -> Human:
+    async def create_human(self, name: str, text: str) -> Human:
         raise NotImplementedError
 
-    def create_persona(self, name: str, text: str) -> Persona:
+    async def create_persona(self, name: str, text: str) -> Persona:
         raise NotImplementedError
 
-    def list_humans(self) -> List[Human]:
+    async def list_humans(self) -> List[Human]:
         raise NotImplementedError
 
-    def list_personas(self) -> List[Persona]:
+    async def list_personas(self) -> List[Persona]:
         raise NotImplementedError
 
-    def update_human(self, human_id: str, text: str) -> Human:
+    async def update_human(self, human_id: str, text: str) -> Human:
         raise NotImplementedError
 
-    def update_persona(self, persona_id: str, text: str) -> Persona:
+    async def update_persona(self, persona_id: str, text: str) -> Persona:
         raise NotImplementedError
 
-    def get_persona(self, id: str) -> Persona:
+    async def get_persona(self, id: str) -> Persona:
         raise NotImplementedError
 
-    def get_human(self, id: str) -> Human:
+    async def get_human(self, id: str) -> Human:
         raise NotImplementedError
 
-    def get_persona_id(self, name: str) -> str:
+    async def get_persona_id(self, name: str) -> str:
         raise NotImplementedError
 
-    def get_human_id(self, name: str) -> str:
+    async def get_human_id(self, name: str) -> str:
         raise NotImplementedError
 
-    def delete_persona(self, id: str):
+    async def delete_persona(self, id: str):
         raise NotImplementedError
 
-    def delete_human(self, id: str):
+    async def delete_human(self, id: str):
         raise NotImplementedError
 
-    def load_langchain_tool(
+    async def load_langchain_tool(
         self,
         langchain_tool: "LangChainBaseTool",
         additional_imports_module_attr_map: dict[str, str] = None,
     ) -> Tool:
         raise NotImplementedError
 
-    def load_composio_tool(self, action: "ActionType") -> Tool:
+    async def load_composio_tool(self, action: "ActionType") -> Tool:
         raise NotImplementedError
 
-    def create_tool(
+    async def create_tool(
         self,
         func,
         name: Optional[str] = None,
@@ -188,7 +188,7 @@ class AbstractClient(object):
     ) -> Tool:
         raise NotImplementedError
 
-    def create_or_update_tool(
+    async def create_or_update_tool(
         self,
         func,
         name: Optional[str] = None,
@@ -197,7 +197,7 @@ class AbstractClient(object):
     ) -> Tool:
         raise NotImplementedError
 
-    def update_tool(
+    async def update_tool(
         self,
         id: str,
         name: Optional[str] = None,
@@ -208,22 +208,22 @@ class AbstractClient(object):
     ) -> Tool:
         raise NotImplementedError
 
-    def list_tools(self, cursor: Optional[str] = None, limit: Optional[int] = 50) -> List[Tool]:
+    async def list_tools(self, cursor: Optional[str] = None, limit: Optional[int] = 50) -> List[Tool]:
         raise NotImplementedError
 
-    def get_tool(self, id: str) -> Tool:
+    async def get_tool(self, id: str) -> Tool:
         raise NotImplementedError
 
-    def delete_tool(self, id: str):
+    async def delete_tool(self, id: str):
         raise NotImplementedError
 
-    def get_tool_id(self, name: str) -> Optional[str]:
+    async def get_tool_id(self, name: str) -> Optional[str]:
         raise NotImplementedError
 
-    def upsert_base_tools(self) -> List[Tool]:
+    async def upsert_base_tools(self) -> List[Tool]:
         raise NotImplementedError
 
-    def get_messages(
+    async def get_messages(
         self,
         agent_id: str,
         before: Optional[str] = None,
@@ -232,22 +232,22 @@ class AbstractClient(object):
     ) -> List[Message]:
         raise NotImplementedError
 
-    def list_model_configs(self) -> List[LLMConfig]:
+    async def list_model_configs(self) -> List[LLMConfig]:
         raise NotImplementedError
 
-    def list_embedding_configs(self) -> List[EmbeddingConfig]:
+    async def list_embedding_configs(self) -> List[EmbeddingConfig]:
         raise NotImplementedError
 
-    def create_org(self, name: Optional[str] = None) -> Organization:
+    async def create_org(self, name: Optional[str] = None) -> Organization:
         raise NotImplementedError
 
-    def list_orgs(self, cursor: Optional[str] = None, limit: Optional[int] = 50) -> List[Organization]:
+    async def list_orgs(self, cursor: Optional[str] = None, limit: Optional[int] = 50) -> List[Organization]:
         raise NotImplementedError
 
-    def delete_org(self, org_id: str) -> Organization:
+    async def delete_org(self, org_id: str) -> Organization:
         raise NotImplementedError
 
-    def create_sandbox_config(self, config: Union[LocalSandboxConfig, E2BSandboxConfig]) -> SandboxConfig:
+    async def create_sandbox_config(self, config: Union[LocalSandboxConfig, E2BSandboxConfig]) -> SandboxConfig:
         """
         Create a new sandbox configuration.
 
@@ -259,7 +259,7 @@ class AbstractClient(object):
         """
         raise NotImplementedError
 
-    def update_sandbox_config(
+    async def update_sandbox_config(
         self,
         sandbox_config_id: str,
         config: Union[LocalSandboxConfig, E2BSandboxConfig],
@@ -276,7 +276,7 @@ class AbstractClient(object):
         """
         raise NotImplementedError
 
-    def delete_sandbox_config(self, sandbox_config_id: str) -> None:
+    async def delete_sandbox_config(self, sandbox_config_id: str) -> None:
         """
         Delete a sandbox configuration.
 
@@ -285,7 +285,7 @@ class AbstractClient(object):
         """
         raise NotImplementedError
 
-    def list_sandbox_configs(self, limit: int = 50, cursor: Optional[str] = None) -> List[SandboxConfig]:
+    async def list_sandbox_configs(self, limit: int = 50, cursor: Optional[str] = None) -> List[SandboxConfig]:
         """
         List all sandbox configurations.
 
@@ -298,7 +298,7 @@ class AbstractClient(object):
         """
         raise NotImplementedError
 
-    def create_sandbox_env_var(
+    async def create_sandbox_env_var(
         self,
         sandbox_config_id: str,
         key: str,
@@ -319,7 +319,7 @@ class AbstractClient(object):
         """
         raise NotImplementedError
 
-    def update_sandbox_env_var(
+    async def update_sandbox_env_var(
         self,
         env_var_id: str,
         key: Optional[str] = None,
@@ -340,7 +340,7 @@ class AbstractClient(object):
         """
         raise NotImplementedError
 
-    def delete_sandbox_env_var(self, env_var_id: str) -> None:
+    async def delete_sandbox_env_var(self, env_var_id: str) -> None:
         """
         Delete an environment variable by its ID.
 
@@ -349,7 +349,7 @@ class AbstractClient(object):
         """
         raise NotImplementedError
 
-    def list_sandbox_env_vars(
+    async def list_sandbox_env_vars(
         self, sandbox_config_id: str, limit: int = 50, cursor: Optional[str] = None
     ) -> List[SandboxEnvironmentVariable]:
         """

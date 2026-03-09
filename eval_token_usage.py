@@ -7,6 +7,7 @@ feeding the .local/images/set1 assets into memory so we can inspect usage
 statistics returned by the API.
 """
 
+import asyncio
 import base64
 import logging
 import mimetypes
@@ -75,13 +76,13 @@ def get_images_from_set(set_path: Path) -> List[Path]:
     return image_paths
 
 
-def add_images_to_memory(client: MirixClient, user_id: str, image_paths: Iterable[Path]) -> None:
+async def add_images_to_memory(client: MirixClient, user_id: str, image_paths: Iterable[Path]) -> None:
     """Send each image to the memory-add endpoint."""
     for image_path in image_paths:
         data_url = encode_image_to_data_url(image_path)
         logger.info("Adding %s ...", image_path.name)
 
-        response = client.add(
+        response = await client.add(
             user_id=user_id,
             messages=[
                 {
@@ -118,25 +119,24 @@ def add_images_to_memory(client: MirixClient, user_id: str, image_paths: Iterabl
         logger.info("Response success=%s usage=%s", success, usage)
 
 
-def main() -> None:
+async def main() -> None:
     user_id = "token-usage-user"
     org_id = "token-usage-org"
 
-    client = MirixClient(
+    client = await MirixClient.create(
         org_id=org_id,
         api_key=None,
         debug=True,
     )
 
-    client.initialize_meta_agent(
-        user_id=user_id,
+    await client.initialize_meta_agent(
         config_path="mirix/configs/examples/mirix_gemini.yaml",
         update_agents=False,
     )
 
     images = get_images_from_set(IMAGE_SET_PATH)
-    add_images_to_memory(client, user_id=user_id, image_paths=images)
+    await add_images_to_memory(client, user_id=user_id, image_paths=images)
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
