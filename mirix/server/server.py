@@ -308,6 +308,26 @@ if not USE_PGLITE and settings.mirix_pg_uri_no_default:
     _pg_uri = settings.mirix_pg_uri.replace("postgresql+pg8000://", "postgresql+asyncpg://").replace(
         "postgresql://", "postgresql+asyncpg://"
     )
+
+    # asyncpg does not accept 'sslmode' as a keyword argument — strip it from
+    # the URI and pass an ssl.SSLContext via connect_args instead.
+    from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+
+    _parsed = urlparse(_pg_uri)
+    _params = parse_qs(_parsed.query, keep_blank_values=True)
+    _sslmode = _params.pop("sslmode", [None])[0]
+    _clean_query = urlencode(_params, doseq=True)
+    _pg_uri = urlunparse(_parsed._replace(query=_clean_query))
+
+    _connect_args: dict = {}
+    if _sslmode and _sslmode not in ("disable", "prefer"):
+        import ssl as _ssl_mod
+
+        _ssl_ctx = _ssl_mod.create_default_context()
+        _ssl_ctx.check_hostname = False
+        _ssl_ctx.verify_mode = _ssl_mod.CERT_NONE
+        _connect_args["ssl"] = _ssl_ctx
+
     engine = create_async_engine(
         _pg_uri,
         pool_size=settings.pg_pool_size,
@@ -315,6 +335,7 @@ if not USE_PGLITE and settings.mirix_pg_uri_no_default:
         pool_timeout=settings.pg_pool_timeout,
         pool_recycle=settings.pg_pool_recycle,
         echo=settings.pg_echo,
+        connect_args=_connect_args,
     )
 elif not USE_PGLITE:
     # TODO: don't rely on config storage
