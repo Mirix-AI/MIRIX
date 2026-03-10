@@ -725,7 +725,7 @@ class EpisodicMemoryManager:
                     )
                     if results:
                         logger.debug(
-                            "Redis cache HIT: returned %d recent episodic events",
+                            "Cache HIT: returned %d recent episodic events",
                             len(results),
                         )
                         # Clean Redis-specific fields before Pydantic validation
@@ -766,7 +766,7 @@ class EpisodicMemoryManager:
                     )
                     if results:
                         logger.debug(
-                            "Redis vector search HIT: found %d episodic events",
+                            "Cache vector search HIT: found %d episodic events",
                             len(results),
                         )
                         # Clean Redis-specific fields before Pydantic validation
@@ -792,7 +792,7 @@ class EpisodicMemoryManager:
                     )
                     if results:
                         logger.debug(
-                            "Redis text search HIT: found %d episodic events",
+                            "Cache text search HIT: found %d episodic events",
                             len(results),
                         )
                         # Clean Redis-specific fields before Pydantic validation
@@ -801,16 +801,16 @@ class EpisodicMemoryManager:
 
             except Exception as e:
                 logger.warning(
-                    "Redis search failed for episodic memory, falling back to PostgreSQL: %s",
+                    "Cache search failed for episodic memory, falling back to PostgreSQL: %s",
                     e,
                 )
                 # Fall through to PostgreSQL
 
         # Log when bypassing cache or Redis unavailable
         if not use_cache:
-            logger.debug("Bypassing Redis cache (use_cache=False), querying PostgreSQL directly for episodic memory")
+            logger.debug("Bypassing cache (use_cache=False), querying PostgreSQL directly for episodic memory")
         elif not redis_client:
-            logger.debug("Redis unavailable, querying PostgreSQL directly for episodic memory")
+            logger.debug("Cache unavailable, querying PostgreSQL directly for episodic memory")
 
         # Original PostgreSQL implementation (unchanged - serves as fallback)
         async with self.session_maker() as session:
@@ -1442,7 +1442,7 @@ class EpisodicMemoryManager:
                     )
                     if results:
                         logger.debug(
-                            "Redis cache HIT: returned %d recent episodic events for org %s",
+                            "Cache HIT: returned %d recent episodic events for org %s",
                             len(results),
                             organization_id,
                         )
@@ -1482,7 +1482,7 @@ class EpisodicMemoryManager:
                     )
                     if results:
                         logger.debug(
-                            "Redis vector search HIT: %d results for org %s",
+                            "Cache vector search HIT: %d results for org %s",
                             len(results),
                             organization_id,
                         )
@@ -1505,7 +1505,7 @@ class EpisodicMemoryManager:
                     )
                     if results:
                         logger.debug(
-                            "Redis text search HIT: %d results for org %s",
+                            "Cache text search HIT: %d results for org %s",
                             len(results),
                             organization_id,
                         )
@@ -1513,11 +1513,11 @@ class EpisodicMemoryManager:
                         return [PydanticEpisodicEvent(**item) for item in results]
 
             except Exception as e:
-                logger.warning("Redis search failed for org %s: %s", organization_id, e)
+                logger.warning("Cache search failed for org %s: %s", organization_id, e)
 
         # Fallback to PostgreSQL
         logger.debug(
-            "Redis cache MISS or disabled - falling back to PostgreSQL for org %s",
+            "Cache MISS or disabled - falling back to PostgreSQL for org %s",
             organization_id,
         )
 

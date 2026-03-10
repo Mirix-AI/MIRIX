@@ -77,7 +77,7 @@ async def test_memory_agent_truncates_extra_tool_calls_and_executes_only_first()
 
     executed = []
 
-    def _fake_exec(function_name, function_args, *args, **kwargs):
+    async def _fake_exec(function_name, function_args, *args, **kwargs):
         executed.append(function_name)
         return "ok"
 

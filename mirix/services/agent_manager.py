@@ -1073,7 +1073,7 @@ class AgentManager:
 
         except Exception as e:
             # Log error and fall back to PostgreSQL
-            logger.warning("Failed to reconstruct children from Redis cache: %s", e)
+            logger.warning("Failed to reconstruct children from cache: %s", e)
             return await self._get_children_from_db(parent_ids, session, actor)
 
     async def _get_children_from_db(self, parent_ids: List[str], session: Session, actor: PydanticClient) -> dict:
@@ -1170,7 +1170,7 @@ class AgentManager:
 
         except Exception as e:
             # Log error and return None to trigger PostgreSQL fallback
-            logger.warning("Failed to get children from Redis for parent %s: %s", parent_id, e)
+            logger.warning("Failed to get children from cache for parent %s: %s", parent_id, e)
             return None
 
     async def _cache_children_ids_for_parents(self, agent_states: List[PydanticAgentState]) -> None:
@@ -1238,11 +1238,11 @@ class AgentManager:
         if parent_id is not None:
             cached_children = await self._get_children_from_redis(parent_id, actor)
             if cached_children is not None:
-                logger.debug("Redis cache HIT for children of parent %s", parent_id)
+                logger.debug("Cache HIT for children of parent %s", parent_id)
                 return cached_children
             # Cache miss - fall through to PostgreSQL query
             logger.debug(
-                "Redis cache MISS for children of parent %s, querying PostgreSQL",
+                "Cache MISS for children of parent %s, querying PostgreSQL",
                 parent_id,
             )
 

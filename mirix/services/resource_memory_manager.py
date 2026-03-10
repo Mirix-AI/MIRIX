@@ -578,7 +578,7 @@ class ResourceMemoryManager:
                         scopes=scopes,
                     )
                     if results:
-                        logger.debug("Redis cache HIT: returned %d resource items", len(results))
+                        logger.debug("Cache HIT: returned %d resource items", len(results))
                         # Clean Redis-specific fields before Pydantic validation
                         results = redis_client.clean_redis_fields(results)
                         return [PydanticResourceMemoryItem(**item) for item in results]
@@ -612,7 +612,7 @@ class ResourceMemoryManager:
                         scopes=scopes,
                     )
                     if results:
-                        logger.debug("Redis vector search HIT: found %d resource items", len(results))
+                        logger.debug("Cache vector search HIT: found %d resource items", len(results))
                         # Clean Redis-specific fields before Pydantic validation
                         results = redis_client.clean_redis_fields(results)
                         return [PydanticResourceMemoryItem(**item) for item in results]
@@ -631,19 +631,19 @@ class ResourceMemoryManager:
                         scopes=scopes,
                     )
                     if results:
-                        logger.debug("Redis text search HIT: found %d resource items", len(results))
+                        logger.debug("Cache text search HIT: found %d resource items", len(results))
                         # Clean Redis-specific fields before Pydantic validation
                         results = redis_client.clean_redis_fields(results)
                         return [PydanticResourceMemoryItem(**item) for item in results]
 
             except Exception as e:
-                logger.warning("Redis search failed for resource memory, falling back to PostgreSQL: %s", e)
+                logger.warning("Cache search failed for resource memory, falling back to PostgreSQL: %s", e)
 
         # Log when bypassing cache or Redis unavailable
         if not use_cache:
-            logger.debug("Bypassing Redis cache (use_cache=False), querying PostgreSQL directly for resource memory")
+            logger.debug("Bypassing cache (use_cache=False), querying PostgreSQL directly for resource memory")
         elif not redis_client:
-            logger.debug("Redis unavailable, querying PostgreSQL directly for resource memory")
+            logger.debug("Cache unavailable, querying PostgreSQL directly for resource memory")
 
         async with self.session_maker() as session:
             if query == "":
@@ -1111,7 +1111,7 @@ class ResourceMemoryManager:
                         scopes=scopes,
                     )
                     if results:
-                        logger.debug("Redis: %d resource memories for org %s", len(results), organization_id)
+                        logger.debug("Cache: %d resource memories for org %s", len(results), organization_id)
                         results = redis_client.clean_redis_fields(results)
                         return [PydanticResourceMemoryItem(**item) for item in results]
 
@@ -1143,7 +1143,7 @@ class ResourceMemoryManager:
                         scopes=scopes,
                     )
                     if results:
-                        logger.debug("Redis vector: %d results for org %s", len(results), organization_id)
+                        logger.debug("Cache vector: %d results for org %s", len(results), organization_id)
                         results = redis_client.clean_redis_fields(results)
                         return [PydanticResourceMemoryItem(**item) for item in results]
 
@@ -1160,12 +1160,12 @@ class ResourceMemoryManager:
                         scopes=scopes,
                     )
                     if results:
-                        logger.debug("Redis text: %d results for org %s", len(results), organization_id)
+                        logger.debug("Cache text: %d results for org %s", len(results), organization_id)
                         results = redis_client.clean_redis_fields(results)
                         return [PydanticResourceMemoryItem(**item) for item in results]
 
             except Exception as e:
-                logger.warning("Redis search failed: %s", e)
+                logger.warning("Cache search failed: %s", e)
 
         # PostgreSQL fallback
         logger.debug("PostgreSQL fallback for org %s", organization_id)

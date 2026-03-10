@@ -3,15 +3,16 @@ Cache provider interface and registry for Mirix.
 
 Cache providers implement the interface via duck typing (no base class
 required). Similar to the auth_provider pattern in mirix.llm_api.auth_provider.
+All methods are async; callers must await them.
 
-Expected methods (duck typing):
-    - get(key: str) -> Optional[Dict[str, Any]]
-    - set(key: str, data: Dict[str, Any], ttl: Optional[int] = None) -> bool
-    - delete(key: str) -> bool
-    - get_hash(key: str) -> Optional[Dict[str, Any]]
-    - set_hash(key: str, data: Dict[str, Any], ttl: Optional[int] = None) -> bool
-    - get_json(key: str) -> Optional[Dict[str, Any]]
-    - set_json(key: str, data: Dict[str, Any], ttl: Optional[int] = None) -> bool
+Expected methods (duck typing, all async):
+    - async get(key: str) -> Optional[Dict[str, Any]]
+    - async set(key: str, data: Dict[str, Any], ttl: Optional[int] = None) -> bool
+    - async delete(key: str) -> bool
+    - async get_hash(key: str) -> Optional[Dict[str, Any]]
+    - async set_hash(key: str, data: Dict[str, Any], ttl: Optional[int] = None) -> bool
+    - async get_json(key: str) -> Optional[Dict[str, Any]]
+    - async set_json(key: str, data: Dict[str, Any], ttl: Optional[int] = None) -> bool
 
 Key prefix constants (all providers should define these):
     BLOCK_PREFIX, MESSAGE_PREFIX, EPISODIC_PREFIX, SEMANTIC_PREFIX,
@@ -28,7 +29,7 @@ Usage:
     from mirix.database.cache_provider import get_cache_provider
     cache_provider = get_cache_provider()
     if cache_provider:
-        data = cache_provider.get_hash(f"{cache_provider.MESSAGE_PREFIX}{msg_id}")
+        data = await cache_provider.get_hash(f"{cache_provider.MESSAGE_PREFIX}{msg_id}")
 """
 
 from typing import Any, Dict, Optional

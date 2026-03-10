@@ -20,30 +20,30 @@ from mirix.database.cache_provider import (
 
 
 class MockCacheProvider:
-    """Mock cache provider for testing (duck typing)."""
+    """Mock cache provider for testing (duck typing). Implements async interface."""
 
     MESSAGE_PREFIX = "msg:"
     BLOCK_PREFIX = "block:"
 
-    def get(self, key: str):
+    async def get(self, key: str):
         return {"mock": "data"}
 
-    def set(self, key: str, data: dict, ttl: int = None):
+    async def set(self, key: str, data: dict, ttl: int = None):
         return True
 
-    def delete(self, key: str):
+    async def delete(self, key: str):
         return True
 
-    def get_hash(self, key: str):
+    async def get_hash(self, key: str):
         return {"mock": "data"}
 
-    def set_hash(self, key: str, data: dict, ttl: int = None):
+    async def set_hash(self, key: str, data: dict, ttl: int = None):
         return True
 
-    def get_json(self, key: str):
+    async def get_json(self, key: str):
         return {"mock": "data"}
 
-    def set_json(self, key: str, data: dict, ttl: int = None):
+    async def set_json(self, key: str, data: dict, ttl: int = None):
         return True
 
 
