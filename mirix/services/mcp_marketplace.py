@@ -66,8 +66,8 @@ class MCPMarketplace:
                 tags=["gmail", "email", "oauth2", "native", "google-workspace"],
                 requirements=[
                     "google-auth",
-                    "google-api-python-client",
-                    "oauth2-credentials",
+                    "google-auth-oauthlib",
+                    "aiogoogle",
                 ],
             )
         ]

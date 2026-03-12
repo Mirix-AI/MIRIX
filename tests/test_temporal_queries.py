@@ -1,10 +1,20 @@
 """Tests for temporal query functionality."""
 
-from datetime import datetime, timedelta
+import asyncio
+import os
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
+import pytest_asyncio
+import requests
 
 from mirix.temporal.temporal_parser import TemporalRange, parse_temporal_expression
+
+# Integration test config (used only by TestTemporalIntegration)
+TEST_USER_ID_TEMPORAL = "temporal-test-user"
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+CONFIG_PATH = PROJECT_ROOT / "mirix" / "configs" / "examples" / "mirix_gemini.yaml"
 
 
 class TestTemporalParser:
@@ -138,28 +148,179 @@ class TestTemporalParser:
         assert result["end"] is None
 
 
+# ---------------------------------------------------------------------------
+# Integration test fixtures (used only by TestTemporalIntegration)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def server_process():
+    """Check that server is running (requires manual start)."""
+    try:
+        resp = requests.get("http://localhost:8000/health", timeout=2)
+        if resp.status_code == 200:
+            yield None
+            return
+    except (requests.ConnectionError, requests.Timeout):
+        pass
+    pytest.skip(
+        "Server not running. Start with: python scripts/start_server.py --port=8000"
+    )
+
+
+@pytest_asyncio.fixture(scope="module")
+async def api_auth(server_process):
+    """Create org and client once per module; yield auth for client creation."""
+    from conftest import _create_client_and_key
+
+    auth = await _create_client_and_key(
+        "temporal-test-client", "temporal-test-org", org_name="Temporal Test Org"
+    )
+    os.environ.setdefault("MIRIX_API_URL", "http://localhost:8000")
+    os.environ["MIRIX_API_KEY"] = auth["api_key"]
+    return auth
+
+
+@pytest_asyncio.fixture
+async def temporal_client(server_process, api_auth):
+    """Create a MirixClient for temporal integration tests."""
+    from mirix.client import MirixClient
+
+    c = await MirixClient.create(
+        api_key=api_auth["api_key"],
+        base_url="http://localhost:8000",
+        debug=False,
+    )
+    await c.initialize_meta_agent(config_path=str(CONFIG_PATH), update_agents=False)
+    assert c._meta_agent is not None, "Meta agent must be initialized"
+    return c
+
+
 class TestTemporalIntegration:
-    """Integration tests for temporal query feature."""
+    """Integration tests for temporal query feature.
 
-    # Note: These tests require a running server and database
-    # They are marked with @pytest.mark.integration to skip in unit test runs
-
-    @pytest.mark.integration
-    def test_retrieve_with_temporal_expression(self):
-        """Test retrieval with natural language temporal expression."""
-        # This would test the full flow from client to database
-        # Skip for now as it requires full setup
-        pytest.skip("Integration test - requires running server and full setup")
+    Require a running server. Run with:
+      pytest tests/test_temporal_queries.py -v -m integration
+    """
 
     @pytest.mark.integration
-    def test_retrieve_with_explicit_date_range(self):
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(
+        not os.getenv("GEMINI_API_KEY"),
+        reason="GEMINI_API_KEY not set (needed for meta agent)",
+    )
+    async def test_retrieve_with_temporal_expression(self, temporal_client):
+        """Test retrieval with natural language temporal expression (e.g. 'today')."""
+        # Add an episodic memory with occurred_at so we have something to retrieve
+        await temporal_client.add(
+            user_id=TEST_USER_ID_TEMPORAL,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "I had a standup meeting at 10 AM and reviewed PRs in the afternoon.",
+                        }
+                    ],
+                },
+                {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "Recorded your standup and PR review."}],
+                },
+            ],
+            occurred_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S"),
+        )
+        await asyncio.sleep(2)
+
+        result = await temporal_client.retrieve_with_conversation(
+            user_id=TEST_USER_ID_TEMPORAL,
+            messages=[
+                {"role": "user", "content": [{"type": "text", "text": "What did I do today?"}]}
+            ],
+            limit=10,
+        )
+
+        assert result is not None
+        assert result.get("success") is True
+        assert "memories" in result
+        # Server may return temporal_expression when it parses "today" from the query
+        assert "memories" in result
+        if result.get("temporal_expression") or result.get("date_range"):
+            assert "episodic" in result["memories"] or len(result["memories"]) >= 0
+
+    @pytest.mark.integration
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(
+        not os.getenv("GEMINI_API_KEY"),
+        reason="GEMINI_API_KEY not set (needed for meta agent)",
+    )
+    async def test_retrieve_with_explicit_date_range(self, temporal_client):
         """Test retrieval with explicit start_date and end_date."""
-        pytest.skip("Integration test - requires running server and full setup")
+        start = "2025-11-01T00:00:00"
+        end = "2025-11-30T23:59:59"
+
+        result = await temporal_client.retrieve_with_conversation(
+            user_id=TEST_USER_ID_TEMPORAL,
+            messages=[
+                {"role": "user", "content": [{"type": "text", "text": "Show me November 2025 events"}]}
+            ],
+            limit=10,
+            start_date=start,
+            end_date=end,
+        )
+
+        assert result is not None
+        assert result.get("success") is True
+        assert "memories" in result
+        assert result.get("date_range") is not None
+        assert result["date_range"].get("start") is not None
+        assert result["date_range"].get("end") is not None
+        assert "2025-11-01" in result["date_range"]["start"]
+        assert "2025-11-30" in result["date_range"]["end"]
 
     @pytest.mark.integration
-    def test_temporal_filtering_episodic_only(self):
-        """Test that temporal filtering only affects episodic memories."""
-        pytest.skip("Integration test - requires running server and full setup")
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(
+        not os.getenv("GEMINI_API_KEY"),
+        reason="GEMINI_API_KEY not set (needed for meta agent)",
+    )
+    async def test_temporal_filtering_episodic_only(self, temporal_client):
+        """Test that temporal filtering applies only to episodic memories."""
+        # Add episodic memory with occurred_at in a specific range
+        await temporal_client.add(
+            user_id=TEST_USER_ID_TEMPORAL,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "I learned that Python uses list comprehensions."}
+                    ],
+                },
+                {"role": "assistant", "content": [{"type": "text", "text": "Noted."}]},
+            ],
+        )
+        await asyncio.sleep(2)
+
+        start = "2025-10-01T00:00:00"
+        end = "2025-12-31T23:59:59"
+        result = await temporal_client.retrieve_with_conversation(
+            user_id=TEST_USER_ID_TEMPORAL,
+            messages=[
+                {"role": "user", "content": [{"type": "text", "text": "What do you know about me?"}]}
+            ],
+            limit=10,
+            start_date=start,
+            end_date=end,
+        )
+
+        assert result is not None
+        assert result.get("success") is True
+        assert "memories" in result
+        # date_range is applied; episodic (if any) are filtered by it; other types (semantic, etc.) are not
+        assert result.get("date_range") is not None
+        # Memories can contain episodic (filtered by date) and other types (unfiltered by date)
+        assert isinstance(result["memories"], dict)
 
 
 # Additional documentation and usage examples

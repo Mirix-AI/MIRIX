@@ -16,6 +16,7 @@ Usage:
     poetry run python tests/test_raw_memory_with_real_embeddings.py
 """
 
+import asyncio
 import os
 import sys
 from pathlib import Path
@@ -47,7 +48,7 @@ from mirix.services.raw_memory_manager import RawMemoryManager
 from mirix.services.user_manager import UserManager
 
 
-def main():
+async def main():
     """Create a raw memory with real Gemini embeddings."""
 
     # Check for API key
@@ -78,24 +79,27 @@ def main():
     # Create organization
     org_id = "test-org-embeddings"
     try:
-        org = org_mgr.get_organization_by_id(org_id)
+        org = await org_mgr.get_organization_by_id(org_id)
+        if org is None:
+            raise ValueError("not found")
         print(f"[OK] Using existing organization: {org_id}")
     except Exception:
-        org = org_mgr.create_organization(PydanticOrganization(id=org_id, name="Test Organization for Embeddings"))
+        org = await org_mgr.create_organization(PydanticOrganization(id=org_id, name="Test Organization for Embeddings"))
         print(f"[OK] Created organization: {org_id}")
 
     # Create client
     client_id = "test-client-embeddings"
     try:
-        client = client_mgr.get_client_by_id(client_id)
+        client = await client_mgr.get_client_by_id(client_id)
         print(f"[OK] Using existing client: {client_id}")
     except Exception:
-        client = client_mgr.create_client(
+        client = await client_mgr.create_client(
             PydanticClient(
                 id=client_id,
                 organization_id=org_id,
                 name="Test Client for Embeddings",
-                scope="read_write",
+                write_scope="test",
+                read_scopes=["test"],
             )
         )
         print(f"[OK] Created client: {client_id}")
@@ -103,10 +107,10 @@ def main():
     # Create user
     user_id = "test-user-embeddings"
     try:
-        user = user_mgr.get_user_by_id(user_id)
+        user = await user_mgr.get_user_by_id(user_id)
         print(f"[OK] Using existing user: {user_id}")
     except Exception:
-        user = user_mgr.create_user(
+        user = await user_mgr.create_user(
             PydanticUser(
                 id=user_id,
                 organization_id=org_id,
@@ -119,7 +123,7 @@ def main():
     # Create agent with Gemini embedding config
     agent_id = "test-agent-gemini-embeddings"
     try:
-        agent = agent_mgr.get_agent_by_id(agent_id, actor=client)
+        agent = await agent_mgr.get_agent_by_id(agent_id, actor=client)
         print(f"[OK] Using existing agent: {agent_id}")
     except Exception:
         # Load config from mirix_gemini.yaml (same pattern as test_memory_server.py)
@@ -131,7 +135,7 @@ def main():
         with open(config_path, "r") as f:
             config = yaml.safe_load(f)
 
-        agent = agent_mgr.create_agent(
+        agent = await agent_mgr.create_agent(
             CreateAgent(
                 name="Test Agent Gemini Embeddings",
                 description="Test agent with real Gemini embeddings from mirix_gemini.yaml",
@@ -159,7 +163,7 @@ def main():
     )
 
     try:
-        created_memory = raw_memory_mgr.create_raw_memory(
+        created_memory = await raw_memory_mgr.create_raw_memory(
             raw_memory=memory_data,
             actor=client,
             agent_state=agent,  # Pass agent_state to generate embeddings
@@ -203,4 +207,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

@@ -16,7 +16,7 @@ export GEMINI_API_KEY=your_api_key_here
 
 | File | Tests | Type | Speed | Description |
 |------|-------|------|-------|-------------|
-| `test_memory_server.py` | 18 | Unit | Fast (~20s) | Direct `SyncServer()` calls, no network |
+| `test_memory_server.py` | 18 | Unit | Fast (~20s) | Direct `AsyncServer()` calls, no network |
 | `test_memory_integration.py` | 4 | Integration | Slow (~45s) | REST API via real server + client |
 
 ## Run Tests

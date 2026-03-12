@@ -8,6 +8,7 @@ Prerequisites:
 - Or set MIRIX_API_URL environment variable to your server URL
 """
 
+import asyncio
 import logging
 import os
 from pathlib import Path
@@ -27,47 +28,40 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(level
 logger = logging.getLogger(__name__)
 
 
-def main():
+async def main():
     """Main function to demonstrate memory retrieval and visualization."""
-
-    # 1. Create MirixClient (represents the client application)
     client_id = "demo-client-app"
     org_id = "demo-org"
-    user_id = "demo-user"  # End-user ID
+    user_id = "demo-user"
 
     logger.info("Initializing MirixClient...")
-    client = MirixClient(
-        api_key=None,  # TODO: add authentication later
+    client = await MirixClient.create(
+        api_key=None,
         client_id=client_id,
         org_id=org_id,
         debug=True,
     )
 
-    # 2. Initialize meta agent (no user_id parameter)
     logger.info("Initializing meta agent...")
     config_path = Path(mirix_root) / "mirix" / "configs" / "examples" / "mirix_gemini.yaml"
-
-    client.initialize_meta_agent(
+    await client.initialize_meta_agent(
         config_path=str(config_path),
         update_agents=False,
     )
     logger.info("✅ Meta agent initialized")
 
-    # 3. Ensure user exists
     logger.info(f"Creating/getting user: {user_id}")
-    user_id = client.create_or_get_user(user_id=user_id, user_name="Alice")
+    user_id = await client.create_or_get_user(user_id=user_id, user_name="Alice")
     logger.info(f"✅ User ready: {user_id}")
 
-    # 4. Retrieve memories using conversation context
     logger.info("\nRetrieving memories for user...")
     print("=" * 80)
 
     try:
-        # Retrieve all memories by providing a general query
-        memories = client.retrieve_with_conversation(
+        memories = await client.retrieve_with_conversation(
             user_id=user_id,
             messages=[{"role": "user", "content": [{"type": "text", "text": "Show me all my memories"}]}],
-            limit=20,  # Retrieve up to 20 items per memory type
+            limit=20,
         )
 
         if not memories.get("success"):
@@ -156,4 +150,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

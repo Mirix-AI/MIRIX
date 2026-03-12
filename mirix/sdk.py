@@ -1,13 +1,16 @@
 """
-Mirix SDK - Simple Python interface for memory-enhanced AI agents
+Mirix SDK - Simple Python interface for memory-enhanced AI agents.
+
+All I/O methods are async. Use Mirix.create() to construct an instance.
 """
 
+import asyncio
 import logging
 import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
-from mirix.local_client import create_client
+from mirix.local_client.local_client import LocalClient
 from mirix.schemas.agent import AgentType, CreateMetaAgent
 from mirix.schemas.embedding_config import EmbeddingConfig
 from mirix.schemas.llm_config import LLMConfig
@@ -62,22 +65,64 @@ class Mirix:
         model: Optional[str] = None,
         config_path: Optional[str] = None,
         load_from: Optional[str] = None,
+        _client: Optional[LocalClient] = None,
+        _meta_agent=None,
         **kwargs,
     ):
         """
-        Initialize Mirix memory agent.
+        Initialize Mirix memory agent. Prefer Mirix.create() for async setup.
 
         Args:
             api_key: API key for LLM provider (required)
             model_provider: LLM provider name (default: "google_ai")
             model: Model to use (optional). If None, uses default model.
-            config_path: Path to custom config file (optional, for loading system prompts)
+            config_path: Path to custom config file (optional)
             load_from: Path to backup directory to restore from (optional)
+            _client: Internal: pre-created LocalClient (used by create()).
+            _meta_agent: Internal: pre-resolved meta agent (used by create()).
         """
-        if not api_key:
+        if not api_key and _client is None:
             raise ValueError("api_key is required to initialize Mirix")
 
-        # Set API key environment variable based on provider
+        if api_key:
+            # Set API key environment variable based on provider
+            if model_provider.lower() in ["google", "google_ai", "gemini"]:
+                os.environ["GEMINI_API_KEY"] = api_key
+            elif model_provider.lower() in ["openai", "gpt"]:
+                os.environ["OPENAI_API_KEY"] = api_key
+            elif model_provider.lower() in ["anthropic", "claude"]:
+                os.environ["ANTHROPIC_API_KEY"] = api_key
+            else:
+                os.environ[f"{model_provider.upper()}_API_KEY"] = api_key
+            self._reload_model_settings()
+
+        self._config_path = config_path
+        self._model = model
+        self._model_provider = model_provider
+        self._load_from = load_from
+        self._kwargs = kwargs
+        self._client = _client
+        self._meta_agent = _meta_agent
+
+    @classmethod
+    async def create(
+        cls,
+        api_key: str,
+        model_provider: str = "google_ai",
+        model: Optional[str] = None,
+        config_path: Optional[str] = None,
+        load_from: Optional[str] = None,
+        **kwargs,
+    ) -> "Mirix":
+        """
+        Create and initialize a Mirix memory agent (async). Use this instead of __init__.
+
+        Example:
+            memory_agent = await Mirix.create(api_key="your-api-key")
+            await memory_agent.add("The moon now has a president")
+        """
+        if not api_key:
+            raise ValueError("api_key is required")
         if model_provider.lower() in ["google", "google_ai", "gemini"]:
             os.environ["GEMINI_API_KEY"] = api_key
         elif model_provider.lower() in ["openai", "gpt"]:
@@ -85,73 +130,73 @@ class Mirix:
         elif model_provider.lower() in ["anthropic", "claude"]:
             os.environ["ANTHROPIC_API_KEY"] = api_key
         else:
-            # For custom providers, use the provider name as prefix
             os.environ[f"{model_provider.upper()}_API_KEY"] = api_key
+        import mirix.settings
+        from mirix.settings import ModelSettings
+        new_settings = ModelSettings()
+        for field_name in ModelSettings.model_fields:
+            setattr(
+                mirix.settings.model_settings,
+                field_name,
+                getattr(new_settings, field_name),
+            )
 
-        # Force reload of model_settings to pick up new environment variables
-        self._reload_model_settings()
-
-        # Load config from file if provided, otherwise use defaults
         system_prompts_folder = None
+        llm_config = LLMConfig.default_config(model or "gemini-2.0-flash")
+        embedding_config = EmbeddingConfig.default_config("text-embedding-004")
         if config_path:
             config_path = Path(config_path)
             if config_path.exists():
                 import yaml
-
                 with open(config_path, "r") as f:
                     config_data = yaml.safe_load(f)
                     system_prompts_folder = config_data.get("system_prompts_folder")
-
-                    # Load llm_config from file
                     if "llm_config" in config_data:
                         llm_config = LLMConfig(**config_data["llm_config"])
-                    else:
-                        # Fall back to default
-                        model = model or "gemini-2.0-flash"
-                        llm_config = LLMConfig.default_config(model)
-
-                    # Load embedding_config from file
                     if "embedding_config" in config_data:
                         embedding_config = EmbeddingConfig(**config_data["embedding_config"])
-                    else:
-                        # Fall back to default
-                        embedding_config = EmbeddingConfig.default_config("text-embedding-004")
-            else:
-                # Config file doesn't exist, use defaults
-                model = model or "gemini-2.0-flash"
-                llm_config = LLMConfig.default_config(model)
-                embedding_config = EmbeddingConfig.default_config("text-embedding-004")
-        else:
-            # No config file, use defaults
-            model = model or "gemini-2.0-flash"
-            llm_config = LLMConfig.default_config(model)
-            embedding_config = EmbeddingConfig.default_config("text-embedding-004")
 
-        # Initialize client
-        self._client = create_client()
-        self._client.set_default_llm_config(llm_config)
-        self._client.set_default_embedding_config(embedding_config)
+        client = await LocalClient.create()
+        client.set_default_llm_config(llm_config)
+        client.set_default_embedding_config(embedding_config)
 
-        # Check if meta agent already exists
-        agents = self._client.list_agents()
+        agents = await client.list_agents()
         existing_meta_agent = None
         for agent in agents:
             if agent.agent_type == AgentType.meta_memory_agent:
                 existing_meta_agent = agent
                 break
-
         if existing_meta_agent:
-            self._meta_agent = existing_meta_agent
+            meta_agent = existing_meta_agent
         else:
-            # Create meta agent
             create_request = CreateMetaAgent(
                 system_prompts_folder=system_prompts_folder,
                 llm_config=llm_config,
                 embedding_config=embedding_config,
             )
-            self._meta_agent = self._client.create_meta_agent(request=create_request)
+            meta_agent = await client.create_meta_agent(request=create_request)
 
-    def add(self, content: str, **kwargs) -> Dict[str, Any]:
+        inst = cls(
+            api_key=api_key,
+            model_provider=model_provider,
+            model=model,
+            config_path=config_path,
+            load_from=load_from,
+            _client=client,
+            _meta_agent=meta_agent,
+            **kwargs,
+        )
+        return inst
+
+    def _require_meta_agent(self):
+        """Raise if meta agent is not available (e.g. client has no write_scope)."""
+        if not self._meta_agent:
+            raise RuntimeError(
+                "Meta agent is not available. This usually means the client has no write_scope configured. "
+                "A write_scope is required to create and use memory agents."
+            )
+
+    async def add(self, content: str, **kwargs) -> Dict[str, Any]:
         """
         Add information to memory.
 
@@ -163,67 +208,39 @@ class Mirix:
             Response from the memory system
 
         Example:
-            memory_agent.add("John likes pizza")
-            memory_agent.add("Meeting at 3pm", metadata={"type": "appointment"})
+            await memory_agent.add("John likes pizza")
         """
-        response = self._client.send_message(agent_id=self._meta_agent.id, role="user", message=content, **kwargs)
-
-        # Extract the response text from MirixResponse
+        self._require_meta_agent()
+        response = await self._client.send_message(
+            agent_id=self._meta_agent.id, role="user", message=content, **kwargs
+        )
         if hasattr(response, "messages") and response.messages:
-            # Get last assistant message
             for msg in reversed(response.messages):
                 if msg.role == "assistant":
                     return {"response": msg.text, "success": True}
-
         return {"response": str(response), "success": True}
 
-    def list_users(self) -> List[Any]:
-        """
-        List all users in the system.
+    async def list_users(self) -> List[Any]:
+        """List all users in the system."""
+        return await self._client.server.user_manager.list_users()
 
-        Returns:
-            List of user objects
-
-        Example:
-            users = memory_agent.list_users()
-            for user in users:
-                logger.debug("User: %s (ID: %s)", user.name, user.id)
-        """
-        users = self._client.server.user_manager.list_users()
-        return users
-
-    def construct_system_message(self, message: str, user_id: str) -> str:
-        """
-        Construct a system message from a message.
-        """
-        return self._client.construct_system_message(agent_id=self._meta_agent.id, message=message, user_id=user_id)
-
-    def extract_memory_for_system_prompt(self, message: str, user_id: str) -> str:
-        """
-        Extract memory for system prompt from a message.
-        """
-        return self._client.extract_memory_for_system_prompt(
+    async def construct_system_message(self, message: str, user_id: str) -> str:
+        """Construct a system message from a message."""
+        self._require_meta_agent()
+        return await self._client.construct_system_message(
             agent_id=self._meta_agent.id, message=message, user_id=user_id
         )
 
-    def get_user_by_name(self, user_name: str):
-        """
-        Get a user by their name.
+    async def extract_memory_for_system_prompt(self, message: str, user_id: str) -> str:
+        """Extract memory for system prompt from a message."""
+        self._require_meta_agent()
+        return await self._client.extract_memory_for_system_prompt(
+            agent_id=self._meta_agent.id, message=message, user_id=user_id
+        )
 
-        Args:
-            user_name: The name of the user to search for
-
-        Returns:
-            User object if found, None if not found
-
-        Example:
-            user = memory_agent.get_user_by_name("Alice")
-            if user:
-                logger.debug("Found user: %s (ID: %s)", user.name, user.id)
-            else:
-                logger.debug("User not found")
-        """
-        users = self.list_users()
+    async def get_user_by_name(self, user_name: str):
+        """Get a user by their name. Returns User if found, None otherwise."""
+        users = await self.list_users()
         for user in users:
             if user.name == user_name:
                 return user
@@ -257,7 +274,7 @@ class Mirix:
             "note": "After removing the database file, you must restart your application and create a new agent instance.",
         }
 
-    def clear_conversation_history(self, user_id: Optional[str] = None) -> Dict[str, Any]:
+    async def clear_conversation_history(self, user_id: Optional[str] = None) -> Dict[str, Any]:
         """
         Clear conversation history while preserving memories.
 
@@ -283,75 +300,60 @@ class Mirix:
             else:
                 logger.debug("Failed to clear: %s", result['error'])
         """
+        self._require_meta_agent()
         try:
             if user_id is None:
-                # Clear all messages except system messages (original behavior)
-                # Get agent state first, then get messages
-                agent_state = self._client.server.agent_manager.get_agent_by_id(
+                agent_state = await self._client.server.agent_manager.get_agent_by_id(
                     agent_id=self._meta_agent.id,
                     actor=self._client.client,
                 )
-                current_messages = self._client.server.agent_manager.get_in_context_messages(
+                current_messages = await self._client.server.agent_manager.get_in_context_messages(
                     agent_state=agent_state,
                     actor=self._client.client,
                 )
                 messages_count = len(current_messages)
-
-                # Clear conversation history using the agent manager reset_messages method
-                # actor=Client (for authorization), user_id=None (clear all users' messages)
-                self._client.server.agent_manager.reset_messages(
+                await self._client.server.agent_manager.reset_messages(
                     agent_id=self._meta_agent.id,
                     actor=self._client.client,
-                    user_id=None,  # Clear messages for all users
-                    add_default_initial_messages=True,  # Keep system message and initial setup
+                    user_id=None,
+                    add_default_initial_messages=True,
                 )
-
                 return {
                     "success": True,
                     "message": "Successfully cleared conversation history. All user and assistant messages removed (system messages preserved).",
                     "messages_deleted": messages_count,
                 }
             else:
-                # Get the user object by ID
-                target_user = self._client.server.user_manager.get_user_by_id(user_id)
+                target_user = await self._client.server.user_manager.get_user_by_id(user_id)
                 if not target_user:
                     return {
                         "success": False,
                         "error": f"User with ID '{user_id}' not found",
                         "messages_deleted": 0,
                     }
-
-                # Clear messages for specific user (same as FastAPI server implementation)
-                # Get current message count for this specific user for reporting
-                agent_state = self._client.server.agent_manager.get_agent_by_id(
+                agent_state = await self._client.server.agent_manager.get_agent_by_id(
                     agent_id=self._meta_agent.id,
                     actor=self._client.client,
                 )
-                current_messages = self._client.server.agent_manager.get_in_context_messages(
+                current_messages = await self._client.server.agent_manager.get_in_context_messages(
                     agent_state=agent_state,
                     actor=self._client.client,
                     user=target_user,
                 )
-                # Count messages belonging to this user (excluding system messages)
                 user_messages_count = len(
                     [msg for msg in current_messages if msg.role != "system" and msg.user_id == target_user.id]
                 )
-
-                # Clear conversation history using the agent manager reset_messages method
-                # actor=Client (for authorization), user_id=specific user to clear
-                self._client.server.agent_manager.reset_messages(
+                await self._client.server.agent_manager.reset_messages(
                     agent_id=self._meta_agent.id,
                     actor=self._client.client,
-                    user_id=target_user.id,  # Clear messages only for this user
-                    add_default_initial_messages=True,  # Keep system message and initial setup
+                    user_id=target_user.id,
+                    add_default_initial_messages=True,
                 )
-
                 return {
                     "success": True,
                     "message": f"Successfully cleared conversation history for {target_user.name}. Messages from other users and system messages preserved.",
                     "messages_deleted": user_messages_count,
                 }
-
         except Exception as e:
             return {"success": False, "error": str(e), "messages_deleted": 0}
 
@@ -422,43 +424,31 @@ class Mirix:
                 getattr(new_settings, field_name),
             )
 
-    def create_user(self, user_name: str, timezone: str = "UTC", organization_id: Optional[str] = None) -> Any:
-        """
-        Create a new user in the system.
-
-        Args:
-            user_name: The name for the new user
-            timezone: The timezone for the user (default: "UTC")
-            organization_id: The organization ID (default: uses default organization)
-
-        Returns:
-            User object
-
-        Example:
-            user = memory_agent.create_user("Alice")
-            logger.debug("Created user: %s", user.name)
-        """
+    async def create_user(
+        self,
+        user_name: str,
+        timezone: str = "UTC",
+        organization_id: Optional[str] = None,
+    ) -> Any:
+        """Create a new user in the system."""
         from mirix.schemas.user import UserCreate
         from mirix.services.organization_manager import OrganizationManager
 
         if organization_id is None:
             organization_id = OrganizationManager.DEFAULT_ORG_ID
-
-        return self._client.server.user_manager.create_user(
-            pydantic_user=UserCreate(name=user_name, timezone=timezone, organization_id=organization_id)
+        return await self._client.server.user_manager.create_user(
+            pydantic_user=UserCreate(
+                name=user_name,
+                timezone=timezone,
+                organization_id=organization_id,
+            )
         )
 
-    def __call__(self, message: str) -> Dict[str, Any]:
-        """
-        Allow using the agent as a callable for adding memories.
+    async def __call__(self, message: str) -> Dict[str, Any]:
+        """Use the agent as a callable for adding memories: await memory_agent(message)."""
+        return await self.add(message)
 
-        Example:
-            memory_agent = Mirix(api_key="...")
-            response = memory_agent("John likes pizza")
-        """
-        return self.add(message)
-
-    def insert_tool(
+    async def insert_tool(
         self,
         name: str,
         source_code: str,
@@ -501,7 +491,7 @@ class Mirix:
         tool_manager = ToolManager()
 
         # Check if tool name already exists
-        existing_tool = tool_manager.get_tool_by_name(tool_name=name, actor=self._client.client)
+        existing_tool = await tool_manager.get_tool_by_name(tool_name=name, actor=self._client.client)
 
         if existing_tool:
             created_tool = existing_tool
@@ -531,14 +521,14 @@ class Mirix:
             )
 
             # Use the tool manager's create_or_update_tool method
-            created_tool = tool_manager.create_or_update_tool(pydantic_tool=pydantic_tool, actor=self._client.client)
+            created_tool = await tool_manager.create_or_update_tool(pydantic_tool=pydantic_tool, actor=self._client.client)
 
         # Apply tool to all existing agents if requested
         if apply_to_agents:
             # Get all existing agents
-            all_agents = self._client.server.agent_manager.list_agents(
+            all_agents = await self._client.server.agent_manager.list_agents(
                 actor=self._client.client,
-                limit=1000,  # Get all agents
+                limit=1000,
             )
 
             if apply_to_agents != "all":
@@ -557,7 +547,7 @@ class Mirix:
                     # Update the agent with the new tool
                     from mirix.schemas.agent import UpdateAgent
 
-                    self._client.server.agent_manager.update_agent(
+                    await self._client.server.agent_manager.update_agent(
                         agent_id=agent.id,
                         agent_update=UpdateAgent(tool_ids=new_tool_ids),
                         actor=self._client.client,
@@ -623,7 +613,7 @@ class Mirix:
 
         return complete_code
 
-    def visualize_memories(self, user_id: Optional[str] = None) -> Dict[str, Any]:
+    async def visualize_memories(self, user_id: Optional[str] = None) -> Dict[str, Any]:
         """
         Visualize all memories for a specific user.
 
@@ -638,42 +628,40 @@ class Mirix:
             logger.debug("Episodic memories: %s", len(memories['episodic']))
             logger.debug("Semantic memories: %s", len(memories['semantic']))
         """
+        self._require_meta_agent()
         try:
             # Find the target user
             if user_id:
-                target_user = self._client.server.user_manager.get_user_by_id(user_id)
+                target_user = await self._client.server.user_manager.get_user_by_id(user_id)
                 if not target_user:
                     return {
                         "success": False,
                         "error": f"User with ID '{user_id}' not found",
                     }
             else:
-                # Find the current active user
-                users = self._client.server.user_manager.list_users()
+                users = await self._client.server.user_manager.list_users()
                 active_user = next((user for user in users if user.status == "active"), None)
                 target_user = active_user if active_user else (users[0] if users else None)
 
             if not target_user:
                 return {"success": False, "error": "No user found"}
 
-            # Get the meta agent state to access memory agents
-            meta_agent_state = self._client.get_agent(self._meta_agent.id)
+            meta_agent_state = await self._client.get_agent(self._meta_agent.id)
 
             memories = {}
 
             # Get episodic memory
             try:
                 episodic_manager = self._client.server.episodic_memory_manager
-                # Find episodic memory agent from meta agent's children
                 episodic_agent = None
-                child_agents = self._client.list_agents(parent_id=self._meta_agent.id)
+                child_agents = await self._client.list_agents(parent_id=self._meta_agent.id)
                 for agent in child_agents:
                     if agent.agent_type == AgentType.episodic_memory_agent:
                         episodic_agent = agent
                         break
 
                 if episodic_agent:
-                    events = episodic_manager.list_episodic_memory(
+                    events = await episodic_manager.list_episodic_memory(
                         agent_state=episodic_agent,
                         actor=target_user,
                         limit=50,
@@ -706,7 +694,7 @@ class Mirix:
                         break
 
                 if semantic_agent:
-                    semantic_items = semantic_manager.list_semantic_items(
+                    semantic_items = await semantic_manager.list_semantic_items(
                         agent_state=semantic_agent,
                         actor=target_user,
                         limit=50,
@@ -739,7 +727,7 @@ class Mirix:
                         break
 
                 if procedural_agent:
-                    procedural_items = procedural_manager.list_procedures(
+                    procedural_items = await procedural_manager.list_procedures(
                         agent_state=procedural_agent,
                         actor=target_user,
                         limit=50,
@@ -789,7 +777,7 @@ class Mirix:
                         break
 
                 if resource_agent:
-                    resources = resource_manager.list_resources(
+                    resources = await resource_manager.list_resources(
                         agent_state=resource_agent,
                         actor=target_user,
                         limit=50,
@@ -814,12 +802,13 @@ class Mirix:
 
             # Get core memory
             try:
-                core_memory = Memory(
-                    blocks=[
-                        self._client.server.block_manager.get_block_by_id(block.id, actor=target_user)
-                        for block in self._client.server.block_manager.get_blocks(actor=target_user)
-                    ]
-                )
+                blocks = await self._client.server.block_manager.get_blocks(user=target_user)
+                core_blocks = []
+                for block in blocks:
+                    b = await self._client.server.block_manager.get_block_by_id(block.id, user=target_user)
+                    if b:
+                        core_blocks.append(b)
+                core_memory = Memory(blocks=core_blocks)
 
                 memories["core"] = []
                 total_characters = 0
@@ -853,7 +842,7 @@ class Mirix:
                         break
 
                 if knowledge_vault_memory_agent:
-                    vault_items = knowledge_vault_manager.list_knowledge(
+                    vault_items = await knowledge_vault_manager.list_knowledge(
                         actor=target_user,
                         agent_state=knowledge_vault_memory_agent,
                         limit=50,
@@ -894,7 +883,7 @@ class Mirix:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    def update_core_memory(self, label: str, text: str, user_id: Optional[str] = None) -> Dict[str, Any]:
+    async def update_core_memory(self, label: str, text: str, user_id: Optional[str] = None) -> Dict[str, Any]:
         """
         Update a specific core memory block with new text.
 
@@ -928,21 +917,20 @@ class Mirix:
             else:
                 logger.debug("Update failed: %s", result['message'])
         """
+        self._require_meta_agent()
         try:
             # If user_id is provided, get the specific user
             if user_id:
-                target_user = self._client.server.user_manager.get_user_by_id(user_id)
+                target_user = await self._client.server.user_manager.get_user_by_id(user_id)
                 if not target_user:
                     return {
                         "success": False,
                         "message": f"User with ID '{user_id}' not found",
                     }
             else:
-                # Use current user
                 target_user = self._client.user
 
-            # Update core memory using the client's update_in_context_memory method
-            self._client.update_in_context_memory(agent_id=self._meta_agent.id, section=label, value=text)
+            await self._client.update_in_context_memory(agent_id=self._meta_agent.id, section=label, value=text)
 
             return {
                 "success": True,

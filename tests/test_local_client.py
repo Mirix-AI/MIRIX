@@ -25,8 +25,10 @@ import time
 import uuid
 from pathlib import Path
 from typing import List
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
+import pytest_asyncio
 
 # Add project root to path
 project_root = Path(__file__).parent.parent
@@ -37,9 +39,12 @@ from mirix.local_client.local_client import LocalClient
 from mirix.orm.errors import NoResultFound
 from mirix.schemas.agent import AgentState, AgentType
 from mirix.schemas.block import Block, Human, Persona
+from mirix.schemas.enums import MessageRole
 from mirix.schemas.llm_config import LLMConfig
 from mirix.schemas.memory import Memory
+from mirix.schemas.message import MessageCreate
 from mirix.schemas.tool import Tool
+from mirix.schemas.usage import MirixUsageStatistics
 
 # Test configuration
 TEST_RUN_ID = uuid.uuid4().hex[:8]
@@ -65,36 +70,35 @@ TEST_EMBEDDING_CONFIG = EmbeddingConfig(
     embedding_chunk_size=300,
 )
 
+# Mark all async tests in this module for pytest-asyncio; use one loop per module so
+# module-scoped async fixtures (test_organization, client_a, client_b, default_client)
+# and all tests share the same event loop (avoids "another operation is in progress").
+pytestmark = [pytest.mark.asyncio(loop_scope="module")]
+
 
 # ============================================================================
 # FIXTURES
 # ============================================================================
 
 
-@pytest.fixture(scope="module")
-def test_organization():
+@pytest_asyncio.fixture(scope="module")
+async def test_organization():
     """Create test organization before any clients."""
-    # Use a default client to create the test organization
-    default_client = LocalClient(
+    default_client = await LocalClient.create(
         debug=False,
         default_llm_config=TEST_LLM_CONFIG,
         default_embedding_config=TEST_EMBEDDING_CONFIG,
     )
-
-    # Create the test organization
-    org = default_client.create_org(name=f"test-org-{TEST_RUN_ID}")
-
-    # Update the global TEST_ORG_ID to use the created org's ID
+    org = await default_client.create_org(name=f"test-org-{TEST_RUN_ID}")
     global TEST_ORG_ID
     TEST_ORG_ID = org.id
-
     yield org
 
 
-@pytest.fixture(scope="module")
-def client_a(test_organization):
+@pytest_asyncio.fixture(scope="module")
+async def client_a(test_organization):
     """Create LocalClient A for testing."""
-    client = LocalClient(
+    client = await LocalClient.create(
         client_id=TEST_CLIENT_A_ID,
         user_id=TEST_USER_A_ID,
         org_id=test_organization.id,
@@ -105,10 +109,10 @@ def client_a(test_organization):
     yield client
 
 
-@pytest.fixture(scope="module")
-def client_b(test_organization):
+@pytest_asyncio.fixture(scope="module")
+async def client_b(test_organization):
     """Create LocalClient B for testing client isolation."""
-    client = LocalClient(
+    client = await LocalClient.create(
         client_id=TEST_CLIENT_B_ID,
         user_id=TEST_USER_B_ID,
         org_id=test_organization.id,
@@ -119,10 +123,10 @@ def client_b(test_organization):
     yield client
 
 
-@pytest.fixture(scope="module")
-def default_client():
+@pytest_asyncio.fixture(scope="module")
+async def default_client():
     """Create LocalClient with default IDs."""
-    client = LocalClient(
+    client = await LocalClient.create(
         debug=False,
         default_llm_config=TEST_LLM_CONFIG,
         default_embedding_config=TEST_EMBEDDING_CONFIG,
@@ -165,7 +169,7 @@ def temp_file():
 class TestInitialization:
     """Test LocalClient initialization."""
 
-    def test_init_with_explicit_ids(self, client_a):
+    async def test_init_with_explicit_ids(self, client_a):
         """Test initialization with explicit client_id, user_id, org_id."""
         assert client_a.client_id == TEST_CLIENT_A_ID
         assert client_a.user_id == TEST_USER_A_ID
@@ -174,7 +178,7 @@ class TestInitialization:
         assert client_a.user is not None
         assert client_a.organization is not None
 
-    def test_init_with_default_ids(self, default_client):
+    async def test_init_with_default_ids(self, default_client):
         """Test initialization without explicit IDs (uses defaults)."""
         assert default_client.client_id is not None
         assert default_client.user_id is not None
@@ -183,7 +187,7 @@ class TestInitialization:
         assert default_client.user is not None
         assert default_client.organization is not None
 
-    def test_client_attributes(self, client_a):
+    async def test_client_attributes(self, client_a):
         """Test that all expected attributes are initialized."""
         assert hasattr(client_a, "client_id")
         assert hasattr(client_a, "user_id")
@@ -195,7 +199,7 @@ class TestInitialization:
         assert hasattr(client_a, "interface")
         assert hasattr(client_a, "file_manager")
 
-    def test_default_configs(self, client_a):
+    async def test_default_configs(self, client_a):
         """Test that default LLM and embedding configs are set."""
         assert client_a._default_llm_config == TEST_LLM_CONFIG
         assert client_a._default_embedding_config == TEST_EMBEDDING_CONFIG
@@ -209,11 +213,11 @@ class TestInitialization:
 class TestAgentManagement:
     """Test agent CRUD operations."""
 
-    def test_create_agent(self, client_a, test_memory):
+    async def test_create_agent(self, client_a, test_memory):
         """Test creating an agent."""
         agent_name = f"test-agent-{uuid.uuid4().hex[:8]}"
 
-        agent = client_a.create_agent(
+        agent = await client_a.create_agent(
             name=agent_name,
             agent_type=AgentType.chat_agent,
             memory=test_memory,
@@ -225,18 +229,18 @@ class TestAgentManagement:
         assert agent.name == agent_name
         assert agent.agent_type == AgentType.chat_agent
 
-    def test_list_agents(self, client_a, test_memory):
+    async def test_list_agents(self, client_a, test_memory):
         """Test listing agents."""
         # Create a test agent
         agent_name = f"test-list-agent-{uuid.uuid4().hex[:8]}"
-        client_a.create_agent(
+        await client_a.create_agent(
             name=agent_name,
             memory=test_memory,
             system="Test system prompt",
         )
 
         # List agents
-        agents = client_a.list_agents()
+        agents = await client_a.list_agents()
         assert isinstance(agents, list)
         assert len(agents) >= 1
 
@@ -244,96 +248,96 @@ class TestAgentManagement:
         agent_names = [a.name for a in agents]
         assert agent_name in agent_names
 
-    def test_get_agent(self, client_a, test_memory):
+    async def test_get_agent(self, client_a, test_memory):
         """Test getting an agent by ID."""
         # Create an agent
         agent_name = f"test-get-agent-{uuid.uuid4().hex[:8]}"
-        created_agent = client_a.create_agent(
+        created_agent = await client_a.create_agent(
             name=agent_name,
             memory=test_memory,
             system="Test system",
         )
 
         # Get the agent
-        retrieved_agent = client_a.get_agent(created_agent.id)
+        retrieved_agent = await client_a.get_agent(created_agent.id)
         assert retrieved_agent.id == created_agent.id
         assert retrieved_agent.name == agent_name
 
-    def test_get_agent_by_name(self, client_a, test_memory):
+    async def test_get_agent_by_name(self, client_a, test_memory):
         """Test getting an agent by name."""
         agent_name = f"test-get-by-name-{uuid.uuid4().hex[:8]}"
-        client_a.create_agent(
+        await client_a.create_agent(
             name=agent_name,
             memory=test_memory,
             system="Test system",
         )
 
         # Get by name
-        agent = client_a.get_agent_by_name(agent_name)
+        agent = await client_a.get_agent_by_name(agent_name)
         assert agent.name == agent_name
 
-    def test_get_agent_id(self, client_a, test_memory):
+    async def test_get_agent_id(self, client_a, test_memory):
         """Test getting agent ID by name."""
         agent_name = f"test-get-id-{uuid.uuid4().hex[:8]}"
-        created_agent = client_a.create_agent(
+        created_agent = await client_a.create_agent(
             name=agent_name,
             memory=test_memory,
             system="Test system",
         )
 
-        agent_id = client_a.get_agent_id(agent_name)
+        agent_id = await client_a.get_agent_id(agent_name)
         assert agent_id == created_agent.id
 
-    def test_agent_exists(self, client_a, test_memory):
+    async def test_agent_exists(self, client_a, test_memory):
         """Test checking if an agent exists."""
         agent_name = f"test-exists-{uuid.uuid4().hex[:8]}"
-        created_agent = client_a.create_agent(
+        created_agent = await client_a.create_agent(
             name=agent_name,
             memory=test_memory,
             system="Test system",
         )
 
         # Check by ID
-        assert client_a.agent_exists(agent_id=created_agent.id) is True
+        assert await client_a.agent_exists(agent_id=created_agent.id) is True
 
         # Check by name
-        assert client_a.agent_exists(agent_name=agent_name) is True
+        assert await client_a.agent_exists(agent_name=agent_name) is True
 
         # Check non-existent
-        assert client_a.agent_exists(agent_name="non-existent-agent-xyz") is False
+        assert await client_a.agent_exists(agent_name="non-existent-agent-xyz") is False
 
-    def test_rename_agent(self, client_a, test_memory):
+    async def test_rename_agent(self, client_a, test_memory):
         """Test renaming an agent."""
         old_name = f"test-rename-old-{uuid.uuid4().hex[:8]}"
         new_name = f"test-rename-new-{uuid.uuid4().hex[:8]}"
 
-        agent = client_a.create_agent(
+        agent = await client_a.create_agent(
             name=old_name,
             memory=test_memory,
             system="Test system",
         )
 
         # Rename
-        client_a.rename_agent(agent.id, new_name)
+        await client_a.rename_agent(agent.id, new_name)
 
         # Verify
-        renamed_agent = client_a.get_agent(agent.id)
+        renamed_agent = await client_a.get_agent(agent.id)
         assert renamed_agent.name == new_name
 
-    def test_delete_agent(self, client_a, test_memory):
+    async def test_delete_agent(self, client_a, test_memory):
         """Test deleting an agent."""
         agent_name = f"test-delete-{uuid.uuid4().hex[:8]}"
-        agent = client_a.create_agent(
+        agent = await client_a.create_agent(
             name=agent_name,
             memory=test_memory,
             system="Test system",
         )
 
         # Delete
-        client_a.delete_agent(agent.id)
+        await client_a.delete_agent(agent.id)
 
         # Verify deletion
-        assert client_a.agent_exists(agent_id=agent.id) is False
+        assert await client_a.agent_exists(agent_id=agent.id) is False
 
 
 # ============================================================================
@@ -344,11 +348,11 @@ class TestAgentManagement:
 class TestClientIsolation:
     """Test that clients have isolated agents."""
 
-    def test_agents_isolated_by_client(self, client_a, client_b, test_memory):
+    async def test_agents_isolated_by_client(self, client_a, client_b, test_memory):
         """Test that agents are isolated per client."""
         # Create agent in client A
         agent_a_name = f"test-isolation-a-{uuid.uuid4().hex[:8]}"
-        agent_a = client_a.create_agent(
+        agent_a = await client_a.create_agent(
             name=agent_a_name,
             memory=test_memory,
             system="Client A agent",
@@ -356,15 +360,15 @@ class TestClientIsolation:
 
         # Create agent in client B
         agent_b_name = f"test-isolation-b-{uuid.uuid4().hex[:8]}"
-        agent_b = client_b.create_agent(
+        agent_b = await client_b.create_agent(
             name=agent_b_name,
             memory=test_memory,
             system="Client B agent",
         )
 
         # List agents for each client
-        agents_a = client_a.list_agents()
-        agents_b = client_b.list_agents()
+        agents_a = await client_a.list_agents()
+        agents_b = await client_b.list_agents()
 
         # Verify client A can see its own agent
         agent_a_names = [a.name for a in agents_a]
@@ -380,10 +384,10 @@ class TestClientIsolation:
         # Verify client B cannot see client A's agent
         assert agent_a_name not in agent_b_names
 
-    def test_get_agent_respects_client_ownership(self, client_a, client_b, test_memory):
+    async def test_get_agent_respects_client_ownership(self, client_a, client_b, test_memory):
         """Test that get_agent respects client ownership."""
         # Create agent in client A
-        agent_a = client_a.create_agent(
+        agent_a = await client_a.create_agent(
             name=f"test-ownership-{uuid.uuid4().hex[:8]}",
             memory=test_memory,
             system="Client A agent",
@@ -391,7 +395,7 @@ class TestClientIsolation:
 
         # Client B should not be able to access client A's agent
         with pytest.raises((NoResultFound, Exception)):
-            client_b.get_agent(agent_a.id)
+            await client_b.get_agent(agent_a.id)
 
 
 # ============================================================================
@@ -402,10 +406,10 @@ class TestClientIsolation:
 class TestToolManagement:
     """Test tool CRUD operations."""
 
-    def test_create_tool(self, client_a):
+    async def test_create_tool(self, client_a):
         """Test creating a tool."""
 
-        def test_function(x: int, y: int) -> int:
+        async def test_function(x: int, y: int) -> int:
             """
             Add two numbers.
 
@@ -419,7 +423,7 @@ class TestToolManagement:
             return x + y
 
         tool_name = f"test_tool_{uuid.uuid4().hex[:8]}"
-        tool = client_a.create_tool(
+        tool = await client_a.create_tool(
             func=test_function,
             name=tool_name,
             description="Test tool",
@@ -429,15 +433,15 @@ class TestToolManagement:
         assert tool is not None
         assert tool.name == tool_name
 
-    def test_list_tools(self, client_a):
+    async def test_list_tools(self, client_a):
         """Test listing tools."""
-        tools = client_a.list_tools(limit=50)
+        tools = await client_a.list_tools(limit=50)
         assert isinstance(tools, list)
 
-    def test_get_tool(self, client_a):
+    async def test_get_tool(self, client_a):
         """Test getting a tool by ID."""
 
-        def test_function() -> str:
+        async def test_function() -> str:
             """
             Return a test string.
 
@@ -447,16 +451,16 @@ class TestToolManagement:
             return "test"
 
         tool_name = f"test_get_tool_{uuid.uuid4().hex[:8]}"
-        created_tool = client_a.create_tool(func=test_function, name=tool_name)
+        created_tool = await client_a.create_tool(func=test_function, name=tool_name)
 
-        retrieved_tool = client_a.get_tool(created_tool.id)
+        retrieved_tool = await client_a.get_tool(created_tool.id)
         assert retrieved_tool.id == created_tool.id
         assert retrieved_tool.name == tool_name
 
-    def test_get_tool_id(self, client_a):
+    async def test_get_tool_id(self, client_a):
         """Test getting tool ID by name."""
 
-        def test_function() -> str:
+        async def test_function() -> str:
             """
             Return a test string.
 
@@ -466,15 +470,15 @@ class TestToolManagement:
             return "test"
 
         tool_name = f"test_tool_id_{uuid.uuid4().hex[:8]}"
-        created_tool = client_a.create_tool(func=test_function, name=tool_name)
+        created_tool = await client_a.create_tool(func=test_function, name=tool_name)
 
-        tool_id = client_a.get_tool_id(tool_name)
+        tool_id = await client_a.get_tool_id(tool_name)
         assert tool_id == created_tool.id
 
-    def test_update_tool(self, client_a):
+    async def test_update_tool(self, client_a):
         """Test updating a tool."""
 
-        def test_function() -> str:
+        async def test_function() -> str:
             """
             Return a test string.
 
@@ -484,21 +488,21 @@ class TestToolManagement:
             return "original"
 
         tool_name = f"test_update_tool_{uuid.uuid4().hex[:8]}"
-        tool = client_a.create_tool(func=test_function, name=tool_name)
+        tool = await client_a.create_tool(func=test_function, name=tool_name)
 
         # Update
         new_description = "Updated description"
-        updated_tool = client_a.update_tool(
+        updated_tool = await client_a.update_tool(
             id=tool.id,
             description=new_description,
         )
 
         assert updated_tool.description == new_description
 
-    def test_delete_tool(self, client_a):
+    async def test_delete_tool(self, client_a):
         """Test deleting a tool."""
 
-        def test_function() -> str:
+        async def test_function() -> str:
             """
             Return a test string.
 
@@ -508,16 +512,16 @@ class TestToolManagement:
             return "test"
 
         tool_name = f"test_delete_tool_{uuid.uuid4().hex[:8]}"
-        tool = client_a.create_tool(func=test_function, name=tool_name)
+        tool = await client_a.create_tool(func=test_function, name=tool_name)
 
         # Delete
-        client_a.delete_tool(tool.id)
+        await client_a.delete_tool(tool.id)
 
         # Verify deletion - get_tool raises NoResultFound for deleted tools
         from mirix.orm.errors import NoResultFound
 
         with pytest.raises(NoResultFound):
-            client_a.get_tool(tool.id)
+            await client_a.get_tool(tool.id)
 
 
 # ============================================================================
@@ -528,46 +532,46 @@ class TestToolManagement:
 class TestBlockManagement:
     """Test block CRUD operations."""
 
-    def test_create_human(self, client_a):
+    async def test_create_human(self, client_a):
         """Test creating a human block."""
         human_name = f"test_human_{uuid.uuid4().hex[:8]}"
         human_text = "I am a software engineer."
 
-        human = client_a.create_human(name=human_name, text=human_text)
+        human = await client_a.create_human(name=human_name, text=human_text)
         assert human is not None
         assert human.value == human_text
 
-    def test_create_persona(self, client_a):
+    async def test_create_persona(self, client_a):
         """Test creating a persona block."""
         persona_name = f"test_persona_{uuid.uuid4().hex[:8]}"
         persona_text = "You are a helpful AI assistant."
 
-        persona = client_a.create_persona(name=persona_name, text=persona_text)
+        persona = await client_a.create_persona(name=persona_name, text=persona_text)
         assert persona is not None
         assert persona.value == persona_text
 
-    def test_list_humans(self, client_a):
+    async def test_list_humans(self, client_a):
         """Test listing human blocks."""
         # Create a human first
-        client_a.create_human(name=f"test_list_human_{uuid.uuid4().hex[:8]}", text="Test human")
+        await client_a.create_human(name=f"test_list_human_{uuid.uuid4().hex[:8]}", text="Test human")
 
-        humans = client_a.list_humans()
+        humans = await client_a.list_humans()
         assert isinstance(humans, list)
 
-    def test_list_personas(self, client_a):
+    async def test_list_personas(self, client_a):
         """Test listing persona blocks."""
         # Create a persona first
-        client_a.create_persona(name=f"test_list_persona_{uuid.uuid4().hex[:8]}", text="Test persona")
+        await client_a.create_persona(name=f"test_list_persona_{uuid.uuid4().hex[:8]}", text="Test persona")
 
-        personas = client_a.list_personas()
+        personas = await client_a.list_personas()
         assert isinstance(personas, list)
 
-    def test_create_block(self, client_a):
+    async def test_create_block(self, client_a):
         """Test creating a custom block."""
         block_label = f"test_block_{uuid.uuid4().hex[:8]}"
         block_value = "Test block content"
 
-        block = client_a.create_block(
+        block = await client_a.create_block(
             label=block_label,
             value=block_value,
             limit=1000,
@@ -577,84 +581,51 @@ class TestBlockManagement:
         assert block.label == block_label
         assert block.value == block_value
 
-    def test_list_blocks(self, client_a):
+    async def test_list_blocks(self, client_a):
         """Test listing blocks."""
-        blocks = client_a.list_blocks()
+        blocks = await client_a.list_blocks()
         assert isinstance(blocks, list)
 
-    def test_get_block(self, client_a):
+    async def test_get_block(self, client_a):
         """Test getting a block by ID."""
         block_label = f"test_get_block_{uuid.uuid4().hex[:8]}"
-        created_block = client_a.create_block(
+        created_block = await client_a.create_block(
             label=block_label,
             value="Test content",
         )
 
-        retrieved_block = client_a.get_block(created_block.id)
+        retrieved_block = await client_a.get_block(created_block.id)
         assert retrieved_block.id == created_block.id
         assert retrieved_block.label == block_label
 
-    def test_update_block(self, client_a):
+    async def test_update_block(self, client_a):
         """Test updating a block."""
         block_label = f"test_update_block_{uuid.uuid4().hex[:8]}"
-        block = client_a.create_block(
+        block = await client_a.create_block(
             label=block_label,
             value="Original content",
         )
 
         # Update
         new_value = "Updated content"
-        updated_block = client_a.update_block(
+        updated_block = await client_a.update_block(
             block_id=block.id,
             value=new_value,
         )
 
         assert updated_block.value == new_value
 
-    def test_delete_block(self, client_a):
+    async def test_delete_block(self, client_a):
         """Test deleting a block."""
         block_label = f"test_delete_block_{uuid.uuid4().hex[:8]}"
-        block = client_a.create_block(
+        block = await client_a.create_block(
             label=block_label,
             value="Test content",
         )
 
         # Delete
-        deleted_block = client_a.delete_block(block.id)
+        deleted_block = await client_a.delete_block(block.id)
         assert deleted_block is not None
-
-
-# ============================================================================
-# TEST: MEMORY OPERATIONS
-# ============================================================================
-
-
-class TestMemoryOperations:
-    """Test memory-related operations."""
-
-    def test_get_core_memory(self, client_a, test_memory):
-        """Test getting agent's core memory."""
-        agent = client_a.create_agent(
-            name=f"test_memory_agent_{uuid.uuid4().hex[:8]}",
-            memory=test_memory,
-            system="Test system",
-        )
-
-        memory = client_a.get_core_memory(agent.id)
-        assert memory is not None
-        assert isinstance(memory, Memory)
-
-    def test_get_in_context_memory(self, client_a, test_memory):
-        """Test getting agent's in-context memory."""
-        agent = client_a.create_agent(
-            name=f"test_in_context_{uuid.uuid4().hex[:8]}",
-            memory=test_memory,
-            system="Test system",
-        )
-
-        memory = client_a.get_in_context_memory(agent.id)
-        assert memory is not None
-        assert isinstance(memory, Memory)
 
 
 # ============================================================================
@@ -665,43 +636,43 @@ class TestMemoryOperations:
 class TestFileManagement:
     """Test file management operations."""
 
-    def test_save_file(self, client_a, temp_file):
+    async def test_save_file(self, client_a, temp_file):
         """Test saving a file."""
-        file_metadata = client_a.save_file(temp_file)
+        file_metadata = await client_a.save_file(temp_file)
         assert file_metadata is not None
         assert file_metadata.file_name is not None
 
-    def test_list_files(self, client_a):
+    async def test_list_files(self, client_a):
         """Test listing files."""
-        files = client_a.list_files(limit=10)
+        files = await client_a.list_files(limit=10)
         assert isinstance(files, list)
 
-    def test_get_file(self, client_a, temp_file):
+    async def test_get_file(self, client_a, temp_file):
         """Test getting file metadata."""
-        saved_file = client_a.save_file(temp_file)
+        saved_file = await client_a.save_file(temp_file)
 
-        retrieved_file = client_a.get_file(saved_file.id)
+        retrieved_file = await client_a.get_file(saved_file.id)
         assert retrieved_file.id == saved_file.id
 
-    def test_search_files(self, client_a, temp_file):
+    async def test_search_files(self, client_a, temp_file):
         """Test searching files by name."""
-        saved_file = client_a.save_file(temp_file)
+        saved_file = await client_a.save_file(temp_file)
 
         # Search by partial name
         search_pattern = Path(temp_file).stem[:5]
-        results = client_a.search_files(search_pattern)
+        results = await client_a.search_files(search_pattern)
         assert isinstance(results, list)
 
-    def test_delete_file(self, client_a, temp_file):
+    async def test_delete_file(self, client_a, temp_file):
         """Test deleting a file."""
-        saved_file = client_a.save_file(temp_file)
+        saved_file = await client_a.save_file(temp_file)
 
         # Delete
-        client_a.delete_file(saved_file.id)
+        await client_a.delete_file(saved_file.id)
 
         # Verify deletion
         with pytest.raises((NoResultFound, Exception)):
-            client_a.get_file(saved_file.id)
+            await client_a.get_file(saved_file.id)
 
 
 # ============================================================================
@@ -712,18 +683,56 @@ class TestFileManagement:
 class TestOrganizationManagement:
     """Test organization operations."""
 
-    def test_create_org(self, default_client):
+    async def test_create_org(self, default_client):
         """Test creating an organization."""
         org_name = f"test_org_{uuid.uuid4().hex[:8]}"
-        org = default_client.create_org(name=org_name)
+        org = await default_client.create_org(name=org_name)
         assert org is not None
         assert org.name == org_name
 
-    def test_list_orgs(self, default_client):
+    async def test_list_orgs(self, default_client):
         """Test listing organizations."""
-        orgs = default_client.list_orgs(limit=10)
+        orgs = await default_client.list_orgs(limit=10)
         assert isinstance(orgs, list)
         assert len(orgs) >= 1
+
+
+# ============================================================================
+# TEST: MESSAGE OPERATIONS (block_filter_tags)
+# ============================================================================
+
+
+class TestSendMessagesBlockFilterTags:
+    """Test that send_messages passes block_filter_tags to server.send_messages."""
+
+    async def test_send_messages_passes_block_filter_tags_to_server(self, client_a):
+        """LocalClient.send_messages(block_filter_tags=...) forwards to server.send_messages."""
+        block_filter_tags = {"env": "staging", "team": "platform"}
+        mock_send = AsyncMock(return_value=MirixUsageStatistics())
+        # Patch MirixResponse so return path doesn't validate messages (MessageCreate != MirixMessageUnion)
+        with patch.object(client_a.server, "send_messages", mock_send), patch(
+            "mirix.local_client.local_client.MirixResponse", Mock
+        ):
+            messages = [MessageCreate(role=MessageRole.user, content="Hello")]
+            await client_a.send_messages(
+                agent_id="test-agent-id",
+                messages=messages,
+                block_filter_tags=block_filter_tags,
+            )
+        mock_send.assert_called_once()
+        assert mock_send.call_args.kwargs.get("block_filter_tags") == block_filter_tags
+
+    async def test_send_messages_passes_none_block_filter_tags(self, client_a):
+        """LocalClient.send_messages() without block_filter_tags passes None (or omits)."""
+        mock_send = AsyncMock(return_value=MirixUsageStatistics())
+        with patch.object(client_a.server, "send_messages", mock_send), patch(
+            "mirix.local_client.local_client.MirixResponse", Mock
+        ):
+            messages = [MessageCreate(role=MessageRole.user, content="Hi")]
+            await client_a.send_messages(agent_id="test-agent-id", messages=messages)
+        mock_send.assert_called_once()
+        # None is passed explicitly by our implementation
+        assert mock_send.call_args.kwargs.get("block_filter_tags") is None
 
 
 # ============================================================================
@@ -734,7 +743,7 @@ class TestOrganizationManagement:
 class TestUserManagement:
     """Test user operations."""
 
-    def test_create_user(self, client_a):
+    async def test_create_user(self, client_a):
         """Test that the client has a valid user."""
         # LocalClient initializes with a user via get_user_or_default
         # If the specified user_id doesn't exist, it uses the default user
@@ -752,7 +761,7 @@ class TestUserManagement:
 class TestConfigurationManagement:
     """Test LLM and embedding configuration management."""
 
-    def test_set_default_llm_config(self, client_a):
+    async def test_set_default_llm_config(self, client_a):
         """Test setting default LLM configuration."""
         new_config = LLMConfig(
             model="gpt-3.5-turbo",
@@ -764,7 +773,7 @@ class TestConfigurationManagement:
         client_a.set_default_llm_config(new_config)
         assert client_a._default_llm_config == new_config
 
-    def test_set_default_embedding_config(self, client_a):
+    async def test_set_default_embedding_config(self, client_a):
         """Test setting default embedding configuration."""
         new_config = EmbeddingConfig(
             embedding_model="text-embedding-3-small",
@@ -777,14 +786,14 @@ class TestConfigurationManagement:
         client_a.set_default_embedding_config(new_config)
         assert client_a._default_embedding_config == new_config
 
-    def test_list_llm_configs(self, client_a):
+    async def test_list_llm_configs(self, client_a):
         """Test listing available LLM configurations."""
-        configs = client_a.list_llm_configs()
+        configs = await client_a.list_llm_configs()
         assert isinstance(configs, list)
 
-    def test_list_embedding_configs(self, client_a):
+    async def test_list_embedding_configs(self, client_a):
         """Test listing available embedding configurations."""
-        configs = client_a.list_embedding_configs()
+        configs = await client_a.list_embedding_configs()
         assert isinstance(configs, list)
 
 

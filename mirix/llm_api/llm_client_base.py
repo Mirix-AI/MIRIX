@@ -35,7 +35,7 @@ class LLMClientBase:
         self.cloud_file_mapping_manager = CloudFileMappingManager()
         self.logger = logging.getLogger("Mirix.LLMClientBase")
 
-    def send_llm_request(
+    async def send_llm_request(
         self,
         messages: List[Message],
         tools: Optional[List[dict]] = None,
@@ -47,7 +47,7 @@ class LLMClientBase:
         """
         Issues a request to the downstream model endpoint and parses response.
         """
-        request_data = self.build_request_data(
+        request_data = await self.build_request_data(
             messages,
             self.llm_config,
             tools,
@@ -63,18 +63,20 @@ class LLMClientBase:
         trace_id = trace_context.get("trace_id") if trace_context else None
         parent_span_id = trace_context.get("observation_id") if trace_context else None
         if langfuse and trace_id:
-            return self._execute_with_langfuse(langfuse, request_data, messages, tools, trace_id, parent_span_id)
-        else:
-            # Provide diagnostic info about why tracing is not active
-            reason = "LangFuse client not available" if not langfuse else "No active trace_id in context"
-            self.logger.debug(f"Sending LLM request without LangFuse tracing ({reason})")
-            return self._execute_without_langfuse(request_data, messages)
+            return await self._execute_with_langfuse(
+                langfuse, request_data, messages, tools, trace_id, parent_span_id
+            )
+        reason = "LangFuse client not available" if not langfuse else "No active trace_id in context"
+        self.logger.debug(f"Sending LLM request without LangFuse tracing ({reason})")
+        return await self._execute_without_langfuse(request_data, messages)
 
-    def _execute_without_langfuse(self, request_data: dict, messages: List[Message]) -> ChatCompletionResponse:
+    async def _execute_without_langfuse(
+        self, request_data: dict, messages: List[Message]
+    ) -> ChatCompletionResponse:
         """Execute LLM request without LangFuse tracing."""
         try:
             t1 = time.time()
-            response_data = self.request(request_data)
+            response_data = await self.request(request_data)
             t2 = time.time()
             self.logger.debug("LLM request time: %.2f seconds", t2 - t1)
         except Exception as e:
@@ -82,7 +84,7 @@ class LLMClientBase:
 
         return self.convert_response_to_chat_completion(response_data, messages)
 
-    def _execute_with_langfuse(
+    async def _execute_with_langfuse(
         self,
         langfuse: Langfuse,
         request_data: dict,
@@ -151,16 +153,17 @@ class LLMClientBase:
         except Exception as e:
             # Langfuse failed to start observation - execute without tracing
             self.logger.error(f"Langfuse failed to start observation. Continuing without tracing: {e}")
-            return self._execute_without_langfuse(request_data, messages)
+            return await self._execute_without_langfuse(request_data, messages)
 
         # Now execute with tracing - LLM errors propagate normally
+        # Langfuse returns a sync context manager; use "with" not "async with"
         with observation_context as generation:
             mark_observation_as_child(generation)
 
             # Execute the LLM request
             try:
                 t1 = time.time()
-                response_data = self.request(request_data)
+                response_data = await self.request(request_data)
                 t2 = time.time()
                 self.logger.debug("LLM request time: %.2f seconds", t2 - t1)
             except Exception as e:
@@ -233,7 +236,7 @@ class LLMClientBase:
         }
 
     @abstractmethod
-    def build_request_data(
+    async def build_request_data(
         self,
         messages: List[Message],
         llm_config: LLMConfig,
@@ -247,7 +250,7 @@ class LLMClientBase:
         raise NotImplementedError
 
     @abstractmethod
-    def request(self, request_data: dict) -> dict:
+    async def request(self, request_data: dict) -> dict:
         """
         Performs underlying request to llm and returns raw response.
         """

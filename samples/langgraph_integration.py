@@ -1,3 +1,4 @@
+import asyncio
 import os
 import sys
 
@@ -38,22 +39,25 @@ llm = ChatGoogleGenerativeAI(
     google_api_key=API_KEY,
 )
 
-# Define user and organization IDs
 user_id = "demo-user"
 client_id = "demo-client-app"
 org_id = "demo-org"
-
-# Build absolute path to config file (since we're in samples/ subdirectory)
 config_path = os.path.join(mirix_root, "mirix/configs/examples/mirix_gemini.yaml")
 
-client = MirixClient(
-    api_key=None,  # TODO: add authentication later
-    client_id=client_id,
-    org_id=org_id,
-    debug=True,
-)
+# Client is set by init_mirix() when script is run as __main__
+client = None
 
-client.initialize_meta_agent(config_path=config_path, update_agents=True)
+
+async def init_mirix():
+    """Create and initialize Mirix client (call once at startup)."""
+    global client
+    client = await MirixClient.create(
+        api_key=None,
+        client_id=client_id,
+        org_id=org_id,
+        debug=True,
+    )
+    await client.initialize_meta_agent(config_path=config_path, update_agents=True)
 
 
 class State(TypedDict):
@@ -147,40 +151,28 @@ def create_mirix_messages(user_content: str, assistant_content: str) -> List[dic
 
 def chatbot(state: State):
     messages = state["messages"]
-    user_id = state["user_id"]
+    uid = state["user_id"]
 
     try:
-        # Create structured message for memory retrieval
         retrieval_messages = create_user_message(messages[-1].content)
-
-        memories = client.retrieve_with_conversation(user_id=user_id, messages=retrieval_messages, limit=10)
-
-        # Format memories into a readable string
+        memories = asyncio.run(client.retrieve_with_conversation(user_id=uid, messages=retrieval_messages, limit=10))
         formatted_memories = format_memories_for_prompt(memories)
-
         system_message = (
             "You are a helpful assistant that can answer questions and help with tasks. "
             "You have the following memories:\n" + formatted_memories
         )
-
         full_messages = [system_message] + messages
-
         response = llm.invoke(full_messages)
-
-        # Store the interaction with Mirix
         try:
             mirix_messages = create_mirix_messages(
                 user_content=messages[-1].content, assistant_content=response.content
             )
-            client.add(user_id=user_id, messages=mirix_messages)
+            asyncio.run(client.add(user_id=uid, messages=mirix_messages))
         except Exception as e:
             print(f"Error saving memory: {e}")
-
         return {"messages": [response]}
-
     except Exception as e:
         print(f"Error in chatbot: {e}")
-        # Fallback response without memory context
         response = llm.invoke(messages)
         return {"messages": [response]}
 
@@ -206,8 +198,9 @@ def run_conversation(user_input: str, user_name: str):
 
 
 if __name__ == "__main__":
+    asyncio.run(init_mirix())
     print("Welcome to Customer Support! How can I assist you today?")
-    user_name = "John Doe"  # You can generate or retrieve this based on your user management system
+    user_name = "John Doe"
     while True:
         user_input = input("You: ")
         if user_input.lower() in ["quit", "exit", "bye"]:

@@ -1,14 +1,14 @@
 """
 Memory System Server-Side Tests for Mirix
 
-Tests memory operations using SyncServer directly (no network, fast).
+Tests memory operations using AsyncServer directly (no network, fast).
 Automatically initializes users and agents on first run.
 
 Prerequisites:
     export GEMINI_API_KEY=your_api_key_here
 
 Test Coverage:
-- Direct memory operations via SyncServer managers
+- Direct memory operations via AsyncServer managers
 - All 5 memory types (Episodic, Procedural, Resource, Knowledge Vault, Semantic)
 - All search methods (bm25, embedding) across relevant fields
 - Retrieve with conversation and topic
@@ -17,6 +17,7 @@ Usage:
     pytest tests/test_memory_server.py -v
 """
 
+import asyncio
 import os
 import sys
 import threading
@@ -26,6 +27,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import pytest_asyncio
 import yaml
 from dotenv import load_dotenv
 
@@ -39,20 +41,23 @@ sys.path.insert(0, str(project_root))
 
 from mirix.schemas.agent import AgentType
 from mirix.schemas.client import Client
-from mirix.server.server import SyncServer
+from mirix.server.server import AsyncServer
 
-# Skip all tests if no API key
-pytestmark = pytest.mark.skipif(not os.getenv("GEMINI_API_KEY"), reason="GEMINI_API_KEY not set")
+# Skip all tests if no API key; use one event loop per module so fixtures and tests share it.
+pytestmark = [
+    pytest.mark.skipif(not os.getenv("GEMINI_API_KEY"), reason="GEMINI_API_KEY not set"),
+    pytest.mark.asyncio(loop_scope="module"),
+]
 
 
 @pytest.fixture(scope="module")
 def server():
     """Create server instance for all tests."""
-    return SyncServer()
+    return AsyncServer()
 
 
-@pytest.fixture(scope="module")
-def user(server):
+@pytest_asyncio.fixture(scope="module", loop_scope="module")
+async def user(server):
     """Get or create the demo user."""
     from mirix.schemas.organization import Organization, OrganizationCreate
     from mirix.schemas.user import User as PydanticUser
@@ -62,7 +67,7 @@ def user(server):
 
     # Try to get existing user
     try:
-        user = server.user_manager.get_user_by_id(user_id)
+        user = await server.user_manager.get_user_by_id(user_id)
         if user:
             return user
     except Exception:
@@ -70,13 +75,15 @@ def user(server):
 
     # Create organization if it doesn't exist
     try:
-        org = server.organization_manager.get_organization_by_id(org_id)
+        org = await server.organization_manager.get_organization_by_id(org_id)
     except Exception:
         org_create = OrganizationCreate(id=org_id, name=org_id)
-        org = server.organization_manager.create_organization(pydantic_org=Organization(**org_create.model_dump()))
+        org = await server.organization_manager.create_organization(
+            pydantic_org=Organization(**org_create.model_dump())
+        )
 
     # Create user
-    user = server.user_manager.create_user(
+    user = await server.user_manager.create_user(
         pydantic_user=PydanticUser(
             id=user_id,
             name=user_id,
@@ -88,44 +95,42 @@ def user(server):
     return user
 
 
-@pytest.fixture(scope="module")
-def client(server, user):
+@pytest_asyncio.fixture(scope="module", loop_scope="module")
+async def client(server, user):
     """Get or create the demo client (represents client application)."""
-    from mirix.services.client_manager import ClientManager
-
     client_id = "demo-client-app"
-    client_manager = ClientManager()
 
     # Try to get existing client
     try:
-        client = client_manager.get_client_by_id(client_id)
+        client = await server.client_manager.get_client_by_id(client_id)
         if client:
             return client
     except Exception:
         pass
 
     # Create client
-    client = client_manager.create_client(
+    client = await server.client_manager.create_client(
         pydantic_client=Client(
             id=client_id,
             name=client_id,
             organization_id=user.organization_id,
             status="active",
-            scope="read_write",
+            write_scope="test",
+            read_scopes=["test"],
         )
     )
 
     return client
 
 
-@pytest.fixture(scope="module")
-def meta_agent(server, client):
+@pytest_asyncio.fixture(scope="module", loop_scope="module")
+async def meta_agent(server, client):
     """Get or create meta agent with all sub-agents."""
     from mirix import EmbeddingConfig, LLMConfig
     from mirix.schemas.agent import CreateMetaAgent
 
     # Check if meta agent already exists
-    existing_agents = server.agent_manager.list_agents(actor=client, limit=1000)
+    existing_agents = await server.agent_manager.list_agents(actor=client, limit=1000)
 
     for agent in existing_agents:
         if agent.agent_type == AgentType.meta_memory_agent:
@@ -155,7 +160,7 @@ def meta_agent(server, client):
             create_params["system_prompts"] = meta_config["system_prompts"]
 
     # Create meta agent using agent_manager (same as rest_api.py)
-    meta_agent = server.agent_manager.create_meta_agent(
+    meta_agent = await server.agent_manager.create_meta_agent(
         meta_agent_create=CreateMetaAgent(**create_params), actor=client
     )
 
@@ -163,9 +168,9 @@ def meta_agent(server, client):
     return meta_agent
 
 
-def get_sub_agent(server, client, meta_agent, agent_type):
+async def get_sub_agent(server, client, meta_agent, agent_type):
     """Helper to get sub agent by type."""
-    sub_agents = server.agent_manager.list_agents(actor=client, parent_id=meta_agent.id)
+    sub_agents = await server.agent_manager.list_agents(actor=client, parent_id=meta_agent.id)
 
     for agent in sub_agents:
         if agent.agent_type == agent_type:
@@ -182,11 +187,11 @@ def get_sub_agent(server, client, meta_agent, agent_type):
 class TestDirectEpisodicMemory:
     """Test direct episodic memory operations using managers."""
 
-    def test_insert_event(self, server, client, user, meta_agent):
+    async def test_insert_event(self, server, client, user, meta_agent):
         """Test inserting an event directly."""
-        episodic_agent = get_sub_agent(server, client, meta_agent, AgentType.episodic_memory_agent)
+        episodic_agent = await get_sub_agent(server, client, meta_agent, AgentType.episodic_memory_agent)
 
-        event = server.episodic_memory_manager.insert_event(
+        event = await server.episodic_memory_manager.insert_event(
             actor=client,
             agent_id=meta_agent.id,
             agent_state=episodic_agent,
@@ -196,6 +201,7 @@ class TestDirectEpisodicMemory:
             summary="Attended team meeting",
             details="Weekly standup meeting with the development team",
             organization_id=user.organization_id,
+            user_id=user.id,
         )
 
         assert event is not None
@@ -203,11 +209,11 @@ class TestDirectEpisodicMemory:
         assert event.summary == "Attended team meeting"
         print(f"[OK] Inserted event: {event.id}")
 
-    def test_search_bm25(self, server, client, user, meta_agent):
+    async def test_search_bm25(self, server, client, user, meta_agent):
         """Test BM25 search on episodic memory."""
-        episodic_agent = get_sub_agent(server, client, meta_agent, AgentType.episodic_memory_agent)
+        episodic_agent = await get_sub_agent(server, client, meta_agent, AgentType.episodic_memory_agent)
 
-        results = server.episodic_memory_manager.list_episodic_memory(
+        results = await server.episodic_memory_manager.list_episodic_memory(
             agent_state=episodic_agent,
             user=user,
             query="meeting",
@@ -219,11 +225,11 @@ class TestDirectEpisodicMemory:
         assert len(results) > 0, "Should find at least one event matching 'meeting'"
         print(f"[OK] BM25 search found {len(results)} events")
 
-    def test_search_embedding(self, server, client, user, meta_agent):
+    async def test_search_embedding(self, server, client, user, meta_agent):
         """Test embedding search on episodic memory."""
-        episodic_agent = get_sub_agent(server, client, meta_agent, AgentType.episodic_memory_agent)
+        episodic_agent = await get_sub_agent(server, client, meta_agent, AgentType.episodic_memory_agent)
 
-        results = server.episodic_memory_manager.list_episodic_memory(
+        results = await server.episodic_memory_manager.list_episodic_memory(
             agent_state=episodic_agent,
             user=user,
             query="team collaboration",
@@ -240,11 +246,11 @@ class TestDirectEpisodicMemory:
 class TestDirectProceduralMemory:
     """Test direct procedural memory operations using managers."""
 
-    def test_insert_procedure(self, server, client, user, meta_agent):
+    async def test_insert_procedure(self, server, client, user, meta_agent):
         """Test inserting a procedure directly."""
-        procedural_agent = get_sub_agent(server, client, meta_agent, AgentType.procedural_memory_agent)
+        procedural_agent = await get_sub_agent(server, client, meta_agent, AgentType.procedural_memory_agent)
 
-        procedure = server.procedural_memory_manager.insert_procedure(
+        procedure = await server.procedural_memory_manager.insert_procedure(
             agent_state=procedural_agent,
             agent_id=meta_agent.id,
             entry_type="process",
@@ -267,11 +273,11 @@ class TestDirectProceduralMemory:
         assert len(procedure.steps) == 6
         print(f"[OK] Inserted procedure: {procedure.id}")
 
-    def test_search_procedures(self, server, client, user, meta_agent):
+    async def test_search_procedures(self, server, client, user, meta_agent):
         """Test searching procedures."""
-        procedural_agent = get_sub_agent(server, client, meta_agent, AgentType.procedural_memory_agent)
+        procedural_agent = await get_sub_agent(server, client, meta_agent, AgentType.procedural_memory_agent)
 
-        results = server.procedural_memory_manager.list_procedures(
+        results = await server.procedural_memory_manager.list_procedures(
             agent_state=procedural_agent,
             user=user,
             query="deploy",
@@ -288,11 +294,11 @@ class TestDirectProceduralMemory:
 class TestDirectResourceMemory:
     """Test direct resource memory operations using managers."""
 
-    def test_insert_resource(self, server, client, user, meta_agent):
+    async def test_insert_resource(self, server, client, user, meta_agent):
         """Test inserting a resource directly."""
-        resource_agent = get_sub_agent(server, client, meta_agent, AgentType.resource_memory_agent)
+        resource_agent = await get_sub_agent(server, client, meta_agent, AgentType.resource_memory_agent)
 
-        resource = server.resource_memory_manager.insert_resource(
+        resource = await server.resource_memory_manager.insert_resource(
             actor=client,
             agent_id=meta_agent.id,
             agent_state=resource_agent,
@@ -309,12 +315,12 @@ class TestDirectResourceMemory:
         assert resource.title == "Python Best Practices Guide"
         print(f"[OK] Inserted resource: {resource.id}")
 
-    def test_search_resources_bm25(self, server, client, user, meta_agent):
+    async def test_search_resources_bm25(self, server, client, user, meta_agent):
         """Test BM25 search on resources."""
-        resource_agent = get_sub_agent(server, client, meta_agent, AgentType.resource_memory_agent)
+        resource_agent = await get_sub_agent(server, client, meta_agent, AgentType.resource_memory_agent)
 
         # Ensure test data exists
-        server.resource_memory_manager.insert_resource(
+        await server.resource_memory_manager.insert_resource(
             actor=client,
             agent_id=meta_agent.id,
             agent_state=resource_agent,
@@ -326,7 +332,7 @@ class TestDirectResourceMemory:
             user_id=user.id,
         )
 
-        results = server.resource_memory_manager.list_resources(
+        results = await server.resource_memory_manager.list_resources(
             agent_state=resource_agent,
             user=user,
             query="Python",
@@ -339,11 +345,11 @@ class TestDirectResourceMemory:
         assert len(results) > 0, "Should find at least one resource matching 'Python'"
         print(f"[OK] BM25 search found {len(results)} resources")
 
-    def test_search_resources_embedding(self, server, client, user, meta_agent):
+    async def test_search_resources_embedding(self, server, client, user, meta_agent):
         """Test embedding search on resources."""
-        resource_agent = get_sub_agent(server, client, meta_agent, AgentType.resource_memory_agent)
+        resource_agent = await get_sub_agent(server, client, meta_agent, AgentType.resource_memory_agent)
 
-        results = server.resource_memory_manager.list_resources(
+        results = await server.resource_memory_manager.list_resources(
             agent_state=resource_agent,
             user=user,
             query="coding standards",
@@ -360,11 +366,13 @@ class TestDirectResourceMemory:
 class TestDirectKnowledgeVault:
     """Test direct knowledge vault operations using managers."""
 
-    def test_insert_knowledge(self, server, client, user, meta_agent):
+    async def test_insert_knowledge(self, server, client, user, meta_agent):
         """Test inserting knowledge directly."""
-        knowledge_vault_memory_agent = get_sub_agent(server, client, meta_agent, AgentType.knowledge_vault_memory_agent)
+        knowledge_vault_memory_agent = await get_sub_agent(
+            server, client, meta_agent, AgentType.knowledge_vault_memory_agent
+        )
 
-        knowledge = server.knowledge_vault_manager.insert_knowledge(
+        knowledge = await server.knowledge_vault_manager.insert_knowledge(
             actor=client,
             agent_id=meta_agent.id,
             agent_state=knowledge_vault_memory_agent,
@@ -382,12 +390,14 @@ class TestDirectKnowledgeVault:
         assert knowledge.entry_type == "credential"
         print(f"[OK] Inserted knowledge: {knowledge.id}")
 
-    def test_search_knowledge(self, server, client, user, meta_agent):
+    async def test_search_knowledge(self, server, client, user, meta_agent):
         """Test searching knowledge vault."""
-        knowledge_vault_memory_agent = get_sub_agent(server, client, meta_agent, AgentType.knowledge_vault_memory_agent)
+        knowledge_vault_memory_agent = await get_sub_agent(
+            server, client, meta_agent, AgentType.knowledge_vault_memory_agent
+        )
 
         # Ensure test data exists
-        server.knowledge_vault_manager.insert_knowledge(
+        await server.knowledge_vault_manager.insert_knowledge(
             actor=client,
             agent_id=meta_agent.id,
             agent_state=knowledge_vault_memory_agent,
@@ -400,7 +410,7 @@ class TestDirectKnowledgeVault:
             user_id=user.id,
         )
 
-        results = server.knowledge_vault_manager.list_knowledge(
+        results = await server.knowledge_vault_manager.list_knowledge(
             agent_state=knowledge_vault_memory_agent,
             user=user,
             query="api_key",
@@ -417,11 +427,11 @@ class TestDirectKnowledgeVault:
 class TestDirectSemanticMemory:
     """Test direct semantic memory operations using managers."""
 
-    def test_insert_semantic_item(self, server, client, user, meta_agent):
+    async def test_insert_semantic_item(self, server, client, user, meta_agent):
         """Test inserting semantic item directly."""
-        semantic_agent = get_sub_agent(server, client, meta_agent, AgentType.semantic_memory_agent)
+        semantic_agent = await get_sub_agent(server, client, meta_agent, AgentType.semantic_memory_agent)
 
-        semantic_item = server.semantic_memory_manager.insert_semantic_item(
+        semantic_item = await server.semantic_memory_manager.insert_semantic_item(
             actor=client,
             agent_id=meta_agent.id,
             agent_state=semantic_agent,
@@ -438,11 +448,11 @@ class TestDirectSemanticMemory:
         assert semantic_item.name == "Machine Learning Concepts"
         print(f"[OK] Inserted semantic item: {semantic_item.id}")
 
-    def test_search_semantic_embedding(self, server, client, user, meta_agent):
+    async def test_search_semantic_embedding(self, server, client, user, meta_agent):
         """Test embedding search on semantic memory."""
-        semantic_agent = get_sub_agent(server, client, meta_agent, AgentType.semantic_memory_agent)
+        semantic_agent = await get_sub_agent(server, client, meta_agent, AgentType.semantic_memory_agent)
 
-        results = server.semantic_memory_manager.list_semantic_items(
+        results = await server.semantic_memory_manager.list_semantic_items(
             agent_state=semantic_agent,
             user=user,
             query="machine learning",
@@ -464,9 +474,9 @@ class TestDirectSemanticMemory:
 class TestSearchMethodComparison:
     """Compare different search methods across all memory types."""
 
-    def test_episodic_search_methods_and_fields(self, server, client, user, meta_agent):
+    async def test_episodic_search_methods_and_fields(self, server, client, user, meta_agent):
         """Test all search methods and fields on episodic memory."""
-        episodic_agent = get_sub_agent(server, client, meta_agent, AgentType.episodic_memory_agent)
+        episodic_agent = await get_sub_agent(server, client, meta_agent, AgentType.episodic_memory_agent)
 
         # Test different fields: summary, details
         test_cases = [
@@ -477,7 +487,7 @@ class TestSearchMethodComparison:
         ]
 
         for query, field, method in test_cases:
-            results = server.episodic_memory_manager.list_episodic_memory(
+            results = await server.episodic_memory_manager.list_episodic_memory(
                 agent_state=episodic_agent,
                 user=user,
                 query=query,
@@ -489,12 +499,12 @@ class TestSearchMethodComparison:
             assert len(results) > 0, f"{method} on '{field}' should find results for '{query}'"
             print(f"[OK] Episodic {method} on '{field}': {len(results)} results")
 
-    def test_procedural_search_methods_and_fields(self, server, client, user, meta_agent):
+    async def test_procedural_search_methods_and_fields(self, server, client, user, meta_agent):
         """Test all search methods and fields on procedural memory."""
-        procedural_agent = get_sub_agent(server, client, meta_agent, AgentType.procedural_memory_agent)
+        procedural_agent = await get_sub_agent(server, client, meta_agent, AgentType.procedural_memory_agent)
 
         # Ensure test data exists
-        server.procedural_memory_manager.insert_procedure(
+        await server.procedural_memory_manager.insert_procedure(
             agent_state=procedural_agent,
             agent_id=meta_agent.id,
             entry_type="process",
@@ -521,7 +531,7 @@ class TestSearchMethodComparison:
         ]
 
         for query, field, method in test_cases:
-            results = server.procedural_memory_manager.list_procedures(
+            results = await server.procedural_memory_manager.list_procedures(
                 agent_state=procedural_agent,
                 user=user,
                 query=query,
@@ -533,9 +543,9 @@ class TestSearchMethodComparison:
             assert len(results) > 0, f"{method} on '{field}' should find results for '{query}'"
             print(f"[OK] Procedural {method} on '{field}': {len(results)} results")
 
-    def test_resource_search_methods_and_fields(self, server, client, user, meta_agent):
+    async def test_resource_search_methods_and_fields(self, server, client, user, meta_agent):
         """Test all search methods and fields on resource memory."""
-        resource_agent = get_sub_agent(server, client, meta_agent, AgentType.resource_memory_agent)
+        resource_agent = await get_sub_agent(server, client, meta_agent, AgentType.resource_memory_agent)
 
         # Test different fields: summary (embedding + bm25), content (bm25 only)
         test_cases = [
@@ -545,7 +555,7 @@ class TestSearchMethodComparison:
         ]
 
         for query, field, method in test_cases:
-            results = server.resource_memory_manager.list_resources(
+            results = await server.resource_memory_manager.list_resources(
                 agent_state=resource_agent,
                 user=user,
                 query=query,
@@ -557,12 +567,14 @@ class TestSearchMethodComparison:
             assert len(results) > 0, f"{method} on '{field}' should find results for '{query}'"
             print(f"[OK] Resource {method} on '{field}': {len(results)} results")
 
-    def test_knowledge_vault_search_methods_and_fields(self, server, client, user, meta_agent):
+    async def test_knowledge_vault_search_methods_and_fields(self, server, client, user, meta_agent):
         """Test all search methods and fields on knowledge vault."""
-        knowledge_vault_memory_agent = get_sub_agent(server, client, meta_agent, AgentType.knowledge_vault_memory_agent)
+        knowledge_vault_memory_agent = await get_sub_agent(
+            server, client, meta_agent, AgentType.knowledge_vault_memory_agent
+        )
 
         # Ensure test data exists
-        server.knowledge_vault_manager.insert_knowledge(
+        await server.knowledge_vault_manager.insert_knowledge(
             actor=client,
             agent_id=meta_agent.id,
             agent_state=knowledge_vault_memory_agent,
@@ -583,7 +595,7 @@ class TestSearchMethodComparison:
         ]
 
         for query, field, method in test_cases:
-            results = server.knowledge_vault_manager.list_knowledge(
+            results = await server.knowledge_vault_manager.list_knowledge(
                 agent_state=knowledge_vault_memory_agent,
                 user=user,
                 query=query,
@@ -595,9 +607,9 @@ class TestSearchMethodComparison:
             assert len(results) > 0, f"{method} on '{field}' should find results for '{query}'"
             print(f"[OK] Knowledge Vault {method} on '{field}': {len(results)} results")
 
-    def test_semantic_search_methods_and_fields(self, server, client, user, meta_agent):
+    async def test_semantic_search_methods_and_fields(self, server, client, user, meta_agent):
         """Test all search methods and fields on semantic memory."""
-        semantic_agent = get_sub_agent(server, client, meta_agent, AgentType.semantic_memory_agent)
+        semantic_agent = await get_sub_agent(server, client, meta_agent, AgentType.semantic_memory_agent)
 
         # Test different fields: name, summary, details
         test_cases = [
@@ -610,7 +622,7 @@ class TestSearchMethodComparison:
         ]
 
         for query, field, method in test_cases:
-            results = server.semantic_memory_manager.list_semantic_items(
+            results = await server.semantic_memory_manager.list_semantic_items(
                 agent_state=semantic_agent,
                 user=user,
                 query=query,
@@ -622,11 +634,11 @@ class TestSearchMethodComparison:
             assert len(results) > 0, f"{method} on '{field}' should find results for '{query}'"
             print(f"[OK] Semantic {method} on '{field}': {len(results)} results")
 
-    def test_all_memory_types_search(self, server, client, user, meta_agent):
+    async def test_all_memory_types_search(self, server, client, user, meta_agent):
         """Test search across all five memory types."""
         # Episodic
-        episodic_agent = get_sub_agent(server, client, meta_agent, AgentType.episodic_memory_agent)
-        episodic_results = server.episodic_memory_manager.list_episodic_memory(
+        episodic_agent = await get_sub_agent(server, client, meta_agent, AgentType.episodic_memory_agent)
+        episodic_results = await server.episodic_memory_manager.list_episodic_memory(
             agent_state=episodic_agent,
             user=user,
             query="test",
@@ -636,8 +648,8 @@ class TestSearchMethodComparison:
         print(f"[OK] Episodic: {len(episodic_results)} results")
 
         # Procedural
-        procedural_agent = get_sub_agent(server, client, meta_agent, AgentType.procedural_memory_agent)
-        procedural_results = server.procedural_memory_manager.list_procedures(
+        procedural_agent = await get_sub_agent(server, client, meta_agent, AgentType.procedural_memory_agent)
+        procedural_results = await server.procedural_memory_manager.list_procedures(
             agent_state=procedural_agent,
             user=user,
             query="test",
@@ -647,8 +659,8 @@ class TestSearchMethodComparison:
         print(f"[OK] Procedural: {len(procedural_results)} results")
 
         # Resource
-        resource_agent = get_sub_agent(server, client, meta_agent, AgentType.resource_memory_agent)
-        resource_results = server.resource_memory_manager.list_resources(
+        resource_agent = await get_sub_agent(server, client, meta_agent, AgentType.resource_memory_agent)
+        resource_results = await server.resource_memory_manager.list_resources(
             agent_state=resource_agent,
             user=user,
             query="test",
@@ -658,8 +670,10 @@ class TestSearchMethodComparison:
         print(f"[OK] Resource: {len(resource_results)} results")
 
         # Knowledge Vault
-        knowledge_vault_memory_agent = get_sub_agent(server, client, meta_agent, AgentType.knowledge_vault_memory_agent)
-        knowledge_results = server.knowledge_vault_manager.list_knowledge(
+        knowledge_vault_memory_agent = await get_sub_agent(
+            server, client, meta_agent, AgentType.knowledge_vault_memory_agent
+        )
+        knowledge_results = await server.knowledge_vault_manager.list_knowledge(
             agent_state=knowledge_vault_memory_agent,
             user=user,
             query="test",
@@ -669,8 +683,8 @@ class TestSearchMethodComparison:
         print(f"[OK] Knowledge: {len(knowledge_results)} results")
 
         # Semantic
-        semantic_agent = get_sub_agent(server, client, meta_agent, AgentType.semantic_memory_agent)
-        semantic_results = server.semantic_memory_manager.list_semantic_items(
+        semantic_agent = await get_sub_agent(server, client, meta_agent, AgentType.semantic_memory_agent)
+        semantic_results = await server.semantic_memory_manager.list_semantic_items(
             agent_state=semantic_agent,
             user=user,
             query="test",
@@ -685,7 +699,7 @@ class TestSearchMethodComparison:
 
 
 class TestMetaMemoryParallelism:
-    def test_trigger_memory_update_runs_in_parallel(self, server, client, user, meta_agent, monkeypatch):
+    async def test_trigger_memory_update_runs_in_parallel(self, server, client, user, meta_agent, monkeypatch):
         """Ensure meta memory updates dispatch memory agents concurrently."""
 
         from mirix.functions.function_sets.memory_tools import trigger_memory_update
@@ -693,7 +707,7 @@ class TestMetaMemoryParallelism:
         from mirix.schemas.message import MessageCreate
         from mirix.schemas.mirix_message_content import TextContent
 
-        child_agents = server.agent_manager.list_agents(
+        child_agents = await server.agent_manager.list_agents(
             actor=client,
             user=user,
             parent_id=meta_agent.id,
@@ -709,22 +723,22 @@ class TestMetaMemoryParallelism:
         lock = threading.Lock()
 
         class MockMemoryAgent:
-            def __init__(self, agent_state, interface, actor, user, filter_tags=None, use_cache=True):
+            def __init__(self, agent_state, interface, actor, user, filter_tags=None, block_filter_tags=None, use_cache=True, **kwargs):
                 self.agent_state = agent_state
 
-            def step(self, input_messages, chaining, actor=None, user=None):
+            async def step(self, input_messages, chaining, actor=None, user=None, topics=None, retrieved_memories=None):
                 memory_type = self.agent_state.agent_type.replace("_memory_agent", "")
                 with lock:
                     tracker["start_times"][memory_type] = time.perf_counter()
                     tracker["thread_ids"][memory_type] = threading.get_ident()
-                time.sleep(1)
+                await asyncio.sleep(1)
 
         monkeypatch.setattr("mirix.agent.EpisodicMemoryAgent", MockMemoryAgent)
         monkeypatch.setattr("mirix.agent.ProceduralMemoryAgent", MockMemoryAgent)
         monkeypatch.setattr("mirix.functions.function_sets.memory_tools.os.cpu_count", lambda: 8)
 
         class StubAgentManager:
-            def list_agents(self, *, parent_id, actor, limit=None):
+            async def list_agents(self, *, parent_id, actor, limit=None, **kwargs):
                 assert parent_id == meta_agent.id
                 return relevant_agents
 
@@ -742,7 +756,7 @@ class TestMetaMemoryParallelism:
         )
         user_message = {"message": message, "chaining": False}
 
-        result = trigger_memory_update(
+        result = await trigger_memory_update(
             stub_meta_agent,
             user_message=user_message,
             memory_types=["episodic", "procedural"],
@@ -754,9 +768,8 @@ class TestMetaMemoryParallelism:
         assert set(start_times.keys()) == {"episodic", "procedural"}
         gap = abs(start_times["episodic"] - start_times["procedural"])
 
+        # Both updates ran; gap < 0.45s indicates concurrent execution (asyncio uses one thread).
         assert gap < 0.45, f"Expected parallel execution, gap was {gap:.3f}s"
-        thread_ids = tracker["thread_ids"]
-        assert len(set(thread_ids.values())) == 2, "Updates should run on separate threads"
 
 
 if __name__ == "__main__":

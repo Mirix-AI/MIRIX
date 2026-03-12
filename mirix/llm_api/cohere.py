@@ -2,7 +2,7 @@ import json
 import uuid
 from typing import List, Optional, Union
 
-import requests
+import httpx
 
 from mirix.local_llm.utils import count_tokens
 from mirix.schemas.message import Message
@@ -29,7 +29,7 @@ COHERE_VALID_MODEL_LIST = [
 ]
 
 
-def cohere_get_model_details(url: str, api_key: Union[str, None], model: str) -> int:
+async def cohere_get_model_details(url: str, api_key: Union[str, None], model: str) -> int:
     """https://docs.cohere.com/reference/get-model"""
     from mirix.utils import printd
 
@@ -42,18 +42,18 @@ def cohere_get_model_details(url: str, api_key: Union[str, None], model: str) ->
 
     printd(f"Sending request to {url}")
     try:
-        response = requests.get(url, headers=headers)
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, headers=headers)
         printd(f"response = {response}")
-        response.raise_for_status()  # Raises HTTPError for 4XX/5XX status
-        response = response.json()  # convert to dict from string
-        return response
-    except requests.exceptions.HTTPError as http_err:
+        response.raise_for_status()  # Raises HTTPStatusError for 4XX/5XX status
+        return response.json()
+    except httpx.HTTPStatusError as http_err:
         # Handle HTTP errors (e.g., response 4XX, 5XX)
-        printd(f"Got HTTPError, exception={http_err}")
+        printd(f"Got HTTPStatusError, exception={http_err}")
         raise http_err
-    except requests.exceptions.RequestException as req_err:
+    except httpx.RequestError as req_err:
         # Handle other requests-related errors (e.g., connection error)
-        printd(f"Got RequestException, exception={req_err}")
+        printd(f"Got RequestError, exception={req_err}")
         raise req_err
     except Exception as e:
         # Handle other potential errors
@@ -61,12 +61,12 @@ def cohere_get_model_details(url: str, api_key: Union[str, None], model: str) ->
         raise e
 
 
-def cohere_get_model_context_window(url: str, api_key: Union[str, None], model: str) -> int:
-    model_details = cohere_get_model_details(url=url, api_key=api_key, model=model)
+async def cohere_get_model_context_window(url: str, api_key: Union[str, None], model: str) -> int:
+    model_details = await cohere_get_model_details(url=url, api_key=api_key, model=model)
     return model_details["context_length"]
 
 
-def cohere_get_model_list(url: str, api_key: Union[str, None]) -> dict:
+async def cohere_get_model_list(url: str, api_key: Union[str, None]) -> dict:
     """https://docs.cohere.com/reference/list-models"""
     from mirix.utils import printd
 
@@ -78,18 +78,18 @@ def cohere_get_model_list(url: str, api_key: Union[str, None]) -> dict:
 
     printd(f"Sending request to {url}")
     try:
-        response = requests.get(url, headers=headers)
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, headers=headers)
         printd(f"response = {response}")
-        response.raise_for_status()  # Raises HTTPError for 4XX/5XX status
-        response = response.json()  # convert to dict from string
-        return response["models"]
-    except requests.exceptions.HTTPError as http_err:
+        response.raise_for_status()  # Raises HTTPStatusError for 4XX/5XX status
+        return response.json()["models"]
+    except httpx.HTTPStatusError as http_err:
         # Handle HTTP errors (e.g., response 4XX, 5XX)
-        printd(f"Got HTTPError, exception={http_err}")
+        printd(f"Got HTTPStatusError, exception={http_err}")
         raise http_err
-    except requests.exceptions.RequestException as req_err:
+    except httpx.RequestError as req_err:
         # Handle other requests-related errors (e.g., connection error)
-        printd(f"Got RequestException, exception={req_err}")
+        printd(f"Got RequestError, exception={req_err}")
         raise req_err
     except Exception as e:
         # Handle other potential errors
@@ -275,7 +275,7 @@ def convert_tools_to_cohere_format(tools: List[Tool], inner_thoughts_in_kwargs: 
     return tools_dict_list
 
 
-def cohere_chat_completions_request(
+async def cohere_chat_completions_request(
     url: str,
     api_key: str,
     chat_completion_request: ChatCompletionRequest,
@@ -364,22 +364,22 @@ def cohere_chat_completions_request(
 
     printd(f"Sending request to {url}")
     try:
-        response = requests.post(url, headers=headers, json=data)
+        async with httpx.AsyncClient() as client:
+            response = await client.post(url, headers=headers, json=data)
         printd(f"response = {response}")
-        response.raise_for_status()  # Raises HTTPError for 4XX/5XX status
-        response = response.json()  # convert to dict from string
-        printd(f"response.json = {response}")
-        response = convert_cohere_response_to_chatcompletion(
-            response_json=response, model=chat_completion_request.model
+        response.raise_for_status()  # Raises HTTPStatusError for 4XX/5XX status
+        response_json = response.json()
+        printd(f"response.json = {response_json}")
+        return convert_cohere_response_to_chatcompletion(
+            response_json=response_json, model=chat_completion_request.model
         )
-        return response
-    except requests.exceptions.HTTPError as http_err:
+    except httpx.HTTPStatusError as http_err:
         # Handle HTTP errors (e.g., response 4XX, 5XX)
-        printd(f"Got HTTPError, exception={http_err}, payload={data}")
+        printd(f"Got HTTPStatusError, exception={http_err}, payload={data}")
         raise http_err
-    except requests.exceptions.RequestException as req_err:
+    except httpx.RequestError as req_err:
         # Handle other requests-related errors (e.g., connection error)
-        printd(f"Got RequestException, exception={req_err}")
+        printd(f"Got RequestError, exception={req_err}")
         raise req_err
     except Exception as e:
         # Handle other potential errors

@@ -1,9 +1,11 @@
 from datetime import datetime
 from typing import List, Optional
 
+import httpx
 from pydantic import Field, model_validator
 
 from mirix.constants import LLM_MAX_TOKENS, MIN_CONTEXT_WINDOW
+from mirix.utils import smart_urljoin
 from mirix.llm_api.azure_openai import (
     get_azure_chat_completions_endpoint,
     get_azure_embeddings_endpoint,
@@ -35,13 +37,13 @@ class Provider(ProviderBase):
         if not self.id:
             self.id = ProviderBase._generate_id(prefix=ProviderBase.__id_prefix__)
 
-    def list_llm_models(self) -> List[LLMConfig]:
+    async def list_llm_models(self) -> List[LLMConfig]:
         return []
 
-    def list_embedding_models(self) -> List[EmbeddingConfig]:
+    async def list_embedding_models(self) -> List[EmbeddingConfig]:
         return []
 
-    def get_model_context_window(self, model_name: str) -> Optional[int]:
+    async def get_model_context_window(self, model_name: str) -> Optional[int]:
         raise NotImplementedError
 
     def provider_tag(self) -> str:
@@ -65,10 +67,10 @@ class ProviderUpdate(ProviderBase):
 class MirixProvider(Provider):
     name: str = "mirix"
 
-    def list_llm_models(self) -> List[LLMConfig]:
+    async def list_llm_models(self) -> List[LLMConfig]:
         return []
 
-    def list_embedding_models(self):
+    async def list_embedding_models(self):
         return []
 
 
@@ -77,20 +79,20 @@ class OpenAIProvider(Provider):
     api_key: str = Field(..., description="API key for the OpenAI API.")
     base_url: str = Field(..., description="Base URL for the OpenAI API.")
 
-    def list_llm_models(self) -> List[LLMConfig]:
-        from mirix.llm_api.openai import openai_get_model_list
-
-        # Some hardcoded support for OpenRouter (so that we only get models with tool calling support)...
-        # See: https://openrouter.ai/docs/requests
+    async def list_llm_models(self) -> List[LLMConfig]:
+        url = smart_urljoin(self.base_url, "models")
+        headers = {"Content-Type": "application/json", "Authorization": f"Bearer {self.api_key}"}
         extra_params = {"supported_parameters": "tools"} if "openrouter.ai" in self.base_url else None
-        response = openai_get_model_list(self.base_url, api_key=self.api_key, extra_params=extra_params)
+
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, headers=headers, params=extra_params)
+            response.raise_for_status()
+            data = response.json()
 
         # TogetherAI's response is missing the 'data' field
-        # assert "data" in response, f"OpenAI model query response missing 'data' field: {response}"
-        if "data" in response:
-            data = response["data"]
-        else:
-            data = response
+        if "data" in data:
+            data = data["data"]
+        # else: data is the list directly (e.g. TogetherAI)
 
         configs = []
         for model in data:
@@ -148,8 +150,7 @@ class OpenAIProvider(Provider):
 
         return configs
 
-    def list_embedding_models(self) -> List[EmbeddingConfig]:
-        # TODO: actually automatically list models
+    async def list_embedding_models(self) -> List[EmbeddingConfig]:
         return [
             EmbeddingConfig(
                 embedding_model="text-embedding-3-small",
@@ -189,7 +190,7 @@ class AnthropicProvider(Provider):
     api_key: str = Field(..., description="API key for the Anthropic API.")
     base_url: str = "https://api.anthropic.com/v1"
 
-    def list_llm_models(self) -> List[LLMConfig]:
+    async def list_llm_models(self) -> List[LLMConfig]:
         from mirix.llm_api.anthropic import anthropic_get_model_list
 
         models = anthropic_get_model_list(self.base_url, api_key=self.api_key)
@@ -207,7 +208,7 @@ class AnthropicProvider(Provider):
             )
         return configs
 
-    def list_embedding_models(self) -> List[EmbeddingConfig]:
+    async def list_embedding_models(self) -> List[EmbeddingConfig]:
         return []
 
 
@@ -216,17 +217,19 @@ class MistralProvider(Provider):
     api_key: str = Field(..., description="API key for the Mistral API.")
     base_url: str = "https://api.mistral.ai/v1"
 
-    def list_llm_models(self) -> List[LLMConfig]:
-        from mirix.llm_api.mistral import mistral_get_model_list
+    async def list_llm_models(self) -> List[LLMConfig]:
+        url = smart_urljoin(self.base_url, "models")
+        headers = {"Content-Type": "application/json", "Authorization": f"Bearer {self.api_key}"}
 
-        # Some hardcoded support for OpenRouter (so that we only get models with tool calling support)...
-        # See: https://openrouter.ai/docs/requests
-        response = mistral_get_model_list(self.base_url, api_key=self.api_key)
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, headers=headers)
+            response.raise_for_status()
+            data = response.json()
 
-        assert "data" in response, f"Mistral model query response missing 'data' field: {response}"
+        assert "data" in data, f"Mistral model query response missing 'data' field: {data}"
 
         configs = []
-        for model in response["data"]:
+        for model in data["data"]:
             # If model has chat completions and function calling enabled
             if model["capabilities"]["completion_chat"] and model["capabilities"]["function_calling"]:
                 configs.append(
@@ -241,18 +244,14 @@ class MistralProvider(Provider):
 
         return configs
 
-    def list_embedding_models(self) -> List[EmbeddingConfig]:
-        # Not supported for mistral
+    async def list_embedding_models(self) -> List[EmbeddingConfig]:
         return []
 
-    def get_model_context_window(self, model_name: str) -> Optional[int]:
-        # Redoing this is fine because it's a pretty lightweight call
-        models = self.list_llm_models()
-
+    async def get_model_context_window(self, model_name: str) -> Optional[int]:
+        models = await self.list_llm_models()
         for m in models:
-            if model_name in m["id"]:
-                return int(m["max_context_length"])
-
+            if model_name in m.model:
+                return m.context_window
         return None
 
 
@@ -266,18 +265,19 @@ class OllamaProvider(OpenAIProvider):
     base_url: str = Field(..., description="Base URL for the Ollama API.")
     api_key: Optional[str] = Field(None, description="API key for the Ollama API (default: `None`).")
 
-    def list_llm_models(self) -> List[LLMConfig]:
+    async def list_llm_models(self) -> List[LLMConfig]:
         # https://github.com/ollama/ollama/blob/main/docs/api.md#list-local-models
-        import requests
+        import httpx
 
-        response = requests.get(f"{self.base_url}/api/tags")
+        async with httpx.AsyncClient() as client:
+            response = await client.get(f"{self.base_url}/api/tags")
         if response.status_code != 200:
             raise Exception(f"Failed to list Ollama models: {response.text}")
         response_json = response.json()
 
         configs = []
         for model in response_json["models"]:
-            context_window = self.get_model_context_window(model["name"])
+            context_window = await self.get_model_context_window(model["name"])
             if context_window is None:
                 logger.debug("Ollama model %s has no context window", model["name"])
                 continue
@@ -293,10 +293,11 @@ class OllamaProvider(OpenAIProvider):
             )
         return configs
 
-    def get_model_context_window(self, model_name: str) -> Optional[int]:
-        import requests
+    async def get_model_context_window(self, model_name: str) -> Optional[int]:
+        import httpx
 
-        response = requests.post(f"{self.base_url}/api/show", json={"name": model_name, "verbose": True})
+        async with httpx.AsyncClient() as client:
+            response = await client.post(f"{self.base_url}/api/show", json={"name": model_name, "verbose": True})
         response_json = response.json()
 
         ## thank you vLLM: https://github.com/vllm-project/vllm/blob/main/vllm/config.py#L1675
@@ -327,10 +328,11 @@ class OllamaProvider(OpenAIProvider):
                 return value
         return None
 
-    def get_model_embedding_dim(self, model_name: str):
-        import requests
+    async def get_model_embedding_dim(self, model_name: str):
+        import httpx
 
-        response = requests.post(f"{self.base_url}/api/show", json={"name": model_name, "verbose": True})
+        async with httpx.AsyncClient() as client:
+            response = await client.post(f"{self.base_url}/api/show", json={"name": model_name, "verbose": True})
         response_json = response.json()
         if "model_info" not in response_json:
             if "error" in response_json:
@@ -341,18 +343,19 @@ class OllamaProvider(OpenAIProvider):
                 return value
         return None
 
-    def list_embedding_models(self) -> List[EmbeddingConfig]:
+    async def list_embedding_models(self) -> List[EmbeddingConfig]:
         # https://github.com/ollama/ollama/blob/main/docs/api.md#list-local-models
-        import requests
+        import httpx
 
-        response = requests.get(f"{self.base_url}/api/tags")
+        async with httpx.AsyncClient() as client:
+            response = await client.get(f"{self.base_url}/api/tags")
         if response.status_code != 200:
             raise Exception(f"Failed to list Ollama models: {response.text}")
         response_json = response.json()
 
         configs = []
         for model in response_json["models"]:
-            embedding_dim = self.get_model_embedding_dim(model["name"])
+            embedding_dim = await self.get_model_embedding_dim(model["name"])
             if not embedding_dim:
                 logger.debug("Ollama model %s has no embedding dimension", model["name"])
                 continue
@@ -374,12 +377,17 @@ class GroqProvider(OpenAIProvider):
     base_url: str = "https://api.groq.com/openai/v1"
     api_key: str = Field(..., description="API key for the Groq API.")
 
-    def list_llm_models(self) -> List[LLMConfig]:
-        from mirix.llm_api.openai import openai_get_model_list
+    async def list_llm_models(self) -> List[LLMConfig]:
+        url = smart_urljoin(self.base_url, "models")
+        headers = {"Content-Type": "application/json", "Authorization": f"Bearer {self.api_key}"}
 
-        response = openai_get_model_list(self.base_url, api_key=self.api_key)
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, headers=headers)
+            response.raise_for_status()
+            data = response.json()
+
         configs = []
-        for model in response["data"]:
+        for model in data.get("data", []):
             if "context_window" not in model:
                 continue
             configs.append(
@@ -393,7 +401,7 @@ class GroqProvider(OpenAIProvider):
             )
         return configs
 
-    def list_embedding_models(self) -> List[EmbeddingConfig]:
+    async def list_embedding_models(self) -> List[EmbeddingConfig]:
         return []
 
     def get_model_context_window_size(self, model_name: str):
@@ -417,17 +425,18 @@ class TogetherProvider(OpenAIProvider):
         description="Default prompt formatter (aka model wrapper) to use on vLLM /completions API.",
     )
 
-    def list_llm_models(self) -> List[LLMConfig]:
-        from mirix.llm_api.openai import openai_get_model_list
+    async def list_llm_models(self) -> List[LLMConfig]:
+        url = smart_urljoin(self.base_url, "models")
+        headers = {"Content-Type": "application/json", "Authorization": f"Bearer {self.api_key}"}
 
-        response = openai_get_model_list(self.base_url, api_key=self.api_key)
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, headers=headers)
+            response.raise_for_status()
+            data = response.json()
 
-        # TogetherAI's response is missing the 'data' field
-        # assert "data" in response, f"OpenAI model query response missing 'data' field: {response}"
-        if "data" in response:
-            data = response["data"]
-        else:
-            data = response
+        if "data" in data:
+            data = data["data"]
+        # else: data is the list directly (e.g. TogetherAI)
 
         configs = []
         for model in data:
@@ -465,8 +474,7 @@ class TogetherProvider(OpenAIProvider):
 
         return configs
 
-    def list_embedding_models(self) -> List[EmbeddingConfig]:
-        # TODO renable once we figure out how to pass API keys through properly
+    async def list_embedding_models(self) -> List[EmbeddingConfig]:
         return []
 
         # from mirix.llm_api.openai import openai_get_model_list
@@ -517,19 +525,15 @@ class GoogleAIProvider(Provider):
     api_key: str = Field(..., description="API key for the Google AI API.")
     base_url: str = "https://generativelanguage.googleapis.com"
 
-    def list_llm_models(self):
-        from mirix.llm_api.google_ai import google_ai_get_model_list
+    async def list_llm_models(self):
+        from mirix.llm_api.google_ai_client import google_ai_get_model_list
 
-        model_options = google_ai_get_model_list(base_url=self.base_url, api_key=self.api_key)
-        # filter by 'generateContent' models
+        model_options = await google_ai_get_model_list(base_url=self.base_url, api_key=self.api_key)
         model_options = [mo for mo in model_options if "generateContent" in mo["supportedGenerationMethods"]]
         model_options = [str(m["name"]) for m in model_options]
 
-        # filter by model names
         model_options = [mo[len("models/") :] if mo.startswith("models/") else mo for mo in model_options]
 
-        # TODO remove manual filtering for gemini-pro
-        # Add support for all gemini models
         model_options = [mo for mo in model_options if str(mo).startswith("gemini-")]
 
         configs = []
@@ -539,18 +543,16 @@ class GoogleAIProvider(Provider):
                     model=model,
                     model_endpoint_type="google_ai",
                     model_endpoint=self.base_url,
-                    context_window=self.get_model_context_window(model),
+                    context_window=await self.get_model_context_window(model),
                     handle=self.get_handle(model),
                 )
             )
         return configs
 
-    def list_embedding_models(self):
-        from mirix.llm_api.google_ai import google_ai_get_model_list
+    async def list_embedding_models(self):
+        from mirix.llm_api.google_ai_client import google_ai_get_model_list
 
-        # TODO: use base_url instead
-        model_options = google_ai_get_model_list(base_url=self.base_url, api_key=self.api_key)
-        # filter by 'generateContent' models
+        model_options = await google_ai_get_model_list(base_url=self.base_url, api_key=self.api_key)
         model_options = [mo for mo in model_options if "embedContent" in mo["supportedGenerationMethods"]]
         model_options = [str(m["name"]) for m in model_options]
         model_options = [mo[len("models/") :] if mo.startswith("models/") else mo for mo in model_options]
@@ -563,16 +565,16 @@ class GoogleAIProvider(Provider):
                     embedding_endpoint_type="google_ai",
                     embedding_endpoint=self.base_url,
                     embedding_dim=768,
-                    embedding_chunk_size=300,  # NOTE: max is 2048
+                    embedding_chunk_size=300,
                     handle=self.get_handle(model),
                 )
             )
         return configs
 
-    def get_model_context_window(self, model_name: str) -> Optional[int]:
-        from mirix.llm_api.google_ai import google_ai_get_model_context_window
+    async def get_model_context_window(self, model_name: str) -> Optional[int]:
+        from mirix.llm_api.google_ai_client import google_ai_get_model_context_window
 
-        return google_ai_get_model_context_window(self.base_url, self.api_key, model_name)
+        return await google_ai_get_model_context_window(self.base_url, self.api_key, model_name)
 
 
 class AzureProvider(Provider):
@@ -596,14 +598,13 @@ class AzureProvider(Provider):
             values["api_version"] = cls.model_fields["latest_api_version"].default
         return values
 
-    def list_llm_models(self) -> List[LLMConfig]:
-        from mirix.llm_api.azure_openai import (
-            azure_openai_get_chat_completion_model_list,
-        )
+    async def list_llm_models(self) -> List[LLMConfig]:
+        from mirix.llm_api.azure_openai import azure_openai_get_deployed_model_list
 
-        model_options = azure_openai_get_chat_completion_model_list(
+        model_list = await azure_openai_get_deployed_model_list(
             self.base_url, api_key=self.api_key, api_version=self.api_version
         )
+        model_options = [m for m in model_list if m.get("capabilities", {}).get("chat_completion")]
         configs = []
         for model_option in model_options:
             model_name = model_option["id"]
@@ -620,15 +621,18 @@ class AzureProvider(Provider):
             )
         return configs
 
-    def list_embedding_models(self) -> List[EmbeddingConfig]:
-        from mirix.llm_api.azure_openai import azure_openai_get_embeddings_model_list
+    async def list_embedding_models(self) -> List[EmbeddingConfig]:
+        from mirix.llm_api.azure_openai import azure_openai_get_deployed_model_list
 
-        model_options = azure_openai_get_embeddings_model_list(
-            self.base_url,
-            api_key=self.api_key,
-            api_version=self.api_version,
-            require_embedding_in_name=True,
+        model_list = await azure_openai_get_deployed_model_list(
+            self.base_url, api_key=self.api_key, api_version=self.api_version
         )
+
+        def valid_embedding_model(m: dict) -> bool:
+            valid_name = "embedding" in m["id"]
+            return m.get("capabilities", {}).get("embeddings", False) and valid_name
+
+        model_options = [m for m in model_list if valid_embedding_model(m)]
         configs = []
         for model_option in model_options:
             model_name = model_option["id"]
@@ -659,15 +663,18 @@ class VLLMChatCompletionsProvider(Provider):
     name: str = "vllm"
     base_url: str = Field(..., description="Base URL for the vLLM API.")
 
-    def list_llm_models(self) -> List[LLMConfig]:
-        # not supported with vLLM
-        from mirix.llm_api.openai import openai_get_model_list
-
+    async def list_llm_models(self) -> List[LLMConfig]:
         assert self.base_url, "base_url is required for vLLM provider"
-        response = openai_get_model_list(self.base_url, api_key=None)
+        url = smart_urljoin(self.base_url, "models")
+        headers = {"Content-Type": "application/json"}
+
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, headers=headers)
+            response.raise_for_status()
+            data = response.json()
 
         configs = []
-        for model in response["data"]:
+        for model in data.get("data", []):
             configs.append(
                 LLMConfig(
                     model=model["id"],
@@ -679,8 +686,7 @@ class VLLMChatCompletionsProvider(Provider):
             )
         return configs
 
-    def list_embedding_models(self) -> List[EmbeddingConfig]:
-        # not supported with vLLM
+    async def list_embedding_models(self) -> List[EmbeddingConfig]:
         return []
 
 
@@ -695,14 +701,17 @@ class VLLMCompletionsProvider(Provider):
         description="Default prompt formatter (aka model wrapper) to use on vLLM /completions API.",
     )
 
-    def list_llm_models(self) -> List[LLMConfig]:
-        # not supported with vLLM
-        from mirix.llm_api.openai import openai_get_model_list
+    async def list_llm_models(self) -> List[LLMConfig]:
+        url = smart_urljoin(self.base_url, "models")
+        headers = {"Content-Type": "application/json"}
 
-        response = openai_get_model_list(self.base_url, api_key=None)
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, headers=headers)
+            response.raise_for_status()
+            data = response.json()
 
         configs = []
-        for model in response["data"]:
+        for model in data.get("data", []):
             configs.append(
                 LLMConfig(
                     model=model["id"],
@@ -715,8 +724,7 @@ class VLLMCompletionsProvider(Provider):
             )
         return configs
 
-    def list_embedding_models(self) -> List[EmbeddingConfig]:
-        # not supported with vLLM
+    async def list_embedding_models(self) -> List[EmbeddingConfig]:
         return []
 
 
@@ -728,10 +736,10 @@ class AnthropicBedrockProvider(Provider):
     name: str = "bedrock"
     aws_region: str = Field(..., description="AWS region for Bedrock")
 
-    def list_llm_models(self):
+    async def list_llm_models(self):
         from mirix.llm_api.aws_bedrock import bedrock_get_model_list
 
-        models = bedrock_get_model_list(self.aws_region)
+        models = await bedrock_get_model_list(self.aws_region)
 
         configs = []
         for model_summary in models:
@@ -747,11 +755,10 @@ class AnthropicBedrockProvider(Provider):
             )
         return configs
 
-    def list_embedding_models(self):
+    async def list_embedding_models(self):
         return []
 
     def get_model_context_window(self, model_name: str) -> Optional[int]:
-        # Context windows for Claude models
         from mirix.llm_api.aws_bedrock import bedrock_get_model_context_window
 
         return bedrock_get_model_context_window(model_name)

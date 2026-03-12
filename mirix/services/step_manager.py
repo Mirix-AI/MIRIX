@@ -12,7 +12,7 @@ class StepManager:
         self.session_maker = db_context
 
     @enforce_types
-    def log_step(
+    async def log_step(
         self,
         actor: PydanticClient,
         provider_name: str,
@@ -32,13 +32,13 @@ class StepManager:
             "tags": [],
             "tid": None,
         }
-        with self.session_maker() as session:
+        async with self.session_maker() as session:
             new_step = StepModel(**step_data)
-            new_step.create(session)
+            await new_step.create(session)
             return new_step.to_pydantic()
 
     @enforce_types
-    def get_step(self, step_id: str) -> PydanticStep:
-        with self.session_maker() as session:
-            step = StepModel.read(db_session=session, identifier=step_id)
+    async def get_step(self, step_id: str) -> PydanticStep:
+        async with self.session_maker() as session:
+            step = await StepModel.read(db_session=session, identifier=step_id)
             return step.to_pydantic()

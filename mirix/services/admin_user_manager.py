@@ -24,6 +24,8 @@ if not hasattr(jwt, "encode") or not hasattr(jwt, "decode"):  # pragma: no cover
         "and remove conflicting jwt packages."
     )
 
+from sqlalchemy import select
+
 from mirix.log import get_logger
 from mirix.orm.client import Client as ClientModel
 from mirix.orm.errors import NoResultFound
@@ -150,7 +152,8 @@ class ClientAuthManager:
             "sub": client.id,
             "name": client.name,
             "email": client.email,
-            "scope": client.scope,
+            "write_scope": client.write_scope,
+            "read_scopes": client.read_scopes,
             "admin_user_id": admin_user_id,  # For memory operations
             "exp": expire,
             "iat": datetime.now(timezone.utc),
@@ -176,13 +179,14 @@ class ClientAuthManager:
     # =========================================================================
 
     @enforce_types
-    def register_client_for_dashboard(
+    async def register_client_for_dashboard(
         self,
         name: str,
         email: str,
         password: str,
         organization_id: Optional[str] = None,
-        scope: str = "admin",
+        write_scope: str = "admin",
+        read_scopes: Optional[List[str]] = None,
     ) -> PydanticClient:
         """
         Register a new client with dashboard login credentials.
@@ -194,7 +198,8 @@ class ClientAuthManager:
             email: Email for dashboard login
             password: Password for dashboard login
             organization_id: Optional organization ID
-            scope: Client scope (default: admin for dashboard users)
+            write_scope: Client write scope (default: admin for dashboard users)
+            read_scopes: Client read scopes (default: [write_scope])
 
         Returns:
             The created client
@@ -209,63 +214,73 @@ class ClientAuthManager:
 
         org_id = organization_id or OrganizationManager.DEFAULT_ORG_ID
 
-        with self.session_maker() as session:
-            # Check if email already exists
-            existing_email = (
-                session.query(ClientModel)
-                .filter(ClientModel.email == email.lower(), ClientModel.is_deleted == False)
-                .first()
+        async with self.session_maker() as session:
+            stmt = (
+                select(ClientModel)
+                .where(
+                    ClientModel.email == email.lower(),
+                    ClientModel.is_deleted == False,
+                )
+                .limit(1)
             )
-            if existing_email:
+            result = await session.execute(stmt)
+            if result.scalar_one_or_none():
                 raise ValueError(f"Email '{email}' already exists")
 
-            # Hash the password
             password_hash = self.hash_password(password)
-
-            # Generate client ID
             client_id = f"client-{uuid.uuid4().hex[:8]}"
 
-            # Create client with dashboard credentials
             client = ClientModel(
                 id=client_id,
                 name=name,
                 email=email.lower(),
                 password_hash=password_hash,
                 status="active",
-                scope=scope,
+                write_scope=write_scope,
+                read_scopes=read_scopes if read_scopes is not None else [write_scope],
                 organization_id=org_id,
             )
 
-            client.create(session)
-            logger.info("Registered client for dashboard: %s (%s)", client.name, client.email)
+            await client.create(session)
+            logger.info(
+                "Registered client for dashboard: %s (%s)",
+                client.name,
+                client.email,
+            )
 
-            # Create an admin user for this client
-            # User ID is derived from client ID for easy association
             admin_user_id = f"user-{client.id.replace('client-', '')}"
 
             try:
-                # Check if user already exists
-                existing_user = session.query(UserModel).filter(UserModel.id == admin_user_id).first()
-
-                if not existing_user:
+                try:
+                    await UserModel.read(db_session=session, identifier=admin_user_id)
+                except NoResultFound:
                     admin_user = UserModel(
                         id=admin_user_id,
                         name="Admin",
                         status="active",
                         timezone="UTC",
                         organization_id=org_id,
-                        is_admin=True,  # Mark as admin user
+                        is_admin=True,
                     )
-                    admin_user.create(session)
-                    logger.info("Created admin user for client: %s -> %s", client.id, admin_user_id)
+                    await admin_user.create(session)
+                    logger.info(
+                        "Created admin user for client: %s -> %s",
+                        client.id,
+                        admin_user_id,
+                    )
             except Exception as e:
-                logger.warning("Failed to create admin user for client %s: %s", client.id, e)
-                # Don't fail client registration if user creation fails
+                logger.warning(
+                    "Failed to create admin user for client %s: %s",
+                    client.id,
+                    e,
+                )
 
             return client.to_pydantic()
 
     @enforce_types
-    def authenticate(self, email: str, password: str) -> Tuple[Optional[PydanticClient], Optional[str], str]:
+    async def authenticate(
+        self, email: str, password: str
+    ) -> Tuple[Optional[PydanticClient], Optional[str], str]:
         """
         Authenticate a client for dashboard access and return client + JWT token.
 
@@ -282,32 +297,44 @@ class ClientAuthManager:
                 - "no_password": client has no password set
                 - "wrong_password": password mismatch
         """
-        with self.session_maker() as session:
-            client = (
-                session.query(ClientModel)
-                .filter(ClientModel.email == email.lower(), ClientModel.is_deleted == False)
-                .first()
+        async with self.session_maker() as session:
+            stmt = (
+                select(ClientModel)
+                .where(
+                    ClientModel.email == email.lower(),
+                    ClientModel.is_deleted == False,
+                )
+                .limit(1)
             )
+            result = await session.execute(stmt)
+            client = result.scalar_one_or_none()
 
             if not client:
-                logger.warning("Login attempt for non-existent email: %s", email)
+                logger.warning(
+                    "Login attempt for non-existent email: %s", email
+                )
                 return None, None, "not_found"
 
             if client.status != "active":
-                logger.warning("Login attempt for inactive client: %s", email)
+                logger.warning(
+                    "Login attempt for inactive client: %s", email
+                )
                 return None, None, "inactive"
 
             if not client.password_hash:
-                logger.warning("Login attempt for client without password: %s", email)
+                logger.warning(
+                    "Login attempt for client without password: %s", email
+                )
                 return None, None, "no_password"
 
             if not self.verify_password(password, client.password_hash):
-                logger.warning("Failed login attempt for client: %s", email)
+                logger.warning(
+                    "Failed login attempt for client: %s", email
+                )
                 return None, None, "wrong_password"
 
-            # Update last login time
             client.last_login = datetime.now(timezone.utc)
-            client.update(session, actor=None)
+            await client.update(session, actor=None)
 
             pydantic_client = client.to_pydantic()
             access_token = self.create_access_token(pydantic_client)
@@ -316,11 +343,13 @@ class ClientAuthManager:
             return pydantic_client, access_token, "ok"
 
     @enforce_types
-    def get_client_by_id(self, client_id: str) -> Optional[PydanticClient]:
+    async def get_client_by_id(self, client_id: str) -> Optional[PydanticClient]:
         """Get a client by ID."""
-        with self.session_maker() as session:
+        async with self.session_maker() as session:
             try:
-                client = ClientModel.read(db_session=session, identifier=client_id)
+                client = await ClientModel.read(
+                    db_session=session, identifier=client_id
+                )
                 if client.is_deleted:
                     return None
                 return client.to_pydantic()
@@ -328,39 +357,49 @@ class ClientAuthManager:
                 return None
 
     @enforce_types
-    def get_client_by_email(self, email: str) -> Optional[PydanticClient]:
+    async def get_client_by_email(self, email: str) -> Optional[PydanticClient]:
         """Get a client by email."""
-        with self.session_maker() as session:
-            client = (
-                session.query(ClientModel)
-                .filter(ClientModel.email == email.lower(), ClientModel.is_deleted == False)
-                .first()
+        async with self.session_maker() as session:
+            stmt = (
+                select(ClientModel)
+                .where(
+                    ClientModel.email == email.lower(),
+                    ClientModel.is_deleted == False,
+                )
+                .limit(1)
             )
+            result = await session.execute(stmt)
+            client = result.scalar_one_or_none()
             if client:
                 return client.to_pydantic()
             return None
 
     @enforce_types
-    def list_dashboard_clients(self, cursor: Optional[str] = None, limit: int = 50) -> List[PydanticClient]:
+    async def list_dashboard_clients(
+        self, cursor: Optional[str] = None, limit: int = 50
+    ) -> List[PydanticClient]:
         """List all clients that have dashboard access (email set)."""
-        with self.session_maker() as session:
-            query = (
-                session.query(ClientModel)
-                .filter(ClientModel.is_deleted == False, ClientModel.email.isnot(None))
+        async with self.session_maker() as session:
+            stmt = (
+                select(ClientModel)
+                .where(
+                    ClientModel.is_deleted == False,
+                    ClientModel.email.isnot(None),
+                )
                 .order_by(ClientModel.created_at.desc())
             )
-
             if cursor:
-                query = query.filter(ClientModel.id < cursor)
-
+                stmt = stmt.where(ClientModel.id < cursor)
             if limit:
-                query = query.limit(limit)
-
-            clients = query.all()
+                stmt = stmt.limit(limit)
+            result = await session.execute(stmt)
+            clients = result.scalars().all()
             return [client.to_pydantic() for client in clients]
 
     @enforce_types
-    def set_client_password(self, client_id: str, email: str, password: str) -> PydanticClient:
+    async def set_client_password(
+        self, client_id: str, email: str, password: str
+    ) -> PydanticClient:
         """
         Set dashboard credentials for an existing client.
 
@@ -372,32 +411,40 @@ class ClientAuthManager:
         Returns:
             Updated client
         """
-        with self.session_maker() as session:
-            client = ClientModel.read(db_session=session, identifier=client_id)
+        async with self.session_maker() as session:
+            client = await ClientModel.read(
+                db_session=session, identifier=client_id
+            )
 
             if client.is_deleted:
                 raise ValueError("Cannot update deleted client")
 
-            # Check if email already exists on another client
-            existing_email = (
-                session.query(ClientModel)
-                .filter(
-                    ClientModel.email == email.lower(), ClientModel.id != client_id, ClientModel.is_deleted == False
+            stmt = (
+                select(ClientModel)
+                .where(
+                    ClientModel.email == email.lower(),
+                    ClientModel.id != client_id,
+                    ClientModel.is_deleted == False,
                 )
-                .first()
+                .limit(1)
             )
-            if existing_email:
-                raise ValueError(f"Email '{email}' already exists on another client")
+            result = await session.execute(stmt)
+            if result.scalar_one_or_none():
+                raise ValueError(
+                    f"Email '{email}' already exists on another client"
+                )
 
             client.email = email.lower()
             client.password_hash = self.hash_password(password)
-            client.update(session, actor=None)
+            await client.update(session, actor=None)
 
             logger.info("Set dashboard credentials for client: %s", client.name)
             return client.to_pydantic()
 
     @enforce_types
-    def change_password(self, client_id: str, current_password: str, new_password: str) -> bool:
+    async def change_password(
+        self, client_id: str, current_password: str, new_password: str
+    ) -> bool:
         """
         Change a client's dashboard password.
 
@@ -409,56 +456,94 @@ class ClientAuthManager:
         Returns:
             True if successful, False otherwise
         """
-        with self.session_maker() as session:
-            client = ClientModel.read(db_session=session, identifier=client_id)
+        async with self.session_maker() as session:
+            client = await ClientModel.read(
+                db_session=session, identifier=client_id
+            )
 
             if not client.password_hash:
-                logger.warning("Password change failed: client has no password set: %s", client_id)
+                logger.warning(
+                    "Password change failed: client has no password set: %s",
+                    client_id,
+                )
                 return False
 
-            if not self.verify_password(current_password, client.password_hash):
-                logger.warning("Password change failed: incorrect current password for %s", client_id)
+            if not self.verify_password(
+                current_password, client.password_hash
+            ):
+                logger.warning(
+                    "Password change failed: incorrect current password for %s",
+                    client_id,
+                )
                 return False
 
             client.password_hash = self.hash_password(new_password)
-            client.update(session, actor=None)
+            await client.update(session, actor=None)
 
             logger.info("Password changed for client: %s", client.name)
             return True
 
     @enforce_types
-    def count_dashboard_clients(self) -> int:
+    async def count_dashboard_clients(self) -> int:
         """Count total clients with dashboard access."""
-        with self.session_maker() as session:
-            return (
-                session.query(ClientModel)
-                .filter(ClientModel.is_deleted == False, ClientModel.email.isnot(None))
-                .count()
+        from sqlalchemy import func
+
+        async with self.session_maker() as session:
+            stmt = select(func.count()).select_from(ClientModel).where(
+                ClientModel.is_deleted == False,
+                ClientModel.email.isnot(None),
             )
+            result = await session.execute(stmt)
+            return result.scalar() or 0
 
     @enforce_types
-    def is_first_dashboard_user(self) -> bool:
+    async def is_first_dashboard_user(self) -> bool:
         """Check if there are no dashboard users yet (for bootstrap)."""
-        return self.count_dashboard_clients() == 0
+        return (await self.count_dashboard_clients()) == 0
 
     # =========================================================================
     # Scope-based Authorization
     # =========================================================================
 
     @staticmethod
-    def can_manage_clients(scope: str) -> bool:
-        """Check if a scope can manage clients and API keys."""
-        return scope == "admin"
+    def can_manage_clients(write_scope: Optional[str]) -> bool:
+        """Check if a client can manage clients and API keys.
+
+        Args:
+            write_scope: The client's write_scope (None = read-only)
+
+        Returns:
+            True if the client has admin write_scope
+        """
+        return write_scope == "admin"
 
     @staticmethod
-    def can_manage_memories(scope: str) -> bool:
-        """Check if a scope can modify memories."""
-        return scope in ["admin", "read_write"]
+    def can_manage_memories(write_scope: Optional[str]) -> bool:
+        """Check if a client can modify memories.
+
+        A client can modify memories if it has a write_scope set (not None).
+
+        Args:
+            write_scope: The client's write_scope (None = read-only)
+
+        Returns:
+            True if the client has a write_scope
+        """
+        return write_scope is not None
 
     @staticmethod
-    def can_view_dashboard(scope: str) -> bool:
-        """Check if a scope can view the dashboard."""
-        return scope in ["admin", "read_write", "read"]
+    def can_view_dashboard(read_scopes: list) -> bool:
+        """Check if a client can view the dashboard.
+
+        A client can view the dashboard if it has any read_scopes.
+
+        Args:
+            read_scopes: The client's read_scopes list
+
+        Returns:
+            True if the client has at least one read_scope
+        """
+        return len(read_scopes) > 0 if read_scopes else False
 
 
 # Backward compatibility alias

@@ -3,8 +3,10 @@ Cleanup job for raw memories with 14-day TTL.
 
 This job should be run nightly via cron or Celery beat to delete
 raw memories older than 14 days (based on updated_at timestamp).
+Uses async native APIs (RawMemoryManager is async).
 """
 
+import asyncio
 import logging
 from datetime import UTC, datetime, timedelta
 from typing import Dict
@@ -15,9 +17,9 @@ from mirix.services.raw_memory_manager import RawMemoryManager
 logger = logging.getLogger(__name__)
 
 
-def delete_stale_raw_memories(days_threshold: int = 14) -> Dict:
+async def delete_stale_raw_memories_async(days_threshold: int = 14) -> Dict:
     """
-    Hard delete raw memories older than the specified threshold (based on updated_at).
+    Hard delete raw memories older than the specified threshold (async native).
 
     This job should be run nightly via cron or Celery beat.
 
@@ -27,7 +29,8 @@ def delete_stale_raw_memories(days_threshold: int = 14) -> Dict:
     Returns:
         Dict with deletion statistics
     """
-    cutoff = datetime.now(UTC) - timedelta(days=days_threshold)
+    # Use naive UTC for comparison with TIMESTAMP WITHOUT TIME ZONE columns (asyncpg)
+    cutoff = (datetime.now(UTC) - timedelta(days=days_threshold)).replace(tzinfo=None)
 
     logger.info(
         "Starting cleanup of raw memories older than %s (cutoff: %s)",
@@ -39,18 +42,18 @@ def delete_stale_raw_memories(days_threshold: int = 14) -> Dict:
     deleted_count = 0
     error_count = 0
 
-    # Query memories older than cutoff and delete them
-    with manager.session_maker() as session:
+    # Query memories older than cutoff and delete them (async session)
+    async with manager.session_maker() as session:
         from sqlalchemy import select
 
         from mirix.orm.raw_memory import RawMemory
 
         # Query stale memories
         stmt = select(RawMemory).where(RawMemory.updated_at < cutoff)
-        result = session.execute(stmt)
+        result = await session.execute(stmt)
         stale_memories = result.scalars().all()
 
-        logger.info(f"Found {len(stale_memories)} stale raw memories to delete")
+        logger.info("Found %d stale raw memories to delete", len(stale_memories))
 
         # Create system actor for deletion
         # Note: This bypasses organization-level access control for cleanup
@@ -62,10 +65,10 @@ def delete_stale_raw_memories(days_threshold: int = 14) -> Dict:
 
         for memory in stale_memories:
             try:
-                manager.delete_raw_memory(memory.id, system_actor)
+                await manager.delete_raw_memory(memory.id, system_actor)
                 deleted_count += 1
             except Exception as e:
-                logger.error(f"Failed to delete raw memory {memory.id}: {e}")
+                logger.error("Failed to delete raw memory %s: %s", memory.id, e)
                 error_count += 1
 
     result = {
@@ -86,18 +89,15 @@ def delete_stale_raw_memories(days_threshold: int = 14) -> Dict:
 
 
 if __name__ == "__main__":
-    # Allow running directly from command line
     import sys
 
-    # Set up basic logging
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
 
-    # Get threshold from command line args if provided
     threshold = int(sys.argv[1]) if len(sys.argv) > 1 else 14
 
     print(f"Running raw memory cleanup with {threshold}-day threshold...")
-    result = delete_stale_raw_memories(threshold)
+    result = asyncio.run(delete_stale_raw_memories_async(threshold))
     print(f"Cleanup result: {result}")

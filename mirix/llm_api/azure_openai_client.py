@@ -1,7 +1,8 @@
+
 import os
 from typing import List, Optional
 
-from openai import AsyncAzureOpenAI, AsyncStream, AzureOpenAI, Stream
+from openai import AsyncAzureOpenAI, AsyncStream
 from openai.types.chat.chat_completion import ChatCompletion
 from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
 
@@ -21,7 +22,7 @@ class AzureOpenAIClient(OpenAIClient):
     Most of the implementation is inherited from OpenAIClient since Azure OpenAI uses the same API interface.
     """
 
-    def _prepare_client_kwargs(self) -> dict:
+    async def _prepare_client_kwargs(self) -> dict:
         """
         Prepare Azure-specific client initialization parameters.
         Azure requires api_key, api_version, azure_endpoint, and azure_deployment.
@@ -32,7 +33,7 @@ class AzureOpenAIClient(OpenAIClient):
             api_key = custom_api_key
         else:
             # Check for database-stored API key first, fall back to model_settings and environment
-            override_key = ProviderManager().get_azure_openai_override_key()
+            override_key = await ProviderManager().get_azure_openai_override_key()
             api_key = override_key or model_settings.azure_api_key or os.environ.get("AZURE_OPENAI_API_KEY")
 
         # Get Azure-specific configurations
@@ -69,7 +70,7 @@ class AzureOpenAIClient(OpenAIClient):
         logger.debug(f"Azure OpenAI client initialized with endpoint: {azure_endpoint}, deployment: {azure_deployment}")
         return kwargs
 
-    def build_request_data(
+    async def build_request_data(
         self,
         messages: List[PydanticMessage],
         llm_config: LLMConfig,
@@ -82,7 +83,7 @@ class AzureOpenAIClient(OpenAIClient):
         Azure uses deployment names as the model parameter.
         """
         # Call parent method to build the base request
-        request_data = super().build_request_data(
+        request_data = await super().build_request_data(
             messages=messages,
             llm_config=llm_config,
             tools=tools,
@@ -98,35 +99,21 @@ class AzureOpenAIClient(OpenAIClient):
 
         return request_data
 
-    def request(self, request_data: dict) -> dict:
-        """
-        Performs synchronous request to Azure OpenAI API.
-        """
-        client = AzureOpenAI(**self._prepare_client_kwargs())
-        response: ChatCompletion = client.chat.completions.create(**request_data)
-        return response.model_dump()
-
-    async def request_async(self, request_data: dict) -> dict:
+    async def request(self, request_data: dict) -> dict:
         """
         Performs asynchronous request to Azure OpenAI API.
         """
-        client = AsyncAzureOpenAI(**self._prepare_client_kwargs())
-        response: ChatCompletion = await client.chat.completions.create(**request_data)
+        client = AsyncAzureOpenAI(**await self._prepare_client_kwargs())
+        response: ChatCompletion = await client.chat.completions.create(
+            **request_data
+        )
         return response.model_dump()
 
-    def stream(self, request_data: dict) -> Stream[ChatCompletionChunk]:
-        """
-        Performs streaming request to Azure OpenAI API.
-        """
-        client = AzureOpenAI(**self._prepare_client_kwargs())
-        response_stream: Stream[ChatCompletionChunk] = client.chat.completions.create(**request_data, stream=True)
-        return response_stream
-
-    async def stream_async(self, request_data: dict) -> AsyncStream[ChatCompletionChunk]:
+    async def stream(self, request_data: dict) -> AsyncStream[ChatCompletionChunk]:
         """
         Performs asynchronous streaming request to Azure OpenAI API.
         """
-        client = AsyncAzureOpenAI(**self._prepare_client_kwargs())
+        client = AsyncAzureOpenAI(**await self._prepare_client_kwargs())
         response_stream: AsyncStream[ChatCompletionChunk] = await client.chat.completions.create(
             **request_data, stream=True
         )

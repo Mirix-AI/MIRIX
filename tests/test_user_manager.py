@@ -12,11 +12,13 @@ Run tests:
     pytest tests/test_user_manager.py -v
 """
 
+import asyncio
 import uuid
 from datetime import datetime
 from datetime import timezone as dt_timezone
 
 import pytest
+import pytest_asyncio
 
 from mirix.log import get_logger
 from mirix.schemas.client import Client as PydanticClient
@@ -25,9 +27,9 @@ from mirix.schemas.user import User as PydanticUser
 from mirix.services.client_manager import ClientManager
 from mirix.services.organization_manager import OrganizationManager
 from mirix.services.user_manager import UserManager
+from mirix.settings import settings
 
 logger = get_logger(__name__)
-
 
 # ============================================================================
 # HELPER FUNCTIONS
@@ -62,85 +64,121 @@ def client_manager():
     return ClientManager()
 
 
-@pytest.fixture
-def test_org1(organization_manager):
+@pytest_asyncio.fixture(scope="module")
+def event_loop():
+    """Single event loop for the module so global DB engine stays on one loop."""
+    loop = asyncio.new_event_loop()
+    yield loop
+    loop.close()
+
+
+@pytest_asyncio.fixture(scope="module", autouse=True)
+async def _ensure_server_in_loop():
+    """Run server engine in the module event loop; use NullPool to avoid connection reuse."""
+    import mirix.server.server as server_module
+
+    if (
+        hasattr(server_module, "engine")
+        and server_module.engine is not None
+        and "asyncpg" in str(server_module.engine.url)
+    ):
+        from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+        from sqlalchemy.pool import NullPool
+
+        await server_module.engine.dispose()
+        _pg_uri = settings.mirix_pg_uri.replace(
+            "postgresql+pg8000://", "postgresql+asyncpg://"
+        ).replace("postgresql://", "postgresql+asyncpg://")
+        server_module.engine = create_async_engine(
+            _pg_uri, poolclass=NullPool, echo=settings.pg_echo
+        )
+        server_module.AsyncSessionLocal = async_sessionmaker(
+            bind=server_module.engine,
+            class_=AsyncSession,
+            autocommit=False,
+            autoflush=False,
+            expire_on_commit=False,
+        )
+    yield
+
+
+@pytest_asyncio.fixture
+async def test_org1(_ensure_server_in_loop, organization_manager):
     """Create test organization 1."""
     org = PydanticOrganization(id=generate_test_id("org"), name="Test Organization 1")
-    created_org = organization_manager.create_organization(org)
+    created_org = await organization_manager.create_organization(org)
     yield created_org
-    # Cleanup
     try:
-        organization_manager.delete_organization_by_id(created_org.id)
+        await organization_manager.delete_organization_by_id(created_org.id)
     except Exception:
         pass
 
 
-@pytest.fixture
-def test_org2(organization_manager):
+@pytest_asyncio.fixture
+async def test_org2(_ensure_server_in_loop, organization_manager):
     """Create test organization 2."""
     org = PydanticOrganization(id=generate_test_id("org"), name="Test Organization 2")
-    created_org = organization_manager.create_organization(org)
+    created_org = await organization_manager.create_organization(org)
     yield created_org
-    # Cleanup
     try:
-        organization_manager.delete_organization_by_id(created_org.id)
+        await organization_manager.delete_organization_by_id(created_org.id)
     except Exception:
         pass
 
 
-@pytest.fixture
-def client_a(test_org1, client_manager):
+@pytest_asyncio.fixture
+async def client_a(test_org1, client_manager):
     """Create Client A in org1."""
     client = PydanticClient(
         id=generate_test_id("client"),
         name="Client A",
         organization_id=test_org1.id,
         status="active",
-        scope="read_write",
+        write_scope="test",
+        read_scopes=["test"],
     )
-    created_client = client_manager.create_client(client)
+    created_client = await client_manager.create_client(client)
     yield created_client
-    # Cleanup
     try:
-        client_manager.delete_client_by_id(created_client.id)
+        await client_manager.delete_client_by_id(created_client.id)
     except Exception:
         pass
 
 
-@pytest.fixture
-def client_b(test_org1, client_manager):
+@pytest_asyncio.fixture
+async def client_b(test_org1, client_manager):
     """Create Client B in org1 (same org as Client A)."""
     client = PydanticClient(
         id=generate_test_id("client"),
         name="Client B",
         organization_id=test_org1.id,
         status="active",
-        scope="read_write",
+        write_scope="test",
+        read_scopes=["test"],
     )
-    created_client = client_manager.create_client(client)
+    created_client = await client_manager.create_client(client)
     yield created_client
-    # Cleanup
     try:
-        client_manager.delete_client_by_id(created_client.id)
+        await client_manager.delete_client_by_id(created_client.id)
     except Exception:
         pass
 
 
-@pytest.fixture
-def client_c(test_org2, client_manager):
+@pytest_asyncio.fixture
+async def client_c(test_org2, client_manager):
     """Create Client C in org2 (different org)."""
     client = PydanticClient(
         id=generate_test_id("client"),
         name="Client C",
         organization_id=test_org2.id,
         status="active",
-        scope="read_write",
+        write_scope="test",
+        read_scopes=["test"],
     )
-    created_client = client_manager.create_client(client)
+    created_client = await client_manager.create_client(client)
     yield created_client
-    # Cleanup
     try:
-        client_manager.delete_client_by_id(created_client.id)
+        await client_manager.delete_client_by_id(created_client.id)
     except Exception:
         pass
 
@@ -186,10 +224,12 @@ class TestUserSchemaWithoutClientId:
 class TestOrganizationScopedUserCreation:
     """Tests verifying users are organization-scoped, not client-scoped."""
 
-    def test_create_user_is_organization_scoped(self, user_manager, test_org1):
+    pytestmark = pytest.mark.asyncio(loop_scope="module")
+
+    async def test_create_user_is_organization_scoped(self, user_manager, test_org1):
         """
         Verify that create_user creates users at the organization level.
-        
+
         Users should be associated with an organization, not a client.
         """
         user_id = generate_test_id("user")
@@ -199,22 +239,23 @@ class TestOrganizationScopedUserCreation:
             organization_id=test_org1.id,
             timezone="UTC",
         )
-        
-        created_user = user_manager.create_user(user)
-        
+
+        created_user = await user_manager.create_user(user)
+
         assert created_user.id == user_id
         assert created_user.organization_id == test_org1.id
-        
-        # Cleanup
+
         try:
-            user_manager.delete_user_by_id(user_id)
+            await user_manager.delete_user_by_id(user_id)
         except Exception:
             pass
 
-    def test_same_user_id_retrieved_by_different_contexts(self, user_manager, test_org1, client_a, client_b):
+    async def test_same_user_id_retrieved_by_different_contexts(
+        self, user_manager, test_org1, client_a, client_b
+    ):
         """
         Verify that a user created in an org can be retrieved regardless of client context.
-        
+
         - Create user in org1
         - User should be retrievable (users are org-scoped, not client-scoped)
         """
@@ -225,19 +266,16 @@ class TestOrganizationScopedUserCreation:
             organization_id=test_org1.id,
             timezone="UTC",
         )
-        
-        # Create user
-        created_user = user_manager.create_user(user)
+
+        created_user = await user_manager.create_user(user)
         assert created_user.id == user_id
-        
-        # Retrieve user - should work since users are org-scoped
-        retrieved_user = user_manager.get_user_by_id(user_id)
+
+        retrieved_user = await user_manager.get_user_by_id(user_id)
         assert retrieved_user.id == user_id
         assert retrieved_user.organization_id == test_org1.id
-        
-        # Cleanup
+
         try:
-            user_manager.delete_user_by_id(user_id)
+            await user_manager.delete_user_by_id(user_id)
         except Exception:
             pass
 
@@ -250,18 +288,21 @@ class TestOrganizationScopedUserCreation:
 class TestMultipleClientsSameOrgShareUsers:
     """Tests verifying that clients in the same org share users."""
 
-    def test_multiple_clients_same_org_see_same_users(self, user_manager, test_org1, client_a, client_b):
+    pytestmark = pytest.mark.asyncio(loop_scope="module")
+
+    async def test_multiple_clients_same_org_see_same_users(
+        self, user_manager, test_org1, client_a, client_b
+    ):
         """
         Verify that two clients in the same organization see the same users.
-        
+
         - Create 3 users in org1
         - list_users(organization_id=org1) should return all 3 users
         - Total user count in org1 should be 3 (not duplicated per client)
         """
         created_user_ids = []
-        
+
         try:
-            # Create 3 users in org1
             for i in range(3):
                 user_id = generate_test_id("user")
                 user = PydanticUser(
@@ -270,60 +311,55 @@ class TestMultipleClientsSameOrgShareUsers:
                     organization_id=test_org1.id,
                     timezone="UTC",
                 )
-                user_manager.create_user(user)
+                await user_manager.create_user(user)
                 created_user_ids.append(user_id)
-            
-            # List users for org1
-            users = user_manager.list_users(organization_id=test_org1.id)
-            
-            # Filter to only our test users (there may be other users in the org)
+
+            users = await user_manager.list_users(organization_id=test_org1.id)
             test_users = [u for u in users if u.id in created_user_ids]
-            
+
             assert len(test_users) == 3, f"Expected 3 users, got {len(test_users)}"
-            
-            # Verify all created users are in the list
+
             retrieved_ids = {u.id for u in test_users}
-            for user_id in created_user_ids:
-                assert user_id in retrieved_ids, f"User {user_id} not found in list"
-                
+            for uid in created_user_ids:
+                assert uid in retrieved_ids, f"User {uid} not found in list"
+
         finally:
-            # Cleanup
-            for user_id in created_user_ids:
+            for uid in created_user_ids:
                 try:
-                    user_manager.delete_user_by_id(user_id)
+                    await user_manager.delete_user_by_id(uid)
                 except Exception:
                     pass
 
-    def test_user_count_not_multiplied_by_clients(self, user_manager, test_org1, client_a, client_b):
+    async def test_user_count_not_multiplied_by_clients(
+        self, user_manager, test_org1, client_a, client_b
+    ):
         """
         Verify that having multiple clients doesn't multiply user count.
-        
+
         Before the fix, users were client-scoped, so each client would have
         its own copy. Now users are org-scoped, so count should be consistent.
         """
         user_id = generate_test_id("user")
-        
+
         try:
-            # Create one user in org1
             user = PydanticUser(
                 id=user_id,
                 name="Single User",
                 organization_id=test_org1.id,
                 timezone="UTC",
             )
-            user_manager.create_user(user)
-            
-            # List users for org1
-            users = user_manager.list_users(organization_id=test_org1.id)
-            
-            # Count how many times our user appears
+            await user_manager.create_user(user)
+
+            users = await user_manager.list_users(organization_id=test_org1.id)
             user_occurrences = [u for u in users if u.id == user_id]
-            
-            assert len(user_occurrences) == 1, f"User should appear exactly once, got {len(user_occurrences)}"
-            
+
+            assert len(user_occurrences) == 1, (
+                f"User should appear exactly once, got {len(user_occurrences)}"
+            )
+
         finally:
             try:
-                user_manager.delete_user_by_id(user_id)
+                await user_manager.delete_user_by_id(user_id)
             except Exception:
                 pass
 
@@ -336,19 +372,22 @@ class TestMultipleClientsSameOrgShareUsers:
 class TestUsersIsolatedAcrossOrganizations:
     """Tests verifying that users in different orgs are isolated."""
 
-    def test_list_users_filters_by_organization(self, user_manager, test_org1, test_org2):
+    pytestmark = pytest.mark.asyncio(loop_scope="module")
+
+    async def test_list_users_filters_by_organization(
+        self, user_manager, test_org1, test_org2
+    ):
         """
         Verify list_users filters by organization_id.
-        
+
         - Create users in org1 and org2
         - list_users(org1) should only return org1 users
         - list_users(org2) should only return org2 users
         """
         org1_user_ids = []
         org2_user_ids = []
-        
+
         try:
-            # Create 2 users in org1
             for i in range(2):
                 user_id = generate_test_id("user")
                 user = PydanticUser(
@@ -357,10 +396,9 @@ class TestUsersIsolatedAcrossOrganizations:
                     organization_id=test_org1.id,
                     timezone="UTC",
                 )
-                user_manager.create_user(user)
+                await user_manager.create_user(user)
                 org1_user_ids.append(user_id)
-            
-            # Create 2 users in org2
+
             for i in range(2):
                 user_id = generate_test_id("user")
                 user = PydanticUser(
@@ -369,38 +407,32 @@ class TestUsersIsolatedAcrossOrganizations:
                     organization_id=test_org2.id,
                     timezone="UTC",
                 )
-                user_manager.create_user(user)
+                await user_manager.create_user(user)
                 org2_user_ids.append(user_id)
-            
-            # List users for org1
-            org1_users = user_manager.list_users(organization_id=test_org1.id)
+
+            org1_users = await user_manager.list_users(organization_id=test_org1.id)
             org1_retrieved_ids = {u.id for u in org1_users}
-            
-            # List users for org2
-            org2_users = user_manager.list_users(organization_id=test_org2.id)
+
+            org2_users = await user_manager.list_users(organization_id=test_org2.id)
             org2_retrieved_ids = {u.id for u in org2_users}
-            
-            # Verify org1 users are in org1 list
-            for user_id in org1_user_ids:
-                assert user_id in org1_retrieved_ids, f"Org1 user {user_id} not in org1 list"
-            
-            # Verify org2 users are in org2 list
-            for user_id in org2_user_ids:
-                assert user_id in org2_retrieved_ids, f"Org2 user {user_id} not in org2 list"
-            
-            # Verify org1 users are NOT in org2 list
-            for user_id in org1_user_ids:
-                assert user_id not in org2_retrieved_ids, f"Org1 user {user_id} should not be in org2 list"
-            
-            # Verify org2 users are NOT in org1 list
-            for user_id in org2_user_ids:
-                assert user_id not in org1_retrieved_ids, f"Org2 user {user_id} should not be in org1 list"
-                
+
+            for uid in org1_user_ids:
+                assert uid in org1_retrieved_ids, f"Org1 user {uid} not in org1 list"
+            for uid in org2_user_ids:
+                assert uid in org2_retrieved_ids, f"Org2 user {uid} not in org2 list"
+            for uid in org1_user_ids:
+                assert uid not in org2_retrieved_ids, (
+                    f"Org1 user {uid} should not be in org2 list"
+                )
+            for uid in org2_user_ids:
+                assert uid not in org1_retrieved_ids, (
+                    f"Org2 user {uid} should not be in org1 list"
+                )
+
         finally:
-            # Cleanup
-            for user_id in org1_user_ids + org2_user_ids:
+            for uid in org1_user_ids + org2_user_ids:
                 try:
-                    user_manager.delete_user_by_id(user_id)
+                    await user_manager.delete_user_by_id(uid)
                 except Exception:
                     pass
 
@@ -413,25 +445,28 @@ class TestUsersIsolatedAcrossOrganizations:
 class TestClientDeletionPreservesUsers:
     """Tests verifying that deleting a client does NOT delete users."""
 
-    def test_delete_client_preserves_users(self, user_manager, client_manager, test_org1):
+    pytestmark = pytest.mark.asyncio(loop_scope="module")
+
+    async def test_delete_client_preserves_users(
+        self, user_manager, client_manager, test_org1
+    ):
         """
         Verify deleting a client does NOT cascade-delete users.
-        
+
         Before the fix, users had a FK to clients with CASCADE delete.
         Now users are org-scoped and should persist when clients are deleted.
         """
-        # Create a client
         client_id = generate_test_id("client")
         client = PydanticClient(
             id=client_id,
             name="Temporary Client",
             organization_id=test_org1.id,
             status="active",
-            scope="read_write",
+            write_scope="test",
+            read_scopes=["test"],
         )
-        created_client = client_manager.create_client(client)
-        
-        # Create a user in the same org
+        await client_manager.create_client(client)
+
         user_id = generate_test_id("user")
         user = PydanticUser(
             id=user_id,
@@ -439,25 +474,23 @@ class TestClientDeletionPreservesUsers:
             organization_id=test_org1.id,
             timezone="UTC",
         )
-        created_user = user_manager.create_user(user)
-        
+        await user_manager.create_user(user)
+
         try:
-            # Verify user exists
-            retrieved_user = user_manager.get_user_by_id(user_id)
+            retrieved_user = await user_manager.get_user_by_id(user_id)
             assert retrieved_user.id == user_id
-            
-            # Delete the client
-            client_manager.delete_client_by_id(client_id)
-            
-            # Verify user STILL exists after client deletion
-            user_after_delete = user_manager.get_user_by_id(user_id)
-            assert user_after_delete.id == user_id, "User should still exist after client deletion"
+
+            await client_manager.delete_client_by_id(client_id)
+
+            user_after_delete = await user_manager.get_user_by_id(user_id)
+            assert user_after_delete.id == user_id, (
+                "User should still exist after client deletion"
+            )
             assert user_after_delete.organization_id == test_org1.id
-            
+
         finally:
-            # Cleanup user
             try:
-                user_manager.delete_user_by_id(user_id)
+                await user_manager.delete_user_by_id(user_id)
             except Exception:
                 pass
 
@@ -470,62 +503,68 @@ class TestClientDeletionPreservesUsers:
 class TestGetOrCreateOrgDefaultUser:
     """Tests for get_or_create_org_default_user without client_id."""
 
-    def test_get_or_create_org_default_user_creates_user(self, user_manager, test_org1):
-        """
-        Verify get_or_create_org_default_user creates a default user for the org.
-        """
-        # Get or create default user
-        default_user = user_manager.get_or_create_org_default_user(org_id=test_org1.id)
-        
+    pytestmark = pytest.mark.asyncio(loop_scope="module")
+
+    async def test_get_or_create_org_default_user_creates_user(
+        self, user_manager, test_org1
+    ):
+        """Verify get_or_create_org_default_user creates a default user for the org."""
+        default_user = await user_manager.get_or_create_org_default_user(
+            org_id=test_org1.id
+        )
+
         assert default_user is not None
         assert default_user.organization_id == test_org1.id
         assert default_user.name == user_manager.DEFAULT_USER_NAME
-        
-        # Cleanup
+
         try:
-            user_manager.delete_user_by_id(default_user.id)
+            await user_manager.delete_user_by_id(default_user.id)
         except Exception:
             pass
 
-    def test_get_or_create_org_default_user_is_idempotent(self, user_manager, test_org1):
-        """
-        Verify get_or_create_org_default_user returns the same user on repeated calls.
-        """
-        # First call
-        default_user_1 = user_manager.get_or_create_org_default_user(org_id=test_org1.id)
-        
-        # Second call
-        default_user_2 = user_manager.get_or_create_org_default_user(org_id=test_org1.id)
-        
-        assert default_user_1.id == default_user_2.id, "Should return same user on repeated calls"
-        
-        # Cleanup
+    async def test_get_or_create_org_default_user_is_idempotent(
+        self, user_manager, test_org1
+    ):
+        """Verify get_or_create_org_default_user returns the same user on repeated calls."""
+        default_user_1 = await user_manager.get_or_create_org_default_user(
+            org_id=test_org1.id
+        )
+        default_user_2 = await user_manager.get_or_create_org_default_user(
+            org_id=test_org1.id
+        )
+
+        assert default_user_1.id == default_user_2.id, (
+            "Should return same user on repeated calls"
+        )
+
         try:
-            user_manager.delete_user_by_id(default_user_1.id)
+            await user_manager.delete_user_by_id(default_user_1.id)
         except Exception:
             pass
 
-    def test_get_or_create_org_default_user_different_orgs(self, user_manager, test_org1, test_org2):
-        """
-        Verify get_or_create_org_default_user creates separate users for different orgs.
-        """
-        # Get default user for org1
-        default_user_org1 = user_manager.get_or_create_org_default_user(org_id=test_org1.id)
-        
-        # Get default user for org2
-        default_user_org2 = user_manager.get_or_create_org_default_user(org_id=test_org2.id)
-        
-        assert default_user_org1.id != default_user_org2.id, "Different orgs should have different default users"
+    async def test_get_or_create_org_default_user_different_orgs(
+        self, user_manager, test_org1, test_org2
+    ):
+        """Verify get_or_create_org_default_user creates separate users for different orgs."""
+        default_user_org1 = await user_manager.get_or_create_org_default_user(
+            org_id=test_org1.id
+        )
+        default_user_org2 = await user_manager.get_or_create_org_default_user(
+            org_id=test_org2.id
+        )
+
+        assert default_user_org1.id != default_user_org2.id, (
+            "Different orgs should have different default users"
+        )
         assert default_user_org1.organization_id == test_org1.id
         assert default_user_org2.organization_id == test_org2.id
-        
-        # Cleanup
+
         try:
-            user_manager.delete_user_by_id(default_user_org1.id)
+            await user_manager.delete_user_by_id(default_user_org1.id)
         except Exception:
             pass
         try:
-            user_manager.delete_user_by_id(default_user_org2.id)
+            await user_manager.delete_user_by_id(default_user_org2.id)
         except Exception:
             pass
 
@@ -541,29 +580,29 @@ class TestUserManagerApiSignature:
     def test_create_user_has_no_client_id_parameter(self):
         """Verify create_user method has no client_id parameter."""
         import inspect
-        
+
         sig = inspect.signature(UserManager.create_user)
         params = list(sig.parameters.keys())
-        
+
         assert "client_id" not in params, "create_user should not have client_id parameter"
         assert "pydantic_user" in params, "create_user should have pydantic_user parameter"
 
     def test_list_users_has_no_client_id_parameter(self):
         """Verify list_users method has no client_id parameter."""
         import inspect
-        
+
         sig = inspect.signature(UserManager.list_users)
         params = list(sig.parameters.keys())
-        
+
         assert "client_id" not in params, "list_users should not have client_id parameter"
         assert "organization_id" in params, "list_users should have organization_id parameter"
 
     def test_get_or_create_org_default_user_has_no_client_id_parameter(self):
         """Verify get_or_create_org_default_user method has no client_id parameter."""
         import inspect
-        
+
         sig = inspect.signature(UserManager.get_or_create_org_default_user)
         params = list(sig.parameters.keys())
-        
+
         assert "client_id" not in params, "get_or_create_org_default_user should not have client_id parameter"
         assert "org_id" in params, "get_or_create_org_default_user should have org_id parameter"

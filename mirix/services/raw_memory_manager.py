@@ -24,7 +24,7 @@ from mirix.schemas.raw_memory import RawMemoryItemCreate as PydanticRawMemoryIte
 from mirix.schemas.user import User as PydanticUser
 from mirix.services.user_manager import UserManager
 from mirix.settings import settings
-from mirix.utils import enforce_types
+from mirix.utils import enforce_types, generate_unique_short_id_async
 
 logger = get_logger(__name__)
 
@@ -43,7 +43,7 @@ class RawMemoryManager:
         self.session_maker = db_context
 
     @enforce_types
-    def create_raw_memory(
+    async def create_raw_memory(
         self,
         raw_memory: PydanticRawMemoryItemCreate,
         actor: PydanticClient,
@@ -81,7 +81,7 @@ class RawMemoryManager:
         # Auto-create user if it doesn't exist (users are organization-scoped, not client-scoped)
         user_manager = UserManager()
         try:
-            user_manager.get_user_by_id(user_id)
+            await user_manager.get_user_by_id(user_id)
         except NoResultFound:
             logger.info(
                 "User with id=%s not found, auto-creating with organization_id=%s",
@@ -90,7 +90,7 @@ class RawMemoryManager:
             )
             try:
                 # Create user with provided user_id and client's organization
-                user_manager.create_user(
+                await user_manager.create_user(
                     pydantic_user=PydanticUser(
                         id=user_id,
                         name=user_id,  # Use user_id as default name
@@ -116,14 +116,16 @@ class RawMemoryManager:
 
         # Ensure ID is set before model_dump
         if not raw_memory.id:
-            from mirix.utils import generate_unique_short_id
+            raw_memory.id = await generate_unique_short_id_async(
+                self.session_maker, RawMemory, "raw_mem"
+            )
 
-            raw_memory.id = generate_unique_short_id(self.session_maker, RawMemory, "raw_mem")
-
-        # Auto-inject scope from actor
+        # Auto-inject scope from actor's write_scope
+        if actor.write_scope is None:
+            raise ValueError("Client has no write_scope - cannot create memories")
         if raw_memory.filter_tags is None:
             raw_memory.filter_tags = {}
-        raw_memory.filter_tags["scope"] = actor.scope
+        raw_memory.filter_tags["scope"] = actor.write_scope
 
         logger.debug(
             "Creating raw memory: id=%s, client_id=%s, user_id=%s, filter_tags=%s",
@@ -138,8 +140,8 @@ class RawMemoryManager:
             try:
                 from mirix.embeddings import embedding_model
 
-                embed_model = embedding_model(agent_state.embedding_config)
-                context_embedding = embed_model.get_text_embedding(raw_memory.context)
+                embed_model = await embedding_model(agent_state.embedding_config)
+                context_embedding = await embed_model.get_text_embedding(raw_memory.context)
 
                 # Pad embeddings using Pydantic validator
                 raw_memory.context_embedding = PydanticRawMemoryItemCreate.pad_embeddings(context_embedding)
@@ -169,20 +171,29 @@ class RawMemoryManager:
         if not raw_memory_dict.get("updated_at"):
             raw_memory_dict["updated_at"] = now
 
+        # raw_memory.occurred_at, created_at, updated_at are TIMESTAMP WITHOUT TIME ZONE;
+        # normalize to naive UTC to avoid asyncpg "offset-naive and offset-aware" errors.
+        for key in ("occurred_at", "created_at", "updated_at"):
+            val = raw_memory_dict.get(key)
+            if isinstance(val, datetime) and val.tzinfo is not None:
+                raw_memory_dict[key] = val.astimezone(timezone.utc).replace(tzinfo=None)
+
         # Validate required fields
         if not raw_memory_dict.get("context"):
             raise ValueError("Required field 'context' is missing or empty")
 
         # Create the raw memory item (with conditional Redis caching)
-        with self.session_maker() as session:
+        async with self.session_maker() as session:
             raw_memory_item = RawMemory(**raw_memory_dict)
-            raw_memory_item.create_with_redis(session, actor=actor, use_cache=use_cache)
+            await raw_memory_item.create_with_redis(
+                session, actor=actor, use_cache=use_cache
+            )
 
             logger.info("Raw memory created: id=%s", raw_memory_item.id)
             return raw_memory_item.to_pydantic()
 
     @enforce_types
-    def get_raw_memory_by_id(
+    async def get_raw_memory_by_id(
         self,
         memory_id: str,
         actor: PydanticClient,
@@ -211,15 +222,15 @@ class RawMemoryManager:
 
             if cache_provider:
                 cache_key = f"{cache_provider.RAW_MEMORY_PREFIX}{memory_id}"
-                cached_data = cache_provider.get_json(cache_key)
+                cached_data = await cache_provider.get_json(cache_key)
                 if cached_data:
                     # Cache HIT - validate scope before returning
                     logger.debug("Cache HIT for raw memory %s", memory_id)
                     pydantic_memory = PydanticRawMemoryItem(**cached_data)
 
-                    # Validate scope
+                    # Validate scope - memory must be in actor's read_scopes
                     memory_scope = (pydantic_memory.filter_tags or {}).get("scope")
-                    if memory_scope != actor.scope:
+                    if memory_scope not in actor.read_scopes:
                         raise NoResultFound(f"Raw memory record with id {memory_id} not found.")
 
                     # Validate user_id if provided
@@ -238,14 +249,16 @@ class RawMemoryManager:
             )
 
         # Cache MISS or cache unavailable - fetch from PostgreSQL
-        with self.session_maker() as session:
+        async with self.session_maker() as session:
             try:
-                raw_memory_item = RawMemory.read(db_session=session, identifier=memory_id, actor=actor)
+                raw_memory_item = await RawMemory.read(
+                    db_session=session, identifier=memory_id, actor=actor
+                )
                 pydantic_memory = raw_memory_item.to_pydantic()
 
-                # Validate scope
+                # Validate scope - memory must be in actor's read_scopes
                 memory_scope = (pydantic_memory.filter_tags or {}).get("scope")
-                if memory_scope != actor.scope:
+                if memory_scope not in actor.read_scopes:
                     raise NoResultFound(f"Raw memory record with id {memory_id} not found.")
 
                 # Validate user_id if provided
@@ -257,7 +270,9 @@ class RawMemoryManager:
                     if cache_provider:
                         cache_key = f"{cache_provider.RAW_MEMORY_PREFIX}{memory_id}"
                         data = pydantic_memory.model_dump(mode="json")
-                        cache_provider.set_json(cache_key, data, ttl=settings.redis_ttl_default)
+                        await cache_provider.set_json(
+                            cache_key, data, ttl=settings.redis_ttl_default
+                        )
                         logger.debug(
                             "Populated cache for raw memory %s",
                             memory_id,
@@ -274,7 +289,7 @@ class RawMemoryManager:
                 raise NoResultFound(f"Raw memory record with id {memory_id} not found.")
 
     @enforce_types
-    def update_raw_memory(
+    async def update_raw_memory(
         self,
         memory_id: str,
         actor: PydanticClient,
@@ -311,12 +326,12 @@ class RawMemoryManager:
             tags_merge_mode,
         )
 
-        with self.session_maker() as session:
+        async with self.session_maker() as session:
             # Fetch the existing memory with row-level lock (SELECT FOR UPDATE)
             # This prevents race conditions when multiple agents append/merge concurrently
             stmt = select(RawMemory).where(RawMemory.id == memory_id).with_for_update()
 
-            result = session.execute(stmt)
+            result = await session.execute(stmt)
             try:
                 raw_memory = result.scalar_one()
             except NoResultFound:
@@ -330,11 +345,12 @@ class RawMemoryManager:
                     f"actor belongs to {actor.organization_id}"
                 )
 
-            # Perform scope access control check
+            # Perform scope access control check - must match actor's write_scope to update
             memory_scope = (raw_memory.filter_tags or {}).get("scope")
-            if memory_scope != actor.scope:
+            if memory_scope != actor.write_scope:
                 raise ValueError(
-                    f"Access denied: memory {memory_id} has scope '{memory_scope}', " f"actor has scope '{actor.scope}'"
+                    f"Access denied: memory {memory_id} has scope '{memory_scope}', "
+                    f"actor has write_scope '{actor.write_scope}'"
                 )
 
             # Perform user_id access control check if provided
@@ -343,8 +359,8 @@ class RawMemoryManager:
 
             # Prevent scope tampering in filter_tags updates
             if new_filter_tags is not None and "scope" in new_filter_tags:
-                if new_filter_tags["scope"] != actor.scope:
-                    raise ValueError("Cannot change memory scope - scope must match actor.scope")
+                if new_filter_tags["scope"] != actor.write_scope:
+                    raise ValueError("Cannot change memory scope - scope must match actor.write_scope")
 
             # Update context
             if new_context is not None:
@@ -378,16 +394,17 @@ class RawMemoryManager:
                 try:
                     from mirix.embeddings import embedding_model
 
-                    embed_model = embedding_model(agent_state.embedding_config)
-                    context_embedding = embed_model.get_text_embedding(raw_memory.context)
+                    embed_model = await embedding_model(agent_state.embedding_config)
+                    context_embedding = await embed_model.get_text_embedding(raw_memory.context)
 
                     raw_memory.context_embedding = PydanticRawMemoryItem.pad_embeddings(context_embedding)
                     raw_memory.embedding_config = agent_state.embedding_config
                 except Exception as e:
                     logger.warning("Failed to regenerate embeddings for raw memory update: %s", e)
 
-            # Update last_modify and timestamp
-            raw_memory.updated_at = datetime.now(timezone.utc)
+            # Update last_modify and timestamp (use naive UTC for TIMESTAMP WITHOUT TIME ZONE)
+            now_utc = datetime.now(timezone.utc)
+            raw_memory.updated_at = now_utc.replace(tzinfo=None) if now_utc.tzinfo else now_utc
             raw_memory.last_modify = {
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "operation": "updated",
@@ -399,7 +416,7 @@ class RawMemoryManager:
                 raw_memory.last_updated_by_id = actor.id
 
             # Commit changes
-            session.commit()
+            await session.commit()
 
             # Invalidate cache
             try:
@@ -408,7 +425,7 @@ class RawMemoryManager:
                 cache_provider = get_cache_provider()
                 if cache_provider:
                     cache_key = f"{cache_provider.RAW_MEMORY_PREFIX}{memory_id}"
-                    cache_provider.delete(cache_key)
+                    await cache_provider.delete(cache_key)
                     logger.debug("Invalidated cache for memory %s", memory_id)
             except Exception as e:
                 logger.warning(
@@ -421,7 +438,7 @@ class RawMemoryManager:
             return raw_memory.to_pydantic()
 
     @enforce_types
-    def delete_raw_memory(
+    async def delete_raw_memory(
         self,
         memory_id: str,
         actor: PydanticClient,
@@ -440,16 +457,18 @@ class RawMemoryManager:
         """
         logger.info("Deleting raw memory: id=%s", memory_id)
 
-        with self.session_maker() as session:
+        async with self.session_maker() as session:
             try:
-                raw_memory = RawMemory.read(db_session=session, identifier=memory_id, actor=actor)
+                raw_memory = await RawMemory.read(
+                    db_session=session, identifier=memory_id, actor=actor
+                )
 
-                # Perform scope access control check
+                # Perform scope access control check - must match actor's write_scope to delete
                 memory_scope = (raw_memory.filter_tags or {}).get("scope")
-                if memory_scope != actor.scope:
+                if memory_scope != actor.write_scope:
                     raise ValueError(
                         f"Access denied: memory {memory_id} has scope '{memory_scope}', "
-                        f"actor has scope '{actor.scope}'"
+                        f"actor has write_scope '{actor.write_scope}'"
                     )
 
                 # Perform user_id access control check if provided
@@ -457,8 +476,8 @@ class RawMemoryManager:
                     logger.warning("Raw memory %s not found for deletion (user mismatch)", memory_id)
                     return False
 
-                session.delete(raw_memory)
-                session.commit()
+                await session.delete(raw_memory)
+                await session.commit()
 
                 # Invalidate cache
                 try:
@@ -467,7 +486,7 @@ class RawMemoryManager:
                     cache_provider = get_cache_provider()
                     if cache_provider:
                         cache_key = f"{cache_provider.RAW_MEMORY_PREFIX}{memory_id}"
-                        cache_provider.delete(cache_key)
+                        await cache_provider.delete(cache_key)
                         logger.debug(
                             "Invalidated cache for deleted memory %s",
                             memory_id,
@@ -486,11 +505,12 @@ class RawMemoryManager:
                 return False
 
     @enforce_types
-    def search_raw_memories(
+    async def search_raw_memories(
         self,
         organization_id: str,
         user_id: Optional[str] = None,
         filter_tags: Optional[Dict[str, Any]] = None,
+        scopes: Optional[List[str]] = None,
         sort: str = "-updated_at",
         cursor: Optional[str] = None,
         time_range: Optional[Dict[str, Optional[datetime]]] = None,
@@ -543,7 +563,7 @@ class RawMemoryManager:
             except (ValueError, KeyError, json.JSONDecodeError, UnicodeDecodeError) as e:
                 raise ValueError(f"Invalid cursor format: {e}")
 
-        with self.session_maker() as session:
+        async with self.session_maker() as session:
             # Base query filtering by organization_id
             base_query = select(RawMemory).where(RawMemory.organization_id == organization_id)
 
@@ -551,20 +571,9 @@ class RawMemoryManager:
             if user_id:
                 base_query = base_query.where(RawMemory.user_id == user_id)
 
-            # Apply filter_tags (AND filter on top-level keys)
-            if filter_tags:
-                for key, value in filter_tags.items():
-                    if key == "scope":
-                        # Scope matching: input value must be in memory's scope field
-                        base_query = base_query.where(
-                            or_(
-                                func.lower(RawMemory.filter_tags[key].as_string()).contains(str(value).lower()),
-                                RawMemory.filter_tags[key].as_string() == str(value),
-                            )
-                        )
-                    else:
-                        # Other keys: exact match
-                        base_query = base_query.where(RawMemory.filter_tags[key].as_string() == str(value))
+            from mirix.database.filter_tags_query import apply_filter_tags_sqlalchemy
+
+            base_query = apply_filter_tags_sqlalchemy(base_query, RawMemory, filter_tags, scopes=scopes)
 
             # Apply time range filtering
             if time_range:
@@ -620,7 +629,7 @@ class RawMemoryManager:
             base_query = base_query.limit(limit + 1)
 
             # Execute query
-            result = session.execute(base_query)
+            result = await session.execute(base_query)
             items = result.scalars().all()
 
             # Determine if there are more results and get next cursor

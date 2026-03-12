@@ -7,6 +7,7 @@ the server runs in-process. This requires full server dependencies.
 For remote/cloud deployments, use mirix.client.MirixClient instead.
 """
 
+import asyncio
 import base64
 import hashlib
 import logging
@@ -16,7 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Union
 from urllib.parse import urlparse
 
-import requests
+import httpx
 
 if TYPE_CHECKING:
     try:
@@ -35,18 +36,12 @@ if TYPE_CHECKING:
 # Server-side imports
 import mirix.utils
 from mirix.client.client import AbstractClient
-from mirix.constants import (
-    BASE_TOOLS,
-    DEFAULT_HUMAN,
-    DEFAULT_PERSONA,
-    FUNCTION_RETURN_CHAR_LIMIT,
-    META_MEMORY_TOOLS,
-)
+from mirix.constants import BASE_TOOLS, DEFAULT_HUMAN, DEFAULT_PERSONA, FUNCTION_RETURN_CHAR_LIMIT, META_MEMORY_TOOLS
 from mirix.functions.functions import parse_source_code
 from mirix.interface import QueuingInterface
 from mirix.orm.errors import NoResultFound
 from mirix.schemas.agent import AgentState, AgentType, CreateAgent, CreateMetaAgent
-from mirix.schemas.block import Block, BlockUpdate, CreateBlock, Human, Persona
+from mirix.schemas.block import Block, BlockUpdate, Human, Persona
 from mirix.schemas.embedding_config import EmbeddingConfig
 from mirix.schemas.enums import MessageRole
 from mirix.schemas.environment_variables import (
@@ -81,9 +76,9 @@ from mirix.schemas.user import User as PydanticUser
 from mirix.schemas.user import UserCreate
 
 
-def create_client():
-    """Factory function to create a LocalClient"""
-    return LocalClient()
+async def create_client() -> "LocalClient":
+    """Async factory to create and initialize a LocalClient. Use: client = await create_client()."""
+    return await LocalClient.create()
 
 
 class LocalClient(AbstractClient):
@@ -102,7 +97,7 @@ class LocalClient(AbstractClient):
         organization (Organization): The organization object.
         debug (bool): Whether to print debug information.
         interface (QueuingInterface): The interface for the client.
-        server (SyncServer): The server for the client.
+        server (AsyncServer): The server for the client.
     """
 
     def __init__(
@@ -126,7 +121,7 @@ class LocalClient(AbstractClient):
             default_embedding_config (EmbeddingConfig): Default embedding configuration.
         """
 
-        from mirix.server.server import SyncServer
+        from mirix.server.server import AsyncServer
 
         # set logging levels
         mirix.utils.DEBUG = debug
@@ -138,7 +133,7 @@ class LocalClient(AbstractClient):
 
         # create server
         self.interface = QueuingInterface(debug=debug)
-        self.server = SyncServer(default_interface_factory=lambda: self.interface)
+        self.server = AsyncServer(default_interface_factory=lambda: self.interface)
 
         # initialize file manager
         from mirix.services.file_manager import FileManager
@@ -163,22 +158,54 @@ class LocalClient(AbstractClient):
             # get default client
             self.client_id = self.server.client_manager.DEFAULT_CLIENT_ID
 
-        self.user = self.server.user_manager.get_user_or_default(self.user_id)
-        self.organization = self.server.get_organization_or_default(self.org_id)
-        self.client = self.server.client_manager.get_client_or_default(self.client_id, self.org_id)
+        self.user = None  # Set by _ensure_client() or create()
+        self.organization = None  # Set by _ensure_client() or create()
+        self.client = None  # Set by _ensure_client() or create()
 
         # get images directory from settings and ensure it exists
-        # Can be customized via MIRIX_IMAGES_DIR environment variable
         from mirix.settings import settings
 
         self.images_dir = Path(settings.images_dir)
         self.images_dir.mkdir(parents=True, exist_ok=True)
 
+    async def _ensure_client(self) -> None:
+        """Ensure user, organization, and client are set. Call after __init__."""
+        if self.user is None:
+            self.user = await self.server.user_manager.get_user_or_admin(self.user_id)
+        if self.organization is None:
+            self.organization = await self.server.get_organization_or_default(self.org_id)
+        if self.client is None:
+            self.client = await self.server.client_manager.get_client_or_default(
+                self.client_id, self.org_id
+            )
+
+    @classmethod
+    async def create(
+        cls,
+        client_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        org_id: Optional[str] = None,
+        debug: bool = False,
+        default_llm_config: Optional[LLMConfig] = None,
+        default_embedding_config: Optional[EmbeddingConfig] = None,
+    ) -> "LocalClient":
+        """Create and initialize a LocalClient. Use this instead of __init__ for async usage."""
+        inst = cls(
+            client_id=client_id,
+            user_id=user_id,
+            org_id=org_id,
+            debug=debug,
+            default_llm_config=default_llm_config,
+            default_embedding_config=default_embedding_config,
+        )
+        await inst._ensure_client()
+        return inst
+
     def _generate_file_hash(self, content: bytes) -> str:
         """Generate a unique hash for file content to avoid duplicates."""
         return hashlib.sha256(content).hexdigest()[:16]
 
-    def _save_image_from_base64(self, base64_data: str, detail: str = "auto") -> FileMetadata:
+    async def _save_image_from_base64(self, base64_data: str, detail: str = "auto") -> FileMetadata:
         """Save an image from base64 data and return FileMetadata."""
         try:
             # Parse the data URL format: data:image/jpeg;base64,{data}
@@ -208,7 +235,7 @@ class LocalClient(AbstractClient):
                     f.write(image_data)
 
             # Create FileMetadata
-            file_metadata = self.file_manager.create_file_metadata_from_path(
+            file_metadata = await self.file_manager.create_file_metadata_from_path(
                 file_path=str(file_path), organization_id=self.org_id
             )
 
@@ -217,11 +244,11 @@ class LocalClient(AbstractClient):
         except Exception as e:
             raise ValueError(f"Failed to save base64 image: {str(e)}")
 
-    def _save_image_from_url(self, url: str, detail: str = "auto") -> FileMetadata:
+    async def _save_image_from_url(self, url: str, detail: str = "auto") -> FileMetadata:
         """Download and save an image from URL and return FileMetadata."""
         try:
-            # Download the image
-            response = requests.get(url, stream=True, timeout=30)
+            async with httpx.AsyncClient() as client:
+                response = await client.get(url, timeout=30)
             response.raise_for_status()
 
             # Get content type and determine file extension
@@ -245,7 +272,7 @@ class LocalClient(AbstractClient):
                     f.write(image_data)
 
             # Create FileMetadata
-            file_metadata = self.file_manager.create_file_metadata_from_path(
+            file_metadata = await self.file_manager.create_file_metadata_from_path(
                 file_path=str(file_path), organization_id=self.org_id
             )
 
@@ -254,7 +281,7 @@ class LocalClient(AbstractClient):
         except Exception as e:
             raise ValueError(f"Failed to download and save image from URL {url}: {str(e)}")
 
-    def _save_image_from_file_uri(self, file_uri: str) -> FileMetadata:
+    async def _save_image_from_file_uri(self, file_uri: str) -> FileMetadata:
         """Copy an image from file URI and return FileMetadata."""
         try:
             # Parse file URI (could be file:// or just a local path)
@@ -284,7 +311,7 @@ class LocalClient(AbstractClient):
                 shutil.copy2(source_path, file_path)
 
             # Create FileMetadata
-            file_metadata = self.file_manager.create_file_metadata_from_path(
+            file_metadata = await self.file_manager.create_file_metadata_from_path(
                 file_path=str(file_path), organization_id=self.org_id
             )
 
@@ -293,7 +320,7 @@ class LocalClient(AbstractClient):
         except Exception as e:
             raise ValueError(f"Failed to copy image from file URI {file_uri}: {str(e)}")
 
-    def _save_image_from_google_cloud_uri(self, cloud_uri: str) -> FileMetadata:
+    async def _save_image_from_google_cloud_uri(self, cloud_uri: str) -> FileMetadata:
         """Create FileMetadata from Google Cloud URI without downloading the image.
 
         Google Cloud URIs are not directly downloadable and should be stored as remote references
@@ -326,7 +353,7 @@ class LocalClient(AbstractClient):
         file_type = file_type_map.get(file_extension, "image/jpeg")
 
         # Create FileMetadata with Google Cloud URI in google_cloud_url field
-        file_metadata = self.file_manager.create_file_metadata(
+        file_metadata = await self.file_manager.create_file_metadata(
             PydanticFileMetadata(
                 organization_id=self.org_id,
                 file_name=file_name,
@@ -342,7 +369,7 @@ class LocalClient(AbstractClient):
 
         return file_metadata
 
-    def _save_file_from_path(self, file_path: str) -> FileMetadata:
+    async def _save_file_from_path(self, file_path: str) -> FileMetadata:
         """Save a file from local path and return FileMetadata."""
         try:
             file_path = Path(file_path)
@@ -351,7 +378,7 @@ class LocalClient(AbstractClient):
                 raise FileNotFoundError(f"File not found: {file_path}")
 
             # Create FileMetadata using the file manager
-            file_metadata = self.file_manager.create_file_metadata_from_path(
+            file_metadata = await self.file_manager.create_file_metadata_from_path(
                 file_path=str(file_path), organization_id=self.org_id
             )
 
@@ -394,7 +421,7 @@ class LocalClient(AbstractClient):
         }
         return file_type_map.get(file_extension, "application/octet-stream")
 
-    def _create_file_metadata_from_url(self, url: str, detail: str = "auto") -> FileMetadata:
+    async def _create_file_metadata_from_url(self, url: str, detail: str = "auto") -> FileMetadata:
         """Create FileMetadata from URL without downloading the image.
 
         The URL is stored in the source_url field, not file_path, to clearly
@@ -425,7 +452,7 @@ class LocalClient(AbstractClient):
             file_type = file_type_map.get(file_extension, "image/jpeg")
 
             # Create FileMetadata with URL in source_url field
-            file_metadata = self.file_manager.create_file_metadata(
+            file_metadata = await self.file_manager.create_file_metadata(
                 PydanticFileMetadata(
                     organization_id=self.org_id,
                     file_name=file_name,
@@ -444,7 +471,7 @@ class LocalClient(AbstractClient):
             raise ValueError(f"Failed to create file metadata from URL {url}: {str(e)}")
 
     # agents
-    def list_agents(
+    async def list_agents(
         self,
         query_text: Optional[str] = None,
         tags: Optional[List[str]] = None,
@@ -453,8 +480,8 @@ class LocalClient(AbstractClient):
         parent_id: Optional[str] = None,
     ) -> List[AgentState]:
         self.interface.clear()
-
-        return self.server.agent_manager.list_agents(
+        await self._ensure_client()
+        return await self.server.agent_manager.list_agents(
             actor=self.client,
             tags=tags,
             query_text=query_text,
@@ -463,29 +490,27 @@ class LocalClient(AbstractClient):
             parent_id=parent_id,
         )
 
-    def agent_exists(self, agent_id: Optional[str] = None, agent_name: Optional[str] = None) -> bool:
+    async def agent_exists(self, agent_id: Optional[str] = None, agent_name: Optional[str] = None) -> bool:
         """
-        Check if an agent exists
+        Check if an agent exists.
 
         Args:
-            agent_id (str): ID of the agent
-            agent_name (str): Name of the agent
+            agent_id: ID of the agent
+            agent_name: Name of the agent
 
         Returns:
-            exists (bool): `True` if the agent exists, `False` otherwise
+            True if the agent exists, False otherwise.
         """
-
         if not (agent_id or agent_name):
             raise ValueError("Either agent_id or agent_name must be provided")
         if agent_id and agent_name:
             raise ValueError("Only one of agent_id or agent_name can be provided")
-        existing = self.list_agents()
+        existing = await self.list_agents()
         if agent_id:
             return str(agent_id) in [str(agent.id) for agent in existing]
-        else:
-            return agent_name in [str(agent.name) for agent in existing]
+        return agent_name in [str(agent.name) for agent in existing]
 
-    def create_agent(
+    async def create_agent(
         self,
         name: Optional[str] = None,
         # agent config
@@ -503,62 +528,62 @@ class LocalClient(AbstractClient):
         include_base_tools: Optional[bool] = True,
         include_meta_memory_tools: Optional[bool] = False,
         # metadata
-        metadata: Optional[Dict] = {
-            "human:": DEFAULT_HUMAN,
-            "persona": DEFAULT_PERSONA,
-        },
+        metadata: Optional[Dict] = None,
         description: Optional[str] = None,
         initial_message_sequence: Optional[List[Message]] = None,
         tags: Optional[List[str]] = None,
     ) -> AgentState:
-        """Create an agent
+        """Create an agent.
 
         Args:
-            name (str): Name of the agent
-            embedding_config (EmbeddingConfig): Embedding configuration
-            llm_config (LLMConfig): LLM configuration
-            memory_blocks (List[Dict]): List of configurations for the memory blocks (placed in core-memory)
-            system (str): System configuration
-            tools (List[str]): List of tools
-            tool_rules (Optional[List[BaseToolRule]]): List of tool rules
-            include_base_tools (bool): Include base tools
-            metadata (Dict): Metadata
-            description (str): Description
-            tags (List[str]): Tags for filtering agents
+            name: Name of the agent
+            embedding_config: Embedding configuration
+            llm_config: LLM configuration
+            memory_blocks: List of configurations for the memory blocks (placed in core-memory)
+            system: System configuration
+            tool_ids: List of tool IDs
+            tool_rules: List of tool rules
+            include_base_tools: Include base tools
+            metadata: Metadata (defaults to DEFAULT_HUMAN, DEFAULT_PERSONA if omitted)
+            description: Description
+            tags: Tags for filtering agents
 
         Returns:
-            agent_state (AgentState): State of the created agent
+            AgentState: State of the created agent
         """
-        # construct list of tools
-        tool_ids = tool_ids or []
+        if metadata is None:
+            metadata = {"human:": DEFAULT_HUMAN, "persona": DEFAULT_PERSONA}
+        await self._ensure_client()
+        tool_ids = list(tool_ids or [])
         tool_names = []
         if include_base_tools:
             tool_names += BASE_TOOLS
         if include_meta_memory_tools:
             tool_names += META_MEMORY_TOOLS
 
-        # Get tool IDs for tools that exist (some may not be created yet)
-        for tool_name in tool_names:
-            tool = self.server.tool_manager.get_tool_by_name(
-                tool_name=tool_name,
-                actor=self.client,
-            )
-            if tool:
-                tool_ids.append(tool.id)
+        async def _resolve_tool_ids():
+            out = []
+            for tool_name in tool_names:
+                tool = await self.server.tool_manager.get_tool_by_name(
+                    tool_name=tool_name,
+                    actor=self.client,
+                )
+                if tool:
+                    out.append(tool.id)
+            return out
 
-        # check if default configs are provided
+        tool_ids.extend(await _resolve_tool_ids())
+
         assert embedding_config or self._default_embedding_config, "Embedding config must be provided"
         assert llm_config or self._default_llm_config, "LLM config must be provided"
 
-        # TODO: This should not happen here, we need to have clear separation between create/add blocks
+        memory = memory or Memory()
         for block in memory.get_blocks():
-            self.server.block_manager.create_or_update_block(block, actor=self.client, user=self.user)
+            await self.server.block_manager.create_or_update_block(
+                block, actor=self.client, user=self.user
+            )
 
-        # Also get any existing block_ids passed in
         block_ids = block_ids or []
-
-        # create agent
-        # Create the base parameters
         create_params = {
             "description": description,
             "metadata_": metadata,
@@ -574,56 +599,62 @@ class LocalClient(AbstractClient):
             "initial_message_sequence": initial_message_sequence,
             "tags": tags,
         }
-
-        # Only add name if it's not None
         if name is not None:
             create_params["name"] = name
 
-        agent_state = self.server.create_agent(
+        agent_state = await self.server.create_agent(
             CreateAgent(**create_params),
             actor=self.client,
         )
+        return await self.server.agent_manager.get_agent_by_id(
+            agent_state.id, actor=self.client
+        )
 
-        # TODO: get full agent state
-        return self.server.agent_manager.get_agent_by_id(agent_state.id, actor=self.client)
+    async def create_user(self, user_id: str, user_name: str) -> PydanticUser:
+        return await self.server.user_manager.create_user(
+            UserCreate(id=user_id, name=user_name)
+        )
 
-    def create_user(self, user_id: str, user_name: str) -> PydanticUser:
-        return self.server.user_manager.create_user(UserCreate(id=user_id, name=user_name))
-
-    def create_meta_agent(self, config: dict):
+    async def create_meta_agent(
+        self,
+        request: Optional[CreateMetaAgent] = None,
+        config: Optional[dict] = None,
+    ) -> Optional[AgentState]:
         """Create a MetaAgent for memory management operations.
 
         Args:
-            config (dict): Configuration dictionary for creating the MetaAgent.
+            request: CreateMetaAgent schema (preferred).
+            config: Configuration dict (alternative to request).
                 Can include: name, agents, system_prompts_folder, system_prompts,
                 llm_config, embedding_config, memory_blocks, description.
 
         Returns:
-            MetaAgent: The initialized MetaAgent instance
+            The meta agent's AgentState, or None if client has no write_scope.
         """
-        # Create MetaAgent through server
-        return self.server.create_meta_agent(
-            request=CreateMetaAgent(**config),
+        await self._ensure_client()
+        if not self.client.write_scope:
+            return None
+
+        if request is None:
+            if config is None:
+                raise ValueError("Either request or config must be provided")
+            request = CreateMetaAgent(**config)
+
+        return await self.server.agent_manager.create_meta_agent(
+            meta_agent_create=request,
             actor=self.client,
         )
 
-    def get_tools_from_agent(self, agent_id: str) -> List[Tool]:
-        """
-        Get tools from an existing agent.
-
-        Args:
-            agent_id (str): ID of the agent
-
-        Returns:
-            List[Tool]: A list of Tool objs
-        """
+    async def get_tools_from_agent(self, agent_id: str) -> List[Tool]:
+        """Get tools from an existing agent."""
         self.interface.clear()
-        return self.server.agent_manager.get_agent_by_id(
-            agent_id=agent_id,
-            actor=self.client,
-        ).tools
+        await self._ensure_client()
+        agent = await self.server.agent_manager.get_agent_by_id(
+            agent_id=agent_id, actor=self.client
+        )
+        return agent.tools
 
-    def add_tool_to_agent(self, agent_id: str, tool_id: str):
+    async def add_tool_to_agent(self, agent_id: str, tool_id: str) -> AgentState:
         """
         Add tool to an existing agent
 
@@ -632,17 +663,15 @@ class LocalClient(AbstractClient):
             tool_id (str): A tool id
 
         Returns:
-            agent_state (AgentState): State of the updated agent
+            AgentState: State of the updated agent
         """
         self.interface.clear()
-        agent_state = self.server.agent_manager.attach_tool(
-            agent_id=agent_id,
-            tool_id=tool_id,
-            actor=self.client,
+        await self._ensure_client()
+        return await self.server.agent_manager.attach_tool(
+            agent_id=agent_id, tool_id=tool_id, actor=self.client
         )
-        return agent_state
 
-    def remove_tool_from_agent(self, agent_id: str, tool_id: str):
+    async def remove_tool_from_agent(self, agent_id: str, tool_id: str) -> AgentState:
         """
         Removes tools from an existing agent
 
@@ -651,17 +680,15 @@ class LocalClient(AbstractClient):
             tool_id (str): The tool id
 
         Returns:
-            agent_state (AgentState): State of the updated agent
+            AgentState: State of the updated agent
         """
         self.interface.clear()
-        agent_state = self.server.agent_manager.detach_tool(
-            agent_id=agent_id,
-            tool_id=tool_id,
-            actor=self.client,
+        await self._ensure_client()
+        return await self.server.agent_manager.detach_tool(
+            agent_id=agent_id, tool_id=tool_id, actor=self.client
         )
-        return agent_state
 
-    def update_agent(
+    async def update_agent(
         self,
         agent_id: str,
         name: Optional[str] = None,
@@ -712,161 +739,62 @@ class LocalClient(AbstractClient):
             update_data["message_ids"] = message_ids
 
         agent_update = UpdateAgent(**update_data)
-        return self.server.agent_manager.update_agent(
-            agent_id=agent_id,
-            agent_update=agent_update,
-            actor=self.client,
+        await self._ensure_client()
+        return await self.server.agent_manager.update_agent(
+            agent_id=agent_id, agent_update=agent_update, actor=self.client
         )
 
-    def rename_agent(self, agent_id: str, new_name: str):
-        """
-        Rename an agent
+    async def rename_agent(self, agent_id: str, new_name: str) -> None:
+        """Rename an agent."""
+        await self.update_agent(agent_id, name=new_name)
 
-        Args:
-            agent_id (str): ID of the agent
-            new_name (str): New name for the agent
-        """
-        self.update_agent(agent_id, name=new_name)
+    async def delete_agent(self, agent_id: str) -> None:
+        """Delete an agent."""
+        await self._ensure_client()
+        await self.server.agent_manager.delete_agent(agent_id=agent_id, actor=self.client)
 
-    def delete_agent(self, agent_id: str):
-        """
-        Delete an agent
-
-        Args:
-            agent_id (str): ID of the agent to delete
-        """
-        self.server.agent_manager.delete_agent(
-            agent_id=agent_id,
-            actor=self.client,
-        )
-
-    def get_agent_by_name(self, agent_name: str) -> AgentState:
-        """
-        Get an agent by its name
-
-        Args:
-            agent_name (str): Name of the agent
-
-        Returns:
-            agent_state (AgentState): State of the agent
-        """
+    async def get_agent_by_name(self, agent_name: str) -> AgentState:
+        """Get an agent by its name."""
         self.interface.clear()
-        return self.server.agent_manager.get_agent_by_name(
-            agent_name=agent_name,
-            actor=self.client,
+        await self._ensure_client()
+        return await self.server.agent_manager.get_agent_by_name(
+            agent_name=agent_name, actor=self.client
         )
 
-    def get_agent(self, agent_id: str) -> AgentState:
-        """
-        Get an agent's state by its ID.
-
-        Args:
-            agent_id (str): ID of the agent
-
-        Returns:
-            agent_state (AgentState): State representation of the agent
-        """
+    async def get_agent(self, agent_id: str) -> AgentState:
+        """Get an agent's state by its ID."""
         self.interface.clear()
-        return self.server.agent_manager.get_agent_by_id(
-            agent_id=agent_id,
-            actor=self.client,
+        await self._ensure_client()
+        return await self.server.agent_manager.get_agent_by_id(
+            agent_id=agent_id, actor=self.client
         )
 
-    def get_agent_id(self, agent_name: str) -> Optional[str]:
-        """
-        Get the ID of an agent by name (names are unique per user)
-
-        Args:
-            agent_name (str): Name of the agent
-
-        Returns:
-            agent_id (str): ID of the agent
-        """
-
+    async def get_agent_id(self, agent_name: str) -> Optional[str]:
+        """Get the ID of an agent by name (names are unique per user)."""
         self.interface.clear()
         assert agent_name, "Agent name must be provided"
-
-        # TODO: Refactor this futher to not have downstream users expect Optionals - this should just error
         try:
-            return self.server.agent_manager.get_agent_by_name(
-                agent_name=agent_name,
-                actor=self.client,
-            ).id
+            agent = await self.get_agent_by_name(agent_name)
+            return agent.id
         except NoResultFound:
             return None
 
-    # memory
-    def get_in_context_memory(self, agent_id: str) -> Memory:
-        """
-        Get the in-context (i.e. core) memory of an agent
-
-        Args:
-            agent_id (str): ID of the agent
-
-        Returns:
-            memory (Memory): In-context memory of the agent
-        """
-        memory = self.server.get_agent_memory(
-            agent_id=agent_id,
-            actor=self.client,
+    async def get_archival_memory_summary(self, agent_id: str) -> ArchivalMemorySummary:
+        """Get a summary of the archival memory of an agent."""
+        await self._ensure_client()
+        return await self.server.get_archival_memory_summary(
+            agent_id=agent_id, actor=self.client
         )
-        return memory
 
-    def get_core_memory(self, agent_id: str) -> Memory:
-        return self.get_in_context_memory(agent_id)
-
-    def update_in_context_memory(self, agent_id: str, section: str, value: Union[List[str], str]) -> Memory:
-        """
-        Update the in-context memory of an agent
-
-        Args:
-            agent_id (str): ID of the agent
-
-        Returns:
-            memory (Memory): The updated in-context memory of the agent
-
-        """
-        # TODO: implement this (not sure what it should look like)
-        memory = self.server.update_agent_core_memory(
-            agent_id=agent_id,
-            label=section,
-            value=value,
-            actor=self.client,
-        )
-        return memory
-
-    def get_archival_memory_summary(self, agent_id: str) -> ArchivalMemorySummary:
-        """
-        Get a summary of the archival memory of an agent
-
-        Args:
-            agent_id (str): ID of the agent
-
-        Returns:
-            summary (ArchivalMemorySummary): Summary of the archival memory
-
-        """
-        return self.server.get_archival_memory_summary(
+    async def get_recall_memory_summary(self, agent_id: str) -> RecallMemorySummary:
+        """Get a summary of the recall memory of an agent."""
+        await self._ensure_client()
+        return await self.server.get_recall_memory_summary(
             agent_id=agent_id,
             actor=self.client,
         )
 
-    def get_recall_memory_summary(self, agent_id: str) -> RecallMemorySummary:
-        """
-        Get a summary of the recall memory of an agent
-
-        Args:
-            agent_id (str): ID of the agent
-
-        Returns:
-            summary (RecallMemorySummary): Summary of the recall memory
-        """
-        return self.server.get_recall_memory_summary(
-            agent_id=agent_id,
-            actor=self.client,
-        )
-
-    def get_in_context_messages(self, agent_id: str, user_id: Optional[str] = None) -> List[Message]:
+    async def get_in_context_messages(self, agent_id: str, user_id: Optional[str] = None) -> List[Message]:
         """
         Get in-context messages of an agent
 
@@ -877,14 +805,15 @@ class LocalClient(AbstractClient):
         Returns:
             messages (List[Message]): List of in-context messages
         """
-        agent_state = self.server.agent_manager.get_agent_by_id(
+        await self._ensure_client()
+        agent_state = await self.server.agent_manager.get_agent_by_id(
             agent_id=agent_id,
             actor=self.client,
         )
         user = None
         if user_id:
-            user = self.server.user_manager.get_user_by_id(user_id)
-        return self.server.agent_manager.get_in_context_messages(
+            user = await self.server.user_manager.get_user_by_id(user_id)
+        return await self.server.agent_manager.get_in_context_messages(
             agent_state=agent_state,
             actor=self.client,
             user=user,
@@ -892,31 +821,35 @@ class LocalClient(AbstractClient):
 
     # agent interactions
 
-    def construct_system_message(self, agent_id: str, message: str, user_id: str) -> str:
+    async def construct_system_message(self, agent_id: str, message: str, user_id: str) -> str:
         """
         Construct a system message from a message.
         """
-        return self.server.construct_system_message(
+        await self._ensure_client()
+        return await self.server.construct_system_message(
             agent_id=agent_id,
             message=message,
             actor=self.client,
         )
 
-    def extract_memory_for_system_prompt(self, agent_id: str, message: str, user_id: str) -> str:
-        """
-        Extract memory for system prompt from a message.
-        """
-        return self.server.extract_memory_for_system_prompt(
+    async def extract_memory_for_system_prompt(
+        self, agent_id: str, message: str, user_id: Optional[str] = None
+    ) -> str:
+        """Extract memory for system prompt from a message."""
+        await self._ensure_client()
+        return await self.server.extract_memory_for_system_prompt(
             agent_id=agent_id,
             message=message,
             actor=self.client,
         )
 
-    def send_messages(
+    async def send_messages(
         self,
         agent_id: str,
         messages: List[Union[Message | MessageCreate]],
         user_id: Optional[str] = None,  # End-user ID
+        block_filter_tags: Optional[Dict[str, Any]] = None,
+        block_filter_tags_update_mode: Optional[str] = "merge",
     ):
         """
         Send pre-packed messages to an agent.
@@ -925,16 +858,19 @@ class LocalClient(AbstractClient):
             agent_id (str): ID of the agent
             messages (List[Union[Message | MessageCreate]]): List of messages to send
             user_id (str): Optional end-user ID for message attribution
+            block_filter_tags (dict): Optional; applied to block filter_tags when core memory agent runs.
+            block_filter_tags_update_mode (str): "merge" (default) or "replace" for existing block filter_tags.
 
         Returns:
             response (MirixResponse): Response from the agent
         """
         self.interface.clear()
+        await self._ensure_client()
 
         # Determine which user to use
         target_user = None
         if user_id is not None:
-            target_user = self.server.user_manager.get_user_by_id(user_id)
+            target_user = await self.server.user_manager.get_user_by_id(user_id)
             if target_user is None:
                 from mirix.log import get_logger
 
@@ -944,17 +880,19 @@ class LocalClient(AbstractClient):
         else:
             target_user = self.user
 
-        usage = self.server.send_messages(
+        usage = await self.server.send_messages(
             actor=self.client,
             agent_id=agent_id,
             input_messages=messages,
-            user=target_user,  # Pass user object
+            user=target_user,
+            block_filter_tags=block_filter_tags,
+            block_filter_tags_update_mode=block_filter_tags_update_mode,
         )
 
         # format messages
         return MirixResponse(messages=messages, usage=usage)
 
-    def send_message(
+    async def send_message(
         self,
         message: str | list[dict],
         role: str,
@@ -966,6 +904,9 @@ class LocalClient(AbstractClient):
         stream_tokens: bool = False,
         chaining: Optional[bool] = None,
         verbose: Optional[bool] = None,
+        block_filter_tags: Optional[Dict[str, Any]] = None,
+        block_filter_tags_update_mode: Optional[str] = "merge",
+        **kwargs,
     ) -> MirixResponse:
         """
         Send a message to an agent
@@ -990,7 +931,7 @@ class LocalClient(AbstractClient):
         if not agent_id:
             # lookup agent by name
             assert agent_name, "Either agent_id or agent_name must be provided"
-            agent_id = self.get_agent_id(agent_name=agent_name)
+            agent_id = await self.get_agent_id(agent_name=agent_name)
             assert agent_id, f"Agent with name {agent_name} not found"
 
         if stream_steps or stream_tokens:
@@ -1003,7 +944,7 @@ class LocalClient(AbstractClient):
             input_messages = [MessageCreate(role=MessageRole(role), content=content, name=name)]
         elif isinstance(message, list):
 
-            def convert_message(m):
+            async def convert_message(m):
                 if m["type"] == "text":
                     return TextContent(**m)
                 elif m["type"] == "image_url":
@@ -1013,10 +954,10 @@ class LocalClient(AbstractClient):
                     # Handle the image based on URL type
                     if url.startswith("data:"):
                         # Base64 encoded image - save locally
-                        file_metadata = self._save_image_from_base64(url, detail)
+                        file_metadata = await self._save_image_from_base64(url, detail)
                     else:
                         # HTTP URL - just create FileMetadata without downloading
-                        file_metadata = self._create_file_metadata_from_url(url, detail)
+                        file_metadata = await self._create_file_metadata_from_url(url, detail)
 
                     return ImageContent(
                         type=MessageContentType.image_url,
@@ -1030,7 +971,7 @@ class LocalClient(AbstractClient):
                     detail = m["image_data"].get("detail", "auto")
 
                     # Save the base64 image to file_manager
-                    file_metadata = self._save_image_from_base64(data, detail)
+                    file_metadata = await self._save_image_from_base64(data, detail)
 
                     return ImageContent(
                         type=MessageContentType.image_url,
@@ -1046,7 +987,7 @@ class LocalClient(AbstractClient):
 
                     if file_type.startswith("image/"):
                         # Handle as image
-                        file_metadata = self._save_image_from_file_uri(file_path)
+                        file_metadata = await self._save_image_from_file_uri(file_path)
                         return ImageContent(
                             type=MessageContentType.image_url,
                             image_id=file_metadata.id,
@@ -1054,7 +995,7 @@ class LocalClient(AbstractClient):
                         )
                     else:
                         # Handle as general file (e.g., PDF, DOC, etc.)
-                        file_metadata = self._save_file_from_path(file_path)
+                        file_metadata = await self._save_file_from_path(file_path)
                         return FileContent(type=MessageContentType.file_uri, file_id=file_metadata.id)
 
                 elif m["type"] == "google_cloud_file_uri":
@@ -1062,7 +1003,7 @@ class LocalClient(AbstractClient):
                     # Handle both the typo version and the correct version from the test file
                     file_uri = m.get("google_cloud_file_uri") or m.get("file_uri")
 
-                    file_metadata = self._save_image_from_google_cloud_uri(file_uri)
+                    file_metadata = await self._save_image_from_google_cloud_uri(file_uri)
                     return CloudFileContent(
                         type=MessageContentType.google_cloud_file_uri,
                         cloud_file_uri=file_metadata.id,
@@ -1090,16 +1031,8 @@ class LocalClient(AbstractClient):
                 else:
                     raise ValueError(f"Unknown message type: {m['type']}")
 
-            content = [convert_message(m) for m in message]
-            input_messages = [MessageCreate(role=MessageRole(role), content=content, name=name)]
-            if extra_messages is not None:
-                extra_messages = [
-                    MessageCreate(
-                        role=MessageRole(role),
-                        content=[convert_message(m) for m in extra_messages],
-                        name=name,
-                    )
-                ]
+            content = await asyncio.gather(*[convert_message(m) for m in message])
+            input_messages = [MessageCreate(role=MessageRole(role), content=list(content), name=name)]
 
         else:
             raise ValueError(f"Invalid message type: {type(message)}")
@@ -1109,7 +1042,7 @@ class LocalClient(AbstractClient):
         target_user = None
         if user_id is not None:
             # Get or create the specified user
-            target_user = self.server.user_manager.get_user_by_id(user_id)
+            target_user = await self.server.user_manager.get_user_by_id(user_id)
             if target_user is None:
                 # User doesn't exist, fall back to default
                 from mirix.log import get_logger
@@ -1121,13 +1054,15 @@ class LocalClient(AbstractClient):
             # Use LocalClient's default user
             target_user = self.user
 
-        usage = self.server.send_messages(
+        usage = await self.server.send_messages(
             actor=self.client,
             agent_id=agent_id,
             input_messages=input_messages,
             chaining=chaining,
-            user=target_user,  # Pass user object instead of relying on default
+            user=target_user,
             verbose=verbose,
+            block_filter_tags=block_filter_tags,
+            block_filter_tags_update_mode=block_filter_tags_update_mode,
         )
 
         # format messages
@@ -1139,22 +1074,14 @@ class LocalClient(AbstractClient):
 
         return MirixResponse(messages=mirix_messages, usage=usage)
 
-    def user_message(self, agent_id: str, message: str, user_id: Optional[str] = None) -> MirixResponse:  # End-user ID
-        """
-        Send a message to an agent as a user
-
-        Args:
-            agent_id (str): ID of the agent
-            message (str): Message to send
-            user_id (str): Optional end-user ID for message attribution
-
-        Returns:
-            response (MirixResponse): Response from the agent
-        """
+    async def user_message(self, agent_id: str, message: str, user_id: Optional[str] = None) -> MirixResponse:
+        """Send a message to an agent as a user."""
         self.interface.clear()
-        return self.send_message(role="user", agent_id=agent_id, message=message, user_id=user_id)  # Pass user_id
+        return await self.send_message(
+            role="user", agent_id=agent_id, message=message, user_id=user_id
+        )
 
-    def run_command(self, agent_id: str, command: str) -> MirixResponse:
+    async def run_command(self, agent_id: str, command: str) -> MirixResponse:
         """
         Run a command on the agent
 
@@ -1167,7 +1094,7 @@ class LocalClient(AbstractClient):
 
         """
         self.interface.clear()
-        usage = self.server.run_command(user_id=self.user_id, agent_id=agent_id, command=command)
+        usage = await self.server.run_command(user_id=self.user_id, agent_id=agent_id, command=command)
 
         # NOTE: messages/usage may be empty, depending on the command
         return MirixResponse(messages=self.interface.to_list(), usage=usage)
@@ -1176,16 +1103,18 @@ class LocalClient(AbstractClient):
 
     # humans / personas
 
-    def get_block_id(self, name: str, label: str) -> str:
-        block = self.server.block_manager.get_blocks(
+    async def get_block_id(self, name: str, label: str) -> str:
+        await self._ensure_client()
+        block = await self.server.block_manager.get_blocks(
             user=self.user,
             label=label,
+            any_scopes=self.client.read_scopes,
         )
         if not block:
             return None
         return block[0].id
 
-    def create_human(self, name: str, text: str):
+    async def create_human(self, name: str, text: str):
         """
         Create a human block template (saved human string to pre-fill `ChatMemory`)
 
@@ -1196,13 +1125,14 @@ class LocalClient(AbstractClient):
         Returns:
             human (Human): Human block
         """
-        return self.server.block_manager.create_or_update_block(
+        await self._ensure_client()
+        return await self.server.block_manager.create_or_update_block(
             Human(value=text),
             actor=self.client,
             user=self.user,
         )
 
-    def create_persona(self, name: str, text: str):
+    async def create_persona(self, name: str, text: str):
         """
         Create a persona block template (saved persona string to pre-fill `ChatMemory`)
 
@@ -1213,37 +1143,42 @@ class LocalClient(AbstractClient):
         Returns:
             persona (Persona): Persona block
         """
-        return self.server.block_manager.create_or_update_block(
+        await self._ensure_client()
+        return await self.server.block_manager.create_or_update_block(
             Persona(value=text),
             actor=self.client,
             user=self.user,
         )
 
-    def list_humans(self):
+    async def list_humans(self):
         """
         List available human block templates
 
         Returns:
             humans (List[Human]): List of human blocks
         """
-        return self.server.block_manager.get_blocks(
+        await self._ensure_client()
+        return await self.server.block_manager.get_blocks(
             user=self.user,
             label="human",
+            any_scopes=self.client.read_scopes,
         )
 
-    def list_personas(self) -> List[Persona]:
+    async def list_personas(self) -> List[Persona]:
         """
         List available persona block templates
 
         Returns:
             personas (List[Persona]): List of persona blocks
         """
-        return self.server.block_manager.get_blocks(
+        await self._ensure_client()
+        return await self.server.block_manager.get_blocks(
             user=self.user,
             label="persona",
+            any_scopes=self.client.read_scopes,
         )
 
-    def update_human(self, human_id: str, text: str):
+    async def update_human(self, human_id: str, text: str):
         """
         Update a human block template
 
@@ -1254,14 +1189,14 @@ class LocalClient(AbstractClient):
         Returns:
             human (Human): Updated human block
         """
-
-        return self.server.block_manager.update_block(
+        await self._ensure_client()
+        return await self.server.block_manager.update_block(
             block_id=human_id,
             block_update=BlockUpdate(value=text),
             actor=self.client,
         )
 
-    def update_persona(self, persona_id: str, text: str):
+    async def update_persona(self, persona_id: str, text: str):
         """
         Update a persona block template
 
@@ -1272,15 +1207,16 @@ class LocalClient(AbstractClient):
         Returns:
             persona (Persona): Updated persona block
         """
-        blocks = self.server.block_manager.get_blocks(user=self.user)
+        await self._ensure_client()
+        blocks = await self.server.block_manager.get_blocks(user=self.user)
         persona_block = [block for block in blocks if block.label == "persona"][0]
-        return self.server.block_manager.update_block(
+        return await self.server.block_manager.update_block(
             block_id=persona_block.id,
             block_update=BlockUpdate(value=text),
             actor=self.client,
         )
 
-    def update_persona_text(self, persona_name: str, text: str):
+    async def update_persona_text(self, persona_name: str, text: str):
         """
         Update a persona block template by template name
 
@@ -1291,19 +1227,20 @@ class LocalClient(AbstractClient):
         Returns:
             persona (Persona): Updated persona block
         """
-        persona_id = self.get_persona_id(persona_name)
+        await self._ensure_client()
+        persona_id = await self.get_persona_id(persona_name)
         if persona_id:
             # Update existing persona
-            return self.server.block_manager.update_block(
+            return await self.server.block_manager.update_block(
                 block_id=persona_id,
                 block_update=BlockUpdate(value=text),
                 actor=self.client,
             )
         else:
             # Create new persona if it doesn't exist
-            return self.create_persona(persona_name, text)
+            return await self.create_persona(persona_name, text)
 
-    def get_persona(self, id: str) -> Persona:
+    async def get_persona(self, id: str) -> Persona:
         """
         Get a persona block template
 
@@ -1314,9 +1251,11 @@ class LocalClient(AbstractClient):
             persona (Persona): Persona block
         """
         assert id, "Persona ID must be provided"
-        return Persona(**self.server.block_manager.get_block_by_id(id, user=self.user).model_dump())
+        await self._ensure_client()
+        block = await self.server.block_manager.get_block_by_id(id, user=self.user)
+        return Persona(**block.model_dump())
 
-    def get_human(self, id: str) -> Human:
+    async def get_human(self, id: str) -> Human:
         """
         Get a human block template
 
@@ -1327,9 +1266,11 @@ class LocalClient(AbstractClient):
             human (Human): Human block
         """
         assert id, "Human ID must be provided"
-        return Human(**self.server.block_manager.get_block_by_id(id, user=self.user).model_dump())
+        await self._ensure_client()
+        block = await self.server.block_manager.get_block_by_id(id, user=self.user)
+        return Human(**block.model_dump())
 
-    def get_persona_id(self, name: str) -> str:
+    async def get_persona_id(self, name: str) -> str:
         """
         Get the ID of a persona block template
 
@@ -1339,15 +1280,17 @@ class LocalClient(AbstractClient):
         Returns:
             id (str): ID of the persona block
         """
-        persona = self.server.block_manager.get_blocks(
+        await self._ensure_client()
+        persona = await self.server.block_manager.get_blocks(
             user=self.user,
             label="persona",
+            any_scopes=self.client.read_scopes,
         )
         if not persona:
             return None
         return persona[0].id
 
-    def get_human_id(self, name: str) -> str:
+    async def get_human_id(self, name: str) -> str:
         """
         Get the ID of a human block template
 
@@ -1357,69 +1300,74 @@ class LocalClient(AbstractClient):
         Returns:
             id (str): ID of the human block
         """
-        human = self.server.block_manager.get_blocks(
+        await self._ensure_client()
+        human = await self.server.block_manager.get_blocks(
             user=self.user,
             label="human",
+            any_scopes=self.client.read_scopes,
         )
         if not human:
             return None
         return human[0].id
 
-    def delete_persona(self, id: str):
+    async def delete_persona(self, id: str):
         """
         Delete a persona block template
 
         Args:
             id (str): ID of the persona block
         """
-        self.delete_block(id)
+        await self.delete_block(id)
 
-    def delete_human(self, id: str):
+    async def delete_human(self, id: str):
         """
         Delete a human block template
 
         Args:
             id (str): ID of the human block
         """
-        self.delete_block(id)
+        await self.delete_block(id)
 
     # tools
-    def load_langchain_tool(
+    async def load_langchain_tool(
         self,
         langchain_tool: "LangChainBaseTool",
         additional_imports_module_attr_map: dict[str, str] = None,
     ) -> Tool:
+        await self._ensure_client()
         tool_create = ToolCreate.from_langchain(
             langchain_tool=langchain_tool,
             additional_imports_module_attr_map=additional_imports_module_attr_map,
         )
-        return self.server.tool_manager.create_or_update_tool(
+        return await self.server.tool_manager.create_or_update_tool(
             pydantic_tool=Tool(**tool_create.model_dump()),
             actor=self.client,
         )
 
-    def load_crewai_tool(
+    async def load_crewai_tool(
         self,
         crewai_tool: "CrewAIBaseTool",
         additional_imports_module_attr_map: dict[str, str] = None,
     ) -> Tool:
+        await self._ensure_client()
         tool_create = ToolCreate.from_crewai(
             crewai_tool=crewai_tool,
             additional_imports_module_attr_map=additional_imports_module_attr_map,
         )
-        return self.server.tool_manager.create_or_update_tool(
+        return await self.server.tool_manager.create_or_update_tool(
             pydantic_tool=Tool(**tool_create.model_dump()),
             actor=self.client,
         )
 
-    def load_composio_tool(self, action: "ActionType") -> Tool:
+    async def load_composio_tool(self, action: "ActionType") -> Tool:
+        await self._ensure_client()
         tool_create = ToolCreate.from_composio(action_name=action.name)
-        return self.server.tool_manager.create_or_update_tool(
+        return await self.server.tool_manager.create_or_update_tool(
             pydantic_tool=Tool(**tool_create.model_dump()),
             actor=self.client,
         )
 
-    def create_tool(
+    async def create_tool(
         self,
         func,
         name: Optional[str] = None,
@@ -1440,6 +1388,7 @@ class LocalClient(AbstractClient):
         Returns:
             tool (Tool): The created tool.
         """
+        await self._ensure_client()
         # TODO: check if tool already exists
         # TODO: how to load modules?
         # parse source code/schema
@@ -1449,7 +1398,7 @@ class LocalClient(AbstractClient):
             tags = []
 
         # call server function
-        return self.server.tool_manager.create_tool(
+        return await self.server.tool_manager.create_tool(
             Tool(
                 source_type=source_type,
                 source_code=source_code,
@@ -1461,7 +1410,7 @@ class LocalClient(AbstractClient):
             actor=self.client,
         )
 
-    def create_or_update_tool(
+    async def create_or_update_tool(
         self,
         func,
         name: Optional[str] = None,
@@ -1482,13 +1431,14 @@ class LocalClient(AbstractClient):
         Returns:
             tool (Tool): The created tool.
         """
+        await self._ensure_client()
         source_code = parse_source_code(func)
         source_type = "python"
         if not tags:
             tags = []
 
         # call server function
-        return self.server.tool_manager.create_or_update_tool(
+        return await self.server.tool_manager.create_or_update_tool(
             Tool(
                 source_type=source_type,
                 source_code=source_code,
@@ -1500,7 +1450,7 @@ class LocalClient(AbstractClient):
             actor=self.client,
         )
 
-    def update_tool(
+    async def update_tool(
         self,
         id: str,
         name: Optional[str] = None,
@@ -1522,6 +1472,7 @@ class LocalClient(AbstractClient):
         Returns:
             tool (Tool): Updated tool
         """
+        await self._ensure_client()
         update_data = {
             "source_type": "python",  # Always include source_type
             "source_code": parse_source_code(func) if func else None,
@@ -1534,62 +1485,70 @@ class LocalClient(AbstractClient):
         # Filter out any None values from the dictionary
         update_data = {key: value for key, value in update_data.items() if value is not None}
 
-        return self.server.tool_manager.update_tool_by_id(
+        return await self.server.tool_manager.update_tool_by_id(
             tool_id=id,
             tool_update=ToolUpdate(**update_data),
             actor=self.client,
         )
 
-    def list_tools(self, cursor: Optional[str] = None, limit: Optional[int] = 50) -> List[Tool]:
+    async def list_tools(self, cursor: Optional[str] = None, limit: Optional[int] = 50) -> List[Tool]:
         """
         List available tools for the user.
 
         Returns:
-            tools (List[Tool]): List of tools
+            List of tools.
         """
-        return self.server.tool_manager.list_tools(
-            cursor=cursor,
-            limit=limit,
-            actor=self.client,
+        await self._ensure_client()
+        return await self.server.tool_manager.list_tools(
+            cursor=cursor, limit=limit, actor=self.client
         )
 
-    def get_tool(self, id: str) -> Optional[Tool]:
+    async def get_tool(self, id: str) -> Tool:
         """
         Get a tool given its ID.
 
         Args:
-            id (str): ID of the tool
+            id: ID of the tool
 
         Returns:
-            tool (Tool): Tool
+            The tool.
         """
-        return self.server.tool_manager.get_tool_by_id(id, actor=self.client)
+        await self._ensure_client()
+        return await self.server.tool_manager.get_tool_by_id(id, actor=self.client)
 
-    def delete_tool(self, id: str):
+    async def delete_tool(self, id: str) -> None:
         """
         Delete a tool given the ID.
 
         Args:
-            id (str): ID of the tool
+            id: ID of the tool
         """
-        return self.server.tool_manager.delete_tool_by_id(id, actor=self.client)
+        await self._ensure_client()
+        await self.server.tool_manager.delete_tool_by_id(id, actor=self.client)
 
-    def get_tool_id(self, name: str) -> Optional[str]:
+    async def get_tool_id(self, name: str) -> Optional[str]:
         """
-        Get the ID of a tool from its name. The client will use the org_id it is configured with.
+        Get the ID of a tool from its name.
 
         Args:
-            name (str): Name of the tool
+            name: Name of the tool
 
         Returns:
-            id (str): ID of the tool (`None` if not found)
+            ID of the tool, or None if not found.
         """
-        tool = self.server.tool_manager.get_tool_by_name(tool_name=name, actor=self.client)
+        tool = await self.get_tool_by_name(name)
         return tool.id if tool else None
+
+    async def get_tool_by_name(self, name: str) -> Optional[Tool]:
+        """Get tool by name."""
+        await self._ensure_client()
+        return await self.server.tool_manager.get_tool_by_name(
+            tool_name=name, actor=self.client
+        )
 
     # recall memory
 
-    def get_messages(self, agent_id: str, cursor: Optional[str] = None, limit: Optional[int] = 1000) -> List[Message]:
+    async def get_messages(self, agent_id: str, cursor: Optional[str] = None, limit: Optional[int] = 1000) -> List[Message]:
         """
         Get messages from an agent with pagination.
 
@@ -1601,9 +1560,8 @@ class LocalClient(AbstractClient):
         Returns:
             messages (List[Message]): List of messages
         """
-
         self.interface.clear()
-        return self.server.get_agent_recall_cursor(
+        return await self.server.get_agent_recall_cursor(
             user_id=self.user_id,
             agent_id=agent_id,
             before=cursor,
@@ -1611,76 +1569,47 @@ class LocalClient(AbstractClient):
             reverse=True,
         )
 
-    def list_blocks(self, label: Optional[str] = None, templates_only: Optional[bool] = True) -> List[Block]:
-        """
-        List available blocks
-
-        Args:
-            label (str): Label of the block
-            templates_only (bool): List only templates
-
-        Returns:
-            blocks (List[Block]): List of blocks
-        """
-        blocks = self.server.block_manager.get_blocks(
+    async def list_blocks(self, label: Optional[str] = None, templates_only: Optional[bool] = True) -> List[Block]:
+        """List available blocks."""
+        await self._ensure_client()
+        blocks = await self.server.block_manager.get_blocks(
             user=self.user,
             label=label,
+            any_scopes=self.client.read_scopes,
         )
-        return blocks
+        return [Block(**b.model_dump()) for b in blocks] if blocks else []
 
-    def create_block(
+    async def create_block(
         self,
         label: str,
         value: str,
         limit: Optional[int] = None,
-    ) -> Block:  #
-        """
-        Create a block
-
-        Args:
-            label (str): Label of the block
-            text (str): Text of the block
-            limit (int): Character of the block
-
-        Returns:
-            block (Block): Created block
-        """
+    ) -> Block:
+        """Create a block."""
         from mirix.constants import CORE_MEMORY_BLOCK_CHAR_LIMIT
 
-        # Use default limit if not provided
+        await self._ensure_client()
         if limit is None:
             limit = CORE_MEMORY_BLOCK_CHAR_LIMIT
-
-        block = Block(
-            label=label,
-            value=value,
-            limit=limit,
+        block = Block(label=label, value=value, limit=limit)
+        pydantic_block = await self.server.block_manager.create_or_update_block(
+            block, actor=self.client, user=self.user
         )
-        return self.server.block_manager.create_or_update_block(block, actor=self.client, user=self.user)
+        return Block(**pydantic_block.model_dump())
 
-    def get_block(self, block_id: str) -> Block:
-        """
-        Get a block
+    async def get_block(self, block_id: str) -> Block:
+        """Get a block by ID."""
+        await self._ensure_client()
+        pydantic_block = await self.server.block_manager.get_block_by_id(block_id, user=self.user)
+        if pydantic_block is None:
+            raise NoResultFound(f"Block {block_id} not found")
+        return Block(**pydantic_block.model_dump())
 
-        Args:
-            block_id (str): ID of the block
-
-        Returns:
-            block (Block): Block
-        """
-        return self.server.block_manager.get_block_by_id(block_id, user=self.user)
-
-    def delete_block(self, id: str) -> Block:
-        """
-        Delete a block
-
-        Args:
-            id (str): ID of the block
-
-        Returns:
-            block (Block): Deleted block
-        """
-        return self.server.block_manager.delete_block(id, actor=self.client)
+    async def delete_block(self, id: str) -> Block:
+        """Delete a block and return the deleted block."""
+        await self._ensure_client()
+        pydantic_block = await self.server.block_manager.delete_block(id, actor=self.client)
+        return Block(**pydantic_block.model_dump())
 
     def set_default_llm_config(self, llm_config: LLMConfig):
         """
@@ -1700,44 +1629,36 @@ class LocalClient(AbstractClient):
         """
         self._default_embedding_config = embedding_config
 
-    def list_llm_configs(self) -> List[LLMConfig]:
-        """
-        List available LLM configurations
+    async def list_llm_configs(self) -> List[LLMConfig]:
+        """List available LLM configurations."""
+        return await self.server.list_llm_models()
 
-        Returns:
-            configs (List[LLMConfig]): List of LLM configurations
-        """
-        return self.server.list_llm_models()
+    async def list_embedding_configs(self) -> List[EmbeddingConfig]:
+        """List available embedding configurations."""
+        return await self.server.list_embedding_models()
 
-    def list_embedding_configs(self) -> List[EmbeddingConfig]:
-        """
-        List available embedding configurations
+    async def create_org(self, name: Optional[str] = None) -> Organization:
+        await self._ensure_client()
+        return await self.server.organization_manager.create_organization(pydantic_org=Organization(name=name))
 
-        Returns:
-            configs (List[EmbeddingConfig]): List of embedding configurations
-        """
-        return self.server.list_embedding_models()
+    async def list_orgs(self, cursor: Optional[str] = None, limit: Optional[int] = 50) -> List[Organization]:
+        return await self.server.organization_manager.list_organizations(cursor=cursor, limit=limit)
 
-    def create_org(self, name: Optional[str] = None) -> Organization:
-        return self.server.organization_manager.create_organization(pydantic_org=Organization(name=name))
+    async def delete_org(self, org_id: str) -> Organization:
+        return await self.server.organization_manager.delete_organization_by_id(org_id=org_id)
 
-    def list_orgs(self, cursor: Optional[str] = None, limit: Optional[int] = 50) -> List[Organization]:
-        return self.server.organization_manager.list_organizations(cursor=cursor, limit=limit)
-
-    def delete_org(self, org_id: str) -> Organization:
-        return self.server.organization_manager.delete_organization_by_id(org_id=org_id)
-
-    def create_sandbox_config(self, config: Union[LocalSandboxConfig, E2BSandboxConfig]) -> SandboxConfig:
+    async def create_sandbox_config(self, config: Union[LocalSandboxConfig, E2BSandboxConfig]) -> SandboxConfig:
         """
         Create a new sandbox configuration.
         """
+        await self._ensure_client()
         config_create = SandboxConfigCreate(config=config)
-        return self.server.sandbox_config_manager.create_or_update_sandbox_config(
+        return await self.server.sandbox_config_manager.create_or_update_sandbox_config(
             sandbox_config_create=config_create,
             actor=self.client,
         )
 
-    def update_sandbox_config(
+    async def update_sandbox_config(
         self,
         sandbox_config_id: str,
         config: Union[LocalSandboxConfig, E2BSandboxConfig],
@@ -1745,33 +1666,36 @@ class LocalClient(AbstractClient):
         """
         Update an existing sandbox configuration.
         """
+        await self._ensure_client()
         sandbox_update = SandboxConfigUpdate(config=config)
-        return self.server.sandbox_config_manager.update_sandbox_config(
+        return await self.server.sandbox_config_manager.update_sandbox_config(
             sandbox_config_id=sandbox_config_id,
             sandbox_update=sandbox_update,
             actor=self.client,
         )
 
-    def delete_sandbox_config(self, sandbox_config_id: str) -> None:
+    async def delete_sandbox_config(self, sandbox_config_id: str) -> None:
         """
         Delete a sandbox configuration.
         """
-        return self.server.sandbox_config_manager.delete_sandbox_config(
+        await self._ensure_client()
+        return await self.server.sandbox_config_manager.delete_sandbox_config(
             sandbox_config_id=sandbox_config_id,
             actor=self.client,
         )
 
-    def list_sandbox_configs(self, limit: int = 50, cursor: Optional[str] = None) -> List[SandboxConfig]:
+    async def list_sandbox_configs(self, limit: int = 50, cursor: Optional[str] = None) -> List[SandboxConfig]:
         """
         List all sandbox configurations.
         """
-        return self.server.sandbox_config_manager.list_sandbox_configs(
+        await self._ensure_client()
+        return await self.server.sandbox_config_manager.list_sandbox_configs(
             actor=self.client,
             limit=limit,
             cursor=cursor,
         )
 
-    def create_sandbox_env_var(
+    async def create_sandbox_env_var(
         self,
         sandbox_config_id: str,
         key: str,
@@ -1781,14 +1705,15 @@ class LocalClient(AbstractClient):
         """
         Create a new environment variable for a sandbox configuration.
         """
+        await self._ensure_client()
         env_var_create = SandboxEnvironmentVariableCreate(key=key, value=value, description=description)
-        return self.server.sandbox_config_manager.create_sandbox_env_var(
+        return await self.server.sandbox_config_manager.create_sandbox_env_var(
             env_var_create=env_var_create,
             sandbox_config_id=sandbox_config_id,
             actor=self.client,
         )
 
-    def update_sandbox_env_var(
+    async def update_sandbox_env_var(
         self,
         env_var_id: str,
         key: Optional[str] = None,
@@ -1798,29 +1723,32 @@ class LocalClient(AbstractClient):
         """
         Update an existing environment variable.
         """
+        await self._ensure_client()
         env_var_update = SandboxEnvironmentVariableUpdate(key=key, value=value, description=description)
-        return self.server.sandbox_config_manager.update_sandbox_env_var(
+        return await self.server.sandbox_config_manager.update_sandbox_env_var(
             env_var_id=env_var_id,
             env_var_update=env_var_update,
             actor=self.client,
         )
 
-    def delete_sandbox_env_var(self, env_var_id: str) -> None:
+    async def delete_sandbox_env_var(self, env_var_id: str) -> None:
         """
         Delete an environment variable by its ID.
         """
-        return self.server.sandbox_config_manager.delete_sandbox_env_var(
+        await self._ensure_client()
+        return await self.server.sandbox_config_manager.delete_sandbox_env_var(
             env_var_id=env_var_id,
             actor=self.client,
         )
 
-    def list_sandbox_env_vars(
+    async def list_sandbox_env_vars(
         self, sandbox_config_id: str, limit: int = 50, cursor: Optional[str] = None
     ) -> List[SandboxEnvironmentVariable]:
         """
         List all environment variables associated with a sandbox configuration.
         """
-        return self.server.sandbox_config_manager.list_sandbox_env_vars(
+        await self._ensure_client()
+        return await self.server.sandbox_config_manager.list_sandbox_env_vars(
             sandbox_config_id=sandbox_config_id,
             actor=self.client,
             limit=limit,
@@ -1828,229 +1756,50 @@ class LocalClient(AbstractClient):
         )
 
     # file management methods
-    def save_file(self, file_path: str, source_id: Optional[str] = None) -> FileMetadata:
-        """
-        Save a file to the file manager and return its metadata.
-
-        Args:
-            file_path (str): Path to the file to save
-            source_id (Optional[str]): Optional source ID to associate with the file
-
-        Returns:
-            FileMetadata: The created file metadata
-        """
-        return self.file_manager.create_file_metadata_from_path(
+    async def save_file(self, file_path: str, source_id: Optional[str] = None) -> FileMetadata:
+        """Save a file to the file manager and return its metadata."""
+        return await self.file_manager.create_file_metadata_from_path(
             file_path=file_path, organization_id=self.org_id, source_id=source_id
         )
 
-    def list_files(self, cursor: Optional[str] = None, limit: Optional[int] = 50) -> List[FileMetadata]:
-        """
-        List files for the current organization.
+    async def list_files(self, cursor: Optional[str] = None, limit: Optional[int] = 50) -> List[FileMetadata]:
+        """List files for the current organization."""
+        return await self.file_manager.get_files_by_organization_id(
+            organization_id=self.org_id, cursor=cursor, limit=limit
+        )
 
-        Args:
-            cursor (Optional[str]): Pagination cursor
-            limit (Optional[int]): Maximum number of files to return
+    async def get_file(self, file_id: str) -> FileMetadata:
+        """Get file metadata by ID."""
+        return await self.file_manager.get_file_metadata_by_id(file_id)
 
-        Returns:
-            List[FileMetadata]: List of file metadata
-        """
-        return self.file_manager.get_files_by_organization_id(organization_id=self.org_id, cursor=cursor, limit=limit)
+    async def delete_file(self, file_id: str) -> None:
+        """Delete a file by ID."""
+        await self.file_manager.delete_file_metadata(file_id)
 
-    def get_file(self, file_id: str) -> FileMetadata:
-        """
-        Get file metadata by ID.
+    async def search_files(self, name_pattern: str) -> List[FileMetadata]:
+        """Search files by name pattern."""
+        return await self.file_manager.search_files_by_name(
+            file_name=name_pattern, organization_id=self.org_id
+        )
 
-        Args:
-            file_id (str): ID of the file
-
-        Returns:
-            FileMetadata: The file metadata
-        """
-        return self.file_manager.get_file_metadata_by_id(file_id)
-
-    def delete_file(self, file_id: str) -> None:
-        """
-        Delete a file by ID.
-
-        Args:
-            file_id (str): ID of the file to delete
-        """
-        self.file_manager.delete_file_metadata(file_id)
-
-    def search_files(self, name_pattern: str) -> List[FileMetadata]:
-        """
-        Search files by name pattern.
-
-        Args:
-            name_pattern (str): Pattern to search for in file names
-
-        Returns:
-            List[FileMetadata]: List of matching files
-        """
-        return self.file_manager.search_files_by_name(file_name=name_pattern, organization_id=self.org_id)
-
-    def get_file_stats(self) -> dict:
+    async def get_file_stats(self) -> dict:
         """
         Get file statistics for the current organization.
 
         Returns:
             dict: File statistics including total files, size, and types
         """
-        return self.file_manager.get_file_stats(organization_id=self.org_id)
+        return await self.file_manager.get_file_stats(organization_id=self.org_id)
 
-    def update_agent_memory_block_label(self, agent_id: str, current_label: str, new_label: str) -> Memory:
-        """Rename a block in the agent's core memory
-
-        Args:
-            agent_id (str): The agent ID
-            current_label (str): The current label of the block
-            new_label (str): The new label of the block
-
-        Returns:
-            memory (Memory): The updated memory
-        """
-        block = self.get_agent_memory_block(agent_id, current_label)
-        return self.update_block(block.id, label=new_label)
-
-    # TODO: remove this
-    def add_agent_memory_block(self, agent_id: str, create_block: CreateBlock) -> Memory:
-        """
-        Create and link a memory block to an agent's core memory
-
-        Args:
-            agent_id (str): The agent ID
-            create_block (CreateBlock): The block to create
-
-        Returns:
-            memory (Memory): The updated memory
-        """
-        block_req = Block(**create_block.model_dump())
-        block = self.server.block_manager.create_or_update_block(actor=self.client, block=block_req, user=self.user)
-        # Link the block to the agent
-        agent = self.server.agent_manager.attach_block(
-            agent_id=agent_id,
-            block_id=block.id,
-            actor=self.client,
-        )
-        return agent.memory
-
-    def link_agent_memory_block(self, agent_id: str, block_id: str) -> Memory:
-        """
-        Link a block to an agent's core memory
-
-        Args:
-            agent_id (str): The agent ID
-            block_id (str): The block ID
-
-        Returns:
-            memory (Memory): The updated memory
-        """
-        return self.server.agent_manager.attach_block(
-            agent_id=agent_id,
-            block_id=block_id,
-            actor=self.client,
-        )
-
-    def remove_agent_memory_block(self, agent_id: str, block_label: str) -> Memory:
-        """
-        Unlike a block from the agent's core memory
-
-        Args:
-            agent_id (str): The agent ID
-            block_label (str): The block label
-
-        Returns:
-            memory (Memory): The updated memory
-        """
-        return self.server.agent_manager.detach_block_with_label(
-            agent_id=agent_id,
-            block_label=block_label,
-            actor=self.client,
-        )
-
-    def list_agent_memory_blocks(self, agent_id: str) -> List[Block]:
-        """
-        Get all the blocks in the agent's core memory
-
-        Args:
-            agent_id (str): The agent ID
-
-        Returns:
-            blocks (List[Block]): The blocks in the agent's core memory
-        """
-        agent = self.server.agent_manager.get_agent_by_id(
-            agent_id=agent_id,
-            actor=self.client,
-        )
-        return agent.memory.blocks
-
-    def get_agent_memory_block(self, agent_id: str, label: str) -> Block:
-        """
-        Get a block in the agent's core memory by its label
-
-        Args:
-            agent_id (str): The agent ID
-            label (str): The label in the agent's core memory
-
-        Returns:
-            block (Block): The block corresponding to the label
-        """
-        return self.server.agent_manager.get_block_with_label(
-            agent_id=agent_id,
-            block_label=label,
-            actor=self.client,
-        )
-
-    def update_agent_memory_block(
-        self,
-        agent_id: str,
-        label: str,
-        value: Optional[str] = None,
-        limit: Optional[int] = None,
-    ):
-        """
-        Update a block in the agent's core memory by specifying its label
-
-        Args:
-            agent_id (str): The agent ID
-            label (str): The label of the block
-            value (str): The new value of the block
-            limit (int): The new limit of the block
-
-        Returns:
-            block (Block): The updated block
-        """
-        block = self.get_agent_memory_block(agent_id, label)
-        data = {}
-        if value:
-            data["value"] = value
-        if limit:
-            data["limit"] = limit
-        return self.server.block_manager.update_block(
-            block.id,
-            actor=self.client,
-            block_update=BlockUpdate(**data),
-        )
-
-    def update_block(
+    async def update_block(
         self,
         block_id: str,
         label: Optional[str] = None,
         value: Optional[str] = None,
         limit: Optional[int] = None,
-    ):
-        """
-        Update a block given the ID with the provided fields
-
-        Args:
-            block_id (str): ID of the block
-            label (str): Label to assign to the block
-            value (str): Value to assign to the block
-            limit (int): Token limit to assign to the block
-
-        Returns:
-            block (Block): Updated block
-        """
+    ) -> Block:
+        """Update a block by ID with the provided fields."""
+        await self._ensure_client()
         data = {}
         if value:
             data["value"] = value
@@ -2058,14 +1807,15 @@ class LocalClient(AbstractClient):
             data["limit"] = limit
         if label:
             data["label"] = label
-        return self.server.block_manager.update_block(
+        pydantic_block = await self.server.block_manager.update_block(
             block_id,
             block_update=BlockUpdate(**data),
             actor=self.client,
             user=self.user,
         )
+        return Block(**pydantic_block.model_dump())
 
-    def get_tags(
+    async def get_tags(
         self,
         cursor: str = None,
         limit: int = 100,
@@ -2077,14 +1827,15 @@ class LocalClient(AbstractClient):
         Returns:
             tags (List[str]): List of tags
         """
-        return self.server.agent_manager.list_tags(
+        await self._ensure_client()
+        return await self.server.agent_manager.list_tags(
             actor=self.client,
             cursor=cursor,
             limit=limit,
             query_text=query_text,
         )
 
-    def retrieve_memory(
+    async def retrieve_memory(
         self,
         agent_id: str,
         query: str,
@@ -2123,7 +1874,8 @@ class LocalClient(AbstractClient):
             raise ValueError("embedding is not supported for knowledge_vault memory's 'secret_value' field.")
 
         # Get the agent to access its memory managers
-        agent_state = self.server.agent_manager.get_agent_by_id(
+        await self._ensure_client()
+        agent_state = await self.server.agent_manager.get_agent_by_id(
             agent_id=agent_id,
             actor=self.client,
         )
@@ -2139,7 +1891,7 @@ class LocalClient(AbstractClient):
             from mirix.constants import MAX_EMBEDDING_DIM
             from mirix.embeddings import embedding_model
 
-            embedded_text = embedding_model(agent_state.embedding_config).get_text_embedding(query)
+            embedded_text = await (await embedding_model(agent_state.embedding_config)).get_text_embedding(query)
             # Pad for episodic memory which requires MAX_EMBEDDING_DIM
             embedded_text_padded = np.pad(
                 np.array(embedded_text), (0, MAX_EMBEDDING_DIM - len(embedded_text)), mode="constant"
@@ -2152,7 +1904,7 @@ class LocalClient(AbstractClient):
 
         # Search episodic memory
         if memory_type == "episodic" or memory_type == "all":
-            episodic_memory = self.server.episodic_memory_manager.list_episodic_memory(
+            episodic_memory = await self.server.episodic_memory_manager.list_episodic_memory(
                 user=self.user,
                 agent_state=agent_state,
                 query=query,
@@ -2183,7 +1935,7 @@ class LocalClient(AbstractClient):
 
         # Search resource memory
         if memory_type == "resource" or memory_type == "all":
-            resource_memories = self.server.resource_memory_manager.list_resources(
+            resource_memories = await self.server.resource_memory_manager.list_resources(
                 user=self.user,
                 agent_state=agent_state,
                 query=query,
@@ -2216,7 +1968,7 @@ class LocalClient(AbstractClient):
 
         # Search procedural memory
         if memory_type == "procedural" or memory_type == "all":
-            procedural_memories = self.server.procedural_memory_manager.list_procedures(
+            procedural_memories = await self.server.procedural_memory_manager.list_procedures(
                 user=self.user,
                 agent_state=agent_state,
                 query=query,
@@ -2245,7 +1997,7 @@ class LocalClient(AbstractClient):
 
         # Search knowledge vault
         if memory_type == "knowledge_vault" or memory_type == "all":
-            knowledge_vault_memories = self.server.knowledge_vault_manager.list_knowledge(
+            knowledge_vault_memories = await self.server.knowledge_vault_manager.list_knowledge(
                 user=self.user,
                 agent_state=agent_state,
                 query=query,
@@ -2276,7 +2028,7 @@ class LocalClient(AbstractClient):
 
         # Search semantic memory
         if memory_type == "semantic" or memory_type == "all":
-            semantic_memories = self.server.semantic_memory_manager.list_semantic_items(
+            semantic_memories = await self.server.semantic_memory_manager.list_semantic_items(
                 user=self.user,
                 agent_state=agent_state,
                 query=query,

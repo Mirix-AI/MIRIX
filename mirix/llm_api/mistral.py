@@ -1,9 +1,9 @@
-import requests
+import httpx
 
 from mirix.utils import printd, smart_urljoin
 
 
-def mistral_get_model_list(url: str, api_key: str) -> dict:
+async def mistral_get_model_list(url: str, api_key: str) -> dict:
     url = smart_urljoin(url, "models")
 
     headers = {"Content-Type": "application/json"}
@@ -14,11 +14,12 @@ def mistral_get_model_list(url: str, api_key: str) -> dict:
     response = None
     try:
         # TODO add query param "tool" to be true
-        response = requests.get(url, headers=headers)
-        response.raise_for_status()  # Raises HTTPError for 4XX/5XX status
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, headers=headers)
+        response.raise_for_status()  # Raises HTTPStatusError for 4XX/5XX status
         response_json = response.json()  # convert to dict from string
         return response_json
-    except requests.exceptions.HTTPError as http_err:
+    except httpx.HTTPStatusError as http_err:
         # Handle HTTP errors (e.g., response 4XX, 5XX)
         try:
             if response:
@@ -27,7 +28,7 @@ def mistral_get_model_list(url: str, api_key: str) -> dict:
             pass
         printd(f"Got HTTPError, exception={http_err}, response={response}")
         raise http_err
-    except requests.exceptions.RequestException as req_err:
+    except httpx.RequestError as req_err:
         # Handle other requests-related errors (e.g., connection error)
         try:
             if response:

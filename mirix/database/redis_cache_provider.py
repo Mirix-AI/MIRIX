@@ -49,58 +49,58 @@ class RedisCacheProvider:
         self.redis_client = redis_client
         logger.info("Initialized RedisCacheProvider")
 
-    def get(self, key: str) -> Optional[Dict[str, Any]]:
+    async def get(self, key: str) -> Optional[Dict[str, Any]]:
         """Get value (string/JSON) from Redis."""
         try:
-            return self.redis_client.get_json(key)
+            return await self.redis_client.get_json(key)
         except Exception as e:
             logger.warning("Redis get failed for key %s: %s", key, e)
             return None
 
-    def set(self, key: str, data: Dict[str, Any], ttl: Optional[int] = None) -> bool:
+    async def set(self, key: str, data: Dict[str, Any], ttl: Optional[int] = None) -> bool:
         """Set value (JSON) in Redis."""
         try:
-            return self.redis_client.set_json(key, data, ttl=ttl)
+            return await self.redis_client.set_json(key, data, ttl=ttl)
         except Exception as e:
             logger.warning("Redis set failed for key %s: %s", key, e)
             return False
 
-    def delete(self, key: str) -> bool:
+    async def delete(self, key: str) -> bool:
         """Delete key from Redis."""
         try:
-            return self.redis_client.delete(key)
+            return await self.redis_client.delete(key)
         except Exception as e:
             logger.warning("Redis delete failed for key %s: %s", key, e)
             return False
 
-    def get_hash(self, key: str) -> Optional[Dict[str, Any]]:
+    async def get_hash(self, key: str) -> Optional[Dict[str, Any]]:
         """Get hash from Redis."""
         try:
-            return self.redis_client.get_hash(key)
+            return await self.redis_client.get_hash(key)
         except Exception as e:
             logger.warning("Redis get_hash failed for key %s: %s", key, e)
             return None
 
-    def set_hash(self, key: str, data: Dict[str, Any], ttl: Optional[int] = None) -> bool:
+    async def set_hash(self, key: str, data: Dict[str, Any], ttl: Optional[int] = None) -> bool:
         """Set hash in Redis."""
         try:
-            return self.redis_client.set_hash(key, data, ttl=ttl)
+            return await self.redis_client.set_hash(key, data, ttl=ttl)
         except Exception as e:
             logger.warning("Redis set_hash failed for key %s: %s", key, e)
             return False
 
-    def get_json(self, key: str) -> Optional[Dict[str, Any]]:
+    async def get_json(self, key: str) -> Optional[Dict[str, Any]]:
         """Get JSON from Redis."""
         try:
-            return self.redis_client.get_json(key)
+            return await self.redis_client.get_json(key)
         except Exception as e:
             logger.warning("Redis get_json failed for key %s: %s", key, e)
             return None
 
-    def set_json(self, key: str, data: Dict[str, Any], ttl: Optional[int] = None) -> bool:
+    async def set_json(self, key: str, data: Dict[str, Any], ttl: Optional[int] = None) -> bool:
         """Set JSON in Redis."""
         try:
-            return self.redis_client.set_json(key, data, ttl=ttl)
+            return await self.redis_client.set_json(key, data, ttl=ttl)
         except Exception as e:
             logger.warning("Redis set_json failed for key %s: %s", key, e)
             return False

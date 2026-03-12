@@ -9,7 +9,7 @@ from mirix.schemas.openai.chat_completion_response import ChatCompletionResponse
 class CohereClient(LLMClientBase):
     """Cohere client - currently a stub that falls back to original implementation"""
 
-    def build_request_data(
+    async def build_request_data(
         self,
         messages: List[Message],
         llm_config: LLMConfig,
@@ -19,7 +19,7 @@ class CohereClient(LLMClientBase):
         # TODO: Implement cohere-specific request building
         raise NotImplementedError("CohereClient not yet implemented - use fallback")
 
-    def request(self, request_data: dict) -> dict:
+    async def request(self, request_data: dict) -> dict:
         # TODO: Implement cohere-specific request
         raise NotImplementedError("CohereClient not yet implemented - use fallback")
 

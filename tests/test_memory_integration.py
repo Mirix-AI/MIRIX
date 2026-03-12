@@ -18,12 +18,13 @@ Test Coverage:
 - client.search(): Search across memory types
 """
 
+import asyncio
 import os
 import sys
-import time
 from pathlib import Path
 
 import pytest
+import pytest_asyncio
 import requests
 from dotenv import load_dotenv
 
@@ -42,10 +43,11 @@ TEST_USER_ID = "demo-user"
 TEST_CLIENT_ID = "demo-client"
 TEST_ORG_ID = "demo-org"
 
-# Mark all tests as integration tests
+# Mark all tests as integration tests; one event loop per module so client and tests share it.
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.skipif(not os.getenv("GEMINI_API_KEY"), reason="GEMINI_API_KEY not set"),
+    pytest.mark.asyncio(loop_scope="module"),
 ]
 
 
@@ -73,30 +75,30 @@ def server_process():
     )
 
 
-@pytest.fixture(scope="module")
-def client(server_process, api_auth):
-    """Create a client connected to the test server."""
-    # Use same user/org as run_client.py to ensure agents are already initialized
-    client = MirixClient(
+@pytest_asyncio.fixture(scope="module", loop_scope="module")
+async def api_auth(server_process):
+    """Create org and client in DB once per module; yield auth for per-test client creation."""
+    from conftest import _create_client_and_key
+
+    auth = await _create_client_and_key(TEST_CLIENT_ID, TEST_ORG_ID, org_name="Demo Org")
+    os.environ.setdefault("MIRIX_API_URL", "http://localhost:8000")
+    os.environ["MIRIX_API_KEY"] = auth["api_key"]
+    return auth
+
+
+@pytest_asyncio.fixture
+async def client(server_process, api_auth):
+    """Create a new MirixClient per test in the current loop (avoids shared httpx + closed loop)."""
+    c = await MirixClient.create(
         api_key=api_auth["api_key"],
         base_url="http://localhost:8000",
-        debug=False,  # Turn off debug to avoid Unicode encoding issues on Windows
+        debug=False,
     )
-
-    # Initialize meta agent (checks if exists, creates if needed)
-    print("\n[SETUP] Initializing user, org, and meta agent...")
-
-    # Construct absolute path to config file
     config_path = project_root / "mirix" / "configs" / "examples" / "mirix_gemini.yaml"
-
-    result = client.initialize_meta_agent(
-        config_path=str(config_path), update_agents=False  # Don't update if already exists, just use existing
-    )
-
-    if client._meta_agent:
-        print(f"[OK] Meta agent ready: {client._meta_agent.id}")
-
-    return client
+    await c.initialize_meta_agent(config_path=str(config_path), update_agents=False)
+    if c._meta_agent:
+        print(f"[OK] Meta agent ready: {c._meta_agent.id}")
+    return c
 
 
 # =================================================================
@@ -104,11 +106,12 @@ def client(server_process, api_auth):
 # =================================================================
 
 
-def test_add(client):
+@pytest.mark.asyncio
+async def test_add(client):
     """Test adding memories using client.add()."""
     print("\n[TEST] Adding memory via client.add()...")
 
-    result = client.add(
+    result = await client.add(
         user_id=TEST_USER_ID,
         messages=[
             {
@@ -137,12 +140,12 @@ def test_add(client):
     print(f"[OK] Memory added successfully")
 
 
-def test_retrieve_with_conversation(client):
+@pytest.mark.asyncio
+async def test_retrieve_with_conversation(client):
     """Test retrieving memories with conversation context."""
     print("\n[TEST] Retrieving memories with conversation...")
 
-    # Add a memory first
-    client.add(
+    await client.add(
         user_id=TEST_USER_ID,
         messages=[
             {
@@ -157,10 +160,9 @@ def test_retrieve_with_conversation(client):
         ],
     )
 
-    time.sleep(2)  # Wait for processing
+    await asyncio.sleep(2)  # Wait for processing
 
-    # Retrieve with conversation
-    result = client.retrieve_with_conversation(
+    result = await client.retrieve_with_conversation(
         user_id=TEST_USER_ID,
         messages=[{"role": "user", "content": [{"type": "text", "text": "What work did I complete recently?"}]}],
         limit=10,
@@ -178,12 +180,12 @@ def test_retrieve_with_conversation(client):
                 print(f"  - {memory_type}: {items['total_count']} items")
 
 
-def test_retrieve_with_topic(client):
+@pytest.mark.asyncio
+async def test_retrieve_with_topic(client):
     """Test retrieving memories by topic."""
     print("\n[TEST] Retrieving memories by topic...")
 
-    # Add topic-related memory
-    client.add(
+    await client.add(
         user_id=TEST_USER_ID,
         messages=[
             {
@@ -198,10 +200,9 @@ def test_retrieve_with_topic(client):
         ],
     )
 
-    time.sleep(2)  # Wait for processing
+    await asyncio.sleep(2)  # Wait for processing
 
-    # Retrieve by topic
-    result = client.retrieve_with_topic(user_id=TEST_USER_ID, topic="deployment", limit=5)
+    result = await client.retrieve_with_topic(user_id=TEST_USER_ID, topic="deployment", limit=5)
 
     assert result is not None
     assert result.get("success") is True
@@ -215,12 +216,12 @@ def test_retrieve_with_topic(client):
                 print(f"  - {memory_type}: {items['total_count']} items")
 
 
-def test_search(client):
+@pytest.mark.asyncio
+async def test_search(client):
     """Test searching memories."""
     print("\n[TEST] Searching memories...")
 
-    # Add searchable memory
-    client.add(
+    await client.add(
         user_id=TEST_USER_ID,
         messages=[
             {
@@ -235,19 +236,17 @@ def test_search(client):
         ],
     )
 
-    time.sleep(2)  # Wait for processing
+    await asyncio.sleep(2)  # Wait for processing
 
-    # Test 1: Search all memory types
     print("  [1] Searching across all memory types...")
-    result_all = client.search(user_id=TEST_USER_ID, query="meeting planning", memory_type="all", limit=10)
+    result_all = await client.search(user_id=TEST_USER_ID, query="meeting planning", memory_type="all", limit=10)
 
     assert result_all is not None
     assert result_all.get("success") is True
     print(f"  [OK] Found {result_all.get('count', 0)} results across all types")
 
-    # Test 2: Search specific memory type (episodic)
     print("  [2] Searching episodic memory...")
-    result_episodic = client.search(
+    result_episodic = await client.search(
         user_id=TEST_USER_ID,
         query="meeting",
         memory_type="episodic",
@@ -260,9 +259,8 @@ def test_search(client):
     assert result_episodic.get("success") is True
     print(f"  [OK] Found {result_episodic.get('count', 0)} episodic results")
 
-    # Test 3: Search with embedding method
     print("  [3] Searching with embedding method...")
-    result_embedding = client.search(
+    result_embedding = await client.search(
         user_id=TEST_USER_ID,
         query="team collaboration",
         memory_type="episodic",

@@ -4,7 +4,6 @@ from typing import TYPE_CHECKING, List, Optional
 from sqlalchemy import JSON, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from mirix.orm.block import Block
 from mirix.orm.custom_columns import (
     EmbeddingConfigColumn,
     LLMConfigColumn,
@@ -18,7 +17,6 @@ from mirix.schemas.agent import AgentState as PydanticAgentState
 from mirix.schemas.agent import AgentType
 from mirix.schemas.embedding_config import EmbeddingConfig
 from mirix.schemas.llm_config import LLMConfig
-from mirix.schemas.memory import Memory
 from mirix.schemas.tool_rule import ToolRule
 
 if TYPE_CHECKING:
@@ -79,7 +77,6 @@ class Agent(SqlalchemyBase, OrganizationMixin):
     # relationships
     organization: Mapped["Organization"] = relationship("Organization", back_populates="agents")
     tools: Mapped[List["Tool"]] = relationship("Tool", secondary="tools_agents", lazy="selectin", passive_deletes=True)
-    core_memory: Mapped[List["Block"]] = relationship("Block", back_populates="agent", lazy="selectin")
     messages: Mapped[List["Message"]] = relationship(
         "Message",
         back_populates="agent",
@@ -104,7 +101,6 @@ class Agent(SqlalchemyBase, OrganizationMixin):
             "agent_type": self.agent_type,
             "llm_config": self.llm_config,
             "embedding_config": self.embedding_config,
-            "memory": Memory(blocks=[b.to_pydantic() for b in self.core_memory]),
             "created_by_id": self.created_by_id,
             "last_updated_by_id": self.last_updated_by_id,
             "created_at": self.created_at,

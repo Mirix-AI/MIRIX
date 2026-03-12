@@ -120,7 +120,7 @@ logger = get_logger(__name__)
 #         return {"error": str(e)}
 
 
-def fetch_and_read_pdf(self, url: str, max_pages: Optional[int] = 10):
+async def fetch_and_read_pdf(self, url: str, max_pages: Optional[int] = 10):
     """
     Fetch and read a PDF file from a URL, extracting its text content.
 
@@ -134,22 +134,21 @@ def fetch_and_read_pdf(self, url: str, max_pages: Optional[int] = 10):
     try:
         logger.debug("[PDF_READER] Fetching PDF from: %s", url)
 
-        # Import libraries for PDF processing
         try:
             import io
 
-            import requests
+            import httpx
             from PyPDF2 import PdfReader
         except ImportError as e:
             missing_lib = str(e).split("'")[1] if "'" in str(e) else "required library"
             return f"PDF processing library not available. Please install '{missing_lib}' to enable PDF reading functionality."
 
-        # Fetch the PDF file
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
         }
 
-        response = requests.get(url, headers=headers, timeout=30)
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, headers=headers, timeout=30)
 
         if response.status_code != 200:
             return f"Failed to fetch PDF: HTTP status {response.status_code}"
@@ -203,7 +202,7 @@ def fetch_and_read_pdf(self, url: str, max_pages: Optional[int] = 10):
         return f"Error reading PDF: {str(e)}"
 
 
-def web_search(self, query: str, num_results: Optional[int] = 5):
+async def web_search(self, query: str, num_results: Optional[int] = 5):
     """
     Search the web for information using DuckDuckGo comprehensive search.
 
@@ -215,21 +214,14 @@ def web_search(self, query: str, num_results: Optional[int] = 5):
         str: Search results formatted as text with titles, URLs, and descriptions.
     """
     try:
-        # Limit num_results to reasonable bounds
         num_results = min(max(1, num_results or 5), 10)
 
         logger.debug("[WEB_SEARCH] Searching for: %s", query)
 
-        # Import ddgs here to avoid import errors if not available
-        try:
-            from ddgs import DDGS
+        from asyncddgs import aDDGS
 
-        except ImportError:
-            return "Web search library not available. Please install 'ddgs' library to enable web search functionality."
-
-        # Use DDGS for comprehensive web search results
-        ddgs = DDGS()
-        search_results = ddgs.text(query, max_results=num_results)
+        async with aDDGS() as ddgs:
+            search_results = await ddgs.text(query, max_results=num_results)
 
         if not search_results:
             return f"No results found for '{query}'. Try rephrasing your search terms or using more specific keywords."

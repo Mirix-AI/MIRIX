@@ -1,6 +1,8 @@
 import datetime
 from typing import List, Literal, Optional
 
+from sqlalchemy import select
+
 from mirix import system
 from mirix.constants import IN_CONTEXT_MEMORY_KEYWORD, STRUCTURED_OUTPUT_MODELS
 from mirix.helpers import ToolRulesSolver
@@ -17,8 +19,7 @@ from mirix.schemas.user import User
 from mirix.utils import get_local_time
 
 
-# Static methods
-def _process_relationship(
+async def _process_relationship(
     session,
     agent: AgentModel,
     relationship_name: str,
@@ -28,10 +29,10 @@ def _process_relationship(
     replace=True,
 ):
     """
-    Generalized function to handle relationships like tools, sources, and blocks using item IDs.
+    Generalized async function to handle relationships like tools, sources, and blocks using item IDs.
 
     Args:
-        session: The database session.
+        session: The async database session.
         agent: The AgentModel instance.
         relationship_name: The name of the relationship attribute (e.g., 'tools', 'sources').
         model_class: The ORM class corresponding to the related items.
@@ -48,19 +49,18 @@ def _process_relationship(
             setattr(agent, relationship_name, [])
         return
 
-    # Retrieve models for the provided IDs
-    found_items = session.query(model_class).filter(model_class.id.in_(item_ids)).all()
+    result = await session.execute(
+        select(model_class).where(model_class.id.in_(item_ids))
+    )
+    found_items = result.scalars().all()
 
-    # Validate all items are found if allow_partial is False
     if not allow_partial and len(found_items) != len(item_ids):
         missing = set(item_ids) - {item.id for item in found_items}
         raise NoResultFound(f"Items not found in {relationship_name}: {missing}")
 
     if replace:
-        # Replace the relationship
         setattr(agent, relationship_name, found_items)
     else:
-        # Extend the relationship (only add new items)
         current_ids = {item.id for item in current_relationship}
         new_items = [item for item in found_items if item.id not in current_ids]
         current_relationship.extend(new_items)
@@ -177,51 +177,6 @@ def compile_system_message(
         raise NotImplementedError(template_format)
 
     return formatted_prompt
-
-
-# def initialize_message_sequence(
-#     agent_state: AgentState,
-#     memory_edit_timestamp: Optional[datetime.datetime] = None,
-#     include_initial_boot_message: bool = True,
-#     previous_message_count: int = 0,
-#     archival_memory_size: int = 0,
-# ) -> List[dict]:
-#     if memory_edit_timestamp is None:
-#         memory_edit_timestamp = get_local_time()
-
-#     full_system_message = compile_system_message(
-#         system_prompt=agent_state.system,
-#         in_context_memory=agent_state.memory,
-#         in_context_memory_last_edit=memory_edit_timestamp,
-#         user_defined_variables=None,
-#         append_icm_if_missing=True,
-#         previous_message_count=previous_message_count,
-#         archival_memory_size=archival_memory_size,
-#     )
-#     first_user_message = get_login_event()  # event letting Mirix know the user just logged in
-
-#     if include_initial_boot_message:
-#         if agent_state.llm_config.model is not None and "gpt-3.5" in agent_state.llm_config.model:
-#             initial_boot_messages = get_initial_boot_messages("startup_with_send_message_gpt35")
-#         else:
-#             initial_boot_messages = get_initial_boot_messages("startup_with_send_message")
-#         messages = (
-#             [
-#                 {"role": "system", "content": full_system_message},
-#             ]
-#             + initial_boot_messages
-#             + [
-#                 {"role": "user", "content": first_user_message},
-#             ]
-#         )
-
-#     else:
-#         messages = [
-#             {"role": "system", "content": full_system_message},
-#             {"role": "user", "content": first_user_message},
-#         ]
-
-#     return messages
 
 
 def initialize_message_sequence(

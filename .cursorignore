@@ -1,0 +1,10 @@
+.venv/
+build/
+*.egg-info/
+mirix.egg-info/
+.persist/
+__pycache__/
+*.pyc
+.pytest_cache/
+node_modules/
+dashboard/node_modules/

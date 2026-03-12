@@ -1,6 +1,8 @@
 from datetime import datetime
 from unittest.mock import MagicMock
 
+import pytest
+
 from mirix.agent.agent import Agent
 from mirix.schemas.agent import AgentState, AgentType
 from mirix.schemas.client import Client
@@ -22,14 +24,16 @@ def make_client(id="client-1", org_id="org-1"):
         organization_id=org_id,
         name="Test Client",
         status="active",
-        scope="test",
+        write_scope="test",
+        read_scopes=["test"],
         created_at=datetime.now(),
         updated_at=datetime.now(),
         is_deleted=False,
     )
 
 
-def test_memory_agent_truncates_extra_tool_calls_and_executes_only_first():
+@pytest.mark.asyncio
+async def test_memory_agent_truncates_extra_tool_calls_and_executes_only_first():
     """
     Regression test for memory-agent multi-tool-call bug:
     If the LLM returns multiple tool calls in one response, memory agents must
@@ -73,7 +77,7 @@ def test_memory_agent_truncates_extra_tool_calls_and_executes_only_first():
 
     executed = []
 
-    def _fake_exec(function_name, function_args, *args, **kwargs):
+    async def _fake_exec(function_name, function_args, *args, **kwargs):
         executed.append(function_name)
         return "ok"
 
@@ -81,7 +85,7 @@ def test_memory_agent_truncates_extra_tool_calls_and_executes_only_first():
 
     # Build input/response messages
     input_message = Message.dict_to_message(
-        id="message-1",
+        id="message-12345678",
         agent_id=agent_state.id,
         model=agent.model,
         openai_message_dict={"role": "user", "content": "hi"},
@@ -102,11 +106,11 @@ def test_memory_agent_truncates_extra_tool_calls_and_executes_only_first():
         ],
     )
 
-    agent._handle_ai_response(
+    await agent._handle_ai_response(
         input_message=input_message,
         response_message=response_message,
         existing_file_uris=[],
-        response_message_id="message-2",
+        response_message_id="message-87654321",
         retrieved_memories=None,
         chaining=False,
     )

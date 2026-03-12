@@ -28,8 +28,8 @@ def is_embedding_tracing_enabled() -> bool:
     return trace_context is not None and trace_context.get("trace_id") is not None
 
 
-def embedding_with_retry(embedding_func) -> List[float]:
-    """Execute embedding function with retry logic (no tracing)."""
+async def embedding_with_retry(embedding_func) -> List[float]:
+    """Execute async embedding function with retry logic (no tracing)."""
     from mirix.settings import settings
 
     wrapped = retry_with_exponential_backoff(
@@ -38,14 +38,14 @@ def embedding_with_retry(embedding_func) -> List[float]:
         max_retries=settings.llm_retry_limit,
         error_codes=(429, 500, 502, 503, 504),
     )
-    return wrapped()
+    return await wrapped()
 
 
-def traced_embedding_with_retry(
+async def traced_embedding_with_retry(
     model: str, provider: str, text: str, embedding_func, endpoint: Optional[str] = None
 ) -> List[float]:
     """
-    Execute embedding with Langfuse tracing and retry logic.
+    Execute async embedding with Langfuse tracing and retry logic.
 
     Each retry attempt is traced individually so failed attempts are visible.
     Langfuse failures are handled gracefully - they won't break embedding functionality.
@@ -63,20 +63,14 @@ def traced_embedding_with_retry(
     trace_id = trace_context.get("trace_id")
     parent_span_id = trace_context.get("observation_id")
 
-    # Optional:runcate input text for trace (avoid huge payloads)
-    # text_preview = text[:500] + "..." if len(text) > 500 else text
-
-    # Or, use the full text for the trace
     text_preview = text
 
-    # Build trace context
     trace_context_dict: dict = {"trace_id": trace_id}
     if parent_span_id:
         trace_context_dict["parent_span_id"] = parent_span_id
 
-    def traced_call() -> List[float]:
+    async def traced_call() -> List[float]:
         """Execute a single embedding attempt with tracing."""
-        # Try to start Langfuse observation - if this fails, execute without tracing
         try:
             observation_context = langfuse.start_as_current_observation(
                 name="embedding",
@@ -91,17 +85,15 @@ def traced_embedding_with_retry(
                 },
             )
         except Exception as e:
-            # Langfuse failed to start observation - execute without tracing
             logger.error(f"Langfuse failed to start observation. Continuing without tracing: {e}")
-            return embedding_func()
+            return await embedding_func()
 
-        # Now execute with tracing - embedding errors propagate normally
+        # Langfuse returns a sync context manager; use "with" not "async with"
         with observation_context as generation:
             mark_observation_as_child(generation)
 
             try:
-                result = embedding_func()
-                # Try to update trace with success - don't fail if this errors
+                result = await embedding_func()
                 try:
                     generation.update(
                         output={"embedding_dim": len(result) if result else 0},
@@ -116,7 +108,6 @@ def traced_embedding_with_retry(
                     logger.error(f"Failed to update LangFuse trace with success. Continuing without tracing: {e}")
                 return result
             except Exception as e:
-                # Update trace with error before re-raising
                 try:
                     generation.update(
                         level="ERROR",
@@ -130,17 +121,15 @@ def traced_embedding_with_retry(
                     )
                 except Exception as langfuse_err:
                     logger.error(f"Failed to update LangFuse trace with error. Continuing: {langfuse_err}")
-                    pass  # Don't let Langfuse errors mask the real error
-                raise  # Re-raise the embedding error
+                raise
 
-    # Wrap traced call with retry logic
     wrapped = retry_with_exponential_backoff(
         traced_call,
         initial_delay=settings.llm_retry_backoff_factor,
         max_retries=settings.llm_retry_limit,
         error_codes=(429, 500, 502, 503, 504),
     )
-    return wrapped()
+    return await wrapped()
 
 
 def parse_and_chunk_text(text: str, chunk_size: int) -> List[str]:
@@ -191,7 +180,7 @@ def check_and_split_text(text: str, embedding_model: str) -> List[str]:
 
 
 class OpenAIEmbeddingWithCustomAuth:
-    """OpenAI embedding client with auth provider support using sync OpenAI SDK."""
+    """OpenAI embedding client with auth provider support using async OpenAI SDK."""
 
     def __init__(self, config: EmbeddingConfig, auth_provider: str):
         """
@@ -199,13 +188,12 @@ class OpenAIEmbeddingWithCustomAuth:
 
         Args:
             config: EmbeddingConfig with auth_provider field set
-            api_key: OpenAI API key
         """
         self.config = config
         self.model = config.embedding_model
         self.auth_provider = auth_provider
 
-    def get_text_embedding(self, text: str) -> List[float]:
+    async def get_text_embedding(self, text: str) -> List[float]:
         """
         Get embedding with dynamic auth headers from auth provider.
 
@@ -219,12 +207,11 @@ class OpenAIEmbeddingWithCustomAuth:
             ValueError: If auth provider is not found in registry
         """
 
-        def _do_embedding():
-            from openai import OpenAI
+        async def _do_embedding():
+            from openai import AsyncOpenAI
 
             from mirix.llm_api.auth_provider import get_auth_provider
 
-            # Get auth headers from provider (sync)
             auth_provider = get_auth_provider(self.auth_provider)
             if not auth_provider:
                 raise ValueError(
@@ -233,7 +220,7 @@ class OpenAIEmbeddingWithCustomAuth:
                 )
 
             try:
-                auth_headers = auth_provider.get_auth_headers()  # Sync call
+                auth_headers = auth_provider.get_auth_headers()
                 logger.info(
                     f"OpenAI Embedding - Using auth provider '{self.config.auth_provider}' "
                     f"to inject {len(auth_headers)} header(s)"
@@ -242,19 +229,17 @@ class OpenAIEmbeddingWithCustomAuth:
                 logger.error(f"Failed to get auth headers from provider '{self.config.auth_provider}': {e}")
                 raise
 
-            # Create OpenAI client with auth headers
-            client = OpenAI(
-                api_key="DUMMY_API_KEY",  # This is not used, but the SDK will thow an error if it is not set
+            client = AsyncOpenAI(
+                api_key="DUMMY_API_KEY",
                 base_url=self.config.embedding_endpoint,
                 default_headers=auth_headers,
             )
 
-            # Call embeddings API
-            response = client.embeddings.create(model=self.model, input=text)
+            response = await client.embeddings.create(model=self.model, input=text)
             return response.data[0].embedding
 
         if is_embedding_tracing_enabled():
-            return traced_embedding_with_retry(
+            return await traced_embedding_with_retry(
                 model=self.config.langfuse_model or self.model,
                 provider="openai_custom_auth",
                 text=text,
@@ -262,7 +247,7 @@ class OpenAIEmbeddingWithCustomAuth:
                 endpoint=self.config.embedding_endpoint,
             )
         else:
-            return embedding_with_retry(_do_embedding)
+            return await embedding_with_retry(_do_embedding)
 
 
 class EmbeddingEndpoint:
@@ -296,7 +281,7 @@ class EmbeddingEndpoint:
         self._base_url = base_url
         self._timeout = timeout
 
-    def _call_api(self, text: str) -> List[float]:
+    async def _call_api(self, text: str) -> List[float]:
         if not is_valid_url(self._base_url):
             raise ValueError(
                 f"Embeddings endpoint does not have a valid URL (set to: '{self._base_url}'). Make sure embedding_endpoint is set correctly in your Mirix config."
@@ -306,8 +291,8 @@ class EmbeddingEndpoint:
         headers = {"Content-Type": "application/json"}
         json_data = {"input": text, "model": self.model_name, "user": self._user}
 
-        with httpx.Client() as client:
-            response = client.post(
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
                 f"{self._base_url}/embeddings",
                 headers=headers,
                 json=json_data,
@@ -317,10 +302,8 @@ class EmbeddingEndpoint:
         response_json = response.json()
 
         if isinstance(response_json, list):
-            # embedding directly in response
             embedding = response_json
         elif isinstance(response_json, dict):
-            # TEI embedding packaged inside openai-style response
             try:
                 embedding = response_json["data"][0]["embedding"]
             except (KeyError, IndexError):
@@ -328,14 +311,13 @@ class EmbeddingEndpoint:
                     f"Got back an unexpected payload from text embedding function, response=\n{response_json}"
                 )
         else:
-            # unknown response, can't parse
             raise TypeError(f"Got back an unexpected payload from text embedding function, response=\n{response_json}")
 
         return embedding
 
-    def get_text_embedding(self, text: str) -> List[float]:
+    async def get_text_embedding(self, text: str) -> List[float]:
         if is_embedding_tracing_enabled():
-            return traced_embedding_with_retry(
+            return await traced_embedding_with_retry(
                 model=self._langfuse_model or self.model_name,
                 provider="hugging-face",
                 text=text,
@@ -343,7 +325,7 @@ class EmbeddingEndpoint:
                 endpoint=self._base_url,
             )
         else:
-            return embedding_with_retry(lambda: self._call_api(text))
+            return await embedding_with_retry(lambda: self._call_api(text))
 
 
 class AzureOpenAIEmbedding:
@@ -355,26 +337,27 @@ class AzureOpenAIEmbedding:
         model: str,
         langfuse_model: Optional[str] = None,
     ):
-        from openai import AzureOpenAI
+        from openai import AsyncAzureOpenAI
 
-        self.client = AzureOpenAI(api_key=api_key, api_version=api_version, azure_endpoint=api_endpoint)
+        self.client = AsyncAzureOpenAI(api_key=api_key, api_version=api_version, azure_endpoint=api_endpoint)
         self.model = model
         self._langfuse_model = langfuse_model
 
-    def get_text_embedding(self, text: str):
+    async def get_text_embedding(self, text: str):
 
-        def _do_embedding():
-            return self.client.embeddings.create(input=[text], model=self.model).data[0].embedding
+        async def _do_embedding():
+            response = await self.client.embeddings.create(input=[text], model=self.model)
+            return response.data[0].embedding
 
         if is_embedding_tracing_enabled():
-            return traced_embedding_with_retry(
+            return await traced_embedding_with_retry(
                 model=self._langfuse_model or self.model,
                 provider="azure",
                 text=text,
                 embedding_func=_do_embedding,
             )
         else:
-            return embedding_with_retry(_do_embedding)
+            return await embedding_with_retry(_do_embedding)
 
 
 class OllamaEmbeddings:
@@ -396,17 +379,17 @@ class OllamaEmbeddings:
         self.ollama_additional_kwargs = ollama_additional_kwargs
         self._langfuse_model = langfuse_model
 
-    def get_text_embedding(self, text: str):
+    async def get_text_embedding(self, text: str):
 
-        def _do_embedding():
+        async def _do_embedding():
             import httpx
 
             headers = {"Content-Type": "application/json"}
             json_data = {"model": self.model, "prompt": text}
             json_data.update(self.ollama_additional_kwargs)
 
-            with httpx.Client() as client:
-                response = client.post(
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
                     f"{self.base_url}/api/embeddings",
                     headers=headers,
                     json=json_data,
@@ -416,7 +399,7 @@ class OllamaEmbeddings:
             return response_json["embedding"]
 
         if is_embedding_tracing_enabled():
-            return traced_embedding_with_retry(
+            return await traced_embedding_with_retry(
                 model=self._langfuse_model or self.model,
                 provider="ollama",
                 text=text,
@@ -424,18 +407,29 @@ class OllamaEmbeddings:
                 endpoint=self.base_url,
             )
         else:
-            return embedding_with_retry(_do_embedding)
+            return await embedding_with_retry(_do_embedding)
 
 
-def query_embedding(embedding_model, query_text: str):
+class AsyncLlamaIndexEmbeddingAdapter:
+    """Adapter that wraps LlamaIndex embedding models to provide a consistent
+    async ``get_text_embedding`` interface via ``aget_text_embedding``."""
+
+    def __init__(self, llama_index_model):
+        self._model = llama_index_model
+
+    async def get_text_embedding(self, text: str) -> List[float]:
+        return await self._model.aget_text_embedding(text)
+
+
+async def query_embedding(embedding_model, query_text: str):
     """Generate padded embedding for querying database"""
-    query_vec = embedding_model.get_text_embedding(query_text)
+    query_vec = await embedding_model.get_text_embedding(query_text)
     query_vec = np.array(query_vec)
     query_vec = np.pad(query_vec, (0, MAX_EMBEDDING_DIM - query_vec.shape[0]), mode="constant").tolist()
     return query_vec
 
 
-def embedding_model(config: EmbeddingConfig, user_id: Optional[uuid.UUID] = None):
+async def embedding_model(config: EmbeddingConfig, user_id: Optional[uuid.UUID] = None):
     """Return LlamaIndex embedding model to use for embeddings"""
 
     endpoint_type = config.embedding_endpoint_type
@@ -447,7 +441,7 @@ def embedding_model(config: EmbeddingConfig, user_id: Optional[uuid.UUID] = None
         from mirix.services.provider_manager import ProviderManager
 
         # Check for database-stored API key first, fall back to model_settings
-        override_key = ProviderManager().get_openai_override_key()
+        override_key = await ProviderManager().get_openai_override_key()
         api_key = override_key if override_key else model_settings.openai_api_key
 
         # Use direct OpenAI SDK if auth_provider is configured
@@ -464,17 +458,14 @@ def embedding_model(config: EmbeddingConfig, user_id: Optional[uuid.UUID] = None
             api_key=api_key,
             additional_kwargs=additional_kwargs,
         )
-        return model
+        return AsyncLlamaIndexEmbeddingAdapter(model)
 
     elif endpoint_type == "google_ai":
-        # Use Google AI (Gemini) for embeddings
         from llama_index.embeddings.google_genai import GoogleGenAIEmbedding
 
         from mirix.services.provider_manager import ProviderManager
 
-        # Check for database-stored API key first, fall back to model_settings
-
-        override_key = ProviderManager().get_gemini_override_key()
+        override_key = await ProviderManager().get_gemini_override_key()
         api_key = override_key if override_key else model_settings.gemini_api_key
 
         model = GoogleGenAIEmbedding(
@@ -482,7 +473,7 @@ def embedding_model(config: EmbeddingConfig, user_id: Optional[uuid.UUID] = None
             api_key=api_key,
             api_base=config.embedding_endpoint,
         )
-        return model
+        return AsyncLlamaIndexEmbeddingAdapter(model)
 
     elif endpoint_type == "azure":
         assert all(

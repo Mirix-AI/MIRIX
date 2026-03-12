@@ -2,7 +2,6 @@
 Base MCP Client - adapted from Letta structure with working implementation
 """
 
-import asyncio
 import logging
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional, Tuple
@@ -27,172 +26,6 @@ DEFAULT_EXECUTE_TOOL_TIMEOUT = 60.0
 
 class BaseMCPClient(ABC):
     """Base class for MCP clients with different transport methods"""
-
-    def __init__(self, server_config: BaseServerConfig):
-        self.server_config = server_config
-        self.session: Optional[ClientSession] = None
-        self.stdio = None
-        self.write = None
-        self.initialized = False
-        self.loop = asyncio.new_event_loop()
-        self.cleanup_funcs = []
-
-    def connect_to_server(
-        self,
-        connect_timeout: float = DEFAULT_CONNECT_TIMEOUT,
-        initialize_timeout: float = DEFAULT_INITIALIZE_TIMEOUT,
-    ):
-        """Connect to the MCP server and initialize the session"""
-        asyncio.set_event_loop(self.loop)
-
-        try:
-            success = self._initialize_connection(self.server_config, timeout=connect_timeout)
-
-            if success:
-                try:
-                    self.loop.run_until_complete(
-                        asyncio.wait_for(self.session.initialize(), timeout=initialize_timeout)
-                    )
-                    self.initialized = True
-                    logger.info(f"Successfully connected to MCP server: {self.server_config.server_name}")
-                except asyncio.TimeoutError:
-                    raise MCPTimeoutError(
-                        "initializing session",
-                        self.server_config.server_name,
-                        initialize_timeout,
-                    )
-            else:
-                raise MCPConnectionError(self.server_config.server_name, "Failed to establish connection")
-        except Exception as e:
-            logger.error(f"Failed to connect to MCP server {self.server_config.server_name}: {str(e)}")
-            raise
-
-    @abstractmethod
-    def _initialize_connection(self, server_config: BaseServerConfig, timeout: float) -> bool:
-        """Initialize the connection - implemented by subclasses"""
-        raise NotImplementedError("Subclasses must implement _initialize_connection")
-
-    def list_tools(self, timeout: float = DEFAULT_LIST_TOOLS_TIMEOUT) -> List[MCPTool]:
-        """List available tools from the MCP server"""
-        self._check_initialized()
-
-        try:
-            response = self.loop.run_until_complete(asyncio.wait_for(self.session.list_tools(), timeout=timeout))
-            return response.tools
-        except asyncio.TimeoutError:
-            logger.error(f"Timed out while listing tools for MCP server {self.server_config.server_name}")
-            raise MCPTimeoutError("listing tools", self.server_config.server_name, timeout)
-
-    def execute_tool(
-        self,
-        tool_name: str,
-        tool_args: Dict[str, Any],
-        timeout: float = DEFAULT_EXECUTE_TOOL_TIMEOUT,
-    ) -> Tuple[str, bool]:
-        """Execute a tool on the MCP server"""
-        self._check_initialized()
-
-        # Get Langfuse client for tracing
-        langfuse = get_langfuse_client()
-        trace_context = get_trace_context() if langfuse else {}
-        trace_id = trace_context.get("trace_id") if trace_context else None
-        parent_span_id = trace_context.get("observation_id") if trace_context else None
-
-        def _do_execute() -> Tuple[str, bool]:
-            try:
-                result = self.loop.run_until_complete(
-                    asyncio.wait_for(self.session.call_tool(tool_name, tool_args), timeout=timeout)
-                )
-
-                # Parse the content from the result
-                parsed_content = []
-                for content_piece in result.content:
-                    if isinstance(content_piece, TextContent):
-                        parsed_content.append(content_piece.text)
-                    else:
-                        parsed_content.append(str(content_piece))
-
-                if len(parsed_content) > 0:
-                    final_content = " ".join(parsed_content)
-                else:
-                    final_content = "Empty response from tool"
-
-                # Return content and whether there was an error
-                return final_content, getattr(result, "isError", False)
-
-            except asyncio.TimeoutError:
-                logger.error(
-                    f"Timed out while executing tool '{tool_name}' for MCP server {self.server_config.server_name}"
-                )
-                raise MCPTimeoutError(
-                    f"executing tool '{tool_name}'",
-                    self.server_config.server_name,
-                    timeout,
-                )
-
-        # Execute with Langfuse tracing if available
-        if langfuse and trace_id:
-            from typing import cast
-
-            from langfuse.types import TraceContext
-
-            # Build trace context
-            trace_context_dict: dict = {"trace_id": trace_id}
-            if parent_span_id:
-                trace_context_dict["parent_span_id"] = parent_span_id
-
-            # Sanitize args for tracing
-            args_for_trace = {key: str(value) for key, value in tool_args.items()}
-
-            try:
-                with langfuse.start_as_current_observation(
-                    name=f"mcp_tool: {tool_name}",
-                    as_type="tool",
-                    trace_context=cast(TraceContext, trace_context_dict),
-                    input={
-                        "tool_name": tool_name,
-                        "server": self.server_config.server_name,
-                        "args": args_for_trace,
-                    },
-                    metadata={
-                        "mcp_server": self.server_config.server_name,
-                        "tool_name": tool_name,
-                    },
-                ) as span:
-                    final_content, is_error = _do_execute()
-
-                    # Update span with result
-                    span.update(
-                        output={"response": final_content, "is_error": is_error},
-                        level="ERROR" if is_error else "DEFAULT",
-                    )
-                    return final_content, is_error
-            except Exception as e:
-                logger.debug(f"Langfuse MCP tool trace failed: {e}")
-                return _do_execute()
-        else:
-            return _do_execute()
-
-    def _check_initialized(self):
-        """Check if the client has been initialized"""
-        if not self.initialized:
-            raise MCPNotInitializedError(self.server_config.server_name)
-
-    def cleanup(self):
-        """Clean up the client resources"""
-        try:
-            for cleanup_func in self.cleanup_funcs:
-                cleanup_func()
-            self.initialized = False
-            if not self.loop.is_closed():
-                self.loop.close()
-            logger.info("Cleaned up MCP client for %s", self.server_config.server_name)
-        except Exception as e:
-            logger.warning(f"Error during cleanup for {self.server_config.server_name}: {e}")
-
-
-class BaseAsyncMCPClient(ABC):
-    """Async version of the base MCP client"""
 
     def __init__(self, server_config: BaseServerConfig):
         self.server_config = server_config
@@ -286,7 +119,6 @@ class BaseAsyncMCPClient(ABC):
                 ) as span:
                     final_content, is_error = await _do_execute()
 
-                    # Update span with result
                     span.update(
                         output={"response": final_content, "is_error": is_error},
                         level="ERROR" if is_error else "DEFAULT",
@@ -307,10 +139,7 @@ class BaseAsyncMCPClient(ABC):
         """Asynchronously clean up client resources"""
         try:
             for cleanup_func in self.cleanup_funcs:
-                if asyncio.iscoroutinefunction(cleanup_func):
-                    await cleanup_func()
-                else:
-                    cleanup_func()
+                await cleanup_func()
             self.initialized = False
             logger.info(f"Cleaned up async MCP client for {self.server_config.server_name}")
         except Exception as e:

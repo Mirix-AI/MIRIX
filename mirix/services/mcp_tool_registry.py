@@ -22,18 +22,16 @@ class MCPToolRegistry:
         self.tool_manager = ToolManager()
         self._mcp_tool_cache: Dict[str, List[Dict[str, Any]]] = {}
 
-    def discover_mcp_tools(self) -> Dict[str, List[Dict[str, Any]]]:
+    async def discover_mcp_tools(self) -> Dict[str, List[Dict[str, Any]]]:
         """Discover all tools from connected MCP servers"""
         try:
-            mcp_manager = get_mcp_client_manager()
+            mcp_manager = await get_mcp_client_manager()
             if not mcp_manager:
                 printd("No MCP manager available for tool discovery")
                 return {}
 
-            # Get tools from all servers
-            tools_by_server = mcp_manager.list_tools()
+            tools_by_server = await mcp_manager.list_tools()
 
-            # Convert MCPTool objects to dictionaries for easier handling
             discovered_tools = {}
             for server_name, mcp_tools in tools_by_server.items():
                 server_tools = []
@@ -44,7 +42,7 @@ class MCPToolRegistry:
                         "server_name": server_name,
                         "full_name": f"{server_name}.{mcp_tool.name}",
                         "schema": mcp_tool.inputSchema if hasattr(mcp_tool, "inputSchema") else {},
-                        "mcp_tool": mcp_tool,  # Keep reference to original object
+                        "mcp_tool": mcp_tool,
                     }
                     server_tools.append(tool_dict)
                 discovered_tools[server_name] = server_tools
@@ -56,7 +54,7 @@ class MCPToolRegistry:
             logger.error("Error discovering MCP tools: %s", str(e))
             return {}
 
-    def register_mcp_tools(
+    async def register_mcp_tools(
         self, actor: PydanticClient, server_filter: Optional[List[str]] = None
     ) -> List[PydanticTool]:
         """
@@ -70,7 +68,7 @@ class MCPToolRegistry:
             List of registered Tool objects
         """
 
-        discovered_tools = self.discover_mcp_tools()
+        discovered_tools = await self.discover_mcp_tools()
         registered_tools = []
 
         for server_name, tools in discovered_tools.items():
@@ -99,7 +97,7 @@ class MCPToolRegistry:
                         source_type="python",
                     )
 
-                    registered_tool = self.tool_manager.create_or_update_tool(pydantic_tool, actor)
+                    registered_tool = await self.tool_manager.create_or_update_tool(pydantic_tool, actor)
                     registered_tools.append(registered_tool)
 
                     logger.info("Registered MCP tool: %s", tool_info["full_name"])
@@ -147,31 +145,31 @@ class MCPToolRegistry:
 
         args_dict_str = "\n".join(args_dict_entries) if args_dict_entries else "        pass"
 
-        source_code = f'''def {full_name.replace(".", "_").replace("-", "_")}(
+        source_code = f'''async def {full_name.replace(".", "_").replace("-", "_")}(
     {param_str}
 ) -> str:
     """
     {tool_info["description"]}
-    
-    This is an auto-generated wrapper for MCP tool: {server_name}.{tool_name}
+
+    This is an auto-generated async wrapper for MCP tool: {server_name}.{tool_name}
     """
     from typing import Optional
     from mirix.functions.mcp_client import get_mcp_client_manager
-    
+
     try:
-        mcp_manager = get_mcp_client_manager()
+        mcp_manager = await get_mcp_client_manager()
         if not mcp_manager:
             return "Error: MCP manager not available"
-        
+
         args = {{}}
 {args_dict_str}
-        
-        result_text, is_error = mcp_manager.execute_tool("{server_name}", "{tool_name}", args)
+
+        result_text, is_error = await mcp_manager.execute_tool("{server_name}", "{tool_name}", args)
         if is_error:
             return f"Error executing {full_name}: {{result_text}}"
-        
+
         return result_text
-        
+
     except Exception as e:
         return f"Error executing {full_name}: {{str(e)}}"
 '''
@@ -204,9 +202,11 @@ class MCPToolRegistry:
         }
         return type_map.get(json_type, "str")
 
-    def unregister_mcp_tools(self, actor: PydanticClient, server_name: Optional[str] = None) -> int:
+    async def unregister_mcp_tools(
+        self, actor: PydanticClient, server_name: Optional[str] = None
+    ) -> int:
         """
-        Unregister MCP tools from database
+        Unregister MCP tools from database.
 
         Args:
             actor: User performing the unregistration
@@ -216,70 +216,61 @@ class MCPToolRegistry:
             Number of tools unregistered
         """
         try:
-            # Get all MCP tools
-            tools = self.tool_manager.list_tools(actor)
+            tools = await self.tool_manager.list_tools(actor)
             mcp_tools = [t for t in tools if t.tool_type == ToolType.MIRIX_MCP]
-
             unregistered_tools = []
             for tool in mcp_tools:
-                # Filter by server name if provided
                 if server_name:
                     server_tag = f"mcp:{server_name}"
                     if server_tag not in tool.tags:
                         continue
-
                 unregistered_tools.append(tool.id)
-                self.tool_manager.delete_tool_by_id(tool.id, actor)
+                await self.tool_manager.delete_tool_by_id(tool.id, actor)
                 printd(f"Unregistered MCP tool: {tool.name}")
-
-            return unregistered_tools
-
+            return len(unregistered_tools)
         except Exception as e:
             logger.error("Error unregistering MCP tools: %s", str(e))
-            return []
+            return 0
 
-    def sync_mcp_tools(self, actor: PydanticClient) -> Dict[str, int]:
+    async def sync_mcp_tools(self, actor: PydanticClient) -> Dict[str, int]:
         """
-        Synchronize database with currently available MCP tools
+        Synchronize database with currently available MCP tools.
 
         Returns:
             Dictionary with 'registered', 'unregistered', 'updated' counts
         """
-        # Discover current tools
-        discovered_tools = self.discover_mcp_tools()
+        discovered_tools = await self.discover_mcp_tools()
         current_tool_names = set()
         for tools in discovered_tools.values():
             current_tool_names.update(t["full_name"] for t in tools)
 
-        # Get existing MCP tools from database
-        existing_tools = self.tool_manager.list_tools(actor)
-        existing_mcp_tools = [t for t in existing_tools if t.tool_type == ToolType.MIRIX_MCP]
+        existing_tools = await self.tool_manager.list_tools(actor)
+        existing_mcp_tools = [
+            t for t in existing_tools if t.tool_type == ToolType.MIRIX_MCP
+        ]
         existing_tool_names = {t.name for t in existing_mcp_tools}
 
-        # Register new tools
         new_tools = current_tool_names - existing_tool_names
         registered_count = 0
         if new_tools:
-            # Filter to only register new tools
             filtered_discovered = {}
-            for server_name, tools in discovered_tools.items():
-                filtered_tools = [t for t in tools if t["full_name"] in new_tools]
+            for sname, tools in discovered_tools.items():
+                filtered_tools = [
+                    t for t in tools if t["full_name"] in new_tools
+                ]
                 if filtered_tools:
-                    filtered_discovered[server_name] = filtered_tools
-
-            # Temporarily override cache and register
+                    filtered_discovered[sname] = filtered_tools
             old_cache = self._mcp_tool_cache
             self._mcp_tool_cache = filtered_discovered
-            registered_tools = self.register_mcp_tools(actor)
+            registered_tools = await self.register_mcp_tools(actor)
             registered_count = len(registered_tools)
             self._mcp_tool_cache = old_cache
 
-        # Unregister obsolete tools
         obsolete_tools = existing_tool_names - current_tool_names
         unregistered_count = 0
         for tool in existing_mcp_tools:
             if tool.name in obsolete_tools:
-                self.tool_manager.delete_tool_by_id(tool.id, actor)
+                await self.tool_manager.delete_tool_by_id(tool.id, actor)
                 unregistered_count += 1
 
         return {

@@ -100,10 +100,12 @@ server_dependencies = [
     "httpx_sse>=0.3.0",
     # Database
     "sqlalchemy>=2.0.0",
+    "asyncpg",
+    "aiosqlite",
     "psycopg2-binary>=2.9.0",
     "pg8000>=1.30.0",
     "pgvector>=0.2.0",
-    "redis>=5.0.0",  # Redis client
+    "redis[hiredis]>=7.0.1,<8.0.0",
     # Pydantic and validation
     "pydantic>=2.0.0",
     "pydantic-settings>=2.0.0",
@@ -132,8 +134,7 @@ server_dependencies = [
     # Google APIs
     "google-auth>=2.0.0",
     "google-auth-oauthlib>=1.0.0",
-    "google-auth-httplib2>=0.1.0",
-    "google-api-python-client>=2.0.0",
+    "aiogoogle",
     # Observability
     "opentelemetry-api>=1.20.0",
     "opentelemetry-sdk>=1.20.0",
@@ -145,6 +146,13 @@ server_dependencies = [
     "pydub>=0.25.0",
     # Protobuf (for queue message serialization) - compatible with pynumaflow
     "protobuf>=5.0.0,<6.0.0",
+    # Kafka queue (async producer/consumer)
+    "aiokafka>=0.13.0,<0.14.0",
+    # Auth
+    "bcrypt>=4.0.0",
+    "PyJWT>=2.10.1",
+    # Async web search
+    "asyncddgs",
 ]
 
 # Optional dependencies

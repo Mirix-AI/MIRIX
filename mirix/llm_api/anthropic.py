@@ -405,7 +405,7 @@ def get_anthropic_endpoint_and_headers(
     return url, headers
 
 
-def anthropic_chat_completions_request(
+async def anthropic_chat_completions_request(
     data: ChatCompletionRequest,
     inner_thoughts_xml_tag: Optional[str] = "thinking",
     betas: List[str] = ["tools-2024-04-04"],
@@ -415,11 +415,11 @@ def anthropic_chat_completions_request(
     from mirix.services.provider_manager import ProviderManager
 
     anthropic_client = None
-    anthropic_override_key = ProviderManager().get_anthropic_override_key()
+    anthropic_override_key = await ProviderManager().get_anthropic_override_key()
     if anthropic_override_key:
-        anthropic_client = anthropic.Anthropic(api_key=anthropic_override_key)
+        anthropic_client = anthropic.AsyncAnthropic(api_key=anthropic_override_key)
     elif model_settings.anthropic_api_key:
-        anthropic_client = anthropic.Anthropic()
+        anthropic_client = anthropic.AsyncAnthropic()
     data = _prepare_anthropic_request(data, inner_thoughts_xml_tag)
 
     if image_uris is not None:
@@ -427,20 +427,22 @@ def anthropic_chat_completions_request(
 
         import httpx
 
-        for image_url in image_uris:
-            image_media_type = "image/" + image_url.split(".")[-1]
+        async with httpx.AsyncClient() as http_client:
+            for image_url in image_uris:
+                image_media_type = "image/" + image_url.split(".")[-1]
 
-            image_data = base64.standard_b64encode(httpx.get(image_url).content).decode("utf-8")
-            data["messages"][2]["content"].append(
-                {
-                    "type": "image",
-                    "source": {
-                        "type": "base64",
-                        "media_type": image_media_type,
-                        "data": image_data,
-                    },
-                }
-            )
+                resp = await http_client.get(image_url)
+                image_data = base64.standard_b64encode(resp.content).decode("utf-8")
+                data["messages"][2]["content"].append(
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": image_media_type,
+                            "data": image_data,
+                        },
+                    }
+                )
 
     if len(data["messages"][-1]["content"]) == 2:
         content = data["messages"][-1]["content"][-2]["content"]
@@ -452,12 +454,13 @@ def anthropic_chat_completions_request(
 
             import base64
 
-            # Get the image data
             image_media_type = "image/" + image_url.split(".")[-1]
             if "http://" in image_url:
                 import httpx
 
-                image_data = base64.standard_b64encode(httpx.get(image_url).content).decode("utf-8")
+                async with httpx.AsyncClient() as http_client:
+                    resp = await http_client.get(image_url)
+                    image_data = base64.standard_b64encode(resp.content).decode("utf-8")
             else:
                 with open(image_url, "rb") as image_file:
                     image_data = base64.b64encode(image_file.read()).decode("utf-8")
@@ -475,7 +478,7 @@ def anthropic_chat_completions_request(
                 }
             )
 
-    response = anthropic_client.beta.messages.create(
+    response = await anthropic_client.beta.messages.create(
         **data,
         betas=betas,
     )
@@ -484,19 +487,17 @@ def anthropic_chat_completions_request(
     )
 
 
-def anthropic_bedrock_chat_completions_request(
+async def anthropic_bedrock_chat_completions_request(
     data: ChatCompletionRequest,
     inner_thoughts_xml_tag: Optional[str] = "thinking",
 ) -> ChatCompletionResponse:
     """Make a chat completion request to Anthropic via AWS Bedrock."""
     data = _prepare_anthropic_request(data, inner_thoughts_xml_tag)
 
-    # Get the client
-    client = get_bedrock_client()
+    client = await get_bedrock_client()
 
-    # Make the request
     try:
-        response = client.messages.create(**data)
+        response = await client.messages.create(**data)
         return convert_anthropic_response_to_chatcompletion(
             response=response, inner_thoughts_xml_tag=inner_thoughts_xml_tag
         )

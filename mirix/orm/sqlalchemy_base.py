@@ -1,12 +1,13 @@
+import asyncio
 import random
-import time
 from datetime import datetime
 from functools import wraps
 from typing import TYPE_CHECKING, List, Literal, Optional, Tuple, Union
 
 from sqlalchemy import String, and_, desc, func, or_, select
 from sqlalchemy.exc import DBAPIError, IntegrityError, OperationalError, TimeoutError
-from sqlalchemy.orm import Mapped, Session, mapped_column
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Mapped, mapped_column
 
 from mirix.log import get_logger
 from mirix.orm.base import Base, CommonSqlalchemyMetaMixins
@@ -22,7 +23,6 @@ from mirix.orm.sqlite_functions import adapt_array
 if TYPE_CHECKING:
     from pydantic import BaseModel
     from sqlalchemy import Select
-    from sqlalchemy.orm import Session
 
     from mirix.orm.client import Client
     from mirix.orm.user import User
@@ -31,15 +31,17 @@ logger = get_logger(__name__)
 
 
 def handle_db_timeout(func):
-    """Decorator to handle SQLAlchemy TimeoutError and wrap it in a custom exception."""
+    """Decorator to handle SQLAlchemy TimeoutError (async-aware)."""
 
     @wraps(func)
-    def wrapper(*args, **kwargs):
+    async def wrapper(*args, **kwargs):
         try:
-            return func(*args, **kwargs)
+            return await func(*args, **kwargs)
         except TimeoutError as e:
-            logger.error(f"Timeout while executing {func.__name__} with args {args} and kwargs {kwargs}: {e}")
-            raise DatabaseTimeoutError(message=f"Timeout occurred in {func.__name__}.", original_exception=e)
+            logger.error("Timeout while executing %s: %s", func.__name__, e)
+            raise DatabaseTimeoutError(
+                message=f"Timeout occurred in {func.__name__}.", original_exception=e
+            ) from e
 
     return wrapper
 
@@ -62,17 +64,14 @@ def retry_db_operation(
 
     def decorator(func):
         @wraps(func)
-        def wrapper(*args, **kwargs):
+        async def wrapper(*args, **kwargs):
             last_exception = None
-
             for attempt in range(max_retries + 1):
                 try:
-                    return func(*args, **kwargs)
+                    return await func(*args, **kwargs)
                 except (OperationalError, DBAPIError) as e:
                     last_exception = e
                     error_msg = str(e).lower()
-
-                    # Check if this is a database locked error
                     if any(
                         msg in error_msg
                         for msg in [
@@ -85,27 +84,29 @@ def retry_db_operation(
                         ]
                     ):
                         if attempt == max_retries:
-                            logger.error(f"Database locked error in {func.__name__} after {max_retries} retries: {e}")
-                            raise e
-
-                        # Calculate delay with exponential backoff and jitter
+                            logger.error(
+                                "Database locked error in %s after %d retries: %s",
+                                func.__name__,
+                                max_retries,
+                                e,
+                            )
+                            raise
                         delay = min(base_delay * (backoff_factor**attempt), max_delay)
-                        jitter = random.uniform(0, delay * 0.1)  # Add up to 10% jitter
+                        jitter = random.uniform(0, delay * 0.1)
                         total_delay = delay + jitter
-
                         logger.warning(
-                            f"Database locked in {func.__name__} (attempt {attempt + 1}/{max_retries + 1}), retrying in {total_delay:.2f}s: {e}"
+                            "Database locked in %s (attempt %d/%d), retrying in %.2fs: %s",
+                            func.__name__,
+                            attempt + 1,
+                            max_retries + 1,
+                            total_delay,
+                            e,
                         )
-                        time.sleep(total_delay)
+                        await asyncio.sleep(total_delay)
                         continue
-                    else:
-                        # Not a database locked error, re-raise immediately
-                        raise e
+                    raise
                 except Exception as e:
-                    # Other exceptions should be re-raised immediately
                     raise e
-
-            # If we get here, all retries failed
             raise last_exception
 
         return wrapper
@@ -131,17 +132,14 @@ def transaction_retry(max_retries: int = 3, base_delay: float = 0.1, max_delay: 
 
     def decorator(func):
         @wraps(func)
-        def wrapper(*args, **kwargs):
+        async def wrapper(*args, **kwargs):
             last_exception = None
-
             for attempt in range(max_retries + 1):
                 try:
-                    return func(*args, **kwargs)
+                    return await func(*args, **kwargs)
                 except (OperationalError, DBAPIError) as e:
                     last_exception = e
                     error_msg = str(e).lower()
-
-                    # Check if this is a database locked error
                     if any(
                         msg in error_msg
                         for msg in [
@@ -154,27 +152,29 @@ def transaction_retry(max_retries: int = 3, base_delay: float = 0.1, max_delay: 
                         ]
                     ):
                         if attempt == max_retries:
-                            logger.error(f"Database locked error in {func.__name__} after {max_retries} retries: {e}")
-                            raise e
-
-                        # Calculate delay with exponential backoff and jitter
+                            logger.error(
+                                "Database locked error in %s after %d retries: %s",
+                                func.__name__,
+                                max_retries,
+                                e,
+                            )
+                            raise
                         delay = min(base_delay * (2.0**attempt), max_delay)
                         jitter = random.uniform(0, delay * 0.1)
                         total_delay = delay + jitter
-
                         logger.warning(
-                            f"Database locked in {func.__name__} (attempt {attempt + 1}/{max_retries + 1}), retrying in {total_delay:.2f}s: {e}"
+                            "Database locked in %s (attempt %d/%d), retrying in %.2fs: %s",
+                            func.__name__,
+                            attempt + 1,
+                            max_retries + 1,
+                            total_delay,
+                            e,
                         )
-                        time.sleep(total_delay)
+                        await asyncio.sleep(total_delay)
                         continue
-                    else:
-                        # Not a database locked error, re-raise immediately
-                        raise e
+                    raise
                 except Exception as e:
-                    # Other exceptions should be re-raised immediately
                     raise e
-
-            # If we get here, all retries failed
             raise last_exception
 
         return wrapper
@@ -192,10 +192,10 @@ class SqlalchemyBase(CommonSqlalchemyMetaMixins, Base):
     @classmethod
     @handle_db_timeout
     @retry_db_operation(max_retries=3, base_delay=0.1, max_delay=2.0)
-    def list(
+    async def list(
         cls,
         *,
-        db_session: "Session",
+        db_session: AsyncSession,
         cursor: Optional[str] = None,
         start_date: Optional[datetime] = None,
         end_date: Optional[datetime] = None,
@@ -233,136 +233,137 @@ class SqlalchemyBase(CommonSqlalchemyMetaMixins, Base):
             raise ValueError("start_date must be earlier than or equal to end_date")
 
         logger.debug("Listing %s with kwarg filters %s", cls.__name__, kwargs)
-        with db_session as session:
-            # If cursor provided, get the reference object
-            cursor_obj = None
-            if cursor:
-                cursor_obj = session.get(cls, cursor)
-                if not cursor_obj:
-                    raise NoResultFound(f"No {cls.__name__} found with id {cursor}")
+        session = db_session
+        # If cursor provided, get the reference object
+        cursor_obj = None
+        if cursor:
+            cursor_obj = await session.get(cls, cursor)
+            if not cursor_obj:
+                raise NoResultFound(f"No {cls.__name__} found with id {cursor}")
 
+        query = select(cls)
+
+        if join_model and join_conditions:
+            query = query.join(join_model, and_(*join_conditions))
+
+        # Apply access predicate if actor is provided
+        if actor:
+            query = cls.apply_access_predicate(query, actor, access, access_type)
+
+        # Handle tag filtering if the model has tags
+        if tags and hasattr(cls, "tags"):
             query = select(cls)
 
-            if join_model and join_conditions:
-                query = query.join(join_model, and_(*join_conditions))
+            if match_all_tags:
+                # Match ALL tags - use subqueries
+                subquery = (
+                    select(cls.tags.property.mapper.class_.agent_id)
+                    .where(cls.tags.property.mapper.class_.tag.in_(tags))
+                    .group_by(cls.tags.property.mapper.class_.agent_id)
+                    .having(func.count() == len(tags))
+                )
+                query = query.filter(cls.id.in_(subquery))
+            else:
+                # Match ANY tag - use join and filter
+                query = (
+                    query.join(cls.tags)
+                    .filter(cls.tags.property.mapper.class_.tag.in_(tags))
+                    .group_by(cls.id)  # Deduplicate results
+                )
 
-            # Apply access predicate if actor is provided
-            if actor:
-                query = cls.apply_access_predicate(query, actor, access, access_type)
+            # Group by primary key and all necessary columns to avoid JSON comparison
+            query = query.group_by(cls.id)
 
-            # Handle tag filtering if the model has tags
-            if tags and hasattr(cls, "tags"):
-                query = select(cls)
+        # Apply filtering logic from kwargs
+        for key, value in kwargs.items():
+            if "." in key:
+                # Handle joined table columns
+                table_name, column_name = key.split(".")
+                joined_table = locals().get(table_name) or globals().get(table_name)
+                column = getattr(joined_table, column_name)
+            else:
+                # Handle columns from main table
+                column = getattr(cls, key)
 
-                if match_all_tags:
-                    # Match ALL tags - use subqueries
-                    subquery = (
-                        select(cls.tags.property.mapper.class_.agent_id)
-                        .where(cls.tags.property.mapper.class_.tag.in_(tags))
-                        .group_by(cls.tags.property.mapper.class_.agent_id)
-                        .having(func.count() == len(tags))
+            if isinstance(value, (list, tuple, set)):
+                query = query.where(column.in_(value))
+            else:
+                query = query.where(column == value)
+
+        # Date range filtering
+        if start_date:
+            query = query.filter(cls.created_at > start_date)
+        if end_date:
+            query = query.filter(cls.created_at < end_date)
+
+        # Cursor-based pagination
+        if cursor_obj:
+            if ascending:
+                query = query.where(cls.created_at >= cursor_obj.created_at).where(
+                    or_(
+                        cls.created_at > cursor_obj.created_at,
+                        cls.id > cursor_obj.id,
                     )
-                    query = query.filter(cls.id.in_(subquery))
-                else:
-                    # Match ANY tag - use join and filter
-                    query = (
-                        query.join(cls.tags)
-                        .filter(cls.tags.property.mapper.class_.tag.in_(tags))
-                        .group_by(cls.id)  # Deduplicate results
+                )
+            else:
+                query = query.where(cls.created_at <= cursor_obj.created_at).where(
+                    or_(
+                        cls.created_at < cursor_obj.created_at,
+                        cls.id < cursor_obj.id,
                     )
+                )
 
-                # Group by primary key and all necessary columns to avoid JSON comparison
-                query = query.group_by(cls.id)
+        # Text search
+        if query_text:
+            if hasattr(cls, "text"):
+                query = query.filter(func.lower(cls.text).contains(func.lower(query_text)))
+            elif hasattr(cls, "name"):
+                # Special case for Agent model - search across name
+                query = query.filter(func.lower(cls.name).contains(func.lower(query_text)))
 
-            # Apply filtering logic from kwargs
-            for key, value in kwargs.items():
-                if "." in key:
-                    # Handle joined table columns
-                    table_name, column_name = key.split(".")
-                    joined_table = locals().get(table_name) or globals().get(table_name)
-                    column = getattr(joined_table, column_name)
-                else:
-                    # Handle columns from main table
-                    column = getattr(cls, key)
+        # Embedding search (for Passages)
+        is_ordered = False
+        if query_embedding:
+            if not hasattr(cls, "embedding"):
+                raise ValueError(f"Class {cls.__name__} does not have an embedding column")
 
-                if isinstance(value, (list, tuple, set)):
-                    query = query.where(column.in_(value))
-                else:
-                    query = query.where(column == value)
+            from mirix.settings import settings
 
-            # Date range filtering
-            if start_date:
-                query = query.filter(cls.created_at > start_date)
-            if end_date:
-                query = query.filter(cls.created_at < end_date)
+            if settings.mirix_pg_uri_no_default:
+                # PostgreSQL with pgvector
+                query = query.order_by(cls.embedding.cosine_distance(query_embedding).asc())
+            else:
+                # SQLite with custom vector type
+                query_embedding_binary = adapt_array(query_embedding)
+                query = query.order_by(
+                    func.cosine_distance(cls.embedding, query_embedding_binary).asc(),
+                    cls.created_at.asc(),
+                    cls.id.asc(),
+                )
+                is_ordered = True
 
-            # Cursor-based pagination
-            if cursor_obj:
-                if ascending:
-                    query = query.where(cls.created_at >= cursor_obj.created_at).where(
-                        or_(
-                            cls.created_at > cursor_obj.created_at,
-                            cls.id > cursor_obj.id,
-                        )
-                    )
-                else:
-                    query = query.where(cls.created_at <= cursor_obj.created_at).where(
-                        or_(
-                            cls.created_at < cursor_obj.created_at,
-                            cls.id < cursor_obj.id,
-                        )
-                    )
+        # Handle soft deletes
+        if hasattr(cls, "is_deleted"):
+            query = query.where(~cls.is_deleted)
 
-            # Text search
-            if query_text:
-                if hasattr(cls, "text"):
-                    query = query.filter(func.lower(cls.text).contains(func.lower(query_text)))
-                elif hasattr(cls, "name"):
-                    # Special case for Agent model - search across name
-                    query = query.filter(func.lower(cls.name).contains(func.lower(query_text)))
+        # Apply ordering
+        if not is_ordered:
+            if ascending:
+                query = query.order_by(cls.created_at, cls.id)
+            else:
+                query = query.order_by(desc(cls.created_at), desc(cls.id))
 
-            # Embedding search (for Passages)
-            is_ordered = False
-            if query_embedding:
-                if not hasattr(cls, "embedding"):
-                    raise ValueError(f"Class {cls.__name__} does not have an embedding column")
+        query = query.limit(limit)
 
-                from mirix.settings import settings
-
-                if settings.mirix_pg_uri_no_default:
-                    # PostgreSQL with pgvector
-                    query = query.order_by(cls.embedding.cosine_distance(query_embedding).asc())
-                else:
-                    # SQLite with custom vector type
-                    query_embedding_binary = adapt_array(query_embedding)
-                    query = query.order_by(
-                        func.cosine_distance(cls.embedding, query_embedding_binary).asc(),
-                        cls.created_at.asc(),
-                        cls.id.asc(),
-                    )
-                    is_ordered = True
-
-            # Handle soft deletes
-            if hasattr(cls, "is_deleted"):
-                query = query.where(~cls.is_deleted)
-
-            # Apply ordering
-            if not is_ordered:
-                if ascending:
-                    query = query.order_by(cls.created_at, cls.id)
-                else:
-                    query = query.order_by(desc(cls.created_at), desc(cls.id))
-
-            query = query.limit(limit)
-
-            return list(session.execute(query).scalars())
+        result = await session.execute(query)
+        return list(result.scalars().all())
 
     @classmethod
     @handle_db_timeout
     @retry_db_operation(max_retries=3, base_delay=0.1, max_delay=2.0)
-    def read(
+    async def read(
         cls,
-        db_session: "Session",
+        db_session: AsyncSession,
         identifier: Optional[str] = None,
         actor: Optional["Client"] = None,
         user: Optional["User"] = None,
@@ -370,26 +371,12 @@ class SqlalchemyBase(CommonSqlalchemyMetaMixins, Base):
         access_type: AccessType = AccessType.ORGANIZATION,
         **kwargs,
     ) -> "SqlalchemyBase":
-        """The primary accessor for an ORM record.
-        Args:
-            db_session: the database session to use when retrieving the record
-            identifier: the identifier of the record to read, can be the id string or the UUID object for backwards compatibility
-            actor: if specified, results will be scoped only to records the user is able to access
-            access: if actor is specified, records will be filtered to the minimum permission level for the actor
-            kwargs: additional arguments to pass to the read, used for more complex objects
-        Returns:
-            The matching object
-        Raises:
-            NoResultFound: if the object is not found
-        """
+        """The primary accessor for an ORM record (async)."""
         logger.debug("Reading %s with ID: %s with actor=%s", cls.__name__, identifier, actor)
 
-        # Start the query
         query = select(cls)
-        # Collect query conditions for better error reporting
         query_conditions = []
 
-        # If an identifier is provided, add it to the query conditions
         if identifier is not None:
             query = query.where(cls.id == identifier)
             query_conditions.append(f"id='{identifier}'")
@@ -405,138 +392,122 @@ class SqlalchemyBase(CommonSqlalchemyMetaMixins, Base):
         if hasattr(cls, "is_deleted"):
             query = query.where(~cls.is_deleted)
             query_conditions.append("is_deleted=False")
-        if found := db_session.execute(query).scalar():
+
+        result = await db_session.execute(query)
+        found = result.scalar_one_or_none()
+        if found:
             return found
 
-        # Construct a detailed error message based on query conditions
         conditions_str = ", ".join(query_conditions) if query_conditions else "no specific conditions"
         raise NoResultFound(f"{cls.__name__} not found with {conditions_str}")
 
     @handle_db_timeout
     @transaction_retry(max_retries=5, base_delay=0.1, max_delay=3.0)
-    def create(self, db_session: "Session", actor: Optional["Client"] = None) -> "SqlalchemyBase":
-        logger.debug(f"Creating {self.__class__.__name__} with ID: {self.id} with actor={actor}")
+    async def create(self, db_session: AsyncSession, actor: Optional["Client"] = None) -> "SqlalchemyBase":
+        logger.debug("Creating %s with ID: %s with actor=%s", self.__class__.__name__, self.id, actor)
 
         if actor:
             self._set_created_and_updated_by_fields(actor.id)
 
-        with db_session as session:
-            try:
-                session.add(self)
-                session.commit()
-                session.refresh(self)
-                return self
-            except (DBAPIError, IntegrityError) as e:
-                session.rollback()
-                logger.error(f"Failed to create {self.__class__.__name__} with ID {self.id}: {e}")
-                self._handle_dbapi_error(e)
-            except Exception as e:
-                session.rollback()
-                logger.error(f"Unexpected error creating {self.__class__.__name__} with ID {self.id}: {e}")
-                raise
+        try:
+            db_session.add(self)
+            await db_session.commit()
+            await db_session.refresh(self)
+            return self
+        except (DBAPIError, IntegrityError) as e:
+            await db_session.rollback()
+            logger.error("Failed to create %s with ID %s: %s", self.__class__.__name__, self.id, e)
+            self._handle_dbapi_error(e)
+        except Exception as e:
+            await db_session.rollback()
+            logger.error("Unexpected error creating %s with ID %s: %s", self.__class__.__name__, self.id, e)
+            raise
 
     @handle_db_timeout
     @retry_db_operation(max_retries=3, base_delay=0.1, max_delay=2.0)
-    def delete(self, db_session: "Session", actor: Optional["Client"] = None) -> "SqlalchemyBase":
-        logger.debug(f"Soft deleting {self.__class__.__name__} with ID: {self.id} with actor={actor}")
+    async def delete(self, db_session: AsyncSession, actor: Optional["Client"] = None) -> "SqlalchemyBase":
+        logger.debug("Soft deleting %s with ID: %s with actor=%s", self.__class__.__name__, self.id, actor)
 
         if actor:
             self._set_created_and_updated_by_fields(actor.id)
 
         self.is_deleted = True
-        return self.update(db_session)
+        return await self.update(db_session)
 
     @handle_db_timeout
     @retry_db_operation(max_retries=3, base_delay=0.1, max_delay=2.0)
-    def hard_delete(self, db_session: "Session", actor: Optional["Client"] = None) -> None:
-        """Permanently removes the record from the database."""
-        logger.debug(f"Hard deleting {self.__class__.__name__} with ID: {self.id} with actor={actor}")
+    async def hard_delete(self, db_session: AsyncSession, actor: Optional["Client"] = None) -> None:
+        """Permanently removes the record from the database (async)."""
+        logger.debug("Hard deleting %s with ID: %s with actor=%s", self.__class__.__name__, self.id, actor)
 
-        with db_session as session:
-            try:
-                session.delete(self)
-                session.commit()
-            except Exception as e:
-                session.rollback()
-                logger.exception(f"Failed to hard delete {self.__class__.__name__} with ID {self.id}")
-                raise ValueError(f"Failed to hard delete {self.__class__.__name__} with ID {self.id}: {e}")
-            else:
-                logger.debug(f"{self.__class__.__name__} with ID {self.id} successfully hard deleted")
+        try:
+            await db_session.delete(self)
+            await db_session.commit()
+            logger.debug("%s with ID %s successfully hard deleted", self.__class__.__name__, self.id)
+        except Exception as e:
+            await db_session.rollback()
+            logger.exception("Failed to hard delete %s with ID %s", self.__class__.__name__, self.id)
+            raise ValueError(f"Failed to hard delete {self.__class__.__name__} with ID {self.id}: {e}") from e
 
     @handle_db_timeout
     @transaction_retry(max_retries=5, base_delay=0.1, max_delay=3.0)
-    def update(self, db_session: "Session", actor: Optional["Client"] = None) -> "SqlalchemyBase":
-        logger.debug(f"Updating {self.__class__.__name__} with ID: {self.id} with actor={actor}")
+    async def update(self, db_session: AsyncSession, actor: Optional["Client"] = None) -> "SqlalchemyBase":
+        logger.debug("Updating %s with ID: %s with actor=%s", self.__class__.__name__, self.id, actor)
         if actor:
             self._set_created_and_updated_by_fields(actor.id)
 
         self.set_updated_at()
 
-        with db_session as session:
-            try:
-                session.add(self)
-                session.commit()
-                session.refresh(self)
-                return self
-            except Exception as e:
-                session.rollback()
-                logger.error(f"Failed to update {self.__class__.__name__} with ID {self.id}: {e}")
-                raise
+        try:
+            db_session.add(self)
+            await db_session.commit()
+            await db_session.refresh(self)
+            return self
+        except Exception as e:
+            await db_session.rollback()
+            logger.error("Failed to update %s with ID %s: %s", self.__class__.__name__, self.id, e)
+            raise
 
     @classmethod
     @handle_db_timeout
     @retry_db_operation(max_retries=3, base_delay=0.1, max_delay=2.0)
-    def size(
+    async def size(
         cls,
         *,
-        db_session: "Session",
+        db_session: AsyncSession,
         actor: Optional["Client"] = None,
         access: Optional[List[Literal["read", "write", "admin"]]] = ["read"],
         access_type: AccessType = AccessType.ORGANIZATION,
         **kwargs,
     ) -> int:
-        """
-        Get the count of rows that match the provided filters.
-
-        Args:
-            db_session: SQLAlchemy session
-            **kwargs: Filters to apply to the query (e.g., column_name=value)
-
-        Returns:
-            int: The count of rows that match the filters
-
-        Raises:
-            DBAPIError: If a database error occurs
-        """
+        """Get the count of rows that match the provided filters (async)."""
         logger.debug("Calculating size for %s with filters %s", cls.__name__, kwargs)
 
-        with db_session as session:
-            query = select(func.count()).select_from(cls)
+        query = select(func.count()).select_from(cls)
 
-            if actor:
-                query = cls.apply_access_predicate(query, actor, access, access_type)
+        if actor:
+            query = cls.apply_access_predicate(query, actor, access, access_type)
 
-            # Apply filtering logic based on kwargs
-            for key, value in kwargs.items():
-                if value:
-                    column = getattr(cls, key, None)
-                    if not column:
-                        raise AttributeError(f"{cls.__name__} has no attribute '{key}'")
-                    if isinstance(value, (list, tuple, set)):  # Check for iterables
-                        query = query.where(column.in_(value))
-                    else:  # Single value for equality filtering
-                        query = query.where(column == value)
+        for key, value in kwargs.items():
+            if value:
+                column = getattr(cls, key, None)
+                if not column:
+                    raise AttributeError(f"{cls.__name__} has no attribute '{key}'")
+                if isinstance(value, (list, tuple, set)):
+                    query = query.where(column.in_(value))
+                else:
+                    query = query.where(column == value)
 
-            # Handle soft deletes if the class has the 'is_deleted' attribute
-            if hasattr(cls, "is_deleted"):
-                query = query.where(~cls.is_deleted)
+        if hasattr(cls, "is_deleted"):
+            query = query.where(~cls.is_deleted)
 
-            try:
-                count = session.execute(query).scalar()
-                return count if count else 0
-            except DBAPIError as e:
-                logger.exception("Failed to calculate size for %s", cls.__name__)
-                raise e
+        try:
+            result = await db_session.execute(query)
+            count = result.scalar()
+            return count if count else 0
+        except DBAPIError as e:
+            logger.exception("Failed to calculate size for %s", cls.__name__)
+            raise e
 
     @classmethod
     def apply_access_predicate(
@@ -657,105 +628,89 @@ class SqlalchemyBase(CommonSqlalchemyMetaMixins, Base):
 
     @handle_db_timeout
     @transaction_retry(max_retries=5, base_delay=0.1, max_delay=3.0)
-    def create_with_redis(
-        self, db_session: "Session", actor: Optional["Client"] = None, use_cache: bool = True
+    async def create_with_redis(
+        self, db_session: AsyncSession, actor: Optional["Client"] = None, use_cache: bool = True
     ) -> "SqlalchemyBase":
-        """
-        Create record in PostgreSQL and optionally cache in Redis.
-        Uses Hash for blocks/messages, JSON for memory tables.
-
-        Args:
-            db_session: Database session
-            actor: User performing the operation
-            use_cache: If True, cache in Redis. If False, skip caching.
-        """
+        """Create record in PostgreSQL and optionally cache in Redis (async)."""
         logger.debug(
-            f"Creating {self.__class__.__name__} with ID: {self.id} (use_cache={use_cache}) with actor={actor}"
+            "Creating %s with ID: %s (use_cache=%s) with actor=%s",
+            self.__class__.__name__,
+            self.id,
+            use_cache,
+            actor,
         )
 
         if actor:
             self._set_created_and_updated_by_fields(actor.id)
 
-        with db_session as session:
-            try:
-                # Write to PostgreSQL (source of truth)
-                session.add(self)
-                session.commit()
-                session.refresh(self)
+        try:
+            db_session.add(self)
+            await db_session.commit()
+            await db_session.refresh(self)
 
-                # Conditional cache write
-                if use_cache:
-                    self._update_redis_cache(operation="create", actor=actor)
-                    logger.debug("Cached %s to cache", self.__class__.__name__)
-                else:
-                    logger.debug("Skipped cache for %s (use_cache=False)", self.__class__.__name__)
+            if use_cache:
+                await self._update_redis_cache(operation="create", actor=actor)
+                logger.debug("Cached %s to cache", self.__class__.__name__)
+            else:
+                logger.debug("Skipped cache for %s (use_cache=False)", self.__class__.__name__)
 
-                return self
-            except (DBAPIError, IntegrityError) as e:
-                session.rollback()
-                logger.error(f"Failed to create {self.__class__.__name__} with ID {self.id}: {e}")
-                self._handle_dbapi_error(e)
-            except Exception as e:
-                session.rollback()
-                logger.error(f"Unexpected error creating {self.__class__.__name__} with ID {self.id}: {e}")
-                raise
+            return self
+        except (DBAPIError, IntegrityError) as e:
+            await db_session.rollback()
+            logger.error("Failed to create %s with ID %s: %s", self.__class__.__name__, self.id, e)
+            self._handle_dbapi_error(e)
+        except Exception as e:
+            await db_session.rollback()
+            logger.error("Unexpected error creating %s with ID %s: %s", self.__class__.__name__, self.id, e)
+            raise
 
     @handle_db_timeout
     @transaction_retry(max_retries=5, base_delay=0.1, max_delay=3.0)
-    def update_with_redis(
-        self, db_session: "Session", actor: Optional["Client"] = None, use_cache: bool = True
+    async def update_with_redis(
+        self, db_session: AsyncSession, actor: Optional["Client"] = None, use_cache: bool = True
     ) -> "SqlalchemyBase":
-        """
-        Update record in PostgreSQL and optionally update cache.
-
-        Args:
-            db_session: Database session
-            actor: User performing the operation
-            use_cache: If True, update cache. If False, skip caching.
-        """
+        """Update record in PostgreSQL and optionally update cache (async)."""
         logger.debug(
-            f"Updating {self.__class__.__name__} with ID: {self.id} (use_cache={use_cache}) with actor={actor}"
+            "Updating %s with ID: %s (use_cache=%s) with actor=%s",
+            self.__class__.__name__,
+            self.id,
+            use_cache,
+            actor,
         )
         if actor:
             self._set_created_and_updated_by_fields(actor.id)
 
         self.set_updated_at()
 
-        with db_session as session:
-            try:
-                # Update PostgreSQL
-                session.add(self)
-                session.commit()
-                session.refresh(self)
+        try:
+            db_session.add(self)
+            await db_session.commit()
+            await db_session.refresh(self)
 
-                # Conditional cache update
-                if use_cache:
-                    self._update_redis_cache(operation="update", actor=actor)
-                    logger.debug("Updated %s in cache", self.__class__.__name__)
-                else:
-                    logger.debug("Skipped cache update for %s (use_cache=False)", self.__class__.__name__)
+            if use_cache:
+                await self._update_redis_cache(operation="update", actor=actor)
+                logger.debug("Updated %s in cache", self.__class__.__name__)
+            else:
+                logger.debug("Skipped cache update for %s (use_cache=False)", self.__class__.__name__)
 
-                return self
-            except Exception as e:
-                session.rollback()
-                logger.error(f"Failed to update {self.__class__.__name__} with ID {self.id}: {e}")
-                raise
+            return self
+        except Exception as e:
+            await db_session.rollback()
+            logger.error("Failed to update %s with ID %s: %s", self.__class__.__name__, self.id, e)
+            raise
 
     @handle_db_timeout
     @retry_db_operation(max_retries=3, base_delay=0.1, max_delay=2.0)
-    def delete_with_redis(
-        self, db_session: "Session", actor: Optional["Client"] = None, use_cache: bool = True
+    async def delete_with_redis(
+        self, db_session: AsyncSession, actor: Optional["Client"] = None, use_cache: bool = True
     ) -> "SqlalchemyBase":
-        """
-        Soft delete record in PostgreSQL and optionally remove from cache.
-
-        Args:
-            db_session: Database session
-            actor: User performing the operation
-            use_cache: If True, remove from cache. If False, skip cache deletion.
-        """
+        """Soft delete record in PostgreSQL and optionally remove from cache (async)."""
         logger.debug(
-            f"Soft deleting {self.__class__.__name__} with ID: {self.id} (use_cache={use_cache}) with actor={actor}"
+            "Soft deleting %s with ID: %s (use_cache=%s) with actor=%s",
+            self.__class__.__name__,
+            self.id,
+            use_cache,
+            actor,
         )
 
         if actor:
@@ -763,23 +718,16 @@ class SqlalchemyBase(CommonSqlalchemyMetaMixins, Base):
 
         self.is_deleted = True
 
-        # Conditional cache deletion
         if use_cache:
-            self._update_redis_cache(operation="delete", actor=actor)
+            await self._update_redis_cache(operation="delete", actor=actor)
             logger.debug("Removed %s from cache", self.__class__.__name__)
         else:
             logger.debug("Skipped cache deletion for %s (use_cache=False)", self.__class__.__name__)
 
-        return self.update(db_session)
+        return await self.update(db_session)
 
-    def _update_redis_cache(self, operation: str = "update", actor: Optional["Client"] = None) -> None:
-        """
-        Update cache based on table type (via cache provider).
-
-        Args:
-            operation: "create", "update", or "delete"
-            actor: User performing the operation
-        """
+    async def _update_redis_cache(self, operation: str = "update", actor: Optional["Client"] = None) -> None:
+        """Update cache based on table type (via cache provider). Async."""
         try:
             from mirix.database.cache_provider import get_cache_provider
             from mirix.database.redis_client import get_redis_client
@@ -787,9 +735,9 @@ class SqlalchemyBase(CommonSqlalchemyMetaMixins, Base):
 
             cache_provider = get_cache_provider()
             if cache_provider is None:
-                return  # No cache provider registered, skip
+                return
 
-            redis_client = get_redis_client()  # For Redis-only reverse-key ops
+            redis_client = get_redis_client()
 
             table_name = getattr(self, "__tablename__", None)
             if not table_name:
@@ -799,39 +747,39 @@ class SqlalchemyBase(CommonSqlalchemyMetaMixins, Base):
             if table_name == "block":
                 cache_key = f"{cache_provider.BLOCK_PREFIX}{self.id}"
                 if operation == "delete":
-                    cache_provider.delete(cache_key)
+                    await cache_provider.delete(cache_key)
                 else:
                     data = self.to_pydantic().model_dump(mode="json")
-                    cache_provider.set_hash(cache_key, data, ttl=settings.redis_ttl_blocks)
+                    await cache_provider.set_hash(cache_key, data, ttl=settings.redis_ttl_blocks)
                 return
 
             if table_name == "messages":
                 cache_key = f"{cache_provider.MESSAGE_PREFIX}{self.id}"
                 if operation == "delete":
-                    cache_provider.delete(cache_key)
+                    await cache_provider.delete(cache_key)
                 else:
                     data = self.to_pydantic().model_dump(mode="json")
-                    cache_provider.set_hash(cache_key, data, ttl=settings.redis_ttl_messages)
+                    await cache_provider.set_hash(cache_key, data, ttl=settings.redis_ttl_messages)
                 return
 
             # ORGANIZATION CACHING (Hash-based)
             if table_name == "organizations":
                 cache_key = f"{cache_provider.ORGANIZATION_PREFIX}{self.id}"
                 if operation == "delete":
-                    cache_provider.delete(cache_key)
+                    await cache_provider.delete(cache_key)
                 else:
                     data = self.to_pydantic().model_dump(mode="json")
-                    cache_provider.set_hash(cache_key, data, ttl=settings.redis_ttl_organizations)
+                    await cache_provider.set_hash(cache_key, data, ttl=settings.redis_ttl_organizations)
                 return
 
             # USER CACHING (Hash-based)
             if table_name == "users":
                 cache_key = f"{cache_provider.USER_PREFIX}{self.id}"
                 if operation == "delete":
-                    cache_provider.delete(cache_key)
+                    await cache_provider.delete(cache_key)
                 else:
                     data = self.to_pydantic().model_dump(mode="json")
-                    cache_provider.set_hash(cache_key, data, ttl=settings.redis_ttl_users)
+                    await cache_provider.set_hash(cache_key, data, ttl=settings.redis_ttl_users)
                 return
 
             # AGENT CACHING (Hash-based, with denormalized tool_ids)
@@ -840,7 +788,7 @@ class SqlalchemyBase(CommonSqlalchemyMetaMixins, Base):
 
                 cache_key = f"{cache_provider.AGENT_PREFIX}{self.id}"
                 if operation == "delete":
-                    cache_provider.delete(cache_key)
+                    await cache_provider.delete(cache_key)
                 else:
                     data = self.to_pydantic().model_dump(mode="json")
 
@@ -872,7 +820,7 @@ class SqlalchemyBase(CommonSqlalchemyMetaMixins, Base):
                             if "tags" in tool_data and tool_data["tags"]:
                                 tool_data["tags"] = json.dumps(tool_data["tags"])
 
-                            cache_provider.set_hash(tool_key, tool_data, ttl=settings.redis_ttl_tools)
+                            await cache_provider.set_hash(tool_key, tool_data, ttl=settings.redis_ttl_tools)
 
                     if "memory" in data and data["memory"]:
                         memory_obj = data["memory"]
@@ -883,13 +831,6 @@ class SqlalchemyBase(CommonSqlalchemyMetaMixins, Base):
                             data["memory_block_ids"] = json.dumps(block_ids)
                             data["memory_prompt_template"] = memory_obj.get("prompt_template", "")
 
-                            # Redis-only: reverse mapping block -> agents
-                            if redis_client:
-                                for block_id in block_ids:
-                                    reverse_key = f"{redis_client.BLOCK_PREFIX}{block_id}:agents"
-                                    redis_client.client.sadd(reverse_key, self.id)
-                                    redis_client.client.expire(reverse_key, settings.redis_ttl_agents)
-
                     if "children" in data and data["children"]:
                         children_ids = [child.id if hasattr(child, "id") else child["id"] for child in data["children"]]
                         data["children_ids"] = json.dumps(children_ids)
@@ -897,14 +838,14 @@ class SqlalchemyBase(CommonSqlalchemyMetaMixins, Base):
                         if redis_client:
                             for child_id in children_ids:
                                 reverse_key = f"{redis_client.AGENT_PREFIX}{child_id}:parent"
-                                redis_client.client.set(reverse_key, self.id)
-                                redis_client.client.expire(reverse_key, settings.redis_ttl_agents)
+                                await redis_client.client.set(reverse_key, self.id)
+                                await redis_client.client.expire(reverse_key, settings.redis_ttl_agents)
 
                     data.pop("tools", None)
                     data.pop("memory", None)
                     data.pop("children", None)
 
-                    cache_provider.set_hash(cache_key, data, ttl=settings.redis_ttl_agents)
+                    await cache_provider.set_hash(cache_key, data, ttl=settings.redis_ttl_agents)
                 return
 
             # TOOL CACHING (Hash-based)
@@ -913,7 +854,7 @@ class SqlalchemyBase(CommonSqlalchemyMetaMixins, Base):
 
                 cache_key = f"{cache_provider.TOOL_PREFIX}{self.id}"
                 if operation == "delete":
-                    cache_provider.delete(cache_key)
+                    await cache_provider.delete(cache_key)
                 else:
                     data = self.to_pydantic().model_dump(mode="json")
 
@@ -922,7 +863,7 @@ class SqlalchemyBase(CommonSqlalchemyMetaMixins, Base):
                     if "tags" in data and data["tags"]:
                         data["tags"] = json.dumps(data["tags"])
 
-                    cache_provider.set_hash(cache_key, data, ttl=settings.redis_ttl_tools)
+                    await cache_provider.set_hash(cache_key, data, ttl=settings.redis_ttl_tools)
                 return
 
             # JSON-BASED CACHING (memory tables with embeddings)
@@ -940,7 +881,7 @@ class SqlalchemyBase(CommonSqlalchemyMetaMixins, Base):
                 cache_key = f"{prefix}{self.id}"
 
                 if operation == "delete":
-                    cache_provider.delete(cache_key)
+                    await cache_provider.delete(cache_key)
                 else:
                     data = self.to_pydantic().model_dump(mode="json")
 
@@ -949,7 +890,7 @@ class SqlalchemyBase(CommonSqlalchemyMetaMixins, Base):
                     if hasattr(self, "occurred_at") and self.occurred_at:
                         data["occurred_at_ts"] = self.occurred_at.timestamp()
 
-                    cache_provider.set_json(cache_key, data, ttl=settings.redis_ttl_default)
+                    await cache_provider.set_json(cache_key, data, ttl=settings.redis_ttl_default)
 
         except Exception as e:
             # Log but don't fail the operation if Redis fails

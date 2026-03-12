@@ -1,9 +1,10 @@
+
 import base64
 import os
 from typing import List, Optional
 
 import openai
-from openai import AsyncOpenAI, AsyncStream, OpenAI, Stream
+from openai import AsyncOpenAI, AsyncStream
 from openai.types.chat.chat_completion import ChatCompletion
 from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
 
@@ -66,14 +67,14 @@ def encode_image(image_path: str) -> str:
 
 
 class OpenAIClient(LLMClientBase):
-    def _prepare_client_kwargs(self) -> dict:
+    async def _prepare_client_kwargs(self) -> dict:
         # Check for custom API key in LLMConfig first (for custom models)
         custom_api_key = getattr(self.llm_config, "api_key", None)
         if custom_api_key:
             api_key = custom_api_key
         else:
             # Check for database-stored API key first, fall back to model_settings and environment
-            override_key = ProviderManager().get_openai_override_key()
+            override_key = await ProviderManager().get_openai_override_key()
             api_key = override_key or model_settings.openai_api_key or os.environ.get("OPENAI_API_KEY")
             # supposedly the openai python client requires a dummy API key
             api_key = api_key or "DUMMY_API_KEY"
@@ -109,7 +110,7 @@ class OpenAIClient(LLMClientBase):
 
         return kwargs
 
-    def build_request_data(
+    async def build_request_data(
         self,
         messages: List[PydanticMessage],
         llm_config: LLMConfig,
@@ -158,7 +159,7 @@ class OpenAIClient(LLMClientBase):
 
         data = ChatCompletionRequest(
             model=model,
-            messages=self.fill_image_content_in_messages(openai_message_list),
+            messages=await self.fill_image_content_in_messages(openai_message_list),
             tools=([OpenAITool(type="function", function=f) for f in tools] if tools else None),
             tool_choice=tool_choice,
             user=str(),
@@ -181,7 +182,7 @@ class OpenAIClient(LLMClientBase):
 
         return data.model_dump(exclude_unset=True)
 
-    def fill_image_content_in_messages(self, openai_message_list):
+    async def fill_image_content_in_messages(self, openai_message_list):
         """
         Converts image URIs in the message to base64 format.
         """
@@ -224,7 +225,7 @@ class OpenAIClient(LLMClientBase):
                                 "text": f"<image {global_image_idx}>",
                             }
                         )
-                        file = self.file_manager.get_file_metadata_by_id(m["image_id"])
+                        file = await self.file_manager.get_file_metadata_by_id(m["image_id"])
                         if file.source_url is not None:
                             message_content.append(
                                 {
@@ -250,9 +251,9 @@ class OpenAIClient(LLMClientBase):
                         global_image_idx += 1
                         has_image = True
                 elif m["type"] == "google_cloud_file_uri":
-                    file = self.file_manager.get_file_metadata_by_id(m["cloud_file_uri"])
+                    file = await self.file_manager.get_file_metadata_by_id(m["cloud_file_uri"])
                     try:
-                        local_path = self.cloud_file_mapping_manager.get_local_file(file.google_cloud_url)
+                        local_path = await self.cloud_file_mapping_manager.get_local_file(file.google_cloud_url)
                     except Exception:
                         local_path = None
 
@@ -287,34 +288,29 @@ class OpenAIClient(LLMClientBase):
 
         return new_message_list
 
-    def request(self, request_data: dict) -> dict:
-        """
-        Performs underlying synchronous request to OpenAI API and returns raw response dict.
-        """
-        client_kwargs = self._prepare_client_kwargs()
-        logger.debug(f"OpenAI Request - Making request to {client_kwargs.get('base_url')}")
-        logger.debug(
-            f"OpenAI Request - Model: {request_data.get('model')}, Max tokens: {request_data.get('max_completion_tokens')}, Temperature: {request_data.get('temperature')}"
-        )
-        if "default_headers" in client_kwargs:
-            logger.debug(
-                f"OpenAI Request - Custom headers will be included in request (count: {len(client_kwargs['default_headers'])})"
-            )
-
-        client = OpenAI(**client_kwargs)
-        response: ChatCompletion = client.chat.completions.create(**request_data)
-        if not response.object:
-            response.object = "chat.completion"
-        response_dict = response.model_dump()
-        return response_dict
-
-    async def request_async(self, request_data: dict) -> dict:
+    async def request(self, request_data: dict) -> dict:
         """
         Performs underlying asynchronous request to OpenAI API and returns raw response dict.
         """
-        client_kwargs = self._prepare_client_kwargs()
+        client_kwargs = await self._prepare_client_kwargs()
+        logger.debug(
+            "OpenAI Request - Making request to %s", client_kwargs.get("base_url")
+        )
+        logger.debug(
+            "OpenAI Request - Model: %s, Max tokens: %s, Temperature: %s",
+            request_data.get("model"),
+            request_data.get("max_completion_tokens"),
+            request_data.get("temperature"),
+        )
+        if "default_headers" in client_kwargs:
+            logger.debug(
+                "OpenAI Request - Custom headers will be included in request (count: %s)",
+                len(client_kwargs["default_headers"]),
+            )
         client = AsyncOpenAI(**client_kwargs)
         response: ChatCompletion = await client.chat.completions.create(**request_data)
+        if not response.object:
+            response.object = "chat.completion"
         return response.model_dump()
 
     def convert_response_to_chat_completion(
@@ -331,19 +327,11 @@ class OpenAIClient(LLMClientBase):
         chat_completion_response = ChatCompletionResponse(**response_data)
         return chat_completion_response
 
-    def stream(self, request_data: dict) -> Stream[ChatCompletionChunk]:
-        """
-        Performs underlying streaming request to OpenAI and returns the stream iterator.
-        """
-        client = OpenAI(**self._prepare_client_kwargs())
-        response_stream: Stream[ChatCompletionChunk] = client.chat.completions.create(**request_data, stream=True)
-        return response_stream
-
-    async def stream_async(self, request_data: dict) -> AsyncStream[ChatCompletionChunk]:
+    async def stream(self, request_data: dict) -> AsyncStream[ChatCompletionChunk]:
         """
         Performs underlying asynchronous streaming request to OpenAI and returns the async stream iterator.
         """
-        client_kwargs = self._prepare_client_kwargs()
+        client_kwargs = await self._prepare_client_kwargs()
         client = AsyncOpenAI(**client_kwargs)
         response_stream: AsyncStream[ChatCompletionChunk] = await client.chat.completions.create(
             **request_data, stream=True

@@ -83,7 +83,7 @@ class RedisMemoryClient:
         try:
             import socket
 
-            from redis import ConnectionPool, Redis
+            from redis.asyncio import ConnectionPool, Redis
 
             self.redis_uri = redis_uri
 
@@ -97,7 +97,7 @@ class RedisMemoryClient:
                     socket.TCP_KEEPCNT: 3,  # Close after 3 failed keepalives
                 }
 
-            # Create connection pool with optimized settings
+            # Create async connection pool with optimized settings
             self.pool = ConnectionPool.from_url(
                 redis_uri,
                 max_connections=max_connections,  # Bounded connection count
@@ -136,24 +136,24 @@ class RedisMemoryClient:
                 return f"{protocol}://****@{parts[1]}"
         return uri
 
-    def ping(self) -> bool:
+    async def ping(self) -> bool:
         """Test Redis connection."""
         try:
-            return self.client.ping()
+            return await self.client.ping()
         except Exception as e:
             logger.error("Redis ping failed: %s", e)
             return False
 
-    def close(self) -> None:
+    async def close(self) -> None:
         """Close Redis connection pool."""
         try:
             if self.pool:
-                self.pool.disconnect()
+                await self.pool.disconnect()
                 logger.info("Redis connection pool closed")
         except Exception as e:
             logger.error("Error closing Redis pool: %s", e)
 
-    def get_connection_info(self) -> Dict[str, Any]:
+    async def get_connection_info(self) -> Dict[str, Any]:
         """
         Get Redis connection pool information for monitoring.
 
@@ -162,8 +162,8 @@ class RedisMemoryClient:
         """
         try:
             # Get Redis server info
-            info = self.client.info("clients")
-            server_info = self.client.info("server")
+            info = await self.client.info("clients")
+            server_info = await self.client.info("server")
 
             # Get connection pool stats
             pool_info = {
@@ -186,10 +186,10 @@ class RedisMemoryClient:
             logger.error("Failed to get Redis connection info: %s", e)
             return {}
 
-    def log_connection_stats(self) -> None:
+    async def log_connection_stats(self) -> None:
         """Log current Redis connection statistics."""
         try:
-            info = self.get_connection_info()
+            info = await self.get_connection_info()
             if info:
                 logger.info(
                     "Redis connections: %d/%d (%.1f%%) | Pool max: %d | Version: %s",
@@ -211,7 +211,7 @@ class RedisMemoryClient:
         except Exception as e:
             logger.error("Failed to log Redis connection stats: %s", e)
 
-    def create_indexes(self) -> None:
+    async def create_indexes(self) -> None:
         """Create RediSearch indexes for all memory types (hybrid approach)."""
         logger.info(
             "Creating Redis indexes (hybrid: Hash for blocks/messages/orgs/users/agents/tools, JSON+Vectors for memory)..."
@@ -219,19 +219,19 @@ class RedisMemoryClient:
 
         try:
             # Hash-based indexes (no embeddings)
-            self._create_block_index()
-            self._create_message_index()
-            self._create_organization_index()
-            self._create_user_index()
-            self._create_agent_index()
-            self._create_tool_index()
+            await self._create_block_index()
+            await self._create_message_index()
+            await self._create_organization_index()
+            await self._create_user_index()
+            await self._create_agent_index()
+            await self._create_tool_index()
 
             # JSON-based indexes with vector fields (has embeddings)
-            self._create_episodic_index()
-            self._create_semantic_index()
-            self._create_procedural_index()
-            self._create_resource_index()
-            self._create_knowledge_index()
+            await self._create_episodic_index()
+            await self._create_semantic_index()
+            await self._create_procedural_index()
+            await self._create_resource_index()
+            await self._create_knowledge_index()
 
             logger.info("All Redis indexes created successfully")
         except Exception as e:
@@ -242,17 +242,17 @@ class RedisMemoryClient:
     # HASH-BASED METHODS (for blocks and messages - NO embeddings)
     # ========================================================================
 
-    def _create_block_index(self) -> None:
+    async def _create_block_index(self) -> None:
         """Create HASH-based index for blocks (Core Memory)."""
         try:
             from redis.commands.search.field import NumericField, TagField, TextField
             from redis.commands.search.index_definition import IndexDefinition, IndexType
 
             try:
-                self.client.ft(self.BLOCK_INDEX).info()
+                await self.client.ft(self.BLOCK_INDEX).info()
                 logger.debug("Index %s already exists", self.BLOCK_INDEX)
                 return
-            except:
+            except Exception:
                 pass
 
             schema = (
@@ -265,7 +265,7 @@ class RedisMemoryClient:
                 NumericField("created_at_ts"),
             )
 
-            self.client.ft(self.BLOCK_INDEX).create_index(
+            await self.client.ft(self.BLOCK_INDEX).create_index(
                 schema,
                 definition=IndexDefinition(
                     prefix=[self.BLOCK_PREFIX], index_type=IndexType.HASH  # Hash type for simple data
@@ -276,17 +276,17 @@ class RedisMemoryClient:
         except Exception as e:
             logger.warning("Failed to create block index: %s", e)
 
-    def _create_message_index(self) -> None:
+    async def _create_message_index(self) -> None:
         """Create HASH-based index for messages."""
         try:
             from redis.commands.search.field import NumericField, TagField, TextField
             from redis.commands.search.index_definition import IndexDefinition, IndexType
 
             try:
-                self.client.ft(self.MESSAGE_INDEX).info()
+                await self.client.ft(self.MESSAGE_INDEX).info()
                 logger.debug("Index %s already exists", self.MESSAGE_INDEX)
                 return
-            except:
+            except Exception:
                 pass
 
             schema = (
@@ -300,7 +300,7 @@ class RedisMemoryClient:
                 TextField("filter_tags"),  # Filter tags (stored as JSON string in HASH)
             )
 
-            self.client.ft(self.MESSAGE_INDEX).create_index(
+            await self.client.ft(self.MESSAGE_INDEX).create_index(
                 schema, definition=IndexDefinition(prefix=[self.MESSAGE_PREFIX], index_type=IndexType.HASH)  # Hash type
             )
             logger.info("Created HASH index: %s", self.MESSAGE_INDEX)
@@ -308,17 +308,17 @@ class RedisMemoryClient:
         except Exception as e:
             logger.warning("Failed to create message index: %s", e)
 
-    def _create_organization_index(self) -> None:
+    async def _create_organization_index(self) -> None:
         """Create HASH-based index for organizations."""
         try:
             from redis.commands.search.field import NumericField, TextField
             from redis.commands.search.index_definition import IndexDefinition, IndexType
 
             try:
-                self.client.ft(self.ORGANIZATION_INDEX).info()
+                await self.client.ft(self.ORGANIZATION_INDEX).info()
                 logger.debug("Index %s already exists", self.ORGANIZATION_INDEX)
                 return
-            except:
+            except Exception:
                 pass
 
             schema = (
@@ -327,7 +327,7 @@ class RedisMemoryClient:
                 NumericField("created_at_ts"),
             )
 
-            self.client.ft(self.ORGANIZATION_INDEX).create_index(
+            await self.client.ft(self.ORGANIZATION_INDEX).create_index(
                 schema, definition=IndexDefinition(prefix=[self.ORGANIZATION_PREFIX], index_type=IndexType.HASH)
             )
             logger.info("Created HASH index: %s", self.ORGANIZATION_INDEX)
@@ -335,17 +335,17 @@ class RedisMemoryClient:
         except Exception as e:
             logger.warning("Failed to create organization index: %s", e)
 
-    def _create_user_index(self) -> None:
+    async def _create_user_index(self) -> None:
         """Create HASH-based index for users."""
         try:
             from redis.commands.search.field import NumericField, TagField, TextField
             from redis.commands.search.index_definition import IndexDefinition, IndexType
 
             try:
-                self.client.ft(self.USER_INDEX).info()
+                await self.client.ft(self.USER_INDEX).info()
                 logger.debug("Index %s already exists", self.USER_INDEX)
                 return
-            except:
+            except Exception:
                 pass
 
             schema = (
@@ -359,7 +359,7 @@ class RedisMemoryClient:
                 TagField("is_deleted"),
             )
 
-            self.client.ft(self.USER_INDEX).create_index(
+            await self.client.ft(self.USER_INDEX).create_index(
                 schema, definition=IndexDefinition(prefix=[self.USER_PREFIX], index_type=IndexType.HASH)
             )
             logger.info("Created HASH index: %s", self.USER_INDEX)
@@ -367,17 +367,17 @@ class RedisMemoryClient:
         except Exception as e:
             logger.warning("Failed to create user index: %s", e)
 
-    def _create_agent_index(self) -> None:
+    async def _create_agent_index(self) -> None:
         """Create HASH-based index for agents (with denormalized tool_ids)."""
         try:
             from redis.commands.search.field import NumericField, TagField, TextField
             from redis.commands.search.index_definition import IndexDefinition, IndexType
 
             try:
-                self.client.ft(self.AGENT_INDEX).info()
+                await self.client.ft(self.AGENT_INDEX).info()
                 logger.debug("Index %s already exists", self.AGENT_INDEX)
                 return
-            except:
+            except Exception:
                 pass
 
             schema = (
@@ -393,7 +393,7 @@ class RedisMemoryClient:
                 TagField("is_deleted"),
             )
 
-            self.client.ft(self.AGENT_INDEX).create_index(
+            await self.client.ft(self.AGENT_INDEX).create_index(
                 schema, definition=IndexDefinition(prefix=[self.AGENT_PREFIX], index_type=IndexType.HASH)
             )
             logger.info("Created HASH index: %s", self.AGENT_INDEX)
@@ -401,17 +401,17 @@ class RedisMemoryClient:
         except Exception as e:
             logger.warning("Failed to create agent index: %s", e)
 
-    def _create_tool_index(self) -> None:
+    async def _create_tool_index(self) -> None:
         """Create HASH-based index for tools."""
         try:
             from redis.commands.search.field import NumericField, TagField, TextField
             from redis.commands.search.index_definition import IndexDefinition, IndexType
 
             try:
-                self.client.ft(self.TOOL_INDEX).info()
+                await self.client.ft(self.TOOL_INDEX).info()
                 logger.debug("Index %s already exists", self.TOOL_INDEX)
                 return
-            except:
+            except Exception:
                 pass
 
             schema = (
@@ -427,7 +427,7 @@ class RedisMemoryClient:
                 TagField("is_deleted"),
             )
 
-            self.client.ft(self.TOOL_INDEX).create_index(
+            await self.client.ft(self.TOOL_INDEX).create_index(
                 schema, definition=IndexDefinition(prefix=[self.TOOL_PREFIX], index_type=IndexType.HASH)
             )
             logger.info("Created HASH index: %s", self.TOOL_INDEX)
@@ -435,7 +435,7 @@ class RedisMemoryClient:
         except Exception as e:
             logger.warning("Failed to create tool index: %s", e)
 
-    def set_hash(self, key: str, data: Dict[str, Any], ttl: Optional[int] = None) -> bool:
+    async def set_hash(self, key: str, data: Dict[str, Any], ttl: Optional[int] = None) -> bool:
         """
         Store data as Redis Hash (for flat structures like blocks and messages).
 
@@ -452,10 +452,10 @@ class RedisMemoryClient:
             flattened = self._flatten_dict(data)
 
             # HSET creates/updates all fields atomically
-            self.client.hset(key, mapping=flattened)
+            await self.client.hset(key, mapping=flattened)
 
             if ttl:
-                self.client.expire(key, ttl)
+                await self.client.expire(key, ttl)
 
             logger.debug("Stored Hash: %s (%d fields)", key, len(flattened))
             return True
@@ -463,7 +463,7 @@ class RedisMemoryClient:
             logger.error("Failed to set hash for %s: %s", key, e)
             return False
 
-    def get_hash(self, key: str) -> Optional[Dict[str, Any]]:
+    async def get_hash(self, key: str) -> Optional[Dict[str, Any]]:
         """
         Retrieve data from Redis Hash.
 
@@ -474,7 +474,7 @@ class RedisMemoryClient:
             Data dictionary or None if not found
         """
         try:
-            data = self.client.hgetall(key)
+            data = await self.client.hgetall(key)
             if not data:
                 return None
 
@@ -486,7 +486,7 @@ class RedisMemoryClient:
             logger.error("Failed to get hash for %s: %s", key, e)
             return None
 
-    def update_hash_field(self, key: str, field: str, value: Any, ttl: Optional[int] = None) -> bool:
+    async def update_hash_field(self, key: str, field: str, value: Any, ttl: Optional[int] = None) -> bool:
         """
         Update a single field in Redis Hash (very fast for partial updates!).
 
@@ -500,9 +500,9 @@ class RedisMemoryClient:
             True if successful
         """
         try:
-            self.client.hset(key, field, str(value))
+            await self.client.hset(key, field, str(value))
             if ttl:
-                self.client.expire(key, ttl)
+                await self.client.expire(key, ttl)
             logger.debug("Updated Hash field: %s.%s", key, field)
             return True
         except Exception as e:
@@ -561,7 +561,7 @@ class RedisMemoryClient:
     # JSON-BASED METHODS (for memory types with embeddings)
     # ========================================================================
 
-    def _create_episodic_index(self) -> None:
+    async def _create_episodic_index(self) -> None:
         """Create JSON-based index for episodic memory with 2 VECTOR fields."""
         try:
             from redis.commands.search.field import NumericField, TagField, TextField, VectorField
@@ -570,10 +570,10 @@ class RedisMemoryClient:
             from mirix.constants import MAX_EMBEDDING_DIM
 
             try:
-                self.client.ft(self.EPISODIC_INDEX).info()
+                await self.client.ft(self.EPISODIC_INDEX).info()
                 logger.debug("Index %s already exists", self.EPISODIC_INDEX)
                 return
-            except:
+            except Exception:
                 pass
 
             schema = (
@@ -602,7 +602,7 @@ class RedisMemoryClient:
                 ),
             )
 
-            self.client.ft(self.EPISODIC_INDEX).create_index(
+            await self.client.ft(self.EPISODIC_INDEX).create_index(
                 schema,
                 definition=IndexDefinition(
                     prefix=[self.EPISODIC_PREFIX], index_type=IndexType.JSON  # JSON type for complex data
@@ -613,7 +613,7 @@ class RedisMemoryClient:
         except Exception as e:
             logger.warning("Failed to create episodic index: %s", e)
 
-    def _create_semantic_index(self) -> None:
+    async def _create_semantic_index(self) -> None:
         """Create JSON-based index for semantic memory with 3 VECTOR fields."""
         try:
             from redis.commands.search.field import NumericField, TagField, TextField, VectorField
@@ -622,10 +622,10 @@ class RedisMemoryClient:
             from mirix.constants import MAX_EMBEDDING_DIM
 
             try:
-                self.client.ft(self.SEMANTIC_INDEX).info()
+                await self.client.ft(self.SEMANTIC_INDEX).info()
                 logger.debug("Index %s already exists", self.SEMANTIC_INDEX)
                 return
-            except:
+            except Exception:
                 pass
 
             schema = (
@@ -660,7 +660,7 @@ class RedisMemoryClient:
                 ),
             )
 
-            self.client.ft(self.SEMANTIC_INDEX).create_index(
+            await self.client.ft(self.SEMANTIC_INDEX).create_index(
                 schema, definition=IndexDefinition(prefix=[self.SEMANTIC_PREFIX], index_type=IndexType.JSON)
             )
             logger.info("Created JSON+VECTOR index: %s (3 vectors, 48KB!)", self.SEMANTIC_INDEX)
@@ -668,7 +668,7 @@ class RedisMemoryClient:
         except Exception as e:
             logger.warning("Failed to create semantic index: %s", e)
 
-    def _create_procedural_index(self) -> None:
+    async def _create_procedural_index(self) -> None:
         """Create JSON-based index for procedural memory with 2 VECTOR fields."""
         try:
             from redis.commands.search.field import NumericField, TagField, TextField, VectorField
@@ -677,10 +677,10 @@ class RedisMemoryClient:
             from mirix.constants import MAX_EMBEDDING_DIM
 
             try:
-                self.client.ft(self.PROCEDURAL_INDEX).info()
+                await self.client.ft(self.PROCEDURAL_INDEX).info()
                 logger.debug("Index %s already exists", self.PROCEDURAL_INDEX)
                 return
-            except:
+            except Exception:
                 pass
 
             schema = (
@@ -707,7 +707,7 @@ class RedisMemoryClient:
                 ),
             )
 
-            self.client.ft(self.PROCEDURAL_INDEX).create_index(
+            await self.client.ft(self.PROCEDURAL_INDEX).create_index(
                 schema, definition=IndexDefinition(prefix=[self.PROCEDURAL_PREFIX], index_type=IndexType.JSON)
             )
             logger.info("Created JSON+VECTOR index: %s (2 vectors)", self.PROCEDURAL_INDEX)
@@ -715,7 +715,7 @@ class RedisMemoryClient:
         except Exception as e:
             logger.warning("Failed to create procedural index: %s", e)
 
-    def _create_resource_index(self) -> None:
+    async def _create_resource_index(self) -> None:
         """Create JSON-based index for resource memory with 1 VECTOR field."""
         try:
             from redis.commands.search.field import NumericField, TagField, TextField, VectorField
@@ -724,10 +724,10 @@ class RedisMemoryClient:
             from mirix.constants import MAX_EMBEDDING_DIM
 
             try:
-                self.client.ft(self.RESOURCE_INDEX).info()
+                await self.client.ft(self.RESOURCE_INDEX).info()
                 logger.debug("Index %s already exists", self.RESOURCE_INDEX)
                 return
-            except:
+            except Exception:
                 pass
 
             schema = (
@@ -749,7 +749,7 @@ class RedisMemoryClient:
                 ),
             )
 
-            self.client.ft(self.RESOURCE_INDEX).create_index(
+            await self.client.ft(self.RESOURCE_INDEX).create_index(
                 schema, definition=IndexDefinition(prefix=[self.RESOURCE_PREFIX], index_type=IndexType.JSON)
             )
             logger.info("Created JSON+VECTOR index: %s (1 vector)", self.RESOURCE_INDEX)
@@ -757,7 +757,7 @@ class RedisMemoryClient:
         except Exception as e:
             logger.warning("Failed to create resource index: %s", e)
 
-    def _create_knowledge_index(self) -> None:
+    async def _create_knowledge_index(self) -> None:
         """Create JSON-based index for knowledge vault with 1 VECTOR field."""
         try:
             from redis.commands.search.field import NumericField, TagField, TextField, VectorField
@@ -766,10 +766,10 @@ class RedisMemoryClient:
             from mirix.constants import MAX_EMBEDDING_DIM
 
             try:
-                self.client.ft(self.KNOWLEDGE_INDEX).info()
+                await self.client.ft(self.KNOWLEDGE_INDEX).info()
                 logger.debug("Index %s already exists", self.KNOWLEDGE_INDEX)
                 return
-            except:
+            except Exception:
                 pass
 
             schema = (
@@ -789,7 +789,7 @@ class RedisMemoryClient:
                 ),
             )
 
-            self.client.ft(self.KNOWLEDGE_INDEX).create_index(
+            await self.client.ft(self.KNOWLEDGE_INDEX).create_index(
                 schema, definition=IndexDefinition(prefix=[self.KNOWLEDGE_PREFIX], index_type=IndexType.JSON)
             )
             logger.info("Created JSON+VECTOR index: %s (1 vector)", self.KNOWLEDGE_INDEX)
@@ -797,7 +797,7 @@ class RedisMemoryClient:
         except Exception as e:
             logger.warning("Failed to create knowledge index: %s", e)
 
-    def set_json(self, key: str, data: Dict[str, Any], ttl: Optional[int] = None) -> bool:
+    async def set_json(self, key: str, data: Dict[str, Any], ttl: Optional[int] = None) -> bool:
         """
         Store data as Redis JSON (for complex structures with embeddings).
 
@@ -811,10 +811,10 @@ class RedisMemoryClient:
         """
         try:
             # Use JSON.SET command
-            self.client.json().set(key, "$", data)
+            await self.client.json().set(key, "$", data)
 
             if ttl:
-                self.client.expire(key, ttl)
+                await self.client.expire(key, ttl)
 
             logger.debug("Stored JSON: %s", key)
             return True
@@ -822,7 +822,7 @@ class RedisMemoryClient:
             logger.error("Failed to set JSON for %s: %s", key, e)
             return False
 
-    def get_json(self, key: str) -> Optional[Dict[str, Any]]:
+    async def get_json(self, key: str) -> Optional[Dict[str, Any]]:
         """
         Retrieve data from Redis JSON.
 
@@ -833,7 +833,7 @@ class RedisMemoryClient:
             Data dictionary or None if not found
         """
         try:
-            data = self.client.json().get(key)
+            data = await self.client.json().get(key)
             if data is None:
                 return None
 
@@ -843,58 +843,35 @@ class RedisMemoryClient:
             logger.error("Failed to get JSON for %s: %s", key, e)
             return None
 
-    def delete(self, key: str) -> bool:
+    async def delete(self, key: str) -> bool:
         """Delete a key from Redis."""
         try:
-            self.client.delete(key)
+            await self.client.delete(key)
             logger.debug("Deleted key: %s", key)
             return True
         except Exception as e:
             logger.error("Failed to delete key %s: %s", key, e)
             return False
 
-    def _build_filter_tags_query(self, filter_tags: Dict[str, Any]) -> str:
+    def _build_filter_tags_query(
+        self, filter_tags: Dict[str, Any], scopes: Optional[List[str]] = None
+    ) -> str:
         """
-        Build Redis Search query string from filter_tags dictionary.
+        Build Redis Search query string from filter_tags and scopes.
 
-        According to MEMORY_METADATA_IMPLEMENTATION_GUIDE.md,
-        filter_tags are indexed as TAG fields with names like:
-        - $.filter_tags.expert_id -> indexed as "filter_tags_expert_id"
-        - $.filter_tags.scope -> indexed as "filter_tags_scope"
+        Delegates to the shared filter_tags_query module which handles:
+        - scopes -> filter_tags_scope OR query
+        - Plain scalar keys -> @filter_tags_{key}:{value}
 
-        Args:
-            filter_tags: Dictionary of filter tag key-value pairs
-                        e.g., {"expert_id": "expert-123", "scope": "read"}
-
-        Returns:
-            Redis Search query string for filter_tags filters
-            e.g., "@filter_tags_expert_id:{expert\\-123} @filter_tags_scope:{read}"
-
-        Example:
-            filter_tags = {"expert_id": "expert-123", "scope": "read"}
-            # Returns: "@filter_tags_expert_id:{expert\\-123} @filter_tags_scope:{read}"
+        Returns empty string if filter_tags is empty/None and scopes is empty/None.
+        Callers should check can_redis_handle() BEFORE calling this to
+        avoid building queries for unsupported operator values.
         """
-        if not filter_tags:
-            return ""
+        from mirix.database.filter_tags_query import build_filter_tags_redis
 
-        import re
+        return build_filter_tags_redis(filter_tags, scopes=scopes)
 
-        def escape_tag_value(value: str) -> str:
-            """Escape special characters for Redis TAG field values."""
-            # TAG fields need escaping for: - : . ( ) { } [ ] " ' , < > ; ! @ # $ % ^ & * + = ~
-            special_chars = r'[\-:.()\[\]{}"\',<>;!@#$%^&*+=~]'
-            return re.sub(special_chars, lambda m: f"\\{m.group(0)}", str(value))
-
-        query_parts = []
-        for key, value in filter_tags.items():
-            # Convert filter_tags.expert_id -> filter_tags_expert_id
-            field_name = f"filter_tags_{key}"
-            escaped_value = escape_tag_value(value)
-            query_parts.append(f"@{field_name}:{{{escaped_value}}}")
-
-        return " ".join(query_parts)
-
-    def search_text(
+    async def search_text(
         self,
         index_name: str,
         query: str,
@@ -904,6 +881,7 @@ class RedisMemoryClient:
         organization_id: Optional[str] = None,
         return_fields: Optional[List[str]] = None,
         filter_tags: Optional[Dict[str, Any]] = None,
+        scopes: Optional[List[str]] = None,
         start_date: Optional[Any] = None,
         end_date: Optional[Any] = None,
     ) -> List[Dict[str, Any]]:
@@ -939,6 +917,12 @@ class RedisMemoryClient:
             )
         """
         try:
+            from mirix.database.filter_tags_query import can_redis_handle
+
+            if filter_tags and not can_redis_handle(filter_tags):
+                logger.debug("filter_tags contain operators unsupported by Redis, skipping Redis search_text")
+                return []
+
             import re
             from datetime import datetime
 
@@ -976,7 +960,7 @@ class RedisMemoryClient:
 
             # Add filter_tags filters
             if filter_tags:
-                filter_query = self._build_filter_tags_query(filter_tags)
+                filter_query = self._build_filter_tags_query(filter_tags, scopes=scopes)
                 if filter_query:
                     query_parts.append(filter_query)
 
@@ -1000,7 +984,7 @@ class RedisMemoryClient:
                 query_obj = query_obj.return_fields(*return_fields)
 
             # Execute search
-            results = self.client.ft(index_name).search(query_obj)
+            results = await self.client.ft(index_name).search(query_obj)
 
             # Parse results
             documents = []
@@ -1023,7 +1007,7 @@ class RedisMemoryClient:
             logger.warning("Redis text search failed for index %s with query '%s': %s", index_name, query[:50], e)
             return []
 
-    def search_vector(
+    async def search_vector(
         self,
         index_name: str,
         embedding: List[float],
@@ -1033,6 +1017,7 @@ class RedisMemoryClient:
         organization_id: Optional[str] = None,
         return_fields: Optional[List[str]] = None,
         filter_tags: Optional[Dict[str, Any]] = None,
+        scopes: Optional[List[str]] = None,
         start_date: Optional[Any] = None,
         end_date: Optional[Any] = None,
     ) -> List[Dict[str, Any]]:
@@ -1066,6 +1051,12 @@ class RedisMemoryClient:
             )
         """
         try:
+            from mirix.database.filter_tags_query import can_redis_handle
+
+            if filter_tags and not can_redis_handle(filter_tags):
+                logger.debug("filter_tags contain operators unsupported by Redis, skipping Redis search_vector")
+                return []
+
             from datetime import datetime
 
             import numpy as np
@@ -1097,7 +1088,7 @@ class RedisMemoryClient:
 
             # Add filter_tags filters
             if filter_tags:
-                filter_query = self._build_filter_tags_query(filter_tags)
+                filter_query = self._build_filter_tags_query(filter_tags, scopes=scopes)
                 if filter_query:
                     query_parts.append(filter_query)
 
@@ -1120,7 +1111,7 @@ class RedisMemoryClient:
             # Redis will return all indexed fields when return_fields is not called
 
             # Execute search
-            results = self.client.ft(index_name).search(query_obj, query_params={"vec": embedding_bytes})
+            results = await self.client.ft(index_name).search(query_obj, query_params={"vec": embedding_bytes})
 
             # Parse results
             documents = []
@@ -1151,7 +1142,7 @@ class RedisMemoryClient:
             )
             return []
 
-    def search_recent(
+    async def search_recent(
         self,
         index_name: str,
         limit: int = 10,
@@ -1160,6 +1151,7 @@ class RedisMemoryClient:
         sort_by: str = "created_at_ts",
         return_fields: Optional[List[str]] = None,
         filter_tags: Optional[Dict[str, Any]] = None,
+        scopes: Optional[List[str]] = None,
         start_date: Optional[Any] = None,
         end_date: Optional[Any] = None,
     ) -> List[Dict[str, Any]]:
@@ -1193,6 +1185,12 @@ class RedisMemoryClient:
             )
         """
         try:
+            from mirix.database.filter_tags_query import can_redis_handle
+
+            if filter_tags and not can_redis_handle(filter_tags):
+                logger.debug("filter_tags contain operators unsupported by Redis, skipping Redis search_recent")
+                return []
+
             from datetime import datetime
 
             from redis.commands.search.query import Query
@@ -1220,7 +1218,7 @@ class RedisMemoryClient:
 
             # Add filter_tags filters
             if filter_tags:
-                filter_query = self._build_filter_tags_query(filter_tags)
+                filter_query = self._build_filter_tags_query(filter_tags, scopes=scopes)
                 if filter_query:
                     query_parts.append(filter_query)
 
@@ -1237,7 +1235,7 @@ class RedisMemoryClient:
                 query_obj = query_obj.return_fields(*return_fields)
 
             # Execute search
-            results = self.client.ft(index_name).search(query_obj)
+            results = await self.client.ft(index_name).search(query_obj)
 
             # Parse results
             documents = []
@@ -1260,7 +1258,7 @@ class RedisMemoryClient:
             logger.warning("Redis recent search failed for index %s (sort_by: %s): %s", index_name, sort_by, e)
             return []
 
-    def search_recent_by_org(
+    async def search_recent_by_org(
         self,
         index_name: str,
         limit: int = 10,
@@ -1268,6 +1266,7 @@ class RedisMemoryClient:
         sort_by: str = "created_at_ts",
         return_fields: Optional[List[str]] = None,
         filter_tags: Optional[Dict[str, Any]] = None,
+        scopes: Optional[List[str]] = None,
         start_date: Optional[Any] = None,
         end_date: Optional[Any] = None,
     ) -> List[Dict[str, Any]]:
@@ -1288,6 +1287,12 @@ class RedisMemoryClient:
             List of recent documents sorted by timestamp (descending)
         """
         try:
+            from mirix.database.filter_tags_query import can_redis_handle
+
+            if filter_tags and not can_redis_handle(filter_tags):
+                logger.debug("filter_tags contain operators unsupported by Redis, skipping Redis search_recent_by_org")
+                return []
+
             import re
             from datetime import datetime
 
@@ -1317,7 +1322,7 @@ class RedisMemoryClient:
 
             # Add filter_tags filters (including scope)
             if filter_tags:
-                filter_query = self._build_filter_tags_query(filter_tags)
+                filter_query = self._build_filter_tags_query(filter_tags, scopes=scopes)
                 if filter_query:
                     query_parts.append(filter_query)
 
@@ -1334,7 +1339,7 @@ class RedisMemoryClient:
                 query_obj = query_obj.return_fields(*return_fields)
 
             # Execute search
-            results = self.client.ft(index_name).search(query_obj)
+            results = await self.client.ft(index_name).search(query_obj)
 
             # Convert results to dictionaries
             return [self._doc_to_dict(doc) for doc in results.docs]
@@ -1343,7 +1348,7 @@ class RedisMemoryClient:
             logger.warning("Redis org search failed for index %s: %s", index_name, e)
             return []
 
-    def search_vector_by_org(
+    async def search_vector_by_org(
         self,
         index_name: str,
         embedding: List[float],
@@ -1352,6 +1357,7 @@ class RedisMemoryClient:
         organization_id: Optional[str] = None,
         return_fields: Optional[List[str]] = None,
         filter_tags: Optional[Dict[str, Any]] = None,
+        scopes: Optional[List[str]] = None,
         start_date: Optional[Any] = None,
         end_date: Optional[Any] = None,
     ) -> List[Dict[str, Any]]:
@@ -1373,6 +1379,12 @@ class RedisMemoryClient:
             List of documents sorted by similarity
         """
         try:
+            from mirix.database.filter_tags_query import can_redis_handle
+
+            if filter_tags and not can_redis_handle(filter_tags):
+                logger.debug("filter_tags contain operators unsupported by Redis, skipping Redis search_vector_by_org")
+                return []
+
             import re
             from datetime import datetime
 
@@ -1399,7 +1411,7 @@ class RedisMemoryClient:
 
             # Add filter_tags filters (including scope)
             if filter_tags:
-                filter_query = self._build_filter_tags_query(filter_tags)
+                filter_query = self._build_filter_tags_query(filter_tags, scopes=scopes)
                 if filter_query:
                     filter_parts.append(filter_query)
 
@@ -1422,7 +1434,7 @@ class RedisMemoryClient:
             # Redis will return all indexed fields when return_fields is not called
 
             # Execute vector search
-            results = self.client.ft(index_name).search(query_obj, query_params={"embedding": embedding_bytes})
+            results = await self.client.ft(index_name).search(query_obj, query_params={"embedding": embedding_bytes})
 
             return [self._doc_to_dict(doc) for doc in results.docs]
 
@@ -1430,7 +1442,7 @@ class RedisMemoryClient:
             logger.warning("Redis vector search failed for org search: %s", e)
             return []
 
-    def search_text_by_org(
+    async def search_text_by_org(
         self,
         index_name: str,
         query_text: str,
@@ -1439,6 +1451,7 @@ class RedisMemoryClient:
         limit: int = 10,
         organization_id: Optional[str] = None,
         filter_tags: Optional[Dict[str, Any]] = None,
+        scopes: Optional[List[str]] = None,
         start_date: Optional[Any] = None,
         end_date: Optional[Any] = None,
     ) -> List[Dict[str, Any]]:
@@ -1460,6 +1473,12 @@ class RedisMemoryClient:
             List of matching documents
         """
         try:
+            from mirix.database.filter_tags_query import can_redis_handle
+
+            if filter_tags and not can_redis_handle(filter_tags):
+                logger.debug("filter_tags contain operators unsupported by Redis, skipping Redis search_text_by_org")
+                return []
+
             import re
             from datetime import datetime
 
@@ -1486,7 +1505,7 @@ class RedisMemoryClient:
 
             # Add filter_tags filters (including scope)
             if filter_tags:
-                filter_query = self._build_filter_tags_query(filter_tags)
+                filter_query = self._build_filter_tags_query(filter_tags, scopes=scopes)
                 if filter_query:
                     query_parts.append(filter_query)
 
@@ -1503,7 +1522,7 @@ class RedisMemoryClient:
             query_obj = Query(search_query).paging(0, limit)
 
             # Execute search
-            results = self.client.ft(index_name).search(query_obj)
+            results = await self.client.ft(index_name).search(query_obj)
 
             return [self._doc_to_dict(doc) for doc in results.docs]
 
@@ -1605,19 +1624,9 @@ def initialize_redis_client() -> Optional[RedisMemoryClient]:
             retry_on_timeout=settings.redis_retry_on_timeout,
         )
 
-        # Test connection
-        if not _redis_client.ping():
-            logger.error("Redis ping failed - disabling Redis")
-            _redis_client = None
-            return None
-
-        # Create indexes
-        _redis_client.create_indexes()
-
-        # Log connection pool info
-        _redis_client.log_connection_stats()
-
-        logger.info("Redis client initialized successfully with optimized connection pool")
+        # Note: ping(), create_indexes(), and log_connection_stats() are async and
+        # are called from FastAPI lifespan (see rest_api.initialize) to avoid blocking.
+        logger.info("Redis async client created (ping/indexes run at lifespan startup)")
 
         # Auto-register as cache provider so service managers can use get_cache_provider()
         try:
@@ -1628,9 +1637,7 @@ def initialize_redis_client() -> Optional[RedisMemoryClient]:
             register_cache_provider("redis", redis_provider)
             logger.info("Auto-registered Redis cache provider")
         except ImportError:
-            logger.debug(
-                "Cache provider registry not available - skipping Redis auto-registration"
-            )
+            logger.debug("Cache provider registry not available - skipping Redis auto-registration")
 
         return _redis_client
 
@@ -1646,9 +1653,9 @@ def get_redis_client() -> Optional[RedisMemoryClient]:
     return _redis_client
 
 
-def close_redis_client() -> None:
-    """Close the global Redis client."""
+async def close_redis_client() -> None:
+    """Close the global Redis client (async)."""
     global _redis_client
     if _redis_client:
-        _redis_client.close()
+        await _redis_client.close()
         _redis_client = None

@@ -12,15 +12,25 @@ This test suite verifies the complete deletion workflow:
 8. Soft delete client
 """
 
+import asyncio
 import logging
 import time
 import uuid
 from pathlib import Path
 
 import pytest
+import pytest_asyncio
 import requests
+from sqlalchemy import func, select
 
 from mirix.client import MirixClient
+
+# Mark all tests as integration tests and asyncio with module-scoped event loop
+# so client fixture and db_context run in the same loop (avoids "context manager" / "event loop closed" errors)
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.asyncio(loop_scope="module"),
+]
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
@@ -56,62 +66,49 @@ def check_server():
         pytest.skip(f"Server not available at {BASE_URL}: {e}")
 
 
-@pytest.fixture(scope="module")
-def client(check_server, api_key_factory):
-    """Create and initialize MirixClient."""
+@pytest_asyncio.fixture(scope="module")
+async def client(check_server):
+    """Create and initialize MirixClient in the same event loop as tests."""
+    from conftest import _create_client_and_key
+
     logger.info("\n" + "=" * 80)
     logger.info("INITIALIZING TEST CLIENT")
     logger.info("=" * 80)
 
-    auth = api_key_factory(TEST_CLIENT_ID, TEST_ORG_ID)
-    client = MirixClient(
+    auth = await _create_client_and_key(TEST_CLIENT_ID, TEST_ORG_ID, org_name="Test Deletion Org")
+
+    import os
+
+    os.environ.setdefault("MIRIX_API_URL", BASE_URL)
+    os.environ["MIRIX_API_KEY"] = auth["api_key"]
+
+    c = await MirixClient.create(
         api_key=auth["api_key"],
         client_name="Test Deletion Client",
         client_scope="test",
         debug=False,
     )
-    logger.info("Client initialized via API key: %s", TEST_CLIENT_ID)
-
-    # Create or get user
-    try:
-        returned_user_id = client.create_or_get_user(
-            user_id=TEST_USER_ID,
-            user_name="Test Deletion User",
-        )
-        logger.info("User ready: %s (requested: %s)", returned_user_id, TEST_USER_ID)
-
-        # Verify they match
-        if returned_user_id != TEST_USER_ID:
-            logger.warning("⚠️  Returned user_id (%s) differs from requested (%s)", returned_user_id, TEST_USER_ID)
-    except Exception as e:
-        logger.error("Failed to create/get user: %s", e)
-        import traceback
-
-        traceback.print_exc()
-        raise
-
-    # Initialize meta agent
-    try:
-        client.initialize_meta_agent(config_path=str(CONFIG_PATH), update_agents=True)
-        logger.info("✓ Meta agent initialized")
-
-        # Add a test memory to trigger sub-agent creation
-        init_result = client.add(
-            user_id=TEST_USER_ID,
-            messages=[{"role": "user", "content": [{"type": "text", "text": "Test initialization message"}]}],
-            chaining=True,
-        )
-        logger.info("✓ Initialization memory added: %s", init_result)
-        time.sleep(5)  # Wait for processing
-        logger.info("✓ Sub-agents created")
-    except Exception as e:
-        logger.error("Failed to initialize meta agent: %s", e)
-        raise
-
-    return client
+    returned_user_id = await c.create_or_get_user(
+        user_id=TEST_USER_ID,
+        user_name="Test Deletion User",
+    )
+    logger.info("User ready: %s (requested: %s)", returned_user_id, TEST_USER_ID)
+    if returned_user_id != TEST_USER_ID:
+        logger.warning("⚠️  Returned user_id (%s) differs from requested (%s)", returned_user_id, TEST_USER_ID)
+    await c.initialize_meta_agent(config_path=str(CONFIG_PATH), update_agents=True)
+    logger.info("✓ Meta agent initialized")
+    init_result = await c.add(
+        user_id=TEST_USER_ID,
+        messages=[{"role": "user", "content": [{"type": "text", "text": "Test initialization message"}]}],
+        chaining=True,
+    )
+    logger.info("✓ Initialization memory added: %s", init_result)
+    await asyncio.sleep(5)
+    logger.info("✓ Sub-agents created")
+    return c
 
 
-def add_test_memories(client: MirixClient, user_id: str, batch_label: str):
+async def add_test_memories(client: MirixClient, user_id: str, batch_label: str):
     """Helper function to add test memories."""
     logger.info("\nAdding test memories (batch: %s)...", batch_label)
 
@@ -176,7 +173,7 @@ def add_test_memories(client: MirixClient, user_id: str, batch_label: str):
 
     for memory in memories:
         try:
-            result = client.add(
+            result = await client.add(
                 user_id=user_id,
                 messages=memory["messages"],
                 chaining=True,
@@ -192,7 +189,7 @@ def add_test_memories(client: MirixClient, user_id: str, batch_label: str):
 
     # Wait for async processing (give enough time for classification)
     logger.info("⏱️  Waiting 30 seconds for async memory processing...")
-    time.sleep(30)
+    await asyncio.sleep(30)
 
     # Check if any memories were actually stored
     from mirix.orm.message import Message as MessageModel
@@ -201,22 +198,25 @@ def add_test_memories(client: MirixClient, user_id: str, batch_label: str):
     # Note: Cannot check queue worker status from test process - it runs in server process
     logger.info("⏱️  Checking if memories were stored in database...")
 
-    with db_context() as session:
-        message_count = session.query(MessageModel).filter(MessageModel.user_id == user_id).count()
-        logger.info("✓ Messages in database after batch %s: %d", batch_label, message_count)
+    async with db_context() as session:
+        r = await session.execute(
+            select(func.count()).select_from(MessageModel).where(MessageModel.user_id == user_id)
+        )
+        message_count = r.scalar_one()
+    logger.info("✓ Messages in database after batch %s: %d", batch_label, message_count)
 
-        if message_count == 0:
-            logger.error("❌ No messages found for user %s after adding memories!", user_id)
-            logger.error("This likely means:")
-            logger.error("  1. The queue worker is not running (check above)")
-            logger.error("  2. The user_id doesn't match")
-            logger.error("  3. Memory addition is failing silently in the worker")
+    if message_count == 0:
+        logger.error("❌ No messages found for user %s after adding memories!", user_id)
+        logger.error("This likely means:")
+        logger.error("  1. The queue worker is not running (check above)")
+        logger.error("  2. The user_id doesn't match")
+        logger.error("  3. Memory addition is failing silently in the worker")
 
     logger.info("✓ All memories added for batch: %s", batch_label)
 
 
-def count_memories_via_api(user_id: str, log_details: bool = False) -> dict:
-    """Count memories by querying the database via API."""
+async def count_memories_via_api(user_id: str, log_details: bool = False) -> dict:
+    """Count memories by querying the database (async with db_context)."""
     from mirix.orm.block import Block as BlockModel
     from mirix.orm.episodic_memory import EpisodicEvent
     from mirix.orm.message import Message as MessageModel
@@ -224,23 +224,40 @@ def count_memories_via_api(user_id: str, log_details: bool = False) -> dict:
     from mirix.orm.semantic_memory import SemanticMemoryItem
     from mirix.server.server import db_context
 
-    with db_context() as session:
-        episodic_count = session.query(EpisodicEvent).filter(EpisodicEvent.user_id == user_id).count()
+    async with db_context() as session:
+        r = await session.execute(
+            select(func.count()).select_from(EpisodicEvent).where(EpisodicEvent.user_id == user_id)
+        )
+        episodic_count = r.scalar_one()
 
-        semantic_count = session.query(SemanticMemoryItem).filter(SemanticMemoryItem.user_id == user_id).count()
+        r = await session.execute(
+            select(func.count()).select_from(SemanticMemoryItem).where(SemanticMemoryItem.user_id == user_id)
+        )
+        semantic_count = r.scalar_one()
 
-        procedural_count = session.query(ProceduralMemoryItem).filter(ProceduralMemoryItem.user_id == user_id).count()
+        r = await session.execute(
+            select(func.count()).select_from(ProceduralMemoryItem).where(ProceduralMemoryItem.user_id == user_id)
+        )
+        procedural_count = r.scalar_one()
 
-        message_count = session.query(MessageModel).filter(MessageModel.user_id == user_id).count()
+        r = await session.execute(
+            select(func.count()).select_from(MessageModel).where(MessageModel.user_id == user_id)
+        )
+        message_count = r.scalar_one()
 
-        block_count = session.query(BlockModel).filter(BlockModel.user_id == user_id).count()
+        r = await session.execute(
+            select(func.count()).select_from(BlockModel).where(BlockModel.user_id == user_id)
+        )
+        block_count = r.scalar_one()
 
         # Log details for debugging
         if log_details:
             logger.debug("Memory details for user %s:", user_id)
             if semantic_count == 0:
-                # Check if semantic memories exist but with is_deleted flag
-                all_semantic = session.query(SemanticMemoryItem).filter(SemanticMemoryItem.user_id == user_id).all()
+                result = await session.execute(
+                    select(SemanticMemoryItem).where(SemanticMemoryItem.user_id == user_id)
+                )
+                all_semantic = result.scalars().all()
                 logger.debug("  Total semantic memories (including deleted): %d", len(all_semantic))
                 for mem in all_semantic:
                     logger.debug(
@@ -259,7 +276,7 @@ def count_memories_via_api(user_id: str, log_details: bool = False) -> dict:
     }
 
 
-def test_1_create_client_and_add_memories(client):
+async def test_1_create_client_and_add_memories(client):
     """Test 1 & 2: Client is created and memories are added."""
     logger.info("\n" + "=" * 80)
     logger.info("TEST 1 & 2: CLIENT CREATED & ADD INITIAL MEMORIES")
@@ -273,8 +290,9 @@ def test_1_create_client_and_add_memories(client):
     from mirix.orm.user import User as UserModel
     from mirix.server.server import db_context
 
-    with db_context() as session:
-        user = session.query(UserModel).filter(UserModel.id == TEST_USER_ID).first()
+    async with db_context() as session:
+        r = await session.execute(select(UserModel).where(UserModel.id == TEST_USER_ID).limit(1))
+        user = r.scalar_one_or_none()
         if user:
             logger.info(
                 "✓ User verified in database: id=%s, name=%s, is_deleted=%s", user.id, user.name, user.is_deleted
@@ -283,11 +301,10 @@ def test_1_create_client_and_add_memories(client):
             logger.error("✗ User NOT found in database with id=%s", TEST_USER_ID)
             pytest.fail(f"User {TEST_USER_ID} does not exist in database")
 
-    # Add initial memories
-    add_test_memories(client, TEST_USER_ID, "batch-1-initial")
+    await add_test_memories(client, TEST_USER_ID, "batch-1-initial")
 
     # Verify memories exist
-    counts = count_memories_via_api(TEST_USER_ID, log_details=True)
+    counts = await count_memories_via_api(TEST_USER_ID, log_details=True)
     logger.info("\nMemory counts after initial add:")
     for memory_type, count in counts.items():
         logger.info("  %s: %d", memory_type, count)
@@ -311,14 +328,14 @@ def test_1_create_client_and_add_memories(client):
     logger.info("✓ TEST 1 & 2 PASSED")
 
 
-def test_3_delete_user_memories(client):
+async def test_3_delete_user_memories(client):
     """Test 3: Delete memories for the user (hard delete)."""
     logger.info("\n" + "=" * 80)
     logger.info("TEST 3: DELETE USER MEMORIES (HARD DELETE)")
     logger.info("=" * 80)
 
     # Check initial count
-    counts_before = count_memories_via_api(TEST_USER_ID)
+    counts_before = await count_memories_via_api(TEST_USER_ID)
     logger.info("Memory counts before deletion:")
     for memory_type, count in counts_before.items():
         logger.info("  %s: %d", memory_type, count)
@@ -332,7 +349,7 @@ def test_3_delete_user_memories(client):
     logger.info("Preserved: %s", result["preserved"])
 
     # Verify memories are deleted
-    counts_after = count_memories_via_api(TEST_USER_ID)
+    counts_after = await count_memories_via_api(TEST_USER_ID)
     logger.info("\nMemory counts after deletion:")
     for memory_type, count in counts_after.items():
         logger.info("  %s: %d", memory_type, count)
@@ -349,17 +366,16 @@ def test_3_delete_user_memories(client):
     logger.info("✓ TEST 3 PASSED: User memories deleted, user preserved")
 
 
-def test_4_add_new_memories_after_user_deletion(client):
+async def test_4_add_new_memories_after_user_deletion(client):
     """Test 4: Add new memories for the same user after deletion."""
     logger.info("\n" + "=" * 80)
     logger.info("TEST 4: ADD NEW MEMORIES AFTER USER MEMORY DELETION")
     logger.info("=" * 80)
 
-    # Add new memories
-    add_test_memories(client, TEST_USER_ID, "batch-2-after-user-deletion")
+    await add_test_memories(client, TEST_USER_ID, "batch-2-after-user-deletion")
 
     # Verify new memories exist
-    counts = count_memories_via_api(TEST_USER_ID)
+    counts = await count_memories_via_api(TEST_USER_ID)
     logger.info("\nMemory counts after re-adding:")
     for memory_type, count in counts.items():
         logger.info("  %s: %d", memory_type, count)
@@ -373,14 +389,14 @@ def test_4_add_new_memories_after_user_deletion(client):
     logger.info("✓ TEST 4 PASSED")
 
 
-def test_5_delete_client_memories(client):
+async def test_5_delete_client_memories(client):
     """Test 5: Delete memories for the client (hard delete)."""
     logger.info("\n" + "=" * 80)
     logger.info("TEST 5: DELETE CLIENT MEMORIES (HARD DELETE)")
     logger.info("=" * 80)
 
     # Check initial count
-    counts_before = count_memories_via_api(TEST_USER_ID)
+    counts_before = await count_memories_via_api(TEST_USER_ID)
     logger.info("Memory counts before client memory deletion:")
     for memory_type, count in counts_before.items():
         logger.info("  %s: %d", memory_type, count)
@@ -394,7 +410,7 @@ def test_5_delete_client_memories(client):
     logger.info("Preserved: %s", result["preserved"])
 
     # Verify memories are deleted
-    counts_after = count_memories_via_api(TEST_USER_ID)
+    counts_after = await count_memories_via_api(TEST_USER_ID)
     logger.info("\nMemory counts after client memory deletion:")
     for memory_type, count in counts_after.items():
         logger.info("  %s: %d", memory_type, count)
@@ -404,8 +420,15 @@ def test_5_delete_client_memories(client):
     # Note: Messages are cached in Redis only, not in PostgreSQL, so we don't check them
 
     # Verify client still exists
-    response = requests.get(f"{BASE_URL}/clients/{TEST_CLIENT_ID}")
-    assert response.status_code == 200, "Client should still exist"
+    # (GET /clients/{id} requires JWT admin auth, so we check the DB directly)
+    from mirix.orm.client import Client as ClientModel
+    from mirix.server.server import db_context
+
+    async with db_context() as session:
+        r = await session.execute(select(ClientModel).where(ClientModel.id == TEST_CLIENT_ID).limit(1))
+        client_obj = r.scalar_one_or_none()
+        assert client_obj is not None, "Client should still exist"
+        logger.info("✓ Client verified in database: id=%s, is_deleted=%s", client_obj.id, client_obj.is_deleted)
 
     # Verify user still exists
     response = requests.get(f"{BASE_URL}/users/{TEST_USER_ID}")
@@ -414,17 +437,16 @@ def test_5_delete_client_memories(client):
     logger.info("✓ TEST 5 PASSED: Client memories deleted, client and user preserved")
 
 
-def test_6_add_memory_after_client_deletion(client):
+async def test_6_add_memory_after_client_deletion(client):
     """Test 6: Add memory for this user after client memory deletion."""
     logger.info("\n" + "=" * 80)
     logger.info("TEST 6: ADD MEMORY AFTER CLIENT MEMORY DELETION")
     logger.info("=" * 80)
 
-    # Add new memories
-    add_test_memories(client, TEST_USER_ID, "batch-3-after-client-deletion")
+    await add_test_memories(client, TEST_USER_ID, "batch-3-after-client-deletion")
 
     # Verify new memories exist
-    counts = count_memories_via_api(TEST_USER_ID)
+    counts = await count_memories_via_api(TEST_USER_ID)
     logger.info("\nMemory counts after re-adding:")
     for memory_type, count in counts.items():
         logger.info("  %s: %d", memory_type, count)
@@ -438,7 +460,7 @@ def test_6_add_memory_after_client_deletion(client):
     logger.info("✓ TEST 6 PASSED")
 
 
-def test_7_soft_delete_user(client):
+async def test_7_soft_delete_user(client):
     """Test 7: Soft delete user."""
     logger.info("\n" + "=" * 80)
     logger.info("TEST 7: SOFT DELETE USER")
@@ -459,7 +481,7 @@ def test_7_soft_delete_user(client):
         pytest.fail(f"Cannot verify user {TEST_USER_ID} exists: {e}")
 
     # Check initial count
-    counts_before = count_memories_via_api(TEST_USER_ID)
+    counts_before = await count_memories_via_api(TEST_USER_ID)
     logger.info("Memory counts before user soft delete:")
     for memory_type, count in counts_before.items():
         logger.info("  %s: %d", memory_type, count)
@@ -479,15 +501,15 @@ def test_7_soft_delete_user(client):
     from mirix.orm.user import User as UserModel
     from mirix.server.server import db_context
 
-    with db_context() as session:
-        # Check user is soft deleted
-        user = session.query(UserModel).filter(UserModel.id == TEST_USER_ID).first()
+    async with db_context() as session:
+        r = await session.execute(select(UserModel).where(UserModel.id == TEST_USER_ID).limit(1))
+        user = r.scalar_one_or_none()
         assert user is not None, "User should still exist in database"
         assert user.is_deleted is True, "User should be marked as deleted"
         logger.info("✓ User is soft deleted (is_deleted=True)")
 
-        # Check memories are soft deleted
-        episodic_memories = session.query(EpisodicEvent).filter(EpisodicEvent.user_id == TEST_USER_ID).all()
+        result_ep = await session.execute(select(EpisodicEvent).where(EpisodicEvent.user_id == TEST_USER_ID))
+        episodic_memories = result_ep.scalars().all()
         assert len(episodic_memories) > 0, "Episodic memories should still exist in database"
         for memory in episodic_memories:
             assert memory.is_deleted is True, "Memory should be marked as deleted"
@@ -496,7 +518,7 @@ def test_7_soft_delete_user(client):
     logger.info("✓ TEST 7 PASSED: User and memories soft deleted (data preserved in DB)")
 
 
-def test_8_soft_delete_client(client):
+async def test_8_soft_delete_client(client):
     """Test 8: Soft delete client."""
     logger.info("\n" + "=" * 80)
     logger.info("TEST 8: SOFT DELETE CLIENT")
@@ -514,15 +536,15 @@ def test_8_soft_delete_client(client):
     from mirix.orm.client import Client as ClientModel
     from mirix.server.server import db_context
 
-    with db_context() as session:
-        # Check client is soft deleted
-        client_obj = session.query(ClientModel).filter(ClientModel.id == TEST_CLIENT_ID).first()
+    async with db_context() as session:
+        r = await session.execute(select(ClientModel).where(ClientModel.id == TEST_CLIENT_ID).limit(1))
+        client_obj = r.scalar_one_or_none()
         assert client_obj is not None, "Client should still exist in database"
         assert client_obj.is_deleted is True, "Client should be marked as deleted"
         logger.info("✓ Client is soft deleted (is_deleted=True)")
 
-        # Check agents are soft deleted
-        agents = session.query(AgentModel).filter(AgentModel._created_by_id == TEST_CLIENT_ID).all()
+        r_agents = await session.execute(select(AgentModel).where(AgentModel._created_by_id == TEST_CLIENT_ID))
+        agents = r_agents.scalars().all()
         if agents:
             for agent in agents:
                 assert agent.is_deleted is True, "Agent should be marked as deleted"
@@ -531,7 +553,7 @@ def test_8_soft_delete_client(client):
     logger.info("✓ TEST 8 PASSED: Client and associated data soft deleted")
 
 
-def test_9_summary():
+async def test_9_summary():
     """Test 9: Print summary of all tests."""
     logger.info("\n" + "=" * 80)
     logger.info("TEST SUMMARY")
