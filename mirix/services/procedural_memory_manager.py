@@ -617,7 +617,7 @@ class ProceduralMemoryManager:
             try:
                 # Case 1: No query - get recent items (regardless of search_method)
                 if is_empty_query:
-                    logger.debug("Searching Redis for recent procedural items with filter_tags=%s", filter_tags)
+                    logger.debug("Searching cache for recent procedural items with filter_tags=%s", filter_tags)
                     results = await redis_client.search_recent(
                         index_name=redis_client.PROCEDURAL_INDEX,
                         limit=limit or 50,
@@ -626,9 +626,9 @@ class ProceduralMemoryManager:
                         filter_tags=filter_tags,
                         scopes=scopes,
                     )
-                    logger.debug("Redis search_recent returned %d results", len(results) if results else 0)
+                    logger.debug("Cache search returned %d results", len(results) if results else 0)
                     if results:
-                        logger.debug("Redis cache HIT: returned %d procedural items", len(results))
+                        logger.debug("Cache HIT: returned %d procedural items", len(results))
                         # Clean Redis-specific fields before Pydantic validation
                         results = redis_client.clean_redis_fields(results)
                         return [PydanticProceduralMemoryItem(**item) for item in results]
@@ -664,7 +664,7 @@ class ProceduralMemoryManager:
                         scopes=scopes,
                     )
                     if results:
-                        logger.debug("Redis vector search HIT: found %d procedural items", len(results))
+                        logger.debug("Cache vector search HIT: found %d procedural items", len(results))
                         # Clean Redis-specific fields before Pydantic validation
                         results = redis_client.clean_redis_fields(results)
                         return [PydanticProceduralMemoryItem(**item) for item in results]
@@ -683,19 +683,19 @@ class ProceduralMemoryManager:
                         scopes=scopes,
                     )
                     if results:
-                        logger.debug("Redis text search HIT: found %d procedural items", len(results))
+                        logger.debug("Cache text search HIT: found %d procedural items", len(results))
                         # Clean Redis-specific fields before Pydantic validation
                         results = redis_client.clean_redis_fields(results)
                         return [PydanticProceduralMemoryItem(**item) for item in results]
 
             except Exception as e:
-                logger.warning("Redis search failed for procedural memory, falling back to PostgreSQL: %s", e)
+                logger.warning("Cache search failed for procedural memory, falling back to PostgreSQL: %s", e)
 
         # Log when bypassing cache or Redis unavailable
         if not use_cache:
-            logger.debug("Bypassing Redis cache (use_cache=False), querying PostgreSQL directly for procedural memory")
+            logger.debug("Bypassing cache (use_cache=False), querying PostgreSQL directly for procedural memory")
         elif not redis_client:
-            logger.debug("Redis unavailable, querying PostgreSQL directly for procedural memory")
+            logger.debug("Cache unavailable, querying PostgreSQL directly for procedural memory")
 
         async with self.session_maker() as session:
             if query == "":
@@ -1188,7 +1188,7 @@ class ProceduralMemoryManager:
                         scopes=scopes,
                     )
                     if results:
-                        logger.debug("Redis: %d procedural memories for org %s", len(results), organization_id)
+                        logger.debug("Cache: %d procedural memories for org %s", len(results), organization_id)
                         results = redis_client.clean_redis_fields(results)
                         return [PydanticProceduralMemoryItem(**item) for item in results]
 
@@ -1218,7 +1218,7 @@ class ProceduralMemoryManager:
                         scopes=scopes,
                     )
                     if results:
-                        logger.debug("Redis vector: %d results", len(results))
+                        logger.debug("Cache vector: %d results", len(results))
                         results = redis_client.clean_redis_fields(results)
                         return [PydanticProceduralMemoryItem(**item) for item in results]
 
@@ -1234,11 +1234,11 @@ class ProceduralMemoryManager:
                         scopes=scopes,
                     )
                     if results:
-                        logger.debug("Redis text: %d results", len(results))
+                        logger.debug("Cache text: %d results", len(results))
                         results = redis_client.clean_redis_fields(results)
                         return [PydanticProceduralMemoryItem(**item) for item in results]
             except Exception as e:
-                logger.warning("Redis search failed: %s", e)
+                logger.warning("Cache search failed: %s", e)
 
         async with self.session_maker() as session:
             base_query = select(ProceduralMemoryItem).where(ProceduralMemoryItem.organization_id == organization_id)

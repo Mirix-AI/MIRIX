@@ -649,7 +649,7 @@ class SemanticMemoryManager:
                 # Case 1: No query - get recent items (regardless of search_method)
                 if is_empty_query:
                     logger.debug(
-                        "Searching Redis for recent semantic items with filter_tags=%s",
+                        "Searching cache for recent semantic items with filter_tags=%s",
                         filter_tags,
                     )
                     results = await redis_client.search_recent(
@@ -662,12 +662,12 @@ class SemanticMemoryManager:
                         scopes=scopes,
                     )
                     logger.debug(
-                        "Redis search_recent returned %d results",
+                        "Cache search returned %d results",
                         len(results) if results else 0,
                     )
                     if results:
                         logger.debug(
-                            "Redis cache HIT: returned %d recent semantic items",
+                            "Cache HIT: returned %d recent semantic items",
                             len(results),
                         )
                         # Clean Redis-specific fields before Pydantic validation
@@ -706,7 +706,7 @@ class SemanticMemoryManager:
                     )
                     if results:
                         logger.debug(
-                            "Redis vector search HIT: found %d semantic items",
+                            "Cache vector search HIT: found %d semantic items",
                             len(results),
                         )
                         # Clean Redis-specific fields before Pydantic validation
@@ -729,7 +729,7 @@ class SemanticMemoryManager:
                     )
                     if results:
                         logger.debug(
-                            "Redis text search HIT: found %d semantic items",
+                            "Cache text search HIT: found %d semantic items",
                             len(results),
                         )
                         # Clean Redis-specific fields before Pydantic validation
@@ -738,18 +738,18 @@ class SemanticMemoryManager:
 
             except Exception as e:
                 logger.warning(
-                    "Redis search failed for semantic memory, falling back to PostgreSQL: %s",
+                    "Cache search failed for semantic memory, falling back to PostgreSQL: %s",
                     e,
                 )
                 # Fall through to PostgreSQL
 
         # Log when bypassing cache or Redis unavailable
         if not use_cache:
-            logger.debug("Bypassing Redis cache (use_cache=False), querying PostgreSQL directly for semantic memory")
+            logger.debug("Bypassing cache (use_cache=False), querying PostgreSQL directly for semantic memory")
         elif not redis_client:
-            logger.debug("Redis unavailable, querying PostgreSQL directly for semantic memory")
+            logger.debug("Cache unavailable, querying PostgreSQL directly for semantic memory")
         else:
-            logger.debug("Redis returned no results, falling back to PostgreSQL for semantic memory")
+            logger.debug("Cache returned no results, falling back to PostgreSQL for semantic memory")
 
         logger.debug("PostgreSQL fallback: query='%s', filter_tags=%s", query, filter_tags)
         async with self.session_maker() as session:
@@ -1291,7 +1291,7 @@ class SemanticMemoryManager:
                         results = redis_client.clean_redis_fields(results)
                         return [PydanticSemanticMemoryItem(**item) for item in results]
             except Exception as e:
-                logger.warning("Redis search failed: %s", e)
+                logger.warning("Cache search failed: %s", e)
 
         async with self.session_maker() as session:
             # Return full SemanticMemoryItem objects, not individual columns

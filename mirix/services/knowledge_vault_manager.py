@@ -681,7 +681,7 @@ class KnowledgeVaultManager:
                         scopes=scopes,
                     )
                     if results:
-                        logger.debug("Redis cache HIT: returned %d knowledge items", len(results))
+                        logger.debug("Cache HIT: returned %d knowledge items", len(results))
                         # Clean Redis-specific fields before Pydantic validation
                         results = redis_client.clean_redis_fields(results)
                         return [PydanticKnowledgeVaultItem(**item) for item in results]
@@ -715,7 +715,7 @@ class KnowledgeVaultManager:
                         scopes=scopes,
                     )
                     if results:
-                        logger.debug("Redis vector search HIT: found %d knowledge items", len(results))
+                        logger.debug("Cache vector search HIT: found %d knowledge items", len(results))
                         # Clean Redis-specific fields before Pydantic validation
                         results = redis_client.clean_redis_fields(results)
                         return [PydanticKnowledgeVaultItem(**item) for item in results]
@@ -734,19 +734,19 @@ class KnowledgeVaultManager:
                         scopes=scopes,
                     )
                     if results:
-                        logger.debug("Redis text search HIT: found %d knowledge items", len(results))
+                        logger.debug("Cache text search HIT: found %d knowledge items", len(results))
                         # Clean Redis-specific fields before Pydantic validation
                         results = redis_client.clean_redis_fields(results)
                         return [PydanticKnowledgeVaultItem(**item) for item in results]
 
             except Exception as e:
-                logger.warning("Redis search failed for knowledge vault, falling back to PostgreSQL: %s", e)
+                logger.warning("Cache search failed for knowledge vault, falling back to PostgreSQL: %s", e)
 
         # Log when bypassing cache or Redis unavailable
         if not use_cache:
-            logger.debug("Bypassing Redis cache (use_cache=False), querying PostgreSQL directly for knowledge vault")
+            logger.debug("Bypassing cache (use_cache=False), querying PostgreSQL directly for knowledge vault")
         elif not redis_client:
-            logger.debug("Redis unavailable, querying PostgreSQL directly for knowledge vault")
+            logger.debug("Cache unavailable, querying PostgreSQL directly for knowledge vault")
 
         async with self.session_maker() as session:
             if query == "":
@@ -1219,7 +1219,7 @@ class KnowledgeVaultManager:
                         results = redis_client.clean_redis_fields(results)
                         return [PydanticKnowledgeVaultItem(**item) for item in results]
             except Exception as e:
-                logger.warning("Redis search failed: %s", e)
+                logger.warning("Cache search failed: %s", e)
 
         async with self.session_maker() as session:
             # Return full KnowledgeVaultItem objects, not individual columns

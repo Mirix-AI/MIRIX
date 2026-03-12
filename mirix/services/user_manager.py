@@ -211,7 +211,7 @@ class UserManager:
                         block_count,
                     )
             except Exception as e:
-                logger.warning("Failed to update Redis cache for user %s: %s", user_id, e)
+                logger.warning("Failed to update cache for user %s: %s", user_id, e)
 
     async def delete_memories_by_user_id(self, user_id: str):
         """

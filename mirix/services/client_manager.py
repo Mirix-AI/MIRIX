@@ -355,7 +355,7 @@ class ClientManager:
                 client_key = f"{redis_client.CLIENT_PREFIX}{client_id}"
                 try:
                     await redis_client.client.hset(client_key, "is_deleted", "true")
-                    logger.debug("Updated client %s in Redis (is_deleted=true)", client_id)
+                    logger.debug("Updated client %s in cache (is_deleted=true)", client_id)
                 except Exception as e:
                     logger.warning(
                         "Failed to update client in Redis, removing instead: %s", e
