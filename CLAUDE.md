@@ -40,6 +40,20 @@ python scripts/start_server.py --port 8531
 
 ## Running Tests
 
+The preferred way to run tests is via the dockerized test script, which handles infrastructure automatically:
+
+```bash
+# Full suite with verbose output (preferred)
+./scripts/run_tests_with_docker.sh --podman -s -v --log-cli-level=INFO
+
+# Pass any pytest args after the flags
+./scripts/run_tests_with_docker.sh --podman -s -v --log-cli-level=INFO -k test_message_handling
+./scripts/run_tests_with_docker.sh --podman -s -v --log-cli-level=INFO -m "not integration"
+```
+
+**Required env var for tests**: `GEMINI_API_KEY`
+
+### Running without Docker (manual infra)
 ```bash
 # Fast unit tests — no running server needed (~20s)
 pytest tests/test_memory_server.py -v
@@ -50,12 +64,7 @@ pytest -m "not integration" -v
 # Integration tests — requires server on port 8899
 python scripts/start_server.py --port 8899          # Terminal 1
 pytest tests/test_memory_integration.py -v -m integration -s   # Terminal 2
-
-# Full suite
-pytest -v
 ```
-
-**Required env var for tests**: `GEMINI_API_KEY`
 
 ## Common Dev Tasks
 
@@ -74,6 +83,10 @@ pytest -v
 
 ### Format & lint
 ```bash
+# Preferred (poetry)
+poetry run black . && poetry run isort .
+
+# Alternatively via make
 make format   # ruff import sort + format
 make lint     # ruff check + pyright
 make check    # format + lint + test
