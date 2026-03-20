@@ -29,6 +29,11 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
+# Diagnostic flag for MissingGreenlet debugging - set via env var
+import os
+
+_TRACE_MISSING_GREENLET = os.getenv("MIRIX_TRACE_MISSING_GREENLET", "false").lower() == "true"
+
 
 def handle_db_timeout(func):
     """Decorator to handle SQLAlchemy TimeoutError (async-aware)."""
@@ -39,9 +44,7 @@ def handle_db_timeout(func):
             return await func(*args, **kwargs)
         except TimeoutError as e:
             logger.error("Timeout while executing %s: %s", func.__name__, e)
-            raise DatabaseTimeoutError(
-                message=f"Timeout occurred in {func.__name__}.", original_exception=e
-            ) from e
+            raise DatabaseTimeoutError(message=f"Timeout occurred in {func.__name__}.", original_exception=e) from e
 
     return wrapper
 
@@ -615,6 +618,20 @@ class SqlalchemyBase(CommonSqlalchemyMetaMixins, Base):
 
     def to_pydantic(self) -> "BaseModel":
         """converts to the basic pydantic model counterpart"""
+        if _TRACE_MISSING_GREENLET:
+            try:
+                return self.__pydantic_model__.model_validate(self)
+            except Exception as e:
+                if "MissingGreenlet" in str(type(e).__name__) or "greenlet" in str(e).lower():
+                    import traceback
+
+                    logger.error(
+                        "MissingGreenlet detected in to_pydantic for %s (id=%s)\n" "Full traceback:\n%s",
+                        self.__class__.__name__,
+                        getattr(self, "id", "no-id"),
+                        traceback.format_exc(),
+                    )
+                raise
         return self.__pydantic_model__.model_validate(self)
 
     def to_record(self) -> "BaseModel":

@@ -6,15 +6,6 @@ from typing import TYPE_CHECKING, List, Optional
 import httpx
 
 from mirix.constants import CLI_WARNING_PREFIX
-from mirix.log import get_logger
-from mirix.observability.context import get_trace_context, mark_observation_as_child
-from mirix.observability.langfuse_client import get_langfuse_client
-
-logger = get_logger(__name__)
-
-if TYPE_CHECKING:
-    from mirix.interface import AgentChunkStreamingInterface
-
 from mirix.errors import MirixConfigurationError, RateLimitExceededError
 from mirix.llm_api.anthropic import (
     anthropic_bedrock_chat_completions_request,
@@ -30,6 +21,9 @@ from mirix.llm_api.openai import (
     build_openai_chat_completions_request,
     openai_chat_completions_request,
 )
+from mirix.log import get_logger
+from mirix.observability.context import get_trace_context, mark_observation_as_child
+from mirix.observability.langfuse_client import get_langfuse_client
 from mirix.schemas.llm_config import LLMConfig
 from mirix.schemas.message import Message
 from mirix.schemas.openai.chat_completion_request import (
@@ -40,6 +34,11 @@ from mirix.schemas.openai.chat_completion_request import (
 from mirix.schemas.openai.chat_completion_response import ChatCompletionResponse
 from mirix.settings import ModelSettings
 from mirix.utils import num_tokens_from_functions, num_tokens_from_messages
+
+logger = get_logger(__name__)
+
+if TYPE_CHECKING:
+    from mirix.interface import AgentChunkStreamingInterface
 
 LLM_API_PROVIDER_OPTIONS = [
     "openai",
@@ -203,9 +202,7 @@ async def create(
         try:
             messages_oai_format = [m.to_openai_dict() for m in messages]
             prompt_tokens = num_tokens_from_messages(messages=messages_oai_format, model=llm_config.model)
-            function_tokens = (
-                num_tokens_from_functions(functions=functions, model=llm_config.model) if functions else 0
-            )
+            function_tokens = num_tokens_from_functions(functions=functions, model=llm_config.model) if functions else 0
             if prompt_tokens + function_tokens > llm_config.context_window:
                 raise Exception(
                     f"Request exceeds maximum context length ({prompt_tokens + function_tokens} > {llm_config.context_window} tokens)"
@@ -272,13 +269,9 @@ async def create(
                                 if hasattr(msg, "tool_calls") and msg.tool_calls:
                                     output_message["tool_calls"] = [
                                         {
-                                            "name": (
-                                                tc.function.name if hasattr(tc, "function") else str(tc)
-                                            ),
+                                            "name": (tc.function.name if hasattr(tc, "function") else str(tc)),
                                             "arguments": (
-                                                str(tc.function.arguments)[:200]
-                                                if hasattr(tc, "function")
-                                                else ""
+                                                str(tc.function.arguments)[:200] if hasattr(tc, "function") else ""
                                             ),
                                         }
                                         for tc in msg.tool_calls[:5]
@@ -301,9 +294,7 @@ async def create(
             # azure
             elif llm_config.model_endpoint_type == "azure":
                 if stream:
-                    raise NotImplementedError(
-                        f"Streaming not yet implemented for {llm_config.model_endpoint_type}"
-                    )
+                    raise NotImplementedError(f"Streaming not yet implemented for {llm_config.model_endpoint_type}")
 
                 if model_settings.azure_api_key is None:
                     raise MirixConfigurationError(
@@ -344,9 +335,7 @@ async def create(
 
             elif llm_config.model_endpoint_type == "google_ai":
                 if stream:
-                    raise NotImplementedError(
-                        f"Streaming not yet implemented for {llm_config.model_endpoint_type}"
-                    )
+                    raise NotImplementedError(f"Streaming not yet implemented for {llm_config.model_endpoint_type}")
                 if not use_tool_naming:
                     raise NotImplementedError("Only tool calling supported on Google AI API requests")
 
@@ -442,9 +431,7 @@ async def create(
 
             elif llm_config.model_endpoint_type == "anthropic":
                 if stream:
-                    raise NotImplementedError(
-                        f"Streaming not yet implemented for {llm_config.model_endpoint_type}"
-                    )
+                    raise NotImplementedError(f"Streaming not yet implemented for {llm_config.model_endpoint_type}")
                 if not use_tool_naming:
                     raise NotImplementedError("Only tool calling supported on Anthropic API requests")
 
@@ -457,9 +444,7 @@ async def create(
                     data=ChatCompletionRequest(
                         model=llm_config.model,
                         messages=[cast_message_to_subtype(m.to_openai_dict()) for m in messages],
-                        tools=(
-                            [{"type": "function", "function": f} for f in functions] if functions else None
-                        ),
+                        tools=([{"type": "function", "function": f} for f in functions] if functions else None),
                         tool_choice=tool_call,
                         max_tokens=4096,  # TODO make dynamic
                         image_uris=image_uris["image_uris"],
@@ -481,17 +466,11 @@ async def create(
                         missing_fields=["groq_api_key"],
                     )
 
-                tools = (
-                    [{"type": "function", "function": f} for f in functions]
-                    if functions is not None
-                    else None
-                )
+                tools = [{"type": "function", "function": f} for f in functions] if functions is not None else None
                 data = ChatCompletionRequest(
                     model=llm_config.model,
                     messages=[
-                        m.to_openai_dict(
-                            put_inner_thoughts_in_kwargs=llm_config.put_inner_thoughts_in_kwargs
-                        )
+                        m.to_openai_dict(put_inner_thoughts_in_kwargs=llm_config.put_inner_thoughts_in_kwargs)
                         for m in messages
                     ],
                     tools=tools,
@@ -540,9 +519,7 @@ async def create(
                     data=ChatCompletionRequest(
                         model=llm_config.model,
                         messages=[cast_message_to_subtype(m.to_openai_dict()) for m in messages],
-                        tools=(
-                            [{"type": "function", "function": f} for f in functions] if functions else None
-                        ),
+                        tools=([{"type": "function", "function": f} for f in functions] if functions else None),
                         tool_choice=tool_call,
                         max_tokens=1024,  # TODO make dynamic
                     ),

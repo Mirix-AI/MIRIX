@@ -5,6 +5,7 @@ from typing import Optional
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic.fields import FieldInfo
 
 # from: https://gist.github.com/norton120/22242eadb80bf2cf1dd54a961b151c61
 
@@ -30,7 +31,7 @@ class MirixBase(BaseModel):
     #    raise NotImplementedError("All schemas must have an __id_prefix__ attribute!")
 
     @classmethod
-    def generate_id_field(cls, prefix: Optional[str] = None) -> "Field":
+    def generate_id_field(cls, prefix: Optional[str] = None) -> FieldInfo:
         prefix = prefix or cls.__id_prefix__
 
         return Field(

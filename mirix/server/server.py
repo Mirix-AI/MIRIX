@@ -1,7 +1,6 @@
 # inspecting tools
 import asyncio
 import os
-import sys
 import traceback
 import warnings
 from abc import abstractmethod
@@ -16,9 +15,7 @@ from fastapi.responses import StreamingResponse
 from rich.console import Console
 from rich.panel import Panel
 from rich.text import Text
-from sqlalchemy import create_engine
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.orm import sessionmaker
 
 import mirix.constants as constants
 import mirix.server.utils as server_utils
@@ -45,7 +42,7 @@ from mirix.interface import QueuingInterface  # for message queuing
 from mirix.log import get_logger
 from mirix.orm import Base
 from mirix.orm.errors import NoResultFound
-from mirix.schemas.agent import AgentState, AgentType, CreateAgent, CreateMetaAgent
+from mirix.schemas.agent import AgentState, AgentType, CreateAgent
 from mirix.schemas.client import Client
 from mirix.schemas.embedding_config import EmbeddingConfig
 
@@ -311,7 +308,7 @@ if not USE_PGLITE and settings.mirix_pg_uri_no_default:
 
     # asyncpg does not accept 'sslmode' as a keyword argument — strip it from
     # the URI and pass an ssl.SSLContext via connect_args instead.
-    from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+    from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
     _parsed = urlparse(_pg_uri)
     _params = parse_qs(_parsed.query, keep_blank_values=True)
@@ -432,6 +429,7 @@ if USE_PGLITE:
     def db_context():
         """Async context manager for service managers (PGlite)."""
         return pglite_session_factory()
+
 else:
 
     async def get_db():
@@ -645,9 +643,7 @@ class AsyncServer(Server):
         """Updated method to load agents from persisted storage."""
         agent_lock = self.per_agent_lock_manager.get_lock(agent_id)
         async with agent_lock:
-            agent_state = await self.agent_manager.get_agent_by_id(
-                agent_id=agent_id, actor=actor
-            )
+            agent_state = await self.agent_manager.get_agent_by_id(agent_id=agent_id, actor=actor)
 
             common_kwargs = dict(
                 interface=interface or self.default_interface_factory(),

@@ -181,3 +181,29 @@ class SemanticMemoryItem(SqlalchemyBase, OrganizationMixin, UserMixin):
         Relationship to the User that owns this semantic memory item.
         """
         return relationship("User", lazy="selectin")
+
+    def to_pydantic(self) -> PydanticSemanticMemoryItem:
+        """
+        Convert to Pydantic model, safely handling relationship loading.
+        This prevents MissingGreenlet errors when converting detached instances.
+        """
+        state = {
+            "id": self.id,
+            "agent_id": self.agent_id,
+            "client_id": self.client_id,
+            "user_id": self.user_id,
+            "organization_id": self.organization_id,
+            "name": self.name,
+            "summary": self.summary,
+            "details": self.details,
+            "source": self.source,
+            "filter_tags": self.filter_tags,
+            "last_modify": self.last_modify,
+            "embedding_config": self.embedding_config,
+            "name_embedding": self.name_embedding,
+            "summary_embedding": self.summary_embedding,
+            "details_embedding": self.details_embedding,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+        }
+        return self.__pydantic_model__(**state)

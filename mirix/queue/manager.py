@@ -7,7 +7,6 @@ When NUM_WORKERS > 1, uses PartitionedMemoryQueue to simulate Kafka's
 user_id-based partitioning for parallel processing.
 """
 
-import logging
 from typing import Any, List, Optional
 
 from mirix.log import get_logger

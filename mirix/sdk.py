@@ -4,7 +4,6 @@ Mirix SDK - Simple Python interface for memory-enhanced AI agents.
 All I/O methods are async. Use Mirix.create() to construct an instance.
 """
 
-import asyncio
 import logging
 import os
 from pathlib import Path
@@ -133,6 +132,7 @@ class Mirix:
             os.environ[f"{model_provider.upper()}_API_KEY"] = api_key
         import mirix.settings
         from mirix.settings import ModelSettings
+
         new_settings = ModelSettings()
         for field_name in ModelSettings.model_fields:
             setattr(
@@ -148,6 +148,7 @@ class Mirix:
             config_path = Path(config_path)
             if config_path.exists():
                 import yaml
+
                 with open(config_path, "r") as f:
                     config_data = yaml.safe_load(f)
                     system_prompts_folder = config_data.get("system_prompts_folder")
@@ -211,9 +212,7 @@ class Mirix:
             await memory_agent.add("John likes pizza")
         """
         self._require_meta_agent()
-        response = await self._client.send_message(
-            agent_id=self._meta_agent.id, role="user", message=content, **kwargs
-        )
+        response = await self._client.send_message(agent_id=self._meta_agent.id, role="user", message=content, **kwargs)
         if hasattr(response, "messages") and response.messages:
             for msg in reversed(response.messages):
                 if msg.role == "assistant":
@@ -521,7 +520,9 @@ class Mirix:
             )
 
             # Use the tool manager's create_or_update_tool method
-            created_tool = await tool_manager.create_or_update_tool(pydantic_tool=pydantic_tool, actor=self._client.client)
+            created_tool = await tool_manager.create_or_update_tool(
+                pydantic_tool=pydantic_tool, actor=self._client.client
+            )
 
         # Apply tool to all existing agents if requested
         if apply_to_agents:

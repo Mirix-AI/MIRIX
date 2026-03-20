@@ -5,7 +5,6 @@ import httpx
 from pydantic import Field, model_validator
 
 from mirix.constants import LLM_MAX_TOKENS, MIN_CONTEXT_WINDOW
-from mirix.utils import smart_urljoin
 from mirix.llm_api.azure_openai import (
     get_azure_chat_completions_endpoint,
     get_azure_embeddings_endpoint,
@@ -15,6 +14,7 @@ from mirix.log import get_logger
 from mirix.schemas.embedding_config import EmbeddingConfig
 from mirix.schemas.llm_config import LLMConfig
 from mirix.schemas.mirix_base import MirixBase
+from mirix.utils import smart_urljoin
 
 logger = get_logger(__name__)
 

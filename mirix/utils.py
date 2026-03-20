@@ -24,8 +24,6 @@ from logging import Logger
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
-    Any,
-    Dict,
     List,
     Optional,
     Union,
@@ -37,8 +35,8 @@ from typing import (
 from urllib.parse import urljoin, urlparse
 
 import demjson3 as demjson
-import pytz
 import httpx
+import pytz
 import tiktoken
 from pathvalidate import sanitize_filename as pathvalidate_sanitize_filename
 
@@ -945,9 +943,6 @@ def get_local_time(timezone=None):
         time_str = local_time.strftime("%Y-%m-%d %I:%M:%S %p %Z%z")
 
     return time_str.strip()
-
-
-# get_utc_time is imported from mirix.client.utils
 
 
 def format_datetime(dt):

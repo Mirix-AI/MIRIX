@@ -138,7 +138,9 @@ class GoogleAIClient(LLMClientBase):
             idx += 1
         return new_contents
 
-    async def fill_image_content_in_messages(self, google_ai_message_list, existing_file_uris: Optional[List[str]] = None):
+    async def fill_image_content_in_messages(
+        self, google_ai_message_list, existing_file_uris: Optional[List[str]] = None
+    ):
         """
         Converts image URIs in the message to base64 format.
         """
@@ -549,7 +551,9 @@ async def google_ai_get_model_list(base_url: str, api_key: str, key_in_header: b
         raise e
 
 
-async def google_ai_get_model_details(base_url: str, api_key: str, model: str, key_in_header: bool = True) -> List[dict]:
+async def google_ai_get_model_details(
+    base_url: str, api_key: str, model: str, key_in_header: bool = True
+) -> List[dict]:
     from mirix.utils import printd
 
     url, headers = get_gemini_endpoint_and_headers(base_url, model, api_key, key_in_header)
@@ -579,7 +583,9 @@ async def google_ai_get_model_details(base_url: str, api_key: str, model: str, k
         raise e
 
 
-async def google_ai_get_model_context_window(base_url: str, api_key: str, model: str, key_in_header: bool = True) -> int:
+async def google_ai_get_model_context_window(
+    base_url: str, api_key: str, model: str, key_in_header: bool = True
+) -> int:
     model_details = await google_ai_get_model_details(
         base_url=base_url, api_key=api_key, model=model, key_in_header=key_in_header
     )

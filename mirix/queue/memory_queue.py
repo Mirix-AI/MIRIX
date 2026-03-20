@@ -7,7 +7,7 @@ where messages are routed by user_id to ensure per-user ordering.
 
 import asyncio
 import logging
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from mirix.queue.message_pb2 import QueueMessage
 from mirix.queue.queue_interface import QueueInterface
@@ -66,9 +66,7 @@ class PartitionedMemoryQueue(QueueInterface):
     def __init__(self, num_partitions: int = 1, round_robin: bool = False):
         self._num_partitions = max(1, num_partitions)
         self._round_robin = round_robin
-        self._partitions: List[asyncio.Queue[QueueMessage]] = [
-            asyncio.Queue() for _ in range(self._num_partitions)
-        ]
+        self._partitions: List[asyncio.Queue[QueueMessage]] = [asyncio.Queue() for _ in range(self._num_partitions)]
 
         self._user_partition_map: Dict[str, int] = {}
         self._next_partition: int = 0
@@ -89,7 +87,7 @@ class PartitionedMemoryQueue(QueueInterface):
     def round_robin(self) -> bool:
         return self._round_robin
 
-    async def get_partition_stats(self) -> Dict[str, any]:
+    async def get_partition_stats(self) -> Dict[str, Any]:
         """Get statistics about partition distribution."""
         async with self._partition_lock:
             partition_counts = [0] * self._num_partitions
@@ -145,9 +143,7 @@ class PartitionedMemoryQueue(QueueInterface):
         """Retrieve from partition 0 (for backward compatibility)."""
         return await self.get_from_partition(0, timeout)
 
-    async def get_from_partition(
-        self, partition_id: int, timeout: Optional[float] = None
-    ) -> QueueMessage:
+    async def get_from_partition(self, partition_id: int, timeout: Optional[float] = None) -> QueueMessage:
         """
         Retrieve a message from a specific partition.
 
@@ -160,15 +156,10 @@ class PartitionedMemoryQueue(QueueInterface):
             ValueError: If partition_id is out of range
         """
         if partition_id < 0 or partition_id >= self._num_partitions:
-            raise ValueError(
-                f"Invalid partition_id {partition_id}, "
-                f"must be 0 to {self._num_partitions - 1}"
-            )
+            raise ValueError(f"Invalid partition_id {partition_id}, " f"must be 0 to {self._num_partitions - 1}")
 
         if timeout is not None:
-            message = await asyncio.wait_for(
-                self._partitions[partition_id].get(), timeout=timeout
-            )
+            message = await asyncio.wait_for(self._partitions[partition_id].get(), timeout=timeout)
         else:
             message = await self._partitions[partition_id].get()
 

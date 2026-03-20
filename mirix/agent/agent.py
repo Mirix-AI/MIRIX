@@ -7,9 +7,9 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 from typing import Callable, List, Optional, Tuple, Union
 
+import httpx
 import numpy as np
 import pytz
-import httpx
 
 from mirix.agent.tool_validators import validate_tool_args
 from mirix.constants import (
@@ -68,6 +68,7 @@ from mirix.services.resource_memory_manager import ResourceMemoryManager
 from mirix.services.semantic_memory_manager import SemanticMemoryManager
 from mirix.services.step_manager import StepManager
 from mirix.services.tool_execution_sandbox import ToolExecutionSandbox
+from mirix.services.user_manager import UserManager
 from mirix.settings import settings, summarizer_settings
 from mirix.system import (
     get_contine_chaining,
@@ -333,10 +334,7 @@ class Agent(BaseAgent):
                 auto_create_from_default=False,  # Don't auto-create here, only in step()
             )
             self.blocks_in_memory = Memory(
-                blocks=[
-                    await self.block_manager.get_block_by_id(block.id, user=self.user)
-                    for block in blocks_result
-                ]
+                blocks=[await self.block_manager.get_block_by_id(block.id, user=self.user) for block in blocks_result]
             )
 
             # NOTE: don't do this since re-buildin the memory is handled at the start of the step
@@ -1239,12 +1237,12 @@ class Agent(BaseAgent):
                 if CLEAR_HISTORY_AFTER_MEMORY_UPDATE and not self.agent_state.is_type(AgentType.chat_agent):
                     if not chaining:
                         should_clear_history = True
-                        self.logger.info(f"should_clear_history=True (chaining=False)")
+                        self.logger.info("should_clear_history=True (chaining=False)")
                     else:
                         for func_name in executed_function_names:
                             if func_name == "finish_memory_update":
                                 should_clear_history = True
-                                self.logger.info(f"should_clear_history=True (finish_memory_update called)")
+                                self.logger.info("should_clear_history=True (finish_memory_update called)")
                                 break
                 else:
                     self.logger.debug(
@@ -1740,7 +1738,9 @@ class Agent(BaseAgent):
 
         # Prepare embedding for semantic search
         if key_words != "" and search_method == "embedding":
-            embedded_text = await (await embedding_model(self.agent_state.embedding_config)).get_text_embedding(key_words)
+            embedded_text = await (await embedding_model(self.agent_state.embedding_config)).get_text_embedding(
+                key_words
+            )
             embedded_text = np.array(embedded_text)
             embedded_text = np.pad(
                 embedded_text,

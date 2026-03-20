@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import copy
 import json
 import uuid
 import warnings
-from collections import OrderedDict
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Literal, Optional, Union
 
@@ -609,8 +607,8 @@ class Message(BaseMessage):
             if openai_message_dict["role"] == "assistant":
                 if not content and tool_calls is None:
                     raise ValueError(
-                        f"Invalid assistant message: must have content or tool_calls. "
-                        f"Got empty content and no tool_calls."
+                        "Invalid assistant message: must have content or tool_calls. "
+                        "Got empty content and no tool_calls."
                     )
 
             # If we're going from tool-call style

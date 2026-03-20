@@ -1,10 +1,9 @@
 import asyncio
-import os
 import re
 from copy import deepcopy
 from typing import TYPE_CHECKING, List, Optional
 
-from mirix.agent import Agent, AgentState
+from mirix.agent import Agent
 
 if TYPE_CHECKING:
     from mirix.schemas.memory import Memory
@@ -265,7 +264,9 @@ async def check_episodic_memory(self: "Agent", event_ids: List[str], timezone_st
         raise ValueError("User is required to check episodic memory")
 
     episodic_memory = [
-        await self.episodic_memory_manager.get_episodic_memory_by_id(event_id, user=self.user, timezone_str=timezone_str)
+        await self.episodic_memory_manager.get_episodic_memory_by_id(
+            event_id, user=self.user, timezone_str=timezone_str
+        )
         for event_id in event_ids
     ]
 
@@ -893,9 +894,7 @@ async def trigger_memory_update(self: "Agent", user_message: object, memory_type
     def _agent_type_key(at):
         return at.value if hasattr(at, "value") else str(at)
 
-    agent_type_to_state = {
-        _agent_type_key(agent_state.agent_type): agent_state for agent_state in child_agent_states
-    }
+    agent_type_to_state = {_agent_type_key(agent_state.agent_type): agent_state for agent_state in child_agent_states}
 
     if not child_agent_states:
         raise ValueError(

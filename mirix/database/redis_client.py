@@ -853,9 +853,7 @@ class RedisMemoryClient:
             logger.error("Failed to delete key %s: %s", key, e)
             return False
 
-    def _build_filter_tags_query(
-        self, filter_tags: Dict[str, Any], scopes: Optional[List[str]] = None
-    ) -> str:
+    def _build_filter_tags_query(self, filter_tags: Dict[str, Any], scopes: Optional[List[str]] = None) -> str:
         """
         Build Redis Search query string from filter_tags and scopes.
 
@@ -924,7 +922,6 @@ class RedisMemoryClient:
                 return []
 
             import re
-            from datetime import datetime
 
             from redis.commands.search.query import Query
 
@@ -1056,8 +1053,6 @@ class RedisMemoryClient:
             if filter_tags and not can_redis_handle(filter_tags):
                 logger.debug("filter_tags contain operators unsupported by Redis, skipping Redis search_vector")
                 return []
-
-            from datetime import datetime
 
             import numpy as np
             from redis.commands.search.query import Query
@@ -1191,8 +1186,6 @@ class RedisMemoryClient:
                 logger.debug("filter_tags contain operators unsupported by Redis, skipping Redis search_recent")
                 return []
 
-            from datetime import datetime
-
             from redis.commands.search.query import Query
 
             # Build query parts
@@ -1294,7 +1287,6 @@ class RedisMemoryClient:
                 return []
 
             import re
-            from datetime import datetime
 
             from redis.commands.search.query import Query
 
@@ -1386,7 +1378,6 @@ class RedisMemoryClient:
                 return []
 
             import re
-            from datetime import datetime
 
             from redis.commands.search.query import Query
 
@@ -1480,7 +1471,6 @@ class RedisMemoryClient:
                 return []
 
             import re
-            from datetime import datetime
 
             from redis.commands.search.query import Query
 

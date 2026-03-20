@@ -135,10 +135,7 @@ class MessageManager:
         user_id: Optional[str] = None,
     ) -> List[PydanticMessage]:
         """Create multiple messages."""
-        return [
-            await self.create_message(m, actor=actor, client_id=client_id, user_id=user_id)
-            for m in pydantic_msgs
-        ]
+        return [await self.create_message(m, actor=actor, client_id=client_id, user_id=user_id) for m in pydantic_msgs]
 
     @enforce_types
     async def update_message_by_id(
@@ -358,9 +355,10 @@ class MessageManager:
         Returns:
             Number of records deleted
         """
+        from sqlalchemy import delete
+
         from mirix.database.redis_client import get_redis_client
         from mirix.schemas.message import MessageRole
-        from sqlalchemy import delete
 
         async with self.session_maker() as session:
             # Get IDs for non-system messages only (preserve system messages)
@@ -585,9 +583,7 @@ class MessageManager:
 
         async with self.session_maker() as session:
             # Get all agents for this organization
-            agents = await AgentModel.list(
-                db_session=session, organization_id=actor.organization_id, limit=None
-            )
+            agents = await AgentModel.list(db_session=session, organization_id=actor.organization_id, limit=None)
 
             cleanup_results = {}
             total_deleted = 0

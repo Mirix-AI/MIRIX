@@ -48,9 +48,7 @@ class ProviderManager:
         )
 
     @enforce_types
-    async def create_provider(
-        self, provider: PydanticProvider, actor: PydanticClient
-    ) -> PydanticProvider:
+    async def create_provider(self, provider: PydanticProvider, actor: PydanticClient) -> PydanticProvider:
         """Create a new provider if it doesn't already exist."""
         async with self.session_maker() as session:
             provider.organization_id = actor.organization_id
@@ -65,9 +63,7 @@ class ProviderManager:
     ) -> PydanticProvider:
         """Update provider details."""
         async with self.session_maker() as session:
-            existing_provider = await ProviderModel.read(
-                db_session=session, identifier=provider_id, actor=actor
-            )
+            existing_provider = await ProviderModel.read(db_session=session, identifier=provider_id, actor=actor)
             update_data = provider_update.model_dump(exclude_unset=True, exclude_none=True)
             for key, value in update_data.items():
                 setattr(existing_provider, key, value)
@@ -78,9 +74,7 @@ class ProviderManager:
     async def delete_provider_by_id(self, provider_id: str, actor: PydanticClient) -> None:
         """Delete a provider."""
         async with self.session_maker() as session:
-            existing_provider = await ProviderModel.read(
-                db_session=session, identifier=provider_id, actor=actor
-            )
+            existing_provider = await ProviderModel.read(db_session=session, identifier=provider_id, actor=actor)
             existing_provider.api_key = None
             await existing_provider.update(session, actor=actor)
             await existing_provider.delete(session, actor=actor)

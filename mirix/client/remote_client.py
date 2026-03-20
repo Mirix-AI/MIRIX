@@ -15,28 +15,23 @@ import httpx
 from mirix.client.client import AbstractClient
 from mirix.constants import FUNCTION_RETURN_CHAR_LIMIT
 from mirix.log import get_logger
-from mirix.schemas.agent import AgentState, AgentType, CreateAgent, CreateMetaAgent
-from mirix.schemas.block import Block, BlockUpdate, CreateBlock, Human, Persona
+from mirix.schemas.agent import AgentState, AgentType
+from mirix.schemas.block import Block, Human, Persona
 from mirix.schemas.embedding_config import EmbeddingConfig
 from mirix.schemas.environment_variables import (
     SandboxEnvironmentVariable,
-    SandboxEnvironmentVariableCreate,
-    SandboxEnvironmentVariableUpdate,
 )
-from mirix.schemas.file import FileMetadata
 from mirix.schemas.llm_config import LLMConfig
 from mirix.schemas.memory import ArchivalMemorySummary, Memory, RecallMemorySummary
-from mirix.schemas.message import Message, MessageCreate
+from mirix.schemas.message import Message
 from mirix.schemas.mirix_response import MirixResponse
 from mirix.schemas.organization import Organization
 from mirix.schemas.sandbox_config import (
     E2BSandboxConfig,
     LocalSandboxConfig,
     SandboxConfig,
-    SandboxConfigCreate,
-    SandboxConfigUpdate,
 )
-from mirix.schemas.tool import Tool, ToolCreate, ToolUpdate
+from mirix.schemas.tool import Tool
 from mirix.schemas.tool_rule import BaseToolRule
 
 logger = get_logger(__name__)
@@ -103,7 +98,7 @@ class RetryTransport(httpx.AsyncBaseTransport):
                 last_exc = exc
                 if attempt == self._max_retries:
                     raise
-            delay = self._backoff_factor * (2 ** attempt)
+            delay = self._backoff_factor * (2**attempt)
             await asyncio.sleep(delay)
         raise last_exc  # type: ignore[misc]
 
@@ -349,9 +344,7 @@ class MirixClient(AbstractClient):
         if not (headers and "X-API-Key" in headers) and (org_id or self.org_id):
             request_data["org_id"] = org_id or self.org_id
 
-        response = await self._request(
-            "POST", "/users/create_or_get", json=request_data, headers=headers
-        )
+        response = await self._request("POST", "/users/create_or_get", json=request_data, headers=headers)
         if isinstance(response, dict) and "id" in response:
             if self.debug:
                 logger.debug("User ready: %s", response["id"])
@@ -408,9 +401,7 @@ class MirixClient(AbstractClient):
             if json:
                 logger.debug("[MirixClient] Request body: %s", json)
 
-        response = await self._client.request(
-            method=method, url=url, json=json, params=params, headers=headers
-        )
+        response = await self._client.request(method=method, url=url, json=json, params=params, headers=headers)
         try:
             response.raise_for_status()
         except httpx.HTTPStatusError as e:
@@ -418,9 +409,7 @@ class MirixClient(AbstractClient):
                 error_detail = response.json().get("detail", str(e))
             except Exception:
                 error_detail = str(e)
-            raise httpx.HTTPStatusError(
-                error_detail, request=e.request, response=e.response
-            ) from e
+            raise httpx.HTTPStatusError(error_detail, request=e.request, response=e.response) from e
         if response.content:
             return response.json()
         return None
@@ -671,7 +660,9 @@ class MirixClient(AbstractClient):
         data = await self._request("GET", f"/agents/{agent_id}/memory/archival", headers=headers)
         return ArchivalMemorySummary(**data)
 
-    async def get_recall_memory_summary(self, agent_id: str, headers: Optional[Dict[str, str]] = None) -> RecallMemorySummary:
+    async def get_recall_memory_summary(
+        self, agent_id: str, headers: Optional[Dict[str, str]] = None
+    ) -> RecallMemorySummary:
         """Get recall memory summary."""
         data = await self._request("GET", f"/agents/{agent_id}/memory/recall", headers=headers)
         return RecallMemorySummary(**data)
@@ -771,9 +762,7 @@ class MirixClient(AbstractClient):
         if not use_cache:
             request_data["use_cache"] = use_cache
 
-        data = await self._request(
-            "POST", f"/agents/{resolved_agent_id}/messages", json=request_data, headers=headers
-        )
+        data = await self._request("POST", f"/agents/{resolved_agent_id}/messages", json=request_data, headers=headers)
         return MirixResponse(**data)
 
     async def user_message(

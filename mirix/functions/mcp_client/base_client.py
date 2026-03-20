@@ -12,7 +12,7 @@ from mcp.types import TextContent
 from mirix.observability.context import get_trace_context
 from mirix.observability.langfuse_client import get_langfuse_client
 
-from .exceptions import MCPConnectionError, MCPNotInitializedError, MCPTimeoutError
+from .exceptions import MCPConnectionError, MCPNotInitializedError
 from .types import BaseServerConfig, MCPTool
 
 logger = logging.getLogger(__name__)

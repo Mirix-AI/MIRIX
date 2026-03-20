@@ -19,9 +19,7 @@ class FileManager:
         self.session_maker = db_context
 
     @enforce_types
-    async def create_file_metadata(
-        self, pydantic_file: PydanticFileMetadata
-    ) -> PydanticFileMetadata:
+    async def create_file_metadata(self, pydantic_file: PydanticFileMetadata) -> PydanticFileMetadata:
         """Create new file metadata."""
         async with self.session_maker() as session:
             file_metadata = FileMetadataModel(**pydantic_file.model_dump())
@@ -32,9 +30,7 @@ class FileManager:
     async def get_file_metadata_by_id(self, file_id: str) -> PydanticFileMetadata:
         """Get file metadata by ID."""
         async with self.session_maker() as session:
-            file_metadata = await FileMetadataModel.read(
-                db_session=session, identifier=file_id
-            )
+            file_metadata = await FileMetadataModel.read(db_session=session, identifier=file_id)
             return file_metadata.to_pydantic()
 
     @enforce_types
@@ -55,14 +51,10 @@ class FileManager:
             return [f.to_pydantic() for f in results]
 
     @enforce_types
-    async def update_file_metadata(
-        self, file_id: str, **kwargs
-    ) -> PydanticFileMetadata:
+    async def update_file_metadata(self, file_id: str, **kwargs) -> PydanticFileMetadata:
         """Update file metadata."""
         async with self.session_maker() as session:
-            file_metadata = await FileMetadataModel.read(
-                db_session=session, identifier=file_id
-            )
+            file_metadata = await FileMetadataModel.read(db_session=session, identifier=file_id)
             for key, value in kwargs.items():
                 if hasattr(file_metadata, key) and value is not None:
                     setattr(file_metadata, key, value)
@@ -74,20 +66,14 @@ class FileManager:
     async def delete_file_metadata(self, file_id: str) -> None:
         """Delete file metadata by ID."""
         async with self.session_maker() as session:
-            file_metadata = await FileMetadataModel.read(
-                db_session=session, identifier=file_id
-            )
+            file_metadata = await FileMetadataModel.read(db_session=session, identifier=file_id)
             await file_metadata.hard_delete(session)
 
     @enforce_types
-    async def list_files(
-        self, cursor: Optional[str] = None, limit: Optional[int] = 50
-    ) -> List[PydanticFileMetadata]:
+    async def list_files(self, cursor: Optional[str] = None, limit: Optional[int] = 50) -> List[PydanticFileMetadata]:
         """List all files with pagination."""
         async with self.session_maker() as session:
-            results = await FileMetadataModel.list(
-                db_session=session, cursor=cursor, limit=limit
-            )
+            results = await FileMetadataModel.list(db_session=session, cursor=cursor, limit=limit)
             return [f.to_pydantic() for f in results]
 
     @enforce_types
@@ -140,14 +126,10 @@ class FileManager:
         """Search files by name pattern."""
         async with self.session_maker() as session:
             stmt = select(FileMetadataModel).where(
-                func.lower(FileMetadataModel.file_name).contains(
-                    func.lower(file_name)
-                )
+                func.lower(FileMetadataModel.file_name).contains(func.lower(file_name))
             )
             if organization_id:
-                stmt = stmt.where(
-                    FileMetadataModel.organization_id == organization_id
-                )
+                stmt = stmt.where(FileMetadataModel.organization_id == organization_id)
             result = await session.execute(stmt)
             rows = result.scalars().all()
             return [f.to_pydantic() for f in rows]
@@ -158,53 +140,37 @@ class FileManager:
     ) -> List[PydanticFileMetadata]:
         """Get files by file type."""
         async with self.session_maker() as session:
-            stmt = select(FileMetadataModel).where(
-                FileMetadataModel.file_type == file_type
-            )
+            stmt = select(FileMetadataModel).where(FileMetadataModel.file_type == file_type)
             if organization_id:
-                stmt = stmt.where(
-                    FileMetadataModel.organization_id == organization_id
-                )
+                stmt = stmt.where(FileMetadataModel.organization_id == organization_id)
             result = await session.execute(stmt)
             rows = result.scalars().all()
             return [f.to_pydantic() for f in rows]
 
     @enforce_types
-    async def check_file_exists(
-        self, file_path: str, organization_id: Optional[str] = None
-    ) -> bool:
+    async def check_file_exists(self, file_path: str, organization_id: Optional[str] = None) -> bool:
         """Check if a file with the given path exists in the database."""
         async with self.session_maker() as session:
             try:
-                stmt = select(FileMetadataModel).where(
-                    FileMetadataModel.file_path == file_path
-                )
+                stmt = select(FileMetadataModel).where(FileMetadataModel.file_path == file_path)
                 if organization_id:
-                    stmt = stmt.where(
-                        FileMetadataModel.organization_id == organization_id
-                    )
+                    stmt = stmt.where(FileMetadataModel.organization_id == organization_id)
                 result = await session.execute(stmt)
                 return result.scalar_one_or_none() is not None
             except Exception:
                 return False
 
     @enforce_types
-    async def get_file_stats(
-        self, organization_id: Optional[str] = None
-    ) -> dict:
+    async def get_file_stats(self, organization_id: Optional[str] = None) -> dict:
         """Get file statistics for an organization or globally."""
         async with self.session_maker() as session:
             stmt = select(
                 func.count(FileMetadataModel.id).label("total_files"),
                 func.sum(FileMetadataModel.file_size).label("total_size"),
-                func.count(func.distinct(FileMetadataModel.file_type)).label(
-                    "unique_types"
-                ),
+                func.count(func.distinct(FileMetadataModel.file_type)).label("unique_types"),
             )
             if organization_id:
-                stmt = stmt.where(
-                    FileMetadataModel.organization_id == organization_id
-                )
+                stmt = stmt.where(FileMetadataModel.organization_id == organization_id)
             result = await session.execute(stmt)
             row = result.one()
             return {

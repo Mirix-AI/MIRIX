@@ -49,9 +49,7 @@ logger = get_logger(__name__)
 class AnthropicClient(LLMClientBase):
     async def request(self, request_data: dict) -> dict:
         client = await self._get_anthropic_client(async_client=True)
-        response = await client.beta.messages.create(
-            **request_data, betas=["tools-2024-04-04"]
-        )
+        response = await client.beta.messages.create(**request_data, betas=["tools-2024-04-04"])
         return response.model_dump()
 
     @trace_method
@@ -112,7 +110,9 @@ class AnthropicClient(LLMClientBase):
             raise self.handle_llm_error(e)
 
     @trace_method
-    async def _get_anthropic_client(self, async_client: bool = False) -> Union[anthropic.AsyncAnthropic, anthropic.Anthropic]:
+    async def _get_anthropic_client(
+        self, async_client: bool = False
+    ) -> Union[anthropic.AsyncAnthropic, anthropic.Anthropic]:
         override_key = await ProviderManager().get_anthropic_override_key()
         if async_client:
             return anthropic.AsyncAnthropic(api_key=override_key) if override_key else anthropic.AsyncAnthropic()

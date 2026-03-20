@@ -39,9 +39,12 @@ class UploadManager:
         if shutil.which("vipsthumbnail"):
             try:
                 process = await asyncio.create_subprocess_exec(
-                    "vipsthumbnail", image_path,
-                    "--size", f"{max_size[0]}x{max_size[1]}",
-                    "-o", f"{compressed_path}[Q={quality},optimize-coding,strip]",
+                    "vipsthumbnail",
+                    image_path,
+                    "--size",
+                    f"{max_size[0]}x{max_size[1]}",
+                    "-o",
+                    f"{compressed_path}[Q={quality},optimize-coding,strip]",
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                 )
@@ -52,13 +55,15 @@ class UploadManager:
 
                 logger.warning(
                     "vipsthumbnail failed for %s (rc=%d): %s",
-                    image_path, process.returncode,
+                    image_path,
+                    process.returncode,
                     stderr_bytes.decode() if stderr_bytes else "",
                 )
             except Exception as e:
                 logger.warning(
                     "vipsthumbnail error for %s: %s; falling back to Pillow",
-                    image_path, e,
+                    image_path,
+                    e,
                 )
 
         # Fallback: Pillow in a child process (still async, separate process)
@@ -74,7 +79,9 @@ class UploadManager:
                 f"quality={quality},optimize=True)"
             )
             process = await asyncio.create_subprocess_exec(
-                sys.executable, "-c", script,
+                sys.executable,
+                "-c",
+                script,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -85,7 +92,8 @@ class UploadManager:
 
             logger.error(
                 "Pillow subprocess failed for %s (rc=%d): %s",
-                image_path, process.returncode,
+                image_path,
+                process.returncode,
                 stderr_bytes.decode() if stderr_bytes else "",
             )
             return None
@@ -115,6 +123,7 @@ class UploadManager:
             upload_file = compressed_file if compressed_file and os.path.exists(compressed_file) else filename
 
             import time
+
             upload_start_time = time.time()
             file_ref = await self.google_client.aio.files.upload(file=upload_file)
             upload_duration = time.time() - upload_start_time
@@ -215,6 +224,7 @@ class UploadManager:
             return placeholder
 
         import time
+
         start_time = time.time()
         while time.time() - start_time < timeout:
             upload_status = await self.get_upload_status(placeholder)
@@ -245,7 +255,7 @@ class UploadManager:
     async def get_upload_status_summary(self):
         """Get a summary of current upload statuses."""
         async with self._upload_lock:
-            summary = {}
+            summary: dict[str, int] = {}
             for uid, info in self._upload_status.items():
                 status = info.get("status", "unknown")
                 summary[status] = summary.get(status, 0) + 1

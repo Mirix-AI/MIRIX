@@ -1,8 +1,4 @@
-import copy
-import json
 import logging
-import warnings
-from collections import OrderedDict
 from typing import Any, List, Union
 
 import httpx
@@ -10,9 +6,8 @@ import httpx
 from mirix.constants import OPENAI_CONTEXT_WINDOW_ERROR_SUBSTRING
 from mirix.schemas.enums import MessageRole
 from mirix.schemas.message import Message
-from mirix.schemas.openai.chat_completion_response import ChatCompletionResponse, Choice
 from mirix.settings import summarizer_settings
-from mirix.utils import count_tokens, json_dumps, printd
+from mirix.utils import count_tokens, printd
 
 logger = logging.getLogger(__name__)
 

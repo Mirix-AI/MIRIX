@@ -87,6 +87,20 @@ class Agent(SqlalchemyBase, OrganizationMixin):
 
     def to_pydantic(self) -> PydanticAgentState:
         """converts to the basic pydantic model counterpart"""
+        from sqlalchemy import inspect
+
+        # Check if we're in a session and tools are loaded
+        # This prevents MissingGreenlet when accessing relationships outside session
+        insp = inspect(self)
+
+        # For tools: if already loaded, use them; otherwise use empty list
+        # tools has lazy="selectin" so should be loaded, but this handles edge cases
+        if "tools" in insp.dict:
+            tools = self.tools
+        else:
+            # Tools not loaded (detached instance or session closed)
+            tools = []
+
         state = {
             "id": self.id,
             "organization_id": self.organization_id,
@@ -95,7 +109,7 @@ class Agent(SqlalchemyBase, OrganizationMixin):
             "parent_id": self.parent_id,
             "children": None,  # Children are populated separately when needed
             "message_ids": self.message_ids,
-            "tools": self.tools,
+            "tools": tools,
             "tool_rules": self.tool_rules,
             "system": self.system,
             "agent_type": self.agent_type,
