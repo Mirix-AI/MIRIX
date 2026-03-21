@@ -507,7 +507,7 @@ class ClientManager:
 
             logger.debug("Bulk deleted %d blocks", block_count)
 
-            # Clear message_ids from agents in PostgreSQL (they reference deleted messages)
+            # Collect agent IDs for cache invalidation (messages already deleted above)
             agent_ids: List[str] = []
             async with self.session_maker() as session:
                 from mirix.orm.agent import Agent as AgentModel
@@ -518,16 +518,6 @@ class ClientManager:
                 result_agents = await session.execute(stmt_agents)
                 agents = result_agents.scalars().all()
                 agent_ids = [agent.id for agent in agents]
-                for agent in agents:
-                    if agent.message_ids and len(agent.message_ids) > 0:
-                        agent.message_ids = [agent.message_ids[0]]
-
-                await session.commit()
-                logger.debug(
-                    "Cleared conversation message_ids from %d agents in PostgreSQL "
-                    "(kept system messages)",
-                    len(agent_ids),
-                )
 
             from mirix.database.cache_provider import get_cache_provider
 

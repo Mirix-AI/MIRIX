@@ -46,6 +46,11 @@ class Client(ClientBase):
     write_scope: Optional[str] = Field(default=None, description="Scope for writing memories (null = read-only).")
     read_scopes: List[str] = Field(default_factory=list, description="Scopes for reading memories.")
 
+    # Message retention
+    message_set_retention_count: Optional[int] = Field(
+        default=0, description="Number of input message-sets to retain per (agent, user). 0 = no retention."
+    )
+
     # Dashboard authentication fields
     email: Optional[str] = Field(default=None, description="Email address for dashboard login.")
     password_hash: Optional[str] = Field(default=None, description="Hashed password for dashboard login.")
@@ -72,3 +77,6 @@ class ClientUpdate(ClientBase):
     write_scope: Optional[str] = Field(default=None, description="The new write scope of the client.")
     read_scopes: Optional[List[str]] = Field(default=None, description="The new read scopes of the client.")
     organization_id: Optional[str] = Field(default=None, description="The new organization id of the client.")
+    message_set_retention_count: Optional[int] = Field(
+        default=None, description="Number of input message-sets to retain per (agent, user). 0 = no retention."
+    )

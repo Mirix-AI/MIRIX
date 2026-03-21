@@ -1,7 +1,7 @@
 import uuid
 from typing import TYPE_CHECKING, List, Optional
 
-from sqlalchemy import JSON, String
+from sqlalchemy import JSON, String  # JSON retained for mcp_tools column
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from mirix.orm.custom_columns import (
@@ -50,10 +50,6 @@ class Agent(SqlalchemyBase, OrganizationMixin):
     # System prompt
     system: Mapped[Optional[str]] = mapped_column(String, nullable=True, doc="The system prompt used by the agent.")
 
-    message_ids: Mapped[Optional[List[str]]] = mapped_column(
-        JSON, nullable=True, doc="List of message IDs in in-context memory."
-    )
-
     # Metadata and configs
     llm_config: Mapped[Optional[LLMConfig]] = mapped_column(
         LLMConfigColumn,
@@ -80,7 +76,7 @@ class Agent(SqlalchemyBase, OrganizationMixin):
     messages: Mapped[List["Message"]] = relationship(
         "Message",
         back_populates="agent",
-        lazy="selectin",
+        lazy="noload",
         cascade="all, delete-orphan",  # Ensure messages are deleted when the agent is deleted
         passive_deletes=True,
     )
@@ -94,7 +90,6 @@ class Agent(SqlalchemyBase, OrganizationMixin):
             "description": self.description,
             "parent_id": self.parent_id,
             "children": None,  # Children are populated separately when needed
-            "message_ids": self.message_ids,
             "tools": self.tools,
             "tool_rules": self.tool_rules,
             "system": self.system,

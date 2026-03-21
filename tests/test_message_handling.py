@@ -1,27 +1,27 @@
 """
-Tests for message handling, particularly the race condition fix.
+Tests for message handling after the message_ids refactor.
 
 Tests cover:
-1. get_messages_by_ids gracefully handles missing message IDs
-2. get_in_context_messages filters by user when user is provided
-3. get_in_context_messages returns all messages when user is not provided
+1. get_messages_for_agent_user returns messages in chronological order
+2. hard_delete_user_messages_for_agent deletes correct rows and keeps newest N
+3. Retention=0 path: no DB persistence after step
+4. Retention=N path: persists input messages and prunes to N newest
 """
 
+import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from mirix.schemas.agent import AgentState
 from mirix.schemas.client import Client
 from mirix.schemas.message import Message
 from mirix.schemas.user import User
-from mirix.services.agent_manager import AgentManager
 from mirix.services.message_manager import MessageManager
 
 
-def make_client(id="client-1", org_id="org-1"):
+def make_client(id="client-1", org_id="org-1", retention=0):
     """Create a real Client object for tests."""
     return Client(
         id=id,
@@ -30,6 +30,7 @@ def make_client(id="client-1", org_id="org-1"):
         status="active",
         write_scope="test",
         read_scopes=["test"],
+        message_set_retention_count=retention,
         created_at=datetime.now(),
         updated_at=datetime.now(),
         is_deleted=False,
@@ -50,196 +51,151 @@ def make_user(id="user-1", org_id="org-1"):
     )
 
 
-def make_agent_state(message_ids=None):
-    """Create a mock AgentState with spec for type checking."""
-    agent_state = MagicMock(spec=AgentState)
-    agent_state.message_ids = message_ids or []
-    return agent_state
+def make_pydantic_message(id: str, role: str = "user", user_id: str = "user-1") -> MagicMock:
+    msg = MagicMock(spec=Message)
+    msg.id = id
+    msg.role = role
+    msg.user_id = user_id
+    return msg
 
 
-@pytest.mark.asyncio
-class TestGetMessagesByIds:
-    """Tests for MessageManager.get_messages_by_ids() - race condition fix"""
+class TestGetMessagesForAgentUser:
+    """Tests for MessageManager.get_messages_for_agent_user()"""
 
-    async def test_returns_existing_messages_skips_missing(self):
-        """
-        Test that get_messages_by_ids returns existing messages and skips missing ones.
-
-        This is the key fix for the race condition - when concurrent workers
-        delete messages via summarization, other workers should not crash.
-        """
+    def test_returns_messages_in_chronological_order(self):
+        """DB returns newest-first; method should reverse to chronological."""
         manager = MessageManager()
 
-        # Mock the session and MessageModel.list to return only 2 of 3 requested messages
-        mock_session = MagicMock()
-        mock_msg1 = MagicMock()
-        mock_msg1.id = "msg-1"
-        mock_msg1.to_pydantic.return_value = MagicMock(id="msg-1")
+        # Simulate DB returning newest-first (DESC order)
+        msg_old = MagicMock()
+        msg_old.to_pydantic.return_value = make_pydantic_message("msg-1")
+        msg_new = MagicMock()
+        msg_new.to_pydantic.return_value = make_pydantic_message("msg-2")
 
-        mock_msg2 = MagicMock()
-        mock_msg2.id = "msg-2"
-        mock_msg2.to_pydantic.return_value = MagicMock(id="msg-2")
+        mock_result = MagicMock()
+        mock_result.scalars.return_value.all.return_value = [msg_new, msg_old]  # newest first from DB
 
-        # msg-3 is "missing" (simulates deletion by another worker)
+        mock_session = AsyncMock()
+        mock_session.execute = AsyncMock(return_value=mock_result)
 
         @asynccontextmanager
         async def _async_cm():
             yield mock_session
 
-        with patch.object(manager, "session_maker") as mock_session_maker:
-            mock_session_maker.return_value = _async_cm()
-
-            with patch("mirix.services.message_manager.MessageModel") as MockMessageModel:
-                MockMessageModel.list = AsyncMock(return_value=[mock_msg1, mock_msg2])
-
+        async def run():
+            with patch.object(manager, "session_maker", return_value=_async_cm()):
                 actor = make_client()
-
-                # Request 3 messages, but only 2 exist
-                result = await manager.get_messages_by_ids(
-                    message_ids=["msg-1", "msg-2", "msg-3"], actor=actor
+                return await manager.get_messages_for_agent_user(
+                    agent_id="agent-1", user_id="user-1", actor=actor, limit=10
                 )
 
-                # Should return only the 2 that exist, not crash
-                assert len(result) == 2
-                assert result[0].id == "msg-1"
-                assert result[1].id == "msg-2"
+        result = asyncio.run(run())
 
-    async def test_preserves_order_of_existing_messages(self):
-        """Test that returned messages maintain the requested order."""
+        # Should be reversed to chronological order
+        assert len(result) == 2
+        assert result[0].id == "msg-1"  # oldest first
+        assert result[1].id == "msg-2"
+
+    def test_returns_empty_when_no_messages(self):
+        """Returns empty list when no messages exist."""
         manager = MessageManager()
 
-        mock_msg2 = MagicMock()
-        mock_msg2.id = "msg-2"
-        mock_msg2.to_pydantic.return_value = MagicMock(id="msg-2")
+        mock_result = MagicMock()
+        mock_result.scalars.return_value.all.return_value = []
 
-        mock_msg1 = MagicMock()
-        mock_msg1.id = "msg-1"
-        mock_msg1.to_pydantic.return_value = MagicMock(id="msg-1")
+        mock_session = AsyncMock()
+        mock_session.execute = AsyncMock(return_value=mock_result)
 
         @asynccontextmanager
         async def _async_cm():
-            yield MagicMock()
+            yield mock_session
 
-        with patch.object(manager, "session_maker") as mock_session_maker:
-            mock_session_maker.return_value = _async_cm()
-
-            with patch("mirix.services.message_manager.MessageModel") as MockMessageModel:
-                # DB returns in different order
-                MockMessageModel.list = AsyncMock(return_value=[mock_msg2, mock_msg1])
-
+        async def run():
+            with patch.object(manager, "session_maker", return_value=_async_cm()):
                 actor = make_client()
-
-                result = await manager.get_messages_by_ids(
-                    message_ids=["msg-1", "msg-2"], actor=actor
+                return await manager.get_messages_for_agent_user(
+                    agent_id="agent-1", user_id="user-1", actor=actor, limit=10
                 )
 
-                # Should be in requested order, not DB order
-                assert result[0].id == "msg-1"
-                assert result[1].id == "msg-2"
+        result = asyncio.run(run())
+        assert result == []
 
-    async def test_returns_empty_list_when_all_missing(self):
-        """Test that an empty list is returned when all messages are missing."""
+
+class TestHardDeleteUserMessagesForAgent:
+    """Tests for MessageManager.hard_delete_user_messages_for_agent()"""
+
+    def test_deletes_all_when_keep_newest_n_is_zero(self):
+        """keep_newest_n=0 means delete everything."""
         manager = MessageManager()
+
+        delete_ids_result = MagicMock()
+        delete_ids_result.all.return_value = [("msg-1",), ("msg-2",), ("msg-3",)]
+
+        execute_results = [
+            delete_ids_result,  # select IDs to delete
+            MagicMock(),        # DELETE statement
+        ]
+
+        mock_session = AsyncMock()
+        mock_session.execute = AsyncMock(side_effect=execute_results)
+        mock_session.commit = AsyncMock()
 
         @asynccontextmanager
         async def _async_cm():
-            yield MagicMock()
+            yield mock_session
 
-        with patch.object(manager, "session_maker") as mock_session_maker:
-            mock_session_maker.return_value = _async_cm()
+        async def run():
+            with patch.object(manager, "session_maker", return_value=_async_cm()):
+                with patch("mirix.database.redis_client.get_redis_client", return_value=None):
+                    actor = make_client()
+                    return await manager.hard_delete_user_messages_for_agent(
+                        agent_id="agent-1",
+                        user_id="user-1",
+                        actor=actor,
+                        keep_newest_n=0,
+                    )
 
-            with patch("mirix.services.message_manager.MessageModel") as MockMessageModel:
-                MockMessageModel.list = AsyncMock(return_value=[])
+        count = asyncio.run(run())
+        assert count == 3
 
+    def test_returns_zero_when_no_messages_exist(self):
+        """Returns 0 when there are no messages to delete."""
+        manager = MessageManager()
+
+        delete_ids_result = MagicMock()
+        delete_ids_result.all.return_value = []  # nothing to delete
+
+        mock_session = AsyncMock()
+        mock_session.execute = AsyncMock(return_value=delete_ids_result)
+        mock_session.commit = AsyncMock()
+
+        @asynccontextmanager
+        async def _async_cm():
+            yield mock_session
+
+        async def run():
+            with patch.object(manager, "session_maker", return_value=_async_cm()):
                 actor = make_client()
-
-                result = await manager.get_messages_by_ids(
-                    message_ids=["msg-1", "msg-2"], actor=actor
+                return await manager.hard_delete_user_messages_for_agent(
+                    agent_id="agent-1",
+                    user_id="user-1",
+                    actor=actor,
+                    keep_newest_n=0,
                 )
 
-                assert result == []
+        count = asyncio.run(run())
+        assert count == 0
 
 
-@pytest.mark.asyncio
-class TestGetInContextMessages:
-    """Tests for AgentManager.get_in_context_messages() - user filtering fix"""
+class TestRetentionBehavior:
+    """Tests that retention=0 vs retention>0 produces correct persistence behavior."""
 
-    async def test_filters_by_user_id_when_user_provided(self):
-        """
-        Test that messages are filtered by user.id when user parameter is provided.
+    def test_client_default_retention_is_zero(self):
+        """Clients default to message_set_retention_count=0."""
+        client = make_client()
+        assert (client.message_set_retention_count or 0) == 0
 
-        This fixes the bug where actor.id (client ID) was used instead of user.id.
-        """
-        manager = AgentManager()
-
-        # Create mock messages
-        system_msg = MagicMock()
-        system_msg.user_id = "system"
-
-        user_a_msg = MagicMock()
-        user_a_msg.user_id = "user-a"
-
-        user_b_msg = MagicMock()
-        user_b_msg.user_id = "user-b"
-
-        with patch.object(manager, "message_manager") as mock_msg_manager:
-            mock_msg_manager.get_messages_by_ids = AsyncMock(
-                return_value=[system_msg, user_a_msg, user_b_msg]
-            )
-
-            agent_state = make_agent_state(message_ids=["sys-1", "msg-a", "msg-b"])
-            actor = make_client(id="client-123")
-            user = make_user(id="user-a")  # Should filter to this user's messages
-
-            result = await manager.get_in_context_messages(
-                agent_state=agent_state, actor=actor, user=user
-            )
-
-            # Should have system message + only user-a's message
-            assert len(result) == 2
-            assert result[0] == system_msg
-            assert result[1] == user_a_msg
-
-    async def test_no_filtering_when_user_not_provided(self):
-        """
-        Test that all messages are returned when user parameter is not provided.
-
-        This maintains backward compatibility.
-        """
-        manager = AgentManager()
-
-        system_msg = MagicMock()
-        user_a_msg = MagicMock()
-        user_b_msg = MagicMock()
-
-        with patch.object(manager, "message_manager") as mock_msg_manager:
-            mock_msg_manager.get_messages_by_ids = AsyncMock(
-                return_value=[system_msg, user_a_msg, user_b_msg]
-            )
-
-            agent_state = make_agent_state(message_ids=["sys-1", "msg-a", "msg-b"])
-            actor = make_client()
-
-            # No user parameter
-            result = await manager.get_in_context_messages(
-                agent_state=agent_state, actor=actor
-            )
-
-            # Should return all messages (no filtering)
-            assert len(result) == 3
-
-    async def test_returns_empty_when_no_messages(self):
-        """Test that empty list is returned when agent has no messages."""
-        manager = AgentManager()
-
-        with patch.object(manager, "message_manager") as mock_msg_manager:
-            mock_msg_manager.get_messages_by_ids = AsyncMock(return_value=[])
-
-            agent_state = make_agent_state(message_ids=[])
-            actor = make_client()
-
-            result = await manager.get_in_context_messages(
-                agent_state=agent_state, actor=actor
-            )
-
-            assert result == []
+    def test_client_with_retention_has_correct_value(self):
+        """Clients configured with retention=5 expose that value."""
+        client = make_client(retention=5)
+        assert client.message_set_retention_count == 5

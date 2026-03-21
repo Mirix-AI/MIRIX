@@ -43,14 +43,6 @@ pytestmark = pytest.mark.asyncio(loop_scope="module")
 # ============================================================================
 
 
-@pytest_asyncio.fixture
-def event_loop():
-    """Single event loop for the module so DB managers and tests share one loop."""
-    loop = asyncio.new_event_loop()
-    yield loop
-    loop.close()
-
-
 @pytest_asyncio.fixture(scope="module", autouse=True)
 async def _init_db():
     """Create all DB tables before any test in this module touches the database."""

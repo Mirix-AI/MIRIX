@@ -1,8 +1,9 @@
 """
 Shared test fixtures for Mirix.
 
-Provides a session-scoped API key tied to a test client, so integration tests can
-authenticate against the REST API without passing X-Client-ID.
+Provides:
+- Module-scoped engine reset (NullPool) so each test module gets fresh DB connections
+- Session-scoped API key tied to a test client for integration tests
 """
 
 import asyncio
@@ -10,12 +11,57 @@ import os
 from typing import Optional
 
 import pytest
+import pytest_asyncio
 
 from mirix.schemas.client import Client as PydanticClient
 from mirix.schemas.organization import Organization as PydanticOrganization
 from mirix.security.api_keys import generate_api_key
 from mirix.services.client_manager import ClientManager
 from mirix.services.organization_manager import OrganizationManager
+from mirix.settings import settings
+
+@pytest_asyncio.fixture(scope="module", autouse=True)
+async def _reset_engine_per_module():
+    """Dispose and recreate the async engine with NullPool at the start of
+    each test module so every module's event loop gets fresh DB connections.
+
+    NullPool creates a new connection per session and closes it immediately,
+    preventing stale connections from a previous module's (now-closed) loop.
+    """
+    import mirix.server.server as server_module
+
+    if (
+        hasattr(server_module, "engine")
+        and server_module.engine is not None
+        and "asyncpg" in str(server_module.engine.url)
+    ):
+        from sqlalchemy.ext.asyncio import (
+            AsyncSession,
+            async_sessionmaker,
+            create_async_engine,
+        )
+        from sqlalchemy.pool import NullPool
+
+        await server_module.engine.dispose()
+        _pg_uri = (
+            settings.mirix_pg_uri.replace(
+                "postgresql+pg8000://", "postgresql+asyncpg://"
+            ).replace("postgresql://", "postgresql+asyncpg://")
+        )
+        server_module.engine = create_async_engine(
+            _pg_uri, poolclass=NullPool, echo=settings.pg_echo
+        )
+        server_module.AsyncSessionLocal = async_sessionmaker(
+            bind=server_module.engine,
+            class_=AsyncSession,
+            autocommit=False,
+            autoflush=False,
+            expire_on_commit=False,
+        )
+
+    await server_module.ensure_tables_created()
+    yield
+
 
 TEST_ORG_ID = "demo-org"
 TEST_CLIENT_ID = "demo-client-id"

@@ -4,7 +4,6 @@ Mirix SDK - Simple Python interface for memory-enhanced AI agents.
 All I/O methods are async. Use Mirix.create() to construct an instance.
 """
 
-import asyncio
 import logging
 import os
 from pathlib import Path
@@ -246,44 +245,17 @@ class Mirix:
                 return user
         return None
 
-    def clear(self) -> Dict[str, Any]:
-        """
-        Clear all memories.
-
-        Note: This requires manual database file removal and app restart.
-
-        Returns:
-            Dict with warning message and instructions
-
-        Example:
-            result = memory_agent.clear()
-            logger.debug(result['warning'])
-            for step in result['instructions']:
-                logger.debug(step)
-        """
-        return {
-            "success": False,
-            "warning": "Memory clearing requires manual database reset.",
-            "instructions": [
-                "1. Stop the Mirix application/process",
-                "2. Remove the database file: ~/.mirix/sqlite.db",
-                "3. Restart the Mirix application",
-                "4. Initialize a new Mirix agent",
-            ],
-            "manual_command": "rm ~/.mirix/sqlite.db",
-            "note": "After removing the database file, you must restart your application and create a new agent instance.",
-        }
-
     async def clear_conversation_history(self, user_id: Optional[str] = None) -> Dict[str, Any]:
         """
         Clear conversation history while preserving memories.
 
-        This removes user and assistant messages from the conversation
-        history but keeps system messages and all stored memories intact.
+        This removes persisted conversation message rows while preserving
+        memory tables and agent configuration.
 
         Args:
-            user_id: User ID to clear messages for. If None, clears all messages
-                    except system messages. If provided, only clears messages for that specific user.
+            user_id: User ID to clear messages for. If None, clears all retained
+                    conversation rows for the meta agent. If provided, only clears
+                    messages for that specific user.
 
         Returns:
             Dict containing success status, message, and count of deleted messages
@@ -303,24 +275,15 @@ class Mirix:
         self._require_meta_agent()
         try:
             if user_id is None:
-                agent_state = await self._client.server.agent_manager.get_agent_by_id(
-                    agent_id=self._meta_agent.id,
-                    actor=self._client.client,
-                )
-                current_messages = await self._client.server.agent_manager.get_in_context_messages(
-                    agent_state=agent_state,
-                    actor=self._client.client,
-                )
-                messages_count = len(current_messages)
+                messages_count = 0  # count not available without per-user query
                 await self._client.server.agent_manager.reset_messages(
                     agent_id=self._meta_agent.id,
                     actor=self._client.client,
                     user_id=None,
-                    add_default_initial_messages=True,
                 )
                 return {
                     "success": True,
-                    "message": "Successfully cleared conversation history. All user and assistant messages removed (system messages preserved).",
+                    "message": "Successfully cleared retained conversation history.",
                     "messages_deleted": messages_count,
                 }
             else:
@@ -331,75 +294,25 @@ class Mirix:
                         "error": f"User with ID '{user_id}' not found",
                         "messages_deleted": 0,
                     }
-                agent_state = await self._client.server.agent_manager.get_agent_by_id(
+                current_messages = await self._client.server.message_manager.get_messages_for_agent_user(
                     agent_id=self._meta_agent.id,
+                    user_id=target_user.id,
                     actor=self._client.client,
+                    limit=10000,
                 )
-                current_messages = await self._client.server.agent_manager.get_in_context_messages(
-                    agent_state=agent_state,
-                    actor=self._client.client,
-                    user=target_user,
-                )
-                user_messages_count = len(
-                    [msg for msg in current_messages if msg.role != "system" and msg.user_id == target_user.id]
-                )
+                user_messages_count = len(current_messages)
                 await self._client.server.agent_manager.reset_messages(
                     agent_id=self._meta_agent.id,
                     actor=self._client.client,
                     user_id=target_user.id,
-                    add_default_initial_messages=True,
                 )
                 return {
                     "success": True,
-                    "message": f"Successfully cleared conversation history for {target_user.name}. Messages from other users and system messages preserved.",
+                    "message": f"Successfully cleared conversation history for {target_user.name}.",
                     "messages_deleted": user_messages_count,
                 }
         except Exception as e:
             return {"success": False, "error": str(e), "messages_deleted": 0}
-
-    def save(self, path: Optional[str] = None) -> Dict[str, Any]:
-        """
-        Save the current memory state to disk.
-
-        Note: Save/backup functionality is not yet implemented in the client-based SDK.
-        Please use the database backup directly.
-
-        Args:
-            path: Save directory path (optional). If not provided, generates
-                 timestamp-based directory name.
-
-        Returns:
-            Dict containing success status and backup path
-
-        Example:
-            result = memory_agent.save("./my_backup")
-        """
-        return {
-            "success": False,
-            "error": "Save functionality not yet implemented in client-based SDK. Please backup the database directly.",
-            "path": path or "N/A",
-        }
-
-    def load(self, path: str) -> Dict[str, Any]:
-        """
-        Load memory state from a backup directory.
-
-        Note: Load/restore functionality is not yet implemented in the client-based SDK.
-        Please restore the database directly.
-
-        Args:
-            path: Path to backup directory
-
-        Returns:
-            Dict containing success status and any error messages
-
-        Example:
-            result = memory_agent.load("./my_backup")
-        """
-        return {
-            "success": False,
-            "error": "Load functionality not yet implemented in client-based SDK. Please restore the database directly.",
-        }
 
     def _reload_model_settings(self):
         """
@@ -645,8 +558,6 @@ class Mirix:
 
             if not target_user:
                 return {"success": False, "error": "No user found"}
-
-            meta_agent_state = await self._client.get_agent(self._meta_agent.id)
 
             memories = {}
 

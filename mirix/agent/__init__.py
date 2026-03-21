@@ -23,7 +23,6 @@ __all__ = [
     "app_utils",
     "Agent",
     "AgentState",
-    "save_agent",
     "BackgroundAgent",
     "CoreMemoryAgent",
     "EpisodicMemoryAgent",
@@ -35,7 +34,7 @@ __all__ = [
     "SemanticMemoryAgent",
 ]
 
-from mirix.agent.agent import Agent, AgentState, save_agent
+from mirix.agent.agent import Agent, AgentState
 from mirix.agent.background_agent import BackgroundAgent
 from mirix.agent.core_memory_agent import CoreMemoryAgent
 from mirix.agent.episodic_memory_agent import EpisodicMemoryAgent

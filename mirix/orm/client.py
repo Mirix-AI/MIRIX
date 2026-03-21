@@ -29,6 +29,11 @@ class Client(SqlalchemyBase, OrganizationMixin):
         JSON, nullable=False, default=list, doc="Scopes for reading memories."
     )
 
+    # Message retention
+    message_set_retention_count: Mapped[Optional[int]] = mapped_column(
+        nullable=True, default=0, doc="Number of input message-sets to retain per (agent, user). 0 = no retention."
+    )
+
     # Dashboard authentication fields
     email: Mapped[Optional[str]] = mapped_column(
         nullable=True, unique=True, index=True, doc="Email address for dashboard login."

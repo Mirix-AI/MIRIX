@@ -515,114 +515,127 @@ class MessageManager:
 
             return [msg.to_pydantic() for msg in results]
 
-    @enforce_types
-    async def delete_detached_messages_for_agent(self, agent_id: str, actor: PydanticClient) -> int:
+    async def get_messages_for_agent_user(
+        self,
+        agent_id: str,
+        user_id: str,
+        actor: PydanticClient,
+        limit: int = 10,
+    ) -> List[PydanticMessage]:
         """
-        Delete messages that belong to an agent but are not in the agent's current message_ids list.
+        Fetch the most recent N messages for a given (agent, user) pair, returned in
+        chronological order (oldest first).
 
-        This is useful for cleaning up messages that were removed from context during
-        context window management but still exist in the database.
+        Uses the composite index ix_messages_agent_user_created_at for efficient retrieval.
 
         Args:
-            agent_id: The ID of the agent to clean up messages for
-            actor: The user performing this action
+            agent_id: The agent whose messages to retrieve
+            user_id: The user whose messages to retrieve
+            actor: Client performing the operation (for org scoping)
+            limit: Maximum number of messages to return (newest N, then reversed)
 
         Returns:
-            int: Number of messages deleted
+            List of messages in chronological order
         """
-        async with self.session_maker() as session:
-            # First, get the agent to access its current message_ids
-            from mirix.orm.agent import Agent as AgentModel
-
-            try:
-                agent = await AgentModel.read(db_session=session, identifier=agent_id, actor=actor)
-            except NoResultFound:
-                raise ValueError(f"Agent with id {agent_id} not found.")
-
-            # Get current message_ids (messages that should be kept)
-            current_message_ids = set(agent.message_ids or [])
-
-            # Find all messages for this agent
-            all_messages = await MessageModel.list(
-                db_session=session,
-                agent_id=agent_id,
-                organization_id=actor.organization_id,
-                limit=None,  # Get all messages
-            )
-
-            # Identify detached messages (not in current message_ids)
-            detached_messages = [msg for msg in all_messages if msg.id not in current_message_ids]
-
-            # Delete detached messages (and clean up Redis cache)
-            deleted_count = 0
-            from mirix.database.redis_client import get_redis_client
-
-            redis_client = get_redis_client()
-
-            for msg in detached_messages:
-                # Remove from Redis cache
-                if redis_client:
-                    redis_key = f"{redis_client.MESSAGE_PREFIX}{msg.id}"
-                    await redis_client.delete(redis_key)
-                await msg.hard_delete(session, actor=actor)
-                deleted_count += 1
-
-            await session.commit()
-            return deleted_count
-
-    @enforce_types
-    async def cleanup_all_detached_messages(self, actor: PydanticClient) -> Dict[str, int]:
-        """
-        Cleanup detached messages for all agents in the organization.
-
-        Args:
-            actor: The user performing this action
-
-        Returns:
-            Dict[str, int]: Dictionary mapping agent_id to number of messages deleted
-        """
-        from mirix.orm.agent import Agent as AgentModel
+        from sqlalchemy import desc
 
         async with self.session_maker() as session:
-            # Get all agents for this organization
-            agents = await AgentModel.list(
-                db_session=session, organization_id=actor.organization_id, limit=None
-            )
-
-            cleanup_results = {}
-            total_deleted = 0
-
-            for agent in agents:
-                # Get current message_ids for this agent
-                current_message_ids = set(agent.message_ids or [])
-
-                # Find all messages for this agent
-                all_messages = await MessageModel.list(
-                    db_session=session,
-                    agent_id=agent.id,
-                    organization_id=actor.organization_id,
-                    limit=None,
+            stmt = (
+                select(MessageModel)
+                .where(
+                    MessageModel.agent_id == agent_id,
+                    MessageModel.user_id == user_id,
+                    MessageModel.organization_id == actor.organization_id,
+                    MessageModel.is_deleted == False,
                 )
+                .order_by(desc(MessageModel.created_at), desc(MessageModel.id))
+                .limit(limit)
+            )
+            result = await session.execute(stmt)
+            messages = result.scalars().all()
 
-                # Identify and delete detached messages
-                detached_messages = [msg for msg in all_messages if msg.id not in current_message_ids]
+        # Reverse to chronological order
+        return [msg.to_pydantic() for msg in reversed(messages)]
 
-                deleted_count = 0
-                from mirix.database.redis_client import get_redis_client
+    async def hard_delete_user_messages_for_agent(
+        self,
+        agent_id: str,
+        user_id: str,
+        actor: PydanticClient,
+        keep_newest_n: int = 0,
+    ) -> int:
+        """
+        Hard-delete messages for a (agent, user) pair, optionally keeping the newest N.
 
-                redis_client = get_redis_client()
+        Deletes from both the database and Redis cache.
 
-                for msg in detached_messages:
-                    # Remove from Redis cache
-                    if redis_client:
-                        redis_key = f"{redis_client.MESSAGE_PREFIX}{msg.id}"
-                        await redis_client.delete(redis_key)
-                    await msg.hard_delete(session)
-                    deleted_count += 1
+        Args:
+            agent_id: The agent whose messages to prune
+            user_id: The user whose messages to prune
+            actor: Client performing the operation (for org scoping)
+            keep_newest_n: How many of the most-recent messages to retain. 0 = delete all.
 
-                cleanup_results[agent.id] = deleted_count
-                total_deleted += deleted_count
+        Returns:
+            Number of messages deleted
+        """
+        from sqlalchemy import delete, desc
 
+        from mirix.database.redis_client import get_redis_client
+
+        async with self.session_maker() as session:
+            # Identify IDs to keep (the newest N)
+            keep_ids: set = set()
+            if keep_newest_n > 0:
+                keep_stmt = (
+                    select(MessageModel.id)
+                    .where(
+                        MessageModel.agent_id == agent_id,
+                        MessageModel.user_id == user_id,
+                        MessageModel.organization_id == actor.organization_id,
+                        MessageModel.is_deleted == False,
+                    )
+                    .order_by(desc(MessageModel.created_at), desc(MessageModel.id))
+                    .limit(keep_newest_n)
+                )
+                keep_result = await session.execute(keep_stmt)
+                keep_ids = {row[0] for row in keep_result.all()}
+
+            # Collect IDs that will be deleted (for cache invalidation)
+            select_stmt = select(MessageModel.id).where(
+                MessageModel.agent_id == agent_id,
+                MessageModel.user_id == user_id,
+                MessageModel.organization_id == actor.organization_id,
+                MessageModel.is_deleted == False,
+            )
+            if keep_ids:
+                select_stmt = select_stmt.where(MessageModel.id.not_in(keep_ids))
+
+            id_result = await session.execute(select_stmt)
+            delete_ids = [row[0] for row in id_result.all()]
+
+            count = len(delete_ids)
+            if count == 0:
+                return 0
+
+            # Bulk delete
+            del_stmt = delete(MessageModel).where(
+                MessageModel.agent_id == agent_id,
+                MessageModel.user_id == user_id,
+                MessageModel.organization_id == actor.organization_id,
+                MessageModel.is_deleted == False,
+            )
+            if keep_ids:
+                del_stmt = del_stmt.where(MessageModel.id.not_in(keep_ids))
+
+            await session.execute(del_stmt)
             await session.commit()
-            cleanup_results["total"] = total_deleted
-            return cleanup_results
+
+        # Evict from Redis cache
+        redis_client = get_redis_client()
+        if redis_client and delete_ids:
+            BATCH_SIZE = 1000
+            for i in range(0, len(delete_ids), BATCH_SIZE):
+                batch = [f"{redis_client.MESSAGE_PREFIX}{mid}" for mid in delete_ids[i : i + BATCH_SIZE]]
+                await redis_client.client.delete(*batch)
+
+        return count

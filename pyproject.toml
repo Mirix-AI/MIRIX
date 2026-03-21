@@ -46,7 +46,7 @@ dependencies = [
     "demjson3",
     "pathvalidate",
     "docstring_parser",
-    "sqlalchemy",
+    "sqlalchemy[asyncio] (>=2.0.48,<3.0.0)",
     "asyncpg",
     "aiosqlite",
     "httpx",
@@ -127,7 +127,7 @@ exclude = ["tests*", "scripts*", "frontend*", "public_evaluations*", "mirix_env*
 [tool.setuptools.package-data]
 mirix = [
     "*.yaml",
-    "*.yml", 
+    "*.yml",
     "*.txt",
     "configs/*.yaml",
     "configs/*.yml",
@@ -214,7 +214,7 @@ python_classes = ["Test*"]
 python_functions = ["test_*"]
 addopts = "-v --tb=short"
 asyncio_mode = "auto"
-asyncio_default_fixture_loop_scope = "session"
+asyncio_default_fixture_loop_scope = "module"
 
 
 [tool.poetry.group.dev.dependencies]

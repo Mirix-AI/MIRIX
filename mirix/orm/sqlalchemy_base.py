@@ -792,8 +792,6 @@ class SqlalchemyBase(CommonSqlalchemyMetaMixins, Base):
                 else:
                     data = self.to_pydantic().model_dump(mode="json")
 
-                    if "message_ids" in data and data["message_ids"]:
-                        data["message_ids"] = json.dumps(data["message_ids"])
                     if "llm_config" in data and data["llm_config"]:
                         data["llm_config"] = json.dumps(data["llm_config"])
                     if "embedding_config" in data and data["embedding_config"]:

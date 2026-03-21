@@ -74,7 +74,6 @@ The codebase is fully async-native. Violating these rules will break the server.
 #### 3. Agent Execution Flow
 - `step()` method is the main agent execution loop (like LangChain's AgentExecutor)
 - `inner_step()` handles single LLM interactions with tool calls
-- `save_agent()` persists agent state to database
 - Steps are logged to the `steps` table for audit/analytics (write-only)
 
 #### 4. Message Flow
@@ -117,9 +116,8 @@ Before suggesting changes, verify:
 2. **Do NOT** call `step_manager.get_step()` - steps are write-only audit logs
 3. **Do NOT** bypass `create_or_get_user()` - always ensure users exist first
 4. **Do NOT** create agents without proper `CreateAgent` schema objects
-5. **Do NOT** forget to persist agent state with `save_agent()`
-6. **Do NOT** use `message.step` relationship - it's never loaded in practice
-7. **Do NOT** add duplicate environment variables in settings.py
+5. **Do NOT** use `message.step` relationship - it's never loaded in practice
+6. **Do NOT** add duplicate environment variables in settings.py
 
 ### Testing Guidelines
 - Tests located in `tests/` directory

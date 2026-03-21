@@ -519,7 +519,7 @@ async def test_raw_memory_create_with_redis(raw_memory_manager, test_actor, test
     await raw_memory_manager.delete_raw_memory(created.id, test_actor)
 
 
-async def test_raw_memory_cache_hit_performance(raw_memory_manager, test_actor, test_user):
+async def test_raw_memory_cache_hit_performance(raw_memory_manager, test_actor, test_user, redis_client):
     """Test cache hit performance for raw memory reads."""
     memory_data = RawMemoryItemCreate(
         context="Redis test: Performance testing context",

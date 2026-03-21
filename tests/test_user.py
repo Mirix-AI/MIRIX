@@ -65,14 +65,6 @@ def server_check():
     )
 
 
-@pytest.fixture(scope="module")
-def event_loop():
-    """Single event loop for the module so client and tests share one loop."""
-    loop = asyncio.new_event_loop()
-    yield loop
-    loop.close()
-
-
 @pytest_asyncio.fixture
 async def client(server_check, api_auth):
     """Create a new MirixClient per test in the current loop (avoids closed-loop httpx)."""

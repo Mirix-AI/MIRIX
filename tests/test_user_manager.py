@@ -64,46 +64,8 @@ def client_manager():
     return ClientManager()
 
 
-@pytest_asyncio.fixture(scope="module")
-def event_loop():
-    """Single event loop for the module so global DB engine stays on one loop."""
-    loop = asyncio.new_event_loop()
-    yield loop
-    loop.close()
-
-
-@pytest_asyncio.fixture(scope="module", autouse=True)
-async def _ensure_server_in_loop():
-    """Run server engine in the module event loop; use NullPool to avoid connection reuse."""
-    import mirix.server.server as server_module
-
-    if (
-        hasattr(server_module, "engine")
-        and server_module.engine is not None
-        and "asyncpg" in str(server_module.engine.url)
-    ):
-        from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-        from sqlalchemy.pool import NullPool
-
-        await server_module.engine.dispose()
-        _pg_uri = settings.mirix_pg_uri.replace(
-            "postgresql+pg8000://", "postgresql+asyncpg://"
-        ).replace("postgresql://", "postgresql+asyncpg://")
-        server_module.engine = create_async_engine(
-            _pg_uri, poolclass=NullPool, echo=settings.pg_echo
-        )
-        server_module.AsyncSessionLocal = async_sessionmaker(
-            bind=server_module.engine,
-            class_=AsyncSession,
-            autocommit=False,
-            autoflush=False,
-            expire_on_commit=False,
-        )
-    yield
-
-
 @pytest_asyncio.fixture
-async def test_org1(_ensure_server_in_loop, organization_manager):
+async def test_org1(organization_manager):
     """Create test organization 1."""
     org = PydanticOrganization(id=generate_test_id("org"), name="Test Organization 1")
     created_org = await organization_manager.create_organization(org)
@@ -115,7 +77,7 @@ async def test_org1(_ensure_server_in_loop, organization_manager):
 
 
 @pytest_asyncio.fixture
-async def test_org2(_ensure_server_in_loop, organization_manager):
+async def test_org2(organization_manager):
     """Create test organization 2."""
     org = PydanticOrganization(id=generate_test_id("org"), name="Test Organization 2")
     created_org = await organization_manager.create_organization(org)

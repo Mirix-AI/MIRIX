@@ -1602,7 +1602,7 @@
                         window sent to
                         the LLM on each call.
                         Messages are stored in the database and loaded via
-                        <code>agent_manager.get_in_context_messages()</code>.
+                        <code>message_manager.get_messages_for_agent_user()</code>.
                     </div>
                     <div class="code-block" style="margin-top: 15px;">
                         <pre><span class="comment"># Message structure for each agent</span>
@@ -1798,7 +1798,7 @@ FUNC_FAILED_HEARTBEAT_MESSAGE = <span class="string">"[System] Function call fai
                             <strong>inner_step()</strong>
                             <span style="color: #858585; margin-left: 10px;">Single async LLM call</span>
                             <div class="code-block" style="margin-top: 10px;">
-                                <pre>in_context_messages = <span class="keyword">await</span> self.agent_manager.<span class="function">get_in_context_messages</span>(...)
+                                <pre>in_context_messages = <span class="keyword">await</span> self.message_manager.<span class="function">get_messages_for_agent_user</span>(...)
 complete_prompt = <span class="keyword">await</span> self.<span class="function">build_system_prompt_with_memories</span>(raw_system)
 response = <span class="keyword">await</span> self.<span class="function">_get_ai_reply</span>(input_message_sequence)
 messages, continue_chaining, failed = <span class="keyword">await</span> self.<span class="function">_handle_ai_response</span>(response)</pre>

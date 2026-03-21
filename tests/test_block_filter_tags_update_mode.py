@@ -30,14 +30,6 @@ import pytest_asyncio
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-# One event loop per module for integration tests (avoids "Future attached to
-# a different loop" / "another operation is in progress").
-@pytest_asyncio.fixture(scope="module")
-def event_loop():
-    loop = asyncio.new_event_loop()
-    yield loop
-    loop.close()
-
 from mirix.queue.queue_util import put_messages
 from mirix.schemas.client import Client
 from mirix.schemas.enums import MessageRole

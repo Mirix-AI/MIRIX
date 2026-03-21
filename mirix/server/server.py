@@ -34,7 +34,6 @@ from mirix.agent import (
     ReflexionAgent,
     ResourceMemoryAgent,
     SemanticMemoryAgent,
-    save_agent,
 )
 from mirix.config import MirixConfig
 
@@ -782,9 +781,6 @@ class AsyncServer(Server):
         if command.lower() == "exit":
             # exit not supported on server.py
             raise ValueError(command)
-
-        elif command.lower() == "save" or command.lower() == "savechat":
-            await save_agent(mirix_agent)
 
         elif command.lower() == "dump" or command.lower().startswith("dump "):
             # Check if there's an additional argument that's an integer

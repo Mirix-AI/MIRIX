@@ -32,6 +32,7 @@ class Message(SqlalchemyBase, OrganizationMixin, UserMixin, AgentMixin):
         Index("ix_messages_created_at", "created_at", "id"),
         Index("ix_messages_client_user", "client_id", "user_id"),
         Index("ix_messages_agent_client_user", "agent_id", "client_id", "user_id"),
+        Index("ix_messages_agent_user_created_at", "agent_id", "user_id", "created_at", "id"),
     )
     __pydantic_model__ = PydanticMessage
 

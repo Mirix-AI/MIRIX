@@ -198,13 +198,6 @@ class TestSearchAllUsers:
     pytestmark = [pytest.mark.asyncio(loop_scope="class")]
 
     @pytest.fixture(scope="class")
-    def event_loop(self):
-        """Single event loop for the test class so all clients and tests share one loop."""
-        loop = asyncio.new_event_loop()
-        yield loop
-        loop.close()
-
-    @pytest.fixture(scope="class")
     def client_scope_value(self):
         """Client scope value used for testing."""
         return "read_write"

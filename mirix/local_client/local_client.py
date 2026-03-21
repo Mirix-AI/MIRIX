@@ -14,7 +14,7 @@ import logging
 import os
 import shutil
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 from urllib.parse import urlparse
 
 import httpx
@@ -530,7 +530,6 @@ class LocalClient(AbstractClient):
         # metadata
         metadata: Optional[Dict] = None,
         description: Optional[str] = None,
-        initial_message_sequence: Optional[List[Message]] = None,
         tags: Optional[List[str]] = None,
     ) -> AgentState:
         """Create an agent.
@@ -596,7 +595,6 @@ class LocalClient(AbstractClient):
             "agent_type": agent_type,
             "llm_config": llm_config if llm_config else self._default_llm_config,
             "embedding_config": (embedding_config if embedding_config else self._default_embedding_config),
-            "initial_message_sequence": initial_message_sequence,
             "tags": tags,
         }
         if name is not None:
@@ -698,7 +696,6 @@ class LocalClient(AbstractClient):
         metadata: Optional[Dict] = None,
         llm_config: Optional[LLMConfig] = None,
         embedding_config: Optional[EmbeddingConfig] = None,
-        message_ids: Optional[List[str]] = None,
     ):
         """
         Update an agent's configuration.
@@ -712,7 +709,6 @@ class LocalClient(AbstractClient):
             metadata (Dict): New metadata
             llm_config (LLMConfig): New LLM configuration
             embedding_config (EmbeddingConfig): New embedding configuration
-            message_ids (List[str]): New list of message IDs
 
         Returns:
             AgentState: Updated agent state
@@ -735,8 +731,6 @@ class LocalClient(AbstractClient):
             update_data["llm_config"] = llm_config
         if embedding_config is not None:
             update_data["embedding_config"] = embedding_config
-        if message_ids is not None:
-            update_data["message_ids"] = message_ids
 
         agent_update = UpdateAgent(**update_data)
         await self._ensure_client()
@@ -792,31 +786,6 @@ class LocalClient(AbstractClient):
         return await self.server.get_recall_memory_summary(
             agent_id=agent_id,
             actor=self.client,
-        )
-
-    async def get_in_context_messages(self, agent_id: str, user_id: Optional[str] = None) -> List[Message]:
-        """
-        Get in-context messages of an agent
-
-        Args:
-            agent_id (str): ID of the agent
-            user_id (str): Optional user ID to filter messages for. If None, returns all messages.
-
-        Returns:
-            messages (List[Message]): List of in-context messages
-        """
-        await self._ensure_client()
-        agent_state = await self.server.agent_manager.get_agent_by_id(
-            agent_id=agent_id,
-            actor=self.client,
-        )
-        user = None
-        if user_id:
-            user = await self.server.user_manager.get_user_by_id(user_id)
-        return await self.server.agent_manager.get_in_context_messages(
-            agent_state=agent_state,
-            actor=self.client,
-            user=user,
         )
 
     # agent interactions
