@@ -4,7 +4,7 @@
 
 -- 1. Delete legacy system messages stored as Message rows
 --    (system prompt now lives exclusively in agent_state.system)
-DELETE FROM messages WHERE role = 'system';
+DELETE FROM messages;
 
 -- 2. Drop the message_ids column from agents table
 ALTER TABLE agents DROP COLUMN IF EXISTS message_ids;
