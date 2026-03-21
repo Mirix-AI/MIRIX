@@ -24,9 +24,17 @@ from mirix.log import get_logger
 from mirix.orm import Agent as AgentModel
 from mirix.orm import Tool as ToolModel
 from mirix.orm.errors import NoResultFound
+
+logger = get_logger(__name__)
+
+# Diagnostic flag for MissingGreenlet debugging
+
+_TRACE_MISSING_GREENLET = os.getenv("MIRIX_TRACE_MISSING_GREENLET", "false").lower() == "true"
 from mirix.schemas.agent import AgentState as PydanticAgentState
 from mirix.schemas.agent import AgentType, CreateAgent, CreateMetaAgent, UpdateAgent, UpdateMetaAgent
 from mirix.schemas.client import Client as PydanticClient
+from mirix.schemas.message import Message as PydanticMessage
+from mirix.schemas.message import MessageCreate
 from mirix.schemas.embedding_config import EmbeddingConfig
 from mirix.schemas.enums import ToolType
 from mirix.schemas.llm_config import LLMConfig
@@ -619,6 +627,64 @@ class AgentManager:
             )
 
     @enforce_types
+    def _generate_initial_message_sequence(
+        self,
+        actor: PydanticClient,
+        agent_state: PydanticAgentState,
+        supplied_initial_message_sequence: Optional[List[MessageCreate]] = None,
+        user_id: Optional[str] = None,
+    ) -> List[PydanticMessage]:
+        init_messages = initialize_message_sequence(
+            agent_state=agent_state,
+            memory_edit_timestamp=get_utc_time(),
+            include_initial_boot_message=True,
+        )
+        if supplied_initial_message_sequence is not None:
+            # We always need the system prompt up front
+            system_message_obj = PydanticMessage.dict_to_message(
+                agent_id=agent_state.id,
+                model=agent_state.llm_config.model,
+                openai_message_dict=init_messages[0],
+            )
+            # Don't use anything else in the pregen sequence, instead use the provided sequence
+            init_messages = [system_message_obj]
+            init_messages.extend(
+                package_initial_message_sequence(
+                    agent_state.id,
+                    supplied_initial_message_sequence,
+                    agent_state.llm_config.model,
+                    actor,
+                    user_id=user_id,
+                )
+            )
+        else:
+            init_messages = [
+                PydanticMessage.dict_to_message(
+                    agent_id=agent_state.id,
+                    model=agent_state.llm_config.model,
+                    openai_message_dict=msg,
+                )
+                for msg in init_messages
+            ]
+
+        return init_messages
+
+    @enforce_types
+    async def append_initial_message_sequence_to_in_context_messages(
+        self,
+        actor: PydanticClient,
+        agent_state: PydanticAgentState,
+        initial_message_sequence: Optional[List[MessageCreate]] = None,
+        user_id: Optional[str] = None,
+    ) -> PydanticAgentState:
+        init_messages = self._generate_initial_message_sequence(
+            actor, agent_state, initial_message_sequence, user_id=user_id
+        )
+        return await self.append_to_in_context_messages(
+            init_messages, agent_id=agent_state.id, actor=actor, user_id=user_id
+        )
+
+    @enforce_types
     async def _create_agent(
         self,
         actor: PydanticClient,
@@ -667,7 +733,9 @@ class AgentManager:
         return await self._update_agent(agent_id=agent_id, agent_update=agent_update, actor=actor)
 
     @enforce_types
-    async def update_llm_config(self, agent_id: str, llm_config: LLMConfig, actor: PydanticClient) -> PydanticAgentState:
+    async def update_llm_config(
+        self, agent_id: str, llm_config: LLMConfig, actor: PydanticClient
+    ) -> PydanticAgentState:
         return await self.update_agent(
             agent_id=agent_id,
             agent_update=UpdateAgent(llm_config=llm_config),
@@ -723,7 +791,9 @@ class AgentManager:
         return agent_state
 
     @enforce_types
-    async def _update_agent(self, agent_id: str, agent_update: UpdateAgent, actor: PydanticClient) -> PydanticAgentState:
+    async def _update_agent(
+        self, agent_id: str, agent_update: UpdateAgent, actor: PydanticClient
+    ) -> PydanticAgentState:
         """
         Update an existing agent.
 
@@ -1012,7 +1082,9 @@ class AgentManager:
         )
         return children_by_parent
 
-    async def _get_children_from_redis(self, parent_id: str, actor: PydanticClient) -> Optional[List[PydanticAgentState]]:
+    async def _get_children_from_redis(
+        self, parent_id: str, actor: PydanticClient
+    ) -> Optional[List[PydanticAgentState]]:
         """
         Fetch children from Redis cache using parent's children_ids.
 
@@ -1165,7 +1237,25 @@ class AgentManager:
             )
 
             # Convert to Pydantic
-            agent_states = [agent.to_pydantic() for agent in agents]
+            if _TRACE_MISSING_GREENLET:
+                logger.info("Converting %d agents to Pydantic in list_agents", len(agents))
+                agent_states = []
+                for i, agent in enumerate(agents):
+                    try:
+                        agent_states.append(agent.to_pydantic())
+                    except Exception as e:
+                        if "MissingGreenlet" in str(type(e).__name__) or "greenlet" in str(e).lower():
+                            import traceback
+
+                            logger.error(
+                                "MissingGreenlet in list_agents at index %d, agent_id=%s\n" "Full traceback:\n%s",
+                                i,
+                                agent.id,
+                                traceback.format_exc(),
+                            )
+                        raise
+            else:
+                agent_states = [agent.to_pydantic() for agent in agents]
 
             # If there are no agents, return early
             if not agent_states:
@@ -1286,7 +1376,23 @@ class AgentManager:
                 identifier=agent_id,
                 actor=actor,  # Triggers client-level filtering via apply_access_predicate
             )
-            pydantic_agent = agent.to_pydantic()
+
+            if _TRACE_MISSING_GREENLET:
+                try:
+                    logger.info("Converting agent %s to Pydantic in get_agent_by_id", agent_id)
+                    pydantic_agent = agent.to_pydantic()
+                except Exception as e:
+                    if "MissingGreenlet" in str(type(e).__name__) or "greenlet" in str(e).lower():
+                        import traceback
+
+                        logger.error(
+                            "MissingGreenlet in get_agent_by_id for agent_id=%s\n" "Full traceback:\n%s",
+                            agent_id,
+                            traceback.format_exc(),
+                        )
+                    raise
+            else:
+                pydantic_agent = agent.to_pydantic()
 
             # Populate cache for next time
             try:
@@ -1439,6 +1545,10 @@ class AgentManager:
 
         agent_state = await self.get_agent_by_id(agent_id=agent_id, actor=actor)
 
+        if add_default_initial_messages:
+            return await self.append_initial_message_sequence_to_in_context_messages(
+                actor, agent_state, user_id=user_id
+            )
         return agent_state
 
     # ======================================================================================================================

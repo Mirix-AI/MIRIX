@@ -176,3 +176,28 @@ class KnowledgeVaultItem(SqlalchemyBase, OrganizationMixin, UserMixin):
         Relationship to the User that owns this knowledge vault item.
         """
         return relationship("User", lazy="selectin")
+
+    def to_pydantic(self) -> "PydanticKnowledgeVaultItem":
+        """
+        Convert to Pydantic model, safely handling relationship loading.
+        This prevents MissingGreenlet errors when converting detached instances.
+        """
+        state = {
+            "id": self.id,
+            "agent_id": self.agent_id,
+            "client_id": self.client_id,
+            "user_id": self.user_id,
+            "organization_id": self.organization_id,
+            "entry_type": self.entry_type,
+            "source": self.source,
+            "sensitivity": self.sensitivity,
+            "secret_value": self.secret_value,
+            "caption": self.caption,
+            "filter_tags": self.filter_tags,
+            "last_modify": self.last_modify,
+            "embedding_config": self.embedding_config,
+            "caption_embedding": self.caption_embedding,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+        }
+        return self.__pydantic_model__(**state)

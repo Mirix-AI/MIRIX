@@ -66,6 +66,7 @@ from mirix.services.resource_memory_manager import ResourceMemoryManager
 from mirix.services.semantic_memory_manager import SemanticMemoryManager
 from mirix.services.step_manager import StepManager
 from mirix.services.tool_execution_sandbox import ToolExecutionSandbox
+from mirix.services.user_manager import UserManager
 from mirix.settings import settings, summarizer_settings
 from mirix.system import get_contine_chaining, get_token_limit_warning, package_function_response, package_user_message
 from mirix.tracing import trace_method
@@ -305,10 +306,7 @@ class Agent(BaseAgent):
                 auto_create_from_default=False,  # Don't auto-create here, only in step()
             )
             self.blocks_in_memory = Memory(
-                blocks=[
-                    await self.block_manager.get_block_by_id(block.id, user=self.user)
-                    for block in blocks_result
-                ]
+                blocks=[await self.block_manager.get_block_by_id(block.id, user=self.user) for block in blocks_result]
             )
 
             # NOTE: don't do this since re-buildin the memory is handled at the start of the step
@@ -1520,7 +1518,9 @@ class Agent(BaseAgent):
 
         # Prepare embedding for semantic search
         if key_words != "" and search_method == "embedding":
-            embedded_text = await (await embedding_model(self.agent_state.embedding_config)).get_text_embedding(key_words)
+            embedded_text = await (await embedding_model(self.agent_state.embedding_config)).get_text_embedding(
+                key_words
+            )
             embedded_text = np.array(embedded_text)
             embedded_text = np.pad(
                 embedded_text,

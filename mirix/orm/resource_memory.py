@@ -163,3 +163,27 @@ class ResourceMemoryItem(SqlalchemyBase, OrganizationMixin, UserMixin):
         Relationship to the User that owns this resource memory item.
         """
         return relationship("User", lazy="selectin")
+
+    def to_pydantic(self) -> "PydanticResourceMemoryItem":
+        """
+        Convert to Pydantic model, safely handling relationship loading.
+        This prevents MissingGreenlet errors when converting detached instances.
+        """
+        state = {
+            "id": self.id,
+            "agent_id": self.agent_id,
+            "client_id": self.client_id,
+            "user_id": self.user_id,
+            "organization_id": self.organization_id,
+            "title": self.title,
+            "summary": self.summary,
+            "content": self.content,
+            "resource_type": self.resource_type,
+            "filter_tags": self.filter_tags,
+            "last_modify": self.last_modify,
+            "embedding_config": self.embedding_config,
+            "summary_embedding": self.summary_embedding,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+        }
+        return self.__pydantic_model__(**state)

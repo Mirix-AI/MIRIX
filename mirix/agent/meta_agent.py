@@ -502,9 +502,7 @@ class MetaAgent(BaseAgent):
 
         actor = None
         if self.client_id:
-            actor = await self.server.client_manager.get_client_by_id(
-                self.client_id
-            )
+            actor = await self.server.client_manager.get_client_by_id(self.client_id)
 
         for agent_state in self.memory_agent_states.get_all_agent_states_list():
             if agent_state is not None:

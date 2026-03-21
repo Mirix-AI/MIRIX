@@ -278,9 +278,7 @@ class ClientAuthManager:
             return client.to_pydantic()
 
     @enforce_types
-    async def authenticate(
-        self, email: str, password: str
-    ) -> Tuple[Optional[PydanticClient], Optional[str], str]:
+    async def authenticate(self, email: str, password: str) -> Tuple[Optional[PydanticClient], Optional[str], str]:
         """
         Authenticate a client for dashboard access and return client + JWT token.
 
@@ -310,27 +308,19 @@ class ClientAuthManager:
             client = result.scalar_one_or_none()
 
             if not client:
-                logger.warning(
-                    "Login attempt for non-existent email: %s", email
-                )
+                logger.warning("Login attempt for non-existent email: %s", email)
                 return None, None, "not_found"
 
             if client.status != "active":
-                logger.warning(
-                    "Login attempt for inactive client: %s", email
-                )
+                logger.warning("Login attempt for inactive client: %s", email)
                 return None, None, "inactive"
 
             if not client.password_hash:
-                logger.warning(
-                    "Login attempt for client without password: %s", email
-                )
+                logger.warning("Login attempt for client without password: %s", email)
                 return None, None, "no_password"
 
             if not self.verify_password(password, client.password_hash):
-                logger.warning(
-                    "Failed login attempt for client: %s", email
-                )
+                logger.warning("Failed login attempt for client: %s", email)
                 return None, None, "wrong_password"
 
             client.last_login = datetime.now(timezone.utc)
@@ -347,9 +337,7 @@ class ClientAuthManager:
         """Get a client by ID."""
         async with self.session_maker() as session:
             try:
-                client = await ClientModel.read(
-                    db_session=session, identifier=client_id
-                )
+                client = await ClientModel.read(db_session=session, identifier=client_id)
                 if client.is_deleted:
                     return None
                 return client.to_pydantic()
@@ -375,9 +363,7 @@ class ClientAuthManager:
             return None
 
     @enforce_types
-    async def list_dashboard_clients(
-        self, cursor: Optional[str] = None, limit: int = 50
-    ) -> List[PydanticClient]:
+    async def list_dashboard_clients(self, cursor: Optional[str] = None, limit: int = 50) -> List[PydanticClient]:
         """List all clients that have dashboard access (email set)."""
         async with self.session_maker() as session:
             stmt = (
@@ -397,9 +383,7 @@ class ClientAuthManager:
             return [client.to_pydantic() for client in clients]
 
     @enforce_types
-    async def set_client_password(
-        self, client_id: str, email: str, password: str
-    ) -> PydanticClient:
+    async def set_client_password(self, client_id: str, email: str, password: str) -> PydanticClient:
         """
         Set dashboard credentials for an existing client.
 
@@ -412,9 +396,7 @@ class ClientAuthManager:
             Updated client
         """
         async with self.session_maker() as session:
-            client = await ClientModel.read(
-                db_session=session, identifier=client_id
-            )
+            client = await ClientModel.read(db_session=session, identifier=client_id)
 
             if client.is_deleted:
                 raise ValueError("Cannot update deleted client")
@@ -430,9 +412,7 @@ class ClientAuthManager:
             )
             result = await session.execute(stmt)
             if result.scalar_one_or_none():
-                raise ValueError(
-                    f"Email '{email}' already exists on another client"
-                )
+                raise ValueError(f"Email '{email}' already exists on another client")
 
             client.email = email.lower()
             client.password_hash = self.hash_password(password)
@@ -442,9 +422,7 @@ class ClientAuthManager:
             return client.to_pydantic()
 
     @enforce_types
-    async def change_password(
-        self, client_id: str, current_password: str, new_password: str
-    ) -> bool:
+    async def change_password(self, client_id: str, current_password: str, new_password: str) -> bool:
         """
         Change a client's dashboard password.
 
@@ -457,9 +435,7 @@ class ClientAuthManager:
             True if successful, False otherwise
         """
         async with self.session_maker() as session:
-            client = await ClientModel.read(
-                db_session=session, identifier=client_id
-            )
+            client = await ClientModel.read(db_session=session, identifier=client_id)
 
             if not client.password_hash:
                 logger.warning(
@@ -468,9 +444,7 @@ class ClientAuthManager:
                 )
                 return False
 
-            if not self.verify_password(
-                current_password, client.password_hash
-            ):
+            if not self.verify_password(current_password, client.password_hash):
                 logger.warning(
                     "Password change failed: incorrect current password for %s",
                     client_id,
@@ -489,9 +463,13 @@ class ClientAuthManager:
         from sqlalchemy import func
 
         async with self.session_maker() as session:
-            stmt = select(func.count()).select_from(ClientModel).where(
-                ClientModel.is_deleted == False,
-                ClientModel.email.isnot(None),
+            stmt = (
+                select(func.count())
+                .select_from(ClientModel)
+                .where(
+                    ClientModel.is_deleted == False,
+                    ClientModel.email.isnot(None),
+                )
             )
             result = await session.execute(stmt)
             return result.scalar() or 0

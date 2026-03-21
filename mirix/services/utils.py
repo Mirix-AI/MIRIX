@@ -113,11 +113,11 @@ def update_timezone(func):
     """Decorator that applies timezone conversion to datetime fields on returned results.
     Only supports async functions (MIRIX is async-native).
     """
+
     @wraps(func)
     async def wrapper(*args, **kwargs):
-        timezone_str = (
-            kwargs.get("timezone_str")
-            or (getattr(kwargs.get("actor"), "timezone", "UTC") if kwargs.get("actor") else None)
+        timezone_str = kwargs.get("timezone_str") or (
+            getattr(kwargs.get("actor"), "timezone", "UTC") if kwargs.get("actor") else None
         )
         results = await func(*args, **kwargs)
         if results is None or not timezone_str:

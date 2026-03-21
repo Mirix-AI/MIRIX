@@ -14,6 +14,8 @@ from mirix.agent.app_utils import encode_image
 from mirix.constants import CHAINING_FOR_MEMORY_UPDATE, CHAINING_FOR_META_AGENT
 from mirix.voice_utils import convert_base64_to_audio_segment, process_voice_files
 
+logger = logging.getLogger(__name__)
+
 
 def get_image_mime_type(image_path):
     """Get MIME type for image files."""
@@ -704,7 +706,9 @@ class TemporaryMessageAccumulator:
                     for file_ref in item["image_uris"]:
                         if hasattr(file_ref, "name"):
                             try:
-                                await self.client.server.cloud_file_mapping_manager.set_processed(cloud_file_id=file_ref.name)
+                                await self.client.server.cloud_file_mapping_manager.set_processed(
+                                    cloud_file_id=file_ref.name
+                                )
                             except Exception:
                                 pass
 

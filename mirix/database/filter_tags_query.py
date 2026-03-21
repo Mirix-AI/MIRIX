@@ -17,11 +17,10 @@ Scope filtering:
 
 import json
 import re
-from typing import Any, Dict, List, Optional, Tuple, Type
+from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy import cast, or_, text, type_coerce
 from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.orm import Query
 
 SUPPORTED_OPERATORS = frozenset({"$contains", "$exists", "$in"})
 
@@ -36,14 +35,12 @@ def _validate_operator(value: dict) -> str:
         )
     if len(ops) > 1:
         raise ValueError(
-            f"filter_tags value dict has multiple operator keys: {ops!r}. "
-            f"Only one operator per key is supported."
+            f"filter_tags value dict has multiple operator keys: {ops!r}. " f"Only one operator per key is supported."
         )
     op = ops[0]
     if op not in SUPPORTED_OPERATORS:
         raise ValueError(
-            f"Unknown filter_tags operator '{op}'. "
-            f"Supported operators: {', '.join(sorted(SUPPORTED_OPERATORS))}"
+            f"Unknown filter_tags operator '{op}'. " f"Supported operators: {', '.join(sorted(SUPPORTED_OPERATORS))}"
         )
     return op
 
@@ -94,9 +91,7 @@ def apply_filter_tags_sqlalchemy(
         if _is_operator_dict(value):
             query = query.where(_resolve_operator_sqla(key, value, model_class))
         else:
-            query = query.where(
-                model_class.filter_tags[key].as_string() == str(value)
-            )
+            query = query.where(model_class.filter_tags[key].as_string() == str(value))
 
     return query
 
@@ -104,10 +99,7 @@ def apply_filter_tags_sqlalchemy(
 def _apply_scopes_sqla(query, model_class, scopes: List[str]):
     """Apply scope authorization filter for SQLAlchemy."""
     if scopes:
-        scope_conditions = [
-            model_class.filter_tags["scope"].as_string() == scope
-            for scope in scopes
-        ]
+        scope_conditions = [model_class.filter_tags["scope"].as_string() == scope for scope in scopes]
         return query.where(or_(*scope_conditions))
     return query.where(text("1 = 0"))
 
@@ -119,9 +111,7 @@ def _resolve_operator_sqla(key: str, value: dict, model_class):
     if op == "$contains":
         # Pass the dict directly — type_coerce lets psycopg2 serialize it once.
         # Using json.dumps + cast would double-encode the string.
-        return cast(model_class.filter_tags, JSONB).contains(
-            type_coerce({key: [value["$contains"]]}, JSONB)
-        )
+        return cast(model_class.filter_tags, JSONB).contains(type_coerce({key: [value["$contains"]]}, JSONB))
     elif op == "$exists":
         condition = cast(model_class.filter_tags, JSONB).has_key(key)  # noqa: W601
         if not value["$exists"]:
@@ -131,14 +121,13 @@ def _resolve_operator_sqla(key: str, value: dict, model_class):
         vals = value["$in"]
         if not isinstance(vals, list) or not vals:
             return text("1 = 0")
-        return model_class.filter_tags[key].as_string().in_(
-            [str(v) for v in vals]
-        )
+        return model_class.filter_tags[key].as_string().in_([str(v) for v in vals])
 
 
 # ---------------------------------------------------------------------------
 # Raw SQL builder (for BM25 full-text search paths)
 # ---------------------------------------------------------------------------
+
 
 def build_filter_tags_raw_sql(
     filter_tags: Optional[Dict[str, Any]],
@@ -189,9 +178,7 @@ def _build_scopes_raw_sql(scopes: List[str]) -> Tuple[List[str], Dict[str, Any]]
 
     if scopes:
         placeholders = [f":scope_{i}" for i in range(len(scopes))]
-        clauses.append(
-            f"filter_tags->>'scope' IN ({', '.join(placeholders)})"
-        )
+        clauses.append(f"filter_tags->>'scope' IN ({', '.join(placeholders)})")
         for i, scope in enumerate(scopes):
             params[f"scope_{i}"] = scope
     else:
@@ -200,9 +187,7 @@ def _build_scopes_raw_sql(scopes: List[str]) -> Tuple[List[str], Dict[str, Any]]
     return clauses, params
 
 
-def _resolve_operator_raw_sql(
-    key: str, value: dict
-) -> Tuple[str, Dict[str, Any]]:
+def _resolve_operator_raw_sql(key: str, value: dict) -> Tuple[str, Dict[str, Any]]:
     """Resolve a single $ operator into a raw SQL clause + params."""
     op = _validate_operator(value)
     params: Dict[str, Any] = {}
@@ -236,6 +221,7 @@ def _resolve_operator_raw_sql(
 # ---------------------------------------------------------------------------
 # Redis support
 # ---------------------------------------------------------------------------
+
 
 def can_redis_handle(filter_tags: Optional[Dict[str, Any]]) -> bool:
     """
@@ -274,6 +260,7 @@ def build_filter_tags_redis(
     Callers should check can_redis_handle() first; this function only
     handles scalar values and scopes.
     """
+
     def escape_tag_value(val: str) -> str:
         special_chars = r'[\-:.()\[\]{}"\',<>;!@#$%^&*+=~]'
         return re.sub(special_chars, lambda m: f"\\{m.group(0)}", str(val))

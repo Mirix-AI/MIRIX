@@ -15,14 +15,14 @@ from mirix.constants import (
 from mirix.log import get_logger
 from mirix.schemas.enums import MessageRole
 from mirix.schemas.message import MessageCreate
-
-logger = get_logger(__name__)
 from mirix.schemas.mirix_message import (
     AssistantMessage,
     ReasoningMessage,
     ToolCallMessage,
 )
 from mirix.schemas.mirix_response import MirixResponse
+
+logger = get_logger(__name__)
 
 if TYPE_CHECKING:
     try:

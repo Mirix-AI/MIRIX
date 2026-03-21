@@ -11,7 +11,7 @@ import json
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
-from sqlalchemy import and_, desc, func, or_, select
+from sqlalchemy import and_, desc, or_, select
 
 from mirix.constants import BUILD_EMBEDDINGS_FOR_MEMORY
 from mirix.log import get_logger
@@ -116,9 +116,7 @@ class RawMemoryManager:
 
         # Ensure ID is set before model_dump
         if not raw_memory.id:
-            raw_memory.id = await generate_unique_short_id_async(
-                self.session_maker, RawMemory, "raw_mem"
-            )
+            raw_memory.id = await generate_unique_short_id_async(self.session_maker, RawMemory, "raw_mem")
 
         # Auto-inject scope from actor's write_scope
         if actor.write_scope is None:
@@ -185,9 +183,7 @@ class RawMemoryManager:
         # Create the raw memory item (with conditional Redis caching)
         async with self.session_maker() as session:
             raw_memory_item = RawMemory(**raw_memory_dict)
-            await raw_memory_item.create_with_redis(
-                session, actor=actor, use_cache=use_cache
-            )
+            await raw_memory_item.create_with_redis(session, actor=actor, use_cache=use_cache)
 
             logger.info("Raw memory created: id=%s", raw_memory_item.id)
             return raw_memory_item.to_pydantic()
@@ -251,9 +247,7 @@ class RawMemoryManager:
         # Cache MISS or cache unavailable - fetch from PostgreSQL
         async with self.session_maker() as session:
             try:
-                raw_memory_item = await RawMemory.read(
-                    db_session=session, identifier=memory_id, actor=actor
-                )
+                raw_memory_item = await RawMemory.read(db_session=session, identifier=memory_id, actor=actor)
                 pydantic_memory = raw_memory_item.to_pydantic()
 
                 # Validate scope - memory must be in actor's read_scopes
@@ -270,9 +264,7 @@ class RawMemoryManager:
                     if cache_provider:
                         cache_key = f"{cache_provider.RAW_MEMORY_PREFIX}{memory_id}"
                         data = pydantic_memory.model_dump(mode="json")
-                        await cache_provider.set_json(
-                            cache_key, data, ttl=settings.redis_ttl_default
-                        )
+                        await cache_provider.set_json(cache_key, data, ttl=settings.redis_ttl_default)
                         logger.debug(
                             "Populated cache for raw memory %s",
                             memory_id,
@@ -459,9 +451,7 @@ class RawMemoryManager:
 
         async with self.session_maker() as session:
             try:
-                raw_memory = await RawMemory.read(
-                    db_session=session, identifier=memory_id, actor=actor
-                )
+                raw_memory = await RawMemory.read(db_session=session, identifier=memory_id, actor=actor)
 
                 # Perform scope access control check - must match actor's write_scope to delete
                 memory_scope = (raw_memory.filter_tags or {}).get("scope")

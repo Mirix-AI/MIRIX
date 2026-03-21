@@ -447,9 +447,7 @@ class ResourceMemoryManager:
         if not item_data.id:
             from mirix.utils import generate_unique_short_id_async
 
-            item_data.id = await generate_unique_short_id_async(
-                self.session_maker, ResourceMemoryItem, "res"
-            )
+            item_data.id = await generate_unique_short_id_async(self.session_maker, ResourceMemoryItem, "res")
 
         data_dict = item_data.model_dump()
 
@@ -664,9 +662,7 @@ class ResourceMemoryManager:
 
                 from mirix.database.filter_tags_query import apply_filter_tags_sqlalchemy
 
-                query_stmt = apply_filter_tags_sqlalchemy(
-                    query_stmt, ResourceMemoryItem, filter_tags, scopes=scopes
-                )
+                query_stmt = apply_filter_tags_sqlalchemy(query_stmt, ResourceMemoryItem, filter_tags, scopes=scopes)
 
                 if limit:
                     query_stmt = query_stmt.limit(limit)
@@ -695,9 +691,7 @@ class ResourceMemoryManager:
 
             from mirix.database.filter_tags_query import apply_filter_tags_sqlalchemy
 
-            base_query = apply_filter_tags_sqlalchemy(
-                base_query, ResourceMemoryItem, filter_tags, scopes=scopes
-            )
+            base_query = apply_filter_tags_sqlalchemy(base_query, ResourceMemoryItem, filter_tags, scopes=scopes)
 
             if search_method == "string_match":
                 main_query = base_query.where(
@@ -736,7 +730,9 @@ class ResourceMemoryManager:
                 else:
                     # Fallback to in-memory BM25 for SQLite (legacy method)
                     # Load all candidate items (memory-intensive, kept for compatibility)
-                    result = await session.execute(select(ResourceMemoryItem).where(ResourceMemoryItem.user_id == user.id))
+                    result = await session.execute(
+                        select(ResourceMemoryItem).where(ResourceMemoryItem.user_id == user.id)
+                    )
                     all_items = result.scalars().all()
 
                     if not all_items:
@@ -938,8 +934,9 @@ class ResourceMemoryManager:
         async with self.session_maker() as session:
             # Query all non-deleted records for this client (use actor.id)
             result = await session.execute(
-                select(ResourceMemoryItem)
-                .where(ResourceMemoryItem.client_id == actor.id, ResourceMemoryItem.is_deleted == False)
+                select(ResourceMemoryItem).where(
+                    ResourceMemoryItem.client_id == actor.id, ResourceMemoryItem.is_deleted == False
+                )
             )
             items = result.scalars().all()
 
@@ -984,8 +981,9 @@ class ResourceMemoryManager:
         async with self.session_maker() as session:
             # Query all non-deleted records for this user
             result = await session.execute(
-                select(ResourceMemoryItem)
-                .where(ResourceMemoryItem.user_id == user_id, ResourceMemoryItem.is_deleted == False)
+                select(ResourceMemoryItem).where(
+                    ResourceMemoryItem.user_id == user_id, ResourceMemoryItem.is_deleted == False
+                )
             )
             items = result.scalars().all()
 
@@ -1030,9 +1028,7 @@ class ResourceMemoryManager:
 
         async with self.session_maker() as session:
             # Get IDs for Redis cleanup (only fetch IDs, not full objects)
-            result = await session.execute(
-                select(ResourceMemoryItem.id).where(ResourceMemoryItem.user_id == user_id)
-            )
+            result = await session.execute(select(ResourceMemoryItem.id).where(ResourceMemoryItem.user_id == user_id))
             item_ids = [row[0] for row in result.all()]
 
             count = len(item_ids)
@@ -1123,7 +1119,9 @@ class ResourceMemoryManager:
                         from mirix.constants import MAX_EMBEDDING_DIM
                         from mirix.embeddings import embedding_model
 
-                        embedded_text = await (await embedding_model(agent_state.embedding_config)).get_text_embedding(query)
+                        embedded_text = await (await embedding_model(agent_state.embedding_config)).get_text_embedding(
+                            query
+                        )
                         embedded_text = np.array(embedded_text)
                         embedded_text = np.pad(
                             embedded_text,
@@ -1176,9 +1174,7 @@ class ResourceMemoryManager:
 
             from mirix.database.filter_tags_query import apply_filter_tags_sqlalchemy
 
-            base_query = apply_filter_tags_sqlalchemy(
-                base_query, ResourceMemoryItem, filter_tags, scopes=scopes
-            )
+            base_query = apply_filter_tags_sqlalchemy(base_query, ResourceMemoryItem, filter_tags, scopes=scopes)
 
             # Handle empty query - fall back to recent sort
             if not query or query == "":

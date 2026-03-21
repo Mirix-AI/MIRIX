@@ -40,9 +40,7 @@ class ToolManager:
 
     # TODO: Refactor this across the codebase to use CreateTool instead of passing in a Tool object
     @enforce_types
-    async def create_or_update_tool(
-        self, pydantic_tool: PydanticTool, actor: PydanticClient
-    ) -> PydanticTool:
+    async def create_or_update_tool(self, pydantic_tool: PydanticTool, actor: PydanticClient) -> PydanticTool:
         """Create or update a tool (async)."""
         tool = await self.get_tool_by_name(tool_name=pydantic_tool.name, actor=actor)
         if tool:
@@ -76,9 +74,7 @@ class ToolManager:
             return tool.to_pydantic()
 
     @enforce_types
-    async def get_tool_by_name(
-        self, tool_name: str, actor: PydanticClient
-    ) -> Optional[PydanticTool]:
+    async def get_tool_by_name(self, tool_name: str, actor: PydanticClient) -> Optional[PydanticTool]:
         """Retrieve a tool by name (async)."""
         try:
             async with self.session_maker() as session:
@@ -105,9 +101,7 @@ class ToolManager:
             return [tool.to_pydantic() for tool in tools]
 
     @enforce_types
-    async def update_tool_by_id(
-        self, tool_id: str, tool_update: ToolUpdate, actor: PydanticClient
-    ) -> PydanticTool:
+    async def update_tool_by_id(self, tool_id: str, tool_update: ToolUpdate, actor: PydanticClient) -> PydanticTool:
         """Update a tool by its ID (async)."""
         async with self.session_maker() as session:
             tool = await ToolModel.read(db_session=session, identifier=tool_id, actor=actor)
@@ -126,9 +120,7 @@ class ToolManager:
         """Delete a tool by its ID."""
         async with self.session_maker() as session:
             try:
-                tool = await ToolModel.read(
-                    db_session=session, identifier=tool_id, actor=actor
-                )
+                tool = await ToolModel.read(db_session=session, identifier=tool_id, actor=actor)
                 await tool.hard_delete(db_session=session, actor=actor)
             except NoResultFound:
                 raise ValueError(f"Tool with id {tool_id} not found.")

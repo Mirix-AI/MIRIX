@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 
 # Forward referencing to avoid circular import with Agent -> Memory -> Agent
 if TYPE_CHECKING:
-    from mirix.schemas.agent import AgentState
+    pass
 
 from mirix.constants import CORE_MEMORY_BLOCK_CHAR_LIMIT
 from mirix.schemas.block import Block

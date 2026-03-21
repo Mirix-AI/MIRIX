@@ -1,4 +1,4 @@
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 from sqlalchemy import select
 
@@ -69,39 +69,27 @@ class UserManager:
     async def update_user(self, user_update: UserUpdate) -> PydanticUser:
         """Update user details (with cache invalidation)."""
         async with self.session_maker() as session:
-            existing_user = await UserModel.read(
-                db_session=session, identifier=user_update.id
-            )
-            update_data = user_update.model_dump(
-                exclude_unset=True, exclude_none=True
-            )
+            existing_user = await UserModel.read(db_session=session, identifier=user_update.id)
+            update_data = user_update.model_dump(exclude_unset=True, exclude_none=True)
             for key, value in update_data.items():
                 setattr(existing_user, key, value)
             await existing_user.update_with_redis(session, actor=None)
             return existing_user.to_pydantic()
 
     @enforce_types
-    async def update_user_timezone(
-        self, timezone_str: str, user_id: str
-    ) -> PydanticUser:
+    async def update_user_timezone(self, timezone_str: str, user_id: str) -> PydanticUser:
         """Update the timezone of a user (with cache invalidation)."""
         async with self.session_maker() as session:
-            existing_user = await UserModel.read(
-                db_session=session, identifier=user_id
-            )
+            existing_user = await UserModel.read(db_session=session, identifier=user_id)
             existing_user.timezone = timezone_str
             await existing_user.update_with_redis(session, actor=None)
             return existing_user.to_pydantic()
 
     @enforce_types
-    async def update_user_status(
-        self, user_id: str, status: str
-    ) -> PydanticUser:
+    async def update_user_status(self, user_id: str, status: str) -> PydanticUser:
         """Update the status of a user (with cache invalidation)."""
         async with self.session_maker() as session:
-            existing_user = await UserModel.read(
-                db_session=session, identifier=user_id
-            )
+            existing_user = await UserModel.read(db_session=session, identifier=user_id)
             existing_user.status = status
             await existing_user.update_with_redis(session, actor=None)
             return existing_user.to_pydantic()

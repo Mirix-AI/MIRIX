@@ -18,7 +18,6 @@ from mirix.services.user_manager import UserManager
 if TYPE_CHECKING:
     from mirix.schemas.client import Client
     from mirix.schemas.message import MessageCreate
-    from mirix.schemas.user import User
 
     from .queue_interface import QueueInterface
 
@@ -154,9 +153,7 @@ class QueueWorker:
             async def _resolve_actor_and_user():
                 actor = await server.client_manager.get_client_by_id(client_id)
                 if not actor:
-                    raise ValueError(
-                        f"Client with id={client_id} not found in database"
-                    )
+                    raise ValueError(f"Client with id={client_id} not found in database")
 
                 user_manager = UserManager()
                 if user_id:
@@ -189,8 +186,7 @@ class QueueWorker:
                             )
                         except Exception as create_error:
                             logger.error(
-                                "Failed to auto-create user with id=%s: %s. "
-                                "Falling back to admin user.",
+                                "Failed to auto-create user with id=%s: %s. " "Falling back to admin user.",
                                 user_id,
                                 create_error,
                             )
@@ -218,9 +214,7 @@ class QueueWorker:
                     raise ValueError("block_filter_tags was provided but could not be parsed as a dict") from e
 
             block_filter_tags_update_mode = (
-                message.block_filter_tags_update_mode
-                if message.HasField("block_filter_tags_update_mode")
-                else "merge"
+                message.block_filter_tags_update_mode if message.HasField("block_filter_tags_update_mode") else "merge"
             )
 
             # Log the processing
@@ -306,9 +300,7 @@ class QueueWorker:
         while self._running:
             try:
                 if self._partition_id is not None and hasattr(self.queue, "get_from_partition"):
-                    message = await self.queue.get_from_partition(
-                        self._partition_id, timeout=1.0
-                    )
+                    message = await self.queue.get_from_partition(self._partition_id, timeout=1.0)
                 else:
                     message = await self.queue.get(timeout=1.0)
 

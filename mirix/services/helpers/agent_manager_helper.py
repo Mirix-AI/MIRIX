@@ -11,6 +11,7 @@ from mirix.prompts import gpt_system
 from mirix.schemas.agent import AgentType
 from mirix.schemas.memory import Memory
 from mirix.schemas.tool_rule import ToolRule
+from mirix.utils import get_local_time
 
 
 async def _process_relationship(
@@ -43,9 +44,7 @@ async def _process_relationship(
             setattr(agent, relationship_name, [])
         return
 
-    result = await session.execute(
-        select(model_class).where(model_class.id.in_(item_ids))
-    )
+    result = await session.execute(select(model_class).where(model_class.id.in_(item_ids)))
     found_items = result.scalars().all()
 
     if not allow_partial and len(found_items) != len(item_ids):

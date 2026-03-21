@@ -169,9 +169,7 @@ class MCPClientManager:
                     all_tools[name] = []
             return all_tools
 
-    async def execute_tool(
-        self, server_name: str, tool_name: str, tool_args: Dict[str, Any]
-    ) -> Tuple[str, bool]:
+    async def execute_tool(self, server_name: str, tool_name: str, tool_args: Dict[str, Any]) -> Tuple[str, bool]:
         """Asynchronously execute a tool on a specific server"""
         await self._ensure_loaded()
 
@@ -194,9 +192,7 @@ class MCPClientManager:
                 logger.error(f"Failed to search tools in server {server_name}: {str(e)}")
         return None
 
-    async def execute_tool_by_name(
-        self, tool_name: str, tool_args: Dict[str, Any]
-    ) -> Tuple[str, bool]:
+    async def execute_tool_by_name(self, tool_name: str, tool_args: Dict[str, Any]) -> Tuple[str, bool]:
         """Execute a tool by name (searches all servers)"""
         result = await self.find_tool(tool_name)
         if result:

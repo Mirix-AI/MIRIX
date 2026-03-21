@@ -28,9 +28,7 @@ GMAIL_SCOPES = [
 ]
 
 
-def authenticate_gmail_local(
-    client_id: str, client_secret: str, token_file: str = None
-) -> dict:
+def authenticate_gmail_local(client_id: str, client_secret: str, token_file: str = None) -> dict:
     """
     Authenticate with Gmail using OAuth2 with a local server to catch the callback.
     This is an interactive browser-based flow; inherently sync.
@@ -66,9 +64,7 @@ def authenticate_gmail_local(
                         "client_secret": client_secret,
                         "auth_uri": "https://accounts.google.com/o/oauth2/auth",
                         "token_uri": "https://oauth2.googleapis.com/token",
-                        "auth_provider_x509_cert_url": (
-                            "https://www.googleapis.com/oauth2/v1/certs"
-                        ),
+                        "auth_provider_x509_cert_url": ("https://www.googleapis.com/oauth2/v1/certs"),
                         "redirect_uris": [
                             "http://localhost:8080/",
                             "http://localhost:8081/",
@@ -134,9 +130,7 @@ class GmailMCPClient(BaseMCPClient):
             with open(self._token_file) as f:
                 token_data = json.load(f)
             if not token_data.get("refresh_token"):
-                logger.warning(
-                    "Token file missing refresh_token, removing invalid token."
-                )
+                logger.warning("Token file missing refresh_token, removing invalid token.")
                 os.remove(self._token_file)
                 return False
 
@@ -145,9 +139,7 @@ class GmailMCPClient(BaseMCPClient):
                 refresh_token=token_data.get("refresh_token"),
                 expires_at=token_data.get("expiry"),
                 scopes=GMAIL_SCOPES,
-                token_uri=token_data.get(
-                    "token_uri", "https://oauth2.googleapis.com/token"
-                ),
+                token_uri=token_data.get("token_uri", "https://oauth2.googleapis.com/token"),
             )
             self._client_creds = ClientCreds(
                 client_id=self._client_id,
@@ -161,9 +153,7 @@ class GmailMCPClient(BaseMCPClient):
     async def _initialize_connection(self, server_config, timeout: float) -> bool:
         """Initialize Gmail connection using OAuth and discover the API."""
         try:
-            self._token_file = server_config.token_file or os.path.expanduser(
-                "~/.mirix/gmail_token.json"
-            )
+            self._token_file = server_config.token_file or os.path.expanduser("~/.mirix/gmail_token.json")
             self._client_id = server_config.client_id
             self._client_secret = server_config.client_secret
 
@@ -182,14 +172,10 @@ class GmailMCPClient(BaseMCPClient):
                     return False
 
                 if not self._load_credentials():
-                    logger.error(
-                        "Failed to load credentials after authentication"
-                    )
+                    logger.error("Failed to load credentials after authentication")
                     return False
 
-            async with Aiogoogle(
-                user_creds=self._user_creds, client_creds=self._client_creds
-            ) as aiogoogle:
+            async with Aiogoogle(user_creds=self._user_creds, client_creds=self._client_creds) as aiogoogle:
                 self._gmail_api = await aiogoogle.discover("gmail", "v1")
 
             logger.info("Gmail service initialized successfully")
@@ -201,9 +187,7 @@ class GmailMCPClient(BaseMCPClient):
 
     async def _execute_gmail_request(self, request):
         """Execute a single Gmail API request with auto token refresh."""
-        async with Aiogoogle(
-            user_creds=self._user_creds, client_creds=self._client_creds
-        ) as aiogoogle:
+        async with Aiogoogle(user_creds=self._user_creds, client_creds=self._client_creds) as aiogoogle:
             return await aiogoogle.as_user(request)
 
     async def list_tools(self) -> List[MCPTool]:
@@ -258,15 +242,11 @@ class GmailMCPClient(BaseMCPClient):
                     "properties": {
                         "query": {
                             "type": "string",
-                            "description": (
-                                "Gmail search query (optional, e.g., 'is:unread')"
-                            ),
+                            "description": ("Gmail search query (optional, e.g., 'is:unread')"),
                         },
                         "max_results": {
                             "type": "integer",
-                            "description": (
-                                "Maximum number of emails to retrieve (default: 10)"
-                            ),
+                            "description": ("Maximum number of emails to retrieve (default: 10)"),
                             "default": 10,
                         },
                     },
@@ -288,16 +268,13 @@ class GmailMCPClient(BaseMCPClient):
             ),
         ]
 
-    async def execute_tool(
-        self, tool_name: str, tool_args: Dict[str, Any]
-    ) -> Tuple[str, bool]:
+    async def execute_tool(self, tool_name: str, tool_args: Dict[str, Any]) -> Tuple[str, bool]:
         """Execute a Gmail tool."""
         self._check_initialized()
 
         if not await self._ensure_gmail_service():
             return (
-                "Gmail authentication required. "
-                "Please run the Gmail connection process.",
+                "Gmail authentication required. " "Please run the Gmail connection process.",
                 True,
             )
 
@@ -320,9 +297,7 @@ class GmailMCPClient(BaseMCPClient):
             return True
 
         try:
-            success = await self._initialize_connection(
-                self.server_config, timeout=30.0
-            )
+            success = await self._initialize_connection(self.server_config, timeout=30.0)
             if success and self._gmail_api is not None:
                 logger.info("Gmail service established successfully")
                 return True
@@ -344,15 +319,9 @@ class GmailMCPClient(BaseMCPClient):
             html_body = args.get("html_body")
             attachments = args.get("attachments", [])
 
-            message = self._create_message(
-                to, subject, body, cc, bcc, attachments, html_body
-            )
+            message = self._create_message(to, subject, body, cc, bcc, attachments, html_body)
 
-            result = await self._execute_gmail_request(
-                self._gmail_api.users.messages.send(
-                    userId="me", json=message
-                )
-            )
+            result = await self._execute_gmail_request(self._gmail_api.users.messages.send(userId="me", json=message))
 
             return f"Email sent successfully! Message ID: {result['id']}", False
 
@@ -370,9 +339,7 @@ class GmailMCPClient(BaseMCPClient):
                 client_creds=self._client_creds,
             ) as aiogoogle:
                 results = await aiogoogle.as_user(
-                    self._gmail_api.users.messages.list(
-                        userId="me", q=query, maxResults=max_results
-                    )
+                    self._gmail_api.users.messages.list(userId="me", q=query, maxResults=max_results)
                 )
 
                 messages = results.get("messages", [])
@@ -381,35 +348,19 @@ class GmailMCPClient(BaseMCPClient):
 
                 email_details = []
                 for msg_entry in messages:
-                    msg = await aiogoogle.as_user(
-                        self._gmail_api.users.messages.get(
-                            userId="me", id=msg_entry["id"]
-                        )
-                    )
+                    msg = await aiogoogle.as_user(self._gmail_api.users.messages.get(userId="me", id=msg_entry["id"]))
 
                     headers = msg["payload"].get("headers", [])
                     subject = next(
-                        (
-                            h["value"]
-                            for h in headers
-                            if h["name"] == "Subject"
-                        ),
+                        (h["value"] for h in headers if h["name"] == "Subject"),
                         "No Subject",
                     )
                     sender = next(
-                        (
-                            h["value"]
-                            for h in headers
-                            if h["name"] == "From"
-                        ),
+                        (h["value"] for h in headers if h["name"] == "From"),
                         "Unknown Sender",
                     )
                     date = next(
-                        (
-                            h["value"]
-                            for h in headers
-                            if h["name"] == "Date"
-                        ),
+                        (h["value"] for h in headers if h["name"] == "Date"),
                         "Unknown Date",
                     )
 
@@ -432,9 +383,7 @@ class GmailMCPClient(BaseMCPClient):
         try:
             email_id = args["email_id"]
 
-            message = await self._execute_gmail_request(
-                self._gmail_api.users.messages.get(userId="me", id=email_id)
-            )
+            message = await self._execute_gmail_request(self._gmail_api.users.messages.get(userId="me", id=email_id))
 
             headers = message["payload"].get("headers", [])
             subject = next(
@@ -477,18 +426,12 @@ class GmailMCPClient(BaseMCPClient):
     ) -> dict:
         """Create an email message dict for the Gmail API."""
         if html_body or attachments:
-            message = MIMEMultipart(
-                "alternative" if html_body else "mixed"
-            )
+            message = MIMEMultipart("alternative" if html_body else "mixed")
         else:
             message = MIMEText(body)
             message["to"] = to
             message["subject"] = subject
-            return {
-                "raw": base64.urlsafe_b64encode(
-                    message.as_bytes()
-                ).decode()
-            }
+            return {"raw": base64.urlsafe_b64encode(message.as_bytes()).decode()}
 
         message["to"] = to
         message["subject"] = subject
@@ -525,13 +468,9 @@ class GmailMCPClient(BaseMCPClient):
                     )
                     message.attach(attachment)
                 else:
-                    logger.warning(
-                        "Attachment file '%s' not found", file_path
-                    )
+                    logger.warning("Attachment file '%s' not found", file_path)
 
-        return {
-            "raw": base64.urlsafe_b64encode(message.as_bytes()).decode()
-        }
+        return {"raw": base64.urlsafe_b64encode(message.as_bytes()).decode()}
 
     def _extract_message_body(self, payload):
         """Extract message body from Gmail API payload."""
@@ -544,8 +483,6 @@ class GmailMCPClient(BaseMCPClient):
                     body = base64.urlsafe_b64decode(data).decode("utf-8")
                     break
         elif payload["body"].get("data"):
-            body = base64.urlsafe_b64decode(
-                payload["body"]["data"]
-            ).decode("utf-8")
+            body = base64.urlsafe_b64decode(payload["body"]["data"]).decode("utf-8")
 
         return body

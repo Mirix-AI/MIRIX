@@ -122,9 +122,9 @@ SEMANTIC_MEMORY_TOOLS = [
     "semantic_memory_update",
     "check_semantic_memory",
 ]
-CHAT_AGENT_TOOLS = []
+CHAT_AGENT_TOOLS: list[str] = []
 EXTRAS_TOOLS = ["web_search", "fetch_and_read_pdf"]
-MCP_TOOLS = []
+MCP_TOOLS: list[str] = []
 META_MEMORY_TOOLS = ["trigger_memory_update"]
 SEARCH_MEMORY_TOOLS = ["search_in_memory", "list_memory_within_timerange"]
 UNIVERSAL_MEMORY_TOOLS = [

@@ -29,9 +29,7 @@ def get_azure_deployment_list_endpoint(base_url: str):
     return f"{base_url}/openai/deployments?api-version=2023-03-15-preview"
 
 
-async def azure_openai_get_deployed_model_list(
-    base_url: str, api_key: str, api_version: str
-) -> List[dict]:
+async def azure_openai_get_deployed_model_list(base_url: str, api_key: str, api_version: str) -> List[dict]:
     """Returns list of deployed models using httpx."""
     headers = {"Content-Type": "application/json"}
     if api_key is not None:
@@ -65,9 +63,7 @@ async def azure_openai_get_deployed_model_list(
     return list(latest_models.values())
 
 
-async def azure_openai_get_chat_completion_model_list(
-    base_url: str, api_key: str, api_version: str
-) -> list:
+async def azure_openai_get_chat_completion_model_list(base_url: str, api_key: str, api_version: str) -> list:
     model_list = await azure_openai_get_deployed_model_list(base_url, api_key, api_version)
     # Extract models that support text generation
     model_options = [m for m in model_list if m.get("capabilities").get("chat_completion")]

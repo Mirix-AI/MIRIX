@@ -495,9 +495,7 @@ class ProceduralMemoryManager:
         if not item_data.id:
             from mirix.utils import generate_unique_short_id_async
 
-            item_data.id = await generate_unique_short_id_async(
-                self.session_maker, ProceduralMemoryItem, "proc"
-            )
+            item_data.id = await generate_unique_short_id_async(self.session_maker, ProceduralMemoryItem, "proc")
 
         data_dict = item_data.model_dump()
 
@@ -708,9 +706,7 @@ class ProceduralMemoryManager:
 
                 from mirix.database.filter_tags_query import apply_filter_tags_sqlalchemy
 
-                query_stmt = apply_filter_tags_sqlalchemy(
-                    query_stmt, ProceduralMemoryItem, filter_tags, scopes=scopes
-                )
+                query_stmt = apply_filter_tags_sqlalchemy(query_stmt, ProceduralMemoryItem, filter_tags, scopes=scopes)
 
                 if limit:
                     query_stmt = query_stmt.limit(limit)
@@ -740,9 +736,7 @@ class ProceduralMemoryManager:
 
                 from mirix.database.filter_tags_query import apply_filter_tags_sqlalchemy
 
-                base_query = apply_filter_tags_sqlalchemy(
-                    base_query, ProceduralMemoryItem, filter_tags, scopes=scopes
-                )
+                base_query = apply_filter_tags_sqlalchemy(base_query, ProceduralMemoryItem, filter_tags, scopes=scopes)
 
                 if search_method == "embedding":
                     main_query = await build_query(
@@ -1199,7 +1193,9 @@ class ProceduralMemoryManager:
                         from mirix.constants import MAX_EMBEDDING_DIM
                         from mirix.embeddings import embedding_model
 
-                        embedded_text = await (await embedding_model(agent_state.embedding_config)).get_text_embedding(query)
+                        embedded_text = await (await embedding_model(agent_state.embedding_config)).get_text_embedding(
+                            query
+                        )
                         embedded_text = np.array(embedded_text)
                         embedded_text = np.pad(
                             embedded_text,
@@ -1245,9 +1241,7 @@ class ProceduralMemoryManager:
 
             from mirix.database.filter_tags_query import apply_filter_tags_sqlalchemy
 
-            base_query = apply_filter_tags_sqlalchemy(
-                base_query, ProceduralMemoryItem, filter_tags, scopes=scopes
-            )
+            base_query = apply_filter_tags_sqlalchemy(base_query, ProceduralMemoryItem, filter_tags, scopes=scopes)
 
             # Handle empty query - fall back to recent sort
             if not query or query == "":

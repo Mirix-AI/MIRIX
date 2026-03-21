@@ -1,4 +1,3 @@
-
 import os
 from typing import List, Optional
 
@@ -104,9 +103,7 @@ class AzureOpenAIClient(OpenAIClient):
         Performs asynchronous request to Azure OpenAI API.
         """
         client = AsyncAzureOpenAI(**await self._prepare_client_kwargs())
-        response: ChatCompletion = await client.chat.completions.create(
-            **request_data
-        )
+        response: ChatCompletion = await client.chat.completions.create(**request_data)
         return response.model_dump()
 
     async def stream(self, request_data: dict) -> AsyncStream[ChatCompletionChunk]:

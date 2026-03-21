@@ -86,14 +86,10 @@ class OrganizationManager:
     @enforce_types
     async def create_default_organization(self) -> PydanticOrganization:
         """Create the default organization."""
-        return await self.create_organization(
-            PydanticOrganization(name=self.DEFAULT_ORG_NAME, id=self.DEFAULT_ORG_ID)
-        )
+        return await self.create_organization(PydanticOrganization(name=self.DEFAULT_ORG_NAME, id=self.DEFAULT_ORG_ID))
 
     @enforce_types
-    async def update_organization_name_using_id(
-        self, org_id: str, name: Optional[str] = None
-    ) -> PydanticOrganization:
+    async def update_organization_name_using_id(self, org_id: str, name: Optional[str] = None) -> PydanticOrganization:
         """Update an organization (with cache invalidation)."""
         async with self.session_maker() as session:
             org = await OrganizationModel.read(db_session=session, identifier=org_id)

@@ -1,7 +1,6 @@
 from typing import TYPE_CHECKING, List, Optional, Type
 
-from sqlalchemy import JSON, BigInteger, Index, Integer, String, UniqueConstraint, cast, event, or_, select, text
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import JSON, BigInteger, Index, Integer, UniqueConstraint, event, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import (
     Mapped,

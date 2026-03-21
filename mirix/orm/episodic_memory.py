@@ -204,3 +204,31 @@ class EpisodicEvent(SqlalchemyBase, OrganizationMixin, UserMixin):
         Relationship to the User that owns this episodic event.
         """
         return relationship("User", lazy="selectin")
+
+    def to_pydantic(self) -> PydanticEpisodicEvent:
+        """
+        Convert to Pydantic model, safely handling relationship loading.
+        This prevents MissingGreenlet errors when converting detached instances.
+        """
+        # Build dict with only scalar fields (no relationships)
+        # Pydantic model expects scalars only; relationships are foreign keys
+        state = {
+            "id": self.id,
+            "agent_id": self.agent_id,
+            "client_id": self.client_id,
+            "user_id": self.user_id,
+            "organization_id": self.organization_id,
+            "occurred_at": self.occurred_at,
+            "last_modify": self.last_modify,
+            "actor": self.actor,
+            "event_type": self.event_type,
+            "summary": self.summary,
+            "details": self.details,
+            "filter_tags": self.filter_tags,
+            "embedding_config": self.embedding_config,
+            "details_embedding": self.details_embedding,
+            "summary_embedding": self.summary_embedding,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+        }
+        return self.__pydantic_model__(**state)
