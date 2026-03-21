@@ -82,8 +82,15 @@ async def api_auth(server_process):
 
     auth = await _create_client_and_key(TEST_CLIENT_ID, TEST_ORG_ID, org_name="Demo Org")
     os.environ.setdefault("MIRIX_API_URL", "http://localhost:8000")
+    previous_api_key = os.environ.get("MIRIX_API_KEY")
     os.environ["MIRIX_API_KEY"] = auth["api_key"]
-    return auth
+    try:
+        yield auth
+    finally:
+        if previous_api_key is None:
+            os.environ.pop("MIRIX_API_KEY", None)
+        else:
+            os.environ["MIRIX_API_KEY"] = previous_api_key
 
 
 @pytest_asyncio.fixture
@@ -98,7 +105,10 @@ async def client(server_process, api_auth):
     await c.initialize_meta_agent(config_path=str(config_path), update_agents=False)
     if c._meta_agent:
         print(f"[OK] Meta agent ready: {c._meta_agent.id}")
-    return c
+    try:
+        yield c
+    finally:
+        await c.close()
 
 
 # =================================================================
@@ -106,7 +116,7 @@ async def client(server_process, api_auth):
 # =================================================================
 
 
-@pytest.mark.asyncio
+@pytest.mark.asyncio(loop_scope="module")
 async def test_add(client):
     """Test adding memories using client.add()."""
     print("\n[TEST] Adding memory via client.add()...")
@@ -140,7 +150,7 @@ async def test_add(client):
     print(f"[OK] Memory added successfully")
 
 
-@pytest.mark.asyncio
+@pytest.mark.asyncio(loop_scope="module")
 async def test_retrieve_with_conversation(client):
     """Test retrieving memories with conversation context."""
     print("\n[TEST] Retrieving memories with conversation...")
@@ -180,7 +190,7 @@ async def test_retrieve_with_conversation(client):
                 print(f"  - {memory_type}: {items['total_count']} items")
 
 
-@pytest.mark.asyncio
+@pytest.mark.asyncio(loop_scope="module")
 async def test_retrieve_with_topic(client):
     """Test retrieving memories by topic."""
     print("\n[TEST] Retrieving memories by topic...")
@@ -216,7 +226,7 @@ async def test_retrieve_with_topic(client):
                 print(f"  - {memory_type}: {items['total_count']} items")
 
 
-@pytest.mark.asyncio
+@pytest.mark.asyncio(loop_scope="module")
 async def test_search(client):
     """Test searching memories."""
     print("\n[TEST] Searching memories...")
@@ -316,7 +326,10 @@ async def msg_client(server_process, msg_api_auth):
     await c.create_or_get_user(
         user_id=MSG_TEST_USER_ID, user_name="Message Lifecycle User"
     )
-    return c
+    try:
+        yield c
+    finally:
+        await c.close()
 
 
 def _get_server():
@@ -383,7 +396,7 @@ async def _get_sub_agent_ids(client: MirixClient):
 # -----------------------------------------------------------------
 
 
-@pytest.mark.asyncio
+@pytest.mark.asyncio(loop_scope="module")
 async def test_system_prompt_stored_on_agent_not_as_message(msg_client):
     """The system prompt lives in agent_state.system. Updating it should
     never create a message row with role='system' in the messages table.
@@ -426,7 +439,7 @@ async def test_system_prompt_stored_on_agent_not_as_message(msg_client):
 # -----------------------------------------------------------------
 
 
-@pytest.mark.asyncio
+@pytest.mark.asyncio(loop_scope="module")
 async def test_no_messages_persisted_with_zero_retention(msg_client):
     """When a client has message_set_retention_count=0, processing a
     conversation should leave zero message rows in the DB for every
@@ -488,7 +501,7 @@ async def test_no_messages_persisted_with_zero_retention(msg_client):
 # -----------------------------------------------------------------
 
 
-@pytest.mark.asyncio
+@pytest.mark.asyncio(loop_scope="module")
 async def test_message_retention_prunes_to_limit(msg_client):
     """With message_set_retention_count=2, sending 3 conversations should
     leave at most 2 retained message rows for the meta agent. The oldest
@@ -505,14 +518,10 @@ async def test_message_retention_prunes_to_limit(msg_client):
     server = _get_server()
     from mirix.schemas.client import ClientUpdate
 
-    await server.client_manager.update_client(
+    updated_client = await server.client_manager.update_client(
         ClientUpdate(id=MSG_TEST_CLIENT_ID, message_set_retention_count=2)
     )
-
-    db_client = await server.client_manager.get_client_by_id(
-        MSG_TEST_CLIENT_ID
-    )
-    assert db_client.message_set_retention_count == 2
+    assert updated_client.message_set_retention_count == 2
 
     try:
         conversations = [
@@ -557,9 +566,10 @@ async def test_message_retention_prunes_to_limit(msg_client):
         )
 
     finally:
-        await server.client_manager.update_client(
+        reset_client = await server.client_manager.update_client(
             ClientUpdate(id=MSG_TEST_CLIENT_ID, message_set_retention_count=0)
         )
+        assert (reset_client.message_set_retention_count or 0) == 0
 
         from mirix.services.message_manager import MessageManager
 
@@ -567,7 +577,7 @@ async def test_message_retention_prunes_to_limit(msg_client):
         await mm.hard_delete_user_messages_for_agent(
             agent_id=meta_agent_id,
             user_id=MSG_TEST_USER_ID,
-            actor=db_client,
+            actor=reset_client,
             keep_newest_n=0,
         )
 
@@ -577,7 +587,7 @@ async def test_message_retention_prunes_to_limit(msg_client):
 # -----------------------------------------------------------------
 
 
-@pytest.mark.asyncio
+@pytest.mark.asyncio(loop_scope="module")
 async def test_failed_processing_leaves_no_messages(msg_client):
     """When processing fails (e.g. input exceeds the context window),
     no partial message rows should remain in the DB.

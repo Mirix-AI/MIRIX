@@ -7,9 +7,9 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 from typing import Callable, List, Optional, Tuple, Union
 
+import httpx
 import numpy as np
 import pytz
-import httpx
 
 from mirix.agent.tool_validators import validate_tool_args
 from mirix.constants import (
@@ -67,12 +67,7 @@ from mirix.services.semantic_memory_manager import SemanticMemoryManager
 from mirix.services.step_manager import StepManager
 from mirix.services.tool_execution_sandbox import ToolExecutionSandbox
 from mirix.settings import settings, summarizer_settings
-from mirix.system import (
-    get_contine_chaining,
-    get_token_limit_warning,
-    package_function_response,
-    package_user_message,
-)
+from mirix.system import get_contine_chaining, get_token_limit_warning, package_function_response, package_user_message
 from mirix.tracing import trace_method
 from mirix.utils import (
     convert_timezone_to_utc,
@@ -273,11 +268,6 @@ class Agent(BaseAgent):
 
         # Logger that the Agent specifically can use, will also report the agent_state ID with the logs
         # Note: Logger is already initialized earlier in constructor
-
-    async def load_last_function_response(self):
-        """Load the last function response from message history."""
-        # message_ids no longer persisted — last_function_response is tracked in-memory only
-        return self.last_function_response
 
     async def update_memory_if_changed(self, new_memory: Memory) -> bool:
         """

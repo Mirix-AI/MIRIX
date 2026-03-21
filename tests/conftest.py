@@ -128,3 +128,14 @@ def api_key_factory():
 def api_auth(api_key_factory):
     """Default API auth (single client) for tests that need only one key."""
     return api_key_factory()
+
+
+@pytest.fixture(scope="module")
+def isolate_api_key_env():
+    """Temporarily clear MIRIX_API_KEY for header-based client tests."""
+    previous_api_key = os.environ.pop("MIRIX_API_KEY", None)
+    try:
+        yield
+    finally:
+        if previous_api_key is not None:
+            os.environ["MIRIX_API_KEY"] = previous_api_key

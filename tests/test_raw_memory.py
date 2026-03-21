@@ -818,7 +818,9 @@ async def test_api_create_and_get_raw_memory(api_client, raw_memory_manager, tes
 
 
 @pytest.mark.integration
-async def test_api_update_raw_memory_replace(api_client, raw_memory_manager, test_actor, test_user, mock_embedding_model):
+async def test_api_update_raw_memory_replace(
+    api_client, raw_memory_manager, test_actor, test_user, test_agent, mock_embedding_model
+):
     """Test PATCH /memory/raw/{memory_id} endpoint with replace mode."""
     import os
 
@@ -872,7 +874,7 @@ async def test_api_update_raw_memory_replace(api_client, raw_memory_manager, tes
 
 @pytest.mark.integration
 async def test_api_update_raw_memory_append_and_merge(
-    api_client, raw_memory_manager, test_actor, test_user, mock_embedding_model
+    api_client, raw_memory_manager, test_actor, test_user, test_agent, mock_embedding_model
 ):
     """Test PATCH /memory/raw/{memory_id} endpoint with append and merge modes."""
     import os
@@ -929,7 +931,7 @@ async def test_api_update_raw_memory_append_and_merge(
 
 
 @pytest.mark.integration
-async def test_api_delete_raw_memory(api_client, test_actor, test_user):
+async def test_api_delete_raw_memory(api_client, test_actor, test_user, test_agent):
     """Test DELETE /memory/raw/{memory_id} endpoint.
 
     Create via POST so create/delete/get all go through the same server (same DB and cache).

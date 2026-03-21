@@ -26,6 +26,7 @@ from mirix.client import MirixClient
 
 pytestmark = [
     pytest.mark.integration,
+    pytest.mark.usefixtures("isolate_api_key_env"),
 ]
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
