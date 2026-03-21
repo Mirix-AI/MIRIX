@@ -228,7 +228,6 @@ else
 fi
 
 # Detect whether user already provided a pytest marker expression.
-# If not, --integration should imply '-m integration'.
 HAS_MARKER_EXPR=false
 for arg in "${PYTEST_ARGS[@]}"; do
     if [[ "$arg" == "-m" ]] || [[ "$arg" == --markexpr=* ]]; then
@@ -239,13 +238,15 @@ done
 
 if [ ${#PYTEST_ARGS[@]} -eq 0 ]; then
     if [ "$START_SERVER" = true ]; then
-        $PYTEST_CMD tests/ -v -m integration
+        # Override pytest.ini default '-m "not integration"' so all tests run.
+        $PYTEST_CMD tests/ -v -m "integration or not integration"
     else
         $PYTEST_CMD tests/ -v -m "not integration"
     fi
 else
     if [ "$START_SERVER" = true ] && [ "$HAS_MARKER_EXPR" = false ]; then
-        $PYTEST_CMD -m integration "${PYTEST_ARGS[@]}"
+        # No explicit marker provided; include both integration and non-integration.
+        $PYTEST_CMD -m "integration or not integration" "${PYTEST_ARGS[@]}"
     else
         $PYTEST_CMD "${PYTEST_ARGS[@]}"
     fi

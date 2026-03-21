@@ -386,11 +386,20 @@ class TestSearchAllUsers:
         logger.info("TEST 3: Search with client_id retrieves both users with matching scope")
         logger.info("=" * 80)
 
-        results = await client1.search_all_users(
-            query="Python",  # Search for "Python" which should appear in semantic memories for both users
-            memory_type="all",
-            client_id=client1.client_id,
-            limit=50,
+        async def _search_client1_bm25():
+            return await client1.search_all_users(
+                query="Python",
+                memory_type="all",
+                client_id=client1.client_id,
+                limit=50,
+            )
+
+        results = await poll_until(
+            fetch_results=_search_client1_bm25,
+            is_ready=lambda r: r["count"] > 0,
+            wait_log=(
+                "Client1 bm25 search returned 0; waiting %ss before retry (elapsed=%ss)..."
+            ),
         )
 
         logger.info(f"Results: {results['count']} memories found")
@@ -433,12 +442,21 @@ class TestSearchAllUsers:
         logger.info("TEST 3b: Embedding search with client_id retrieves both users with matching scope")
         logger.info("=" * 80)
 
-        results = await client1.search_all_users(
-            query="group discussion",  # Semantic query for "team meeting"
-            memory_type="all",
-            search_method="embedding",
-            client_id=client1.client_id,
-            limit=50,
+        async def _search_client1_embedding():
+            return await client1.search_all_users(
+                query="group discussion",
+                memory_type="all",
+                search_method="embedding",
+                client_id=client1.client_id,
+                limit=50,
+            )
+
+        results = await poll_until(
+            fetch_results=_search_client1_embedding,
+            is_ready=lambda r: r["count"] > 0,
+            wait_log=(
+                "Client1 embedding search returned 0; waiting %ss before retry (elapsed=%ss)..."
+            ),
         )
 
         logger.info(f"Results: {results['count']} memories found")
@@ -524,7 +542,18 @@ class TestSearchAllUsers:
         logger.info("=" * 80)
 
         # Search with client3 which has write_scope='read_only'
-        results = await client3.search_all_users(query="", memory_type="all", client_id=client3.client_id, limit=100)
+        async def _search_client3_bm25():
+            return await client3.search_all_users(
+                query="", memory_type="all", client_id=client3.client_id, limit=100
+            )
+
+        results = await poll_until(
+            fetch_results=_search_client3_bm25,
+            is_ready=lambda r: user3_id in set(result["user_id"] for result in r["results"]),
+            wait_log=(
+                "Client3 bm25 search missing user3; waiting %ss before retry (elapsed=%ss)..."
+            ),
+        )
 
         logger.info(f"Results: {results['count']} memories found")
         logger.info(f"Filter Tags: {results.get('filter_tags')}")
@@ -547,12 +576,21 @@ class TestSearchAllUsers:
         logger.info("=" * 80)
 
         # Search with client3 which has write_scope='read_only'
-        results = await client3.search_all_users(
-            query="software development",  # Semantic query
-            memory_type="all",
-            search_method="embedding",
-            client_id=client3.client_id,
-            limit=100,
+        async def _search_client3_embedding():
+            return await client3.search_all_users(
+                query="software development",
+                memory_type="all",
+                search_method="embedding",
+                client_id=client3.client_id,
+                limit=100,
+            )
+
+        results = await poll_until(
+            fetch_results=_search_client3_embedding,
+            is_ready=lambda r: user3_id in set(result["user_id"] for result in r["results"]),
+            wait_log=(
+                "Client3 embedding search missing user3; waiting %ss before retry (elapsed=%ss)..."
+            ),
         )
 
         logger.info(f"Results: {results['count']} memories found")

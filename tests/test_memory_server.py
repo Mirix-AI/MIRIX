@@ -735,7 +735,6 @@ class TestMetaMemoryParallelism:
 
         monkeypatch.setattr("mirix.agent.EpisodicMemoryAgent", MockMemoryAgent)
         monkeypatch.setattr("mirix.agent.ProceduralMemoryAgent", MockMemoryAgent)
-        monkeypatch.setattr("mirix.functions.function_sets.memory_tools.os.cpu_count", lambda: 8)
 
         class StubAgentManager:
             async def list_agents(self, *, parent_id, actor, limit=None, **kwargs):

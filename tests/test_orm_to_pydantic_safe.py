@@ -127,8 +127,7 @@ async def test_episodic_memory_to_pydantic(server):
     }
     
     event = await server.episodic_memory_manager.create_episodic_memory(
-        agent_state=None,
-        event=EpisodicEventCreate(**event_data),
+        episodic_memory=EpisodicEventCreate(**event_data),
         actor=actor,
     )
     
@@ -168,9 +167,8 @@ async def test_memory_models_to_pydantic(server):
     
     # Test semantic memory
     from mirix.schemas.semantic_memory import SemanticMemoryItem as SemanticCreate
-    semantic = await server.semantic_memory_manager.create_semantic_item(
-        agent_state=None,
-        item=SemanticCreate(
+    semantic = await server.semantic_memory_manager.create_item(
+        item_data=SemanticCreate(
             name="test_concept",
             summary="Test summary",
             details="Test details",
@@ -179,6 +177,7 @@ async def test_memory_models_to_pydantic(server):
             organization_id=user.organization_id,
         ),
         actor=actor,
+        user_id=user.id,
     )
     
     async with db_context() as session:
@@ -194,17 +193,16 @@ async def test_memory_models_to_pydantic(server):
     
     # Test procedural memory
     from mirix.schemas.procedural_memory import ProceduralMemoryItem as ProceduralCreate
-    procedural = await server.procedural_memory_manager.create_procedure(
-        agent_state=None,
-        item=ProceduralCreate(
+    procedural = await server.procedural_memory_manager.create_item(
+        item_data=ProceduralCreate(
+            entry_type="workflow",
             summary="test_procedure",
-            description="Test description",
-            steps="Step 1\nStep 2",
-            tags=["test"],
+            steps=["Step 1", "Step 2"],
             user_id=user.id,
             organization_id=user.organization_id,
         ),
         actor=actor,
+        user_id=user.id,
     )
     
     async with db_context() as session:
@@ -219,17 +217,17 @@ async def test_memory_models_to_pydantic(server):
     
     # Test resource memory
     from mirix.schemas.resource_memory import ResourceMemoryItem as ResourceCreate
-    resource = await server.resource_memory_manager.create_resource(
-        agent_state=None,
-        item=ResourceCreate(
+    resource = await server.resource_memory_manager.create_item(
+        item_data=ResourceCreate(
+            title="test_resource_title",
             summary="test_resource",
             content="Resource content",
             resource_type="document",
-            source="test",
             user_id=user.id,
             organization_id=user.organization_id,
         ),
         actor=actor,
+        user_id=user.id,
     )
     
     async with db_context() as session:
@@ -244,16 +242,18 @@ async def test_memory_models_to_pydantic(server):
     
     # Test knowledge vault
     from mirix.schemas.knowledge_vault import KnowledgeVaultItem as KnowledgeCreate
-    knowledge = await server.knowledge_vault_manager.create_knowledge(
-        agent_state=None,
-        item=KnowledgeCreate(
+    knowledge = await server.knowledge_vault_manager.create_item(
+        knowledge_vault_item=KnowledgeCreate(
+            entry_type="credential",
+            source="test",
+            sensitivity="low",
             caption="test_knowledge",
             secret_value="Secret data",
-            category="test",
             user_id=user.id,
             organization_id=user.organization_id,
         ),
         actor=actor,
+        user_id=user.id,
     )
     
     async with db_context() as session:
@@ -321,8 +321,7 @@ async def test_memory_manager_list_conversion(server):
     
     from mirix.schemas.episodic_memory import EpisodicEvent as EpisodicCreate
     await server.episodic_memory_manager.create_episodic_memory(
-        agent_state=agent,
-        event=EpisodicCreate(
+        episodic_memory=EpisodicCreate(
             event_type="test",
             actor="system",
             summary="Test event",

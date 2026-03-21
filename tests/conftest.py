@@ -139,3 +139,13 @@ def isolate_api_key_env():
     finally:
         if previous_api_key is not None:
             os.environ["MIRIX_API_KEY"] = previous_api_key
+
+
+@pytest_asyncio.fixture(scope="module")
+async def server():
+    """Shared AsyncServer fixture for tests requiring direct server access."""
+    from mirix.server.server import AsyncServer
+
+    srv = AsyncServer()
+    await srv.ensure_defaults()
+    return srv
