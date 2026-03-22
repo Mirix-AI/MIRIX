@@ -44,10 +44,9 @@ from mirix.schemas.block import BlockUpdate
 from mirix.schemas.client import Client
 from mirix.schemas.embedding_config import EmbeddingConfig
 from mirix.schemas.enums import MessageRole, ToolType
-from mirix.schemas.memory import ContextWindowOverview, Memory
+from mirix.schemas.memory import Memory
 from mirix.schemas.message import Message, MessageCreate
 from mirix.schemas.mirix_message_content import CloudFileContent, FileContent, ImageContent, TextContent
-from mirix.schemas.openai.chat_completion_request import Tool as ChatCompletionRequestTool
 from mirix.schemas.openai.chat_completion_response import ChatCompletionResponse
 from mirix.schemas.openai.chat_completion_response import Message as ChatCompletionMessage
 from mirix.schemas.openai.chat_completion_response import UsageStatistics
@@ -58,7 +57,7 @@ from mirix.schemas.user import User
 from mirix.services.agent_manager import AgentManager
 from mirix.services.block_manager import BlockManager
 from mirix.services.episodic_memory_manager import EpisodicMemoryManager
-from mirix.services.helpers.agent_manager_helper import check_supports_structured_output, compile_memory_metadata_block
+from mirix.services.helpers.agent_manager_helper import check_supports_structured_output
 from mirix.services.knowledge_vault_manager import KnowledgeVaultManager
 from mirix.services.message_manager import MessageManager
 from mirix.services.procedural_memory_manager import ProceduralMemoryManager
@@ -72,15 +71,12 @@ from mirix.system import get_contine_chaining, get_token_limit_warning, package_
 from mirix.tracing import trace_method
 from mirix.utils import (
     convert_timezone_to_utc,
-    count_tokens,
     get_friendly_error_msg,
     get_tool_call_id,
     get_utc_time,
     json_dumps,
     json_loads,
     log_telemetry,
-    num_tokens_from_functions,
-    num_tokens_from_messages,
     parse_json,
     printv,
     validate_function_response,
@@ -2229,127 +2225,6 @@ These keywords have been used to retrieve relevant memories from the database.
         # TODO: recall memory
         raise NotImplementedError()
 
-    async def get_context_window(self) -> ContextWindowOverview:
-        """Get the context window of the agent"""
-        from mirix.schemas.agent import AgentType
-
-        system_prompt = self.agent_state.system  # TODO is this the current system or the initial system?
-        num_tokens_system = count_tokens(system_prompt)
-        core_memory = self.blocks_in_memory.compile() if self.blocks_in_memory else ""
-        num_tokens_core_memory = count_tokens(core_memory)
-
-        # Grab recent retained messages from DB for token counting purposes.
-        # Retention is only applied to meta agent history.
-        retention = (self.actor.message_set_retention_count or 0) if self.actor else 0
-        is_meta_agent = self.agent_state.is_type(AgentType.meta_memory_agent)
-        should_use_retention = retention > 0 and is_meta_agent and self.actor and self.user_id
-        db_messages: List[Message] = []
-        if should_use_retention:
-            db_messages = await self.message_manager.get_messages_for_agent_user(
-                agent_id=self.agent_state.id,
-                user_id=self.user_id,
-                actor=self.actor,
-                limit=retention,
-            )
-        # Prepend synthetic system message for context window calculation
-        system_msg_for_count = Message.dict_to_message(
-            agent_id=self.agent_state.id,
-            model=self.model,
-            openai_message_dict={"role": "system", "content": system_prompt},
-        )
-        in_context_messages = [system_msg_for_count] + db_messages
-        in_context_messages_openai = [m.to_openai_dict() for m in in_context_messages]
-
-        # Check if there's a summary message in the message queue
-        if (
-            len(in_context_messages) > 1
-            and in_context_messages[1].role == MessageRole.user
-            and isinstance(in_context_messages[1].text, str)
-            # TODO remove hardcoding
-            and "The following is a summary of the previous " in in_context_messages[1].text
-        ):
-            # Summary message exists
-            assert in_context_messages[1].text is not None
-            summary_memory = in_context_messages[1].text
-            num_tokens_summary_memory = count_tokens(in_context_messages[1].text)
-            # with a summary message, the real messages start at index 2
-            num_tokens_messages = (
-                num_tokens_from_messages(messages=in_context_messages_openai[2:], model=self.model)
-                if len(in_context_messages_openai) > 2
-                else 0
-            )
-
-        else:
-            summary_memory = None
-            num_tokens_summary_memory = 0
-            # with no summary message, the real messages start at index 1
-            num_tokens_messages = (
-                num_tokens_from_messages(messages=in_context_messages_openai[1:], model=self.model)
-                if len(in_context_messages_openai) > 1
-                else 0
-            )
-
-        message_manager_size = await self.message_manager.size(
-            actor=self.actor, agent_id=self.agent_state.id, user_id=self.user_id
-        )
-        external_memory_summary = compile_memory_metadata_block(
-            memory_edit_timestamp=get_utc_time(),
-            previous_message_count=await self.message_manager.size(
-                actor=self.actor, agent_id=self.agent_state.id, user_id=self.user_id
-            ),
-        )
-        num_tokens_external_memory_summary = count_tokens(external_memory_summary)
-
-        # tokens taken up by function definitions
-        agent_state_tool_jsons = [t.json_schema for t in self.agent_state.tools]
-        if agent_state_tool_jsons:
-            available_functions_definitions = [
-                ChatCompletionRequestTool(type="function", function=f) for f in agent_state_tool_jsons
-            ]
-            num_tokens_available_functions_definitions = num_tokens_from_functions(
-                functions=agent_state_tool_jsons, model=self.model
-            )
-        else:
-            available_functions_definitions = []
-            num_tokens_available_functions_definitions = 0
-
-        num_tokens_used_total = (
-            num_tokens_system  # system prompt
-            + num_tokens_available_functions_definitions  # function definitions
-            + num_tokens_core_memory  # core memory
-            + num_tokens_external_memory_summary  # metadata (statistics) about recall/archival
-            + num_tokens_summary_memory  # summary of ongoing conversation
-            + num_tokens_messages  # tokens taken by messages
-        )
-        assert isinstance(num_tokens_used_total, int)
-
-        return ContextWindowOverview(
-            # context window breakdown (in messages)
-            num_messages=len(in_context_messages),
-            num_recall_memory=message_manager_size,
-            num_tokens_external_memory_summary=num_tokens_external_memory_summary,
-            external_memory_summary=external_memory_summary,
-            # top-level information
-            context_window_size_max=self.agent_state.llm_config.context_window,
-            context_window_size_current=num_tokens_used_total,
-            # context window breakdown (in tokens)
-            num_tokens_system=num_tokens_system,
-            system_prompt=system_prompt,
-            num_tokens_core_memory=num_tokens_core_memory,
-            core_memory=core_memory,
-            num_tokens_summary_memory=num_tokens_summary_memory,
-            summary_memory=summary_memory,
-            num_tokens_messages=num_tokens_messages,
-            messages=in_context_messages,
-            # related to functions
-            num_tokens_functions_definitions=num_tokens_available_functions_definitions,
-            functions_definitions=available_functions_definitions,
-        )
-
-    async def count_tokens(self) -> int:
-        """Count the tokens in the current context window"""
-        context_window_breakdown = await self.get_context_window()
-        return context_window_breakdown.context_window_size_current
 
 
 def strip_name_field_from_user_message(

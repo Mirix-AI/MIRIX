@@ -48,7 +48,7 @@ from mirix.schemas.embedding_config import EmbeddingConfig
 # openai schemas
 from mirix.schemas.enums import MessageStreamStatus
 from mirix.schemas.llm_config import LLMConfig
-from mirix.schemas.memory import ContextWindowOverview, RecallMemorySummary
+from mirix.schemas.memory import RecallMemorySummary
 from mirix.schemas.message import Message, MessageCreate, MessageUpdate
 from mirix.schemas.mirix_message import LegacyMirixMessage, MirixMessage, ToolReturnMessage
 from mirix.schemas.mirix_response import MirixResponse
@@ -1289,9 +1289,6 @@ class AsyncServer(Server):
     def add_embedding_model(self, request: EmbeddingConfig) -> EmbeddingConfig:
         """Add a new embedding model"""
 
-    async def get_agent_context_window(self, agent_id: str, actor: Client) -> ContextWindowOverview:
-        mirix_agent = await self.load_agent(agent_id=agent_id, actor=actor)
-        return await mirix_agent.get_context_window()
 
     async def run_tool_from_source(
         self,
