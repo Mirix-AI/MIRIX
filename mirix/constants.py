@@ -229,11 +229,6 @@ INNER_THOUGHTS_KWARG_DESCRIPTION = "Deep inner monologue private to you only."
 INNER_THOUGHTS_CLI_SYMBOL = "💭"
 ASSISTANT_MESSAGE_CLI_SYMBOL = "🤖"
 
-CLEAR_HISTORY_AFTER_MEMORY_UPDATE = os.getenv("CLEAR_HISTORY_AFTER_MEMORY_UPDATE", "true").lower() in (
-    "true",
-    "1",
-    "yes",
-)
 CALL_MEMORY_AGENT_IN_PARALLEL = os.getenv("CALL_MEMORY_AGENT_IN_PARALLEL", "false").lower() in ("true", "1", "yes")
 CHAINING_FOR_MEMORY_UPDATE = os.getenv("CHAINING_FOR_MEMORY_UPDATE", "false").lower() in ("true", "1", "yes")
 CHAINING_FOR_META_AGENT = os.getenv("CHAINING_FOR_META_AGENT", "true").lower() in (
