@@ -719,7 +719,7 @@ class TestMetaMemoryParallelism:
         relevant_agents = [agent for agent in child_agents if agent.agent_type in target_types]
         assert len(relevant_agents) == len(target_types), "Expected episodic and procedural memory agents to be present"
 
-        tracker = {"start_times": {}, "thread_ids": {}}
+        tracker = {"start_times": {}, "thread_ids": {}, "input_lengths": {}}
         lock = threading.Lock()
 
         class MockMemoryAgent:
@@ -731,6 +731,9 @@ class TestMetaMemoryParallelism:
                 with lock:
                     tracker["start_times"][memory_type] = time.perf_counter()
                     tracker["thread_ids"][memory_type] = threading.get_ident()
+                    tracker["input_lengths"][memory_type] = (
+                        len(input_messages) if isinstance(input_messages, list) else 1
+                    )
                 await asyncio.sleep(1)
 
         monkeypatch.setattr("mirix.agent.EpisodicMemoryAgent", MockMemoryAgent)
@@ -766,6 +769,9 @@ class TestMetaMemoryParallelism:
         start_times = tracker["start_times"]
         assert set(start_times.keys()) == {"episodic", "procedural"}
         gap = abs(start_times["episodic"] - start_times["procedural"])
+
+        # Child agents should receive a single packed input message.
+        assert tracker["input_lengths"] == {"episodic": 1, "procedural": 1}
 
         # Both updates ran; gap < 0.45s indicates concurrent execution (asyncio uses one thread).
         assert gap < 0.45, f"Expected parallel execution, gap was {gap:.3f}s"

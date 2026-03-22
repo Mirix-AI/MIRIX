@@ -484,12 +484,31 @@ async def test_no_messages_persisted_with_zero_retention(msg_client):
     print("  Waiting for queue processing (15s)...")
     await asyncio.sleep(15)
 
+    synthetic_markers = [
+        "[System Message] As the meta memory manager",
+        "continue chaining",
+        "function failed",
+        "finish_memory_update",
+    ]
+
     for name, aid in agent_map.items():
         messages = await _get_message_rows(
             agent_id=aid,
             user_id=MSG_TEST_USER_ID,
             org_id=TEST_ORG_ID,
         )
+        for message in messages:
+            content_text = " ".join(
+                [
+                    c.text
+                    for c in (message.content or [])
+                    if hasattr(c, "text") and c.text
+                ]
+            )
+            assert not any(marker in content_text for marker in synthetic_markers), (
+                f"Agent '{name}' persisted synthetic helper content with retention=0: "
+                f"{content_text}"
+            )
         assert len(messages) == 0, (
             f"Agent '{name}' should have 0 message rows with "
             f"retention=0, found {len(messages)}"
@@ -564,6 +583,39 @@ async def test_message_retention_prunes_to_limit(msg_client):
             f"Expected at most 2 retained message rows with "
             f"retention=2, found {len(messages)}"
         )
+
+        synthetic_markers = [
+            "[System Message] As the meta memory manager",
+            "continue chaining",
+            "function failed",
+            "finish_memory_update",
+        ]
+        for message in messages:
+            content_text = " ".join(
+                [
+                    c.text
+                    for c in (message.content or [])
+                    if hasattr(c, "text") and c.text
+                ]
+            )
+            assert not any(marker in content_text for marker in synthetic_markers), (
+                "Retention rows should contain only persisted input message sets, "
+                f"found synthetic helper content: {content_text}"
+            )
+
+        # Sub-agents should not persist retained input message sets.
+        for name, aid in agent_map.items():
+            if name == "meta_memory_agent":
+                continue
+            sub_messages = await _get_message_rows(
+                agent_id=aid,
+                user_id=MSG_TEST_USER_ID,
+                org_id=TEST_ORG_ID,
+            )
+            assert len(sub_messages) == 0, (
+                f"Sub-agent '{name}' should not persist retained message rows; "
+                f"found {len(sub_messages)}"
+            )
 
     finally:
         reset_client = await server.client_manager.update_client(
