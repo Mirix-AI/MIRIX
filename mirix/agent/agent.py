@@ -1233,12 +1233,13 @@ class Agent(BaseAgent):
         input_messages: Union[Message, MessageCreate, List[Union[Message, MessageCreate]]],
         chaining: bool = True,
         max_chaining_steps: Optional[int] = None,
-        extra_messages: Optional[List[dict]] = None,
-        actor: Optional["Client"] = None,  # Client for write operations (audit trail)
-        user: Optional[User] = None,  # User for read operations (data scope)
+        actor: Optional["Client"] = None,  # Client
+        user: Optional[User] = None,
         **kwargs,
     ) -> MirixUsageStatistics:
-        """Run Agent.step in a loop, handling chaining via continue_chaining requests and function failures
+        """A "step" is one full invocation of an agent.
+
+        Run Agent.inner_step in a loop, handling chaining via continue_chaining requests and function failures
 
         Args:
             actor: Client object for write operations (updating messages, agent state) - audit trail
@@ -1250,124 +1251,125 @@ class Agent(BaseAgent):
         # chat_agent is deprecated - raise immediately
         if self.agent_state.is_type(AgentType.chat_agent):
             raise NotImplementedError(
-                "AgentType.chat_agent is deprecated and no longer supported. "
-                "Use a memory agent type instead."
+                "AgentType.chat_agent is deprecated and no longer supported. " "Use a memory agent type instead."
             )
 
-        # Store actor for write operations
-        if actor:
-            self.actor = actor
+        if actor is None or user is None:
+            raise ValueError("Agent.step requires non-null actor and user.")
 
-        # Store user and load user's memory blocks
-        if user:
-            self.user = user
+        # Store actor/user context for this step invocation.
+        self.actor = actor
+        self.user = user
 
-            # Only load blocks for core_memory_agent (other agent types don't use blocks)
-            if self.agent_state.is_type(AgentType.core_memory_agent):
-                # Load existing blocks for this user, scoped by the client's write_scope.
-                # auto_create_from_default=True will create blocks from template if they don't exist for this scope.
-                # filter_tags_set_on_create is applied only when new blocks are created (e.g. from default template).
-                existing_blocks = await self.block_manager.get_blocks(
-                    user=self.user,
-                    any_scopes=self._block_scopes,
-                    filter_tags_set_on_create=self.block_filter_tags,
-                )
+        # Special case for Core Memory Agent: load blocks to use later in the step
+        if self.agent_state.is_type(AgentType.core_memory_agent):
+            # Load existing blocks for this user, scoped by the client's write_scope.
+            # auto_create_from_default=True will create blocks from template if they don't exist for this scope.
+            # filter_tags_set_on_create is applied only when new blocks are created (e.g. from default template).
+            existing_blocks = await self.block_manager.get_blocks(
+                user=self.user,
+                any_scopes=self._block_scopes,
+                filter_tags_set_on_create=self.block_filter_tags,
+            )
 
-                # Apply block_filter_tags to existing blocks (merge or replace).
-                # Skips blocks whose filter_tags already match the desired state
-                # (e.g. blocks just created from template with the same tags).
-                if self.block_filter_tags and existing_blocks:
-                    existing_blocks = await self._apply_block_filter_tags(existing_blocks)
+            # Apply block_filter_tags to existing blocks (merge or replace).
+            # Skips blocks whose filter_tags already match the desired state
+            # (e.g. blocks just created from template with the same tags).
+            if self.block_filter_tags and existing_blocks:
+                existing_blocks = await self._apply_block_filter_tags(existing_blocks)
 
-                # Load blocks into memory for core_memory_agent
-                self.blocks_in_memory = Memory(blocks=existing_blocks)
+            # Load blocks into memory for core_memory_agent
+            self.blocks_in_memory = Memory(blocks=existing_blocks)
 
-        # Reset last function response for this step (no longer loaded from DB history)
+        # Reset last function response for this step
         self.last_function_response = None
 
         max_chaining_steps = max_chaining_steps or MAX_CHAINING_STEPS
 
-        first_input_message = input_messages[0] if isinstance(input_messages, list) else input_messages
+        # Normalize to runtime Message objects for downstream prompt assembly.
+        raw_input_messages = input_messages
+        if not isinstance(raw_input_messages, list):
+            raw_input_messages = [raw_input_messages]
 
-        # Convert MessageCreate objects to Message objects
-        if not isinstance(input_messages, list):
-            input_messages = [input_messages]
-        message_objects = [
-            (
-                m
-                if isinstance(m, Message)
-                else prepare_input_message_create(
-                    m,
-                    self.agent_state.id,
-                    wrap_user_message=False,
-                    wrap_system_message=True,
+        # At the end of this normalization step we will end up with a list containing only one Message object
+        # (multiple messages are packed into a single Message object in the upstream caller)
+        # The step also converts it from a MessageCreate to a Message object
+        # to match compatability with the downstream prompt assembly.
+        normalized_input_messages: List[Message] = []
+        for m in raw_input_messages:
+            if isinstance(m, Message):
+                normalized_input_messages.append(m)
+            elif isinstance(m, MessageCreate):
+                normalized_input_messages.append(
+                    prepare_input_message_create(
+                        m,
+                        self.agent_state.id,
+                        wrap_user_message=False,
+                        wrap_system_message=True,
+                    )
                 )
-            )
-            for m in input_messages
-        ]
+            else:
+                raise ValueError("input_messages items must be Message or MessageCreate, " f"got {type(m)}")
 
-        extra_message_objects = (
-            [
-                prepare_input_message_create(
-                    m,
-                    self.agent_state.id,
-                    wrap_user_message=False,
-                    wrap_system_message=True,
-                )
-                for m in extra_messages
-            ]
-            if extra_messages is not None
-            else None
-        )
-        next_input_message = message_objects
-        counter = 0
-        total_usage = UsageStatistics()
-        step_count = 0
-
-        # Load retained messages from DB if client has retention configured
+        # Read retained history from the parent scope (for sub-agents) or from this
+        # agent's scope (for top-level agents/meta). This keeps sub-agent inputs as a
+        # single packed message while still providing parent retained context.
         retention = (self.actor.message_set_retention_count or 0) if self.actor else 0
-        retained_messages: List[Message] = []
-        if retention > 0 and self.actor and self.user_id:
-            retained_messages = await self.message_manager.get_messages_for_agent_user(
-                agent_id=self.agent_state.id,
+        retention_agent_id = (
+            self.agent_state.parent_id or self.agent_state.id
+        )  # Retained messages in the DB are associated with the meta agent
+        should_read_retention = retention > 0 and self.actor and self.user_id
+        is_meta_agent = self.agent_state.is_type(AgentType.meta_memory_agent)
+        should_write_retention = retention > 0 and is_meta_agent and self.actor and self.user_id
+        retained_input_sets: List[Message] = []
+        if should_read_retention:
+            retained_input_sets = await self.message_manager.get_messages_for_agent_user(
+                agent_id=retention_agent_id,
                 user_id=self.user_id,
                 actor=self.actor,
                 limit=retention,
             )
 
-        # In-memory accumulator: starts with retained messages, grows with each chaining step
-        accumulated: List[Message] = list(retained_messages)
-        # Track the initial input messages for retention write-back
-        input_messages_for_persistence = message_objects
-
-        # initial_message_count = system_msg (1) + retained messages
-        initial_message_count = 1 + len(retained_messages)
+        # Chaining accumulator for the active agent loop only.
+        accumulated: List[Message] = list(retained_input_sets)
+        # Persist only the original input payload, never synthetic helper messages
+        # appended to iteration messages during meta-agent processing.
+        input_messages_for_persistence: List[Message] = list(normalized_input_messages)
 
         # Initialize the LLM client once per step to reuse across retries.
         llm_client = LLMClient.create(
             llm_config=self.agent_state.llm_config,
         )
 
+        if self.agent_state.is_type(AgentType.meta_memory_agent):
+            # Extract topics from retained context + current input messages.
+            try:
+                # make sure to include both retained context and current input messages in the search topic extraction
+                topics = await self._extract_topics_from_messages(retained_input_sets + normalized_input_messages)
+
+                if topics is not None:
+                    kwargs["topics"] = topics
+                else:
+                    printv(f"[Mirix.Agent.{self.agent_state.name}] WARNING: No topics extracted from input")
+
+            except Exception as e:
+                printv(f"[Mirix.Agent.{self.agent_state.name}] INFO: Error in extracting the topic from the input: {e}")
+                pass
+
+        # Main loop:ing
+        # Each iteration calls inner_step and then makes a decision about whether to continue chaining
+        # or to terminate the step. When chaining, the curren_input_messages are updated to reference
+        # a heartbeat message (e.g. "function failed", "continue chaining", etc.) and the previous input messages
+        # are added to the in-memory accumulator.
+        counter = 0
+        total_usage = UsageStatistics()
+        step_count = 0
+        loop_input_messages: List[Message] = list(normalized_input_messages)
         while True:
             kwargs["first_message"] = False
             kwargs["step_count"] = step_count
 
-            if self.agent_state.is_type(AgentType.meta_memory_agent, AgentType.chat_agent) and step_count == 0:
-                # When the agent first gets the screenshots, we need to extract the topic to search the query.
-                try:
-                    topics = await self._extract_topics_from_messages(next_input_message)
-
-                    if topics is not None:
-                        kwargs["topics"] = topics
-                    else:
-                        printv(f"[Mirix.Agent.{self.agent_state.name}] WARNING: No topics extracted from screenshots")
-
-                except Exception as e:
-                    printv(
-                        f"[Mirix.Agent.{self.agent_state.name}] INFO: Error in extracting the topic from the screenshots: {e}"
-                    )
-                    pass
-
+            loop_iteration_messages = list(loop_input_messages)
             if self.agent_state.is_type(AgentType.meta_memory_agent) and step_count == 0:
                 meta_message = prepare_input_message_create(
                     MessageCreate(
@@ -1379,14 +1381,11 @@ class Agent(BaseAgent):
                     wrap_user_message=False,
                     wrap_system_message=True,
                 )
-                next_input_message.append(meta_message)
+                loop_iteration_messages.append(meta_message)
 
             step_response = await self.inner_step(
-                first_input_messge=first_input_message,
-                messages=next_input_message,
+                messages=loop_iteration_messages,
                 accumulated=accumulated,
-                extra_messages=extra_message_objects,
-                initial_message_count=initial_message_count,
                 chaining=chaining,
                 llm_client=llm_client,
                 **kwargs,
@@ -1394,7 +1393,6 @@ class Agent(BaseAgent):
 
             continue_chaining = step_response.continue_chaining
             function_failed = step_response.function_failed
-            token_warning = step_response.in_context_memory_warning
             usage = step_response.usage
 
             # Accumulate step messages for next chaining iteration
@@ -1415,60 +1413,54 @@ class Agent(BaseAgent):
                     warning_content = "[System Message] You have reached the maximum chaining steps. Please call 'send_message' to send your response to the user."
                 else:
                     warning_content = "[System Message] You have reached the maximum chaining steps. Please call 'finish_memory_update' to end the chaining."
-                next_input_message = Message.dict_to_message(
-                    agent_id=self.agent_state.id,
-                    model=self.model,
-                    openai_message_dict={
-                        "role": "user",
-                        "content": warning_content,
-                    },
-                )
+                loop_input_messages = [
+                    Message.dict_to_message(
+                        agent_id=self.agent_state.id,
+                        model=self.model,
+                        openai_message_dict={
+                            "role": "user",
+                            "content": warning_content,
+                        },
+                    )
+                ]
                 continue  # give agent one more chance to respond
             elif max_chaining_steps is not None and counter > max_chaining_steps:
                 printv(
                     f"[Mirix.Agent.{self.agent_state.name}] INFO: Hit max chaining steps, stopping after {counter} steps"
                 )
                 break
-            # Chain handlers
-            elif token_warning and summarizer_settings.send_memory_warning_message:
-                assert self.agent_state.created_by_id is not None
-                next_input_message = Message.dict_to_message(
-                    agent_id=self.agent_state.id,
-                    model=self.model,
-                    openai_message_dict={
-                        "role": "user",  # TODO: change to system?
-                        "content": get_token_limit_warning(),
-                    },
-                )
-                continue  # always chain
             elif function_failed:
                 assert self.agent_state.created_by_id is not None
-                next_input_message = Message.dict_to_message(
-                    agent_id=self.agent_state.id,
-                    model=self.model,
-                    openai_message_dict={
-                        "role": "user",  # TODO: change to system?
-                        "content": get_contine_chaining(FUNC_FAILED_HEARTBEAT_MESSAGE),
-                    },
-                )
+                loop_input_messages = [
+                    Message.dict_to_message(
+                        agent_id=self.agent_state.id,
+                        model=self.model,
+                        openai_message_dict={
+                            "role": "user",  # TODO: change to system?
+                            "content": get_contine_chaining(FUNC_FAILED_HEARTBEAT_MESSAGE),
+                        },
+                    )
+                ]
                 continue  # always chain
             elif continue_chaining:
                 assert self.agent_state.created_by_id is not None
-                next_input_message = Message.dict_to_message(
-                    agent_id=self.agent_state.id,
-                    model=self.model,
-                    openai_message_dict={
-                        "role": "user",  # TODO: change to system?
-                        "content": get_contine_chaining(REQ_HEARTBEAT_MESSAGE),
-                    },
-                )
+                loop_input_messages = [
+                    Message.dict_to_message(
+                        agent_id=self.agent_state.id,
+                        model=self.model,
+                        openai_message_dict={
+                            "role": "user",  # TODO: change to system?
+                            "content": get_contine_chaining(REQ_HEARTBEAT_MESSAGE),
+                        },
+                    )
+                ]
                 continue  # always chain
             # Mirix no-op / yield
             else:
                 break
 
         # Retention write-back: persist input messages and prune old ones if configured
-        if retention > 0 and self.actor and self.user_id and input_messages_for_persistence:
+        if should_write_retention and input_messages_for_persistence:
             await self.message_manager.create_many_messages(
                 input_messages_for_persistence,
                 actor=self.actor,
@@ -2000,23 +1992,16 @@ These keywords have been used to retrieve relevant memories from the database.
 
     async def inner_step(
         self,
-        first_input_messge: Message,
         messages: Union[Message, List[Message]],
         accumulated: Optional[List[Message]] = None,
-        first_message: bool = False,
-        first_message_retry_limit: int = FIRST_MESSAGE_ATTEMPTS,
-        skip_verify: bool = False,
         stream: bool = False,  # TODO move to config?
         step_count: Optional[int] = None,
-        metadata: Optional[dict] = None,
         force_response: bool = False,
         topics: Optional[str] = None,
         retrieved_memories: Optional[dict] = None,
         display_intermediate_message: any = None,
         request_user_confirmation: Optional[Callable] = None,
         existing_file_uris: Optional[List[str]] = None,
-        extra_messages: Optional[List[dict]] = None,
-        initial_message_count: Optional[int] = None,
         return_memory_types_without_update: bool = False,
         message_queue: Optional[any] = None,
         chaining: bool = True,
@@ -2057,17 +2042,14 @@ These keywords have been used to retrieve relevant memories from the database.
                 messages = [messages]
 
             if not all(isinstance(m, Message) for m in messages):
-                raise ValueError(f"messages should be a Message or a list of Message, got {type(messages)}")
+                message_types = [type(m).__name__ for m in messages]
+                raise ValueError(
+                    "messages should be a Message or a list of Message, "
+                    f"got container={type(messages)}, elements={message_types}"
+                )
 
             # Build sequence: [system] + accumulated (prior chaining steps) + current messages
             input_message_sequence = [system_msg] + accumulated + messages
-
-            if extra_messages is not None:
-                input_message_sequence = (
-                    input_message_sequence[:initial_message_count]
-                    + extra_messages
-                    + input_message_sequence[initial_message_count:]
-                )
 
             if len(input_message_sequence) > 1 and input_message_sequence[-1].role != "user":
                 printv(
@@ -2077,7 +2059,6 @@ These keywords have been used to retrieve relevant memories from the database.
             # Step 2: send the conversation and available functions to the LLM
             response = await self._get_ai_reply(
                 message_sequence=input_message_sequence,
-                first_message=first_message,
                 stream=stream,
                 step_count=step_count,
                 existing_file_uris=existing_file_uris,
@@ -2109,7 +2090,7 @@ These keywords have been used to retrieve relevant memories from the database.
             for response_choice in response.choices:
                 response_message = response_choice.message
                 tmp_response_messages, continue_chaining, function_failed = await self._handle_ai_response(
-                    first_input_messge,  # give the last message to the function so that other agents can see this message through funciton_calls
+                    messages[0],  # Input messages are always packed into a single MessageCreate object
                     response_message,
                     existing_file_uris=existing_file_uris,
                     # TODO this is kind of hacky, find a better way to handle this
@@ -2149,60 +2130,11 @@ These keywords have been used to retrieve relevant memories from the database.
                         f"[Mirix.Agent.{self.agent_state.name}] ERROR: Function execution encountered errors (see logs above for details)"
                     )
 
-            # if function_failed:
-
-            #     inputs = self._get_ai_reply(
-            #         message_sequence=input_message_sequence,
-            #         first_message=first_message,
-            #         stream=stream,
-            #         step_count=step_count,
-            #         # extra_messages=extra_messages,
-            #         get_input_data_for_debugging=True
-            #     )
-
-            #     try:
-            #         error = json.loads(all_response_messages[-1].content[0].text)
-            #     except:
-            #         error = 'Not Known'
-
-            #     response_json = response.model_dump()
-            #     response_json.pop('created', None)
-            #     results_to_log = {
-            #         'input': inputs,
-            #         'output': response_json,
-            #         'error': error
-            #     }
-
-            #     if not os.path.exists("debug"):
-            #         os.makedirs("debug")
-            #     count = 0
-            #     while os.path.exists(f"debug/debug_{count}.json"):
-            #         count += 1
-            #     with open(f"debug/debug_{count}.json", "w") as f:
-            #         json.dump(results_to_log, f, indent=2)
-
             # Step 6: extend the message history
             if len(messages) > 0:
                 all_new_messages = messages + all_response_messages
             else:
                 all_new_messages = all_response_messages
-
-            # Check the memory pressure and potentially issue a memory pressure warning
-            current_total_tokens = response.usage.total_tokens
-            active_memory_warning = False
-
-            # We can't do summarize logic properly if context_window is undefined
-            if self.agent_state.llm_config.context_window is None:
-                # Fallback if for some reason context_window is missing, just set to the default
-                printv(
-                    f"[Mirix.Agent.{self.agent_state.name}] WARNING: Could not find context_window in config, setting to default {LLM_MAX_TOKENS['DEFAULT']}"
-                )
-                printv(f"[Mirix.Agent.{self.agent_state.name}] DEBUG: Agent state: {self.agent_state}")
-                self.agent_state.llm_config.context_window = (
-                    LLM_MAX_TOKENS[self.model]
-                    if (self.model is not None and self.model in LLM_MAX_TOKENS)
-                    else LLM_MAX_TOKENS["DEFAULT"]
-                )
 
             # Log step
             step = await self.step_manager.log_step(
@@ -2215,24 +2147,6 @@ These keywords have been used to retrieve relevant memories from the database.
             for message in all_new_messages:
                 message.step_id = step.id
 
-            # Check memory pressure (warning only — no in-loop summarization)
-            if current_total_tokens > summarizer_settings.memory_warning_threshold * int(
-                self.agent_state.llm_config.context_window
-            ):
-                printv(
-                    f"[Mirix.Agent.{self.agent_state.name}] INFO: Memory pressure detected: last response total_tokens ({current_total_tokens}) > {summarizer_settings.memory_warning_threshold * int(self.agent_state.llm_config.context_window)}"
-                )
-
-                # Only deliver the alert if we haven't already (this period)
-                if not self.agent_alerted_about_memory_pressure:
-                    active_memory_warning = True
-                    self.agent_alerted_about_memory_pressure = True  # it's up to the outer loop to handle this
-
-            else:
-                printv(
-                    f"[Mirix.Agent.{self.agent_state.name}] DEBUG: Memory usage acceptable: last response total_tokens ({current_total_tokens}) < {summarizer_settings.memory_warning_threshold * int(self.agent_state.llm_config.context_window)}"
-                )
-
             # Log step completion and results
             printv(
                 f"[Mirix.Agent.{self.agent_state.name}] INFO: Agent step completed - continue_chaining: {continue_chaining}, function_failed: {function_failed}, messages_generated: {len(all_new_messages)}"
@@ -2242,12 +2156,13 @@ These keywords have been used to retrieve relevant memories from the database.
                 messages=all_new_messages,
                 continue_chaining=continue_chaining,
                 function_failed=function_failed,
-                in_context_memory_warning=active_memory_warning,
                 usage=response.usage,
             )
 
         except Exception as e:
-            printv(f"[Mirix.Agent.{self.agent_state.name}] ERROR: inner_step() failed\nmessages = {messages}\nerror = {e}")
+            printv(
+                f"[Mirix.Agent.{self.agent_state.name}] ERROR: inner_step() failed\nmessages = {messages}\nerror = {e}"
+            )
             if is_context_overflow_error(e):
                 num_accumulated = len(accumulated) + len(messages)
                 err_msg = f"Context window exceeded for agent id={self.agent_state.id} with {num_accumulated} in-context messages."
@@ -2316,16 +2231,20 @@ These keywords have been used to retrieve relevant memories from the database.
 
     async def get_context_window(self) -> ContextWindowOverview:
         """Get the context window of the agent"""
+        from mirix.schemas.agent import AgentType
 
         system_prompt = self.agent_state.system  # TODO is this the current system or the initial system?
         num_tokens_system = count_tokens(system_prompt)
         core_memory = self.blocks_in_memory.compile() if self.blocks_in_memory else ""
         num_tokens_core_memory = count_tokens(core_memory)
 
-        # Grab recent messages from DB for token counting purposes
+        # Grab recent retained messages from DB for token counting purposes.
+        # Retention is only applied to meta agent history.
         retention = (self.actor.message_set_retention_count or 0) if self.actor else 0
+        is_meta_agent = self.agent_state.is_type(AgentType.meta_memory_agent)
+        should_use_retention = retention > 0 and is_meta_agent and self.actor and self.user_id
         db_messages: List[Message] = []
-        if retention > 0 and self.actor and self.user_id:
+        if should_use_retention:
             db_messages = await self.message_manager.get_messages_for_agent_user(
                 agent_id=self.agent_state.id,
                 user_id=self.user_id,

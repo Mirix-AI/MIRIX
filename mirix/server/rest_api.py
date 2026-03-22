@@ -2035,6 +2035,8 @@ async def add_memory(
                 raise ValueError(f"Invalid content type: {type(content)}")
         message = new_message
 
+    # N.b. This function converts to Mirix format and also packs all messages into a single MessageCreate object
+    # so, there will be only one MessageCreate object in the list
     input_messages = convert_message_to_mirix_message(message)
 
     # Add client scope to filter_tags (create if not provided)

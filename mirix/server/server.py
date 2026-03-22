@@ -700,6 +700,8 @@ class AsyncServer(Server):
     ) -> MirixUsageStatistics:
         """Send the input message through the agent"""
         logger.debug("Got input messages: %s", input_messages)
+        if user is None:
+            raise ValueError("AsyncServer._step requires a non-null user.")
         mirix_agent = None
         try:
             mirix_agent = await self.load_agent(
@@ -859,11 +861,11 @@ class AsyncServer(Server):
 
         elif command.lower() == "contine_chaining":
             input_message = system.get_contine_chaining()
-            usage = await self._step(actor=actor, agent_id=agent_id, input_messages=input_message)
+            usage = await self._step(actor=actor, agent_id=agent_id, input_messages=input_message, user=actor)
 
         elif command.lower() == "memorywarning":
             input_message = system.get_token_limit_warning()
-            usage = await self._step(actor=actor, agent_id=agent_id, input_messages=input_message)
+            usage = await self._step(actor=actor, agent_id=agent_id, input_messages=input_message, user=actor)
 
         if not usage:
             usage = MirixUsageStatistics()
@@ -919,7 +921,7 @@ class AsyncServer(Server):
                 )
 
         # Run the agent state forward
-        usage = await self._step(actor=actor, agent_id=agent_id, input_messages=message)
+        usage = await self._step(actor=actor, agent_id=agent_id, input_messages=message, user=actor)
         return usage
 
     async def system_message(
@@ -984,7 +986,7 @@ class AsyncServer(Server):
             message.created_at = timestamp
 
         # Run the agent state forward
-        return await self._step(actor=actor, agent_id=agent_id, input_messages=message)
+        return await self._step(actor=actor, agent_id=agent_id, input_messages=message, user=actor)
 
     async def construct_system_message(self, agent_id: str, message: str, actor: Client) -> str:
         """
@@ -1046,6 +1048,9 @@ class AsyncServer(Server):
             from mirix.utils import set_verbose
 
             set_verbose(verbose)
+
+        if user is None:
+            user = await self.user_manager.get_admin_user()
 
         try:
             # Run the agent state forward

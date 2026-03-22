@@ -302,10 +302,6 @@ class AgentStepResponse(BaseModel):
         description="Whether the agent requested a contine_chaining (i.e. follow-up execution).",
     )
     function_failed: bool = Field(..., description="Whether the agent step ended because a function call failed.")
-    in_context_memory_warning: bool = Field(
-        ...,
-        description="Whether the agent step ended because the in-context memory is near its limit.",
-    )
     usage: UsageStatistics = Field(..., description="Usage statistics of the LLM call during the agent's step.")
     traj: Optional[dict] = Field(None, description="Action, Observation, State at the current step")
 
