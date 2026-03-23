@@ -31,42 +31,6 @@ from mirix.settings import settings
 pytestmark = pytest.mark.asyncio(loop_scope="module")
 
 
-@pytest.fixture(scope="module")
-def event_loop():
-    """Single event loop for the module so shared fixtures and DB use one loop."""
-    loop = asyncio.new_event_loop()
-    yield loop
-    loop.close()
-
-
-@pytest_asyncio.fixture(scope="module", autouse=True)
-async def _ensure_server_in_loop():
-    """Import server in the module event loop and use NullPool to avoid connection reuse issues."""
-    import mirix.server.server as server_module  # noqa: F401
-
-    if (
-        hasattr(server_module, "engine")
-        and server_module.engine is not None
-        and "asyncpg" in str(server_module.engine.url)
-    ):
-        from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-        from sqlalchemy.pool import NullPool
-
-        await server_module.engine.dispose()
-        _pg_uri = settings.mirix_pg_uri.replace("postgresql+pg8000://", "postgresql+asyncpg://").replace(
-            "postgresql://", "postgresql+asyncpg://"
-        )
-        server_module.engine = create_async_engine(_pg_uri, poolclass=NullPool, echo=settings.pg_echo)
-        server_module.AsyncSessionLocal = async_sessionmaker(
-            bind=server_module.engine,
-            class_=AsyncSession,
-            autocommit=False,
-            autoflush=False,
-            expire_on_commit=False,
-        )
-    yield
-
-
 # =============================================================================
 # Helpers
 # =============================================================================
@@ -82,7 +46,7 @@ def _test_id(prefix: str) -> str:
 
 
 @pytest_asyncio.fixture(scope="module")
-async def test_org(_ensure_server_in_loop):
+async def test_org():
     org_mgr = OrganizationManager()
     org_id = _test_id("scoped-blk-org")
     try:
@@ -988,7 +952,9 @@ class TestBlockScopeIsolation:
             )
         )
         blocks_via_a = await block_manager.get_blocks(user=target_user, any_scopes=[scope])
-        blocks_via_b = await block_manager.get_blocks(user=target_user, any_scopes=[scope], auto_create_from_default=False)
+        blocks_via_b = await block_manager.get_blocks(
+            user=target_user, any_scopes=[scope], auto_create_from_default=False
+        )
         assert {b.id for b in blocks_via_a} == {b.id for b in blocks_via_b}
 
     async def test_reader_client_sees_multiple_scopes(
@@ -1014,7 +980,9 @@ class TestBlockScopeIsolation:
         assert "test-scope-1" in scopes_found
         assert "test-scope-2" in scopes_found
 
-    async def test_reader_client_cannot_see_ungranted_scope(self, block_manager, client_scope1, client_scope2, test_org):
+    async def test_reader_client_cannot_see_ungranted_scope(
+        self, block_manager, client_scope1, client_scope2, test_org
+    ):
         """Reader with read_scopes=["test-scope-1"] cannot see test-scope-2 blocks."""
         restricted_reader = await ClientManager().create_client(
             PydanticClient(

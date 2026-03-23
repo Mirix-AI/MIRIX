@@ -26,6 +26,7 @@ from mirix.client import MirixClient
 
 pytestmark = [
     pytest.mark.integration,
+    pytest.mark.usefixtures("isolate_api_key_env"),
 ]
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
@@ -203,12 +204,12 @@ class TestSearchSingleUserCoreMemory:
         scopes_a = set(r["scope"] for r in core_a)
         scopes_b = set(r["scope"] for r in core_b)
 
-        assert "scope_b" not in scopes_a, (
-            f"Client1 (scope_a) should not see scope_b blocks. Scopes returned: {scopes_a}"
-        )
-        assert "scope_a" not in scopes_b, (
-            f"Client2 (scope_b) should not see scope_a blocks. Scopes returned: {scopes_b}"
-        )
+        assert (
+            "scope_b" not in scopes_a
+        ), f"Client1 (scope_a) should not see scope_b blocks. Scopes returned: {scopes_a}"
+        assert (
+            "scope_a" not in scopes_b
+        ), f"Client2 (scope_b) should not see scope_a blocks. Scopes returned: {scopes_b}"
 
         if core_a:
             assert "scope_a" in scopes_a, f"Client1 should see scope_a blocks. Scopes: {scopes_a}"
@@ -238,9 +239,9 @@ class TestSearchSingleUserCoreMemory:
         for r in non_core:
             assert r["memory_type"] == "episodic", "Non-core results should all be episodic"
 
-        assert len(core_results) > 0, (
-            "Core blocks should be returned even when memory_type='episodic' and include_core_memory=True"
-        )
+        assert (
+            len(core_results) > 0
+        ), "Core blocks should be returned even when memory_type='episodic' and include_core_memory=True"
         logger.info(
             "Test passed: %d core blocks + %d episodic results returned",
             len(core_results),

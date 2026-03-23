@@ -9,7 +9,6 @@ from mirix.orm.organization import Organization as OrganizationModel
 from mirix.schemas.client import Client as PydanticClient
 from mirix.schemas.client import ClientUpdate
 from mirix.schemas.client_api_key import ClientApiKey as PydanticClientApiKey
-from mirix.schemas.client_api_key import ClientApiKeyCreate
 from mirix.security.api_keys import hash_api_key
 from mirix.services.organization_manager import OrganizationManager
 from mirix.utils import enforce_types
@@ -28,17 +27,13 @@ class ClientManager:
         self.session_maker = db_context
 
     @enforce_types
-    async def create_default_client(
-        self, org_id: str = OrganizationManager.DEFAULT_ORG_ID
-    ) -> PydanticClient:
+    async def create_default_client(self, org_id: str = OrganizationManager.DEFAULT_ORG_ID) -> PydanticClient:
         """Create the default client (async)."""
         async with self.session_maker() as session:
             try:
                 await OrganizationModel.read(db_session=session, identifier=org_id)
             except NoResultFound:
-                raise ValueError(
-                    f"No organization with {org_id} exists in the organization table."
-                ) from None
+                raise ValueError(f"No organization with {org_id} exists in the organization table.") from None
 
             try:
                 client = await ClientModel.read(db_session=session, identifier=self.DEFAULT_CLIENT_ID)
@@ -67,9 +62,7 @@ class ClientManager:
     async def update_client(self, client_update: ClientUpdate) -> PydanticClient:
         """Update client details (with cache invalidation)."""
         async with self.session_maker() as session:
-            existing_client = await ClientModel.read(
-                db_session=session, identifier=client_update.id
-            )
+            existing_client = await ClientModel.read(db_session=session, identifier=client_update.id)
             update_data = client_update.model_dump(exclude_unset=True, exclude_none=True)
             for key, value in update_data.items():
                 setattr(existing_client, key, value)
@@ -133,9 +126,7 @@ class ClientManager:
             if not api_key_record:
                 return None
 
-            client = await ClientModel.read(
-                db_session=session, identifier=api_key_record.client_id
-            )
+            client = await ClientModel.read(db_session=session, identifier=api_key_record.client_id)
             if client.is_deleted or client.status != "active":
                 return None
 
@@ -157,9 +148,7 @@ class ClientManager:
     async def revoke_client_api_key(self, api_key_id: str) -> PydanticClientApiKey:
         """Revoke an API key (set status to 'revoked')."""
         async with self.session_maker() as session:
-            api_key = await ClientApiKeyModel.read(
-                db_session=session, identifier=api_key_id
-            )
+            api_key = await ClientApiKeyModel.read(db_session=session, identifier=api_key_id)
             api_key.status = "revoked"
             await api_key.update(session, actor=None)
             return api_key.to_pydantic()
@@ -168,9 +157,7 @@ class ClientManager:
     async def delete_client_api_key(self, api_key_id: str) -> None:
         """Permanently delete an API key from the database."""
         async with self.session_maker() as session:
-            api_key = await ClientApiKeyModel.read(
-                db_session=session, identifier=api_key_id
-            )
+            api_key = await ClientApiKeyModel.read(db_session=session, identifier=api_key_id)
             session.delete(api_key)
             await session.commit()
 
@@ -178,9 +165,7 @@ class ClientManager:
     async def update_client_status(self, client_id: str, status: str) -> PydanticClient:
         """Update the status of a client (with cache invalidation)."""
         async with self.session_maker() as session:
-            existing_client = await ClientModel.read(
-                db_session=session, identifier=client_id
-            )
+            existing_client = await ClientModel.read(db_session=session, identifier=client_id)
             existing_client.status = status
             await existing_client.update_with_redis(session, actor=None)
             return existing_client.to_pydantic()
@@ -357,9 +342,7 @@ class ClientManager:
                     await redis_client.client.hset(client_key, "is_deleted", "true")
                     logger.debug("Updated client %s in cache (is_deleted=true)", client_id)
                 except Exception as e:
-                    logger.warning(
-                        "Failed to update client in Redis, removing instead: %s", e
-                    )
+                    logger.warning("Failed to update client in Redis, removing instead: %s", e)
                     await redis_client.delete(client_key)
 
                 for agent_id in agent_ids:
@@ -368,9 +351,7 @@ class ClientManager:
                         await redis_client.client.hset(agent_key, "is_deleted", "true")
                     except Exception:
                         await redis_client.delete(agent_key)
-                logger.debug(
-                    "Updated %d agents in Redis cache (is_deleted=true)", len(agent_ids)
-                )
+                logger.debug("Updated %d agents in Redis cache (is_deleted=true)", len(agent_ids))
 
                 logger.info(
                     "Client %s and all associated records soft deleted: "
@@ -385,9 +366,7 @@ class ClientManager:
                     message_count,
                 )
         except Exception as e:
-            logger.warning(
-                "Failed to update Redis cache for client %s: %s", client_id, e
-            )
+            logger.warning("Failed to update Redis cache for client %s: %s", client_id, e)
 
     async def delete_memories_by_client_id(self, client_id: str):
         """
@@ -471,9 +450,7 @@ class ClientManager:
             async with self.session_maker() as session:
                 from mirix.orm.block import Block as BlockModel
 
-                stmt_ids = select(BlockModel.id).where(
-                    BlockModel._created_by_id == client_id
-                )
+                stmt_ids = select(BlockModel.id).where(BlockModel._created_by_id == client_id)
                 result_ids = await session.execute(stmt_ids)
                 block_ids = [row[0] for row in result_ids.all()]
 
@@ -485,9 +462,7 @@ class ClientManager:
                     for block_id in block_ids:
                         await block_manager._invalidate_block_cache(block_id)
 
-                    stmt_del = delete(BlockModel).where(
-                        BlockModel._created_by_id == client_id
-                    )
+                    stmt_del = delete(BlockModel).where(BlockModel._created_by_id == client_id)
                     await session.execute(stmt_del)
                     await session.commit()
 
@@ -496,10 +471,7 @@ class ClientManager:
 
                 redis_client = get_redis_client()
                 if redis_client:
-                    redis_keys = [
-                        f"{redis_client.BLOCK_PREFIX}{block_id}"
-                        for block_id in block_ids
-                    ]
+                    redis_keys = [f"{redis_client.BLOCK_PREFIX}{block_id}" for block_id in block_ids]
                     BATCH_SIZE = 1000
                     for i in range(0, len(redis_keys), BATCH_SIZE):
                         batch = redis_keys[i : i + BATCH_SIZE]
@@ -507,27 +479,15 @@ class ClientManager:
 
             logger.debug("Bulk deleted %d blocks", block_count)
 
-            # Clear message_ids from agents in PostgreSQL (they reference deleted messages)
+            # Collect agent IDs for cache invalidation (messages already deleted above)
             agent_ids: List[str] = []
             async with self.session_maker() as session:
                 from mirix.orm.agent import Agent as AgentModel
 
-                stmt_agents = select(AgentModel).where(
-                    AgentModel._created_by_id == client_id
-                )
+                stmt_agents = select(AgentModel).where(AgentModel._created_by_id == client_id)
                 result_agents = await session.execute(stmt_agents)
                 agents = result_agents.scalars().all()
                 agent_ids = [agent.id for agent in agents]
-                for agent in agents:
-                    if agent.message_ids and len(agent.message_ids) > 0:
-                        agent.message_ids = [agent.message_ids[0]]
-
-                await session.commit()
-                logger.debug(
-                    "Cleared conversation message_ids from %d agents in PostgreSQL "
-                    "(kept system messages)",
-                    len(agent_ids),
-                )
 
             from mirix.database.cache_provider import get_cache_provider
 
@@ -591,14 +551,10 @@ class ClientManager:
 
                     cache_key = f"{cache_provider.CLIENT_PREFIX}{client_id}"
                     data = pydantic_client.model_dump(mode="json")
-                    await cache_provider.set_hash(
-                        cache_key, data, ttl=settings.redis_ttl_clients
-                    )
+                    await cache_provider.set_hash(cache_key, data, ttl=settings.redis_ttl_clients)
                     logger.debug("Populated cache for client %s", client_id)
             except Exception as e:
-                logger.warning(
-                    "Failed to populate cache for client %s: %s", client_id, e
-                )
+                logger.warning("Failed to populate cache for client %s: %s", client_id, e)
 
             return pydantic_client
 
@@ -612,9 +568,7 @@ class ClientManager:
 
             org_mgr = OrganizationManager()
             await org_mgr.get_default_organization()
-            return await self.create_default_client(
-                org_id=OrganizationManager.DEFAULT_ORG_ID
-            )
+            return await self.create_default_client(org_id=OrganizationManager.DEFAULT_ORG_ID)
 
     @enforce_types
     async def get_client_or_default(
@@ -659,7 +613,5 @@ class ClientManager:
     ) -> List[PydanticClient]:
         """List clients with pagination using cursor (id) and limit."""
         async with self.session_maker() as session:
-            results = await ClientModel.list(
-                db_session=session, cursor=cursor, limit=limit
-            )
+            results = await ClientModel.list(db_session=session, cursor=cursor, limit=limit)
             return [client.to_pydantic() for client in results]

@@ -65,14 +65,6 @@ def server_check():
     )
 
 
-@pytest.fixture(scope="module")
-def event_loop():
-    """Single event loop for the module so client and tests share one loop."""
-    loop = asyncio.new_event_loop()
-    yield loop
-    loop.close()
-
-
 @pytest_asyncio.fixture
 async def client(server_check, api_auth):
     """Create a new MirixClient per test in the current loop (avoids closed-loop httpx)."""
@@ -118,7 +110,9 @@ async def test_explicit_user_creation_then_add_memory(client):
 
     # Step 2: Create user explicitly
     print(f"[Step 2] Creating user with create_or_get_user()...")
-    created_user_id = await client.create_or_get_user(user_id=user_id, user_name=f"Test User {user_id}", org_id=TEST_ORG_ID)
+    created_user_id = await client.create_or_get_user(
+        user_id=user_id, user_name=f"Test User {user_id}", org_id=TEST_ORG_ID
+    )
     print(f"[OK] User created: {created_user_id}")
     assert created_user_id == user_id, "Returned user_id should match requested user_id"
 
@@ -145,7 +139,9 @@ async def test_explicit_user_creation_then_add_memory(client):
 
     filter_tags = {"test_type": "explicit_creation", "account_id": "ACC-001"}
 
-    response = await client.add(user_id=user_id, messages=messages, filter_tags=filter_tags, chaining=False, verbose=False)
+    response = await client.add(
+        user_id=user_id, messages=messages, filter_tags=filter_tags, chaining=False, verbose=False
+    )
 
     print(f"[OK] Memory add request submitted")
     print(f"     Response: {response}")
@@ -212,7 +208,9 @@ async def test_auto_user_creation_on_add_memory(client):
 
     filter_tags = {"test_type": "auto_creation", "region": "West"}
 
-    response = await client.add(user_id=user_id, messages=messages, filter_tags=filter_tags, chaining=False, verbose=False)
+    response = await client.add(
+        user_id=user_id, messages=messages, filter_tags=filter_tags, chaining=False, verbose=False
+    )
 
     print(f"[OK] Memory add request submitted")
     print(f"     Response: {response}")
@@ -261,14 +259,18 @@ async def test_idempotent_create_or_get_user(client):
     user_id = f"test-idempotent-user-{uuid.uuid4().hex[:8]}"
     print(f"\n[Step 1] Creating user: {user_id}")
 
-    created_user_id_1 = await client.create_or_get_user(user_id=user_id, user_name="Idempotent Test User", org_id=TEST_ORG_ID)
+    created_user_id_1 = await client.create_or_get_user(
+        user_id=user_id, user_name="Idempotent Test User", org_id=TEST_ORG_ID
+    )
     print(f"[OK] User created (1st call): {created_user_id_1}")
 
     # Step 2: Call again with same user_id
     print(f"[Step 2] Calling create_or_get_user() again with same user_id...")
     await asyncio.sleep(1)  # Small delay
 
-    created_user_id_2 = await client.create_or_get_user(user_id=user_id, user_name="Idempotent Test User", org_id=TEST_ORG_ID)
+    created_user_id_2 = await client.create_or_get_user(
+        user_id=user_id, user_name="Idempotent Test User", org_id=TEST_ORG_ID
+    )
     print(f"[OK] User retrieved (2nd call): {created_user_id_2}")
 
     # Step 3: Verify same user_id returned

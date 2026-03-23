@@ -18,7 +18,7 @@ import logging
 import os
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Any, Awaitable, Callable, Optional
 
 import pytest
 import pytest_asyncio
@@ -28,6 +28,7 @@ from mirix.client import MirixClient
 # Mark all tests as integration tests (require a running server)
 pytestmark = [
     pytest.mark.integration,
+    pytest.mark.usefixtures("isolate_api_key_env"),
 ]
 
 # Configure logging
@@ -39,6 +40,24 @@ logger = logging.getLogger(__name__)
 # MirixClient will automatically read from environment variables
 BASE_URL = os.environ.get("MIRIX_API_URL", "http://localhost:8000")
 CONFIG_PATH = Path(__file__).parent.parent / "mirix" / "configs" / "examples" / "mirix_gemini.yaml"
+
+
+async def poll_until(
+    fetch_results: Callable[[], Awaitable[dict[str, Any]]],
+    is_ready: Callable[[dict[str, Any]], bool],
+    wait_log: str,
+    max_wait_s: int = 90,
+    interval_s: int = 15,
+) -> dict[str, Any]:
+    """Poll an async search until condition is met or timeout expires."""
+    results = await fetch_results()
+    elapsed = 0
+    while not is_ready(results) and elapsed < max_wait_s:
+        logger.info(wait_log, interval_s, elapsed)
+        await asyncio.sleep(interval_s)
+        elapsed += interval_s
+        results = await fetch_results()
+    return results
 
 
 async def add_all_memories(
@@ -196,13 +215,6 @@ class TestSearchAllUsers:
     """Test suite for search_all_users API."""
 
     pytestmark = [pytest.mark.asyncio(loop_scope="class")]
-
-    @pytest.fixture(scope="class")
-    def event_loop(self):
-        """Single event loop for the test class so all clients and tests share one loop."""
-        loop = asyncio.new_event_loop()
-        yield loop
-        loop.close()
 
     @pytest.fixture(scope="class")
     def client_scope_value(self):
@@ -374,11 +386,18 @@ class TestSearchAllUsers:
         logger.info("TEST 3: Search with client_id retrieves both users with matching scope")
         logger.info("=" * 80)
 
-        results = await client1.search_all_users(
-            query="Python",  # Search for "Python" which should appear in semantic memories for both users
-            memory_type="all",
-            client_id=client1.client_id,
-            limit=50,
+        async def _search_client1_bm25():
+            return await client1.search_all_users(
+                query="Python",
+                memory_type="all",
+                client_id=client1.client_id,
+                limit=50,
+            )
+
+        results = await poll_until(
+            fetch_results=_search_client1_bm25,
+            is_ready=lambda r: r["count"] > 0,
+            wait_log=("Client1 bm25 search returned 0; waiting %ss before retry (elapsed=%ss)..."),
         )
 
         logger.info(f"Results: {results['count']} memories found")
@@ -421,12 +440,19 @@ class TestSearchAllUsers:
         logger.info("TEST 3b: Embedding search with client_id retrieves both users with matching scope")
         logger.info("=" * 80)
 
-        results = await client1.search_all_users(
-            query="group discussion",  # Semantic query for "team meeting"
-            memory_type="all",
-            search_method="embedding",
-            client_id=client1.client_id,
-            limit=50,
+        async def _search_client1_embedding():
+            return await client1.search_all_users(
+                query="group discussion",
+                memory_type="all",
+                search_method="embedding",
+                client_id=client1.client_id,
+                limit=50,
+            )
+
+        results = await poll_until(
+            fetch_results=_search_client1_embedding,
+            is_ready=lambda r: r["count"] > 0,
+            wait_log=("Client1 embedding search returned 0; waiting %ss before retry (elapsed=%ss)..."),
         )
 
         logger.info(f"Results: {results['count']} memories found")
@@ -512,7 +538,14 @@ class TestSearchAllUsers:
         logger.info("=" * 80)
 
         # Search with client3 which has write_scope='read_only'
-        results = await client3.search_all_users(query="", memory_type="all", client_id=client3.client_id, limit=100)
+        async def _search_client3_bm25():
+            return await client3.search_all_users(query="", memory_type="all", client_id=client3.client_id, limit=100)
+
+        results = await poll_until(
+            fetch_results=_search_client3_bm25,
+            is_ready=lambda r: user3_id in set(result["user_id"] for result in r["results"]),
+            wait_log=("Client3 bm25 search missing user3; waiting %ss before retry (elapsed=%ss)..."),
+        )
 
         logger.info(f"Results: {results['count']} memories found")
         logger.info(f"Filter Tags: {results.get('filter_tags')}")
@@ -535,12 +568,19 @@ class TestSearchAllUsers:
         logger.info("=" * 80)
 
         # Search with client3 which has write_scope='read_only'
-        results = await client3.search_all_users(
-            query="software development",  # Semantic query
-            memory_type="all",
-            search_method="embedding",
-            client_id=client3.client_id,
-            limit=100,
+        async def _search_client3_embedding():
+            return await client3.search_all_users(
+                query="software development",
+                memory_type="all",
+                search_method="embedding",
+                client_id=client3.client_id,
+                limit=100,
+            )
+
+        results = await poll_until(
+            fetch_results=_search_client3_embedding,
+            is_ready=lambda r: user3_id in set(result["user_id"] for result in r["results"]),
+            wait_log=("Client3 embedding search missing user3; waiting %ss before retry (elapsed=%ss)..."),
         )
 
         logger.info(f"Results: {results['count']} memories found")
@@ -566,8 +606,16 @@ class TestSearchAllUsers:
         logger.info("TEST 8: Organization isolation - same scope, different org")
         logger.info("=" * 80)
 
-        # Search with client2 (in org2)
-        results = await client2.search_all_users(query="", memory_type="all", client_id=client2.client_id, limit=100)
+        # Search with client2 (in org2). Poll briefly because async memory
+        # extraction can lag under heavier CI/local runs.
+        async def _search_client2_bm25():
+            return await client2.search_all_users(query="", memory_type="all", client_id=client2.client_id, limit=100)
+
+        results = await poll_until(
+            fetch_results=_search_client2_bm25,
+            is_ready=lambda r: user4_id in set(result["user_id"] for result in r["results"]),
+            wait_log="Org2 search missing user4; waiting %ss before retry (elapsed=%ss)...",
+        )
 
         user_ids_in_results = set(result["user_id"] for result in results["results"])
         logger.info(f"Client 2 search - User IDs in results: {user_ids_in_results}")
@@ -590,12 +638,19 @@ class TestSearchAllUsers:
         logger.info("=" * 80)
 
         # Search with client2 (in org2)
-        results = await client2.search_all_users(
-            query="database information",  # Semantic query
-            memory_type="all",
-            search_method="embedding",
-            client_id=client2.client_id,
-            limit=100,
+        async def _search_client2_embedding():
+            return await client2.search_all_users(
+                query="database information",
+                memory_type="all",
+                search_method="embedding",
+                client_id=client2.client_id,
+                limit=100,
+            )
+
+        results = await poll_until(
+            fetch_results=_search_client2_embedding,
+            is_ready=lambda r: user4_id in set(result["user_id"] for result in r["results"]),
+            wait_log=("Org2 embedding search missing user4; waiting %ss before retry (elapsed=%ss)..."),
         )
 
         user_ids_in_results = set(result["user_id"] for result in results["results"])
@@ -639,7 +694,9 @@ class TestSearchAllUsers:
         logger.info("TEST: Search specific memory type (episodic)")
         logger.info("=" * 80)
 
-        results = await client1.search_all_users(query="team", memory_type="episodic", client_id=client1.client_id, limit=20)
+        results = await client1.search_all_users(
+            query="team", memory_type="episodic", client_id=client1.client_id, limit=20
+        )
 
         logger.info(f"Results: {results['count']} episodic memories found")
 
@@ -670,18 +727,8 @@ class TestSearchAllUsers:
             limit=20,
         )
 
-        max_wait_s = 90
-        interval_s = 15
-        elapsed = 0
-        while results["count"] == 0 and elapsed < max_wait_s:
-            logger.info(
-                "Semantic embedding search returned 0; waiting %ss before retry (elapsed=%ds)...",
-                interval_s,
-                elapsed,
-            )
-            await asyncio.sleep(interval_s)
-            elapsed += interval_s
-            results = await client1.search_all_users(
+        async def _search_semantic_embedding():
+            return await client1.search_all_users(
                 query="programming language concepts",
                 memory_type="semantic",
                 search_method="embedding",
@@ -689,15 +736,20 @@ class TestSearchAllUsers:
                 limit=20,
             )
 
+        results = await poll_until(
+            fetch_results=_search_semantic_embedding,
+            is_ready=lambda r: r["count"] > 0,
+            wait_log=("Semantic embedding search returned 0; waiting %ss before retry (elapsed=%ss)..."),
+        )
+
         logger.info(f"Results: {results['count']} semantic memories found")
         logger.info(f"Search Method: {results.get('search_method')}")
 
         assert results["success"] is True
         assert results["search_method"] == "embedding"
-        assert results["count"] > 0, (
-            "Semantic embedding search still 0 results after waiting %ds (index may not be ready)."
-            % max_wait_s
-        )
+        assert (
+            results["count"] > 0
+        ), "Semantic embedding search still 0 results after waiting for retries (index may not be ready)."
 
         # All results should be semantic type
         for result in results["results"]:
@@ -833,7 +885,9 @@ class TestSearchAllUsers:
 
         assert results["success"] is True
         core_results = [r for r in results["results"] if r.get("memory_type") == "core"]
-        assert len(core_results) > 0, "Results should include items with memory_type='core' when include_core_memory=True"
+        assert (
+            len(core_results) > 0
+        ), "Results should include items with memory_type='core' when include_core_memory=True"
         for item in core_results:
             assert "id" in item
             assert "label" in item
@@ -873,9 +927,9 @@ class TestSearchAllUsers:
             "Blocks from scope 'read_write' (client1's scope) must be returned. Scopes returned: %s" % scopes_returned
         )
         read_write_items = [r for r in core_results if r["scope"] == "read_write"]
-        assert len(read_write_items) > 0, (
-            "At least one block from scope 'read_write' must be returned. core count=%s" % len(core_results)
-        )
+        assert (
+            len(read_write_items) > 0
+        ), "At least one block from scope 'read_write' must be returned. core count=%s" % len(core_results)
 
         logger.info(
             "Scopes in core results: %s; read_write blocks: %s (read_only correctly excluded)",

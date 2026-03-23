@@ -8,11 +8,9 @@ import mirix.queue as queue
 from mirix.observability import add_trace_to_queue_message
 from mirix.queue.message_pb2 import MessageCreate as ProtoMessageCreate
 from mirix.queue.message_pb2 import QueueMessage
-from mirix.queue.message_pb2 import User as ProtoUser
 from mirix.schemas.client import Client
 from mirix.schemas.enums import MessageRole
 from mirix.schemas.message import MessageCreate
-from mirix.schemas.message import MessageCreate as PydanticMessageCreate
 from mirix.schemas.mirix_message_content import TextContent
 
 logger = logging.getLogger(__name__)

@@ -4,7 +4,7 @@ Agent System Prompt Update Integration Tests for Mirix
 Tests system prompt updates for all memory agent types:
 - Episodic, Semantic, Core, Procedural, Resource, Knowledge Vault, Reflexion, Meta Memory
 - Verifies updates in: running agents, PostgreSQL database, Redis cache
-- Verifies system message (message_ids[0]) is updated
+- Verifies agent.system field is updated in DB and cache
 
 Prerequisites:
     export GEMINI_API_KEY=your_api_key_here
@@ -102,6 +102,7 @@ async def client(server_check, api_auth):
             print(f"[SETUP] ⚠ Warning: Test memory addition failed: {e}")
     except Exception as e:
         import traceback
+
         print(f"\n[ERROR] Failed to create/get user: {e}")
         pytest.skip(f"Failed to create/get user: {e}")
 
@@ -224,23 +225,6 @@ async def get_agent_direct_from_api(client: MirixClient, agent_name: str):
     return None
 
 
-def get_system_message_id(agent) -> str:
-    """
-    Get the system message ID from agent's message_ids.
-
-    The system message is always the first message (message_ids[0]).
-
-    Args:
-        agent: AgentState object
-
-    Returns:
-        str: System message ID, or empty string if no messages
-    """
-    if agent.message_ids and len(agent.message_ids) > 0:
-        return agent.message_ids[0]
-    return ""
-
-
 # Agent names to test (short names)
 AGENT_NAMES = [
     "episodic",
@@ -261,7 +245,7 @@ async def test_update_agent_system_prompt(client, agent_name):
 
     Verifies:
     1. System prompt is updated in the agent state
-    2. System message (message_ids[0]) is updated
+    2. agent.system field is updated
     3. Changes are persisted in the database
     4. Changes are reflected in Redis cache (via subsequent reads)
 
@@ -282,11 +266,6 @@ async def test_update_agent_system_prompt(client, agent_name):
 
     print(f"[OK] Found agent: {original_agent.name} (ID: {original_agent.id})")
     print(f"     Original system prompt: {original_agent.system[:80]}...")
-
-    # Get original system message ID
-    original_message_id = get_system_message_id(original_agent)
-    if original_message_id:
-        print(f"     Original system message ID: {original_message_id}")
 
     # Step 2: Update system prompt
     print(f"\n[Step 2] Updating system prompt for '{agent_name}' agent...")
@@ -316,12 +295,6 @@ Test ID: {agent_name}-test-{int(time.time())}
     assert updated_agent.system == new_system_prompt, "System prompt in returned agent should match the new prompt"
     print(f"[OK] System prompt matches in returned state")
 
-    # Verify system message ID changed
-    new_message_id = updated_agent.message_ids[0] if updated_agent.message_ids else None
-    if original_message_id and new_message_id:
-        assert new_message_id != original_message_id, "System message ID (message_ids[0]) should have changed"
-        print(f"[OK] System message ID changed: {original_message_id} → {new_message_id}")
-
     # Step 4: Wait for cache and database to sync
     print(f"\n[Step 4] Waiting 2 seconds for cache/database sync...")
     time.sleep(2)
@@ -335,11 +308,6 @@ Test ID: {agent_name}-test-{int(time.time())}
     assert refetched_agent.system == new_system_prompt, "System prompt should persist in cache/database"
     print(f"[OK] System prompt persisted in cache")
     print(f"     Cached prompt: {refetched_agent.system[:80]}...")
-
-    # Verify message_ids[0] is still the new one
-    cached_message_id = refetched_agent.message_ids[0] if refetched_agent.message_ids else None
-    assert cached_message_id == new_message_id, "System message ID should persist in cache"
-    print(f"[OK] System message ID persisted: {cached_message_id}")
 
     # Step 6: Verify system prompt in agent state
     print(f"\n[Step 6] Verifying system prompt is stored correctly...")
@@ -426,7 +394,7 @@ async def test_update_same_agent_multiple_times(client):
     Verifies:
     1. Multiple updates to the same agent work correctly
     2. Each update creates a new system message
-    3. message_ids[0] is updated each time
+    3. agent.system is updated each time
     """
     print("\n" + "=" * 70)
     print("TEST: Multiple Updates to Same Agent")
@@ -436,7 +404,6 @@ async def test_update_same_agent_multiple_times(client):
 
     print(f"\n[Test] Updating '{agent_name}' agent 3 times in succession...")
 
-    previous_message_id = None
     previous_prompt = None
 
     for i in range(1, 4):
@@ -451,18 +418,11 @@ async def test_update_same_agent_multiple_times(client):
         assert updated.system == new_prompt, f"Update {i} should apply new prompt"
         print(f"    ✓ Prompt updated")
 
-        # Verify message_ids[0] changed
-        current_message_id = updated.message_ids[0] if updated.message_ids else None
-        if previous_message_id:
-            assert current_message_id != previous_message_id, f"Update {i} should create new system message"
-            print(f"    ✓ Message ID changed: {previous_message_id[:20]}... → {current_message_id[:20]}...")
-
         # Verify prompt is different from previous
         if previous_prompt:
             assert updated.system != previous_prompt, f"Update {i} should change prompt from previous"
             print(f"    ✓ Prompt changed from previous")
 
-        previous_message_id = current_message_id
         previous_prompt = new_prompt
 
         # Small delay between updates

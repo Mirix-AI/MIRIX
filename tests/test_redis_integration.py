@@ -38,15 +38,6 @@ import pytest_asyncio
 pytestmark = pytest.mark.asyncio(loop_scope="module")
 
 from mirix.database.redis_client import RedisMemoryClient, get_redis_client, initialize_redis_client
-
-
-@pytest.fixture(scope="module")
-def event_loop():
-    """Single event loop for the whole module so engine and Redis stay on one loop."""
-    loop = asyncio.new_event_loop()
-    yield loop
-    loop.close()
-
 from mirix.log import get_logger
 from mirix.schemas.agent import AgentType, CreateAgent, UpdateAgent
 from mirix.schemas.block import Block as PydanticBlock
@@ -91,39 +82,16 @@ def generate_test_id(prefix: str) -> str:
 
 
 @pytest_asyncio.fixture(scope="module", autouse=True)
-async def _ensure_server_and_redis_in_loop():
-    """Import server in the module event loop and use NullPool to avoid connection reuse issues."""
-    import mirix.server.server as server_module  # noqa: F401
-
-    # Use NullPool so each session gets a fresh connection (avoids 'another operation is in progress')
-    if (
-        hasattr(server_module, "engine")
-        and server_module.engine is not None
-        and "asyncpg" in str(server_module.engine.url)
-    ):
-        from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-        from sqlalchemy.pool import NullPool
-
-        await server_module.engine.dispose()
-        _pg_uri = settings.mirix_pg_uri.replace("postgresql+pg8000://", "postgresql+asyncpg://").replace(
-            "postgresql://", "postgresql+asyncpg://"
-        )
-        server_module.engine = create_async_engine(_pg_uri, poolclass=NullPool, echo=settings.pg_echo)
-        server_module.AsyncSessionLocal = async_sessionmaker(
-            bind=server_module.engine,
-            class_=AsyncSession,
-            autocommit=False,
-            autoflush=False,
-            expire_on_commit=False,
-        )
+async def _ensure_tables_and_redis():
+    """Ensure DB tables exist (engine reset handled by conftest._reset_engine_per_module)."""
+    import mirix.server.server as server_module
 
     await server_module.ensure_tables_created()
-
     yield
 
 
 @pytest_asyncio.fixture
-async def redis_client(_ensure_server_and_redis_in_loop):
+async def redis_client(_ensure_tables_and_redis):
     """Redis client for tests: use a fresh client in this loop to avoid 'Future attached to different loop'."""
     if not settings.redis_enabled:
         pytest.skip("Redis not enabled - set MIRIX_REDIS_ENABLED=true")
@@ -213,61 +181,61 @@ async def test_client(test_organization):
 
 
 @pytest_asyncio.fixture
-async def block_manager(_ensure_server_and_redis_in_loop):
+async def block_manager(_ensure_tables_and_redis):
     """Create block manager instance (after server in loop)."""
     return BlockManager()
 
 
 @pytest_asyncio.fixture
-async def message_manager(_ensure_server_and_redis_in_loop):
+async def message_manager(_ensure_tables_and_redis):
     """Create message manager instance (after server in loop)."""
     return MessageManager()
 
 
 @pytest_asyncio.fixture
-async def episodic_manager(_ensure_server_and_redis_in_loop):
+async def episodic_manager(_ensure_tables_and_redis):
     """Create episodic memory manager instance (after server in loop)."""
     return EpisodicMemoryManager()
 
 
 @pytest_asyncio.fixture
-async def semantic_manager(_ensure_server_and_redis_in_loop):
+async def semantic_manager(_ensure_tables_and_redis):
     """Create semantic memory manager instance (after server in loop)."""
     return SemanticMemoryManager()
 
 
 @pytest_asyncio.fixture
-async def procedural_manager(_ensure_server_and_redis_in_loop):
+async def procedural_manager(_ensure_tables_and_redis):
     """Create procedural memory manager instance (after server in loop)."""
     return ProceduralMemoryManager()
 
 
 @pytest_asyncio.fixture
-async def resource_manager(_ensure_server_and_redis_in_loop):
+async def resource_manager(_ensure_tables_and_redis):
     """Create resource memory manager instance (after server in loop)."""
     return ResourceMemoryManager()
 
 
 @pytest_asyncio.fixture
-async def knowledge_manager(_ensure_server_and_redis_in_loop):
+async def knowledge_manager(_ensure_tables_and_redis):
     """Create knowledge vault manager instance (after server in loop)."""
     return KnowledgeVaultManager()
 
 
 @pytest_asyncio.fixture
-async def organization_manager(_ensure_server_and_redis_in_loop):
+async def organization_manager(_ensure_tables_and_redis):
     """Create organization manager (after server is imported in loop)."""
     return OrganizationManager()
 
 
 @pytest_asyncio.fixture
-async def user_manager(_ensure_server_and_redis_in_loop):
+async def user_manager(_ensure_tables_and_redis):
     """Create user manager instance (after server in loop)."""
     return UserManager()
 
 
 @pytest_asyncio.fixture(scope="module")
-async def ensure_admin_user(_ensure_server_and_redis_in_loop):
+async def ensure_admin_user(_ensure_tables_and_redis):
     """Ensure the admin user exists in the database.
 
     This is needed because agent creation creates messages that default
@@ -899,7 +867,9 @@ class TestMessageManagerRedis:
         # Cleanup
         await message_manager.delete_message_by_id(created_message.id, test_client)
 
-    async def test_message_cache_hit_performance(self, message_manager, test_client, test_user, test_agent, redis_client):
+    async def test_message_cache_hit_performance(
+        self, message_manager, test_client, test_user, test_agent, redis_client
+    ):
         """Test message cache hit is significantly faster than DB."""
         # Create message
         message_data = PydanticMessage(
@@ -966,7 +936,9 @@ class TestEpisodicMemoryManagerRedis:
         # Cleanup
         await episodic_manager.delete_event_by_id(created_event.id, test_client)
 
-    async def test_episodic_cache_with_embeddings(self, episodic_manager, test_client, test_user, test_agent, redis_client):
+    async def test_episodic_cache_with_embeddings(
+        self, episodic_manager, test_client, test_user, test_agent, redis_client
+    ):
         """Test episodic memory with embeddings caches correctly."""
         # Create mock embeddings (4096 dimensions)
         mock_embedding = [0.1] * 4096
@@ -1108,7 +1080,9 @@ class TestProceduralMemoryManagerRedis:
 class TestResourceMemoryManagerRedis:
     """Test Resource Memory Manager with Redis JSON caching (1 embedding)."""
 
-    async def test_resource_create_with_embedding(self, resource_manager, test_client, test_user, test_agent, redis_client):
+    async def test_resource_create_with_embedding(
+        self, resource_manager, test_client, test_user, test_agent, redis_client
+    ):
         """Test resource memory with 1 embedding (16KB) caches to Redis JSON."""
         # Create mock embedding
         from mirix.schemas.resource_memory import ResourceMemoryItem
@@ -1152,7 +1126,9 @@ class TestResourceMemoryManagerRedis:
 class TestKnowledgeVaultManagerRedis:
     """Test Knowledge Vault Manager with Redis JSON caching (1 embedding)."""
 
-    async def test_knowledge_create_with_embedding(self, knowledge_manager, test_client, test_user, test_agent, redis_client):
+    async def test_knowledge_create_with_embedding(
+        self, knowledge_manager, test_client, test_user, test_agent, redis_client
+    ):
         """Test knowledge vault item with 1 embedding (16KB) caches to Redis JSON."""
         # Create mock embedding
         from mirix.schemas.knowledge_vault import KnowledgeVaultItem
@@ -1263,7 +1239,9 @@ class TestRedisPerformance:
         for block in blocks:
             await block_manager.delete_block(block.id, test_client)
 
-    async def test_message_cache_vs_db_comparison(self, message_manager, test_client, test_user, test_agent, redis_client):
+    async def test_message_cache_vs_db_comparison(
+        self, message_manager, test_client, test_user, test_agent, redis_client
+    ):
         """Compare Redis cache vs PostgreSQL performance for messages."""
         # Create test message
         message_data = PydanticMessage(

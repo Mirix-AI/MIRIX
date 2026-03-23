@@ -99,8 +99,8 @@ Bedrock) use their respective async SDK classes. Streaming responses are
 `asyncio.sleep()`.
 
 **Agent execution** (`mirix/agent/agent.py`)
-`step()`, `inner_step()`, `_get_ai_reply()`, `_handle_ai_response()`,
-`execute_tool_and_persist_state()`, and `save_agent()` are all async.
+`step()`, `inner_step()`, `_get_ai_reply()`, and `_handle_ai_response()`
+are all async.
 Built-in tools (core, memory, extras) are async. User-defined tools
 execute in `ToolExecutionSandbox` via `asyncio.create_subprocess_exec()`
 (no thread pool).

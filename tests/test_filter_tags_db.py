@@ -26,22 +26,15 @@ pytestmark = [
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-# One event loop per module to avoid "another operation is in progress".
-@pytest_asyncio.fixture(scope="module")
-def event_loop():
-    loop = asyncio.new_event_loop()
-    yield loop
-    loop.close()
-
 from mirix.schemas.client import Client as PydanticClient
 from mirix.schemas.raw_memory import RawMemoryItemCreate
 from mirix.schemas.user import User as PydanticUser
 from mirix.services.raw_memory_manager import RawMemoryManager
 
-
 # =================================================================
 # FIXTURES
 # =================================================================
+
 
 @pytest.fixture
 def raw_memory_manager():
@@ -61,9 +54,7 @@ async def test_actor():
     try:
         await org_mgr.get_organization_by_id(org_id)
     except Exception:
-        await org_mgr.create_organization(
-            PydanticOrganization(id=org_id, name="Filter Tags Test Org")
-        )
+        await org_mgr.create_organization(PydanticOrganization(id=org_id, name="Filter Tags Test Org"))
 
     client_id = f"test-filter-tags-client-{uuid.uuid4().hex[:8]}"
     try:
@@ -122,11 +113,14 @@ async def _create_memory(raw_memory_manager, test_actor, test_user, context, fil
 # $contains operator
 # =================================================================
 
+
 class TestContainsOperator:
     async def test_contains_matches_array_value(self, raw_memory_manager, test_actor, test_user):
         """$contains finds a value inside a stored JSON array."""
         mem = await _create_memory(
-            raw_memory_manager, test_actor, test_user,
+            raw_memory_manager,
+            test_actor,
+            test_user,
             "contains-match",
             {"scope": "test-ft", "account_ids": ["ABC", "DEF"]},
         )
@@ -144,7 +138,9 @@ class TestContainsOperator:
     async def test_contains_no_match(self, raw_memory_manager, test_actor, test_user):
         """$contains returns nothing when value is not in the array."""
         mem = await _create_memory(
-            raw_memory_manager, test_actor, test_user,
+            raw_memory_manager,
+            test_actor,
+            test_user,
             "contains-no-match",
             {"scope": "test-ft", "account_ids": ["ABC", "DEF"]},
         )
@@ -162,7 +158,9 @@ class TestContainsOperator:
     async def test_contains_missing_key_no_error(self, raw_memory_manager, test_actor, test_user):
         """$contains on a key that doesn't exist silently excludes the row."""
         mem = await _create_memory(
-            raw_memory_manager, test_actor, test_user,
+            raw_memory_manager,
+            test_actor,
+            test_user,
             "contains-missing-key",
             {"scope": "test-ft"},
         )
@@ -180,7 +178,9 @@ class TestContainsOperator:
     async def test_contains_scalar_value_no_error(self, raw_memory_manager, test_actor, test_user):
         """$contains on a key that holds a scalar (not array) silently excludes the row."""
         mem = await _create_memory(
-            raw_memory_manager, test_actor, test_user,
+            raw_memory_manager,
+            test_actor,
+            test_user,
             "contains-scalar",
             {"scope": "test-ft", "account_ids": "ABC"},
         )
@@ -200,10 +200,13 @@ class TestContainsOperator:
 # $exists operator
 # =================================================================
 
+
 class TestExistsOperator:
     async def test_exists_true_matches(self, raw_memory_manager, test_actor, test_user):
         mem = await _create_memory(
-            raw_memory_manager, test_actor, test_user,
+            raw_memory_manager,
+            test_actor,
+            test_user,
             "exists-true",
             {"scope": "test-ft", "project_id": "proj-1"},
         )
@@ -220,7 +223,9 @@ class TestExistsOperator:
 
     async def test_exists_true_excludes_missing_key(self, raw_memory_manager, test_actor, test_user):
         mem = await _create_memory(
-            raw_memory_manager, test_actor, test_user,
+            raw_memory_manager,
+            test_actor,
+            test_user,
             "exists-true-missing",
             {"scope": "test-ft"},
         )
@@ -237,7 +242,9 @@ class TestExistsOperator:
 
     async def test_exists_false_matches_missing_key(self, raw_memory_manager, test_actor, test_user):
         mem = await _create_memory(
-            raw_memory_manager, test_actor, test_user,
+            raw_memory_manager,
+            test_actor,
+            test_user,
             "exists-false",
             {"scope": "test-ft"},
         )
@@ -257,10 +264,13 @@ class TestExistsOperator:
 # $in operator
 # =================================================================
 
+
 class TestInOperator:
     async def test_in_matches(self, raw_memory_manager, test_actor, test_user):
         mem = await _create_memory(
-            raw_memory_manager, test_actor, test_user,
+            raw_memory_manager,
+            test_actor,
+            test_user,
             "in-match",
             {"scope": "test-ft", "status": "active"},
         )
@@ -277,7 +287,9 @@ class TestInOperator:
 
     async def test_in_no_match(self, raw_memory_manager, test_actor, test_user):
         mem = await _create_memory(
-            raw_memory_manager, test_actor, test_user,
+            raw_memory_manager,
+            test_actor,
+            test_user,
             "in-no-match",
             {"scope": "test-ft", "status": "archived"},
         )
@@ -297,6 +309,7 @@ class TestInOperator:
 # scopes parameter
 # =================================================================
 
+
 class TestScopes:
     async def test_scopes_filters_by_scope(self, raw_memory_manager, test_actor, test_user):
         """scopes parameter translates to scope IN (...) correctly.
@@ -306,7 +319,9 @@ class TestScopes:
         with the matching scope finds the memory and a non-matching scope does not.
         """
         mem = await _create_memory(
-            raw_memory_manager, test_actor, test_user,
+            raw_memory_manager,
+            test_actor,
+            test_user,
             "scope-match",
             {},
         )
@@ -335,7 +350,9 @@ class TestScopes:
 
     async def test_empty_scopes_returns_nothing(self, raw_memory_manager, test_actor, test_user):
         mem = await _create_memory(
-            raw_memory_manager, test_actor, test_user,
+            raw_memory_manager,
+            test_actor,
+            test_user,
             "empty-scopes",
             {"scope": "test-ft"},
         )
@@ -353,7 +370,9 @@ class TestScopes:
     async def test_read_scopes_in_filter_tags_ignored(self, raw_memory_manager, test_actor, test_user):
         """read_scopes key in filter_tags is ignored; use scopes param instead."""
         mem = await _create_memory(
-            raw_memory_manager, test_actor, test_user,
+            raw_memory_manager,
+            test_actor,
+            test_user,
             "ignored-read-scopes",
             {"scope": "test-ft"},
         )
@@ -374,10 +393,13 @@ class TestScopes:
 # Backward compatibility
 # =================================================================
 
+
 class TestBackwardCompatibility:
     async def test_plain_scalar_exact_match(self, raw_memory_manager, test_actor, test_user):
         mem = await _create_memory(
-            raw_memory_manager, test_actor, test_user,
+            raw_memory_manager,
+            test_actor,
+            test_user,
             "scalar-match",
             {"scope": "test-ft", "priority": "high"},
         )
@@ -395,7 +417,9 @@ class TestBackwardCompatibility:
     async def test_null_filter_tags_excluded_by_exists(self, raw_memory_manager, test_actor, test_user):
         """Rows with NULL filter_tags are silently excluded by $exists: true."""
         mem = await _create_memory(
-            raw_memory_manager, test_actor, test_user,
+            raw_memory_manager,
+            test_actor,
+            test_user,
             "null-filter-tags",
             None,
         )
@@ -415,16 +439,21 @@ class TestBackwardCompatibility:
 # Mixed operators
 # =================================================================
 
+
 class TestMixedOperators:
     async def test_contains_and_scalar_combined(self, raw_memory_manager, test_actor, test_user):
         """Combining $contains with a plain scalar filter (AND)."""
         mem = await _create_memory(
-            raw_memory_manager, test_actor, test_user,
+            raw_memory_manager,
+            test_actor,
+            test_user,
             "mixed-match",
             {"scope": "test-ft", "account_ids": ["ABC", "DEF"], "priority": "high"},
         )
         mem_no_match = await _create_memory(
-            raw_memory_manager, test_actor, test_user,
+            raw_memory_manager,
+            test_actor,
+            test_user,
             "mixed-no-match",
             {"scope": "test-ft", "account_ids": ["ABC", "DEF"], "priority": "low"},
         )

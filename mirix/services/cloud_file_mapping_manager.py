@@ -14,38 +14,28 @@ class CloudFileMappingManager:
 
         self.session_maker = db_context
 
-    async def add_mapping(
-        self, cloud_file_id, local_file_id, timestamp, force_add=False
-    ):
+    async def add_mapping(self, cloud_file_id, local_file_id, timestamp, force_add=False):
         """Add a mapping from a cloud file to a local file."""
         async with self.session_maker() as session:
             try:
-                existing = await CloudFileMapping.read(
-                    db_session=session, cloud_file_id=cloud_file_id
-                )
+                existing = await CloudFileMapping.read(db_session=session, cloud_file_id=cloud_file_id)
             except Exception:
                 existing = None
             if existing:
                 if force_add:
                     await existing.hard_delete(session)
                 else:
-                    raise ValueError(
-                        f"Mapping already exists for cloud file {cloud_file_id}"
-                    )
+                    raise ValueError(f"Mapping already exists for cloud file {cloud_file_id}")
 
             try:
-                existing = await CloudFileMapping.read(
-                    db_session=session, local_file_id=local_file_id
-                )
+                existing = await CloudFileMapping.read(db_session=session, local_file_id=local_file_id)
             except Exception:
                 existing = None
             if existing:
                 if force_add:
                     await existing.hard_delete(session)
                 else:
-                    raise ValueError(
-                        f"Mapping already exists for local file {local_file_id}"
-                    )
+                    raise ValueError(f"Mapping already exists for local file {local_file_id}")
 
             pydantic_mapping_dict = {
                 "cloud_file_id": cloud_file_id,
@@ -56,9 +46,7 @@ class CloudFileMappingManager:
             }
             from mirix.services.organization_manager import OrganizationManager
 
-            pydantic_mapping_dict["organization_id"] = (
-                OrganizationManager.DEFAULT_ORG_ID
-            )
+            pydantic_mapping_dict["organization_id"] = OrganizationManager.DEFAULT_ORG_ID
 
             mapping = CloudFileMapping(**pydantic_mapping_dict)
             await mapping.create(session)
@@ -68,9 +56,7 @@ class CloudFileMappingManager:
         """Get the local file ID for a cloud file."""
         async with self.session_maker() as session:
             try:
-                mapping = await CloudFileMapping.read(
-                    db_session=session, cloud_file_id=cloud_file_id
-                )
+                mapping = await CloudFileMapping.read(db_session=session, cloud_file_id=cloud_file_id)
                 return mapping.local_file_id if mapping else None
             except Exception:
                 return None
@@ -79,76 +65,56 @@ class CloudFileMappingManager:
         """Get the cloud file ID for a local file."""
         async with self.session_maker() as session:
             try:
-                mapping = await CloudFileMapping.read(
-                    db_session=session, local_file_id=local_file_id
-                )
+                mapping = await CloudFileMapping.read(db_session=session, local_file_id=local_file_id)
                 return mapping.cloud_file_id if mapping else None
             except Exception:
                 return None
 
-    async def delete_mapping(
-        self, cloud_file_id=None, local_file_id=None
-    ) -> None:
+    async def delete_mapping(self, cloud_file_id=None, local_file_id=None) -> None:
         """Delete a mapping."""
         async with self.session_maker() as session:
             if cloud_file_id is not None:
                 try:
-                    mapping = await CloudFileMapping.read(
-                        db_session=session, cloud_file_id=cloud_file_id
-                    )
+                    mapping = await CloudFileMapping.read(db_session=session, cloud_file_id=cloud_file_id)
                     await mapping.hard_delete(session)
                 except Exception:
                     pass
             if local_file_id is not None:
                 try:
-                    mapping = await CloudFileMapping.read(
-                        db_session=session, local_file_id=local_file_id
-                    )
+                    mapping = await CloudFileMapping.read(db_session=session, local_file_id=local_file_id)
                     await mapping.hard_delete(session)
                 except Exception:
                     pass
 
-    async def check_if_existing(
-        self, cloud_file_id=None, local_file_id=None
-    ) -> bool:
+    async def check_if_existing(self, cloud_file_id=None, local_file_id=None) -> bool:
         """Check if the file_ids exist in the database."""
         async with self.session_maker() as session:
             if cloud_file_id is not None:
                 try:
-                    await CloudFileMapping.read(
-                        db_session=session, cloud_file_id=cloud_file_id
-                    )
+                    await CloudFileMapping.read(db_session=session, cloud_file_id=cloud_file_id)
                     return True
                 except Exception:
                     pass
             elif local_file_id is not None:
                 try:
-                    await CloudFileMapping.read(
-                        db_session=session, local_file_id=local_file_id
-                    )
+                    await CloudFileMapping.read(db_session=session, local_file_id=local_file_id)
                     return True
                 except Exception:
                     pass
         return False
 
-    async def set_processed(
-        self, cloud_file_id=None, local_file_id=None
-    ) -> PydanticCloudFileMapping:
+    async def set_processed(self, cloud_file_id=None, local_file_id=None) -> PydanticCloudFileMapping:
         """Set status to processed."""
         async with self.session_maker() as session:
             mapping = None
             if cloud_file_id is not None:
                 try:
-                    mapping = await CloudFileMapping.read(
-                        db_session=session, cloud_file_id=cloud_file_id
-                    )
+                    mapping = await CloudFileMapping.read(db_session=session, cloud_file_id=cloud_file_id)
                 except Exception:
                     pass
             elif local_file_id is not None:
                 try:
-                    mapping = await CloudFileMapping.read(
-                        db_session=session, local_file_id=local_file_id
-                    )
+                    mapping = await CloudFileMapping.read(db_session=session, local_file_id=local_file_id)
                 except Exception:
                     pass
             if mapping is None:

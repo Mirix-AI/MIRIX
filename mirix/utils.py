@@ -22,23 +22,12 @@ from datetime import datetime, timedelta, timezone
 from functools import wraps
 from logging import Logger
 from pathlib import Path
-from typing import (
-    TYPE_CHECKING,
-    Any,
-    Dict,
-    List,
-    Optional,
-    Union,
-    _GenericAlias,
-    get_args,
-    get_origin,
-    get_type_hints,
-)
+from typing import TYPE_CHECKING, List, Optional, Union, _GenericAlias, get_args, get_origin, get_type_hints
 from urllib.parse import urljoin, urlparse
 
 import demjson3 as demjson
-import pytz
 import httpx
+import pytz
 import tiktoken
 from pathvalidate import sanitize_filename as pathvalidate_sanitize_filename
 
@@ -947,9 +936,6 @@ def get_local_time(timezone=None):
     return time_str.strip()
 
 
-# get_utc_time is imported from mirix.client.utils
-
-
 def format_datetime(dt):
     return dt.strftime("%Y-%m-%d %I:%M:%S %p %Z%z")
 
@@ -1802,6 +1788,37 @@ def convert_message_to_mirix_message(
     file_manager: Optional["FileManager"] = None,
     images_dir: Optional[Path] = None,
 ) -> List[MessageCreate]:
+    """Convert raw API-style payloads into MIRIX ``MessageCreate`` objects.
+
+    This helper always returns ``List[MessageCreate]``.
+
+    Key behavior for the ``/memory/add`` save flow:
+    - The API first flattens multi-turn input (e.g. user/assistant turns) into a
+      single content list with ``[USER]``/``[ASSISTANT]`` text markers.
+    - This function then wraps that flattened list into exactly ONE
+      ``MessageCreate`` (usually with role ``user``).
+    - So a multi-turn save payload becomes ``[single MessageCreate]``.
+
+    Examples:
+        String input:
+            >>> convert_message_to_mirix_message("hello")
+            [MessageCreate(role="user", content=[TextContent(text="hello")])]
+
+       packed conversation:
+            >>> convert_message_to_mirix_message(
+            ...     [
+            ...         {"type": "text", "text": "[USER]"},
+            ...         {"type": "text", "text": "hi"},
+            ...         {"type": "text", "text": "[ASSISTANT]"},
+            ...         {"type": "text", "text": "hello there"},
+            ...     ]
+            ... )
+            [MessageCreate(role="user", content=[TextContent(...), ...])]
+
+        The caller can override role:
+            >>> convert_message_to_mirix_message("system note", role="system")
+            [MessageCreate(role="system", content=[TextContent(text="system note")])]
+    """
     if isinstance(message, str):
         content = [TextContent(text=message)]
         input_messages = [MessageCreate(role=MessageRole(role), content=content)]

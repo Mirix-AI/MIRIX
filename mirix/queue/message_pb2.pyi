@@ -1,15 +1,36 @@
-from google.protobuf import timestamp_pb2 as _timestamp_pb2
-from google.protobuf import struct_pb2 as _struct_pb2
-from google.protobuf.internal import containers as _containers
-from google.protobuf.internal import enum_type_wrapper as _enum_type_wrapper
+from typing import ClassVar as _ClassVar
+from typing import Iterable as _Iterable
+from typing import Mapping as _Mapping
+from typing import Optional as _Optional
+from typing import Union as _Union
+
 from google.protobuf import descriptor as _descriptor
 from google.protobuf import message as _message
-from typing import ClassVar as _ClassVar, Iterable as _Iterable, Mapping as _Mapping, Optional as _Optional, Union as _Union
+from google.protobuf import struct_pb2 as _struct_pb2
+from google.protobuf import timestamp_pb2 as _timestamp_pb2
+from google.protobuf.internal import containers as _containers
+from google.protobuf.internal import enum_type_wrapper as _enum_type_wrapper
 
 DESCRIPTOR: _descriptor.FileDescriptor
 
 class QueueMessage(_message.Message):
-    __slots__ = ("client_id", "agent_id", "input_messages", "chaining", "user_id", "verbose", "filter_tags", "use_cache", "occurred_at", "langfuse_trace_id", "langfuse_observation_id", "langfuse_session_id", "langfuse_user_id", "block_filter_tags", "block_filter_tags_update_mode")
+    __slots__ = (
+        "client_id",
+        "agent_id",
+        "input_messages",
+        "chaining",
+        "user_id",
+        "verbose",
+        "filter_tags",
+        "use_cache",
+        "occurred_at",
+        "langfuse_trace_id",
+        "langfuse_observation_id",
+        "langfuse_session_id",
+        "langfuse_user_id",
+        "block_filter_tags",
+        "block_filter_tags_update_mode",
+    )
     CLIENT_ID_FIELD_NUMBER: _ClassVar[int]
     AGENT_ID_FIELD_NUMBER: _ClassVar[int]
     INPUT_MESSAGES_FIELD_NUMBER: _ClassVar[int]
@@ -40,7 +61,24 @@ class QueueMessage(_message.Message):
     langfuse_user_id: str
     block_filter_tags: _struct_pb2.Struct
     block_filter_tags_update_mode: str
-    def __init__(self, client_id: _Optional[str] = ..., agent_id: _Optional[str] = ..., input_messages: _Optional[_Iterable[_Union[MessageCreate, _Mapping]]] = ..., chaining: bool = ..., user_id: _Optional[str] = ..., verbose: bool = ..., filter_tags: _Optional[_Union[_struct_pb2.Struct, _Mapping]] = ..., use_cache: bool = ..., occurred_at: _Optional[str] = ..., langfuse_trace_id: _Optional[str] = ..., langfuse_observation_id: _Optional[str] = ..., langfuse_session_id: _Optional[str] = ..., langfuse_user_id: _Optional[str] = ..., block_filter_tags: _Optional[_Union[_struct_pb2.Struct, _Mapping]] = ..., block_filter_tags_update_mode: _Optional[str] = ...) -> None: ...
+    def __init__(
+        self,
+        client_id: _Optional[str] = ...,
+        agent_id: _Optional[str] = ...,
+        input_messages: _Optional[_Iterable[_Union[MessageCreate, _Mapping]]] = ...,
+        chaining: bool = ...,
+        user_id: _Optional[str] = ...,
+        verbose: bool = ...,
+        filter_tags: _Optional[_Union[_struct_pb2.Struct, _Mapping]] = ...,
+        use_cache: bool = ...,
+        occurred_at: _Optional[str] = ...,
+        langfuse_trace_id: _Optional[str] = ...,
+        langfuse_observation_id: _Optional[str] = ...,
+        langfuse_session_id: _Optional[str] = ...,
+        langfuse_user_id: _Optional[str] = ...,
+        block_filter_tags: _Optional[_Union[_struct_pb2.Struct, _Mapping]] = ...,
+        block_filter_tags_update_mode: _Optional[str] = ...,
+    ) -> None: ...
 
 class User(_message.Message):
     __slots__ = ("id", "organization_id", "name", "status", "timezone", "created_at", "updated_at", "is_deleted")
@@ -60,15 +98,27 @@ class User(_message.Message):
     created_at: _timestamp_pb2.Timestamp
     updated_at: _timestamp_pb2.Timestamp
     is_deleted: bool
-    def __init__(self, id: _Optional[str] = ..., organization_id: _Optional[str] = ..., name: _Optional[str] = ..., status: _Optional[str] = ..., timezone: _Optional[str] = ..., created_at: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ..., updated_at: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ..., is_deleted: bool = ...) -> None: ...
+    def __init__(
+        self,
+        id: _Optional[str] = ...,
+        organization_id: _Optional[str] = ...,
+        name: _Optional[str] = ...,
+        status: _Optional[str] = ...,
+        timezone: _Optional[str] = ...,
+        created_at: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ...,
+        updated_at: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ...,
+        is_deleted: bool = ...,
+    ) -> None: ...
 
 class MessageCreate(_message.Message):
     __slots__ = ("role", "text_content", "structured_content", "name", "otid", "sender_id", "group_id")
+
     class Role(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
         __slots__ = ()
         ROLE_UNSPECIFIED: _ClassVar[MessageCreate.Role]
         ROLE_USER: _ClassVar[MessageCreate.Role]
         ROLE_SYSTEM: _ClassVar[MessageCreate.Role]
+
     ROLE_UNSPECIFIED: MessageCreate.Role
     ROLE_USER: MessageCreate.Role
     ROLE_SYSTEM: MessageCreate.Role
@@ -86,7 +136,16 @@ class MessageCreate(_message.Message):
     otid: str
     sender_id: str
     group_id: str
-    def __init__(self, role: _Optional[_Union[MessageCreate.Role, str]] = ..., text_content: _Optional[str] = ..., structured_content: _Optional[_Union[MessageContentList, _Mapping]] = ..., name: _Optional[str] = ..., otid: _Optional[str] = ..., sender_id: _Optional[str] = ..., group_id: _Optional[str] = ...) -> None: ...
+    def __init__(
+        self,
+        role: _Optional[_Union[MessageCreate.Role, str]] = ...,
+        text_content: _Optional[str] = ...,
+        structured_content: _Optional[_Union[MessageContentList, _Mapping]] = ...,
+        name: _Optional[str] = ...,
+        otid: _Optional[str] = ...,
+        sender_id: _Optional[str] = ...,
+        group_id: _Optional[str] = ...,
+    ) -> None: ...
 
 class MessageContentList(_message.Message):
     __slots__ = ("parts",)
@@ -104,7 +163,13 @@ class MessageContentPart(_message.Message):
     image: ImageContent
     file: FileContent
     cloud_file: CloudFileContent
-    def __init__(self, text: _Optional[_Union[TextContent, _Mapping]] = ..., image: _Optional[_Union[ImageContent, _Mapping]] = ..., file: _Optional[_Union[FileContent, _Mapping]] = ..., cloud_file: _Optional[_Union[CloudFileContent, _Mapping]] = ...) -> None: ...
+    def __init__(
+        self,
+        text: _Optional[_Union[TextContent, _Mapping]] = ...,
+        image: _Optional[_Union[ImageContent, _Mapping]] = ...,
+        file: _Optional[_Union[FileContent, _Mapping]] = ...,
+        cloud_file: _Optional[_Union[CloudFileContent, _Mapping]] = ...,
+    ) -> None: ...
 
 class TextContent(_message.Message):
     __slots__ = ("text",)

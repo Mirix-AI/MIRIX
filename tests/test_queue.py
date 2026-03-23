@@ -43,18 +43,11 @@ pytestmark = pytest.mark.asyncio(loop_scope="module")
 # ============================================================================
 
 
-@pytest_asyncio.fixture
-def event_loop():
-    """Single event loop for the module so DB managers and tests share one loop."""
-    loop = asyncio.new_event_loop()
-    yield loop
-    loop.close()
-
-
 @pytest_asyncio.fixture(scope="module", autouse=True)
 async def _init_db():
     """Create all DB tables before any test in this module touches the database."""
     from mirix.server.server import ensure_tables_created
+
     await ensure_tables_created()
 
 
@@ -65,9 +58,7 @@ async def ensure_organization():
     try:
         await org_mgr.get_organization_by_id(TEST_QUEUE_ORG_ID)
     except Exception:
-        await org_mgr.create_organization(
-            PydanticOrganization(id=TEST_QUEUE_ORG_ID, name="Test Queue Org")
-        )
+        await org_mgr.create_organization(PydanticOrganization(id=TEST_QUEUE_ORG_ID, name="Test Queue Org"))
     return TEST_QUEUE_ORG_ID
 
 
@@ -634,9 +625,7 @@ class TestWorkerPartitionAssignment:
 
         def make_server(worker_key):
             s = Mock()
-            s.send_messages = AsyncMock(
-                side_effect=lambda **kwargs: processed[worker_key].append(kwargs["agent_id"])
-            )
+            s.send_messages = AsyncMock(side_effect=lambda **kwargs: processed[worker_key].append(kwargs["agent_id"]))
             s.client_manager = Mock()
             s.client_manager.get_client_by_id = AsyncMock(return_value=sample_client)
             return s
@@ -918,9 +907,7 @@ class TestQueueIntegration:
         await manager.cleanup()
 
     @pytest.mark.asyncio
-    async def test_worker_handles_processing_errors(
-        self, clean_manager, mock_server, sample_client, sample_messages
-    ):
+    async def test_worker_handles_processing_errors(self, clean_manager, mock_server, sample_client, sample_messages):
         manager = clean_manager
 
         mock_server.send_messages = AsyncMock(side_effect=Exception("Processing error"))

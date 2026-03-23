@@ -63,16 +63,12 @@ class LLMClientBase:
         trace_id = trace_context.get("trace_id") if trace_context else None
         parent_span_id = trace_context.get("observation_id") if trace_context else None
         if langfuse and trace_id:
-            return await self._execute_with_langfuse(
-                langfuse, request_data, messages, tools, trace_id, parent_span_id
-            )
+            return await self._execute_with_langfuse(langfuse, request_data, messages, tools, trace_id, parent_span_id)
         reason = "LangFuse client not available" if not langfuse else "No active trace_id in context"
         self.logger.debug(f"Sending LLM request without LangFuse tracing ({reason})")
         return await self._execute_without_langfuse(request_data, messages)
 
-    async def _execute_without_langfuse(
-        self, request_data: dict, messages: List[Message]
-    ) -> ChatCompletionResponse:
+    async def _execute_without_langfuse(self, request_data: dict, messages: List[Message]) -> ChatCompletionResponse:
         """Execute LLM request without LangFuse tracing."""
         try:
             t1 = time.time()

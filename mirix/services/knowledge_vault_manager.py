@@ -440,7 +440,9 @@ class KnowledgeVaultManager:
                     id="system-default-client", organization_id=user.organization_id, name="system-client"
                 )
 
-                item = await KnowledgeVaultItem.read(db_session=session, identifier=knowledge_vault_item_id, actor=actor)
+                item = await KnowledgeVaultItem.read(
+                    db_session=session, identifier=knowledge_vault_item_id, actor=actor
+                )
                 pydantic_item = item.to_pydantic()
 
                 try:
@@ -506,9 +508,7 @@ class KnowledgeVaultManager:
         if not knowledge_vault_item.id:
             from mirix.utils import generate_unique_short_id_async
 
-            knowledge_vault_item.id = await generate_unique_short_id_async(
-                self.session_maker, KnowledgeVaultItem, "kv"
-            )
+            knowledge_vault_item.id = await generate_unique_short_id_async(self.session_maker, KnowledgeVaultItem, "kv")
 
         item_data = knowledge_vault_item.model_dump()
 
@@ -950,7 +950,9 @@ class KnowledgeVaultManager:
         """Delete a knowledge vault item by ID (removes from cache)."""
         async with self.session_maker() as session:
             try:
-                item = await KnowledgeVaultItem.read(db_session=session, identifier=knowledge_vault_item_id, actor=actor)
+                item = await KnowledgeVaultItem.read(
+                    db_session=session, identifier=knowledge_vault_item_id, actor=actor
+                )
                 # Remove from cache
                 from mirix.database.cache_provider import get_cache_provider
 
@@ -1114,9 +1116,7 @@ class KnowledgeVaultManager:
 
         async with self.session_maker() as session:
             # Get IDs for Redis cleanup (only fetch IDs, not full objects)
-            result = await session.execute(
-                select(KnowledgeVaultItem.id).where(KnowledgeVaultItem.user_id == user_id)
-            )
+            result = await session.execute(select(KnowledgeVaultItem.id).where(KnowledgeVaultItem.user_id == user_id))
             item_ids = [row[0] for row in result.all()]
 
             count = len(item_ids)
@@ -1184,7 +1184,9 @@ class KnowledgeVaultManager:
                         from mirix.constants import MAX_EMBEDDING_DIM
                         from mirix.embeddings import embedding_model
 
-                        embedded_text = await (await embedding_model(agent_state.embedding_config)).get_text_embedding(query)
+                        embedded_text = await (await embedding_model(agent_state.embedding_config)).get_text_embedding(
+                            query
+                        )
                         embedded_text = np.array(embedded_text)
                         embedded_text = np.pad(
                             embedded_text,

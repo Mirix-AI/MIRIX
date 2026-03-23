@@ -1,11 +1,10 @@
-import asyncio
 import ast
+import asyncio
 import base64
 import os
 import pickle
 import sys
 import tempfile
-import traceback
 import uuid
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
@@ -94,7 +93,9 @@ class ToolExecutionSandbox:
                 return await self.run_e2b_sandbox(agent_state=agent_state, additional_env_vars=additional_env_vars)
             else:
                 logger.debug("Using local sandbox to execute %s", self.tool_name)
-                return await self.run_local_dir_sandbox(agent_state=agent_state, additional_env_vars=additional_env_vars)
+                return await self.run_local_dir_sandbox(
+                    agent_state=agent_state, additional_env_vars=additional_env_vars
+                )
 
         if langfuse and trace_id:
             from typing import cast
@@ -175,9 +176,7 @@ class ToolExecutionSandbox:
         with tempfile.NamedTemporaryFile(
             mode="w", dir=local_configs.sandbox_dir, suffix=".py", delete=False
         ) as temp_file:
-            code = self.generate_execution_script(
-                agent_state=agent_state, wrap_print_with_markers=True
-            )
+            code = self.generate_execution_script(agent_state=agent_state, wrap_print_with_markers=True)
             temp_file.write(code)
             temp_file.flush()
             temp_file_path = temp_file.name
@@ -223,9 +222,7 @@ class ToolExecutionSandbox:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                process.communicate(), timeout=60
-            )
+            stdout_bytes, stderr_bytes = await asyncio.wait_for(process.communicate(), timeout=60)
             stdout_text = stdout_bytes.decode() if stdout_bytes else ""
             stderr_text = stderr_bytes.decode() if stderr_bytes else ""
 
@@ -278,24 +275,20 @@ class ToolExecutionSandbox:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                process.communicate(), timeout=60
-            )
+            stdout_bytes, stderr_bytes = await asyncio.wait_for(process.communicate(), timeout=60)
             stdout_text = stdout_bytes.decode() if stdout_bytes else ""
             stderr_text = stderr_bytes.decode() if stderr_bytes else ""
 
             if process.returncode != 0:
                 logger.error(
                     "Executing tool %s failed with return code %d",
-                    self.tool_name, process.returncode,
+                    self.tool_name,
+                    process.returncode,
                 )
                 func_return = get_friendly_error_msg(
                     function_name=self.tool_name,
                     exception_name="SubprocessError",
-                    exception_message=(
-                        f"Process exited with code {process.returncode}: "
-                        f"{stderr_text}"
-                    ),
+                    exception_message=(f"Process exited with code {process.returncode}: " f"{stderr_text}"),
                 )
                 return SandboxRunResult(
                     func_return=func_return,
@@ -306,9 +299,7 @@ class ToolExecutionSandbox:
                     sandbox_config_fingerprint=sbx_config.fingerprint(),
                 )
 
-            func_result, stdout_parsed = (
-                self.parse_out_function_results_markers(stdout_text)
-            )
+            func_result, stdout_parsed = self.parse_out_function_results_markers(stdout_text)
             func_return, agent_state = self.parse_best_effort(func_result)
             return SandboxRunResult(
                 func_return=func_return,
@@ -320,15 +311,10 @@ class ToolExecutionSandbox:
             )
 
         except asyncio.TimeoutError:
-            raise TimeoutError(
-                f"Executing tool {self.tool_name} has timed out."
-            )
+            raise TimeoutError(f"Executing tool {self.tool_name} has timed out.")
 
         except Exception as e:
-            logger.error(
-                f"Executing tool {self.tool_name} has an unexpected "
-                f"error: {e}"
-            )
+            logger.error(f"Executing tool {self.tool_name} has an unexpected " f"error: {e}")
             raise e
 
     def parse_out_function_results_markers(self, text: str):
@@ -344,21 +330,26 @@ class ToolExecutionSandbox:
 
     async def create_venv_for_local_sandbox(self, sandbox_dir_path: str, venv_path: str, env: Dict[str, str]):
         process = await asyncio.create_subprocess_exec(
-            sys.executable, "-m", "venv", "--with-pip", venv_path,
+            sys.executable,
+            "-m",
+            "venv",
+            "--with-pip",
+            venv_path,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
         _, stderr = await process.communicate()
         if process.returncode != 0:
-            raise RuntimeError(
-                f"venv creation failed: {stderr.decode() if stderr else ''}"
-            )
+            raise RuntimeError(f"venv creation failed: {stderr.decode() if stderr else ''}")
 
         pip_path = os.path.join(venv_path, "bin", "pip")
         try:
             logger.info("Upgrading pip in the virtual environment...")
             process = await asyncio.create_subprocess_exec(
-                pip_path, "install", "--upgrade", "pip",
+                pip_path,
+                "install",
+                "--upgrade",
+                "pip",
                 env=env,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -371,7 +362,10 @@ class ToolExecutionSandbox:
             if os.path.isfile(requirements_txt_path):
                 logger.info(f"Installing packages from requirements file: {requirements_txt_path}")
                 process = await asyncio.create_subprocess_exec(
-                    pip_path, "install", "-r", requirements_txt_path,
+                    pip_path,
+                    "install",
+                    "-r",
+                    requirements_txt_path,
                     env=env,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,

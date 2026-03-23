@@ -1,7 +1,7 @@
 import uuid
 from typing import TYPE_CHECKING, List, Optional
 
-from sqlalchemy import JSON, String
+from sqlalchemy import JSON, String  # JSON retained for mcp_tools column
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from mirix.orm.custom_columns import (
@@ -50,10 +50,6 @@ class Agent(SqlalchemyBase, OrganizationMixin):
     # System prompt
     system: Mapped[Optional[str]] = mapped_column(String, nullable=True, doc="The system prompt used by the agent.")
 
-    message_ids: Mapped[Optional[List[str]]] = mapped_column(
-        JSON, nullable=True, doc="List of message IDs in in-context memory."
-    )
-
     # Metadata and configs
     llm_config: Mapped[Optional[LLMConfig]] = mapped_column(
         LLMConfigColumn,
@@ -80,13 +76,27 @@ class Agent(SqlalchemyBase, OrganizationMixin):
     messages: Mapped[List["Message"]] = relationship(
         "Message",
         back_populates="agent",
-        lazy="selectin",
+        lazy="noload",
         cascade="all, delete-orphan",  # Ensure messages are deleted when the agent is deleted
         passive_deletes=True,
     )
 
     def to_pydantic(self) -> PydanticAgentState:
         """converts to the basic pydantic model counterpart"""
+        from sqlalchemy import inspect
+
+        # Check if we're in a session and tools are loaded
+        # This prevents MissingGreenlet when accessing relationships outside session
+        insp = inspect(self)
+
+        # For tools: if already loaded, use them; otherwise use empty list
+        # tools has lazy="selectin" so should be loaded, but this handles edge cases
+        if "tools" in insp.dict:
+            tools = self.tools
+        else:
+            # Tools not loaded (detached instance or session closed)
+            tools = []
+
         state = {
             "id": self.id,
             "organization_id": self.organization_id,
@@ -94,8 +104,7 @@ class Agent(SqlalchemyBase, OrganizationMixin):
             "description": self.description,
             "parent_id": self.parent_id,
             "children": None,  # Children are populated separately when needed
-            "message_ids": self.message_ids,
-            "tools": self.tools,
+            "tools": tools,
             "tool_rules": self.tool_rules,
             "system": self.system,
             "agent_type": self.agent_type,

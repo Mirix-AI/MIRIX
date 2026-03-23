@@ -3,19 +3,14 @@ from typing import List, Literal, Optional
 
 from sqlalchemy import select
 
-from mirix import system
 from mirix.constants import IN_CONTEXT_MEMORY_KEYWORD, STRUCTURED_OUTPUT_MODELS
 from mirix.helpers import ToolRulesSolver
 from mirix.orm.agent import Agent as AgentModel
 from mirix.orm.errors import NoResultFound
 from mirix.prompts import gpt_system
-from mirix.schemas.agent import AgentState, AgentType
-from mirix.schemas.client import Client
-from mirix.schemas.enums import MessageRole
+from mirix.schemas.agent import AgentType
 from mirix.schemas.memory import Memory
-from mirix.schemas.message import Message, MessageCreate
 from mirix.schemas.tool_rule import ToolRule
-from mirix.schemas.user import User
 from mirix.utils import get_local_time
 
 
@@ -49,9 +44,7 @@ async def _process_relationship(
             setattr(agent, relationship_name, [])
         return
 
-    result = await session.execute(
-        select(model_class).where(model_class.id.in_(item_ids))
-    )
+    result = await session.execute(select(model_class).where(model_class.id.in_(item_ids)))
     found_items = result.scalars().all()
 
     if not allow_partial and len(found_items) != len(item_ids):
@@ -177,67 +170,6 @@ def compile_system_message(
         raise NotImplementedError(template_format)
 
     return formatted_prompt
-
-
-def initialize_message_sequence(
-    agent_state: AgentState,
-    memory_edit_timestamp: Optional[datetime.datetime] = None,
-    include_initial_boot_message: bool = True,
-    previous_message_count: int = 0,
-    archival_memory_size: int = 0,
-) -> List[dict]:
-    if memory_edit_timestamp is None:
-        memory_edit_timestamp = get_local_time()
-
-    messages = [
-        {"role": "system", "content": agent_state.system},
-    ]
-
-    return messages
-
-
-def package_initial_message_sequence(
-    agent_id: str,
-    initial_message_sequence: List[MessageCreate],
-    model: str,
-    actor: Client,
-    user_id: Optional[str] = None,
-) -> List[Message]:
-    """
-    Package initial messages for an agent.
-
-    Args:
-        agent_id: The agent ID these messages belong to.
-        initial_message_sequence: List of messages to package.
-        model: The LLM model name.
-        actor: The Client performing the operation (used for organization_id).
-        user_id: The user ID to associate with these messages. If not provided,
-                 messages will have user_id=None.
-    """
-    init_messages = []
-    for message_create in initial_message_sequence:
-        if message_create.role == MessageRole.user:
-            packed_message = system.package_user_message(
-                user_message=message_create.text,
-            )
-        elif message_create.role == MessageRole.system:
-            packed_message = system.package_system_message(
-                system_message=message_create.text,
-            )
-        else:
-            raise ValueError(f"Invalid message role: {message_create.role}")
-
-        init_messages.append(
-            Message(
-                role=message_create.role,
-                text=packed_message,
-                organization_id=actor.organization_id,
-                user_id=user_id,
-                agent_id=agent_id,
-                model=model,
-            )
-        )
-    return init_messages
 
 
 def check_supports_structured_output(model: str, tool_rules: List[ToolRule]) -> bool:

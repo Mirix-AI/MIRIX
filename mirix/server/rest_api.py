@@ -4,17 +4,15 @@ This provides HTTP endpoints that wrap the AsyncServer functionality,
 allowing MirixClient instances to communicate with a cloud-hosted server.
 """
 
-import asyncio
-import copy
 import functools
 import json
 import traceback
 from contextlib import asynccontextmanager
 from datetime import datetime
-from typing import Any, Dict, List, Literal, Optional, Union
+from typing import Any, Dict, List, Optional
 
 import httpx
-from fastapi import APIRouter, Body, FastAPI, Header, HTTPException, Query, Request
+from fastapi import APIRouter, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
@@ -24,43 +22,29 @@ from mirix.llm_api.llm_client import LLMClient
 from mirix.log import get_logger
 from mirix.orm.errors import NoResultFound
 from mirix.schemas.agent import AgentState, AgentType, CreateAgent
-from mirix.schemas.block import Block, BlockUpdate, CreateBlock, Human, Persona
-from mirix.schemas.client import Client, ClientCreate, ClientUpdate
+from mirix.schemas.block import Block
+from mirix.schemas.client import Client, ClientUpdate
 from mirix.schemas.embedding_config import EmbeddingConfig
 from mirix.schemas.enums import MessageRole
-from mirix.schemas.environment_variables import (
-    SandboxEnvironmentVariable,
-    SandboxEnvironmentVariableCreate,
-    SandboxEnvironmentVariableUpdate,
-)
-from mirix.schemas.file import FileMetadata
 from mirix.schemas.llm_config import LLMConfig
-from mirix.schemas.memory import ArchivalMemorySummary, Memory, RecallMemorySummary
+from mirix.schemas.memory import Memory
 from mirix.schemas.message import Message, MessageCreate
 from mirix.schemas.mirix_response import MirixResponse
 from mirix.schemas.organization import Organization
 from mirix.schemas.procedural_memory import ProceduralMemoryItemUpdate
 from mirix.schemas.raw_memory import (
-    RawMemoryItem,
     RawMemoryItemCreateRequest,
     RawMemoryItemUpdate,
     SearchRawMemoryRequest,
     SearchRawMemoryResponse,
 )
 from mirix.schemas.resource_memory import ResourceMemoryItemUpdate
-from mirix.schemas.sandbox_config import (
-    E2BSandboxConfig,
-    LocalSandboxConfig,
-    SandboxConfig,
-    SandboxConfigCreate,
-    SandboxConfigUpdate,
-)
 from mirix.schemas.semantic_memory import SemanticMemoryItemUpdate
-from mirix.schemas.tool import Tool, ToolCreate, ToolUpdate
+from mirix.schemas.tool import Tool
 from mirix.schemas.tool_rule import BaseToolRule
 from mirix.schemas.user import User
 from mirix.server.server import AsyncServer, ensure_tables_created
-from mirix.settings import model_settings, settings
+from mirix.settings import model_settings
 from mirix.utils import convert_message_to_mirix_message
 
 logger = get_logger(__name__)
@@ -521,9 +505,7 @@ async def extract_topics_and_temporal_info(
     return None, None
 
 
-async def extract_topics_from_messages(
-    messages: List[Dict[str, Any]], llm_config: LLMConfig
-) -> Optional[str]:
+async def extract_topics_from_messages(messages: List[Dict[str, Any]], llm_config: LLMConfig) -> Optional[str]:
     """
     Extract topics from a list of messages using LLM.
 
@@ -570,9 +552,7 @@ def _flatten_messages_to_plain_text(messages: List[Dict[str, Any]]) -> str:
     return "\n".join(transcript_parts)
 
 
-async def extract_topics_with_local_model(
-    messages: List[Dict[str, Any]], model_name: str
-) -> Optional[str]:
+async def extract_topics_with_local_model(messages: List[Dict[str, Any]], model_name: str) -> Optional[str]:
     """
     Extract topics using a locally hosted Ollama model via the /api/chat endpoint.
 
@@ -729,7 +709,6 @@ class CreateAgentRequest(BaseModel):
     include_meta_memory_tools: Optional[bool] = False
     metadata: Optional[Dict] = None
     description: Optional[str] = None
-    initial_message_sequence: Optional[List[Message]] = None
     tags: Optional[List[str]] = None
 
 
@@ -767,20 +746,15 @@ async def create_agent(
         "agent_type": request.agent_type,
         "llm_config": request.llm_config,
         "embedding_config": request.embedding_config,
-        "initial_message_sequence": request.initial_message_sequence,
         "tags": request.tags,
     }
 
     if request.name:
         create_params["name"] = request.name
 
-    agent_state = await server.create_agent(
-        CreateAgent(**create_params), client
-    )
+    agent_state = await server.create_agent(CreateAgent(**create_params), client)
 
-    return await server.agent_manager.get_agent_by_id(
-        agent_state.id, client
-    )
+    return await server.agent_manager.get_agent_by_id(agent_state.id, client)
 
 
 @router.get("/agents/{agent_id}", response_model=AgentState)
@@ -797,10 +771,8 @@ async def get_agent(
     client = await server.client_manager.get_client_by_id(client_id)
 
     try:
-        return await server.agent_manager.get_agent_by_id(
-            agent_id, client
-        )
-    except NoResultFound as e:
+        return await server.agent_manager.get_agent_by_id(agent_id, client)
+    except NoResultFound:
         raise HTTPException(status_code=404, detail=f"Agent {agent_id} not found or not accessible")
 
 
@@ -828,7 +800,6 @@ class UpdateAgentRequest(BaseModel):
     metadata: Optional[Dict] = None
     llm_config: Optional[LLMConfig] = None
     embedding_config: Optional[EmbeddingConfig] = None
-    message_ids: Optional[List[str]] = None
     memory: Optional[Memory] = None
     tags: Optional[List[str]] = None
 
@@ -896,9 +867,7 @@ async def update_agent_system_prompt_by_name(
     client = await server.client_manager.get_client_by_id(client_id)
 
     # List all top-level agents for this client
-    top_level_agents = await server.agent_manager.list_agents(
-        actor=client, limit=1000
-    )
+    top_level_agents = await server.agent_manager.list_agents(actor=client, limit=1000)
     # Also get sub-agents (children of meta agent)
     all_agents = list(top_level_agents)
     for agent in top_level_agents:
@@ -985,8 +954,7 @@ async def update_agent_system_prompt(
     The update process:
     1. Updates the agent.system field in PostgreSQL
     2. Updates the agent.system field in Redis cache
-    3. Creates a new system message
-    4. Updates message_ids[0] to reference the new system message
+    3. Updates agent.system in DB and cache
 
     Args:
         agent_id: ID of the agent to update (e.g., "agent-123")
@@ -1119,9 +1087,7 @@ async def list_tools(
     server = get_server()
     client_id, org_id = await get_client_and_org(x_client_id, x_org_id)
     client = await server.client_manager.get_client_by_id(client_id)
-    return await server.tool_manager.list_tools(
-        cursor=cursor, limit=limit, actor=client
-    )
+    return await server.tool_manager.list_tools(cursor=cursor, limit=limit, actor=client)
 
 
 @router.get("/tools/{tool_id}", response_model=Tool)
@@ -1270,9 +1236,7 @@ async def list_organizations(
 ):
     """List organizations."""
     server = get_server()
-    return await server.organization_manager.list_organizations(
-        cursor=cursor, limit=limit
-    )
+    return await server.organization_manager.list_organizations(cursor=cursor, limit=limit)
 
 
 @router.post("/organizations", response_model=Organization)
@@ -1283,9 +1247,7 @@ async def create_organization(
 ):
     """Create an organization."""
     server = get_server()
-    return await server.organization_manager.create_organization(
-        pydantic_org=Organization(name=name)
-    )
+    return await server.organization_manager.create_organization(pydantic_org=Organization(name=name))
 
 
 @router.get("/organizations/{org_id}", response_model=Organization)
@@ -1342,9 +1304,7 @@ async def create_or_get_organization(
 
     # Create new organization if it doesn't exist
     org_create = OrganizationCreate(id=org_id, name=request.name or org_id)
-    org = await server.organization_manager.create_organization(
-        pydantic_org=Organization(**org_create.model_dump())
-    )
+    org = await server.organization_manager.create_organization(pydantic_org=Organization(**org_create.model_dump()))
     logger.debug("Created new organization: %s", org_id)
     return org
 
@@ -1890,7 +1850,7 @@ async def delete_client_api_key(
             "message": f"API key {api_key_id} deleted successfully",
             "id": api_key_id,
         }
-    except Exception as e:
+    except Exception:
         raise HTTPException(status_code=404, detail=f"API key {api_key_id} not found")
 
 
@@ -1947,9 +1907,7 @@ async def initialize_meta_agent(
 
     # Check if meta agent already exists for this client
     # list_agents now automatically filters by client (organization_id + _created_by_id)
-    existing_meta_agents = await server.agent_manager.list_agents(
-        actor=client, limit=1000
-    )
+    existing_meta_agents = await server.agent_manager.list_agents(actor=client, limit=1000)
 
     assert len(existing_meta_agents) <= 1, "Only one meta agent can be created per client"
 
@@ -2077,6 +2035,8 @@ async def add_memory(
                 raise ValueError(f"Invalid content type: {type(content)}")
         message = new_message
 
+    # N.b. This function converts to Mirix format and also packs all messages into a single MessageCreate object
+    # so, there will be only one MessageCreate object in the list
     input_messages = convert_message_to_mirix_message(message)
 
     # Add client scope to filter_tags (create if not provided)
@@ -2438,9 +2398,7 @@ async def retrieve_memory_with_conversation(
     filter_tags = dict(request.filter_tags) if request.filter_tags is not None else {}
 
     # Get all agents for this client (automatically filtered by client via apply_access_predicate)
-    all_agents = await server.agent_manager.list_agents(
-        actor=client, limit=1000
-    )
+    all_agents = await server.agent_manager.list_agents(actor=client, limit=1000)
 
     if not all_agents:
         return {
@@ -2484,9 +2442,7 @@ async def retrieve_memory_with_conversation(
 
         if topics is None:
             # NEW: Extract both topics and temporal expression
-            topics, temporal_expr = await extract_topics_and_temporal_info(
-                request.messages, llm_config
-            )
+            topics, temporal_expr = await extract_topics_and_temporal_info(request.messages, llm_config)
 
         logger.debug("Extracted topics: %s, temporal: %s", topics, temporal_expr)
         key_words = topics if topics else ""
@@ -2620,9 +2576,7 @@ async def retrieve_memory_with_topic(
         parsed_filter_tags = {}
 
     # Get all agents for this client (automatically filtered by client via apply_access_predicate)
-    all_agents = await server.agent_manager.list_agents(
-        actor=client, limit=1000
-    )
+    all_agents = await server.agent_manager.list_agents(actor=client, limit=1000)
 
     if not all_agents:
         return {
@@ -2763,9 +2717,7 @@ async def search_memory(
         logger.debug("No user_id provided, using admin user: %s", user_id)
 
     # Get all agents for this client (automatically filtered by client via apply_access_predicate)
-    all_agents = await server.agent_manager.list_agents(
-        actor=client, limit=1000
-    )
+    all_agents = await server.agent_manager.list_agents(actor=client, limit=1000)
 
     if not all_agents:
         return {
@@ -3376,9 +3328,7 @@ async def search_memory_all_users(
             logger.warning("Invalid end_date format: %s", e)
 
     # Get agents for this client
-    all_agents = await server.agent_manager.list_agents(
-        actor=client, limit=1000
-    )
+    all_agents = await server.agent_manager.list_agents(actor=client, limit=1000)
     if not all_agents:
         return {
             "success": False,
@@ -3884,9 +3834,7 @@ async def list_memory_components(
     limit = max(1, min(limit, 200))  # guardrails
 
     # Need an agent state for memory manager configuration
-    agents = await server.agent_manager.list_agents(
-        actor=client, limit=1
-    )
+    agents = await server.agent_manager.list_agents(actor=client, limit=1)
     if not agents:
         raise HTTPException(status_code=404, detail="No agents found for this client")
     agent_state = agents[0]
@@ -4446,9 +4394,7 @@ async def create_raw_memory(
         raise HTTPException(status_code=401, detail="Client or client_id required")
 
     # Get agent_state for embedding generation (required)
-    agents = await server.agent_manager.list_agents(
-        actor=client, limit=1
-    )
+    agents = await server.agent_manager.list_agents(actor=client, limit=1)
     agent_state = agents[0] if agents else None
 
     if not agent_state:
@@ -4623,9 +4569,7 @@ async def update_raw_memory(
             raise HTTPException(status_code=404, detail=f"User {user_id} not found")
 
     # Get agent_state for embedding generation (required)
-    agents = await server.agent_manager.list_agents(
-        actor=client, limit=1
-    )
+    agents = await server.agent_manager.list_agents(actor=client, limit=1)
     agent_state = agents[0] if agents else None
 
     if not agent_state:
@@ -5242,9 +5186,7 @@ async def dashboard_login(request: DashboardLoginRequest):
 
     auth_manager = ClientAuthManager()
 
-    client, access_token, auth_status = await auth_manager.authenticate(
-        request.email, request.password
-    )
+    client, access_token, auth_status = await auth_manager.authenticate(request.email, request.password)
 
     if auth_status == "not_found":
         raise HTTPException(status_code=404, detail="Account does not exist. Please create an account.")

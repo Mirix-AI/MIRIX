@@ -51,9 +51,7 @@ async def test_org():
     try:
         return await org_mgr.get_organization_by_id(org_id)
     except Exception:
-        return await org_mgr.create_organization(
-            PydanticOrganization(id=org_id, name="Multi-Scope Test Org")
-        )
+        return await org_mgr.create_organization(PydanticOrganization(id=org_id, name="Multi-Scope Test Org"))
 
 
 @pytest_asyncio.fixture(scope="module", loop_scope="module")
@@ -206,9 +204,7 @@ async def no_access_client(test_org, client_manager):
 class TestReadOnlyClient:
     """Tests for clients with write_scope=None."""
 
-    async def test_read_only_client_cannot_create_memory(
-        self, raw_memory_manager, read_only_client, test_user
-    ):
+    async def test_read_only_client_cannot_create_memory(self, raw_memory_manager, read_only_client, test_user):
         """Test that a read-only client (write_scope=None) cannot create memories."""
         memory_data = RawMemoryItemCreate(
             context="Attempting to create from read-only client",
@@ -249,9 +245,7 @@ class TestReadOnlyClient:
             assert created.filter_tags["scope"] == "shared"
 
             # Read-only client should be able to read it (has 'shared' in read_scopes)
-            fetched = await raw_memory_manager.get_raw_memory_by_id(
-                created.id, actor=read_only_client
-            )
+            fetched = await raw_memory_manager.get_raw_memory_by_id(created.id, actor=read_only_client)
             assert fetched.id == created.id
             assert fetched.context == memory_data.context
         finally:
@@ -304,14 +298,10 @@ class TestMultiScopeRead:
 
             # multi_read_client has read_scopes=["shared", "private", "multi-read-scope"]
             # It should be able to read both memories
-            fetched_shared = await raw_memory_manager.get_raw_memory_by_id(
-                shared_memory.id, actor=multi_read_client
-            )
+            fetched_shared = await raw_memory_manager.get_raw_memory_by_id(shared_memory.id, actor=multi_read_client)
             assert fetched_shared.id == shared_memory.id
 
-            fetched_private = await raw_memory_manager.get_raw_memory_by_id(
-                private_memory.id, actor=multi_read_client
-            )
+            fetched_private = await raw_memory_manager.get_raw_memory_by_id(private_memory.id, actor=multi_read_client)
             assert fetched_private.id == private_memory.id
         finally:
             # Cleanup
@@ -400,9 +390,7 @@ class TestSharedMemoryPool:
             assert memory.filter_tags["scope"] == "shared"
 
             # Reader can read it
-            fetched = await raw_memory_manager.get_raw_memory_by_id(
-                memory.id, actor=read_only_client
-            )
+            fetched = await raw_memory_manager.get_raw_memory_by_id(memory.id, actor=read_only_client)
             assert fetched.id == memory.id
         finally:
             await raw_memory_manager.delete_raw_memory(memory.id, shared_writer_client)
@@ -480,15 +468,11 @@ class TestPrivateAndSharedAccess:
 
         try:
             # Private client can read shared memory
-            fetched_shared = await raw_memory_manager.get_raw_memory_by_id(
-                shared_memory.id, actor=private_client
-            )
+            fetched_shared = await raw_memory_manager.get_raw_memory_by_id(shared_memory.id, actor=private_client)
             assert fetched_shared.id == shared_memory.id
 
             # Private client can read its own private memory
-            fetched_private = await raw_memory_manager.get_raw_memory_by_id(
-                private_memory.id, actor=private_client
-            )
+            fetched_private = await raw_memory_manager.get_raw_memory_by_id(private_memory.id, actor=private_client)
             assert fetched_private.id == private_memory.id
         finally:
             await raw_memory_manager.delete_raw_memory(shared_memory.id, shared_writer_client)
@@ -527,9 +511,7 @@ class TestPrivateAndSharedAccess:
         finally:
             await raw_memory_manager.delete_raw_memory(shared_memory.id, shared_writer_client)
 
-    async def test_private_client_can_modify_own_scope(
-        self, raw_memory_manager, private_client, test_user
-    ):
+    async def test_private_client_can_modify_own_scope(self, raw_memory_manager, private_client, test_user):
         """Test that private client can create, update, and delete in its own scope."""
         # Create in private scope
         memory = await raw_memory_manager.create_raw_memory(
@@ -596,15 +578,11 @@ class TestEmptyReadScopes:
         try:
             # no_access_client has read_scopes=[], so it cannot read anything
             with pytest.raises(NoResultFound):
-                await raw_memory_manager.get_raw_memory_by_id(
-                    memory.id, actor=no_access_client
-                )
+                await raw_memory_manager.get_raw_memory_by_id(memory.id, actor=no_access_client)
         finally:
             await raw_memory_manager.delete_raw_memory(memory.id, shared_writer_client)
 
-    async def test_no_access_client_cannot_create_memory(
-        self, raw_memory_manager, no_access_client, test_user
-    ):
+    async def test_no_access_client_cannot_create_memory(self, raw_memory_manager, no_access_client, test_user):
         """Test that a client with no write_scope cannot create memories."""
         memory_data = RawMemoryItemCreate(
             context="Attempting to create from no-access client",
@@ -688,9 +666,7 @@ class TestScopeIsolation:
             # shared_writer_client only has read_scopes=["shared"]
             # It should NOT be able to read 'private' scope memory
             with pytest.raises(NoResultFound):
-                await raw_memory_manager.get_raw_memory_by_id(
-                    private_memory.id, actor=shared_writer_client
-                )
+                await raw_memory_manager.get_raw_memory_by_id(private_memory.id, actor=shared_writer_client)
         finally:
             await raw_memory_manager.delete_raw_memory(private_memory.id, private_client)
 

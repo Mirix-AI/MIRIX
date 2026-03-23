@@ -1,18 +1,11 @@
-import copy
-import json
 import logging
-import warnings
-from collections import OrderedDict
 from typing import Any, List, Union
 
 import httpx
 
 from mirix.constants import OPENAI_CONTEXT_WINDOW_ERROR_SUBSTRING
-from mirix.schemas.enums import MessageRole
 from mirix.schemas.message import Message
-from mirix.schemas.openai.chat_completion_response import ChatCompletionResponse, Choice
-from mirix.settings import summarizer_settings
-from mirix.utils import count_tokens, json_dumps, printd
+from mirix.utils import count_tokens, printd
 
 logger = logging.getLogger(__name__)
 
@@ -189,64 +182,6 @@ async def make_post_request(url: str, headers: dict[str, str], data: dict[str, A
         error_message = f"An unexpected error occurred: {e}"
         printd(error_message)
         raise Exception(error_message) from e
-
-
-def calculate_summarizer_cutoff(
-    in_context_messages: List[Message],
-    token_counts: List[int],
-    logger: "logging.Logger",
-) -> int:
-    if len(in_context_messages) != len(token_counts):
-        raise ValueError(
-            f"Given in_context_messages has different length from given token_counts: {len(in_context_messages)} != {len(token_counts)}"
-        )
-
-    in_context_messages_openai = [m.to_openai_dict() for m in in_context_messages]
-
-    if summarizer_settings.evict_all_messages:
-        logger.debug("Evicting all messages...")
-        return len(in_context_messages)
-    else:
-        # Start at index 1 (past the system message),
-        # and collect messages for summarization until we reach the desired truncation token fraction (eg 50%)
-        # We do the inverse of `desired_memory_token_pressure` to get what we need to remove
-        desired_token_count_to_summarize = int(
-            sum(token_counts) * (1 - summarizer_settings.desired_memory_token_pressure)
-        )
-        logger.debug(f"desired_token_count_to_summarize={desired_token_count_to_summarize}")
-
-        tokens_so_far = 0
-        cutoff = 0
-        for i, msg in enumerate(in_context_messages_openai):
-            # Skip system
-            if i == 0:
-                continue
-            cutoff = i
-            tokens_so_far += token_counts[i]
-
-            if msg["role"] not in ["user", "tool", "function"] and tokens_so_far >= desired_token_count_to_summarize:
-                # The intent of this code is to break on an assistant message boundary,
-                # so that we don't summarize in the middle of a back and forth turn.
-                # Break if the role is NOT a user or tool/function and tokens_so_far is enough
-                break
-            elif len(in_context_messages) - cutoff - 1 <= summarizer_settings.keep_last_n_messages:
-                # Also break if we reached the `keep_last_n_messages` threshold
-                # NOTE: This may be on a user, tool, or function in theory
-                logger.warning(
-                    f"Breaking summary cutoff early on role={msg['role']} because we hit the `keep_last_n_messages`={summarizer_settings.keep_last_n_messages}"
-                )
-                break
-        # If the next message is a tool call result, then include it in the set of messages to summarize as well.
-        # The intent of this code is so that tool calls and their results stay together. They are either both summarized
-        # or neither is.
-        while (
-            cutoff + 1 < len(in_context_messages_openai)
-            and in_context_messages_openai[cutoff + 1]["role"] == MessageRole.tool
-        ):
-            cutoff += 1
-
-        logger.debug("Evicting %s/%s messages...", cutoff, len(in_context_messages))
-        return cutoff + 1
 
 
 def get_token_counts_for_messages(in_context_messages: List[Message]) -> List[int]:

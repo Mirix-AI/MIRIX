@@ -15,28 +15,23 @@ import httpx
 from mirix.client.client import AbstractClient
 from mirix.constants import FUNCTION_RETURN_CHAR_LIMIT
 from mirix.log import get_logger
-from mirix.schemas.agent import AgentState, AgentType, CreateAgent, CreateMetaAgent
-from mirix.schemas.block import Block, BlockUpdate, CreateBlock, Human, Persona
+from mirix.schemas.agent import AgentState, AgentType
+from mirix.schemas.block import Block, Human, Persona
 from mirix.schemas.embedding_config import EmbeddingConfig
 from mirix.schemas.environment_variables import (
     SandboxEnvironmentVariable,
-    SandboxEnvironmentVariableCreate,
-    SandboxEnvironmentVariableUpdate,
 )
-from mirix.schemas.file import FileMetadata
 from mirix.schemas.llm_config import LLMConfig
 from mirix.schemas.memory import ArchivalMemorySummary, Memory, RecallMemorySummary
-from mirix.schemas.message import Message, MessageCreate
+from mirix.schemas.message import Message
 from mirix.schemas.mirix_response import MirixResponse
 from mirix.schemas.organization import Organization
 from mirix.schemas.sandbox_config import (
     E2BSandboxConfig,
     LocalSandboxConfig,
     SandboxConfig,
-    SandboxConfigCreate,
-    SandboxConfigUpdate,
 )
-from mirix.schemas.tool import Tool, ToolCreate, ToolUpdate
+from mirix.schemas.tool import Tool
 from mirix.schemas.tool_rule import BaseToolRule
 
 logger = get_logger(__name__)
@@ -103,7 +98,7 @@ class RetryTransport(httpx.AsyncBaseTransport):
                 last_exc = exc
                 if attempt == self._max_retries:
                     raise
-            delay = self._backoff_factor * (2 ** attempt)
+            delay = self._backoff_factor * (2**attempt)
             await asyncio.sleep(delay)
         raise last_exc  # type: ignore[misc]
 
@@ -349,9 +344,7 @@ class MirixClient(AbstractClient):
         if not (headers and "X-API-Key" in headers) and (org_id or self.org_id):
             request_data["org_id"] = org_id or self.org_id
 
-        response = await self._request(
-            "POST", "/users/create_or_get", json=request_data, headers=headers
-        )
+        response = await self._request("POST", "/users/create_or_get", json=request_data, headers=headers)
         if isinstance(response, dict) and "id" in response:
             if self.debug:
                 logger.debug("User ready: %s", response["id"])
@@ -408,9 +401,7 @@ class MirixClient(AbstractClient):
             if json:
                 logger.debug("[MirixClient] Request body: %s", json)
 
-        response = await self._client.request(
-            method=method, url=url, json=json, params=params, headers=headers
-        )
+        response = await self._client.request(method=method, url=url, json=json, params=params, headers=headers)
         try:
             response.raise_for_status()
         except httpx.HTTPStatusError as e:
@@ -418,9 +409,7 @@ class MirixClient(AbstractClient):
                 error_detail = response.json().get("detail", str(e))
             except Exception:
                 error_detail = str(e)
-            raise httpx.HTTPStatusError(
-                error_detail, request=e.request, response=e.response
-            ) from e
+            raise httpx.HTTPStatusError(error_detail, request=e.request, response=e.response) from e
         if response.content:
             return response.json()
         return None
@@ -485,7 +474,6 @@ class MirixClient(AbstractClient):
         include_meta_memory_tools: Optional[bool] = False,
         metadata: Optional[Dict] = None,
         description: Optional[str] = None,
-        initial_message_sequence: Optional[List[Message]] = None,
         tags: Optional[List[str]] = None,
         headers: Optional[Dict[str, str]] = None,
     ) -> AgentState:
@@ -504,9 +492,6 @@ class MirixClient(AbstractClient):
             "include_meta_memory_tools": include_meta_memory_tools,
             "metadata": metadata,
             "description": description,
-            "initial_message_sequence": [
-                msg.model_dump() if hasattr(msg, "model_dump") else msg for msg in (initial_message_sequence or [])
-            ],
             "tags": tags,
         }
 
@@ -523,7 +508,6 @@ class MirixClient(AbstractClient):
         metadata: Optional[Dict] = None,
         llm_config: Optional[LLMConfig] = None,
         embedding_config: Optional[EmbeddingConfig] = None,
-        message_ids: Optional[List[str]] = None,
         memory: Optional[Memory] = None,
         tags: Optional[List[str]] = None,
         headers: Optional[Dict[str, str]] = None,
@@ -537,7 +521,6 @@ class MirixClient(AbstractClient):
             "metadata": metadata,
             "llm_config": llm_config.model_dump() if llm_config else None,
             "embedding_config": (embedding_config.model_dump() if embedding_config else None),
-            "message_ids": message_ids,
             "memory": memory.model_dump() if memory else None,
             "tags": tags,
         }
@@ -554,8 +537,7 @@ class MirixClient(AbstractClient):
         """
         Update an agent's system prompt by agent name.
 
-        This method updates the agent's system prompt and triggers a rebuild
-        of the system message in the agent's message history.
+        This method updates the agent's system prompt in persisted agent state.
 
         The method accepts short agent names like "episodic", "semantic", "core",
         or full names like "meta_memory_agent_episodic_memory_agent".
@@ -564,8 +546,6 @@ class MirixClient(AbstractClient):
         1. Resolves the agent name to agent_id for the authenticated client
         2. Updates the agent.system field in PostgreSQL
         3. Updates the agent.system field in Redis cache
-        4. Creates a new system message
-        5. Updates message_ids[0] to reference the new system message
 
         Args:
             agent_name: Name of the agent to update. Can be:
@@ -671,14 +651,12 @@ class MirixClient(AbstractClient):
         data = await self._request("GET", f"/agents/{agent_id}/memory/archival", headers=headers)
         return ArchivalMemorySummary(**data)
 
-    async def get_recall_memory_summary(self, agent_id: str, headers: Optional[Dict[str, str]] = None) -> RecallMemorySummary:
+    async def get_recall_memory_summary(
+        self, agent_id: str, headers: Optional[Dict[str, str]] = None
+    ) -> RecallMemorySummary:
         """Get recall memory summary."""
         data = await self._request("GET", f"/agents/{agent_id}/memory/recall", headers=headers)
         return RecallMemorySummary(**data)
-
-    async def get_in_context_messages(self, agent_id: str) -> List[Message]:
-        """Get in-context messages."""
-        raise NotImplementedError("get_in_context_messages not yet implemented in REST API")
 
     # ========================================================================
     # Message Methods
@@ -771,9 +749,7 @@ class MirixClient(AbstractClient):
         if not use_cache:
             request_data["use_cache"] = use_cache
 
-        data = await self._request(
-            "POST", f"/agents/{resolved_agent_id}/messages", json=request_data, headers=headers
-        )
+        data = await self._request("POST", f"/agents/{resolved_agent_id}/messages", json=request_data, headers=headers)
         return MirixResponse(**data)
 
     async def user_message(

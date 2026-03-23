@@ -566,8 +566,9 @@ class BlockManager:
         Returns:
             Number of records deleted
         """
-        from mirix.database.redis_client import get_redis_client
         from sqlalchemy import delete
+
+        from mirix.database.redis_client import get_redis_client
 
         async with self.session_maker() as session:
             stmt = select(BlockModel.id).where(BlockModel.user_id == user_id)

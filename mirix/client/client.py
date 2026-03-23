@@ -59,7 +59,6 @@ class AbstractClient(object):
         include_meta_memory_tools: Optional[bool] = False,
         metadata: Optional[Dict] = None,
         description: Optional[str] = None,
-        initial_message_sequence: Optional[List[Message]] = None,
         tags: Optional[List[str]] = None,
     ) -> AgentState:
         raise NotImplementedError
@@ -74,7 +73,6 @@ class AbstractClient(object):
         metadata: Optional[Dict] = None,
         llm_config: Optional[LLMConfig] = None,
         embedding_config: Optional[EmbeddingConfig] = None,
-        message_ids: Optional[List[str]] = None,
         memory: Optional[Memory] = None,
         tags: Optional[List[str]] = None,
     ):
@@ -108,9 +106,6 @@ class AbstractClient(object):
         raise NotImplementedError
 
     async def get_recall_memory_summary(self, agent_id: str) -> RecallMemorySummary:
-        raise NotImplementedError
-
-    async def get_in_context_messages(self, agent_id: str) -> List[Message]:
         raise NotImplementedError
 
     async def send_message(

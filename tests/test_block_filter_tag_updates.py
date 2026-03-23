@@ -30,23 +30,15 @@ import pytest_asyncio
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-# One event loop per module for integration tests (avoids "Future attached to
-# a different loop" / "another operation is in progress").
-@pytest_asyncio.fixture(scope="module")
-def event_loop():
-    loop = asyncio.new_event_loop()
-    yield loop
-    loop.close()
-
 from mirix.queue.queue_util import put_messages
 from mirix.schemas.client import Client
 from mirix.schemas.enums import MessageRole
 from mirix.schemas.message import MessageCreate
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _test_id(prefix: str) -> str:
     return f"{prefix}-{uuid.uuid4().hex[:8]}"
@@ -68,9 +60,7 @@ async def ensure_queue_org():
     try:
         await org_mgr.get_organization_by_id(QUEUE_TEST_ORG_ID)
     except Exception:
-        await org_mgr.create_organization(
-            PydanticOrganization(id=QUEUE_TEST_ORG_ID, name="BFT Queue Test Org")
-        )
+        await org_mgr.create_organization(PydanticOrganization(id=QUEUE_TEST_ORG_ID, name="BFT Queue Test Org"))
     return QUEUE_TEST_ORG_ID
 
 
@@ -378,9 +368,7 @@ class TestQueueUpdateMode:
 
         await manager.cleanup()
 
-    async def test_put_messages_default_merge(
-        self, queue_clean_manager, queue_sample_client, queue_sample_messages
-    ):
+    async def test_put_messages_default_merge(self, queue_clean_manager, queue_sample_client, queue_sample_messages):
         """put_messages without explicit update_mode defaults to 'merge'."""
         manager = queue_clean_manager
         await manager.initialize()
@@ -405,9 +393,7 @@ class TestQueueUpdateMode:
 
         # Worker resolves actor via server.client_manager.get_client_by_id; provide it.
         queue_mock_server.client_manager = Mock()
-        queue_mock_server.client_manager.get_client_by_id = AsyncMock(
-            return_value=queue_sample_client
-        )
+        queue_mock_server.client_manager.get_client_by_id = AsyncMock(return_value=queue_sample_client)
 
         manager = queue_clean_manager
         await initialize_queue(queue_mock_server)
@@ -455,9 +441,7 @@ class TestBlockManagerUpdateFilterTags:
         try:
             org = await org_mgr.get_organization_by_id(org_id)
         except Exception:
-            org = await org_mgr.create_organization(
-                PydanticOrganization(id=org_id, name="BFT Test Org")
-            )
+            org = await org_mgr.create_organization(PydanticOrganization(id=org_id, name="BFT Test Org"))
 
         user_mgr = UserManager()
         user_id = _test_id("bft-user")

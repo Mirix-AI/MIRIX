@@ -1,4 +1,4 @@
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 from sqlalchemy import select
 
@@ -69,39 +69,27 @@ class UserManager:
     async def update_user(self, user_update: UserUpdate) -> PydanticUser:
         """Update user details (with cache invalidation)."""
         async with self.session_maker() as session:
-            existing_user = await UserModel.read(
-                db_session=session, identifier=user_update.id
-            )
-            update_data = user_update.model_dump(
-                exclude_unset=True, exclude_none=True
-            )
+            existing_user = await UserModel.read(db_session=session, identifier=user_update.id)
+            update_data = user_update.model_dump(exclude_unset=True, exclude_none=True)
             for key, value in update_data.items():
                 setattr(existing_user, key, value)
             await existing_user.update_with_redis(session, actor=None)
             return existing_user.to_pydantic()
 
     @enforce_types
-    async def update_user_timezone(
-        self, timezone_str: str, user_id: str
-    ) -> PydanticUser:
+    async def update_user_timezone(self, timezone_str: str, user_id: str) -> PydanticUser:
         """Update the timezone of a user (with cache invalidation)."""
         async with self.session_maker() as session:
-            existing_user = await UserModel.read(
-                db_session=session, identifier=user_id
-            )
+            existing_user = await UserModel.read(db_session=session, identifier=user_id)
             existing_user.timezone = timezone_str
             await existing_user.update_with_redis(session, actor=None)
             return existing_user.to_pydantic()
 
     @enforce_types
-    async def update_user_status(
-        self, user_id: str, status: str
-    ) -> PydanticUser:
+    async def update_user_status(self, user_id: str, status: str) -> PydanticUser:
         """Update the status of a user (with cache invalidation)."""
         async with self.session_maker() as session:
-            existing_user = await UserModel.read(
-                db_session=session, identifier=user_id
-            )
+            existing_user = await UserModel.read(db_session=session, identifier=user_id)
             existing_user.status = status
             await existing_user.update_with_redis(session, actor=None)
             return existing_user.to_pydantic()
@@ -285,26 +273,8 @@ class UserManager:
             block_count = await block_manager.delete_by_user_id(user_id=user_id)
             logger.debug("Bulk deleted %d blocks", block_count)
 
-            # Clear message_ids from ALL agents in PostgreSQL (messages are user-scoped, agents are client-scoped)
-            # IMPORTANT: Keep the first message (system message) as agents need it to function
-            # We need to clear message_ids from all agents that might have cached this user's messages
-            async with self.session_maker() as session:
-                from mirix.orm.agent import Agent as AgentModel
-
-                # Update ALL agents to keep only system messages
-                # (We can't know which agents have which user's messages, so clean all)
-                stmt = select(AgentModel)
-                result = await session.execute(stmt)
-                agents = result.scalars().all()
-
-                for agent in agents:
-                    if agent.message_ids and len(agent.message_ids) > 1:  # Has conversation messages
-                        agent.message_ids = [agent.message_ids[0]]  # Keep system message only
-
-                await session.commit()
-                logger.debug(
-                    "Cleared conversation message_ids from %d agents in PostgreSQL (kept system messages)", len(agents)
-                )
+            # Messages for this user are already deleted by delete_by_user_id above.
+            # No message_ids maintenance needed (column removed).
 
             # Invalidate agent caches that might reference deleted messages for this user
             from mirix.database.redis_client import get_redis_client

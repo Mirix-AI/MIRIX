@@ -24,6 +24,11 @@ from mirix.utils import enforce_types
 
 logger = get_logger(__name__)
 
+# Diagnostic flag for MissingGreenlet debugging
+import os
+
+_TRACE_MISSING_GREENLET = os.getenv("MIRIX_TRACE_MISSING_GREENLET", "false").lower() == "true"
+
 
 class EpisodicMemoryManager:
     """Manager class to handle business logic related to Episodic episodic_memory items."""
@@ -260,9 +265,7 @@ class EpisodicMemoryManager:
         if not episodic_memory.id:
             from mirix.utils import generate_unique_short_id_async
 
-            episodic_memory.id = await generate_unique_short_id_async(
-                self.session_maker, EpisodicEvent, "ep"
-            )
+            episodic_memory.id = await generate_unique_short_id_async(self.session_maker, EpisodicEvent, "ep")
 
         # Convert the Pydantic model into a dict
         episodic_memory_dict = episodic_memory.model_dump()
@@ -349,9 +352,7 @@ class EpisodicMemoryManager:
 
         async with self.session_maker() as session:
             # Get IDs for Redis cleanup (only fetch IDs, not full objects)
-            result = await session.execute(
-                select(EpisodicEvent.id).where(EpisodicEvent.client_id == actor.id)
-            )
+            result = await session.execute(select(EpisodicEvent.id).where(EpisodicEvent.client_id == actor.id))
             item_ids = [row[0] for row in result.all()]
 
             count = len(item_ids)
@@ -359,9 +360,7 @@ class EpisodicMemoryManager:
                 return 0
 
             # Bulk delete in single query
-            await session.execute(
-                delete(EpisodicEvent).where(EpisodicEvent.client_id == actor.id)
-            )
+            await session.execute(delete(EpisodicEvent).where(EpisodicEvent.client_id == actor.id))
 
             await session.commit()
 
@@ -498,18 +497,14 @@ class EpisodicMemoryManager:
         from mirix.database.redis_client import get_redis_client
 
         async with self.session_maker() as session:
-            result = await session.execute(
-                select(EpisodicEvent.id).where(EpisodicEvent.user_id == user_id)
-            )
+            result = await session.execute(select(EpisodicEvent.id).where(EpisodicEvent.user_id == user_id))
             item_ids = [row[0] for row in result.all()]
 
             count = len(item_ids)
             if count == 0:
                 return 0
 
-            await session.execute(
-                delete(EpisodicEvent).where(EpisodicEvent.user_id == user_id)
-            )
+            await session.execute(delete(EpisodicEvent).where(EpisodicEvent.user_id == user_id))
 
             await session.commit()
 
@@ -741,7 +736,9 @@ class EpisodicMemoryManager:
                         from mirix.constants import MAX_EMBEDDING_DIM
                         from mirix.embeddings import embedding_model
 
-                        embedded_text = await (await embedding_model(agent_state.embedding_config)).get_text_embedding(query)
+                        embedded_text = await (await embedding_model(agent_state.embedding_config)).get_text_embedding(
+                            query
+                        )
                         embedded_text = np.array(embedded_text)
                         embedded_text = np.pad(
                             embedded_text,
@@ -1458,7 +1455,9 @@ class EpisodicMemoryManager:
                         from mirix.constants import MAX_EMBEDDING_DIM
                         from mirix.embeddings import embedding_model
 
-                        embedded_text = await (await embedding_model(agent_state.embedding_config)).get_text_embedding(query)
+                        embedded_text = await (await embedding_model(agent_state.embedding_config)).get_text_embedding(
+                            query
+                        )
                         embedded_text = np.array(embedded_text)
                         embedded_text = np.pad(
                             embedded_text,
@@ -1543,7 +1542,30 @@ class EpisodicMemoryManager:
                     base_query = base_query.limit(limit)
                 result = await session.execute(base_query)
                 episodic_memory = result.scalars().all()
-                return [event.to_pydantic() for event in episodic_memory]
+
+                if _TRACE_MISSING_GREENLET:
+                    logger.info(
+                        "Converting %d episodic events to Pydantic in list_episodic_memory_by_org", len(episodic_memory)
+                    )
+                    pydantic_events = []
+                    for i, event in enumerate(episodic_memory):
+                        try:
+                            pydantic_events.append(event.to_pydantic())
+                        except Exception as e:
+                            if "MissingGreenlet" in str(type(e).__name__) or "greenlet" in str(e).lower():
+                                import traceback
+
+                                logger.error(
+                                    "MissingGreenlet in list_episodic_memory_by_org at index %d, event_id=%s\n"
+                                    "Full traceback:\n%s",
+                                    i,
+                                    event.id,
+                                    traceback.format_exc(),
+                                )
+                            raise
+                    return pydantic_events
+                else:
+                    return [event.to_pydantic() for event in episodic_memory]
 
             if search_method == "embedding":
                 embed_query = True
@@ -1583,7 +1605,7 @@ class EpisodicMemoryManager:
                 base_query = base_query.order_by(embedding_query_field)
             elif search_method == "bm25":
                 # Use PostgreSQL native full-text search if available
-                from sqlalchemy import func, text
+                from sqlalchemy import func
 
                 # Determine search field
                 if not search_field or search_field == "details":

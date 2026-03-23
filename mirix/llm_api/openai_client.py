@@ -1,4 +1,3 @@
-
 import base64
 import os
 from typing import List, Optional
@@ -293,9 +292,7 @@ class OpenAIClient(LLMClientBase):
         Performs underlying asynchronous request to OpenAI API and returns raw response dict.
         """
         client_kwargs = await self._prepare_client_kwargs()
-        logger.debug(
-            "OpenAI Request - Making request to %s", client_kwargs.get("base_url")
-        )
+        logger.debug("OpenAI Request - Making request to %s", client_kwargs.get("base_url"))
         logger.debug(
             "OpenAI Request - Model: %s, Max tokens: %s, Temperature: %s",
             request_data.get("model"),

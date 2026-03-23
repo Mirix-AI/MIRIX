@@ -1,7 +1,6 @@
 # inspecting tools
 import asyncio
 import os
-import sys
 import traceback
 import warnings
 from abc import abstractmethod
@@ -16,9 +15,7 @@ from fastapi.responses import StreamingResponse
 from rich.console import Console
 from rich.panel import Panel
 from rich.text import Text
-from sqlalchemy import create_engine
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.orm import sessionmaker
 
 import mirix.constants as constants
 import mirix.server.utils as server_utils
@@ -34,7 +31,6 @@ from mirix.agent import (
     ReflexionAgent,
     ResourceMemoryAgent,
     SemanticMemoryAgent,
-    save_agent,
 )
 from mirix.config import MirixConfig
 
@@ -45,14 +41,14 @@ from mirix.interface import QueuingInterface  # for message queuing
 from mirix.log import get_logger
 from mirix.orm import Base
 from mirix.orm.errors import NoResultFound
-from mirix.schemas.agent import AgentState, AgentType, CreateAgent, CreateMetaAgent
+from mirix.schemas.agent import AgentState, AgentType, CreateAgent
 from mirix.schemas.client import Client
 from mirix.schemas.embedding_config import EmbeddingConfig
 
 # openai schemas
 from mirix.schemas.enums import MessageStreamStatus
 from mirix.schemas.llm_config import LLMConfig
-from mirix.schemas.memory import ContextWindowOverview, RecallMemorySummary
+from mirix.schemas.memory import RecallMemorySummary
 from mirix.schemas.message import Message, MessageCreate, MessageUpdate
 from mirix.schemas.mirix_message import LegacyMirixMessage, MirixMessage, ToolReturnMessage
 from mirix.schemas.mirix_response import MirixResponse
@@ -311,7 +307,7 @@ if not USE_PGLITE and settings.mirix_pg_uri_no_default:
 
     # asyncpg does not accept 'sslmode' as a keyword argument — strip it from
     # the URI and pass an ssl.SSLContext via connect_args instead.
-    from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+    from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
     _parsed = urlparse(_pg_uri)
     _params = parse_qs(_parsed.query, keep_blank_values=True)
@@ -432,6 +428,7 @@ if USE_PGLITE:
     def db_context():
         """Async context manager for service managers (PGlite)."""
         return pglite_session_factory()
+
 else:
 
     async def get_db():
@@ -645,9 +642,7 @@ class AsyncServer(Server):
         """Updated method to load agents from persisted storage."""
         agent_lock = self.per_agent_lock_manager.get_lock(agent_id)
         async with agent_lock:
-            agent_state = await self.agent_manager.get_agent_by_id(
-                agent_id=agent_id, actor=actor
-            )
+            agent_state = await self.agent_manager.get_agent_by_id(agent_id=agent_id, actor=actor)
 
             common_kwargs = dict(
                 interface=interface or self.default_interface_factory(),
@@ -705,6 +700,8 @@ class AsyncServer(Server):
     ) -> MirixUsageStatistics:
         """Send the input message through the agent"""
         logger.debug("Got input messages: %s", input_messages)
+        if user is None:
+            raise ValueError("AsyncServer._step requires a non-null user.")
         mirix_agent = None
         try:
             mirix_agent = await self.load_agent(
@@ -782,9 +779,6 @@ class AsyncServer(Server):
         if command.lower() == "exit":
             # exit not supported on server.py
             raise ValueError(command)
-
-        elif command.lower() == "save" or command.lower() == "savechat":
-            await save_agent(mirix_agent)
 
         elif command.lower() == "dump" or command.lower().startswith("dump "):
             # Check if there's an additional argument that's an integer
@@ -867,11 +861,11 @@ class AsyncServer(Server):
 
         elif command.lower() == "contine_chaining":
             input_message = system.get_contine_chaining()
-            usage = await self._step(actor=actor, agent_id=agent_id, input_messages=input_message)
+            usage = await self._step(actor=actor, agent_id=agent_id, input_messages=input_message, user=actor)
 
         elif command.lower() == "memorywarning":
             input_message = system.get_token_limit_warning()
-            usage = await self._step(actor=actor, agent_id=agent_id, input_messages=input_message)
+            usage = await self._step(actor=actor, agent_id=agent_id, input_messages=input_message, user=actor)
 
         if not usage:
             usage = MirixUsageStatistics()
@@ -927,7 +921,7 @@ class AsyncServer(Server):
                 )
 
         # Run the agent state forward
-        usage = await self._step(actor=actor, agent_id=agent_id, input_messages=message)
+        usage = await self._step(actor=actor, agent_id=agent_id, input_messages=message, user=actor)
         return usage
 
     async def system_message(
@@ -992,7 +986,7 @@ class AsyncServer(Server):
             message.created_at = timestamp
 
         # Run the agent state forward
-        return await self._step(actor=actor, agent_id=agent_id, input_messages=message)
+        return await self._step(actor=actor, agent_id=agent_id, input_messages=message, user=actor)
 
     async def construct_system_message(self, agent_id: str, message: str, actor: Client) -> str:
         """
@@ -1054,6 +1048,9 @@ class AsyncServer(Server):
             from mirix.utils import set_verbose
 
             set_verbose(verbose)
+
+        if user is None:
+            user = await self.user_manager.get_admin_user()
 
         try:
             # Run the agent state forward
@@ -1291,10 +1288,6 @@ class AsyncServer(Server):
 
     def add_embedding_model(self, request: EmbeddingConfig) -> EmbeddingConfig:
         """Add a new embedding model"""
-
-    async def get_agent_context_window(self, agent_id: str, actor: Client) -> ContextWindowOverview:
-        mirix_agent = await self.load_agent(agent_id=agent_id, actor=actor)
-        return await mirix_agent.get_context_window()
 
     async def run_tool_from_source(
         self,

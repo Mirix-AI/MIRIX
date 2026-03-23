@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import timezone
 
 from sqlalchemy import JSON
 from sqlalchemy.types import BINARY, DateTime, TypeDecorator

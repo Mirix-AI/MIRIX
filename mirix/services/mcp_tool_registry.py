@@ -202,9 +202,7 @@ class MCPToolRegistry:
         }
         return type_map.get(json_type, "str")
 
-    async def unregister_mcp_tools(
-        self, actor: PydanticClient, server_name: Optional[str] = None
-    ) -> int:
+    async def unregister_mcp_tools(self, actor: PydanticClient, server_name: Optional[str] = None) -> int:
         """
         Unregister MCP tools from database.
 
@@ -245,9 +243,7 @@ class MCPToolRegistry:
             current_tool_names.update(t["full_name"] for t in tools)
 
         existing_tools = await self.tool_manager.list_tools(actor)
-        existing_mcp_tools = [
-            t for t in existing_tools if t.tool_type == ToolType.MIRIX_MCP
-        ]
+        existing_mcp_tools = [t for t in existing_tools if t.tool_type == ToolType.MIRIX_MCP]
         existing_tool_names = {t.name for t in existing_mcp_tools}
 
         new_tools = current_tool_names - existing_tool_names
@@ -255,9 +251,7 @@ class MCPToolRegistry:
         if new_tools:
             filtered_discovered = {}
             for sname, tools in discovered_tools.items():
-                filtered_tools = [
-                    t for t in tools if t["full_name"] in new_tools
-                ]
+                filtered_tools = [t for t in tools if t["full_name"] in new_tools]
                 if filtered_tools:
                     filtered_discovered[sname] = filtered_tools
             old_cache = self._mcp_tool_cache

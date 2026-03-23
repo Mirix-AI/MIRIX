@@ -8,7 +8,7 @@ from mirix.helpers import ToolRulesSolver
 from mirix.schemas.block import CreateBlock
 from mirix.schemas.embedding_config import EmbeddingConfig
 from mirix.schemas.llm_config import LLMConfig
-from mirix.schemas.message import Message, MessageCreate
+from mirix.schemas.message import Message
 from mirix.schemas.mirix_base import OrmMetadataBase
 from mirix.schemas.openai.chat_completion_response import UsageStatistics
 from mirix.schemas.tool import Tool
@@ -23,7 +23,7 @@ class AgentType(str, Enum):
     """
 
     coder_agent = "coder_agent"
-    chat_agent = "chat_agent"
+    chat_agent = "chat_agent"  # DEPRECATED: use a memory agent type instead
     reflexion_agent = "reflexion_agent"
     background_agent = "background_agent"
     episodic_memory_agent = "episodic_memory_agent"
@@ -57,12 +57,6 @@ class AgentState(OrmMetadataBase, validate_assignment=True):
     name: str = Field(..., description="The name of the agent.")
     # tool rules
     tool_rules: Optional[List[ToolRule]] = Field(default=None, description="The list of tool rules.")
-
-    # in-context memory
-    message_ids: Optional[List[str]] = Field(
-        default=None,
-        description="The ids of the messages in the agent's in-context memory.",
-    )
 
     # system prompt
     system: str = Field(..., description="The system prompt used by the agent.")
@@ -134,12 +128,6 @@ class CreateAgent(BaseModel, validate_assignment=True):  #
     llm_config: Optional[LLMConfig] = Field(None, description="The LLM configuration used by the agent.")
     embedding_config: Optional[EmbeddingConfig] = Field(
         None, description="The embedding configuration used by the agent."
-    )
-    # Note: if this is None, then we'll populate with the standard "more human than human" initial message sequence
-    # If the client wants to make this empty, then the client can set the arg to an empty list
-    initial_message_sequence: Optional[List[MessageCreate]] = Field(
-        None,
-        description="The initial set of messages to put in the agent's in-context memory.",
     )
     include_base_tools: bool = Field(
         True,
@@ -236,9 +224,6 @@ class UpdateAgent(BaseModel):
     embedding_config: Optional[EmbeddingConfig] = Field(
         None, description="The embedding configuration used by the agent."
     )
-    message_ids: Optional[List[str]] = Field(
-        None, description="The ids of the messages in the agent's in-context memory."
-    )
     description: Optional[str] = Field(None, description="The description of the agent.")
     parent_id: Optional[str] = Field(None, description="The parent agent ID (for sub-agents in a meta-agent).")
     mcp_tools: Optional[List[str]] = Field(None, description="List of MCP server names to connect to this agent.")
@@ -317,10 +302,6 @@ class AgentStepResponse(BaseModel):
         description="Whether the agent requested a contine_chaining (i.e. follow-up execution).",
     )
     function_failed: bool = Field(..., description="Whether the agent step ended because a function call failed.")
-    in_context_memory_warning: bool = Field(
-        ...,
-        description="Whether the agent step ended because the in-context memory is near its limit.",
-    )
     usage: UsageStatistics = Field(..., description="Usage statistics of the LLM call during the agent's step.")
     traj: Optional[dict] = Field(None, description="Action, Observation, State at the current step")
 

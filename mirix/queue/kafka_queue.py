@@ -53,10 +53,7 @@ class KafkaQueue(QueueInterface):
         try:
             from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
         except ImportError:
-            raise ImportError(
-                "aiokafka is required for Kafka support. "
-                "Install it with: pip install aiokafka"
-            )
+            raise ImportError("aiokafka is required for Kafka support. " "Install it with: pip install aiokafka")
 
         logger.info(
             "Initializing Kafka queue: servers=%s, topic=%s, group=%s, format=%s, security=%s",
@@ -165,9 +162,7 @@ class KafkaQueue(QueueInterface):
         logger.debug("Polling Kafka topic %s for messages (timeout=%.1fs)", self.topic, effective_timeout)
 
         try:
-            record = await asyncio.wait_for(
-                self.consumer.getone(), timeout=effective_timeout
-            )
+            record = await asyncio.wait_for(self.consumer.getone(), timeout=effective_timeout)
         except asyncio.TimeoutError:
             logger.debug("No message available from Kafka within timeout")
             raise
