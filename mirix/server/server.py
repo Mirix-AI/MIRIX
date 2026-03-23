@@ -1289,7 +1289,6 @@ class AsyncServer(Server):
     def add_embedding_model(self, request: EmbeddingConfig) -> EmbeddingConfig:
         """Add a new embedding model"""
 
-
     async def run_tool_from_source(
         self,
         actor: Client,

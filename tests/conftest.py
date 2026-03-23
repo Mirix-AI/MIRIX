@@ -20,6 +20,7 @@ from mirix.services.client_manager import ClientManager
 from mirix.services.organization_manager import OrganizationManager
 from mirix.settings import settings
 
+
 @pytest_asyncio.fixture(scope="module", autouse=True)
 async def _reset_engine_per_module():
     """Dispose and recreate the async engine with NullPool at the start of
@@ -43,14 +44,10 @@ async def _reset_engine_per_module():
         from sqlalchemy.pool import NullPool
 
         await server_module.engine.dispose()
-        _pg_uri = (
-            settings.mirix_pg_uri.replace(
-                "postgresql+pg8000://", "postgresql+asyncpg://"
-            ).replace("postgresql://", "postgresql+asyncpg://")
+        _pg_uri = settings.mirix_pg_uri.replace("postgresql+pg8000://", "postgresql+asyncpg://").replace(
+            "postgresql://", "postgresql+asyncpg://"
         )
-        server_module.engine = create_async_engine(
-            _pg_uri, poolclass=NullPool, echo=settings.pg_echo
-        )
+        server_module.engine = create_async_engine(_pg_uri, poolclass=NullPool, echo=settings.pg_echo)
         server_module.AsyncSessionLocal = async_sessionmaker(
             bind=server_module.engine,
             class_=AsyncSession,
@@ -72,9 +69,7 @@ async def _ensure_org(org_mgr: OrganizationManager, org_id: str, org_name: str):
     try:
         await org_mgr.get_organization_by_id(org_id)
     except Exception:
-        await org_mgr.create_organization(
-            PydanticOrganization(id=org_id, name=org_name)
-        )
+        await org_mgr.create_organization(PydanticOrganization(id=org_id, name=org_name))
 
 
 async def _issue_key(client_id: str, org_id: str, client_mgr: ClientManager) -> str:
@@ -83,9 +78,7 @@ async def _issue_key(client_id: str, org_id: str, client_mgr: ClientManager) -> 
     return api_key
 
 
-async def _create_client_and_key(
-    client_id: str, org_id: str, org_name: Optional[str] = None
-) -> dict:
+async def _create_client_and_key(client_id: str, org_id: str, org_name: Optional[str] = None) -> dict:
     """
     Create one test client and API key in the current event loop.
     Use this from async fixtures when you need multiple clients in the same loop
@@ -115,6 +108,7 @@ def api_key_factory():
     """
     Factory to provision API keys for test clients.
     """
+
     def _create(client_id: str = TEST_CLIENT_ID, org_id: str = TEST_ORG_ID):
         result = asyncio.run(_create_client_and_key(client_id, org_id))
         os.environ["MIRIX_API_KEY"] = result["api_key"]

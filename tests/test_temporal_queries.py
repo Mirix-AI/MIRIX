@@ -163,9 +163,7 @@ def server_process():
             return
     except (requests.ConnectionError, requests.Timeout):
         pass
-    pytest.skip(
-        "Server not running. Start with: python scripts/start_server.py --port=8000"
-    )
+    pytest.skip("Server not running. Start with: python scripts/start_server.py --port=8000")
 
 
 @pytest_asyncio.fixture(scope="module")
@@ -173,9 +171,7 @@ async def api_auth(server_process):
     """Create org and client once per module; yield auth for client creation."""
     from conftest import _create_client_and_key
 
-    auth = await _create_client_and_key(
-        "temporal-test-client", "temporal-test-org", org_name="Temporal Test Org"
-    )
+    auth = await _create_client_and_key("temporal-test-client", "temporal-test-org", org_name="Temporal Test Org")
     os.environ.setdefault("MIRIX_API_URL", "http://localhost:8000")
     os.environ["MIRIX_API_KEY"] = auth["api_key"]
     return auth
@@ -235,9 +231,7 @@ class TestTemporalIntegration:
 
         result = await temporal_client.retrieve_with_conversation(
             user_id=TEST_USER_ID_TEMPORAL,
-            messages=[
-                {"role": "user", "content": [{"type": "text", "text": "What did I do today?"}]}
-            ],
+            messages=[{"role": "user", "content": [{"type": "text", "text": "What did I do today?"}]}],
             limit=10,
         )
 
@@ -262,9 +256,7 @@ class TestTemporalIntegration:
 
         result = await temporal_client.retrieve_with_conversation(
             user_id=TEST_USER_ID_TEMPORAL,
-            messages=[
-                {"role": "user", "content": [{"type": "text", "text": "Show me November 2025 events"}]}
-            ],
+            messages=[{"role": "user", "content": [{"type": "text", "text": "Show me November 2025 events"}]}],
             limit=10,
             start_date=start,
             end_date=end,
@@ -293,9 +285,7 @@ class TestTemporalIntegration:
             messages=[
                 {
                     "role": "user",
-                    "content": [
-                        {"type": "text", "text": "I learned that Python uses list comprehensions."}
-                    ],
+                    "content": [{"type": "text", "text": "I learned that Python uses list comprehensions."}],
                 },
                 {"role": "assistant", "content": [{"type": "text", "text": "Noted."}]},
             ],
@@ -306,9 +296,7 @@ class TestTemporalIntegration:
         end = "2025-12-31T23:59:59"
         result = await temporal_client.retrieve_with_conversation(
             user_id=TEST_USER_ID_TEMPORAL,
-            messages=[
-                {"role": "user", "content": [{"type": "text", "text": "What do you know about me?"}]}
-            ],
+            messages=[{"role": "user", "content": [{"type": "text", "text": "What do you know about me?"}]}],
             limit=10,
             start_date=start,
             end_date=end,

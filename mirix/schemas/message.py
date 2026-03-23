@@ -170,6 +170,11 @@ class Message(BaseMessage):
         ],
     )
 
+    message_type: Optional[str] = Field(
+        default="original",
+        description="Type of message: 'original' for user input, 'summary' for summarized retained context",
+    )
+
     @field_validator("role")
     @classmethod
     def validate_role(cls, v: str) -> str:

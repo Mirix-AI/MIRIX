@@ -38,8 +38,6 @@ import pytest_asyncio
 pytestmark = pytest.mark.asyncio(loop_scope="module")
 
 from mirix.database.redis_client import RedisMemoryClient, get_redis_client, initialize_redis_client
-
-
 from mirix.log import get_logger
 from mirix.schemas.agent import AgentType, CreateAgent, UpdateAgent
 from mirix.schemas.block import Block as PydanticBlock
@@ -869,7 +867,9 @@ class TestMessageManagerRedis:
         # Cleanup
         await message_manager.delete_message_by_id(created_message.id, test_client)
 
-    async def test_message_cache_hit_performance(self, message_manager, test_client, test_user, test_agent, redis_client):
+    async def test_message_cache_hit_performance(
+        self, message_manager, test_client, test_user, test_agent, redis_client
+    ):
         """Test message cache hit is significantly faster than DB."""
         # Create message
         message_data = PydanticMessage(
@@ -936,7 +936,9 @@ class TestEpisodicMemoryManagerRedis:
         # Cleanup
         await episodic_manager.delete_event_by_id(created_event.id, test_client)
 
-    async def test_episodic_cache_with_embeddings(self, episodic_manager, test_client, test_user, test_agent, redis_client):
+    async def test_episodic_cache_with_embeddings(
+        self, episodic_manager, test_client, test_user, test_agent, redis_client
+    ):
         """Test episodic memory with embeddings caches correctly."""
         # Create mock embeddings (4096 dimensions)
         mock_embedding = [0.1] * 4096
@@ -1078,7 +1080,9 @@ class TestProceduralMemoryManagerRedis:
 class TestResourceMemoryManagerRedis:
     """Test Resource Memory Manager with Redis JSON caching (1 embedding)."""
 
-    async def test_resource_create_with_embedding(self, resource_manager, test_client, test_user, test_agent, redis_client):
+    async def test_resource_create_with_embedding(
+        self, resource_manager, test_client, test_user, test_agent, redis_client
+    ):
         """Test resource memory with 1 embedding (16KB) caches to Redis JSON."""
         # Create mock embedding
         from mirix.schemas.resource_memory import ResourceMemoryItem
@@ -1122,7 +1126,9 @@ class TestResourceMemoryManagerRedis:
 class TestKnowledgeVaultManagerRedis:
     """Test Knowledge Vault Manager with Redis JSON caching (1 embedding)."""
 
-    async def test_knowledge_create_with_embedding(self, knowledge_manager, test_client, test_user, test_agent, redis_client):
+    async def test_knowledge_create_with_embedding(
+        self, knowledge_manager, test_client, test_user, test_agent, redis_client
+    ):
         """Test knowledge vault item with 1 embedding (16KB) caches to Redis JSON."""
         # Create mock embedding
         from mirix.schemas.knowledge_vault import KnowledgeVaultItem
@@ -1233,7 +1239,9 @@ class TestRedisPerformance:
         for block in blocks:
             await block_manager.delete_block(block.id, test_client)
 
-    async def test_message_cache_vs_db_comparison(self, message_manager, test_client, test_user, test_agent, redis_client):
+    async def test_message_cache_vs_db_comparison(
+        self, message_manager, test_client, test_user, test_agent, redis_client
+    ):
         """Compare Redis cache vs PostgreSQL performance for messages."""
         # Create test message
         message_data = PydanticMessage(

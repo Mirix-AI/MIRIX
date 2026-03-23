@@ -102,6 +102,7 @@ async def client(server_check, api_auth):
             print(f"[SETUP] ⚠ Warning: Test memory addition failed: {e}")
     except Exception as e:
         import traceback
+
         print(f"\n[ERROR] Failed to create/get user: {e}")
         pytest.skip(f"Failed to create/get user: {e}")
 

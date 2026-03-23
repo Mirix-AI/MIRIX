@@ -710,8 +710,9 @@ class TestSendMessagesBlockFilterTags:
         block_filter_tags = {"env": "staging", "team": "platform"}
         mock_send = AsyncMock(return_value=MirixUsageStatistics())
         # Patch MirixResponse so return path doesn't validate messages (MessageCreate != MirixMessageUnion)
-        with patch.object(client_a.server, "send_messages", mock_send), patch(
-            "mirix.local_client.local_client.MirixResponse", Mock
+        with (
+            patch.object(client_a.server, "send_messages", mock_send),
+            patch("mirix.local_client.local_client.MirixResponse", Mock),
         ):
             messages = [MessageCreate(role=MessageRole.user, content="Hello")]
             await client_a.send_messages(
@@ -725,8 +726,9 @@ class TestSendMessagesBlockFilterTags:
     async def test_send_messages_passes_none_block_filter_tags(self, client_a):
         """LocalClient.send_messages() without block_filter_tags passes None (or omits)."""
         mock_send = AsyncMock(return_value=MirixUsageStatistics())
-        with patch.object(client_a.server, "send_messages", mock_send), patch(
-            "mirix.local_client.local_client.MirixResponse", Mock
+        with (
+            patch.object(client_a.server, "send_messages", mock_send),
+            patch("mirix.local_client.local_client.MirixResponse", Mock),
         ):
             messages = [MessageCreate(role=MessageRole.user, content="Hi")]
             await client_a.send_messages(agent_id="test-agent-id", messages=messages)

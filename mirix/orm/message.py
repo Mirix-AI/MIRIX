@@ -79,6 +79,11 @@ class Message(SqlalchemyBase, OrganizationMixin, UserMixin, AgentMixin):
         nullable=True,
         doc="The id of the sender of the message, can be an identity id or agent id",
     )
+    message_type: Mapped[Optional[str]] = mapped_column(
+        nullable=True,
+        default="original",
+        doc="Type of message: 'original' for user input, 'summary' for summarized retained context",
+    )
 
     # Relationships
     agent: Mapped["Agent"] = relationship("Agent", back_populates="messages", lazy="selectin")

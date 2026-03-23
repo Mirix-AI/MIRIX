@@ -8,7 +8,6 @@ from mirix.schemas.enums import MessageRole
 from mirix.schemas.memory import Memory
 from mirix.schemas.message import Message
 from mirix.schemas.mirix_message_content import TextContent
-from mirix.settings import summarizer_settings
 from mirix.utils import count_tokens, printd
 
 
@@ -62,43 +61,37 @@ async def summarize_messages(
     agent_state: AgentState,
     message_sequence_to_summarize: List[Message],
     existing_file_uris: Optional[List[str]] = None,
-):
-    """Summarize a message sequence using GPT"""
-    # we need the context_window
-    context_window = agent_state.llm_config.context_window
+) -> str:
+    """Summarize a message sequence using the agent's LLM.
 
-    summary_prompt = SUMMARY_PROMPT_SYSTEM
+    If the formatted input exceeds ~60% of the context window, the message
+    list is truncated (keeping the newest messages) so the summarizer call
+    itself doesn't overflow.
+    """
+    context_window = agent_state.llm_config.context_window
+    max_input_tokens = int(context_window * 0.6)
+
     summary_input = _format_summary_history(message_sequence_to_summarize)
     summary_input_tkns = count_tokens(summary_input)
-    if summary_input_tkns > summarizer_settings.memory_warning_threshold * context_window:
-        trunc_ratio = (
-            summarizer_settings.memory_warning_threshold * context_window / summary_input_tkns
-        ) * 0.8  # For good measure...
-        cutoff = int(len(message_sequence_to_summarize) * trunc_ratio)
-        summary_input = str(
-            [
-                await summarize_messages(
-                    agent_state,
-                    message_sequence_to_summarize=message_sequence_to_summarize[:cutoff],
-                )
-            ]
-            + message_sequence_to_summarize[cutoff:]
-        )
 
-    dummy_agent_id = agent_state.id
+    if summary_input_tkns > max_input_tokens:
+        ratio = max_input_tokens / summary_input_tkns * 0.8
+        keep = max(1, int(len(message_sequence_to_summarize) * ratio))
+        summary_input = _format_summary_history(message_sequence_to_summarize[-keep:])
+
     message_sequence = [
         Message(
-            agent_id=dummy_agent_id,
+            agent_id=agent_state.id,
             role=MessageRole.system,
-            content=[TextContent(text=summary_prompt)],
+            content=[TextContent(text=SUMMARY_PROMPT_SYSTEM)],
         ),
         Message(
-            agent_id=dummy_agent_id,
+            agent_id=agent_state.id,
             role=MessageRole.assistant,
             content=[TextContent(text=MESSAGE_SUMMARY_REQUEST_ACK)],
         ),
         Message(
-            agent_id=dummy_agent_id,
+            agent_id=agent_state.id,
             role=MessageRole.user,
             content=[TextContent(text=summary_input)],
         ),
@@ -114,5 +107,4 @@ async def summarize_messages(
     )
 
     printd(f"summarize_messages gpt reply: {response.choices[0]}")
-    reply = response.choices[0].message.content
-    return reply
+    return response.choices[0].message.content

@@ -37,6 +37,7 @@ from mirix.llm_api.helpers import get_token_counts_for_messages, is_context_over
 from mirix.llm_api.llm_api_tools import create
 from mirix.llm_api.llm_client import LLMClient
 from mirix.log import get_logger
+from mirix.memory import summarize_messages
 from mirix.observability.context import get_trace_context, mark_observation_as_child
 from mirix.observability.langfuse_client import get_langfuse_client
 from mirix.schemas.agent import AgentState, AgentStepResponse
@@ -66,7 +67,7 @@ from mirix.services.semantic_memory_manager import SemanticMemoryManager
 from mirix.services.step_manager import StepManager
 from mirix.services.tool_execution_sandbox import ToolExecutionSandbox
 from mirix.services.user_manager import UserManager
-from mirix.settings import settings, summarizer_settings
+from mirix.settings import settings
 from mirix.system import get_contine_chaining, get_token_limit_warning, package_function_response, package_user_message
 from mirix.tracing import trace_method
 from mirix.utils import (
@@ -1384,6 +1385,7 @@ class Agent(BaseAgent):
                 accumulated=accumulated,
                 chaining=chaining,
                 llm_client=llm_client,
+                retained_count=len(retained_input_sets),
                 **kwargs,
             )
 
@@ -1986,6 +1988,59 @@ These keywords have been used to retrieve relevant memories from the database.
 
         return complete_system_prompt
 
+    async def summarize_and_replace_retained_messages(
+        self,
+        retained_messages: List[Message],
+        existing_file_uris: Optional[List[str]] = None,
+    ) -> Message:
+        """Summarize retained input-set messages and replace them in the DB.
+
+        Calls the LLM to produce a summary of the retained messages, persists
+        the summary as a single ``message_type='summary'`` row, then hard-deletes
+        the original retained rows.
+
+        Returns the new summary ``Message`` for use in the in-memory accumulator.
+        """
+        printv(
+            f"[Mirix.Agent.{self.agent_state.name}] INFO: "
+            f"Summarizing {len(retained_messages)} retained messages to recover from context overflow"
+        )
+
+        summary_text = await summarize_messages(
+            agent_state=self.agent_state,
+            message_sequence_to_summarize=retained_messages,
+            existing_file_uris=existing_file_uris,
+        )
+
+        retention_agent_id = self.agent_state.parent_id or self.agent_state.id
+        summary_msg = Message(
+            agent_id=retention_agent_id,
+            role=MessageRole.user,
+            content=[TextContent(text=summary_text)],
+            user_id=self.user_id,
+            message_type="summary",
+        )
+
+        await self.message_manager.create_message(
+            summary_msg,
+            actor=self.actor,
+            client_id=self.client_id,
+            user_id=self.user_id,
+        )
+
+        for msg in retained_messages:
+            await self.message_manager.delete_message_by_id(
+                message_id=msg.id,
+                actor=self.actor,
+            )
+
+        printv(
+            f"[Mirix.Agent.{self.agent_state.name}] INFO: "
+            f"Replaced {len(retained_messages)} retained messages with summary (id={summary_msg.id})"
+        )
+
+        return summary_msg
+
     async def inner_step(
         self,
         messages: Union[Message, List[Message]],
@@ -2002,6 +2057,8 @@ These keywords have been used to retrieve relevant memories from the database.
         message_queue: Optional[any] = None,
         chaining: bool = True,
         llm_client: Optional[LLMClient] = None,
+        retained_count: int = 0,
+        _summarization_attempted: bool = False,
         **kwargs,
     ) -> AgentStepResponse:
         """Runs a single step in the agent loop (generates at most one LLM call)"""
@@ -2161,7 +2218,55 @@ These keywords have been used to retrieve relevant memories from the database.
             )
             if is_context_overflow_error(e):
                 num_accumulated = len(accumulated) + len(messages)
-                err_msg = f"Context window exceeded for agent id={self.agent_state.id} with {num_accumulated} in-context messages."
+
+                # Attempt summarization recovery: summarize retained DB messages
+                # and retry once with a smaller context.
+                retained = accumulated[:retained_count] if retained_count > 0 else []
+                if retained and not _summarization_attempted:
+                    printv(
+                        f"[Mirix.Agent.{self.agent_state.name}] INFO: "
+                        f"Context overflow with {num_accumulated} messages — "
+                        f"attempting summarization of {len(retained)} retained messages"
+                    )
+                    try:
+                        summary_msg = await self.summarize_and_replace_retained_messages(retained, existing_file_uris)
+                    except Exception as summarize_err:
+                        printv(
+                            f"[Mirix.Agent.{self.agent_state.name}] ERROR: " f"Summarization failed: {summarize_err}"
+                        )
+                        raise ContextWindowExceededError(
+                            f"Context window exceeded for agent id={self.agent_state.id} "
+                            f"and summarization recovery failed: {summarize_err}",
+                            details={"num_in_context_messages": num_accumulated},
+                        ) from e
+
+                    chaining_outputs = accumulated[retained_count:]
+                    new_accumulated = [summary_msg] + chaining_outputs
+
+                    return await self.inner_step(
+                        messages=messages,
+                        accumulated=new_accumulated,
+                        stream=stream,
+                        step_count=step_count,
+                        force_response=force_response,
+                        topics=topics,
+                        retrieved_memories=retrieved_memories,
+                        display_intermediate_message=display_intermediate_message,
+                        request_user_confirmation=request_user_confirmation,
+                        existing_file_uris=existing_file_uris,
+                        return_memory_types_without_update=return_memory_types_without_update,
+                        message_queue=message_queue,
+                        chaining=chaining,
+                        llm_client=llm_client,
+                        retained_count=1,
+                        _summarization_attempted=True,
+                        **kwargs,
+                    )
+
+                err_msg = (
+                    f"Context window exceeded for agent id={self.agent_state.id} "
+                    f"with {num_accumulated} in-context messages."
+                )
                 printv(f"[Mirix.Agent.{self.agent_state.name}] ERROR: {err_msg}")
                 raise ContextWindowExceededError(
                     err_msg,
@@ -2224,7 +2329,6 @@ These keywords have been used to retrieve relevant memories from the database.
 
         # TODO: recall memory
         raise NotImplementedError()
-
 
 
 def strip_name_field_from_user_message(

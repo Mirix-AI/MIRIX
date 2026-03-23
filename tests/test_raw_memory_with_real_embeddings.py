@@ -84,7 +84,9 @@ async def main():
             raise ValueError("not found")
         print(f"[OK] Using existing organization: {org_id}")
     except Exception:
-        org = await org_mgr.create_organization(PydanticOrganization(id=org_id, name="Test Organization for Embeddings"))
+        org = await org_mgr.create_organization(
+            PydanticOrganization(id=org_id, name="Test Organization for Embeddings")
+        )
         print(f"[OK] Created organization: {org_id}")
 
     # Create client

@@ -6,6 +6,7 @@ Tests cover:
 2. hard_delete_user_messages_for_agent deletes correct rows and keeps newest N
 3. Retention=0 path: no DB persistence after step
 4. Retention=N path: persists input messages and prunes to N newest
+5. Context overflow summarization recovery
 """
 
 import asyncio
@@ -14,14 +15,18 @@ from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 from mirix.agent.agent import Agent
+from mirix.errors import ContextWindowExceededError
 from mirix.schemas.agent import AgentState, AgentStepResponse, AgentType
 from mirix.schemas.client import Client
 from mirix.schemas.embedding_config import EmbeddingConfig
+from mirix.schemas.enums import MessageRole
 from mirix.schemas.llm_config import LLMConfig
 from mirix.schemas.message import Message
+from mirix.schemas.mirix_message_content import TextContent
 from mirix.schemas.openai.chat_completion_response import UsageStatistics
 from mirix.schemas.user import User
 from mirix.services.message_manager import MessageManager
@@ -139,7 +144,7 @@ class TestHardDeleteUserMessagesForAgent:
 
         execute_results = [
             delete_ids_result,  # select IDs to delete
-            MagicMock(),        # DELETE statement
+            MagicMock(),  # DELETE statement
         ]
 
         mock_session = AsyncMock()
@@ -278,7 +283,9 @@ class TestAgentStepRetentionAndTopics:
             parent_id="agent-meta",
         )
         agent = build_step_test_agent(agent_state, user)
-        agent.message_manager.get_messages_for_agent_user = AsyncMock(return_value=[make_runtime_message("agent-meta", "r1")])
+        agent.message_manager.get_messages_for_agent_user = AsyncMock(
+            return_value=[make_runtime_message("agent-meta", "r1")]
+        )
 
         with patch("mirix.agent.agent.LLMClient.create", return_value=object()):
             await agent.step(
@@ -379,3 +386,311 @@ class TestAgentStepRetentionAndTopics:
         agent.message_manager.get_messages_for_agent_user.assert_not_awaited()
         agent.message_manager.create_many_messages.assert_not_awaited()
         agent.message_manager.hard_delete_user_messages_for_agent.assert_not_awaited()
+
+
+def _make_context_overflow_error():
+    """Create an httpx error that is_context_overflow_error() recognises."""
+    request = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
+    response = httpx.Response(
+        400,
+        json={
+            "error": {
+                "message": "This model's maximum context length is 8192 tokens",
+                "type": "invalid_request_error",
+                "code": "context_length_exceeded",
+            }
+        },
+        request=request,
+    )
+    return httpx.HTTPStatusError(
+        message="maximum context length",
+        request=request,
+        response=response,
+    )
+
+
+def build_inner_step_test_agent(agent_state: AgentState, user: User) -> Agent:
+    """Build an Agent with mocks suitable for testing inner_step directly."""
+    agent = Agent.__new__(Agent)
+    agent.agent_state = agent_state
+    agent.user = user
+    agent.user_id = user.id
+    agent.client_id = "client-1"
+    agent.model = "gpt-4o-mini"
+    agent.filter_tags = None
+    agent.block_filter_tags = None
+    agent._block_scopes = None
+    agent.blocks_in_memory = None
+    agent.last_function_response = None
+    agent.logger = MagicMock()
+    agent.block_manager = SimpleNamespace(get_blocks=AsyncMock(return_value=[]))
+    agent.message_manager = SimpleNamespace(
+        get_messages_for_agent_user=AsyncMock(return_value=[]),
+        create_many_messages=AsyncMock(return_value=[]),
+        hard_delete_user_messages_for_agent=AsyncMock(return_value=0),
+        create_message=AsyncMock(side_effect=lambda msg, **kw: msg),
+        delete_message_by_id=AsyncMock(),
+    )
+    agent.step_manager = SimpleNamespace(
+        log_step=AsyncMock(return_value=SimpleNamespace(id="step-1")),
+    )
+    agent.interface = SimpleNamespace(step_complete=lambda: None)
+    agent.actor = make_client(retention=3)
+    return agent
+
+
+class TestSummarizeAndReplaceRetainedMessages:
+    """Tests for Agent.summarize_and_replace_retained_messages()"""
+
+    @pytest.mark.asyncio
+    async def test_calls_summarize_and_persists_summary(self):
+        """Verifies the method calls summarize_messages, persists the result,
+        and deletes the original retained messages."""
+        user = make_user()
+        agent_state = make_agent_state("agent-1", AgentType.meta_memory_agent)
+        agent = build_inner_step_test_agent(agent_state, user)
+
+        retained = [
+            make_runtime_message("agent-1", "old-msg-1"),
+            make_runtime_message("agent-1", "old-msg-2"),
+        ]
+
+        with patch("mirix.agent.agent.summarize_messages", new_callable=AsyncMock) as mock_summarize:
+            mock_summarize.return_value = "Summary of old messages"
+            result = await agent.summarize_and_replace_retained_messages(retained)
+
+        mock_summarize.assert_awaited_once()
+        assert result.message_type == "summary"
+        assert result.role == MessageRole.user
+        assert result.content[0].text == "Summary of old messages"
+
+        agent.message_manager.create_message.assert_awaited_once()
+        assert agent.message_manager.delete_message_by_id.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_summary_message_has_correct_agent_and_user(self):
+        """Summary message should be scoped to the correct agent and user."""
+        user = make_user()
+        agent_state = make_agent_state("agent-1", AgentType.meta_memory_agent)
+        agent = build_inner_step_test_agent(agent_state, user)
+
+        retained = [make_runtime_message("agent-1", "old-msg")]
+
+        with patch("mirix.agent.agent.summarize_messages", new_callable=AsyncMock) as mock_summarize:
+            mock_summarize.return_value = "Summary"
+            result = await agent.summarize_and_replace_retained_messages(retained)
+
+        assert result.agent_id == "agent-1"
+        assert result.user_id == "user-1"
+
+    @pytest.mark.asyncio
+    async def test_summary_scoped_to_meta_agent_when_called_from_sub_agent(self):
+        """When a sub-agent summarizes, the summary message's agent_id should
+        be the parent (meta) agent, not the sub-agent itself."""
+        user = make_user()
+        agent_state = make_agent_state(
+            "agent-child",
+            AgentType.episodic_memory_agent,
+            parent_id="agent-meta",
+        )
+        agent = build_inner_step_test_agent(agent_state, user)
+
+        retained = [make_runtime_message("agent-meta", "old-msg")]
+
+        with patch("mirix.agent.agent.summarize_messages", new_callable=AsyncMock) as mock_summarize:
+            mock_summarize.return_value = "Summary"
+            result = await agent.summarize_and_replace_retained_messages(retained)
+
+        assert result.agent_id == "agent-meta"
+        assert result.user_id == "user-1"
+
+
+class TestContextOverflowSummarizationRecovery:
+    """Tests for the summarization recovery path in inner_step."""
+
+    @pytest.mark.asyncio
+    async def test_summarization_triggered_on_overflow_with_retained_messages(self):
+        """When context overflows and retained messages exist, summarization
+        should be attempted and inner_step retried."""
+        user = make_user()
+        agent_state = make_agent_state("agent-1", AgentType.meta_memory_agent)
+        agent = build_inner_step_test_agent(agent_state, user)
+
+        retained_msg = make_runtime_message("agent-1", "retained")
+        current_msg = make_runtime_message("agent-1", "current")
+        summary_msg = Message(
+            agent_id="agent-1",
+            role=MessageRole.user,
+            content=[TextContent(text="Summary")],
+            message_type="summary",
+        )
+
+        call_count = 0
+
+        async def mock_get_ai_reply(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise _make_context_overflow_error()
+            # Second call succeeds
+            return MagicMock(
+                choices=[MagicMock(message=MagicMock(content="ok", tool_calls=None))],
+                usage=UsageStatistics(),
+                id="resp-1",
+            )
+
+        agent._get_ai_reply = mock_get_ai_reply
+        agent.build_system_prompt_with_memories = AsyncMock(return_value=("system prompt", {}))
+        agent.summarize_and_replace_retained_messages = AsyncMock(return_value=summary_msg)
+        agent._handle_ai_response = AsyncMock(return_value=([], False, False))
+
+        result = await agent.inner_step(
+            messages=[current_msg],
+            accumulated=[retained_msg],
+            retained_count=1,
+            chaining=False,
+        )
+
+        agent.summarize_and_replace_retained_messages.assert_awaited_once_with([retained_msg], None)
+        assert result is not None
+
+    @pytest.mark.asyncio
+    async def test_hard_fail_when_no_retained_messages(self):
+        """When context overflows but there are no retained messages,
+        ContextWindowExceededError should be raised immediately."""
+        user = make_user()
+        agent_state = make_agent_state("agent-1", AgentType.meta_memory_agent)
+        agent = build_inner_step_test_agent(agent_state, user)
+
+        current_msg = make_runtime_message("agent-1", "current")
+
+        agent._get_ai_reply = AsyncMock(side_effect=_make_context_overflow_error())
+        agent.build_system_prompt_with_memories = AsyncMock(return_value=("system prompt", {}))
+
+        with pytest.raises(ContextWindowExceededError):
+            await agent.inner_step(
+                messages=[current_msg],
+                accumulated=[],
+                retained_count=0,
+                chaining=False,
+            )
+
+    @pytest.mark.asyncio
+    async def test_hard_fail_after_summarization_already_attempted(self):
+        """If summarization was already attempted and context still overflows,
+        raise ContextWindowExceededError."""
+        user = make_user()
+        agent_state = make_agent_state("agent-1", AgentType.meta_memory_agent)
+        agent = build_inner_step_test_agent(agent_state, user)
+
+        summary_msg = Message(
+            agent_id="agent-1",
+            role=MessageRole.user,
+            content=[TextContent(text="Summary")],
+            message_type="summary",
+        )
+        current_msg = make_runtime_message("agent-1", "current")
+
+        agent._get_ai_reply = AsyncMock(side_effect=_make_context_overflow_error())
+        agent.build_system_prompt_with_memories = AsyncMock(return_value=("system prompt", {}))
+
+        with pytest.raises(ContextWindowExceededError):
+            await agent.inner_step(
+                messages=[current_msg],
+                accumulated=[summary_msg],
+                retained_count=1,
+                _summarization_attempted=True,
+                chaining=False,
+            )
+
+    @pytest.mark.asyncio
+    async def test_hard_fail_when_summarization_itself_fails(self):
+        """If summarize_and_replace_retained_messages raises, the original
+        context overflow should still surface as ContextWindowExceededError."""
+        user = make_user()
+        agent_state = make_agent_state("agent-1", AgentType.meta_memory_agent)
+        agent = build_inner_step_test_agent(agent_state, user)
+
+        retained_msg = make_runtime_message("agent-1", "retained")
+        current_msg = make_runtime_message("agent-1", "current")
+
+        agent._get_ai_reply = AsyncMock(side_effect=_make_context_overflow_error())
+        agent.build_system_prompt_with_memories = AsyncMock(return_value=("system prompt", {}))
+        agent.summarize_and_replace_retained_messages = AsyncMock(side_effect=RuntimeError("LLM summarization failed"))
+
+        with pytest.raises(ContextWindowExceededError, match="summarization recovery failed"):
+            await agent.inner_step(
+                messages=[current_msg],
+                accumulated=[retained_msg],
+                retained_count=1,
+                chaining=False,
+            )
+
+    @pytest.mark.asyncio
+    async def test_chaining_outputs_preserved_after_summarization(self):
+        """When summarization fires, chaining outputs (accumulated beyond
+        retained_count) should be preserved in the retry."""
+        user = make_user()
+        agent_state = make_agent_state("agent-1", AgentType.meta_memory_agent)
+        agent = build_inner_step_test_agent(agent_state, user)
+
+        retained_msg = make_runtime_message("agent-1", "retained")
+        chaining_msg = make_runtime_message("agent-1", "heartbeat")
+        current_msg = make_runtime_message("agent-1", "current")
+        summary_msg = Message(
+            agent_id="agent-1",
+            role=MessageRole.user,
+            content=[TextContent(text="Summary")],
+            message_type="summary",
+        )
+
+        call_count = 0
+
+        async def mock_get_ai_reply(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise _make_context_overflow_error()
+            return MagicMock(
+                choices=[MagicMock(message=MagicMock(content="ok", tool_calls=None))],
+                usage=UsageStatistics(),
+                id="resp-1",
+            )
+
+        agent._get_ai_reply = mock_get_ai_reply
+        agent.build_system_prompt_with_memories = AsyncMock(return_value=("system prompt", {}))
+        agent.summarize_and_replace_retained_messages = AsyncMock(return_value=summary_msg)
+        agent._handle_ai_response = AsyncMock(return_value=([], False, False))
+
+        result = await agent.inner_step(
+            messages=[current_msg],
+            accumulated=[retained_msg, chaining_msg],
+            retained_count=1,
+            chaining=False,
+        )
+
+        assert result is not None
+        # The retry should have been called with accumulated=[summary_msg, chaining_msg]
+        # and retained_count=1 (for the single summary message)
+        assert call_count == 2
+
+
+class TestMessageTypeField:
+    """Tests for the message_type field on Message schema."""
+
+    def test_default_message_type_is_original(self):
+        msg = Message(
+            agent_id="agent-1",
+            role=MessageRole.user,
+            content=[TextContent(text="hello")],
+        )
+        assert msg.message_type == "original"
+
+    def test_summary_message_type(self):
+        msg = Message(
+            agent_id="agent-1",
+            role=MessageRole.user,
+            content=[TextContent(text="summary text")],
+            message_type="summary",
+        )
+        assert msg.message_type == "summary"

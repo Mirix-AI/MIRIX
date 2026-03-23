@@ -624,7 +624,6 @@ class AgentManager:
                 actor=actor,
             )
 
-
     @enforce_types
     async def _create_agent(
         self,
@@ -684,7 +683,9 @@ class AgentManager:
         )
 
     @enforce_types
-    async def update_system_prompt(self, agent_id: str, system_prompt: str, actor: PydanticClient) -> PydanticAgentState:
+    async def update_system_prompt(
+        self, agent_id: str, system_prompt: str, actor: PydanticClient
+    ) -> PydanticAgentState:
         return await self.update_agent(
             agent_id=agent_id,
             agent_update=UpdateAgent(system=system_prompt),

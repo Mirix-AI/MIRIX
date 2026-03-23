@@ -17,10 +17,10 @@ from mirix.database.filter_tags_query import (
     can_redis_handle,
 )
 
-
 # ---------------------------------------------------------------------------
 # Minimal ORM model for testing SQLAlchemy compilation (no real DB needed)
 # ---------------------------------------------------------------------------
+
 
 class _Base(DeclarativeBase):
     pass
@@ -43,6 +43,7 @@ def _compile_query(query) -> str:
 # ===================================================================
 # can_redis_handle
 # ===================================================================
+
 
 class TestCanRedisHandle:
     def test_none_filter_tags(self):
@@ -76,6 +77,7 @@ class TestCanRedisHandle:
 # ===================================================================
 # build_filter_tags_redis
 # ===================================================================
+
 
 class TestBuildFilterTagsRedis:
     def test_none_no_scopes(self):
@@ -125,6 +127,7 @@ class TestBuildFilterTagsRedis:
 # build_filter_tags_raw_sql
 # ===================================================================
 
+
 class TestBuildFilterTagsRawSql:
     def test_none(self):
         clauses, params = build_filter_tags_raw_sql(None)
@@ -160,56 +163,42 @@ class TestBuildFilterTagsRawSql:
         assert clauses == ["1 = 0"]
 
     def test_scopes_with_filter_tags(self):
-        clauses, params = build_filter_tags_raw_sql(
-            {"env": "prod"}, scopes=["A"]
-        )
+        clauses, params = build_filter_tags_raw_sql({"env": "prod"}, scopes=["A"])
         assert len(clauses) == 2
         assert any("filter_tags->>'scope' IN" in c for c in clauses)
         assert any("filter_tags->>'env'" in c for c in clauses)
 
     def test_ignored_keys_excluded(self):
-        clauses, params = build_filter_tags_raw_sql(
-            {"read_scopes": ["X"], "scope": "Y", "env": "prod"}
-        )
+        clauses, params = build_filter_tags_raw_sql({"read_scopes": ["X"], "scope": "Y", "env": "prod"})
         assert len(clauses) == 1
         assert "filter_tags->>'env'" in clauses[0]
 
     def test_contains_operator(self):
-        clauses, params = build_filter_tags_raw_sql(
-            {"account_ids": {"$contains": "ABC"}}
-        )
+        clauses, params = build_filter_tags_raw_sql({"account_ids": {"$contains": "ABC"}})
         assert len(clauses) == 1
         assert "filter_tags::jsonb @>" in clauses[0]
         param_val = json.loads(params["filter_contains_account_ids"])
         assert param_val == {"account_ids": ["ABC"]}
 
     def test_exists_true(self):
-        clauses, params = build_filter_tags_raw_sql(
-            {"account_ids": {"$exists": True}}
-        )
+        clauses, params = build_filter_tags_raw_sql({"account_ids": {"$exists": True}})
         assert len(clauses) == 1
         assert "filter_tags::jsonb ? 'account_ids'" == clauses[0]
 
     def test_exists_false(self):
-        clauses, params = build_filter_tags_raw_sql(
-            {"account_ids": {"$exists": False}}
-        )
+        clauses, params = build_filter_tags_raw_sql({"account_ids": {"$exists": False}})
         assert len(clauses) == 1
         assert "NOT (filter_tags::jsonb ? 'account_ids')" == clauses[0]
 
     def test_in_operator(self):
-        clauses, params = build_filter_tags_raw_sql(
-            {"status": {"$in": ["active", "pending"]}}
-        )
+        clauses, params = build_filter_tags_raw_sql({"status": {"$in": ["active", "pending"]}})
         assert len(clauses) == 1
         assert "filter_tags->>'status' IN" in clauses[0]
         assert params["filter_in_status_0"] == "active"
         assert params["filter_in_status_1"] == "pending"
 
     def test_in_operator_empty_list(self):
-        clauses, params = build_filter_tags_raw_sql(
-            {"status": {"$in": []}}
-        )
+        clauses, params = build_filter_tags_raw_sql({"status": {"$in": []}})
         assert clauses == ["1 = 0"]
 
     def test_unknown_operator_raises(self):
@@ -221,21 +210,18 @@ class TestBuildFilterTagsRawSql:
             build_filter_tags_raw_sql({"x": {"$contains": "a", "$in": ["b"]}})
 
     def test_mixed_scalar_and_operator(self):
-        clauses, params = build_filter_tags_raw_sql(
-            {"env": "prod", "account_ids": {"$contains": "ABC"}}
-        )
+        clauses, params = build_filter_tags_raw_sql({"env": "prod", "account_ids": {"$contains": "ABC"}})
         assert len(clauses) == 2
 
     def test_scopes_with_operator(self):
-        clauses, params = build_filter_tags_raw_sql(
-            {"account_ids": {"$contains": "X"}}, scopes=["A"]
-        )
+        clauses, params = build_filter_tags_raw_sql({"account_ids": {"$contains": "X"}}, scopes=["A"])
         assert len(clauses) == 2
 
 
 # ===================================================================
 # apply_filter_tags_sqlalchemy
 # ===================================================================
+
 
 class TestApplyFilterTagsSqlalchemy:
     def _base_query(self):
@@ -273,51 +259,39 @@ class TestApplyFilterTagsSqlalchemy:
 
     def test_ignored_keys_excluded(self):
         q = self._base_query()
-        result = apply_filter_tags_sqlalchemy(
-            q, _FakeMemory, {"read_scopes": ["X"], "scope": "Y"}
-        )
+        result = apply_filter_tags_sqlalchemy(q, _FakeMemory, {"read_scopes": ["X"], "scope": "Y"})
         sql = _compile_query(result)
         assert _compile_query(result) == _compile_query(q)
 
     def test_contains_operator(self):
         q = self._base_query()
-        result = apply_filter_tags_sqlalchemy(
-            q, _FakeMemory, {"account_ids": {"$contains": "ABC"}}
-        )
+        result = apply_filter_tags_sqlalchemy(q, _FakeMemory, {"account_ids": {"$contains": "ABC"}})
         sql = _compile_query(result)
         assert "CAST" in sql or "cast" in sql.lower() or "@>" in sql
 
     def test_exists_true(self):
         q = self._base_query()
-        result = apply_filter_tags_sqlalchemy(
-            q, _FakeMemory, {"account_ids": {"$exists": True}}
-        )
+        result = apply_filter_tags_sqlalchemy(q, _FakeMemory, {"account_ids": {"$exists": True}})
         sql = _compile_query(result)
         assert "JSONB" in sql.upper() or "jsonb" in sql
         assert "?" in sql
 
     def test_exists_false(self):
         q = self._base_query()
-        result = apply_filter_tags_sqlalchemy(
-            q, _FakeMemory, {"account_ids": {"$exists": False}}
-        )
+        result = apply_filter_tags_sqlalchemy(q, _FakeMemory, {"account_ids": {"$exists": False}})
         sql = _compile_query(result)
         assert "?" in sql
         assert "NOT" in sql.upper()
 
     def test_in_operator(self):
         q = self._base_query()
-        result = apply_filter_tags_sqlalchemy(
-            q, _FakeMemory, {"status": {"$in": ["active", "pending"]}}
-        )
+        result = apply_filter_tags_sqlalchemy(q, _FakeMemory, {"status": {"$in": ["active", "pending"]}})
         sql = _compile_query(result)
         assert "IN" in sql.upper()
 
     def test_in_operator_empty(self):
         q = self._base_query()
-        result = apply_filter_tags_sqlalchemy(
-            q, _FakeMemory, {"status": {"$in": []}}
-        )
+        result = apply_filter_tags_sqlalchemy(q, _FakeMemory, {"status": {"$in": []}})
         sql = _compile_query(result)
         assert "1 = 0" in sql
 

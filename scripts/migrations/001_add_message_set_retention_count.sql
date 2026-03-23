@@ -6,7 +6,11 @@
 ALTER TABLE clients
     ADD COLUMN IF NOT EXISTS message_set_retention_count INTEGER DEFAULT 0;
 
--- 2. Add composite index for efficient retention queries on messages
+-- 2. Add message_type to messages table (distinguishes original vs summary messages)
+ALTER TABLE messages
+    ADD COLUMN IF NOT EXISTS message_type VARCHAR DEFAULT 'original';
+
+-- 3. Add composite index for efficient retention queries on messages
 --    Supports: ORDER BY created_at DESC, id DESC WHERE agent_id=? AND user_id=?
 CREATE INDEX IF NOT EXISTS ix_messages_agent_user_created_at
     ON messages (agent_id, user_id, created_at, id);

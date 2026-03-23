@@ -41,8 +41,6 @@ from mirix.services.raw_memory_manager import RawMemoryManager
 # =================================================================
 
 
-
-
 @pytest.fixture
 def raw_memory_manager():
     """Provide a RawMemoryManager instance."""
@@ -404,12 +402,8 @@ async def test_cleanup_job_deletes_stale_memories(raw_memory_manager, test_actor
 
         from mirix.orm.raw_memory import RawMemory
 
-        naive_utc_15_days_ago = (datetime.now(UTC).replace(tzinfo=None) - timedelta(days=15))
-        stmt = (
-            update(RawMemory)
-            .where(RawMemory.id == old_memory.id)
-            .values(updated_at=naive_utc_15_days_ago)
-        )
+        naive_utc_15_days_ago = datetime.now(UTC).replace(tzinfo=None) - timedelta(days=15)
+        stmt = update(RawMemory).where(RawMemory.id == old_memory.id).values(updated_at=naive_utc_15_days_ago)
         await session.execute(stmt)
         await session.commit()
 
@@ -465,10 +459,8 @@ async def test_cleanup_job_respects_custom_threshold(raw_memory_manager, test_ac
 
         from mirix.orm.raw_memory import RawMemory
 
-        naive_utc_8_days_ago = (datetime.now(UTC).replace(tzinfo=None) - timedelta(days=8))
-        stmt = (
-            update(RawMemory).where(RawMemory.id == memory.id).values(updated_at=naive_utc_8_days_ago)
-        )
+        naive_utc_8_days_ago = datetime.now(UTC).replace(tzinfo=None) - timedelta(days=8)
+        stmt = update(RawMemory).where(RawMemory.id == memory.id).values(updated_at=naive_utc_8_days_ago)
         await session.execute(stmt)
         await session.commit()
 
@@ -826,7 +818,9 @@ async def test_api_update_raw_memory_replace(
 
     api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or os.getenv("MIRIX_GOOGLE_API_KEY")
     if not api_key:
-        pytest.skip("Skipping API test with embeddings - no Google/Gemini API key (set GEMINI_API_KEY, GOOGLE_API_KEY, or MIRIX_GOOGLE_API_KEY)")
+        pytest.skip(
+            "Skipping API test with embeddings - no Google/Gemini API key (set GEMINI_API_KEY, GOOGLE_API_KEY, or MIRIX_GOOGLE_API_KEY)"
+        )
 
     # Create a raw memory first
     sample_data = RawMemoryItemCreate(
@@ -881,7 +875,9 @@ async def test_api_update_raw_memory_append_and_merge(
 
     api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or os.getenv("MIRIX_GOOGLE_API_KEY")
     if not api_key:
-        pytest.skip("Skipping API test with embeddings - no Google/Gemini API key (set GEMINI_API_KEY, GOOGLE_API_KEY, or MIRIX_GOOGLE_API_KEY)")
+        pytest.skip(
+            "Skipping API test with embeddings - no Google/Gemini API key (set GEMINI_API_KEY, GOOGLE_API_KEY, or MIRIX_GOOGLE_API_KEY)"
+        )
 
     # Create a raw memory first
     sample_data = RawMemoryItemCreate(
@@ -962,9 +958,9 @@ async def test_api_delete_raw_memory(api_client, test_actor, test_user, test_age
 
     # GET after DELETE must return 404 (same server DB and cache)
     get_response = api_client.get(f"/memory/raw/{memory_id}", params={"user_id": test_user.id})
-    assert get_response.status_code == 404, (
-        f"GET after DELETE should return 404, got {get_response.status_code}: {get_response.text}"
-    )
+    assert (
+        get_response.status_code == 404
+    ), f"GET after DELETE should return 404, got {get_response.status_code}: {get_response.text}"
 
     print(f"\n[OK] DELETE /memory/raw/{memory_id} successful")
 
@@ -1872,7 +1868,7 @@ async def test_search_raw_memories_limit_enforcement(raw_memory_manager, test_ac
             user_id=test_user.id,
             use_cache=False,
         )
-        memories.append(mem    )
+        memories.append(mem)
 
     # Test limit=2
     results, _ = await raw_memory_manager.search_raw_memories(

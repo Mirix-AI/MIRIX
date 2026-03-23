@@ -199,9 +199,7 @@ async def add_test_memories(client: MirixClient, user_id: str, batch_label: str)
     logger.info("⏱️  Checking if memories were stored in database...")
 
     async with db_context() as session:
-        r = await session.execute(
-            select(func.count()).select_from(MessageModel).where(MessageModel.user_id == user_id)
-        )
+        r = await session.execute(select(func.count()).select_from(MessageModel).where(MessageModel.user_id == user_id))
         message_count = r.scalar_one()
     logger.info("✓ Messages in database after batch %s: %d", batch_label, message_count)
 
@@ -240,23 +238,17 @@ async def count_memories_via_api(user_id: str, log_details: bool = False) -> dic
         )
         procedural_count = r.scalar_one()
 
-        r = await session.execute(
-            select(func.count()).select_from(MessageModel).where(MessageModel.user_id == user_id)
-        )
+        r = await session.execute(select(func.count()).select_from(MessageModel).where(MessageModel.user_id == user_id))
         message_count = r.scalar_one()
 
-        r = await session.execute(
-            select(func.count()).select_from(BlockModel).where(BlockModel.user_id == user_id)
-        )
+        r = await session.execute(select(func.count()).select_from(BlockModel).where(BlockModel.user_id == user_id))
         block_count = r.scalar_one()
 
         # Log details for debugging
         if log_details:
             logger.debug("Memory details for user %s:", user_id)
             if semantic_count == 0:
-                result = await session.execute(
-                    select(SemanticMemoryItem).where(SemanticMemoryItem.user_id == user_id)
-                )
+                result = await session.execute(select(SemanticMemoryItem).where(SemanticMemoryItem.user_id == user_id))
                 all_semantic = result.scalars().all()
                 logger.debug("  Total semantic memories (including deleted): %d", len(all_semantic))
                 for mem in all_semantic:

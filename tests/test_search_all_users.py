@@ -397,9 +397,7 @@ class TestSearchAllUsers:
         results = await poll_until(
             fetch_results=_search_client1_bm25,
             is_ready=lambda r: r["count"] > 0,
-            wait_log=(
-                "Client1 bm25 search returned 0; waiting %ss before retry (elapsed=%ss)..."
-            ),
+            wait_log=("Client1 bm25 search returned 0; waiting %ss before retry (elapsed=%ss)..."),
         )
 
         logger.info(f"Results: {results['count']} memories found")
@@ -454,9 +452,7 @@ class TestSearchAllUsers:
         results = await poll_until(
             fetch_results=_search_client1_embedding,
             is_ready=lambda r: r["count"] > 0,
-            wait_log=(
-                "Client1 embedding search returned 0; waiting %ss before retry (elapsed=%ss)..."
-            ),
+            wait_log=("Client1 embedding search returned 0; waiting %ss before retry (elapsed=%ss)..."),
         )
 
         logger.info(f"Results: {results['count']} memories found")
@@ -543,16 +539,12 @@ class TestSearchAllUsers:
 
         # Search with client3 which has write_scope='read_only'
         async def _search_client3_bm25():
-            return await client3.search_all_users(
-                query="", memory_type="all", client_id=client3.client_id, limit=100
-            )
+            return await client3.search_all_users(query="", memory_type="all", client_id=client3.client_id, limit=100)
 
         results = await poll_until(
             fetch_results=_search_client3_bm25,
             is_ready=lambda r: user3_id in set(result["user_id"] for result in r["results"]),
-            wait_log=(
-                "Client3 bm25 search missing user3; waiting %ss before retry (elapsed=%ss)..."
-            ),
+            wait_log=("Client3 bm25 search missing user3; waiting %ss before retry (elapsed=%ss)..."),
         )
 
         logger.info(f"Results: {results['count']} memories found")
@@ -588,9 +580,7 @@ class TestSearchAllUsers:
         results = await poll_until(
             fetch_results=_search_client3_embedding,
             is_ready=lambda r: user3_id in set(result["user_id"] for result in r["results"]),
-            wait_log=(
-                "Client3 embedding search missing user3; waiting %ss before retry (elapsed=%ss)..."
-            ),
+            wait_log=("Client3 embedding search missing user3; waiting %ss before retry (elapsed=%ss)..."),
         )
 
         logger.info(f"Results: {results['count']} memories found")
@@ -619,9 +609,7 @@ class TestSearchAllUsers:
         # Search with client2 (in org2). Poll briefly because async memory
         # extraction can lag under heavier CI/local runs.
         async def _search_client2_bm25():
-            return await client2.search_all_users(
-                query="", memory_type="all", client_id=client2.client_id, limit=100
-            )
+            return await client2.search_all_users(query="", memory_type="all", client_id=client2.client_id, limit=100)
 
         results = await poll_until(
             fetch_results=_search_client2_bm25,
@@ -662,9 +650,7 @@ class TestSearchAllUsers:
         results = await poll_until(
             fetch_results=_search_client2_embedding,
             is_ready=lambda r: user4_id in set(result["user_id"] for result in r["results"]),
-            wait_log=(
-                "Org2 embedding search missing user4; waiting %ss before retry (elapsed=%ss)..."
-            ),
+            wait_log=("Org2 embedding search missing user4; waiting %ss before retry (elapsed=%ss)..."),
         )
 
         user_ids_in_results = set(result["user_id"] for result in results["results"])
@@ -708,7 +694,9 @@ class TestSearchAllUsers:
         logger.info("TEST: Search specific memory type (episodic)")
         logger.info("=" * 80)
 
-        results = await client1.search_all_users(query="team", memory_type="episodic", client_id=client1.client_id, limit=20)
+        results = await client1.search_all_users(
+            query="team", memory_type="episodic", client_id=client1.client_id, limit=20
+        )
 
         logger.info(f"Results: {results['count']} episodic memories found")
 
@@ -751,9 +739,7 @@ class TestSearchAllUsers:
         results = await poll_until(
             fetch_results=_search_semantic_embedding,
             is_ready=lambda r: r["count"] > 0,
-            wait_log=(
-                "Semantic embedding search returned 0; waiting %ss before retry (elapsed=%ss)..."
-            ),
+            wait_log=("Semantic embedding search returned 0; waiting %ss before retry (elapsed=%ss)..."),
         )
 
         logger.info(f"Results: {results['count']} semantic memories found")
@@ -761,9 +747,9 @@ class TestSearchAllUsers:
 
         assert results["success"] is True
         assert results["search_method"] == "embedding"
-        assert results["count"] > 0, (
-            "Semantic embedding search still 0 results after waiting for retries (index may not be ready)."
-        )
+        assert (
+            results["count"] > 0
+        ), "Semantic embedding search still 0 results after waiting for retries (index may not be ready)."
 
         # All results should be semantic type
         for result in results["results"]:
@@ -899,7 +885,9 @@ class TestSearchAllUsers:
 
         assert results["success"] is True
         core_results = [r for r in results["results"] if r.get("memory_type") == "core"]
-        assert len(core_results) > 0, "Results should include items with memory_type='core' when include_core_memory=True"
+        assert (
+            len(core_results) > 0
+        ), "Results should include items with memory_type='core' when include_core_memory=True"
         for item in core_results:
             assert "id" in item
             assert "label" in item
@@ -939,9 +927,9 @@ class TestSearchAllUsers:
             "Blocks from scope 'read_write' (client1's scope) must be returned. Scopes returned: %s" % scopes_returned
         )
         read_write_items = [r for r in core_results if r["scope"] == "read_write"]
-        assert len(read_write_items) > 0, (
-            "At least one block from scope 'read_write' must be returned. core count=%s" % len(core_results)
-        )
+        assert (
+            len(read_write_items) > 0
+        ), "At least one block from scope 'read_write' must be returned. core count=%s" % len(core_results)
 
         logger.info(
             "Scopes in core results: %s; read_write blocks: %s (read_only correctly excluded)",

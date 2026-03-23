@@ -212,9 +212,7 @@ class TestOrganizationScopedUserCreation:
         except Exception:
             pass
 
-    async def test_same_user_id_retrieved_by_different_contexts(
-        self, user_manager, test_org1, client_a, client_b
-    ):
+    async def test_same_user_id_retrieved_by_different_contexts(self, user_manager, test_org1, client_a, client_b):
         """
         Verify that a user created in an org can be retrieved regardless of client context.
 
@@ -252,9 +250,7 @@ class TestMultipleClientsSameOrgShareUsers:
 
     pytestmark = pytest.mark.asyncio(loop_scope="module")
 
-    async def test_multiple_clients_same_org_see_same_users(
-        self, user_manager, test_org1, client_a, client_b
-    ):
+    async def test_multiple_clients_same_org_see_same_users(self, user_manager, test_org1, client_a, client_b):
         """
         Verify that two clients in the same organization see the same users.
 
@@ -292,9 +288,7 @@ class TestMultipleClientsSameOrgShareUsers:
                 except Exception:
                     pass
 
-    async def test_user_count_not_multiplied_by_clients(
-        self, user_manager, test_org1, client_a, client_b
-    ):
+    async def test_user_count_not_multiplied_by_clients(self, user_manager, test_org1, client_a, client_b):
         """
         Verify that having multiple clients doesn't multiply user count.
 
@@ -315,9 +309,7 @@ class TestMultipleClientsSameOrgShareUsers:
             users = await user_manager.list_users(organization_id=test_org1.id)
             user_occurrences = [u for u in users if u.id == user_id]
 
-            assert len(user_occurrences) == 1, (
-                f"User should appear exactly once, got {len(user_occurrences)}"
-            )
+            assert len(user_occurrences) == 1, f"User should appear exactly once, got {len(user_occurrences)}"
 
         finally:
             try:
@@ -336,9 +328,7 @@ class TestUsersIsolatedAcrossOrganizations:
 
     pytestmark = pytest.mark.asyncio(loop_scope="module")
 
-    async def test_list_users_filters_by_organization(
-        self, user_manager, test_org1, test_org2
-    ):
+    async def test_list_users_filters_by_organization(self, user_manager, test_org1, test_org2):
         """
         Verify list_users filters by organization_id.
 
@@ -383,13 +373,9 @@ class TestUsersIsolatedAcrossOrganizations:
             for uid in org2_user_ids:
                 assert uid in org2_retrieved_ids, f"Org2 user {uid} not in org2 list"
             for uid in org1_user_ids:
-                assert uid not in org2_retrieved_ids, (
-                    f"Org1 user {uid} should not be in org2 list"
-                )
+                assert uid not in org2_retrieved_ids, f"Org1 user {uid} should not be in org2 list"
             for uid in org2_user_ids:
-                assert uid not in org1_retrieved_ids, (
-                    f"Org2 user {uid} should not be in org1 list"
-                )
+                assert uid not in org1_retrieved_ids, f"Org2 user {uid} should not be in org1 list"
 
         finally:
             for uid in org1_user_ids + org2_user_ids:
@@ -409,9 +395,7 @@ class TestClientDeletionPreservesUsers:
 
     pytestmark = pytest.mark.asyncio(loop_scope="module")
 
-    async def test_delete_client_preserves_users(
-        self, user_manager, client_manager, test_org1
-    ):
+    async def test_delete_client_preserves_users(self, user_manager, client_manager, test_org1):
         """
         Verify deleting a client does NOT cascade-delete users.
 
@@ -445,9 +429,7 @@ class TestClientDeletionPreservesUsers:
             await client_manager.delete_client_by_id(client_id)
 
             user_after_delete = await user_manager.get_user_by_id(user_id)
-            assert user_after_delete.id == user_id, (
-                "User should still exist after client deletion"
-            )
+            assert user_after_delete.id == user_id, "User should still exist after client deletion"
             assert user_after_delete.organization_id == test_org1.id
 
         finally:
@@ -467,13 +449,9 @@ class TestGetOrCreateOrgDefaultUser:
 
     pytestmark = pytest.mark.asyncio(loop_scope="module")
 
-    async def test_get_or_create_org_default_user_creates_user(
-        self, user_manager, test_org1
-    ):
+    async def test_get_or_create_org_default_user_creates_user(self, user_manager, test_org1):
         """Verify get_or_create_org_default_user creates a default user for the org."""
-        default_user = await user_manager.get_or_create_org_default_user(
-            org_id=test_org1.id
-        )
+        default_user = await user_manager.get_or_create_org_default_user(org_id=test_org1.id)
 
         assert default_user is not None
         assert default_user.organization_id == test_org1.id
@@ -484,40 +462,24 @@ class TestGetOrCreateOrgDefaultUser:
         except Exception:
             pass
 
-    async def test_get_or_create_org_default_user_is_idempotent(
-        self, user_manager, test_org1
-    ):
+    async def test_get_or_create_org_default_user_is_idempotent(self, user_manager, test_org1):
         """Verify get_or_create_org_default_user returns the same user on repeated calls."""
-        default_user_1 = await user_manager.get_or_create_org_default_user(
-            org_id=test_org1.id
-        )
-        default_user_2 = await user_manager.get_or_create_org_default_user(
-            org_id=test_org1.id
-        )
+        default_user_1 = await user_manager.get_or_create_org_default_user(org_id=test_org1.id)
+        default_user_2 = await user_manager.get_or_create_org_default_user(org_id=test_org1.id)
 
-        assert default_user_1.id == default_user_2.id, (
-            "Should return same user on repeated calls"
-        )
+        assert default_user_1.id == default_user_2.id, "Should return same user on repeated calls"
 
         try:
             await user_manager.delete_user_by_id(default_user_1.id)
         except Exception:
             pass
 
-    async def test_get_or_create_org_default_user_different_orgs(
-        self, user_manager, test_org1, test_org2
-    ):
+    async def test_get_or_create_org_default_user_different_orgs(self, user_manager, test_org1, test_org2):
         """Verify get_or_create_org_default_user creates separate users for different orgs."""
-        default_user_org1 = await user_manager.get_or_create_org_default_user(
-            org_id=test_org1.id
-        )
-        default_user_org2 = await user_manager.get_or_create_org_default_user(
-            org_id=test_org2.id
-        )
+        default_user_org1 = await user_manager.get_or_create_org_default_user(org_id=test_org1.id)
+        default_user_org2 = await user_manager.get_or_create_org_default_user(org_id=test_org2.id)
 
-        assert default_user_org1.id != default_user_org2.id, (
-            "Different orgs should have different default users"
-        )
+        assert default_user_org1.id != default_user_org2.id, "Different orgs should have different default users"
         assert default_user_org1.organization_id == test_org1.id
         assert default_user_org2.organization_id == test_org2.id
 

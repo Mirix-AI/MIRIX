@@ -952,7 +952,9 @@ class TestBlockScopeIsolation:
             )
         )
         blocks_via_a = await block_manager.get_blocks(user=target_user, any_scopes=[scope])
-        blocks_via_b = await block_manager.get_blocks(user=target_user, any_scopes=[scope], auto_create_from_default=False)
+        blocks_via_b = await block_manager.get_blocks(
+            user=target_user, any_scopes=[scope], auto_create_from_default=False
+        )
         assert {b.id for b in blocks_via_a} == {b.id for b in blocks_via_b}
 
     async def test_reader_client_sees_multiple_scopes(
@@ -978,7 +980,9 @@ class TestBlockScopeIsolation:
         assert "test-scope-1" in scopes_found
         assert "test-scope-2" in scopes_found
 
-    async def test_reader_client_cannot_see_ungranted_scope(self, block_manager, client_scope1, client_scope2, test_org):
+    async def test_reader_client_cannot_see_ungranted_scope(
+        self, block_manager, client_scope1, client_scope2, test_org
+    ):
         """Reader with read_scopes=["test-scope-1"] cannot see test-scope-2 blocks."""
         restricted_reader = await ClientManager().create_client(
             PydanticClient(

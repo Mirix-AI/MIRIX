@@ -723,7 +723,17 @@ class TestMetaMemoryParallelism:
         lock = threading.Lock()
 
         class MockMemoryAgent:
-            def __init__(self, agent_state, interface, actor, user, filter_tags=None, block_filter_tags=None, use_cache=True, **kwargs):
+            def __init__(
+                self,
+                agent_state,
+                interface,
+                actor,
+                user,
+                filter_tags=None,
+                block_filter_tags=None,
+                use_cache=True,
+                **kwargs,
+            ):
                 self.agent_state = agent_state
 
             async def step(self, input_messages, chaining, actor=None, user=None, topics=None, retrieved_memories=None):

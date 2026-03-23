@@ -305,9 +305,7 @@ async def msg_api_auth(server_process):
     """Provision a dedicated client for message lifecycle tests."""
     from conftest import _create_client_and_key
 
-    auth = await _create_client_and_key(
-        MSG_TEST_CLIENT_ID, TEST_ORG_ID, org_name="Demo Org"
-    )
+    auth = await _create_client_and_key(MSG_TEST_CLIENT_ID, TEST_ORG_ID, org_name="Demo Org")
     return auth
 
 
@@ -320,12 +318,8 @@ async def msg_client(server_process, msg_api_auth):
         debug=False,
     )
     config_path = project_root / "mirix" / "configs" / "examples" / "mirix_gemini.yaml"
-    await c.initialize_meta_agent(
-        config_path=str(config_path), update_agents=False
-    )
-    await c.create_or_get_user(
-        user_id=MSG_TEST_USER_ID, user_name="Message Lifecycle User"
-    )
+    await c.initialize_meta_agent(config_path=str(config_path), update_agents=False)
+    await c.create_or_get_user(user_id=MSG_TEST_USER_ID, user_name="Message Lifecycle User")
     try:
         yield c
     finally:
@@ -344,8 +338,8 @@ async def _get_message_rows(agent_id: str, user_id: str, org_id: str):
 
     Returns all non-deleted message rows in chronological order.
     """
-    from mirix.services.message_manager import MessageManager
     from mirix.schemas.client import Client
+    from mirix.services.message_manager import MessageManager
 
     mm = MessageManager()
     actor = Client(
@@ -373,20 +367,14 @@ async def _get_sub_agent_ids(client: MirixClient):
 
     from mirix.schemas.agent import AgentState
 
-    resp = await client._request(
-        "GET", f"/agents?parent_id={meta.id}&limit=1000"
-    )
+    resp = await client._request("GET", f"/agents?parent_id={meta.id}&limit=1000")
     sub_agents = resp if isinstance(resp, list) else resp.get("agents", [])
     result = {"meta_memory_agent": meta.id}
     for data in sub_agents:
         agent = AgentState(**data)
         short = agent.name
         if "meta_memory_agent_" in short:
-            short = (
-                short.replace("meta_memory_agent_", "")
-                .replace("_memory_agent", "")
-                .replace("_agent", "")
-            )
+            short = short.replace("meta_memory_agent_", "").replace("_memory_agent", "").replace("_agent", "")
         result[short] = agent.id
     return result
 
@@ -411,12 +399,9 @@ async def test_system_prompt_stored_on_agent_not_as_message(msg_client):
     agent_id = agent_map[agent_name]
 
     new_prompt = (
-        "You are an episodic memory agent for integration testing. "
-        "Extract episodic events from conversations."
+        "You are an episodic memory agent for integration testing. " "Extract episodic events from conversations."
     )
-    updated = await client.update_system_prompt(
-        agent_name=agent_name, system_prompt=new_prompt
-    )
+    updated = await client.update_system_prompt(agent_name=agent_name, system_prompt=new_prompt)
 
     assert updated.system == new_prompt
 
@@ -429,8 +414,7 @@ async def test_system_prompt_stored_on_agent_not_as_message(msg_client):
     )
     system_msgs = [m for m in messages if m.role == "system"]
     assert len(system_msgs) == 0, (
-        f"System prompt should not be stored as a message row; "
-        f"found {len(system_msgs)} system message(s)"
+        f"System prompt should not be stored as a message row; " f"found {len(system_msgs)} system message(s)"
     )
 
 
@@ -449,12 +433,8 @@ async def test_no_messages_persisted_with_zero_retention(msg_client):
     agent_map = await _get_sub_agent_ids(client)
 
     server = _get_server()
-    db_client = await server.client_manager.get_client_by_id(
-        MSG_TEST_CLIENT_ID
-    )
-    assert (db_client.message_set_retention_count or 0) == 0, (
-        "Test client should default to retention=0"
-    )
+    db_client = await server.client_manager.get_client_by_id(MSG_TEST_CLIENT_ID)
+    assert (db_client.message_set_retention_count or 0) == 0, "Test client should default to retention=0"
 
     result = await client.add(
         user_id=MSG_TEST_USER_ID,
@@ -498,20 +478,12 @@ async def test_no_messages_persisted_with_zero_retention(msg_client):
             org_id=TEST_ORG_ID,
         )
         for message in messages:
-            content_text = " ".join(
-                [
-                    c.text
-                    for c in (message.content or [])
-                    if hasattr(c, "text") and c.text
-                ]
-            )
+            content_text = " ".join([c.text for c in (message.content or []) if hasattr(c, "text") and c.text])
             assert not any(marker in content_text for marker in synthetic_markers), (
-                f"Agent '{name}' persisted synthetic helper content with retention=0: "
-                f"{content_text}"
+                f"Agent '{name}' persisted synthetic helper content with retention=0: " f"{content_text}"
             )
         assert len(messages) == 0, (
-            f"Agent '{name}' should have 0 message rows with "
-            f"retention=0, found {len(messages)}"
+            f"Agent '{name}' should have 0 message rows with " f"retention=0, found {len(messages)}"
         )
 
 
@@ -580,8 +552,7 @@ async def test_message_retention_prunes_to_limit(msg_client):
         )
 
         assert len(messages) <= 2, (
-            f"Expected at most 2 retained message rows with "
-            f"retention=2, found {len(messages)}"
+            f"Expected at most 2 retained message rows with " f"retention=2, found {len(messages)}"
         )
 
         synthetic_markers = [
@@ -591,13 +562,7 @@ async def test_message_retention_prunes_to_limit(msg_client):
             "finish_memory_update",
         ]
         for message in messages:
-            content_text = " ".join(
-                [
-                    c.text
-                    for c in (message.content or [])
-                    if hasattr(c, "text") and c.text
-                ]
-            )
+            content_text = " ".join([c.text for c in (message.content or []) if hasattr(c, "text") and c.text])
             assert not any(marker in content_text for marker in synthetic_markers), (
                 "Retention rows should contain only persisted input message sets, "
                 f"found synthetic helper content: {content_text}"
@@ -613,8 +578,7 @@ async def test_message_retention_prunes_to_limit(msg_client):
                 org_id=TEST_ORG_ID,
             )
             assert len(sub_messages) == 0, (
-                f"Sub-agent '{name}' should not persist retained message rows; "
-                f"found {len(sub_messages)}"
+                f"Sub-agent '{name}' should not persist retained message rows; " f"found {len(sub_messages)}"
             )
 
     finally:
@@ -651,9 +615,7 @@ async def test_failed_processing_leaves_no_messages(msg_client):
         pytest.skip("Meta agent not found")
 
     server = _get_server()
-    db_client = await server.client_manager.get_client_by_id(
-        MSG_TEST_CLIENT_ID
-    )
+    db_client = await server.client_manager.get_client_by_id(MSG_TEST_CLIENT_ID)
     assert (db_client.message_set_retention_count or 0) == 0
 
     # ~2M chars / ~500k tokens — well beyond any model's context window
@@ -669,9 +631,7 @@ async def test_failed_processing_leaves_no_messages(msg_client):
                 },
                 {
                     "role": "assistant",
-                    "content": [
-                        {"type": "text", "text": "Acknowledged."}
-                    ],
+                    "content": [{"type": "text", "text": "Acknowledged."}],
                 },
             ],
         )
@@ -688,8 +648,7 @@ async def test_failed_processing_leaves_no_messages(msg_client):
             org_id=TEST_ORG_ID,
         )
         assert len(messages) == 0, (
-            f"Agent '{name}' should have 0 message rows after a "
-            f"failed processing attempt, found {len(messages)}"
+            f"Agent '{name}' should have 0 message rows after a " f"failed processing attempt, found {len(messages)}"
         )
 
 
