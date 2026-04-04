@@ -226,6 +226,9 @@ class Settings(BaseSettings):
     llm_retry_backoff_factor: float = Field(0.5, env="MIRIX_LLM_RETRY_BACKOFF_FACTOR")  # Exponential backoff multiplier
     llm_retry_max_delay: float = Field(10.0, env="MIRIX_LLM_RETRY_MAX_DELAY")  # Max delay between retries (seconds)
 
+    # Graph memory: temporal knowledge graph for episodic + semantic
+    enable_graph_memory: bool = Field(False, env="MIRIX_ENABLE_GRAPH_MEMORY")
+
     # cron job parameters
     enable_batch_job_polling: bool = False
     poll_running_llm_batches_interval_seconds: int = 5 * 60

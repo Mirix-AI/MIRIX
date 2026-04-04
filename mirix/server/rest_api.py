@@ -2191,6 +2191,20 @@ async def retrieve_memories_by_keywords(
         timezone_str = "UTC"
     memories = {}
 
+    # Graph memory retrieval (supplements flat retrieval when enabled)
+    if settings.enable_graph_memory:
+        try:
+            graph_context = await server.graph_memory_manager.retrieve_graph_context(
+                query=key_words,
+                agent_state=agent_state,
+                organization_id=client.organization_id,
+                user_id=user_id,
+            )
+            if graph_context:
+                memories["graph"] = {"context": graph_context}
+        except Exception as e:
+            logger.error("Graph memory retrieval failed: %s", e)
+
     # Get episodic memories (recent + relevant) with optional temporal filtering
     try:
         episodic_manager = server.episodic_memory_manager
