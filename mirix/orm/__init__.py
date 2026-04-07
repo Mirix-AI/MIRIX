@@ -6,6 +6,7 @@ from mirix.orm.client_api_key import ClientApiKey
 from mirix.orm.cloud_file_mapping import CloudFileMapping
 from mirix.orm.episodic_memory import EpisodicEvent
 from mirix.orm.file import FileMetadata
+from mirix.orm.graph_memory import EntityEdge, EntityNode, EpisodeNode, InvolvesEdge
 from mirix.orm.knowledge_vault import KnowledgeVaultItem
 from mirix.orm.message import Message
 from mirix.orm.organization import Organization
@@ -25,8 +26,12 @@ __all__ = [
     "Client",
     "ClientApiKey",
     "CloudFileMapping",
+    "EntityEdge",
+    "EntityNode",
+    "EpisodeNode",
     "EpisodicEvent",
     "FileMetadata",
+    "InvolvesEdge",
     "KnowledgeVaultItem",
     "Message",
     "Organization",

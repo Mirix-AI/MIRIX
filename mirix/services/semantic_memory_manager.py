@@ -1007,6 +1007,24 @@ class SemanticMemoryManager:
             )
 
             # Note: Item is already added to clustering tree in create_item()
+
+            # Graph memory: extract entities/relations from semantic item (async, non-blocking)
+            if settings.enable_graph_memory:
+                try:
+                    from mirix.services.graph_memory_manager import GraphMemoryManager
+                    gm = GraphMemoryManager()
+                    await gm.process_for_graph(
+                        text=f"{name}: {summary}\n{details or ''}",
+                        summary=summary,
+                        details=details,
+                        event_time=datetime.now(timezone.utc),
+                        agent_state=agent_state,
+                        organization_id=organization_id,
+                        user_id=user_id or "unknown",
+                    )
+                except Exception as graph_err:
+                    logger.warning("Graph memory processing failed (non-fatal): %s", graph_err)
+
             return semantic_item
         except Exception as e:
             raise e
