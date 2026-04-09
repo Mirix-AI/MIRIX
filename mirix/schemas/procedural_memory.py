@@ -11,13 +11,16 @@ from mirix.schemas.mirix_base import MirixBase
 
 class ProceduralMemoryItemBase(MirixBase):
     """
-    Base schema for storing procedural knowledge (e.g., workflows, methods).
+    Base schema for storing procedural knowledge as reusable skills.
     """
 
     __id_prefix__ = "proc_item"
+    name: str = Field(..., description="Short skill identifier (e.g., 'deploy-production')")
     entry_type: str = Field(..., description="Category (e.g., 'workflow', 'guide', 'script')")
-    summary: str = Field(..., description="Short descriptive text about the procedure")
-    steps: List[str] = Field(..., description="Step-by-step instructions as a list of strings")
+    description: str = Field(..., description="Short descriptive text about the skill")
+    instructions: str = Field(..., description="Step-by-step instructions as a single string")
+    triggers: List[str] = Field(default_factory=list, description="Conditions indicating this skill is relevant")
+    examples: List[dict] = Field(default_factory=list, description="Input/output examples for this skill")
 
 
 class ProceduralMemoryItem(ProceduralMemoryItemBase):
@@ -39,13 +42,14 @@ class ProceduralMemoryItem(ProceduralMemoryItemBase):
         description="Last modification info including timestamp and operation type",
     )
     organization_id: str = Field(..., description="The unique identifier of the organization")
-    summary_embedding: Optional[List[float]] = Field(None, description="The embedding of the summary")
-    steps_embedding: Optional[List[float]] = Field(None, description="The embedding of the steps")
+    version: str = Field(default="0.1.0", description="Semantic version of this skill")
+    description_embedding: Optional[List[float]] = Field(None, description="The embedding of the description")
+    instructions_embedding: Optional[List[float]] = Field(None, description="The embedding of the instructions")
     embedding_config: Optional[EmbeddingConfig] = Field(
         None, description="The embedding configuration used by the event"
     )
 
-    # NEW: Filter tags for flexible filtering and categorization
+    # Filter tags for flexible filtering and categorization
     filter_tags: Optional[Dict[str, Any]] = Field(
         default=None,
         description="Custom filter tags for filtering and categorization",
@@ -54,17 +58,7 @@ class ProceduralMemoryItem(ProceduralMemoryItemBase):
         ],
     )
 
-    # need to validate both steps_embedding and summary_embedding to ensure they are the same size
-    # NEW: Filter tags for flexible filtering and categorization
-    filter_tags: Optional[Dict[str, Any]] = Field(
-        default=None,
-        description="Custom filter tags for filtering and categorization",
-        examples=[
-            {"project_id": "proj-abc", "session_id": "sess-xyz", "tags": ["important", "work"], "priority": "high"}
-        ],
-    )
-
-    @field_validator("summary_embedding", "steps_embedding")
+    @field_validator("description_embedding", "instructions_embedding")
     @classmethod
     def pad_embeddings(cls, embedding: List[float]) -> List[float]:
         """Pad embeddings to `MAX_EMBEDDING_SIZE`. This is necessary to ensure all stored embeddings are the same size."""
@@ -86,17 +80,21 @@ class ProceduralMemoryItemUpdate(MirixBase):
 
     id: str = Field(..., description="Unique ID for this procedural memory entry")
     agent_id: Optional[str] = Field(None, description="The id of the agent this procedural memory item belongs to")
+    name: Optional[str] = Field(None, description="Short skill identifier")
     entry_type: Optional[str] = Field(None, description="Category (e.g., 'workflow', 'guide', 'script')")
-    summary: Optional[str] = Field(None, description="Short descriptive text")
-    steps: Optional[List[str]] = Field(None, description="Step-by-step instructions as a list of strings")
+    description: Optional[str] = Field(None, description="Short descriptive text about the skill")
+    instructions: Optional[str] = Field(None, description="Step-by-step instructions as a single string")
+    triggers: Optional[List[str]] = Field(None, description="Conditions indicating this skill is relevant")
+    examples: Optional[List[dict]] = Field(None, description="Input/output examples for this skill")
+    version: Optional[str] = Field(None, description="Semantic version of this skill")
     organization_id: Optional[str] = Field(None, description="The organization ID")
     updated_at: datetime = Field(default_factory=get_utc_time, description="Update timestamp")
     last_modify: Optional[Dict[str, Any]] = Field(
         None,
         description="Last modification info including timestamp and operation type",
     )
-    steps_embedding: Optional[List[float]] = Field(None, description="The embedding of the event")
-    summary_embedding: Optional[List[float]] = Field(None, description="The embedding of the summary")
+    instructions_embedding: Optional[List[float]] = Field(None, description="The embedding of the instructions")
+    description_embedding: Optional[List[float]] = Field(None, description="The embedding of the description")
     embedding_config: Optional[EmbeddingConfig] = Field(
         None, description="The embedding configuration used by the event"
     )
