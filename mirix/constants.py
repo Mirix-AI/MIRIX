@@ -114,7 +114,7 @@ EPISODIC_MEMORY_TOOLS = [
     "episodic_memory_replace",
     "check_episodic_memory",
 ]
-PROCEDURAL_MEMORY_TOOLS = ["procedural_memory_insert", "procedural_memory_update"]
+SKILL_TOOLS = ["skill_insert", "skill_update"]
 RESOURCE_MEMORY_TOOLS = ["resource_memory_insert", "resource_memory_update"]
 KNOWLEDGE_VAULT_TOOLS = ["knowledge_vault_insert", "knowledge_vault_update"]
 SEMANTIC_MEMORY_TOOLS = [
@@ -137,7 +137,7 @@ ALL_TOOLS = list(
         BASE_TOOLS
         + CORE_MEMORY_TOOLS
         + EPISODIC_MEMORY_TOOLS
-        + PROCEDURAL_MEMORY_TOOLS
+        + SKILL_TOOLS
         + RESOURCE_MEMORY_TOOLS
         + KNOWLEDGE_VAULT_TOOLS
         + SEMANTIC_MEMORY_TOOLS

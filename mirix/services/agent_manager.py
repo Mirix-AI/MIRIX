@@ -14,7 +14,7 @@ from mirix.constants import (
     KNOWLEDGE_VAULT_TOOLS,
     MCP_TOOLS,
     META_MEMORY_TOOLS,
-    PROCEDURAL_MEMORY_TOOLS,
+    SKILL_TOOLS,
     RESOURCE_MEMORY_TOOLS,
     SEARCH_MEMORY_TOOLS,
     SEMANTIC_MEMORY_TOOLS,
@@ -124,7 +124,7 @@ class AgentManager:
         if agent_create.agent_type == AgentType.episodic_memory_agent:
             tool_names.extend(EPISODIC_MEMORY_TOOLS + UNIVERSAL_MEMORY_TOOLS)
         if agent_create.agent_type == AgentType.procedural_memory_agent:
-            tool_names.extend(PROCEDURAL_MEMORY_TOOLS + UNIVERSAL_MEMORY_TOOLS)
+            tool_names.extend(SKILL_TOOLS + UNIVERSAL_MEMORY_TOOLS)
         if agent_create.agent_type == AgentType.resource_memory_agent:
             tool_names.extend(RESOURCE_MEMORY_TOOLS + UNIVERSAL_MEMORY_TOOLS)
         if agent_create.agent_type == AgentType.knowledge_vault_memory_agent:
@@ -559,7 +559,7 @@ class AgentManager:
         if agent_state.agent_type == AgentType.episodic_memory_agent:
             tool_names.extend(EPISODIC_MEMORY_TOOLS + UNIVERSAL_MEMORY_TOOLS)
         if agent_state.agent_type == AgentType.procedural_memory_agent:
-            tool_names.extend(PROCEDURAL_MEMORY_TOOLS + UNIVERSAL_MEMORY_TOOLS)
+            tool_names.extend(SKILL_TOOLS + UNIVERSAL_MEMORY_TOOLS)
         if agent_state.agent_type == AgentType.resource_memory_agent:
             tool_names.extend(RESOURCE_MEMORY_TOOLS + UNIVERSAL_MEMORY_TOOLS)
         if agent_state.agent_type == AgentType.knowledge_vault_memory_agent:
