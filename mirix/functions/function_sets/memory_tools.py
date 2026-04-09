@@ -20,7 +20,7 @@ from mirix.observability.langfuse_client import get_langfuse_client
 from mirix.schemas.episodic_memory import EpisodicEventForLLM
 from mirix.schemas.knowledge_vault import KnowledgeVaultItemBase
 from mirix.schemas.mirix_message_content import TextContent
-from mirix.schemas.procedural_memory import ProceduralMemoryItemBase
+
 from mirix.schemas.resource_memory import ResourceMemoryItemBase
 from mirix.schemas.semantic_memory import SemanticMemoryItemBase
 
@@ -437,56 +437,61 @@ async def resource_memory_update(self: "Agent", old_ids: List[str], new_items: L
         )
 
 
-async def procedural_memory_insert(self: "Agent", items: List[ProceduralMemoryItemBase]):
+async def skill_insert(self: "Agent", items: List[dict]):
     """
-    The tool to insert new procedures into procedural memory. Note that the `summary` should not be a general term such as "guide" or "workflow" but rather a more informative description of the procedure.
+    Insert new skills into procedural memory. If a skill with the same name already exists,
+    it will be updated (merged) instead of creating a duplicate.
 
     Args:
-        items (array): List of procedural memory items to insert.
+        items (array): List of skill items to insert. Each item has: name, description, instructions, entry_type, triggers (optional), examples (optional).
 
     Returns:
-        Optional[str]: Message about insertion results including any duplicates detected.
+        Optional[str]: Message about insertion results.
     """
     agent_id = self.agent_state.parent_id if self.agent_state.parent_id is not None else self.agent_state.id
 
-    # Get filter_tags, use_cache, client_id, and user_id from agent instance
     filter_tags = getattr(self, "filter_tags", None)
     use_cache = getattr(self, "use_cache", True)
     client_id = getattr(self, "client_id", None)
     user_id = getattr(self, "user_id", None)
 
     inserted_count = 0
-    skipped_count = 0
-    skipped_summaries = []
+    merged_count = 0
 
     for item in items:
-        # Check for existing similar procedures (by summary and filter_tags)
-        existing_procedures = await self.procedural_memory_manager.list_procedures(
+        existing_skills = await self.procedural_memory_manager.list_procedures(
             agent_state=self.agent_state,
-            user=self.user,  # User for read operations (data filtering)
-            query="",  # Get all procedures
-            limit=1000,  # Get enough to check for duplicates
+            user=self.user,
+            query="",
+            limit=1000,
             filter_tags=filter_tags if filter_tags else None,
             use_cache=use_cache,
         )
 
-        # Check if this procedure already exists
-        is_duplicate = False
-        for existing in existing_procedures:
-            if existing.summary == item["summary"] and existing.steps == item["steps"]:
-                is_duplicate = True
-                skipped_count += 1
-                skipped_summaries.append(item["summary"])
+        # Name-based dedup
+        duplicate = None
+        for existing in existing_skills:
+            if existing.name == item["name"]:
+                duplicate = existing
                 break
 
-        if not is_duplicate:
+        if duplicate:
+            old_version = getattr(duplicate, "version", "0.1.0")
+            new_version = _bump_patch_version(old_version)
             try:
+                await self.procedural_memory_manager.delete_procedure_by_id(
+                    procedure_id=duplicate.id, actor=self.actor
+                )
                 await self.procedural_memory_manager.insert_procedure(
                     agent_state=self.agent_state,
                     agent_id=agent_id,
+                    name=item["name"],
+                    description=item["description"],
+                    instructions=item["instructions"],
                     entry_type=item["entry_type"],
-                    summary=item["summary"],
-                    steps=item["steps"],
+                    triggers=item.get("triggers", []),
+                    examples=item.get("examples", []),
+                    version=new_version,
                     actor=self.actor,
                     organization_id=self.user.organization_id,
                     filter_tags=filter_tags if filter_tags else None,
@@ -495,42 +500,71 @@ async def procedural_memory_insert(self: "Agent", items: List[ProceduralMemoryIt
                 )
             except Exception as e:
                 print(
-                    f"[procedural_memory_insert] insert_procedure FAILED for "
+                    f"[skill_insert] merge FAILED for "
+                    f"item {item!r}: {e}"
+                )
+                traceback.print_exc()
+                raise
+            merged_count += 1
+        else:
+            try:
+                await self.procedural_memory_manager.insert_procedure(
+                    agent_state=self.agent_state,
+                    agent_id=agent_id,
+                    name=item["name"],
+                    description=item["description"],
+                    instructions=item["instructions"],
+                    entry_type=item["entry_type"],
+                    triggers=item.get("triggers", []),
+                    examples=item.get("examples", []),
+                    version="0.1.0",
+                    actor=self.actor,
+                    organization_id=self.user.organization_id,
+                    filter_tags=filter_tags if filter_tags else None,
+                    use_cache=use_cache,
+                    user_id=user_id,
+                )
+            except Exception as e:
+                print(
+                    f"[skill_insert] insert_procedure FAILED for "
                     f"item {item!r}: {e}"
                 )
                 traceback.print_exc()
                 raise
             inserted_count += 1
 
-    # Return feedback message
-    if skipped_count > 0:
-        skipped_list = ", ".join(f"'{s}'" for s in skipped_summaries[:3])
-        if len(skipped_summaries) > 3:
-            skipped_list += f" and {len(skipped_summaries) - 3} more"
-        return f"Inserted {inserted_count} new procedure(s). Skipped {skipped_count} duplicate(s): {skipped_list}."
-    elif inserted_count > 0:
-        return f"Successfully inserted {inserted_count} new procedure(s)."
-    else:
-        return "No procedures were inserted."
+    parts = []
+    if inserted_count > 0:
+        parts.append(f"Inserted {inserted_count} new skill(s)")
+    if merged_count > 0:
+        parts.append(f"Merged {merged_count} existing skill(s)")
+    return ". ".join(parts) + "." if parts else "No skills were inserted."
 
 
-async def procedural_memory_update(self: "Agent", old_ids: List[str], new_items: List[ProceduralMemoryItemBase]):
+def _bump_patch_version(version: str) -> str:
+    """Increment patch version: '0.1.0' -> '0.1.1'."""
+    try:
+        parts = version.split(".")
+        parts[-1] = str(int(parts[-1]) + 1)
+        return ".".join(parts)
+    except (ValueError, IndexError):
+        return "0.1.1"
+
+
+async def skill_update(self: "Agent", old_ids: List[str], new_items: List[dict]):
     """
-    The tool to update/delete items in the procedural memory. To update the memory, set the old_ids to be the ids of the items that needs to be updated and new_items as the updated items. Note that the number of new items does not need to be the same as the number of old ids as it is not a one-to-one mapping. To delete the memory, set the old_ids to be the ids of the items that needs to be deleted and new_items as an empty list.
+    Update/delete skills in procedural memory. Deletes old skills by ID and inserts replacements.
 
     Args:
-        old_ids (array): List of ids of the items to be deleted (or updated).
-        new_items (array): List of new procedural memory items to insert. If this is an empty list, then it means that the items are being deleted.
+        old_ids (array): List of ids of the skills to delete/replace.
+        new_items (array): List of new skill items. Empty list means deletion only.
 
     Returns:
-        Optional[str]: None is always returned as this function does not produce a response.
+        Optional[str]: None is always returned.
     """
     agent_id = self.agent_state.parent_id if self.agent_state.parent_id is not None else self.agent_state.id
-
-    # Get filter_tags, use_cache, client_id, and user_id from agent instance
     filter_tags = getattr(self, "filter_tags", None)
     use_cache = getattr(self, "use_cache", True)
-    client_id = getattr(self, "client_id", None)
     user_id = getattr(self, "user_id", None)
 
     for old_id in old_ids:
@@ -549,9 +583,13 @@ async def procedural_memory_update(self: "Agent", old_ids: List[str], new_items:
             await self.procedural_memory_manager.insert_procedure(
                 agent_state=self.agent_state,
                 agent_id=agent_id,
+                name=item["name"],
+                description=item["description"],
+                instructions=item["instructions"],
                 entry_type=item["entry_type"],
-                summary=item["summary"],
-                steps=item["steps"],
+                triggers=item.get("triggers", []),
+                examples=item.get("examples", []),
+                version=item.get("version", "0.1.0"),
                 actor=self.actor,
                 organization_id=self.actor.organization_id,
                 filter_tags=filter_tags if filter_tags else None,
@@ -560,7 +598,7 @@ async def procedural_memory_update(self: "Agent", old_ids: List[str], new_items:
             )
         except Exception as e:
             print(
-                f"[procedural_memory_update] insert_procedure FAILED for item "
+                f"[skill_update] insert_procedure FAILED for item "
                 f"{item!r}: {e}"
             )
             traceback.print_exc()

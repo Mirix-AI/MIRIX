@@ -188,45 +188,35 @@ def validate_resource_memory_update(function_name: str, args: dict) -> Optional[
 
 
 # ============================================================
-# Procedural Memory Validators
+# Skill Validators
 # ============================================================
 
 
-@register_validator("procedural_memory_insert")
-def validate_procedural_memory_insert(function_name: str, args: dict) -> Optional[str]:
-    """Validate procedural_memory_insert arguments."""
+@register_validator("skill_insert")
+def validate_skill_insert(function_name: str, args: dict) -> Optional[str]:
+    """Validate skill_insert arguments."""
     items = args.get("items", [])
     for i, item in enumerate(items):
-        if not item.get("summary", "").strip():
-            return (
-                f"Validation error: 'summary' field in item {i} cannot be empty. "
-                "Please provide a descriptive summary of this procedure."
-            )
-        steps = item.get("steps", [])
-        if not steps or all(not s.strip() for s in steps):
-            return (
-                f"Validation error: 'steps' field in item {i} cannot be empty. "
-                "Please provide at least one non-empty step."
-            )
+        if not item.get("name", "").strip():
+            return f"Validation error: 'name' field in item {i} cannot be empty."
+        if not item.get("description", "").strip():
+            return f"Validation error: 'description' field in item {i} cannot be empty."
+        if not item.get("instructions", "").strip():
+            return f"Validation error: 'instructions' field in item {i} cannot be empty."
     return None
 
 
-@register_validator("procedural_memory_update")
-def validate_procedural_memory_update(function_name: str, args: dict) -> Optional[str]:
-    """Validate procedural_memory_update arguments."""
+@register_validator("skill_update")
+def validate_skill_update(function_name: str, args: dict) -> Optional[str]:
+    """Validate skill_update arguments."""
     items = args.get("new_items", [])
     for i, item in enumerate(items):
-        if not item.get("summary", "").strip():
-            return (
-                f"Validation error: 'summary' field in new_items[{i}] cannot be empty. "
-                "Please provide a descriptive summary of this procedure."
-            )
-        steps = item.get("steps", [])
-        if not steps or all(not s.strip() for s in steps):
-            return (
-                f"Validation error: 'steps' field in new_items[{i}] cannot be empty. "
-                "Please provide at least one non-empty step."
-            )
+        if not item.get("name", "").strip():
+            return f"Validation error: 'name' field in new_items[{i}] cannot be empty."
+        if not item.get("description", "").strip():
+            return f"Validation error: 'description' field in new_items[{i}] cannot be empty."
+        if not item.get("instructions", "").strip():
+            return f"Validation error: 'instructions' field in new_items[{i}] cannot be empty."
     return None
 
 
