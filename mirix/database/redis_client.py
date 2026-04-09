@@ -687,23 +687,24 @@ class RedisMemoryClient:
                 TextField("$.organization_id", as_name="organization_id"),
                 TextField("$.agent_id", as_name="agent_id"),
                 TextField("$.entry_type", as_name="entry_type"),
-                TextField("$.summary", as_name="summary"),
+                TextField("$.description", as_name="description"),
+                TextField("$.name", as_name="name"),
                 TagField("$.user_id", as_name="user_id"),
                 NumericField("$.created_at_ts", as_name="created_at_ts"),
                 TagField("$.filter_tags.scope", as_name="filter_tags_scope"),  # Explicit scope field
                 TextField("$.filter_tags.*", as_name="filter_tags"),  # Filter tags for flexible filtering
                 # Two vector fields (32KB total)
                 VectorField(
-                    "$.summary_embedding",
+                    "$.description_embedding",
                     "FLAT",
                     {"TYPE": "FLOAT32", "DIM": MAX_EMBEDDING_DIM, "DISTANCE_METRIC": "COSINE"},
-                    as_name="summary_embedding",
+                    as_name="description_embedding",
                 ),
                 VectorField(
-                    "$.steps_embedding",
+                    "$.instructions_embedding",
                     "FLAT",
                     {"TYPE": "FLOAT32", "DIM": MAX_EMBEDDING_DIM, "DISTANCE_METRIC": "COSINE"},
-                    as_name="steps_embedding",
+                    as_name="instructions_embedding",
                 ),
             )
 
