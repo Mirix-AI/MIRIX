@@ -20,11 +20,15 @@ if TYPE_CHECKING:
 
 class ProceduralMemoryItem(SqlalchemyBase, OrganizationMixin, UserMixin):
     """
-    Stores procedural memory entries, such as workflows, step-by-step guides, or how-to knowledge.
+    Stores procedural knowledge as reusable skills.
 
-    type:        The category or tag of the procedure (e.g. 'workflow', 'guide', 'script')
-    summary: Short descriptive text about what this procedure accomplishes
-    steps:       Step-by-step instructions or method
+    name:         Short skill identifier (e.g. 'deploy-production')
+    entry_type:   Category or tag of the skill (e.g. 'workflow', 'guide', 'script')
+    description:  Short descriptive text about what this skill accomplishes
+    instructions: Step-by-step instructions as plain text
+    triggers:     Conditions that indicate this skill is relevant
+    examples:     Input/output examples for this skill
+    version:      Semantic version of this skill
     """
 
     __tablename__ = "procedural_memory"
@@ -53,14 +57,26 @@ class ProceduralMemoryItem(SqlalchemyBase, OrganizationMixin, UserMixin):
         doc="ID of the client application that created this item",
     )
 
-    # Distinguish the type/category of the procedure
+    # Short skill identifier
+    name: Mapped[str] = mapped_column(String, nullable=False, doc="Short skill identifier (e.g. 'deploy-production')")
+
+    # Distinguish the type/category of the skill
     entry_type: Mapped[str] = mapped_column(String, doc="Category or type (e.g. 'workflow', 'guide', 'script')")
 
-    # A human-friendly description of this procedure
-    summary: Mapped[str] = mapped_column(String, doc="Short description or title of the procedure")
+    # A human-friendly description of this skill
+    description: Mapped[str] = mapped_column(String, doc="Short descriptive text about what this skill accomplishes")
 
-    # Steps or instructions stored as a JSON object/list
-    steps: Mapped[list] = mapped_column(JSON, doc="Step-by-step instructions stored as a list of strings")
+    # Step-by-step instructions as plain text
+    instructions: Mapped[str] = mapped_column(String, doc="Step-by-step instructions as a single string")
+
+    # Conditions that indicate this skill is relevant
+    triggers: Mapped[list] = mapped_column(JSON, default=list, doc="Conditions that indicate this skill is relevant")
+
+    # Input/output examples
+    examples: Mapped[list] = mapped_column(JSON, default=list, doc="Input/output examples for this skill")
+
+    # Semantic version
+    version: Mapped[str] = mapped_column(String, default="0.1.0", doc="Semantic version of this skill")
 
     # NEW: Filter tags for flexible filtering and categorization
     filter_tags: Mapped[Optional[dict]] = mapped_column(
@@ -86,11 +102,11 @@ class ProceduralMemoryItem(SqlalchemyBase, OrganizationMixin, UserMixin):
     if settings.mirix_pg_uri_no_default:
         from pgvector.sqlalchemy import Vector
 
-        summary_embedding = mapped_column(Vector(MAX_EMBEDDING_DIM), nullable=True)
-        steps_embedding = mapped_column(Vector(MAX_EMBEDDING_DIM), nullable=True)
+        description_embedding = mapped_column(Vector(MAX_EMBEDDING_DIM), nullable=True)
+        instructions_embedding = mapped_column(Vector(MAX_EMBEDDING_DIM), nullable=True)
     else:
-        summary_embedding = Column(CommonVector, nullable=True)
-        steps_embedding = Column(CommonVector, nullable=True)
+        description_embedding = Column(CommonVector, nullable=True)
+        instructions_embedding = Column(CommonVector, nullable=True)
 
     # Database indexes for efficient querying
     __table_args__ = tuple(
@@ -127,6 +143,17 @@ class ProceduralMemoryItem(SqlalchemyBase, OrganizationMixin, UserMixin):
                         "ix_procedural_memory_org_filter_scope",
                         "organization_id",
                         text("((filter_tags->>'scope')::text)"),
+                        postgresql_using="btree",
+                    )
+                    if settings.mirix_pg_uri_no_default
+                    else None
+                ),
+                (
+                    Index(
+                        "ix_procedural_memory_org_user_name",
+                        "organization_id",
+                        "user_id",
+                        "name",
                         postgresql_using="btree",
                     )
                     if settings.mirix_pg_uri_no_default
