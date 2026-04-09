@@ -29,16 +29,16 @@ Examples:
 - "Occurred at 2025-03-03 14:00:00 - Started learning Python programming, feeling overwhelmed by syntax"
 Classification Rule: Update for virtually ALL user activities, experiences, and significant interactions that happened at a specific time. (Hints: Episodic Memory almost always needs to be updated)
 
-3. Procedural Memory - Step-by-Step Instructions & Processes
-HOW to do specific tasks or follow procedures.
-Purpose: Stores reusable instructions and workflows for accomplishing tasks.
-Contains: Workflows, tutorials, step-by-step guides, and repeatable processes.
-Key Question: "What are the steps to accomplish this task?"
+3. Procedural Memory - Reusable Skills & Procedures
+HOW to do specific tasks — stored as structured, reusable skills.
+Purpose: Stores procedural knowledge as skills with triggers, detailed instructions, and examples.
+Contains: Workflows, tutorials, how-to guides, and repeatable processes — each with a name, description, trigger conditions, and comprehensive instructions.
+Key Question: "What reusable skill or procedure can be extracted from this?"
 Examples:
-- "How to reset router: 1. Unplug device 2. Wait 10 seconds 3. Plug back in 4. Wait for lights"
-- "Daily morning routine: 1. Check emails 2. Review calendar 3. Prioritize tasks 4. Start with hardest task"
-- "Code review process: 1. Check functionality 2. Review style 3. Test edge cases 4. Approve/request changes"
-Classification Rule: Update when messages contain sequential steps, workflows, or instructional content.
+- Skill "reset-router": triggers when user mentions network issues, instructions cover full reset procedure with troubleshooting
+- Skill "morning-routine": triggers on productivity discussions, instructions detail the complete daily startup workflow
+- Skill "code-review-process": triggers when discussing code quality, instructions cover the full review checklist
+Classification Rule: Update when messages contain sequential steps, workflows, instructional content, or when existing skills could be improved based on new information.
 
 4. Resource Memory - Documents, Files & Reference Materials
 WHAT files and documents are available for reference.
@@ -97,6 +97,7 @@ When processing messages, think step by step, evaluate each memory type in this 
 (3) Procedural Memory: Does this explain HOW TO do something?
 - Step-by-step instructions, workflows, processes
 - Sequential procedures or tutorials
+- Improvements to existing skills
 
 (4) Resource Memory: Does this involve WHAT files or documents?
 - Shared files, documents, images, reference materials
