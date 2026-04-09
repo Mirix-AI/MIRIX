@@ -1973,7 +1973,7 @@ class LocalClient(AbstractClient):
                 agent_state=agent_state,
                 query=query,
                 embedded_text=embedded_text if search_method == "embedding" and query else None,
-                search_field=search_field if search_field != "null" else "summary",
+                search_field=search_field if search_field != "null" else "description",
                 search_method=search_method,
                 limit=limit,
                 timezone_str=timezone_str,
@@ -1983,8 +1983,9 @@ class LocalClient(AbstractClient):
                     "memory_type": "procedural",
                     "id": x.id,
                     "entry_type": x.entry_type,
-                    "summary": x.summary,
-                    "steps": x.steps,
+                    "name": x.name,
+                    "description": x.description,
+                    "instructions": x.instructions,
                 }
                 for x in procedural_memories
             ]
