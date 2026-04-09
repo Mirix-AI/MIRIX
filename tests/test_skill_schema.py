@@ -1,6 +1,7 @@
 """Tests for the skill-based procedural memory schema."""
 
 import pytest
+from pydantic import ValidationError
 
 from mirix.schemas.procedural_memory import (
     ProceduralMemoryItem,
@@ -15,7 +16,7 @@ class TestProceduralMemoryItemBase:
 
     def test_name_is_required(self):
         """name field must be provided; omitting it raises a ValidationError."""
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             ProceduralMemoryItemBase(
                 entry_type="workflow",
                 description="Deploy the app",

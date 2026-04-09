@@ -46,7 +46,7 @@ class ProceduralMemoryItem(ProceduralMemoryItemBase):
     description_embedding: Optional[List[float]] = Field(None, description="The embedding of the description")
     instructions_embedding: Optional[List[float]] = Field(None, description="The embedding of the instructions")
     embedding_config: Optional[EmbeddingConfig] = Field(
-        None, description="The embedding configuration used by the event"
+        None, description="The embedding configuration used by the skill"
     )
 
     # Filter tags for flexible filtering and categorization
@@ -96,7 +96,7 @@ class ProceduralMemoryItemUpdate(MirixBase):
     instructions_embedding: Optional[List[float]] = Field(None, description="The embedding of the instructions")
     description_embedding: Optional[List[float]] = Field(None, description="The embedding of the description")
     embedding_config: Optional[EmbeddingConfig] = Field(
-        None, description="The embedding configuration used by the event"
+        None, description="The embedding configuration used by the skill"
     )
 
     filter_tags: Optional[Dict[str, Any]] = Field(
