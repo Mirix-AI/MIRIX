@@ -1549,7 +1549,7 @@ class MirixClient(AbstractClient):
             search_field: Field to search in. Options vary by memory type:
                          - episodic: "summary", "details"
                          - resource: "summary", "content"
-                         - procedural: "summary", "steps"
+                         - procedural: "description", "instructions"
                          - knowledge_vault: "caption", "secret_value"
                          - semantic: "name", "summary", "details"
                          - For "all": use "null" (default)
@@ -1697,7 +1697,7 @@ class MirixClient(AbstractClient):
             search_field: Field to search in. Options vary by memory type:
                          - episodic: "summary", "details"
                          - resource: "summary", "content"
-                         - procedural: "summary", "steps"
+                         - procedural: "description", "instructions"
                          - knowledge_vault: "caption", "secret_value"
                          - semantic: "name", "summary", "details"
                          - For "all": use "null" (default)

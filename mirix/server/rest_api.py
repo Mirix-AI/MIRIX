@@ -2434,7 +2434,7 @@ async def retrieve_memories_by_keywords(
             agent_state=agent_state,  # Not accessed during BM25 search
             user=user,
             query=key_words,
-            search_field="summary",
+            search_field="description",
             search_method=search_method,
             limit=limit,
             timezone_str=timezone_str,
@@ -2449,7 +2449,8 @@ async def retrieve_memories_by_keywords(
                 {
                     "id": procedure.id,
                     "entry_type": procedure.entry_type,
-                    "summary": procedure.summary,
+                    "name": procedure.name,
+                    "description": procedure.description,
                 }
                 for procedure in procedures
             ],
@@ -2829,7 +2830,7 @@ async def search_memory(
         search_field: Field to search in. Options vary by memory type:
                      - episodic: "summary", "details"
                      - resource: "summary", "content"
-                     - procedural: "summary", "steps"
+                     - procedural: "description", "instructions"
                      - knowledge_vault: "caption", "secret_value"
                      - semantic: "name", "summary", "details"
                      - For "all": use "null" (default)
@@ -3046,7 +3047,7 @@ async def search_memory(
                     user=user,
                     query=query,
                     embedded_text=(embedded_text if search_method == "embedding" and query else None),
-                    search_field=search_field if search_field != "null" else "steps",
+                    search_field=search_field if search_field != "null" else "description",
                     search_method=search_method,
                     limit=limit,
                     timezone_str=timezone_str,
@@ -3059,8 +3060,9 @@ async def search_memory(
                         "memory_type": "procedural",
                         "id": x.id,
                         "entry_type": x.entry_type,
-                        "summary": x.summary,
-                        "steps": x.steps,
+                        "name": x.name,
+                        "description": x.description,
+                        "instructions": x.instructions,
                     }
                     for x in memories
                 ]
@@ -3239,7 +3241,7 @@ async def search_memory(
                 user=user,
                 query=query,
                 embedded_text=(embedded_text if search_method == "embedding" and query else None),
-                search_field=search_field if search_field != "null" else "summary",
+                search_field=search_field if search_field != "null" else "description",
                 search_method=search_method,
                 limit=limit,
                 timezone_str=timezone_str,
@@ -3253,8 +3255,9 @@ async def search_memory(
                         "memory_type": "procedural",
                         "id": x.id,
                         "entry_type": x.entry_type,
-                        "summary": x.summary,
-                        "steps": x.steps,
+                        "name": x.name,
+                        "description": x.description,
+                        "instructions": x.instructions,
                     }
                     for x in procedural_memories
                 ]
@@ -3617,7 +3620,7 @@ async def search_memory_all_users(
                     organization_id=effective_org_id,
                     query=query,
                     embedded_text=(embedded_text if search_method == "embedding" and query else None),
-                    search_field=search_field if search_field != "null" else "summary",
+                    search_field=search_field if search_field != "null" else "description",
                     search_method=search_method,
                     limit=limit,
                     timezone_str="UTC",
@@ -3630,8 +3633,9 @@ async def search_memory_all_users(
                         "memory_type": "procedural",
                         "id": x.id,
                         "entry_type": x.entry_type,
-                        "summary": x.summary,
-                        "steps": x.steps,
+                        "name": x.name,
+                        "description": x.description,
+                        "instructions": x.instructions,
                         "user_id": str(x.user_id),
                     }
                     for x in memories
@@ -3795,7 +3799,7 @@ async def search_memory_all_users(
                 organization_id=effective_org_id,
                 query=query,
                 embedded_text=(embedded_text if search_method == "embedding" and query else None),
-                search_field=search_field if search_field != "null" else "summary",
+                search_field=search_field if search_field != "null" else "description",
                 search_method=search_method,
                 limit=limit,
                 timezone_str="UTC",
@@ -3810,8 +3814,9 @@ async def search_memory_all_users(
                         "user_id": x.user_id,
                         "id": x.id,
                         "entry_type": x.entry_type,
-                        "summary": x.summary,
-                        "steps": x.steps,
+                        "name": x.name,
+                        "description": x.description,
+                        "instructions": x.instructions,
                     }
                     for x in procedural_memories
                 ]
@@ -4067,7 +4072,7 @@ async def list_memory_components(
             agent_state=agent_state,
             user=user,
             query="",
-            search_field="summary",
+            search_field="description",
             search_method="bm25",
             limit=limit,
             timezone_str=timezone_str,
@@ -4078,8 +4083,9 @@ async def list_memory_components(
                 {
                     "id": item.id,
                     "entry_type": item.entry_type,
-                    "summary": item.summary,
-                    "steps": item.steps,
+                    "name": item.name,
+                    "description": item.description,
+                    "instructions": item.instructions,
                     "created_at": (item.created_at.isoformat() if getattr(item, "created_at", None) else None),
                     "updated_at": (item.updated_at.isoformat() if getattr(item, "updated_at", None) else None),
                 }
@@ -4192,7 +4198,7 @@ async def list_memory_fields(
     fields_by_type = {
         "episodic": ["summary", "details"],
         "semantic": ["name", "summary", "details"],
-        "procedural": ["summary", "steps"],
+        "procedural": ["description", "instructions"],
         "resource": ["summary", "content"],
         "knowledge_vault": ["caption", "secret_value"],
         "core": ["label", "value"],
@@ -4433,8 +4439,11 @@ async def delete_semantic_memory(
 class UpdateProceduralMemoryRequest(BaseModel):
     """Request model for updating a procedural memory."""
 
-    summary: Optional[str] = None
-    steps: Optional[List[str]] = None
+    name: Optional[str] = None
+    description: Optional[str] = None
+    instructions: Optional[str] = None
+    triggers: Optional[List[str]] = None
+    examples: Optional[List[dict]] = None
 
 
 @router.patch("/memory/procedural/{memory_id}")
@@ -4469,10 +4478,16 @@ async def update_procedural_memory(
 
     try:
         procedural_update_data = {"id": memory_id}
-        if request.summary is not None:
-            procedural_update_data["summary"] = request.summary
-        if request.steps is not None:
-            procedural_update_data["steps"] = request.steps
+        if request.name is not None:
+            procedural_update_data["name"] = request.name
+        if request.description is not None:
+            procedural_update_data["description"] = request.description
+        if request.instructions is not None:
+            procedural_update_data["instructions"] = request.instructions
+        if request.triggers is not None:
+            procedural_update_data["triggers"] = request.triggers
+        if request.examples is not None:
+            procedural_update_data["examples"] = request.examples
 
         updated_memory = await server.procedural_memory_manager.update_item(
             item_update=ProceduralMemoryItemUpdate.model_validate(procedural_update_data),
@@ -4484,8 +4499,9 @@ async def update_procedural_memory(
             "message": f"Procedural memory {memory_id} updated",
             "memory": {
                 "id": updated_memory.id,
-                "summary": updated_memory.summary,
-                "steps": updated_memory.steps,
+                "name": updated_memory.name,
+                "description": updated_memory.description,
+                "instructions": updated_memory.instructions,
             },
         }
     except Exception as e:
