@@ -1860,19 +1860,19 @@ class Agent(BaseAgent):
                 user=self.user,
                 query=key_words,
                 embedded_text=embedded_text,
-                search_field="summary",
+                search_field="description",
                 search_method=search_method,
                 limit=MAX_RETRIEVAL_LIMIT_IN_SYSTEM,
                 timezone_str=timezone_str,
             )
             procedural_memory = ""
             if len(current_procedural_memory) > 0:
-                for idx, procedure in enumerate(current_procedural_memory):
+                for idx, skill in enumerate(current_procedural_memory):
                     if is_owning_agent:
-                        procedural_memory += f"[Procedure ID: {procedure.id}] Entry Type: {procedure.entry_type}; Summary: {procedure.summary}\n"
+                        procedural_memory += f"[Skill ID: {skill.id}] Name: {skill.name}; Description: {skill.description}; Version: {skill.version}\n"
                     else:
                         procedural_memory += (
-                            f"[{idx}] Entry Type: {procedure.entry_type}; Summary: {procedure.summary}\n"
+                            f"[{idx}] Name: {skill.name}; Description: {skill.description}\n"
                         )
             procedural_memory = procedural_memory.strip()
             retrieved_memories["procedural"] = {
