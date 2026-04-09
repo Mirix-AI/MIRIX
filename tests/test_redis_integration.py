@@ -1072,10 +1072,13 @@ class TestProceduralMemoryManagerRedis:
         item_data = ProceduralMemoryItem(
             id=generate_test_id("procedural"),
             entry_type="process",
-            summary="How to deploy an application",
-            steps=["Build the application", "Test the application", "Deploy to production"],
-            summary_embedding=mock_embedding,
-            steps_embedding=mock_embedding,
+            name="deploy-application",
+            description="How to deploy an application",
+            instructions="Build the application\nTest the application\nDeploy to production",
+            triggers=["deployment request"],
+            examples=[],
+            description_embedding=mock_embedding,
+            instructions_embedding=mock_embedding,
             organization_id=test_user.organization_id,
             user_id=test_user.id,
             agent_id=test_agent.id,
@@ -1089,10 +1092,10 @@ class TestProceduralMemoryManagerRedis:
         cached_data = await redis_client.get_json(redis_key)
 
         assert cached_data is not None
-        assert "summary_embedding" in cached_data
-        assert "steps_embedding" in cached_data
-        assert len(cached_data["summary_embedding"]) == 4096
-        assert len(cached_data["steps_embedding"]) == 4096
+        assert "description_embedding" in cached_data
+        assert "instructions_embedding" in cached_data
+        assert len(cached_data["description_embedding"]) == 4096
+        assert len(cached_data["instructions_embedding"]) == 4096
 
         logger.info("✅ Cached procedural memory with 32KB of embeddings (2 × 16KB)")
 
