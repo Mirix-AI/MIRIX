@@ -152,17 +152,17 @@ class ProceduralMemoryManager:
             return 0
 
         # Determine which text fields to search in
-        if search_field == "summary":
-            search_texts = [item_data.get("summary", "")]
-        elif search_field == "steps":
-            search_texts = [item_data.get("steps", "")]
+        if search_field == "description":
+            search_texts = [item_data.get("description", "")]
+        elif search_field == "instructions":
+            search_texts = [item_data.get("instructions", "")]
         elif search_field == "entry_type":
             search_texts = [item_data.get("entry_type", "")]
         else:
             # Search across all relevant text fields
             search_texts = [
-                item_data.get("summary", ""),
-                item_data.get("steps", ""),
+                item_data.get("description", ""),
+                item_data.get("instructions", ""),
                 item_data.get("entry_type", ""),
             ]
 
@@ -198,7 +198,7 @@ class ProceduralMemoryManager:
             session: Database session
             base_query: Base SQLAlchemy query (not used, kept for API compatibility)
             query_text: Search query string
-            search_field: Field to search in ('summary', 'steps', 'entry_type', etc.)
+            search_field: Field to search in ('description', 'instructions', 'entry_type', etc.)
             limit: Maximum number of results to return
             user: User object to filter by
             filter_tags: Optional dict of tag key-value pairs to filter by (e.g., {"scope": "CARE"})
@@ -245,13 +245,12 @@ class ProceduralMemoryManager:
             tsquery_string_and = tsquery_string_or = tsquery_parts[0]
 
         # Determine which field to search based on search_field
-        if search_field == "summary":
-            tsvector_sql = "to_tsvector('english', coalesce(summary, ''))"
-            rank_sql = "ts_rank_cd(to_tsvector('english', coalesce(summary, '')), to_tsquery('english', :tsquery), 32)"
-        elif search_field == "steps":
-            # Convert JSON array to text by removing JSON formatting
-            tsvector_sql = "to_tsvector('english', coalesce(regexp_replace(steps::text, '[\"\\[\\],]', ' ', 'g'), ''))"
-            rank_sql = "ts_rank_cd(to_tsvector('english', coalesce(regexp_replace(steps::text, '[\"\\[\\],]', ' ', 'g'), '')), to_tsquery('english', :tsquery), 32)"
+        if search_field == "description":
+            tsvector_sql = "to_tsvector('english', coalesce(description, ''))"
+            rank_sql = "ts_rank_cd(to_tsvector('english', coalesce(description, '')), to_tsquery('english', :tsquery), 32)"
+        elif search_field == "instructions":
+            tsvector_sql = "to_tsvector('english', coalesce(instructions, ''))"
+            rank_sql = "ts_rank_cd(to_tsvector('english', coalesce(instructions, '')), to_tsquery('english', :tsquery), 32)"
         elif search_field == "entry_type":
             tsvector_sql = "to_tsvector('english', coalesce(entry_type, ''))"
             rank_sql = (
@@ -259,13 +258,12 @@ class ProceduralMemoryManager:
             )
         else:
             # Search across all relevant text fields with weighting
-            # Convert steps JSON array to text by removing JSON formatting
-            tsvector_sql = """setweight(to_tsvector('english', coalesce(summary, '')), 'A') ||
-                             setweight(to_tsvector('english', coalesce(regexp_replace(steps::text, '[\"\\[\\],]', ' ', 'g'), '')), 'B') ||
+            tsvector_sql = """setweight(to_tsvector('english', coalesce(description, '')), 'A') ||
+                             setweight(to_tsvector('english', coalesce(instructions, '')), 'B') ||
                              setweight(to_tsvector('english', coalesce(entry_type, '')), 'C')"""
             rank_sql = """ts_rank_cd(
-                setweight(to_tsvector('english', coalesce(summary, '')), 'A') ||
-                setweight(to_tsvector('english', coalesce(regexp_replace(steps::text, '[\"\\[\\],]', ' ', 'g'), '')), 'B') ||
+                setweight(to_tsvector('english', coalesce(description, '')), 'A') ||
+                setweight(to_tsvector('english', coalesce(instructions, '')), 'B') ||
                 setweight(to_tsvector('english', coalesce(entry_type, '')), 'C'),
                 to_tsquery('english', :tsquery), 32)"""
 
@@ -291,8 +289,8 @@ class ProceduralMemoryManager:
             and_query_sql = text(
                 f"""
                 SELECT
-                    id, created_at, entry_type, summary, steps,
-                    steps_embedding, summary_embedding, embedding_config,
+                    id, created_at, entry_type, name, description, instructions,
+                    instructions_embedding, description_embedding, embedding_config,
                     organization_id, last_modify, user_id,
                     {rank_sql} as rank_score
                 FROM procedural_memory
@@ -323,7 +321,7 @@ class ProceduralMemoryManager:
                             pass
 
                     # Parse embedding fields
-                    embedding_fields = ["steps_embedding", "summary_embedding"]
+                    embedding_fields = ["instructions_embedding", "description_embedding"]
                     for field in embedding_fields:
                         if field in data and data[field] is not None:
                             data[field] = self._parse_embedding_field(data[field])
@@ -344,8 +342,8 @@ class ProceduralMemoryManager:
             or_query_sql = text(
                 f"""
                 SELECT
-                    id, created_at, entry_type, summary, steps,
-                    steps_embedding, summary_embedding, embedding_config,
+                    id, created_at, entry_type, name, description, instructions,
+                    instructions_embedding, description_embedding, embedding_config,
                     organization_id, last_modify, user_id,
                     {rank_sql} as rank_score
                 FROM procedural_memory
@@ -373,7 +371,7 @@ class ProceduralMemoryManager:
                             pass
 
                 # Parse embedding fields
-                embedding_fields = ["steps_embedding", "summary_embedding"]
+                embedding_fields = ["instructions_embedding", "description_embedding"]
                 for field in embedding_fields:
                     if field in data and data[field] is not None:
                         data[field] = self._parse_embedding_field(data[field])
@@ -389,7 +387,7 @@ class ProceduralMemoryManager:
             fallback_field = (
                 getattr(ProceduralMemoryItem, search_field)
                 if search_field and hasattr(ProceduralMemoryItem, search_field)
-                else ProceduralMemoryItem.summary
+                else ProceduralMemoryItem.description
             )
             fallback_query = base_query.where(func.lower(fallback_field).contains(query_text.lower())).order_by(
                 ProceduralMemoryItem.created_at.desc()
@@ -502,7 +500,7 @@ class ProceduralMemoryManager:
         data_dict = item_data.model_dump()
 
         # Validate required fields
-        required_fields = ["entry_type"]
+        required_fields = ["entry_type", "name"]
         for field in required_fields:
             if field not in data_dict:
                 raise ValueError(f"Required field '{field}' missing from procedural memory data")
@@ -576,7 +574,7 @@ class ProceduralMemoryManager:
             agent_state: The agent state containing embedding configuration
             query: Search query string
             embedded_text: Pre-computed embedding for semantic search
-            search_field: Field to search in ('summary', 'steps', 'entry_type')
+            search_field: Field to search in ('description', 'instructions', 'entry_type')
             search_method: Search method to use:
                 - 'embedding': Vector similarity search using embeddings
                 - 'string_match': Simple string containment search
@@ -651,7 +649,7 @@ class ProceduralMemoryManager:
                             mode="constant",
                         ).tolist()
 
-                    vector_field = f"{search_field}_embedding" if search_field else "summary_embedding"
+                    vector_field = f"{search_field}_embedding" if search_field else "description_embedding"
 
                     results = await redis_client.search_vector(
                         index_name=redis_client.PROCEDURAL_INDEX,
@@ -670,7 +668,7 @@ class ProceduralMemoryManager:
                         return [PydanticProceduralMemoryItem(**item) for item in results]
 
                 elif search_method in ["bm25", "string_match"]:
-                    fields = [search_field] if search_field else ["summary", "steps"]
+                    fields = [search_field] if search_field else ["description", "instructions"]
 
                     results = await redis_client.search_text(
                         index_name=redis_client.PROCEDURAL_INDEX,
@@ -724,10 +722,11 @@ class ProceduralMemoryManager:
                         ProceduralMemoryItem.id.label("id"),
                         ProceduralMemoryItem.created_at.label("created_at"),
                         ProceduralMemoryItem.entry_type.label("entry_type"),
-                        ProceduralMemoryItem.summary.label("summary"),
-                        ProceduralMemoryItem.steps.label("steps"),
-                        ProceduralMemoryItem.steps_embedding.label("steps_embedding"),
-                        ProceduralMemoryItem.summary_embedding.label("summary_embedding"),
+                        ProceduralMemoryItem.name.label("name"),
+                        ProceduralMemoryItem.description.label("description"),
+                        ProceduralMemoryItem.instructions.label("instructions"),
+                        ProceduralMemoryItem.instructions_embedding.label("instructions_embedding"),
+                        ProceduralMemoryItem.description_embedding.label("description_embedding"),
                         ProceduralMemoryItem.embedding_config.label("embedding_config"),
                         ProceduralMemoryItem.organization_id.label("organization_id"),
                         ProceduralMemoryItem.last_modify.label("last_modify"),
@@ -757,22 +756,8 @@ class ProceduralMemoryManager:
                     )
 
                 elif search_method == "string_match":
-                    if search_field == "steps":
-                        # For JSON array field, convert to text first and then search
-                        from sqlalchemy import text
-
-                        if settings.mirix_pg_uri_no_default:
-                            # PostgreSQL: use regexp_replace and ::text casting
-                            search_condition = text(
-                                "lower(regexp_replace(steps::text, '[\"\\[\\],]', ' ', 'g')) LIKE lower(:query)"
-                            )
-                        else:
-                            # SQLite: use simpler text conversion without regexp_replace or ::text
-                            search_condition = text("lower(steps) LIKE lower(:query)")
-                        main_query = base_query.where(search_condition).params(query=f"%{query}%")
-                    else:
-                        search_field_obj = eval("ProceduralMemoryItem." + search_field)
-                        main_query = base_query.where(func.lower(search_field_obj).contains(query.lower()))
+                    search_field_obj = eval("ProceduralMemoryItem." + search_field)
+                    main_query = base_query.where(func.lower(search_field_obj).contains(query.lower()))
 
                 elif search_method == "bm25":
                     # Check if we're using PostgreSQL - use native full-text search if available
@@ -805,24 +790,15 @@ class ProceduralMemoryManager:
 
                         for item in all_items:
                             # Determine which field to use for search
-                            if search_field == "summary":
-                                text_to_search = item.summary or ""
-                            elif search_field == "steps":
-                                # Convert JSON array to text for searching
-                                if isinstance(item.steps, list):
-                                    text_to_search = " ".join(item.steps)
-                                else:
-                                    text_to_search = str(item.steps) if item.steps else ""
+                            if search_field == "description":
+                                text_to_search = item.description or ""
+                            elif search_field == "instructions":
+                                text_to_search = item.instructions or ""
                             elif search_field == "entry_type":
                                 text_to_search = item.entry_type or ""
                             else:
                                 # Default to searching across all text fields
-                                texts = [item.summary or "", item.entry_type or ""]
-                                # Handle steps field conversion
-                                if isinstance(item.steps, list):
-                                    texts.append(" ".join(item.steps))
-                                else:
-                                    texts.append(str(item.steps) if item.steps else "")
+                                texts = [item.description or "", item.entry_type or "", item.instructions or ""]
                                 text_to_search = " ".join(texts)
 
                             # Preprocess the text into tokens
@@ -873,7 +849,7 @@ class ProceduralMemoryManager:
                         if search_field and hasattr(item, search_field):
                             text_to_search = getattr(item, search_field)
                         else:
-                            text_to_search = item.summary
+                            text_to_search = item.description
 
                         # Compute a fuzzy matching score using partial_ratio,
                         # which is suited for comparing a short query to longer text.
@@ -903,11 +879,15 @@ class ProceduralMemoryManager:
         self,
         agent_state: AgentState,
         agent_id: str,
+        name: str,
+        description: str,
+        instructions: str,
         entry_type: str,
-        summary: Optional[str],
-        steps: List[str],
         actor: PydanticClient,
         organization_id: str,
+        triggers: Optional[List[str]] = None,
+        examples: Optional[List[dict]] = None,
+        version: str = "0.1.0",
         filter_tags: Optional[dict] = None,
         use_cache: bool = True,
         user_id: Optional[str] = None,
@@ -917,12 +897,12 @@ class ProceduralMemoryManager:
             if BUILD_EMBEDDINGS_FOR_MEMORY:
                 # TODO: need to check if we need to chunk the text
                 embed_model = await embedding_model(agent_state.embedding_config)
-                summary_embedding = await embed_model.get_text_embedding(summary)
-                steps_embedding = await embed_model.get_text_embedding("\n".join(steps))
+                description_embedding = await embed_model.get_text_embedding(description)
+                instructions_embedding = await embed_model.get_text_embedding(instructions)
                 embedding_config = agent_state.embedding_config
             else:
-                summary_embedding = None
-                steps_embedding = None
+                description_embedding = None
+                instructions_embedding = None
                 embedding_config = None
 
             # Set client_id from actor, user_id with fallback to DEFAULT_USER_ID
@@ -934,14 +914,18 @@ class ProceduralMemoryManager:
 
             procedure = await self.create_item(
                 item_data=PydanticProceduralMemoryItem(
+                    name=name,
                     entry_type=entry_type,
-                    summary=summary,
-                    steps=steps,
+                    description=description,
+                    instructions=instructions,
+                    triggers=triggers or [],
+                    examples=examples or [],
+                    version=version,
                     user_id=user_id,
                     agent_id=agent_id,
                     organization_id=organization_id,
-                    summary_embedding=summary_embedding,
-                    steps_embedding=steps_embedding,
+                    description_embedding=description_embedding,
+                    instructions_embedding=instructions_embedding,
                     embedding_config=embedding_config,
                     filter_tags=filter_tags,
                 ),
@@ -1207,7 +1191,7 @@ class ProceduralMemoryManager:
                             mode="constant",
                         ).tolist()
 
-                    vector_field = f"{search_field}_embedding" if search_field else "summary_embedding"
+                    vector_field = f"{search_field}_embedding" if search_field else "description_embedding"
                     results = await redis_client.search_vector_by_org(
                         index_name=redis_client.PROCEDURAL_INDEX,
                         embedding=embedded_text,
@@ -1226,7 +1210,7 @@ class ProceduralMemoryManager:
                     results = await redis_client.search_text_by_org(
                         index_name=redis_client.PROCEDURAL_INDEX,
                         query_text=query,
-                        search_field=search_field or "summary",
+                        search_field=search_field or "description",
                         search_method=search_method,
                         limit=limit or 50,
                         organization_id=organization_id,
@@ -1267,12 +1251,12 @@ class ProceduralMemoryManager:
                     embedded_text = await (await embedding_model(embedding_config)).get_text_embedding(query)
 
                 # Determine which embedding field to search
-                if search_field == "summary":
-                    embedding_field = ProceduralMemoryItem.summary_embedding
-                elif search_field == "steps":
-                    embedding_field = ProceduralMemoryItem.steps_embedding
+                if search_field == "description":
+                    embedding_field = ProceduralMemoryItem.description_embedding
+                elif search_field == "instructions":
+                    embedding_field = ProceduralMemoryItem.instructions_embedding
                 else:
-                    embedding_field = ProceduralMemoryItem.summary_embedding
+                    embedding_field = ProceduralMemoryItem.description_embedding
 
                 embedding_query_field = embedding_field.cosine_distance(embedded_text).label("distance")
                 base_query = base_query.add_columns(embedding_query_field)
@@ -1288,12 +1272,12 @@ class ProceduralMemoryManager:
                 from sqlalchemy import func
 
                 # Determine search field
-                if search_field == "summary":
-                    text_field = ProceduralMemoryItem.summary
-                elif search_field == "steps":
-                    text_field = ProceduralMemoryItem.steps
+                if search_field == "description":
+                    text_field = ProceduralMemoryItem.description
+                elif search_field == "instructions":
+                    text_field = ProceduralMemoryItem.instructions
                 else:
-                    text_field = ProceduralMemoryItem.summary
+                    text_field = ProceduralMemoryItem.description
 
                 tsquery = func.plainto_tsquery("english", query)
                 tsvector = func.to_tsvector("english", text_field)
