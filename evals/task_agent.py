@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 from typing import Any, Dict, Optional, List
@@ -8,14 +9,16 @@ import uuid
 from pathlib import Path
 import yaml
 from mirix import MirixClient
+from mirix_memory_system import _resolve_api_keys
 
-load_dotenv("../env")
+load_dotenv(".env")
 
 class TaskAgent:
     def __init__(
         self,
         mirix_config_path: str,
-        mirix_api_key: str,
+        client_id: Optional[str] = None,
+        org_id: Optional[str] = None,
         api_key: Optional[str] = None,
         model: str = "gpt-4.1-mini",
         user_id: Optional[str] = None,
@@ -29,14 +32,15 @@ class TaskAgent:
         self.model = model
         self.user_id = user_id
         self.max_tool_rounds = max_tool_rounds
-        self.mirix_client = MirixClient(api_key=mirix_api_key, base_url="http://127.0.0.1:8531")
+        self.mirix_client = MirixClient(client_id=client_id, org_id=org_id, base_url="http://127.0.0.1:8531", write_scope="read_write")
         self.user_id = user_id if user_id is not None else str(uuid.uuid4())
         config_path = Path(mirix_config_path)
         with config_path.open("r", encoding="utf-8") as handle:
             config = yaml.safe_load(handle) or {}
-        self.mirix_client.initialize_meta_agent(
+        config = _resolve_api_keys(config)
+        asyncio.run(self.mirix_client.initialize_meta_agent(
             config=config
-        )
+        ))
 
     def _build_tools(self) -> list:
         if not self.mirix_client:
@@ -145,13 +149,13 @@ class TaskAgent:
 
         # Set reasonable defaults for better search quality
         if 'search_method' not in params or params['search_method'] is None:
-            params['search_method'] = None  # Let meta agent decide
+            params['search_method'] = "embedding"
 
         # Increase limit slightly for better recall
         if 'limit' not in params or params['limit'] is None or params['limit'] < 10:
             params['limit'] = 15  # Get more candidates for better coverage
 
-        results = self.mirix_client.search(user_id=resolved_user_id, **params)
+        results = asyncio.run(self.mirix_client.search(user_id=resolved_user_id, **params))
 
         if results['success']:
             for result in results['results']:

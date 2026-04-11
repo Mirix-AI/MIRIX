@@ -2128,6 +2128,116 @@ async def add_memory(
     }
 
 
+@router.post("/memory/add_sync")
+@with_langfuse_tracing
+async def add_memory_sync(
+    request: AddMemoryRequest,
+    x_org_id: Optional[str] = Header(None),
+    x_client_id: Optional[str] = Header(None),
+):
+    """
+    Add conversation turns to memory (synchronous processing).
+
+    Processes messages immediately by running the agent directly, blocking
+    until all memory extraction is complete before returning.
+    """
+    server = get_server()
+    client_id, org_id = await get_client_and_org(x_client_id, x_org_id)
+    client = await server.client_manager.get_client_by_id(client_id)
+
+    if client is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Client {client_id} not found. Please create the client first.",
+        )
+
+    meta_agent = await server.agent_manager.get_agent_by_id(
+        request.meta_agent_id,
+        client,
+    )
+
+    user_id = request.user_id
+    if not user_id:
+        from mirix.services.admin_user_manager import ClientAuthManager
+
+        user_id = ClientAuthManager.get_admin_user_id_for_client(client.id)
+
+    message = request.messages
+
+    if isinstance(message, list) and "role" in message[0].keys():
+        new_message = []
+        for msg in message:
+            new_message.append(
+                {
+                    "type": "text",
+                    "text": "[USER]" if msg["role"] == "user" else "[ASSISTANT]",
+                }
+            )
+            content = msg["content"]
+            if isinstance(content, str):
+                new_message.append({"type": "text", "text": content})
+            elif isinstance(content, list):
+                new_message.extend(content)
+            else:
+                raise ValueError(f"Invalid content type: {type(content)}")
+        message = new_message
+
+    input_messages = convert_message_to_mirix_message(message)
+
+    if request.filter_tags is not None:
+        filter_tags = dict(request.filter_tags)
+    else:
+        filter_tags = {}
+
+    if client.write_scope is None:
+        raise HTTPException(status_code=403, detail="Client has no write_scope - cannot create memories")
+    filter_tags["scope"] = client.write_scope
+
+    from mirix.services.user_manager import UserManager
+
+    user_manager = UserManager()
+    try:
+        user = await user_manager.get_user_by_id(user_id)
+    except Exception:
+        from mirix.schemas.user import User as PydanticUser
+
+        user = await user_manager.create_user(
+            pydantic_user=PydanticUser(
+                id=user_id,
+                name=user_id,
+                organization_id=client.organization_id,
+                timezone=user_manager.DEFAULT_TIME_ZONE,
+                status="active",
+                is_deleted=False,
+                is_admin=False,
+            )
+        )
+
+    await server.send_messages(
+        actor=client,
+        agent_id=meta_agent.id,
+        input_messages=input_messages,
+        chaining=request.chaining,
+        user=user,
+        verbose=request.verbose,
+        filter_tags=filter_tags,
+        block_filter_tags=request.block_filter_tags,
+        block_filter_tags_update_mode=request.block_filter_tags_update_mode,
+        use_cache=request.use_cache,
+        occurred_at=request.occurred_at,
+    )
+
+    logger.debug("Memory processed synchronously: %s", meta_agent.id)
+
+    return {
+        "success": True,
+        "message": "Memory processed successfully",
+        "status": "processed",
+        "agent_id": meta_agent.id,
+        "message_count": len(input_messages),
+    }
+
+
 class RetrieveMemoryRequest(BaseModel):
     """Request model for retrieving memory."""
 
@@ -2696,7 +2806,7 @@ async def search_memory(
     query: str = "",
     memory_type: str = "all",
     search_field: str = "null",
-    search_method: str = "bm25",
+    search_method: str = "embedding",
     limit: int = 10,
     authorization: Optional[str] = Header(None),
     filter_tags: Optional[str] = Query(None),
@@ -2824,6 +2934,10 @@ async def search_memory(
                 parsed_end_date = parsed_end_date.replace(tzinfo=None)
         except ValueError as e:
             logger.warning("Invalid end_date format: %s", e)
+
+    # Normalize empty search_method to the default (FastAPI passes "" for missing query params)
+    if not search_method:
+        search_method = "embedding"
 
     # Validate search parameters
     if memory_type == "resource" and search_field == "content" and search_method == "embedding":
@@ -3261,7 +3375,7 @@ async def search_memory_all_users(
     query: str,
     memory_type: str = "all",
     search_field: str = "null",
-    search_method: str = "bm25",
+    search_method: str = "embedding",
     limit: int = 10,
     client_id: Optional[str] = Query(None),
     org_id: Optional[str] = Query(None),
@@ -3389,6 +3503,10 @@ async def search_memory_all_users(
         }
 
     agent_state = all_agents[0]
+
+    # Normalize empty search_method to the default (FastAPI passes "" for missing query params)
+    if not search_method:
+        search_method = "embedding"
 
     # Validate search parameters
     if memory_type == "resource" and search_field == "content" and search_method == "embedding":

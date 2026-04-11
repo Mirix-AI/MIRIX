@@ -185,7 +185,13 @@ class MirixClient(AbstractClient):
             self.read_scopes = [client_scope]
         else:
             self.write_scope = write_scope
-            self.read_scopes = read_scopes if read_scopes is not None else []
+            if read_scopes is not None:
+                self.read_scopes = read_scopes
+            elif write_scope:
+                # If only write_scope is given, the client can also read what it writes
+                self.read_scopes = [write_scope]
+            else:
+                self.read_scopes = []
 
         # Keep client_scope for backward compatibility in logging
         self.client_scope = client_scope or write_scope or ""
@@ -1192,6 +1198,9 @@ class MirixClient(AbstractClient):
             >>> meta_agent = client.initialize_meta_agent(config=config)
         """
 
+        # Ensure org and client exist in the DB before making agent requests
+        await self._ensure_org_and_client_exist(headers=headers)
+
         # Load config from file if provided
         if config_path:
             from pathlib import Path
@@ -1243,6 +1252,7 @@ class MirixClient(AbstractClient):
         block_filter_tags_update_mode: Optional[str] = "merge",
         use_cache: bool = True,
         occurred_at: Optional[str] = None,
+        async_add: bool = True,
         headers: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         """
@@ -1345,7 +1355,8 @@ class MirixClient(AbstractClient):
         if occurred_at is not None:
             request_data["occurred_at"] = occurred_at
 
-        return await self._request("POST", "/memory/add", json=request_data, headers=headers)
+        endpoint = "/memory/add" if async_add else "/memory/add_sync"
+        return await self._request("POST", endpoint, json=request_data, headers=headers)
 
     async def retrieve_with_conversation(
         self,
@@ -1511,7 +1522,7 @@ class MirixClient(AbstractClient):
         query: str,
         memory_type: str = "all",
         search_field: str = "null",
-        search_method: str = "bm25",
+        search_method: str = "embedding",
         limit: int = 10,
         filter_tags: Optional[Dict[str, Any]] = None,
         similarity_threshold: Optional[float] = None,
@@ -1661,7 +1672,7 @@ class MirixClient(AbstractClient):
         query: str,
         memory_type: str = "all",
         search_field: str = "null",
-        search_method: str = "bm25",
+        search_method: str = "embedding",
         limit: int = 10,
         client_id: Optional[str] = None,
         filter_tags: Optional[Dict[str, Any]] = None,

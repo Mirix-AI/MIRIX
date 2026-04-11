@@ -156,12 +156,8 @@ def main() -> None:
     if args.limit is not None:
         items = items[: args.limit]
 
-    mirix_api_key = os.environ.get("MIRIX_API_KEY") or ""
-    if not mirix_api_key:
-        raise RuntimeError(
-            "MIRIX_API_KEY must be set in the environment to run evals against the local server. "
-            "Tip: run ./.venv/bin/python samples/generate_demo_api_key.py and export MIRIX_API_KEY to the printed value."
-        )
+    mirix_client_id = os.environ.get("MIRIX_CLIENT_ID", "mirix-eval-client")
+    mirix_org_id = os.environ.get("MIRIX_ORG_ID", "mirix-eval-org")
 
     output_path = args.output_path
     output_path.mkdir(parents=True, exist_ok=True)
@@ -172,7 +168,7 @@ def main() -> None:
             continue
         sample_path = output_path / f"{sample_id}.json"
 
-        task_agent = TaskAgent(mirix_config_path=str(args.mirix_config_path), mirix_api_key=mirix_api_key, user_id=sample_id) if args.run_llm else None
+        task_agent = TaskAgent(mirix_config_path=str(args.mirix_config_path), client_id=mirix_client_id, org_id=mirix_org_id, user_id=sample_id) if args.run_llm else None
 
         sample_result = load_sample_result(sample_path)
         if sample_result is None:
@@ -186,9 +182,9 @@ def main() -> None:
         sample_result.setdefault("sample_id", sample_id)
         sample_result = normalize_sample_result(sample_result)
 
-        memory_system = MirixMemorySystem(user_id=sample_id, 
+        memory_system = MirixMemorySystem(user_id=sample_id,
                     mirix_config_path=str(args.mirix_config_path),
-                    mirix_api_key=mirix_api_key)
+                    client=task_agent.mirix_client)
 
         conversation = item.get("conversation", {})
         for idx, session in enumerate(iter_sessions(conversation), start=1):
@@ -200,7 +196,7 @@ def main() -> None:
             date_time = conversation.get(date_time_key)
             if date_time is None:
                 date_time = conversation.get(f"session_{idx + 1}_date_time")
-            
+
             # Timestamp context for memory agents
             timestamp_context = f"The conversation is timestamped at {date_time}.\n\n" if date_time else ""
             chunk_with_instruction = timestamp_context + chunk

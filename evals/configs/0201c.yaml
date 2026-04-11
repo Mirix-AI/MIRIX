@@ -14,7 +14,7 @@ topic_extraction_llm_config:
   api_key: your-api-key
   model_endpoint: "https://api.openai.com/v1"
   context_window: 128000
-  
+
 embedding_config:
   embedding_model: "text-embedding-3-small"
   embedding_endpoint: "https://api.openai.com/v1"
@@ -32,9 +32,7 @@ meta_agent_config:
     - semantic_memory_agent
     - episodic_memory_agent
     - procedural_memory_agent
-    - knowledge_memory_agent
-    - reflexion_agent
-    - background_agent
+    - knowledge_vault_memory_agent
   memory:
     core:
       - label: "human"

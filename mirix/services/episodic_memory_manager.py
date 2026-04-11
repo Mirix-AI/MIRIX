@@ -996,6 +996,9 @@ class EpisodicMemoryManager:
                     # Return the list after converting to Pydantic.
                     return [event.to_pydantic() for event in episodic_memory]
 
+                else:
+                    raise ValueError(f"Invalid search method: {search_method}")
+
                 if limit:
                     main_query = main_query.limit(limit)
 

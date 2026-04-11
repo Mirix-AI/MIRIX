@@ -1,3 +1,4 @@
+import asyncio
 import sys
 from pathlib import Path
 
@@ -11,44 +12,75 @@ import yaml
 from typing import Optional
 from dotenv import load_dotenv
 
-# Load .env file from project root (parent directory of evals/)
-env_path = Path(__file__).parent.parent / ".env"
-load_dotenv(env_path)
+load_dotenv()
+
+_PROVIDER_ENV_VARS: dict[str, str] = {
+    "openai": "OPENAI_API_KEY",
+    "anthropic": "ANTHROPIC_API_KEY",
+    "google": "GEMINI_API_KEY",
+    "gemini": "GEMINI_API_KEY",
+    "azure": "AZURE_OPENAI_API_KEY",
+    "groq": "GROQ_API_KEY",
+    "cohere": "COHERE_API_KEY",
+    "mistral": "MISTRAL_API_KEY",
+}
+
+_PLACEHOLDER = "your-api-key"
+
+
+def _resolve_api_keys(config: dict) -> dict:
+    """Replace placeholder api_key values with the matching env var."""
+    for section in config.values():
+        if not isinstance(section, dict) or section.get("api_key") != _PLACEHOLDER:
+            continue
+        provider = (
+            section.get("model_endpoint_type")
+            or section.get("embedding_endpoint_type")
+            or ""
+        ).lower()
+        env_var = _PROVIDER_ENV_VARS.get(provider)
+        if env_var:
+            section["api_key"] = os.environ.get(env_var, _PLACEHOLDER)
+    return config
+
 
 class MirixMemorySystem:
-    
-    def __init__(self, user_id: Optional[str] = None, mirix_config_path: Optional[str] = None, mirix_api_key: Optional[str] = None):
-        self.client = MirixClient(api_key=mirix_api_key, base_url="http://127.0.0.1:8531")
-        self.user_id = user_id if user_id is not None else str(uuid.uuid4())
-        config_path = Path(mirix_config_path) if mirix_config_path else Path(__file__).with_name("mirix_openai.yaml")
-        with config_path.open("r", encoding="utf-8") as handle:
-            config = yaml.safe_load(handle) or {}
-        self.client.initialize_meta_agent(
-            config=config
-        )
 
-    def add_chunk(self, chunk: str, raw_input: Optional[str] = None):
-        response = self.client.add(
+    def __init__(self, user_id: Optional[str] = None, mirix_config_path: Optional[str] = None, client_id: Optional[str] = None, org_id: Optional[str] = None, client: Optional[MirixClient] = None):
+        if client is None:
+            self.client = MirixClient(client_id=client_id, org_id=org_id, base_url="http://127.0.0.1:8531", write_scope="read_write")
+            config_path = Path(mirix_config_path) if mirix_config_path else Path(__file__).with_name("mirix_openai.yaml")
+            with config_path.open("r", encoding="utf-8") as handle:
+                config = yaml.safe_load(handle) or {}
+            config = _resolve_api_keys(config)
+            asyncio.run(self.client.initialize_meta_agent(
+                config=config,
+            ))
+        else:
+            self.client = client
+        self.user_id = user_id if user_id is not None else str(uuid.uuid4())
+
+
+    def add_chunk(self, chunk: str, raw_input: Optional[str] = None, async_add: bool = False):
+        response = asyncio.run(self.client.add(
             user_id=self.user_id,
             messages=[
                 {"role": "user", "content": chunk}
             ],
-            raw_input=raw_input,
-            save_raw_inputs=True if raw_input is not None else None,
             # LoCoMo ingestion: avoid running the full multi-agent chain on every session.
             chaining=False,
             filter_tags={"scope": "read_write", "kind": "conversation_session"},
-            async_add=False,
-        )
+            async_add=async_add,
+        ))
         return response
-    
+
     def wrap_user_prompt(self, prompt: str):
-        memories = self.client.retrieve_with_conversation(
+        memories = asyncio.run(self.client.retrieve_with_conversation(
             user_id=self.user_id,
             messages=[
                 {'role': 'user', 'content': prompt}
             ]
-        )
+        ))
 
         memory_context_lines = ["<episodic_memory>"]
         memories_found = False
@@ -94,7 +126,7 @@ class MirixMemorySystem:
                         )
                         if not content:
                             content = str(item)
-                        
+
                         if item.get("timestamp"):
                             content = f"[{item.get('timestamp')}] {content}"
 
@@ -116,8 +148,8 @@ class MirixMemorySystem:
         ]
 
     def list_all_memories(self, memory_type: str = "all", limit: int = 0):
-        return self.client.list_memory_components(
+        return asyncio.run(self.client.list_memory_components(
             user_id=self.user_id,
             memory_type=memory_type,
             limit=limit,
-        )
+        ))

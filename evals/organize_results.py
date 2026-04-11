@@ -104,33 +104,33 @@ def sorted_record_items(records: Dict[str, Dict[str, Any]]) -> List[Tuple[str, D
 
 def count_memory_tokens(data: Dict[str, Any], encoding) -> int:
     """Count tokens in memory data using tiktoken encoding.
-    
+
     For memory types like episodic, semantic, etc., counts tokens from 'summary' and 'details'.
     For core memories, counts tokens from 'value'.
     """
     total_tokens = 0
-    
+
     memories = data.get("memories", {})
     if not isinstance(memories, dict):
         return 0
-    
+
     for memory_type, memory_data in memories.items():
         if not isinstance(memory_data, dict):
             continue
-        
+
         items = memory_data.get("items", [])
         if not isinstance(items, list):
             continue
-        
+
         for item in items:
             if not isinstance(item, dict):
                 continue
-            
+
             # For most memory types, count summary and details
             if memory_type != "core":
                 summary = item.get("summary", "")
                 details = item.get("details", "")
-                
+
                 if isinstance(summary, str):
                     total_tokens += len(encoding.encode(summary))
                 if isinstance(details, str):
@@ -140,7 +140,7 @@ def count_memory_tokens(data: Dict[str, Any], encoding) -> int:
                 value = item.get("value", "")
                 if isinstance(value, str):
                     total_tokens += len(encoding.encode(value))
-    
+
     return total_tokens
 
 
@@ -228,7 +228,7 @@ def main() -> None:
     parser.add_argument(
         "input_dir",
         type=Path,
-        help="Path to results folder (e.g., evals/results/0124a).",
+        help="Path to results folder (e.g., results/0124a).",
     )
     parser.add_argument(
         "--output-file",
@@ -270,7 +270,7 @@ def main() -> None:
     total_judged = 0
     judge_results: List[Optional[Dict[str, Any]]] = []
     judge_tasks: List[Tuple[int, str, Any, Any, Any, Any, Any]] = []
-    
+
     # Initialize tiktoken encoding for gpt-4o-mini
     encoding = tiktoken.encoding_for_model("gpt-4o-mini")
     total_memory_tokens = 0
@@ -340,14 +340,14 @@ def main() -> None:
                 if category != 5:
                     total_correct += score
                     total_judged += 1
-    
+
     # Process memory files to count tokens
     memory_files = list(sorted(input_dir.glob("*_memories.json")))
     for path in tqdm(memory_files, total=len(memory_files), desc="Processing memory files"):
         data = load_json(path)
         if data is None:
             continue
-        
+
         tokens = count_memory_tokens(data, encoding)
         total_memory_tokens += tokens
         memory_file_count += 1
