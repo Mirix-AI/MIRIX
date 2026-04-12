@@ -41,7 +41,7 @@ from mirix.log import get_logger
 from mirix.memory import summarize_messages
 from mirix.observability.context import get_trace_context, mark_observation_as_child
 from mirix.observability.langfuse_client import get_langfuse_client
-from mirix.schemas.agent import AgentState, AgentStepResponse, UpdateAgent
+from mirix.schemas.agent import AgentState, AgentStepResponse, AgentType, UpdateAgent
 from mirix.schemas.block import BlockUpdate
 from mirix.schemas.client import Client
 from mirix.schemas.embedding_config import EmbeddingConfig
@@ -67,6 +67,7 @@ from mirix.services.procedural_memory_manager import ProceduralMemoryManager
 from mirix.services.resource_memory_manager import ResourceMemoryManager
 from mirix.services.semantic_memory_manager import SemanticMemoryManager
 from mirix.services.step_manager import StepManager
+from mirix.services.user_manager import UserManager
 from mirix.services.tool_execution_sandbox import ToolExecutionSandbox
 from mirix.settings import settings, summarizer_settings
 from mirix.system import (
@@ -927,38 +928,15 @@ class Agent(BaseAgent):
                 for tool_call in response_message.tool_calls:
                     assert tool_call.id is not None  # should be defined
 
-            # Memory agents are instructed to emit only ONE tool call per step.
-            # In practice, the LLM can occasionally return multiple tool calls (often duplicates),
-            # which can cause non-idempotent operations to fail (e.g., double deletes).
-            # To match the prompt contract and keep behavior predictable, truncate to the first.
-            from mirix.schemas.agent import AgentType
-
-            memory_agent_types = {
-                AgentType.core_memory_agent,
-                AgentType.episodic_memory_agent,
-                AgentType.procedural_memory_agent,
-                AgentType.resource_memory_agent,
-                AgentType.knowledge_vault_memory_agent,
-                AgentType.semantic_memory_agent,
-            }
-
             if (
-                self.agent_state.agent_type in memory_agent_types
-                and response_message.tool_calls is not None
+                response_message.tool_calls is not None
                 and len(response_message.tool_calls) > 1
             ):
-                kept = response_message.tool_calls[0]
-                dropped = response_message.tool_calls[1:]
-                dropped_desc = [f"{tc.function.name}:{tc.id}" for tc in dropped if tc and tc.function]
-                self.logger.warning(
-                    "Truncating %d extra tool call(s) for memory agent %s (keeping %s:%s, dropping %s)",
-                    len(dropped),
+                self.logger.info(
+                    "Memory agent %s returned %d tool call(s); executing each sequentially",
                     self.agent_state.agent_type,
-                    kept.function.name if kept and kept.function else None,
-                    kept.id if kept else None,
-                    dropped_desc,
+                    len(response_message.tool_calls),
                 )
-                response_message.tool_calls = [kept]
 
             # role: assistant (requesting tool call, set tool call ID)
             messages.append(
@@ -1495,8 +1473,6 @@ class Agent(BaseAgent):
             self.user = user
 
             # Only load blocks for core_memory_agent (other agent types don't use blocks)
-            from mirix.schemas.agent import AgentType
-
             if self.agent_state.is_type(AgentType.core_memory_agent):
                 # Load existing blocks for this user, scoped by the client's write_scope.
                 # auto_create_from_default=True will create blocks from template if they don't exist for this scope.
@@ -1723,8 +1699,6 @@ class Agent(BaseAgent):
         Returns:
             Tuple[str, dict]: The complete system prompt and the retrieved memories dict
         """
-        from mirix.schemas.agent import AgentType
-
         timezone_str = self.user.timezone
 
         if retrieved_memories is None:
