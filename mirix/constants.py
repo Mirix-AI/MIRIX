@@ -114,7 +114,7 @@ EPISODIC_MEMORY_TOOLS = [
     "episodic_memory_replace",
     "check_episodic_memory",
 ]
-SKILL_TOOLS = ["skill_insert", "skill_update"]
+SKILL_TOOLS = ["skill_list", "skill_read", "skill_create", "skill_edit", "skill_delete"]
 RESOURCE_MEMORY_TOOLS = ["resource_memory_insert", "resource_memory_update"]
 KNOWLEDGE_VAULT_TOOLS = ["knowledge_vault_insert", "knowledge_vault_update"]
 SEMANTIC_MEMORY_TOOLS = [
@@ -248,3 +248,4 @@ LOAD_IMAGE_CONTENT_FOR_LAST_MESSAGE_ONLY = os.getenv("LOAD_IMAGE_CONTENT_FOR_LAS
     "yes",
 )
 BUILD_EMBEDDINGS_FOR_MEMORY = os.getenv("BUILD_EMBEDDINGS_FOR_MEMORY", "true").lower() in ("true", "1", "yes")
+SKILL_TRIGGER_MESSAGE_THRESHOLD = int(os.getenv("SKILL_TRIGGER_MESSAGE_THRESHOLD", "10"))
