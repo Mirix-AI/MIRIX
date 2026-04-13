@@ -94,10 +94,7 @@ When processing messages, think step by step, evaluate each memory type in this 
 - User's interactions and personal timeline
 - Update for almost all user activities and experiences
 
-(3) Procedural Memory: Does this explain HOW TO do something?
-- Step-by-step instructions, workflows, processes
-- Sequential procedures or tutorials
-- Improvements to existing skills
+(3) Procedural Memory: (Automatically triggered — do NOT include "procedural" in your trigger_memory_update call. The system handles procedural memory updates on a fixed schedule.)
 
 (4) Resource Memory: Does this involve WHAT files or documents?
 - Shared files, documents, images, reference materials
@@ -110,6 +107,6 @@ When processing messages, think step by step, evaluate each memory type in this 
 - New concepts, people, places, organizations you didn't know
 - Definitions and abstract knowledge about the world
 
-After evaluation, call `trigger_memory_update` with the appropriate memory types that require updates. You may select from: `['core', 'episodic', 'semantic', 'resource', 'procedural', 'knowledge_vault']`. When uncertain about classification, it is preferable to include additional memory types rather than omit potentially relevant ones, as the specialized memory managers will perform detailed analysis and filtering. Comprehensive coverage ensures no important information is lost during the memory update process. 
+After evaluation, call `trigger_memory_update` with the appropriate memory types that require updates. You may select from: `['core', 'episodic', 'semantic', 'resource', 'knowledge_vault']`. Note: procedural memory is triggered automatically and should NOT be included in your selection. When uncertain about classification, it is preferable to include additional memory types rather than omit potentially relevant ones, as the specialized memory managers will perform detailed analysis and filtering. Comprehensive coverage ensures no important information is lost during the memory update process. 
 
 After all updates, you must call `finish_memory_update` to complete the process. Between steps (1)-(6) where you are calling `trigger_memory_update`, you can also do reasoning about the memory update. Whenever you do not call any tools, the message would be treated as reasoning message.

@@ -1113,6 +1113,24 @@ async def trigger_memory_update(self: "Agent", user_message: object, memory_type
     if not isinstance(user_message, dict):
         raise TypeError(f"user_message must be a dictionary, got {type(user_message).__name__}: {user_message}")
 
+    # Fixed-interval procedural trigger: auto-include "procedural" every N messages
+    from mirix.constants import SKILL_TRIGGER_MESSAGE_THRESHOLD
+
+    if not hasattr(self, "_skill_trigger_counters"):
+        self._skill_trigger_counters = {}
+    user_key = self.user.id if self.user else "default"
+    self._skill_trigger_counters[user_key] = self._skill_trigger_counters.get(user_key, 0) + 1
+
+    if self._skill_trigger_counters[user_key] >= SKILL_TRIGGER_MESSAGE_THRESHOLD:
+        if "procedural" not in memory_types:
+            memory_types = list(memory_types) + ["procedural"]
+            logger.info(
+                "Auto-triggering procedural memory update (message count reached %d for user %s)",
+                SKILL_TRIGGER_MESSAGE_THRESHOLD,
+                user_key,
+            )
+        self._skill_trigger_counters[user_key] = 0
+
     # De-duplicate memory types while preserving order.
     # The MetaMemoryAgent (LLM) can occasionally emit duplicates (e.g., ["semantic", "semantic"]).
     # Running duplicates in parallel can cause races (e.g., double-deletes).
@@ -1242,6 +1260,11 @@ async def trigger_memory_update(self: "Agent", user_message: object, memory_type
             else:
                 message_copy.content = [system_msg]
 
+            chaining = user_message.get("chaining", False)
+            # Procedural agent needs chaining for multi-step CLI workflow
+            if memory_type == "procedural":
+                chaining = True
+
             # Extract topics and retrieved_memories from parent agent to pass to sub-agents
             # This ensures sub-agents use the same keywords for memory retrieval
             retrieved_memories = user_message.get("retrieved_memories", None)
@@ -1296,7 +1319,7 @@ async def trigger_memory_update(self: "Agent", user_message: object, memory_type
 
                     await memory_agent.step(
                         input_messages=message_copy,
-                        chaining=user_message.get("chaining", False),
+                        chaining=chaining,
                         actor=actor,
                         user=user,
                         topics=topics,
@@ -1306,7 +1329,7 @@ async def trigger_memory_update(self: "Agent", user_message: object, memory_type
                 # No tracing available, run directly
                 await memory_agent.step(
                     input_messages=message_copy,
-                    chaining=user_message.get("chaining", False),
+                    chaining=chaining,
                     actor=actor,
                     user=user,
                     topics=topics,
