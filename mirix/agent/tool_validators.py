@@ -192,31 +192,46 @@ def validate_resource_memory_update(function_name: str, args: dict) -> Optional[
 # ============================================================
 
 
-@register_validator("skill_insert")
-def validate_skill_insert(function_name: str, args: dict) -> Optional[str]:
-    """Validate skill_insert arguments."""
-    items = args.get("items", [])
-    for i, item in enumerate(items):
-        if not item.get("name", "").strip():
-            return f"Validation error: 'name' field in item {i} cannot be empty."
-        if not item.get("description", "").strip():
-            return f"Validation error: 'description' field in item {i} cannot be empty."
-        if not item.get("instructions", "").strip():
-            return f"Validation error: 'instructions' field in item {i} cannot be empty."
+@register_validator("skill_create")
+def validate_skill_create(function_name: str, args: dict) -> Optional[str]:
+    """Validate skill_create arguments."""
+    if not args.get("name", "").strip():
+        return "Validation error: 'name' cannot be empty."
+    if not args.get("description", "").strip():
+        return "Validation error: 'description' cannot be empty."
+    if not args.get("instructions", "").strip():
+        return "Validation error: 'instructions' cannot be empty."
     return None
 
 
-@register_validator("skill_update")
-def validate_skill_update(function_name: str, args: dict) -> Optional[str]:
-    """Validate skill_update arguments."""
-    items = args.get("new_items", [])
-    for i, item in enumerate(items):
-        if not item.get("name", "").strip():
-            return f"Validation error: 'name' field in new_items[{i}] cannot be empty."
-        if not item.get("description", "").strip():
-            return f"Validation error: 'description' field in new_items[{i}] cannot be empty."
-        if not item.get("instructions", "").strip():
-            return f"Validation error: 'instructions' field in new_items[{i}] cannot be empty."
+@register_validator("skill_edit")
+def validate_skill_edit(function_name: str, args: dict) -> Optional[str]:
+    """Validate skill_edit arguments."""
+    if not args.get("skill_id", "").strip():
+        return "Validation error: 'skill_id' cannot be empty."
+    field = args.get("field", "")
+    if not field:
+        return "Validation error: 'field' cannot be empty."
+    valid_fields = {"name", "description", "instructions", "entry_type", "triggers", "examples"}
+    if field not in valid_fields:
+        return f"Validation error: 'field' must be one of: {', '.join(sorted(valid_fields))}."
+    text_fields = {"name", "description", "instructions"}
+    if field in text_fields:
+        if not args.get("old_text"):
+            return f"Validation error: 'old_text' is required for text field '{field}'."
+        if args.get("new_text") is None:
+            return f"Validation error: 'new_text' is required for text field '{field}'."
+    else:
+        if args.get("value") is None:
+            return f"Validation error: 'value' is required for field '{field}'."
+    return None
+
+
+@register_validator("skill_delete")
+def validate_skill_delete(function_name: str, args: dict) -> Optional[str]:
+    """Validate skill_delete arguments."""
+    if not args.get("skill_id", "").strip():
+        return "Validation error: 'skill_id' cannot be empty."
     return None
 
 
