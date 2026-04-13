@@ -437,110 +437,6 @@ async def resource_memory_update(self: "Agent", old_ids: List[str], new_items: L
         )
 
 
-async def skill_insert(self: "Agent", items: List[dict]):
-    """
-    Insert new skills into procedural memory. If a skill with the same name already exists,
-    it will be updated (merged) instead of creating a duplicate.
-
-    Args:
-        items (array): List of skill items to insert. Each item has: name, description, instructions, entry_type, triggers (optional), examples (optional).
-
-    Returns:
-        Optional[str]: Message about insertion results.
-    """
-    agent_id = self.agent_state.parent_id if self.agent_state.parent_id is not None else self.agent_state.id
-
-    filter_tags = getattr(self, "filter_tags", None)
-    use_cache = getattr(self, "use_cache", True)
-    client_id = getattr(self, "client_id", None)
-    user_id = getattr(self, "user_id", None)
-
-    inserted_count = 0
-    merged_count = 0
-
-    for item in items:
-        existing_skills = await self.procedural_memory_manager.list_procedures(
-            agent_state=self.agent_state,
-            user=self.user,
-            query="",
-            limit=1000,
-            filter_tags=filter_tags if filter_tags else None,
-            use_cache=use_cache,
-        )
-
-        # Name-based dedup
-        duplicate = None
-        for existing in existing_skills:
-            if existing.name == item["name"]:
-                duplicate = existing
-                break
-
-        if duplicate:
-            old_version = getattr(duplicate, "version", "0.1.0")
-            new_version = _bump_patch_version(old_version)
-            try:
-                await self.procedural_memory_manager.delete_procedure_by_id(
-                    procedure_id=duplicate.id, actor=self.actor
-                )
-                await self.procedural_memory_manager.insert_procedure(
-                    agent_state=self.agent_state,
-                    agent_id=agent_id,
-                    name=item["name"],
-                    description=item["description"],
-                    instructions=item["instructions"],
-                    entry_type=item["entry_type"],
-                    triggers=item.get("triggers", []),
-                    examples=item.get("examples", []),
-                    version=new_version,
-                    actor=self.actor,
-                    organization_id=self.user.organization_id,
-                    filter_tags=filter_tags if filter_tags else None,
-                    use_cache=use_cache,
-                    user_id=user_id,
-                )
-            except Exception as e:
-                print(
-                    f"[skill_insert] merge FAILED for "
-                    f"item {item!r}: {e}"
-                )
-                traceback.print_exc()
-                raise
-            merged_count += 1
-        else:
-            try:
-                await self.procedural_memory_manager.insert_procedure(
-                    agent_state=self.agent_state,
-                    agent_id=agent_id,
-                    name=item["name"],
-                    description=item["description"],
-                    instructions=item["instructions"],
-                    entry_type=item["entry_type"],
-                    triggers=item.get("triggers", []),
-                    examples=item.get("examples", []),
-                    version="0.1.0",
-                    actor=self.actor,
-                    organization_id=self.user.organization_id,
-                    filter_tags=filter_tags if filter_tags else None,
-                    use_cache=use_cache,
-                    user_id=user_id,
-                )
-            except Exception as e:
-                print(
-                    f"[skill_insert] insert_procedure FAILED for "
-                    f"item {item!r}: {e}"
-                )
-                traceback.print_exc()
-                raise
-            inserted_count += 1
-
-    parts = []
-    if inserted_count > 0:
-        parts.append(f"Inserted {inserted_count} new skill(s)")
-    if merged_count > 0:
-        parts.append(f"Merged {merged_count} existing skill(s)")
-    return ". ".join(parts) + "." if parts else "No skills were inserted."
-
-
 def _bump_patch_version(version: str) -> str:
     """Increment patch version: '0.1.0' -> '0.1.1'."""
     try:
@@ -551,58 +447,262 @@ def _bump_patch_version(version: str) -> str:
         return "0.1.1"
 
 
-async def skill_update(self: "Agent", old_ids: List[str], new_items: List[dict]):
+async def skill_list(self: "Agent", query: str = "", limit: int = 50) -> str:
     """
-    Update/delete skills in procedural memory. Deletes old skills by ID and inserts replacements.
+    List skills with optional search query.
 
     Args:
-        old_ids (array): List of ids of the skills to delete/replace.
-        new_items (array): List of new skill items. Empty list means deletion only.
+        query (str): Optional search term to filter skills. Empty string returns all skills.
+        limit (int): Maximum number of skills to return. Default 50.
 
     Returns:
-        Optional[str]: None is always returned.
+        str: Formatted list of skills with id, name, description, entry_type, and version.
+    """
+    filter_tags = getattr(self, "filter_tags", None)
+    use_cache = getattr(self, "use_cache", True)
+
+    skills = await self.procedural_memory_manager.list_procedures(
+        agent_state=self.agent_state,
+        user=self.user,
+        query=query,
+        search_field="description" if query else "",
+        search_method="bm25" if query else "",
+        limit=limit,
+        filter_tags=filter_tags if filter_tags else None,
+        use_cache=use_cache,
+    )
+
+    if not skills:
+        return "No skills found."
+
+    lines = []
+    for skill in skills:
+        lines.append(
+            f"[ID: {skill.id}] {skill.name} (v{skill.version}) - {skill.entry_type}: {skill.description}"
+        )
+    return "\n".join(lines)
+
+
+async def skill_read(self: "Agent", name_or_id: str) -> str:
+    """
+    Read the complete content of a skill by name or ID.
+
+    Args:
+        name_or_id (str): The skill name (e.g. "deploy-production") or ID (e.g. "proc-xxx").
+
+    Returns:
+        str: Full skill content including all fields.
+    """
+    filter_tags = getattr(self, "filter_tags", None)
+    use_cache = getattr(self, "use_cache", True)
+    skill = None
+
+    if name_or_id.startswith("proc"):
+        try:
+            skill = await self.procedural_memory_manager.get_item_by_id(
+                item_id=name_or_id, user=self.user, timezone_str="UTC"
+            )
+        except Exception:
+            pass
+
+    if skill is None:
+        results = await self.procedural_memory_manager.list_procedures(
+            agent_state=self.agent_state,
+            user=self.user,
+            query=name_or_id,
+            search_field="name",
+            search_method="string_match",
+            limit=1,
+            filter_tags=filter_tags if filter_tags else None,
+            use_cache=use_cache,
+        )
+        if results:
+            skill = results[0]
+
+    if skill is None:
+        return f"Skill '{name_or_id}' not found."
+
+    parts = [
+        f"ID: {skill.id}",
+        f"Name: {skill.name}",
+        f"Version: {skill.version}",
+        f"Entry Type: {skill.entry_type}",
+        f"Description: {skill.description}",
+        f"Instructions:\n{skill.instructions}",
+        f"Triggers: {skill.triggers}",
+        f"Examples: {skill.examples}",
+    ]
+    return "\n".join(parts)
+
+
+async def skill_create(
+    self: "Agent",
+    name: str,
+    description: str,
+    instructions: str,
+    entry_type: str,
+    triggers: List[str] = None,
+    examples: List[dict] = None,
+) -> str:
+    """
+    Create a new skill. Fails if a skill with the same name already exists.
+
+    Args:
+        name (str): Concise kebab-case identifier (e.g. "deploy-production").
+        description (str): What this skill does and when it's useful.
+        instructions (str): Detailed instructions as plain text.
+        entry_type (str): Category — "workflow", "guide", or "script".
+        triggers (array): Optional list of conditions that indicate this skill is relevant.
+        examples (array): Optional list of input/output examples.
+
+    Returns:
+        str: Confirmation with the created skill's ID.
     """
     agent_id = self.agent_state.parent_id if self.agent_state.parent_id is not None else self.agent_state.id
     filter_tags = getattr(self, "filter_tags", None)
     use_cache = getattr(self, "use_cache", True)
     user_id = getattr(self, "user_id", None)
 
-    for old_id in old_ids:
-        try:
-            await self.procedural_memory_manager.delete_procedure_by_id(procedure_id=old_id, actor=self.actor)
-        except Exception as e:
-            print(
-                f"[procedural_memory_update] delete_procedure_by_id FAILED for "
-                f"old_id {old_id!r}: {e}"
-            )
-            traceback.print_exc()
-            raise
+    # Name dedup check
+    existing = await self.procedural_memory_manager.list_procedures(
+        agent_state=self.agent_state,
+        user=self.user,
+        query=name,
+        search_field="name",
+        search_method="string_match",
+        limit=100,
+        filter_tags=filter_tags if filter_tags else None,
+        use_cache=use_cache,
+    )
+    for skill in existing:
+        if skill.name == name:
+            return f"Skill '{name}' already exists (ID: {skill.id}). Use skill_edit to modify it, or skill_delete to remove it first."
 
-    for item in new_items:
-        try:
-            await self.procedural_memory_manager.insert_procedure(
-                agent_state=self.agent_state,
-                agent_id=agent_id,
-                name=item["name"],
-                description=item["description"],
-                instructions=item["instructions"],
-                entry_type=item["entry_type"],
-                triggers=item.get("triggers", []),
-                examples=item.get("examples", []),
-                version=item.get("version", "0.1.0"),
-                actor=self.actor,
-                organization_id=self.actor.organization_id,
-                filter_tags=filter_tags if filter_tags else None,
-                use_cache=use_cache,
-                user_id=user_id,
+    try:
+        created = await self.procedural_memory_manager.insert_procedure(
+            agent_state=self.agent_state,
+            agent_id=agent_id,
+            name=name,
+            description=description,
+            instructions=instructions,
+            entry_type=entry_type,
+            triggers=triggers or [],
+            examples=examples or [],
+            version="0.1.0",
+            actor=self.actor,
+            organization_id=self.user.organization_id,
+            filter_tags=filter_tags if filter_tags else None,
+            use_cache=use_cache,
+            user_id=user_id,
+        )
+        return f"Skill '{name}' created successfully (ID: {created.id}, version: 0.1.0)."
+    except Exception as e:
+        logger.error("[skill_create] FAILED for '%s': %s", name, e)
+        traceback.print_exc()
+        raise
+
+
+async def skill_edit(
+    self: "Agent",
+    skill_id: str,
+    field: str,
+    old_text: str = None,
+    new_text: str = None,
+    value: object = None,
+) -> str:
+    """
+    Edit an existing skill. For text fields (name, description, instructions), use old_text/new_text
+    to do a find-and-replace patch. For other fields (triggers, examples, entry_type), use value
+    to replace the entire field.
+
+    Args:
+        skill_id (str): The ID of the skill to edit.
+        field (str): The field to modify — "name", "description", "instructions", "entry_type", "triggers", or "examples".
+        old_text (str): For text fields: the text to find and replace.
+        new_text (str): For text fields: the replacement text.
+        value (object): For non-text fields: the new value for the entire field.
+
+    Returns:
+        str: Confirmation of the edit with the new version number.
+    """
+    from mirix.schemas.procedural_memory import ProceduralMemoryItemUpdate
+
+    text_fields = {"name", "description", "instructions"}
+    value_fields = {"triggers", "examples", "entry_type"}
+    valid_fields = text_fields | value_fields
+
+    if field not in valid_fields:
+        return f"Invalid field '{field}'. Must be one of: {', '.join(sorted(valid_fields))}."
+
+    try:
+        skill = await self.procedural_memory_manager.get_item_by_id(
+            item_id=skill_id, user=self.user, timezone_str="UTC"
+        )
+    except Exception:
+        return f"Skill '{skill_id}' not found."
+
+    update_data = {"id": skill_id}
+
+    if field in text_fields:
+        if old_text is None or new_text is None:
+            return f"For text field '{field}', both old_text and new_text are required."
+
+        current_value = getattr(skill, field, "")
+
+        # Normalize whitespace for matching
+        normalized_current = " ".join(current_value.split())
+        normalized_old = " ".join(old_text.split())
+
+        if normalized_old not in normalized_current:
+            return (
+                f"old_text not found in field '{field}'. "
+                f"Current value:\n{current_value}"
             )
-        except Exception as e:
-            print(
-                f"[skill_update] insert_procedure FAILED for item "
-                f"{item!r}: {e}"
-            )
-            traceback.print_exc()
-            raise
+
+        import re
+        pattern = re.escape(old_text)
+        pattern = re.sub(r'\\\s+', r'\\s+', pattern)
+        new_value = re.sub(pattern, new_text, current_value, count=1)
+        update_data[field] = new_value
+    else:
+        if value is None:
+            return f"For field '{field}', the value parameter is required."
+        update_data[field] = value
+
+    new_version = _bump_patch_version(getattr(skill, "version", "0.1.0"))
+    update_data["version"] = new_version
+
+    try:
+        updated = await self.procedural_memory_manager.update_item(
+            item_update=ProceduralMemoryItemUpdate.model_validate(update_data),
+            user=self.user,
+            actor=self.actor,
+        )
+        return f"Skill '{updated.name}' updated (field: {field}, new version: {new_version})."
+    except Exception as e:
+        logger.error("[skill_edit] FAILED for '%s': %s", skill_id, e)
+        traceback.print_exc()
+        raise
+
+
+async def skill_delete(self: "Agent", skill_id: str) -> str:
+    """
+    Delete a skill by ID.
+
+    Args:
+        skill_id (str): The ID of the skill to delete.
+
+    Returns:
+        str: Confirmation message.
+    """
+    try:
+        await self.procedural_memory_manager.delete_procedure_by_id(
+            procedure_id=skill_id, actor=self.actor
+        )
+        return f"Skill '{skill_id}' deleted successfully."
+    except Exception as e:
+        logger.error("[skill_delete] FAILED for '%s': %s", skill_id, e)
+        return f"Failed to delete skill '{skill_id}': {e}"
 
 
 async def check_semantic_memory(
