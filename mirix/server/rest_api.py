@@ -4446,6 +4446,37 @@ class UpdateProceduralMemoryRequest(BaseModel):
     examples: Optional[List[dict]] = None
 
 
+class CreateSkillRequest(BaseModel):
+    """Request model for creating a skill."""
+
+    name: str
+    description: str
+    instructions: str
+    entry_type: str
+    triggers: Optional[List[str]] = []
+    examples: Optional[List[dict]] = []
+    user_id: Optional[str] = None
+
+
+class PatchSkillRequest(BaseModel):
+    """Request model for updating a skill (partial update)."""
+
+    name: Optional[str] = None
+    description: Optional[str] = None
+    instructions: Optional[str] = None
+    entry_type: Optional[str] = None
+    triggers: Optional[List[str]] = None
+    examples: Optional[List[dict]] = None
+    user_id: Optional[str] = None
+
+
+class SkillEvolveRequest(BaseModel):
+    """Request model for triggering skill evolution from messages."""
+
+    messages: List[str]
+    user_id: Optional[str] = None
+
+
 @router.patch("/memory/procedural/{memory_id}")
 async def update_procedural_memory(
     memory_id: str,
@@ -4526,6 +4557,459 @@ async def delete_procedural_memory(
     try:
         await server.procedural_memory_manager.delete_procedure_by_id(memory_id, actor=client)
         return {"success": True, "message": f"Procedural memory {memory_id} deleted"}
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+# ============================================================================
+# Skill Endpoints (v1/skills)
+# ============================================================================
+
+
+@router.post("/v1/skills/evolve")
+async def evolve_skills(
+    request: SkillEvolveRequest,
+    authorization: Optional[str] = Header(None),
+    http_request: Request = None,
+):
+    """
+    Trigger the Procedural Agent to extract/evolve skills from messages.
+
+    Snapshots skills before and after, then returns a diff of created/edited/deleted skills.
+
+    **Accepts both JWT (dashboard) and Client API Key (programmatic).**
+    """
+    from mirix.agent import ProceduralMemoryAgent
+    from mirix.schemas.message import Message as PydanticMessage
+
+    client, auth_type = await get_client_from_jwt_or_api_key(authorization, http_request)
+    server = get_server()
+
+    # Resolve user
+    user_id = request.user_id
+    if not user_id:
+        from mirix.services.admin_user_manager import ClientAuthManager
+
+        user_id = ClientAuthManager.get_admin_user_id_for_client(client.id)
+
+    user = await server.user_manager.get_user_by_id(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail=f"User {user_id} not found")
+
+    timezone_str = getattr(user, "timezone", None) or "UTC"
+
+    # Find the procedural memory agent among meta agent's children
+    all_agents = await server.agent_manager.list_agents(actor=client)
+    proc_agent_state = None
+    for agent in all_agents:
+        if agent.agent_type == AgentType.procedural_memory_agent:
+            proc_agent_state = agent
+            break
+
+    if not proc_agent_state:
+        raise HTTPException(
+            status_code=404,
+            detail="No procedural memory agent found. Initialize a meta agent first.",
+        )
+
+    # Snapshot skills before
+    before_skills = await server.procedural_memory_manager.list_procedures(
+        agent_state=proc_agent_state,
+        user=user,
+        query="",
+        search_field="description",
+        search_method="bm25",
+        limit=1000,
+        timezone_str=timezone_str,
+        use_cache=False,
+    )
+    before_ids = {s.id for s in before_skills}
+    before_map = {s.id: s for s in before_skills}
+
+    # Build input messages for the agent
+    combined_text = "\n".join(request.messages)
+    input_message = PydanticMessage(
+        role="user",
+        text=combined_text,
+        agent_id=proc_agent_state.id,
+        name="user",
+    )
+
+    # Instantiate and run the procedural agent
+    proc_agent = ProceduralMemoryAgent(
+        agent_state=proc_agent_state,
+        interface=server.default_interface_factory(),
+        actor=client,
+        user=user,
+    )
+
+    try:
+        await proc_agent.step(
+            input_messages=[input_message],
+            chaining=True,
+            actor=client,
+            user=user,
+        )
+    except Exception as e:
+        logger.error("Skill evolve agent step failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Skill evolution failed: {str(e)}")
+
+    # Snapshot skills after
+    after_skills = await server.procedural_memory_manager.list_procedures(
+        agent_state=proc_agent_state,
+        user=user,
+        query="",
+        search_field="description",
+        search_method="bm25",
+        limit=1000,
+        timezone_str=timezone_str,
+        use_cache=False,
+    )
+    after_ids = {s.id for s in after_skills}
+    after_map = {s.id: s for s in after_skills}
+
+    # Compute diff
+    created_ids = after_ids - before_ids
+    deleted_ids = before_ids - after_ids
+    common_ids = before_ids & after_ids
+    edited_ids = set()
+    for sid in common_ids:
+        before_item = before_map[sid]
+        after_item = after_map[sid]
+        if (
+            before_item.version != after_item.version
+            or before_item.instructions != after_item.instructions
+            or before_item.description != after_item.description
+        ):
+            edited_ids.add(sid)
+
+    def _skill_summary(skill):
+        return {
+            "id": skill.id,
+            "name": skill.name,
+            "entry_type": skill.entry_type,
+            "version": getattr(skill, "version", None),
+        }
+
+    return {
+        "success": True,
+        "changes": {
+            "created": [_skill_summary(after_map[sid]) for sid in created_ids],
+            "edited": [_skill_summary(after_map[sid]) for sid in edited_ids],
+            "deleted": [_skill_summary(before_map[sid]) for sid in deleted_ids],
+        },
+        "summary": {
+            "created_count": len(created_ids),
+            "edited_count": len(edited_ids),
+            "deleted_count": len(deleted_ids),
+        },
+    }
+
+
+@router.get("/v1/skills")
+async def list_skills(
+    query: str = "",
+    limit: int = 50,
+    user_id: Optional[str] = None,
+    authorization: Optional[str] = Header(None),
+    http_request: Request = None,
+):
+    """
+    List or search skills (procedural memory items).
+
+    **Accepts both JWT (dashboard) and Client API Key (programmatic).**
+    """
+    client, auth_type = await get_client_from_jwt_or_api_key(authorization, http_request)
+    server = get_server()
+
+    # Resolve user
+    if not user_id:
+        from mirix.services.admin_user_manager import ClientAuthManager
+
+        user_id = ClientAuthManager.get_admin_user_id_for_client(client.id)
+
+    user = await server.user_manager.get_user_by_id(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail=f"User {user_id} not found")
+
+    timezone_str = getattr(user, "timezone", None) or "UTC"
+    limit = max(1, min(limit, 200))
+
+    # Need an agent state for the manager
+    agents = await server.agent_manager.list_agents(actor=client, limit=1)
+    if not agents:
+        raise HTTPException(status_code=404, detail="No agents found for this client")
+    agent_state = agents[0]
+
+    skills = await server.procedural_memory_manager.list_procedures(
+        agent_state=agent_state,
+        user=user,
+        query=query,
+        search_field="description",
+        search_method="bm25",
+        limit=limit,
+        timezone_str=timezone_str,
+    )
+
+    total_count = await server.procedural_memory_manager.get_total_number_of_items(user=user)
+
+    return {
+        "success": True,
+        "skills": [
+            {
+                "id": s.id,
+                "name": s.name,
+                "entry_type": s.entry_type,
+                "description": s.description,
+                "version": getattr(s, "version", None),
+                "created_at": (s.created_at.isoformat() if getattr(s, "created_at", None) else None),
+                "updated_at": (s.updated_at.isoformat() if getattr(s, "updated_at", None) else None),
+            }
+            for s in skills
+        ],
+        "total_count": total_count,
+    }
+
+
+@router.get("/v1/skills/{skill_id}")
+async def get_skill(
+    skill_id: str,
+    user_id: Optional[str] = None,
+    authorization: Optional[str] = Header(None),
+    http_request: Request = None,
+):
+    """
+    Get a single skill by ID with full content.
+
+    **Accepts both JWT (dashboard) and Client API Key (programmatic).**
+    """
+    client, auth_type = await get_client_from_jwt_or_api_key(authorization, http_request)
+    server = get_server()
+
+    # Resolve user
+    if not user_id:
+        from mirix.services.admin_user_manager import ClientAuthManager
+
+        user_id = ClientAuthManager.get_admin_user_id_for_client(client.id)
+
+    user = await server.user_manager.get_user_by_id(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail=f"User {user_id} not found")
+
+    timezone_str = getattr(user, "timezone", None) or "UTC"
+
+    try:
+        skill = await server.procedural_memory_manager.get_item_by_id(
+            item_id=skill_id, user=user, timezone_str=timezone_str
+        )
+    except Exception:
+        raise HTTPException(status_code=404, detail=f"Skill {skill_id} not found")
+
+    if not skill:
+        raise HTTPException(status_code=404, detail=f"Skill {skill_id} not found")
+
+    return {
+        "success": True,
+        "skill": {
+            "id": skill.id,
+            "name": skill.name,
+            "entry_type": skill.entry_type,
+            "description": skill.description,
+            "instructions": skill.instructions,
+            "triggers": skill.triggers,
+            "examples": skill.examples,
+            "version": getattr(skill, "version", None),
+            "created_at": (skill.created_at.isoformat() if getattr(skill, "created_at", None) else None),
+            "updated_at": (skill.updated_at.isoformat() if getattr(skill, "updated_at", None) else None),
+        },
+    }
+
+
+@router.post("/v1/skills", status_code=201)
+async def create_skill(
+    request: CreateSkillRequest,
+    authorization: Optional[str] = Header(None),
+    http_request: Request = None,
+):
+    """
+    Create a new skill. Returns 409 if a skill with the same name already exists.
+
+    **Accepts both JWT (dashboard) and Client API Key (programmatic).**
+    """
+    client, auth_type = await get_client_from_jwt_or_api_key(authorization, http_request)
+    server = get_server()
+
+    # Resolve user
+    user_id = request.user_id
+    if not user_id:
+        from mirix.services.admin_user_manager import ClientAuthManager
+
+        user_id = ClientAuthManager.get_admin_user_id_for_client(client.id)
+
+    user = await server.user_manager.get_user_by_id(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail=f"User {user_id} not found")
+
+    timezone_str = getattr(user, "timezone", None) or "UTC"
+
+    # Need an agent state for insert
+    agents = await server.agent_manager.list_agents(actor=client, limit=1)
+    if not agents:
+        raise HTTPException(status_code=404, detail="No agents found for this client")
+    agent_state = agents[0]
+
+    # Check for duplicate name
+    existing = await server.procedural_memory_manager.list_procedures(
+        agent_state=agent_state,
+        user=user,
+        query=request.name,
+        search_field="description",
+        search_method="bm25",
+        limit=200,
+        timezone_str=timezone_str,
+        use_cache=False,
+    )
+    for skill in existing:
+        if skill.name == request.name:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Skill with name '{request.name}' already exists (ID: {skill.id})",
+            )
+
+    try:
+        created = await server.procedural_memory_manager.insert_procedure(
+            agent_state=agent_state,
+            agent_id=agent_state.id,
+            name=request.name,
+            description=request.description,
+            instructions=request.instructions,
+            entry_type=request.entry_type,
+            triggers=request.triggers or [],
+            examples=request.examples or [],
+            version="0.1.0",
+            actor=client,
+            organization_id=user.organization_id,
+            user_id=user_id,
+        )
+    except Exception as e:
+        logger.error("Failed to create skill: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to create skill: {str(e)}")
+
+    return {
+        "success": True,
+        "skill": {
+            "id": created.id,
+            "name": created.name,
+            "entry_type": created.entry_type,
+            "description": created.description,
+            "instructions": created.instructions,
+            "version": getattr(created, "version", "0.1.0"),
+            "created_at": (created.created_at.isoformat() if getattr(created, "created_at", None) else None),
+        },
+    }
+
+
+@router.patch("/v1/skills/{skill_id}")
+async def patch_skill(
+    skill_id: str,
+    request: PatchSkillRequest,
+    authorization: Optional[str] = Header(None),
+    http_request: Request = None,
+):
+    """
+    Partially update a skill. Auto-bumps the version.
+
+    **Accepts both JWT (dashboard) and Client API Key (programmatic).**
+    """
+    from mirix.functions.function_sets.memory_tools import _bump_patch_version
+
+    client, auth_type = await get_client_from_jwt_or_api_key(authorization, http_request)
+    server = get_server()
+
+    # Resolve user
+    user_id = request.user_id
+    if not user_id:
+        from mirix.services.admin_user_manager import ClientAuthManager
+
+        user_id = ClientAuthManager.get_admin_user_id_for_client(client.id)
+
+    user = await server.user_manager.get_user_by_id(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail=f"User {user_id} not found")
+
+    timezone_str = getattr(user, "timezone", None) or "UTC"
+
+    # Get current skill to read its version
+    try:
+        current_skill = await server.procedural_memory_manager.get_item_by_id(
+            item_id=skill_id, user=user, timezone_str=timezone_str
+        )
+    except Exception:
+        raise HTTPException(status_code=404, detail=f"Skill {skill_id} not found")
+
+    if not current_skill:
+        raise HTTPException(status_code=404, detail=f"Skill {skill_id} not found")
+
+    # Build update data, auto-bump version
+    update_data = {"id": skill_id}
+    if request.name is not None:
+        update_data["name"] = request.name
+    if request.description is not None:
+        update_data["description"] = request.description
+    if request.instructions is not None:
+        update_data["instructions"] = request.instructions
+    if request.entry_type is not None:
+        update_data["entry_type"] = request.entry_type
+    if request.triggers is not None:
+        update_data["triggers"] = request.triggers
+    if request.examples is not None:
+        update_data["examples"] = request.examples
+
+    # Auto-bump version
+    current_version = getattr(current_skill, "version", "0.1.0") or "0.1.0"
+    update_data["version"] = _bump_patch_version(current_version)
+
+    try:
+        updated = await server.procedural_memory_manager.update_item(
+            item_update=ProceduralMemoryItemUpdate.model_validate(update_data),
+            user=user,
+            actor=client,
+        )
+    except Exception as e:
+        logger.error("Failed to update skill %s: %s", skill_id, e, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to update skill: {str(e)}")
+
+    return {
+        "success": True,
+        "skill": {
+            "id": updated.id,
+            "name": updated.name,
+            "entry_type": updated.entry_type,
+            "description": updated.description,
+            "instructions": updated.instructions,
+            "version": getattr(updated, "version", None),
+            "updated_at": (updated.updated_at.isoformat() if getattr(updated, "updated_at", None) else None),
+        },
+    }
+
+
+@router.delete("/v1/skills/{skill_id}")
+async def delete_skill(
+    skill_id: str,
+    authorization: Optional[str] = Header(None),
+    http_request: Request = None,
+):
+    """
+    Delete a skill by ID.
+
+    **Accepts both JWT (dashboard) and Client API Key (programmatic).**
+    """
+    client, auth_type = await get_client_from_jwt_or_api_key(authorization, http_request)
+    server = get_server()
+
+    try:
+        await server.procedural_memory_manager.delete_procedure_by_id(skill_id, actor=client)
+        return {"success": True, "message": f"Skill {skill_id} deleted"}
     except Exception as e:
         raise HTTPException(status_code=404, detail=str(e))
 
