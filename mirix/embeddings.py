@@ -328,6 +328,39 @@ class EmbeddingEndpoint:
             return await embedding_with_retry(lambda: self._call_api(text))
 
 
+class OpenRouterEmbedding(EmbeddingEndpoint):
+    """EmbeddingEndpoint subclass that adds Bearer auth for OpenRouter."""
+
+    def __init__(self, api_key: str, **kwargs: Any):
+        super().__init__(**kwargs)
+        self._api_key = api_key
+
+    async def _call_api(self, text: str) -> List[float]:
+        import httpx
+
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self._api_key}",
+        }
+        json_data = {"input": text, "model": self.model_name}
+
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{self._base_url}/embeddings",
+                headers=headers,
+                json=json_data,
+                timeout=self._timeout,
+            )
+
+        response_json = response.json()
+        if isinstance(response_json, dict):
+            try:
+                return response_json["data"][0]["embedding"]
+            except (KeyError, IndexError):
+                raise TypeError(f"Unexpected embedding response: {response_json}")
+        raise TypeError(f"Unexpected embedding response type: {response_json}")
+
+
 class AzureOpenAIEmbedding:
     def __init__(
         self,
@@ -525,6 +558,15 @@ async def embedding_model(config: EmbeddingConfig, user_id: Optional[uuid.UUID] 
             langfuse_model=config.langfuse_model,
         )
         return model
+
+    elif endpoint_type == "openrouter":
+        api_key = config.api_key or model_settings.openai_api_key
+        return OpenRouterEmbedding(
+            api_key=api_key,
+            model=config.embedding_model,
+            base_url=config.embedding_endpoint,
+            user=str(user_id) if user_id else "",
+        )
 
     else:
         raise ValueError(f"Unknown endpoint type {endpoint_type}")
