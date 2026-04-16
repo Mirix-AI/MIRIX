@@ -440,9 +440,12 @@ async def embedding_model(config: EmbeddingConfig, user_id: Optional[uuid.UUID] 
     if endpoint_type == "openai":
         from mirix.services.provider_manager import ProviderManager
 
-        # Check for database-stored API key first, fall back to model_settings
-        override_key = await ProviderManager().get_openai_override_key()
-        api_key = override_key if override_key else model_settings.openai_api_key
+        if config.api_key:
+            api_key = config.api_key
+        else:
+            # Check for database-stored API key first, fall back to model_settings
+            override_key = await ProviderManager().get_openai_override_key()
+            api_key = override_key if override_key else model_settings.openai_api_key
 
         # Use direct OpenAI SDK if auth_provider is configured
         if hasattr(config, "auth_provider") and config.auth_provider:
@@ -465,8 +468,11 @@ async def embedding_model(config: EmbeddingConfig, user_id: Optional[uuid.UUID] 
 
         from mirix.services.provider_manager import ProviderManager
 
-        override_key = await ProviderManager().get_gemini_override_key()
-        api_key = override_key if override_key else model_settings.gemini_api_key
+        if config.api_key:
+            api_key = config.api_key
+        else:
+            override_key = await ProviderManager().get_gemini_override_key()
+            api_key = override_key if override_key else model_settings.gemini_api_key
 
         model = GoogleGenAIEmbedding(
             model_name=config.embedding_model,

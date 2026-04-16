@@ -133,16 +133,45 @@ def cosine_distance(embedding1, embedding2, expected_dim=MAX_EMBEDDING_DIM):
     return distance
 
 
+def _unwrap_sqlite_connection(dbapi_connection) -> Optional[sqlite3.Connection]:
+    """
+    Unwrap a possibly-async-adapted connection to find the raw sqlite3.Connection.
+
+    SQLAlchemy's aiosqlite dialect wraps the raw connection in one or two adapter
+    layers (AsyncAdaptedConnection → aiosqlite.Connection → sqlite3.Connection).
+    This helper peels those layers back so we can call sqlite3-specific APIs such
+    as create_function() and execute PRAGMA statements.
+    """
+    if isinstance(dbapi_connection, sqlite3.Connection):
+        return dbapi_connection
+    # Walk common wrapper attribute names used by SQLAlchemy / aiosqlite
+    for outer_attr in ("_connection", "_adapt_connection", "_conn", "connection"):
+        mid = getattr(dbapi_connection, outer_attr, None)
+        if mid is None:
+            continue
+        if isinstance(mid, sqlite3.Connection):
+            return mid
+        for inner_attr in ("_conn", "_connection", "_adapt_connection"):
+            inner = getattr(mid, inner_attr, None)
+            if isinstance(inner, sqlite3.Connection):
+                return inner
+    return None
+
+
 @event.listens_for(Engine, "connect")
 def register_functions(dbapi_connection, connection_record):
-    """Register SQLite functions"""
-    if isinstance(dbapi_connection, sqlite3.Connection):
-        dbapi_connection.create_function("cosine_distance", 2, cosine_distance)
+    """Register SQLite functions for vector search."""
+    conn = _unwrap_sqlite_connection(dbapi_connection)
+    if conn is not None:
+        conn.create_function("cosine_distance", 2, cosine_distance)
 
 
 @event.listens_for(Engine, "connect")
 def configure_sqlite_connection(dbapi_connection, connection_record):
     """Configure SQLite connection for better concurrency and performance"""
+    conn = _unwrap_sqlite_connection(dbapi_connection)
+    if conn is not None:
+        dbapi_connection = conn
     if isinstance(dbapi_connection, sqlite3.Connection):
         # Enable WAL mode for better concurrency
         dbapi_connection.execute("PRAGMA journal_mode=WAL")

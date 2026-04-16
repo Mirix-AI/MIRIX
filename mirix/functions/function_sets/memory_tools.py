@@ -1,6 +1,7 @@
 import asyncio
 import os
 import re
+import traceback
 from copy import deepcopy
 from typing import TYPE_CHECKING, List, Optional
 
@@ -137,20 +138,29 @@ async def episodic_memory_insert(self: "Agent", items: List[EpisodicEventForLLM]
 
             timestamp = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
 
-        await self.episodic_memory_manager.insert_event(
-            actor=self.actor,
-            agent_state=self.agent_state,
-            agent_id=agent_id,
-            timestamp=timestamp,  # Use potentially overridden timestamp
-            event_type=item["event_type"],
-            event_actor=item["actor"],
-            summary=item["summary"],
-            details=item["details"],
-            organization_id=self.actor.organization_id,
-            filter_tags=filter_tags if filter_tags else None,
-            use_cache=use_cache,
-            user_id=user_id,
-        )
+        try:
+            await self.episodic_memory_manager.insert_event(
+                actor=self.actor,
+                agent_state=self.agent_state,
+                agent_id=agent_id,
+                timestamp=timestamp,  # Use potentially overridden timestamp
+                event_type=item["event_type"],
+                event_actor=item["actor"],
+                summary=item["summary"],
+                details=item["details"],
+                organization_id=self.actor.organization_id,
+                filter_tags=filter_tags if filter_tags else None,
+                use_cache=use_cache,
+                user_id=user_id,
+            )
+        except Exception as e:
+            print(
+                f"[episodic_memory_insert] insert_event FAILED for item "
+                f"{item!r}: {e}"
+            )
+            traceback.print_exc()
+            raise
+
     response = "Events inserted! Now you need to check if there are repeated events shown in the system prompt."
     return response
 
@@ -173,14 +183,22 @@ async def episodic_memory_merge(
         Optional[str]: None is always returned as this function does not produce a response.
     """
 
-    episodic_memory = await self.episodic_memory_manager.update_event(
-        event_id=event_id,
-        new_summary=combined_summary,
-        new_details=combined_details,
-        actor=self.actor,
-        agent_state=self.agent_state,
-        update_mode="replace",
-    )
+    try:
+        episodic_memory = await self.episodic_memory_manager.update_event(
+            event_id=event_id,
+            new_summary=combined_summary,
+            new_details=combined_details,
+            actor=self.actor,
+            agent_state=self.agent_state,
+            update_mode="replace",
+        )
+    except Exception as e:
+        print(
+            f"[episodic_memory_merge] update_event FAILED for event_id "
+            f"{event_id!r}: {e}"
+        )
+        traceback.print_exc()
+        raise
     response = (
         "These are the `summary` and the `details` of the updated event:\n",
         str(
@@ -223,7 +241,15 @@ async def episodic_memory_replace(self: "Agent", event_ids: List[str], new_items
         await self.episodic_memory_manager.get_episodic_memory_by_id(event_id, user=self.user)
 
     for event_id in event_ids:
-        await self.episodic_memory_manager.delete_event_by_id(event_id, actor=self.actor)
+        try:
+            await self.episodic_memory_manager.delete_event_by_id(event_id, actor=self.actor)
+        except Exception as e:
+            print(
+                f"[episodic_memory_replace] delete_event_by_id FAILED for "
+                f"event_id {event_id!r}: {e}"
+            )
+            traceback.print_exc()
+            raise
 
     for new_item in new_items:
         # Use occurred_at_override if provided, otherwise use LLM-extracted timestamp
@@ -235,20 +261,28 @@ async def episodic_memory_replace(self: "Agent", event_ids: List[str], new_items
 
             timestamp = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
 
-        await self.episodic_memory_manager.insert_event(
-            actor=self.actor,
-            agent_state=self.agent_state,
-            agent_id=agent_id,
-            timestamp=timestamp,  # Use potentially overridden timestamp
-            event_type=new_item["event_type"],
-            event_actor=new_item["actor"],
-            summary=new_item["summary"],
-            details=new_item["details"],
-            organization_id=self.actor.organization_id,
-            filter_tags=filter_tags if filter_tags else None,
-            use_cache=use_cache,
-            user_id=user_id,
-        )
+        try:
+            await self.episodic_memory_manager.insert_event(
+                actor=self.actor,
+                agent_state=self.agent_state,
+                agent_id=agent_id,
+                timestamp=timestamp,  # Use potentially overridden timestamp
+                event_type=new_item["event_type"],
+                event_actor=new_item["actor"],
+                summary=new_item["summary"],
+                details=new_item["details"],
+                organization_id=self.actor.organization_id,
+                filter_tags=filter_tags if filter_tags else None,
+                use_cache=use_cache,
+                user_id=user_id,
+            )
+        except Exception as e:
+            print(
+                f"[episodic_memory_replace] insert_event FAILED for item "
+                f"{new_item!r}: {e}"
+            )
+            traceback.print_exc()
+            raise
 
 
 async def check_episodic_memory(self: "Agent", event_ids: List[str], timezone_str: str) -> List[EpisodicEventForLLM]:
@@ -333,19 +367,27 @@ async def resource_memory_insert(self: "Agent", items: List[ResourceMemoryItemBa
                 break
 
         if not is_duplicate:
-            await self.resource_memory_manager.insert_resource(
-                actor=self.actor,
-                agent_state=self.agent_state,
-                agent_id=agent_id,
-                title=item["title"],
-                summary=item["summary"],
-                resource_type=item["resource_type"],
-                content=item["content"],
-                organization_id=self.actor.organization_id,
-                filter_tags=filter_tags if filter_tags else None,
-                use_cache=use_cache,
-                user_id=user_id,
-            )
+            try:
+                await self.resource_memory_manager.insert_resource(
+                    actor=self.actor,
+                    agent_state=self.agent_state,
+                    agent_id=agent_id,
+                    title=item["title"],
+                    summary=item["summary"],
+                    resource_type=item["resource_type"],
+                    content=item["content"],
+                    organization_id=self.actor.organization_id,
+                    filter_tags=filter_tags if filter_tags else None,
+                    use_cache=use_cache,
+                    user_id=user_id,
+                )
+            except Exception as e:
+                print(
+                    f"[resource_memory_insert] insert_resource FAILED for item "
+                    f"{item!r}: {e}"
+                )
+                traceback.print_exc()
+                raise
             inserted_count += 1
 
     # Return feedback message
@@ -438,18 +480,26 @@ async def procedural_memory_insert(self: "Agent", items: List[ProceduralMemoryIt
                 break
 
         if not is_duplicate:
-            await self.procedural_memory_manager.insert_procedure(
-                agent_state=self.agent_state,
-                agent_id=agent_id,
-                entry_type=item["entry_type"],
-                summary=item["summary"],
-                steps=item["steps"],
-                actor=self.actor,
-                organization_id=self.user.organization_id,
-                filter_tags=filter_tags if filter_tags else None,
-                use_cache=use_cache,
-                user_id=user_id,
-            )
+            try:
+                await self.procedural_memory_manager.insert_procedure(
+                    agent_state=self.agent_state,
+                    agent_id=agent_id,
+                    entry_type=item["entry_type"],
+                    summary=item["summary"],
+                    steps=item["steps"],
+                    actor=self.actor,
+                    organization_id=self.user.organization_id,
+                    filter_tags=filter_tags if filter_tags else None,
+                    use_cache=use_cache,
+                    user_id=user_id,
+                )
+            except Exception as e:
+                print(
+                    f"[procedural_memory_insert] insert_procedure FAILED for "
+                    f"item {item!r}: {e}"
+                )
+                traceback.print_exc()
+                raise
             inserted_count += 1
 
     # Return feedback message
@@ -484,21 +534,37 @@ async def procedural_memory_update(self: "Agent", old_ids: List[str], new_items:
     user_id = getattr(self, "user_id", None)
 
     for old_id in old_ids:
-        await self.procedural_memory_manager.delete_procedure_by_id(procedure_id=old_id, actor=self.actor)
+        try:
+            await self.procedural_memory_manager.delete_procedure_by_id(procedure_id=old_id, actor=self.actor)
+        except Exception as e:
+            print(
+                f"[procedural_memory_update] delete_procedure_by_id FAILED for "
+                f"old_id {old_id!r}: {e}"
+            )
+            traceback.print_exc()
+            raise
 
     for item in new_items:
-        await self.procedural_memory_manager.insert_procedure(
-            agent_state=self.agent_state,
-            agent_id=agent_id,
-            entry_type=item["entry_type"],
-            summary=item["summary"],
-            steps=item["steps"],
-            actor=self.actor,
-            organization_id=self.actor.organization_id,
-            filter_tags=filter_tags if filter_tags else None,
-            use_cache=use_cache,
-            user_id=user_id,
-        )
+        try:
+            await self.procedural_memory_manager.insert_procedure(
+                agent_state=self.agent_state,
+                agent_id=agent_id,
+                entry_type=item["entry_type"],
+                summary=item["summary"],
+                steps=item["steps"],
+                actor=self.actor,
+                organization_id=self.actor.organization_id,
+                filter_tags=filter_tags if filter_tags else None,
+                use_cache=use_cache,
+                user_id=user_id,
+            )
+        except Exception as e:
+            print(
+                f"[procedural_memory_update] insert_procedure FAILED for item "
+                f"{item!r}: {e}"
+            )
+            traceback.print_exc()
+            raise
 
 
 async def check_semantic_memory(
@@ -581,19 +647,27 @@ async def semantic_memory_insert(self: "Agent", items: List[SemanticMemoryItemBa
                 break
 
         if not is_duplicate:
-            await self.semantic_memory_manager.insert_semantic_item(
-                agent_state=self.agent_state,
-                agent_id=agent_id,
-                name=item["name"],
-                summary=item["summary"],
-                details=item["details"],
-                source=item["source"],
-                organization_id=self.actor.organization_id,
-                actor=self.actor,  # Client for write operations
-                filter_tags=filter_tags if filter_tags else None,
-                use_cache=use_cache,
-                user_id=user_id,
-            )
+            try:
+                await self.semantic_memory_manager.insert_semantic_item(
+                    agent_state=self.agent_state,
+                    agent_id=agent_id,
+                    name=item["name"],
+                    summary=item["summary"],
+                    details=item["details"],
+                    source=item["source"],
+                    organization_id=self.actor.organization_id,
+                    actor=self.actor,
+                    filter_tags=filter_tags if filter_tags else None,
+                    use_cache=use_cache,
+                    user_id=user_id,
+                )
+            except Exception as e:
+                print(
+                    f"[semantic_memory_insert] insert_semantic_item FAILED for "
+                    f"item {item!r}: {e}"
+                )
+                traceback.print_exc()
+                raise
             inserted_count += 1
 
     # Return feedback message
@@ -632,23 +706,41 @@ async def semantic_memory_update(
     user_id = getattr(self, "user_id", None)
 
     for old_id in old_semantic_item_ids:
-        await self.semantic_memory_manager.delete_semantic_item_by_id(semantic_memory_id=old_id, actor=self.actor)
+        try:
+            await self.semantic_memory_manager.delete_semantic_item_by_id(
+                semantic_memory_id=old_id, actor=self.actor
+            )
+        except Exception as e:
+            print(
+                f"[semantic_memory_update] delete_semantic_item_by_id FAILED for "
+                f"old_id {old_id!r}: {e}"
+            )
+            traceback.print_exc()
+            raise
 
     new_ids = []
     for item in new_items:
-        inserted_item = await self.semantic_memory_manager.insert_semantic_item(
-            agent_state=self.agent_state,
-            agent_id=agent_id,
-            name=item["name"],
-            summary=item["summary"],
-            details=item["details"],
-            source=item["source"],
-            actor=self.actor,
-            organization_id=self.actor.organization_id,
-            filter_tags=filter_tags if filter_tags else None,
-            use_cache=use_cache,
-            user_id=user_id,
-        )
+        try:
+            inserted_item = await self.semantic_memory_manager.insert_semantic_item(
+                agent_state=self.agent_state,
+                agent_id=agent_id,
+                name=item["name"],
+                summary=item["summary"],
+                details=item["details"],
+                source=item["source"],
+                actor=self.actor,
+                organization_id=self.actor.organization_id,
+                filter_tags=filter_tags if filter_tags else None,
+                use_cache=use_cache,
+                user_id=user_id,
+            )
+        except Exception as e:
+            print(
+                f"[semantic_memory_update] insert_semantic_item FAILED for "
+                f"item {item!r}: {e}"
+            )
+            traceback.print_exc()
+            raise
         new_ids.append(inserted_item.id)
 
     message_to_return = (
@@ -706,20 +798,28 @@ async def knowledge_vault_insert(self: "Agent", items: List[KnowledgeVaultItemBa
                 break
 
         if not is_duplicate:
-            await self.knowledge_vault_manager.insert_knowledge(
-                actor=self.actor,
-                agent_state=self.agent_state,
-                agent_id=agent_id,
-                entry_type=item["entry_type"],
-                source=item["source"],
-                sensitivity=item["sensitivity"],
-                secret_value=item["secret_value"],
-                caption=item["caption"],
-                organization_id=self.actor.organization_id,
-                filter_tags=filter_tags if filter_tags else None,
-                use_cache=use_cache,
-                user_id=user_id,
-            )
+            try:
+                await self.knowledge_vault_manager.insert_knowledge(
+                    actor=self.actor,
+                    agent_state=self.agent_state,
+                    agent_id=agent_id,
+                    entry_type=item["entry_type"],
+                    source=item["source"],
+                    sensitivity=item["sensitivity"],
+                    secret_value=item["secret_value"],
+                    caption=item["caption"],
+                    organization_id=self.actor.organization_id,
+                    filter_tags=filter_tags if filter_tags else None,
+                    use_cache=use_cache,
+                    user_id=user_id,
+                )
+            except Exception as e:
+                print(
+                    f"[knowledge_vault_insert] insert_knowledge FAILED for "
+                    f"item {item!r}: {e}"
+                )
+                traceback.print_exc()
+                raise
             inserted_count += 1
 
     # Return feedback message
@@ -754,23 +854,41 @@ async def knowledge_vault_update(self: "Agent", old_ids: List[str], new_items: L
     user_id = getattr(self, "user_id", None)
 
     for old_id in old_ids:
-        await self.knowledge_vault_manager.delete_knowledge_by_id(knowledge_vault_item_id=old_id, actor=self.actor)
+        try:
+            await self.knowledge_vault_manager.delete_knowledge_by_id(
+                knowledge_vault_item_id=old_id, actor=self.actor
+            )
+        except Exception as e:
+            print(
+                f"[knowledge_vault_update] delete_knowledge_by_id FAILED for "
+                f"old_id {old_id!r}: {e}"
+            )
+            traceback.print_exc()
+            raise
 
     for item in new_items:
-        await self.knowledge_vault_manager.insert_knowledge(
-            actor=self.actor,
-            agent_state=self.agent_state,
-            agent_id=agent_id,
-            entry_type=item["entry_type"],
-            source=item["source"],
-            sensitivity=item["sensitivity"],
-            secret_value=item["secret_value"],
-            caption=item["caption"],
-            organization_id=self.actor.organization_id,
-            filter_tags=filter_tags if filter_tags else None,
-            use_cache=use_cache,
-            user_id=user_id,
-        )
+        try:
+            await self.knowledge_vault_manager.insert_knowledge(
+                actor=self.actor,
+                agent_state=self.agent_state,
+                agent_id=agent_id,
+                entry_type=item["entry_type"],
+                source=item["source"],
+                sensitivity=item["sensitivity"],
+                secret_value=item["secret_value"],
+                caption=item["caption"],
+                organization_id=self.actor.organization_id,
+                filter_tags=filter_tags if filter_tags else None,
+                use_cache=use_cache,
+                user_id=user_id,
+            )
+        except Exception as e:
+            print(
+                f"[knowledge_vault_update] insert_knowledge FAILED for item "
+                f"{item!r}: {e}"
+            )
+            traceback.print_exc()
+            raise
 
 
 async def trigger_memory_update_with_instruction(

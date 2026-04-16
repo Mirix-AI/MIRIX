@@ -60,6 +60,12 @@ class EmbeddingConfig(BaseModel):
         description="Model name to report to Langfuse for cost tracking (overrides 'embedding_model' if set).",
     )
 
+    # Optional API key override — takes precedence over env-var / provider-manager keys
+    api_key: Optional[str] = Field(
+        None,
+        description="API key to use for this embedding config, overriding env-var / provider-manager defaults.",
+    )
+
     # azure only
     azure_endpoint: Optional[str] = Field(None, description="The Azure endpoint for the model.")
     azure_version: Optional[str] = Field(None, description="The Azure version for the model.")
