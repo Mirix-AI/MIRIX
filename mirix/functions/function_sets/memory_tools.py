@@ -438,7 +438,11 @@ async def resource_memory_update(self: "Agent", old_ids: List[str], new_items: L
 
 
 def _bump_patch_version(version: str) -> str:
-    """Increment patch version: '0.1.0' -> '0.1.1'."""
+    """Increment patch version: '0.1.0' -> '0.1.1'.
+
+    Args:
+        version (str): Semver version string to bump.
+    """
     try:
         parts = version.split(".")
         parts[-1] = str(int(parts[-1]) + 1)
@@ -608,7 +612,7 @@ async def skill_edit(
     field: str,
     old_text: str = None,
     new_text: str = None,
-    value: object = None,
+    value: str = None,
 ) -> str:
     """
     Edit an existing skill. For text fields (name, description, instructions), use old_text/new_text
@@ -620,7 +624,7 @@ async def skill_edit(
         field (str): The field to modify — "name", "description", "instructions", "entry_type", "triggers", or "examples".
         old_text (str): For text fields: the text to find and replace.
         new_text (str): For text fields: the replacement text.
-        value (object): For non-text fields: the new value for the entire field.
+        value (str): For non-text fields: the new value for the entire field (JSON string for lists/dicts).
 
     Returns:
         str: Confirmation of the edit with the new version number.
@@ -1113,23 +1117,31 @@ async def trigger_memory_update(self: "Agent", user_message: object, memory_type
     if not isinstance(user_message, dict):
         raise TypeError(f"user_message must be a dictionary, got {type(user_message).__name__}: {user_message}")
 
-    # Fixed-interval procedural trigger: auto-include "procedural" every N messages
+    # Fixed-interval procedural trigger: auto-include "procedural" when the
+    # current chunk contains >= N messages (counted by [USER] markers in content).
     from mirix.constants import SKILL_TRIGGER_MESSAGE_THRESHOLD
 
-    if not hasattr(self, "_skill_trigger_counters"):
-        self._skill_trigger_counters = {}
-    user_key = self.user.id if self.user else "default"
-    self._skill_trigger_counters[user_key] = self._skill_trigger_counters.get(user_key, 0) + 1
+    msg_obj = user_message.get("message")
+    msg_count = 0
+    if msg_obj is not None:
+        content = getattr(msg_obj, "content", None) or getattr(msg_obj, "text", None)
+        if isinstance(content, list):
+            msg_count = sum(
+                1 for c in content
+                if hasattr(c, "text") and isinstance(c.text, str) and c.text.strip() == "[USER]"
+            )
+        elif isinstance(content, str):
+            msg_count = content.count("[USER]")
 
-    if self._skill_trigger_counters[user_key] >= SKILL_TRIGGER_MESSAGE_THRESHOLD:
+    if msg_count >= SKILL_TRIGGER_MESSAGE_THRESHOLD:
         if "procedural" not in memory_types:
             memory_types = list(memory_types) + ["procedural"]
             logger.info(
-                "Auto-triggering procedural memory update (message count reached %d for user %s)",
+                "Auto-triggering procedural memory update (chunk has %d messages, threshold=%d, user=%s)",
+                msg_count,
                 SKILL_TRIGGER_MESSAGE_THRESHOLD,
-                user_key,
+                self.user.id if self.user else "default",
             )
-        self._skill_trigger_counters[user_key] = 0
 
     # De-duplicate memory types while preserving order.
     # The MetaMemoryAgent (LLM) can occasionally emit duplicates (e.g., ["semantic", "semantic"]).

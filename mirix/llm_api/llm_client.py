@@ -48,5 +48,11 @@ class LLMClient:
                 return GoogleAIClient(
                     llm_config=llm_config,
                 )
+            case "openrouter":
+                from mirix.llm_api.openrouter_client import OpenRouterClient
+
+                return OpenRouterClient(
+                    llm_config=llm_config,
+                )
             case _:
                 return None

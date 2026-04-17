@@ -33,6 +33,17 @@ def _resolve_api_keys(config: dict) -> dict:
     for section in config.values():
         if not isinstance(section, dict) or section.get("api_key") != _PLACEHOLDER:
             continue
+
+        # Check if endpoint points to OpenRouter
+        endpoint = (
+            section.get("model_endpoint")
+            or section.get("embedding_endpoint")
+            or ""
+        ).lower()
+        if "openrouter.ai" in endpoint:
+            section["api_key"] = os.environ.get("OPENROUTER_API_KEY", _PLACEHOLDER)
+            continue
+
         provider = (
             section.get("model_endpoint_type")
             or section.get("embedding_endpoint_type")
@@ -48,7 +59,7 @@ class MirixMemorySystem:
 
     def __init__(self, user_id: Optional[str] = None, mirix_config_path: Optional[str] = None, client_id: Optional[str] = None, org_id: Optional[str] = None, client: Optional[MirixClient] = None):
         if client is None:
-            self.client = MirixClient(client_id=client_id, org_id=org_id, base_url="http://127.0.0.1:8531", write_scope="read_write")
+            self.client = MirixClient(client_id=client_id, org_id=org_id, base_url="http://127.0.0.1:8531", write_scope="read_write", timeout=600)
             config_path = Path(mirix_config_path) if mirix_config_path else Path(__file__).with_name("mirix_openai.yaml")
             with config_path.open("r", encoding="utf-8") as handle:
                 config = yaml.safe_load(handle) or {}
@@ -67,8 +78,8 @@ class MirixMemorySystem:
             messages=[
                 {"role": "user", "content": chunk}
             ],
-            # LoCoMo ingestion: avoid running the full multi-agent chain on every session.
-            chaining=False,
+            # LoCoMo ingestion: run full agent chain to extract memories.
+            chaining=True,
             filter_tags={"scope": "read_write", "kind": "conversation_session"},
             async_add=async_add,
         ))

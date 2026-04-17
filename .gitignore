@@ -50,3 +50,5 @@ test-results/
 test_*.db
 *.log
 .persist
+docs/superpowers/
+.claude/
