@@ -32,7 +32,7 @@ Contains general knowledge about a concept (e.g. a new software name, a new conc
    - Use `episodic_memory_merge` for minor updates to existing events (e.g., user continues discussing the same topic). Note that the new summary will overwrite the old summary, so ensure it covers both earlier and new information.
    - Use `episodic_memory_insert` when significant changes occur (e.g., user starts discussing a completely different topic or shares new content).
    - Use `episodic_memory_replace` if you need to consolidate repeated items or rewrite overly long summaries.
-3. **Make Updates**: Execute the function calls that capture the episodic information, including detailed descriptions in the `details` field and the correct `occurred_at` timestamp.
+3. **Make Updates**: Execute the function calls that capture the episodic information, including detailed descriptions in the `details` field and the correct `occurred_at` timestamp. Insert small atomic events.
 4. **Skip Update if Necessary**: If there are no updates to make, then skip the update by calling `finish_memory_update`.
 
 **Example of Multiple Updates:**
