@@ -10,6 +10,7 @@ from typing import Callable, List, Optional, Tuple, Union
 import numpy as np
 import pytz
 import httpx
+from opentelemetry import trace
 
 from mirix.agent.tool_validators import validate_tool_args
 from mirix.constants import (
@@ -96,6 +97,7 @@ from mirix.utils import (
 
 # Initialize module-level logger
 logger = get_logger(__name__)
+otel_tracer = trace.get_tracer(__name__)
 
 
 def _filter_function_args(
@@ -683,191 +685,230 @@ class Agent(BaseAgent):
         active_llm_client = llm_client or LLMClient.create(
             llm_config=self.agent_state.llm_config,
         )
+        configured_model = self.agent_state.llm_config.model
+        if active_llm_client and active_llm_client.llm_config:
+            configured_model = active_llm_client.llm_config.model
+
+        def _serialize_for_span(value: object, max_len: int = 8000) -> str:
+            """Serialize complex values safely for OpenTelemetry span attributes."""
+            try:
+                if hasattr(value, "model_dump"):
+                    text = json_dumps(value.model_dump())
+                else:
+                    text = json_dumps(value)
+            except Exception:
+                text = str(value)
+            if len(text) > max_len:
+                return f"{text[:max_len]}...[truncated]"
+            return text
 
         for attempt in range(1, empty_response_retry_limit + 1):
-            try:
-                log_telemetry(self.logger, "_get_ai_reply create start")
+            with otel_tracer.start_as_current_span("Agent._get_ai_reply.llm_attempt") as llm_span:
+                llm_span.set_attribute("llm.attempt", attempt)
+                llm_span.set_attribute("llm.stream", stream)
+                llm_span.set_attribute("llm.agent_name", self.agent_state.name)
+                llm_span.set_attribute("llm.model.configured", configured_model or "unknown")
+                llm_span.set_attribute("llm.input.messages", _serialize_for_span(message_sequence))
+                llm_span.set_attribute("llm.input.allowed_functions", _serialize_for_span(allowed_functions))
+                if force_tool_call:
+                    llm_span.set_attribute("llm.input.force_tool_call", force_tool_call)
 
-                # New LLM client flow
-                if active_llm_client and not stream:
-                    response = await active_llm_client.send_llm_request(
-                        messages=message_sequence,
-                        tools=allowed_functions,
-                        stream=stream,
-                        force_tool_call=force_tool_call,
-                        get_input_data_for_debugging=get_input_data_for_debugging,
-                        existing_file_uris=existing_file_uris,
-                    )
+                try:
+                    log_telemetry(self.logger, "_get_ai_reply create start")
 
-                    if get_input_data_for_debugging:
-                        return response
+                    # New LLM client flow
+                    if active_llm_client and not stream:
 
-                else:
-                    # Fallback to existing flow
-                    response = await create(
-                        llm_config=self.agent_state.llm_config,
-                        messages=message_sequence,
-                        user_id=self.agent_state.created_by_id,
-                        functions=allowed_functions,
-                        # functions_python=self.functions_python, do we need this?
-                        function_call=function_call,
-                        first_message=first_message,
-                        force_tool_call=force_tool_call,
-                        stream=stream,
-                        stream_interface=self.interface,
-                        name=self.agent_state.name,
-                    )
-                log_telemetry(self.logger, "_get_ai_reply create finish")
+                        response = await active_llm_client.send_llm_request(
+                            messages=message_sequence,
+                            tools=allowed_functions,
+                            stream=stream,
+                            force_tool_call=force_tool_call,
+                            get_input_data_for_debugging=get_input_data_for_debugging,
+                            existing_file_uris=existing_file_uris,
+                        )
 
-                # These bottom two are retryable
-                if len(response.choices) == 0 or response.choices[0] is None:
-                    raise ValueError(f"API call returned an empty message: {response}")
+                        if get_input_data_for_debugging:
+                            return response
 
-                for choice in response.choices:
-                    if choice.message.content == "" and len(choice.message.tool_calls) == 0:
+                    else:
+                        # Fallback to existing flow
+                        response = await create(
+                            llm_config=self.agent_state.llm_config,
+                            messages=message_sequence,
+                            user_id=self.agent_state.created_by_id,
+                            functions=allowed_functions,
+                            # functions_python=self.functions_python, do we need this?
+                            function_call=function_call,
+                            first_message=first_message,
+                            force_tool_call=force_tool_call,
+                            stream=stream,
+                            stream_interface=self.interface,
+                            name=self.agent_state.name,
+                        )
+                    log_telemetry(self.logger, "_get_ai_reply create finish")
+                    llm_span.set_attribute("llm.model.response", response.model or configured_model or "unknown")
+                    llm_span.set_attribute("llm.output.response", _serialize_for_span(response))
+                    if response.usage:
+                        llm_span.set_attribute("llm.usage.prompt_tokens", response.usage.prompt_tokens)
+                        llm_span.set_attribute("llm.usage.completion_tokens", response.usage.completion_tokens)
+                        llm_span.set_attribute("llm.usage.total_tokens", response.usage.total_tokens)
+
+                    # These bottom two are retryable
+                    if len(response.choices) == 0 or response.choices[0] is None:
                         raise ValueError(f"API call returned an empty message: {response}")
 
-                if response.choices[0].finish_reason not in [
-                    "stop",
-                    "function_call",
-                    "tool_calls",
-                ]:
-                    if response.choices[0].finish_reason == "length":
-                        if attempt >= empty_response_retry_limit:
-                            raise RuntimeError(
-                                "Retries exhausted and no valid response received. Final error: maximum context length exceeded or generated content is too long"
-                            )
+                    for choice in response.choices:
+                        if choice.message.content == "" and len(choice.message.tool_calls) == 0:
+                            raise ValueError(f"API call returned an empty message: {response}")
+
+                    if response.choices[0].finish_reason not in [
+                        "stop",
+                        "function_call",
+                        "tool_calls",
+                    ]:
+                        if response.choices[0].finish_reason == "length":
+                            if attempt >= empty_response_retry_limit:
+                                raise RuntimeError(
+                                    "Retries exhausted and no valid response received. Final error: maximum context length exceeded or generated content is too long"
+                                )
+                            else:
+                                delay = min(backoff_factor * (2 ** (attempt - 1)), max_delay)
+                                printv(
+                                    f"[Mirix.Agent.{self.agent_state.name}] WARNING: Attempt {attempt} failed: {response.choices[0].finish_reason}. Retrying in {delay} seconds..."
+                                )
+                                await asyncio.sleep(delay)
+                                continue
                         else:
-                            delay = min(backoff_factor * (2 ** (attempt - 1)), max_delay)
-                            printv(
-                                f"[Mirix.Agent.{self.agent_state.name}] WARNING: Attempt {attempt} failed: {response.choices[0].finish_reason}. Retrying in {delay} seconds..."
-                            )
-                            await asyncio.sleep(delay)
-                            continue
-                    else:
-                        raise ValueError(f"Bad finish reason from API: {response.choices[0].finish_reason}")
-                log_telemetry(self.logger, "_handle_ai_response finish")
+                            raise ValueError(f"Bad finish reason from API: {response.choices[0].finish_reason}")
+                    log_telemetry(self.logger, "_handle_ai_response finish")
 
-            except ValueError as ve:
-                # Some upstream libraries raise ValueError() with an empty message, which
-                # makes retry logs unhelpful. Always include type + repr for visibility.
-                ve_desc = f"{type(ve).__name__}: {ve!r}"
-                if attempt >= empty_response_retry_limit:
-                    printv(f"[Mirix.Agent.{self.agent_state.name}] ERROR: Retry limit reached. Final error: {ve_desc}")
-                    log_telemetry(self.logger, "_handle_ai_response finish ValueError")
-                    # Log traceback once at the final attempt for actionable debugging.
-                    self.logger.exception(
-                        "[Mirix.Agent.%s] Retry limit reached (ValueError).",
-                        self.agent_state.name,
-                    )
-                    raise Exception(f"Retries exhausted and no valid response received. Final error: {ve_desc}")
-                else:
-                    delay = min(backoff_factor * (2 ** (attempt - 1)), max_delay)
-                    printv(
-                        f"[Mirix.Agent.{self.agent_state.name}] WARNING: Attempt {attempt} failed: {ve_desc}. Retrying in {delay} seconds..."
-                    )
-                    await asyncio.sleep(delay)
-                    continue
-
-            except KeyError as ke:
-                # Gemini api sometimes can yield empty response
-                # This is a retryable error
-                ke_desc = f"{type(ke).__name__}: {ke!r}"
-                if attempt >= empty_response_retry_limit:
-                    printv(f"[Mirix.Agent.{self.agent_state.name}] ERROR: Retry limit reached. Final error: {ke_desc}")
-                    log_telemetry(self.logger, "_handle_ai_response finish KeyError")
-                    self.logger.exception(
-                        "[Mirix.Agent.%s] Retry limit reached (KeyError).",
-                        self.agent_state.name,
-                    )
-                    raise Exception(f"Retries exhausted and no valid response received. Final error: {ke_desc}")
-                else:
-                    delay = min(backoff_factor * (2 ** (attempt - 1)), max_delay)
-                    printv(
-                        f"[Mirix.Agent.{self.agent_state.name}] WARNING: Attempt {attempt} failed: {ke_desc}. Retrying in {delay} seconds..."
-                    )
-                    await asyncio.sleep(delay)
-                    continue
-
-            except LLMError as llm_error:
-                llm_error_desc = f"{type(llm_error).__name__}: {llm_error!r}"
-                if attempt >= empty_response_retry_limit:
-                    printv(
-                        f"[Mirix.Agent.{self.agent_state.name}] ERROR: Retry limit reached. Final error: {llm_error_desc}"
-                    )
-                    log_telemetry(self.logger, "_handle_ai_response finish LLMError")
-                    log_telemetry(self.logger, "_get_ai_reply_last_message_hacking start")
-                    self.logger.exception(
-                        "[Mirix.Agent.%s] Retry limit reached (LLMError).",
-                        self.agent_state.name,
-                    )
-                    if second_try:
-                        raise Exception(
-                            f"Retries exhausted and no valid response received. Final error: {llm_error_desc}"
+                except ValueError as ve:
+                    llm_span.record_exception(ve)
+                    # Some upstream libraries raise ValueError() with an empty message, which
+                    # makes retry logs unhelpful. Always include type + repr for visibility.
+                    ve_desc = f"{type(ve).__name__}: {ve!r}"
+                    if attempt >= empty_response_retry_limit:
+                        printv(f"[Mirix.Agent.{self.agent_state.name}] ERROR: Retry limit reached. Final error: {ve_desc}")
+                        log_telemetry(self.logger, "_handle_ai_response finish ValueError")
+                        # Log traceback once at the final attempt for actionable debugging.
+                        self.logger.exception(
+                            "[Mirix.Agent.%s] Retry limit reached (ValueError).",
+                            self.agent_state.name,
                         )
-                    return await self._get_ai_reply(
-                        [message_sequence[-1]],
-                        function_call,
-                        first_message,
-                        stream,
-                        empty_response_retry_limit,
-                        backoff_factor,
-                        max_delay,
-                        step_count,
-                        last_function_failed,
-                        get_input_data_for_debugging,
-                        second_try=True,
-                        llm_client=active_llm_client,
-                    )
+                        raise Exception(f"Retries exhausted and no valid response received. Final error: {ve_desc}")
+                    else:
+                        delay = min(backoff_factor * (2 ** (attempt - 1)), max_delay)
+                        printv(
+                            f"[Mirix.Agent.{self.agent_state.name}] WARNING: Attempt {attempt} failed: {ve_desc}. Retrying in {delay} seconds..."
+                        )
+                        await asyncio.sleep(delay)
+                        continue
 
-                else:
-                    delay = min(backoff_factor * (2 ** (attempt - 1)), max_delay)
-                    printv(
-                        f"[Mirix.Agent.{self.agent_state.name}] WARNING: Attempt {attempt} failed: {llm_error_desc}. Retrying in {delay} seconds..."
-                    )
-                    await asyncio.sleep(delay)
-                    continue
+                except KeyError as ke:
+                    llm_span.record_exception(ke)
+                    # Gemini api sometimes can yield empty response
+                    # This is a retryable error
+                    ke_desc = f"{type(ke).__name__}: {ke!r}"
+                    if attempt >= empty_response_retry_limit:
+                        printv(f"[Mirix.Agent.{self.agent_state.name}] ERROR: Retry limit reached. Final error: {ke_desc}")
+                        log_telemetry(self.logger, "_handle_ai_response finish KeyError")
+                        self.logger.exception(
+                            "[Mirix.Agent.%s] Retry limit reached (KeyError).",
+                            self.agent_state.name,
+                        )
+                        raise Exception(f"Retries exhausted and no valid response received. Final error: {ke_desc}")
+                    else:
+                        delay = min(backoff_factor * (2 ** (attempt - 1)), max_delay)
+                        printv(
+                            f"[Mirix.Agent.{self.agent_state.name}] WARNING: Attempt {attempt} failed: {ke_desc}. Retrying in {delay} seconds..."
+                        )
+                        await asyncio.sleep(delay)
+                        continue
 
-            except AssertionError as ae:
-                tb_str = traceback.format_exc()
-                ae_desc = f"{type(ae).__name__}: {ae!r}\nTraceback:\n{tb_str}"
-                if attempt >= empty_response_retry_limit:
-                    printv(f"[Mirix.Agent.{self.agent_state.name}] ERROR: Retry limit reached. Final error: {ae_desc}")
-                    self.logger.exception(
-                        "[Mirix.Agent.%s] Retry limit reached (AssertionError).",
-                        self.agent_state.name,
-                    )
-                    raise Exception(f"Retries exhausted and no valid response received. Final error: {ae_desc}")
-                else:
-                    delay = min(backoff_factor * (2 ** (attempt - 1)), max_delay)
-                    printv(
-                        f"[Mirix.Agent.{self.agent_state.name}] WARNING: Attempt {attempt} failed: {ae_desc}. Retrying in {delay} seconds..."
-                    )
-                    await asyncio.sleep(delay)
-                    continue
+                except LLMError as llm_error:
+                    llm_span.record_exception(llm_error)
+                    llm_error_desc = f"{type(llm_error).__name__}: {llm_error!r}"
+                    if attempt >= empty_response_retry_limit:
+                        printv(
+                            f"[Mirix.Agent.{self.agent_state.name}] ERROR: Retry limit reached. Final error: {llm_error_desc}"
+                        )
+                        log_telemetry(self.logger, "_handle_ai_response finish LLMError")
+                        log_telemetry(self.logger, "_get_ai_reply_last_message_hacking start")
+                        self.logger.exception(
+                            "[Mirix.Agent.%s] Retry limit reached (LLMError).",
+                            self.agent_state.name,
+                        )
+                        if second_try:
+                            raise Exception(
+                                f"Retries exhausted and no valid response received. Final error: {llm_error_desc}"
+                            )
+                        return await self._get_ai_reply(
+                            [message_sequence[-1]],
+                            function_call,
+                            first_message,
+                            stream,
+                            empty_response_retry_limit,
+                            backoff_factor,
+                            max_delay,
+                            step_count,
+                            last_function_failed,
+                            get_input_data_for_debugging,
+                            second_try=True,
+                            llm_client=active_llm_client,
+                        )
 
-            except httpx.HTTPStatusError as he:
-                he_desc = f"{type(he).__name__}: {he!r}"
-                if attempt >= empty_response_retry_limit:
-                    printv(f"[Mirix.Agent.{self.agent_state.name}] ERROR: Retry limit reached. Final error: {he_desc}")
-                    self.logger.exception(
-                        "[Mirix.Agent.%s] Retry limit reached (HTTPError).",
-                        self.agent_state.name,
-                    )
-                    raise Exception(f"Retries exhausted and no valid response received. Final error: {he_desc}")
-                else:
-                    delay = min(backoff_factor * (2 ** (attempt - 1)), max_delay)
-                    printv(
-                        f"[Mirix.Agent.{self.agent_state.name}] WARNING: Attempt {attempt} failed: {he_desc}. Retrying in {delay} seconds..."
-                    )
-                    await asyncio.sleep(delay)
-                    continue
+                    else:
+                        delay = min(backoff_factor * (2 ** (attempt - 1)), max_delay)
+                        printv(
+                            f"[Mirix.Agent.{self.agent_state.name}] WARNING: Attempt {attempt} failed: {llm_error_desc}. Retrying in {delay} seconds..."
+                        )
+                        await asyncio.sleep(delay)
+                        continue
 
-            except Exception as e:
-                log_telemetry(self.logger, "_handle_ai_response finish generic Exception")
-                # For non-retryable errors, exit immediately
-                log_telemetry(self.logger, "_handle_ai_response finish generic Exception")
-                raise e
+                except AssertionError as ae:
+                    llm_span.record_exception(ae)
+                    tb_str = traceback.format_exc()
+                    ae_desc = f"{type(ae).__name__}: {ae!r}\nTraceback:\n{tb_str}"
+                    if attempt >= empty_response_retry_limit:
+                        printv(f"[Mirix.Agent.{self.agent_state.name}] ERROR: Retry limit reached. Final error: {ae_desc}")
+                        self.logger.exception(
+                            "[Mirix.Agent.%s] Retry limit reached (AssertionError).",
+                            self.agent_state.name,
+                        )
+                        raise Exception(f"Retries exhausted and no valid response received. Final error: {ae_desc}")
+                    else:
+                        delay = min(backoff_factor * (2 ** (attempt - 1)), max_delay)
+                        printv(
+                            f"[Mirix.Agent.{self.agent_state.name}] WARNING: Attempt {attempt} failed: {ae_desc}. Retrying in {delay} seconds..."
+                        )
+                        await asyncio.sleep(delay)
+                        continue
+
+                except httpx.HTTPStatusError as he:
+                    llm_span.record_exception(he)
+                    he_desc = f"{type(he).__name__}: {he!r}"
+                    if attempt >= empty_response_retry_limit:
+                        printv(f"[Mirix.Agent.{self.agent_state.name}] ERROR: Retry limit reached. Final error: {he_desc}")
+                        self.logger.exception(
+                            "[Mirix.Agent.%s] Retry limit reached (HTTPError).",
+                            self.agent_state.name,
+                        )
+                        raise Exception(f"Retries exhausted and no valid response received. Final error: {he_desc}")
+                    else:
+                        delay = min(backoff_factor * (2 ** (attempt - 1)), max_delay)
+                        printv(
+                            f"[Mirix.Agent.{self.agent_state.name}] WARNING: Attempt {attempt} failed: {he_desc}. Retrying in {delay} seconds..."
+                        )
+                        await asyncio.sleep(delay)
+                        continue
+
+                except Exception as e:
+                    llm_span.record_exception(e)
+                    log_telemetry(self.logger, "_handle_ai_response finish generic Exception")
+                    # For non-retryable errors, exit immediately
+                    log_telemetry(self.logger, "_handle_ai_response finish generic Exception")
+                    raise e
 
             # check if we are going over the context window: this allows for articifial constraints
             if response.usage.total_tokens > self.agent_state.llm_config.context_window:

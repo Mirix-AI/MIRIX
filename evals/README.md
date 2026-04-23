@@ -5,7 +5,7 @@
 Install uv with `brew install uv`, then run:
 ```
 uv venv
-source .venv/bin/activate
+source .venv/bin/activate # on windows, use `.\.venv\Scripts\Activate.ps1`
 python -m ensurepip --upgrade
 python -m pip install -r requirements.txt
 ```
