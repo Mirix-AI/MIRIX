@@ -309,6 +309,11 @@ class AgentTriggerStateManager:
         preds = [
             MessageModel.agent_id == agent_id,
             MessageModel.session_id.isnot(None),
+            # Skip soft-deleted messages: if a user wipes conversation
+            # history, the sessions those messages belonged to should not
+            # keep contributing to the procedural fire threshold. Mirrors
+            # the `is_deleted == False` filter in message_manager.
+            MessageModel.is_deleted.is_(False),
         ]
         if user_id is not None:
             preds.append(MessageModel.user_id == user_id)

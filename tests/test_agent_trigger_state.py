@@ -241,6 +241,16 @@ class TestAgentTriggerStateManagerSurface:
             "check_and_claim_fire must lock the cursor row with SELECT FOR UPDATE"
         )
 
+    def test_excludes_soft_deleted_messages(self):
+        # Messages carry an is_deleted flag from CommonSqlalchemyMetaMixins.
+        # Leaving them in the count lets a user's deleted history keep
+        # firing procedural extraction — mirror message_manager's
+        # `is_deleted == False` convention.
+        agg_src = inspect.getsource(AgentTriggerStateManager._aggregate_window)
+        assert "MessageModel.is_deleted.is_(False)" in agg_src, (
+            "aggregate must exclude soft-deleted messages"
+        )
+
     def test_uses_min_semantics_not_max(self):
         # MIN-based windowing is what prevents double-counting a session
         # whose last message happens to fall in a future window. Each
