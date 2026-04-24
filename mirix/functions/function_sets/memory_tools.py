@@ -1117,30 +1117,58 @@ async def trigger_memory_update(self: "Agent", user_message: object, memory_type
     if not isinstance(user_message, dict):
         raise TypeError(f"user_message must be a dictionary, got {type(user_message).__name__}: {user_message}")
 
-    # Fixed-interval procedural trigger: auto-include "procedural" when the
-    # current chunk contains >= N messages (counted by [USER] markers in content).
-    from mirix.constants import SKILL_TRIGGER_MESSAGE_THRESHOLD
+    # Fixed-interval procedural trigger: auto-include "procedural" once
+    # SKILL_TRIGGER_SESSION_THRESHOLD distinct message sessions have accrued
+    # on this (agent, user) pair since the last fire. The cursor lives in the
+    # agent_trigger_state table; the running count is derived from messages
+    # at query time so there is only one source of truth and restarts/multi-
+    # worker deployments all agree.
+    #
+    # `check_and_claim_fire` is the single atomic entry point: it serializes
+    # the threshold-check + cursor-advance under SELECT FOR UPDATE so two
+    # concurrent workers can never double-fire for the same window, and it
+    # advances the cursor to the observed MAX(messages.created_at) so the
+    # next window cannot skip messages inserted mid-check.
+    from mirix.constants import SKILL_TRIGGER_SESSION_THRESHOLD
+    from mirix.schemas.agent_trigger_state import TRIGGER_TYPE_PROCEDURAL_SKILL
+    from mirix.services.agent_trigger_state_manager import AgentTriggerStateManager
 
-    msg_obj = user_message.get("message")
-    msg_count = 0
-    if msg_obj is not None:
-        content = getattr(msg_obj, "content", None) or getattr(msg_obj, "text", None)
-        if isinstance(content, list):
-            msg_count = sum(
-                1 for c in content
-                if hasattr(c, "text") and isinstance(c.text, str) and c.text.strip() == "[USER]"
-            )
-        elif isinstance(content, str):
-            msg_count = content.count("[USER]")
+    # Messages are stored against the top-level (chat) agent, not the meta
+    # agent, so count sessions on the parent when this tool runs inside a
+    # child memory agent — matches the convention used elsewhere in this module.
+    trigger_agent_id = (
+        self.agent_state.parent_id
+        if self.agent_state.parent_id is not None
+        else self.agent_state.id
+    )
+    trigger_user_id = self.user.id if self.user else None
+    trigger_org_id = self.actor.organization_id if getattr(self, "actor", None) else None
+    current_session_id = getattr(self, "_current_step_session_id", None)
 
-    if msg_count >= SKILL_TRIGGER_MESSAGE_THRESHOLD:
-        if "procedural" not in memory_types:
-            memory_types = list(memory_types) + ["procedural"]
+    if trigger_user_id is None:
+        # No user scope — we cannot bookkeep a per-user cursor. Skip the
+        # auto-trigger rather than silently lumping all users together.
+        logger.debug("Skipping session-based procedural trigger: no user on agent.")
+    else:
+        trigger_mgr = AgentTriggerStateManager()
+        claim = await trigger_mgr.check_and_claim_fire(
+            agent_id=trigger_agent_id,
+            user_id=trigger_user_id,
+            trigger_type=TRIGGER_TYPE_PROCEDURAL_SKILL,
+            threshold=SKILL_TRIGGER_SESSION_THRESHOLD,
+            organization_id=trigger_org_id,
+            current_session_id=current_session_id,
+        )
+        if claim.fired:
+            if "procedural" not in memory_types:
+                memory_types = list(memory_types) + ["procedural"]
             logger.info(
-                "Auto-triggering procedural memory update (chunk has %d messages, threshold=%d, user=%s)",
-                msg_count,
-                SKILL_TRIGGER_MESSAGE_THRESHOLD,
-                self.user.id if self.user else "default",
+                "Auto-triggering procedural memory update "
+                "(sessions_since=%d, threshold=%d, agent=%s, user=%s)",
+                claim.sessions_since,
+                SKILL_TRIGGER_SESSION_THRESHOLD,
+                trigger_agent_id,
+                trigger_user_id,
             )
 
     # De-duplicate memory types while preserving order.

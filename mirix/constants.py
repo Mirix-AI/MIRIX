@@ -249,3 +249,8 @@ LOAD_IMAGE_CONTENT_FOR_LAST_MESSAGE_ONLY = os.getenv("LOAD_IMAGE_CONTENT_FOR_LAS
 )
 BUILD_EMBEDDINGS_FOR_MEMORY = os.getenv("BUILD_EMBEDDINGS_FOR_MEMORY", "true").lower() in ("true", "1", "yes")
 SKILL_TRIGGER_MESSAGE_THRESHOLD = int(os.getenv("SKILL_TRIGGER_MESSAGE_THRESHOLD", "10"))
+# Number of *sessions* (distinct message.session_id values) that must accumulate
+# on an agent for a given user before procedural-memory extraction auto-fires.
+# Counted against a persisted cursor (agent_trigger_state), so restarts and
+# multiple workers all see the same value.
+SKILL_TRIGGER_SESSION_THRESHOLD = int(os.getenv("SKILL_TRIGGER_SESSION_THRESHOLD", "5"))
