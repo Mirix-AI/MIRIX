@@ -45,11 +45,18 @@ pytestmark = [
 # ----------------------------- infrastructure ----------------------------
 
 
-@pytest.fixture(scope="module")
-def server():
-    """One AsyncServer instance per test module; owns the DB connection pool."""
-    from mirix.server.server import AsyncServer
+@pytest_asyncio.fixture(scope="module", loop_scope="module")
+async def server():
+    """One AsyncServer instance per test module; owns the DB connection pool.
 
+    `AsyncServer()` on its own does not run DDL — that normally happens via
+    FastAPI's lifespan hook. We call `ensure_tables_created()` explicitly
+    so the ORM tables (including the new agent_trigger_state) exist before
+    any test runs.
+    """
+    from mirix.server.server import AsyncServer, ensure_tables_created
+
+    await ensure_tables_created()
     return AsyncServer()
 
 
@@ -93,9 +100,10 @@ async def _insert_minimal_agent(server, org_id: str) -> str:
     embedding-model requirements that don't matter for the trigger path.
     """
     from mirix.orm.agent import Agent as AgentORM
+    from mirix.server.server import db_context
 
     agent_id = f"agent-{uuid.uuid4()}"
-    async with server.db_context() as session:
+    async with db_context() as session:
         session.add(AgentORM(id=agent_id, organization_id=org_id))
         await session.commit()
     return agent_id
@@ -134,8 +142,10 @@ async def _insert_message(
     """
     from mirix.orm.message import Message as MessageORM
 
+    from mirix.server.server import db_context
+
     msg_id = f"message-{uuid.uuid4()}"
-    async with server.db_context() as session:
+    async with db_context() as session:
         msg = MessageORM(
             id=msg_id,
             agent_id=agent_id,
