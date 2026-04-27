@@ -1819,6 +1819,36 @@ class MirixClient(AbstractClient):
 
         return await self._request("GET", "/memory/search_all_users", params=params, headers=headers)
 
+    async def list_memory_components(
+        self,
+        user_id: str,
+        memory_type: str = "all",
+        limit: int = 50,
+        headers: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
+        """
+        List memory records grouped by component for the given user.
+
+        Args:
+            user_id: End-user whose memories to list
+            memory_type: One of "episodic", "semantic", "procedural", "resource",
+                        "knowledge_vault", "core", or "all" (default: "all")
+            limit: Maximum number of items to return per memory type (default: 50)
+
+        Returns:
+            Dict containing memories grouped by component type
+        """
+        await self._ensure_user_exists(user_id, headers=headers)
+
+        params: Dict[str, Any] = {
+            "user_id": user_id,
+            "memory_type": memory_type,
+        }
+        if limit:
+            params["limit"] = limit
+
+        return await self._request("GET", "/memory/components", params=params, headers=headers)
+
     # ========================================================================
     # LangChain/Composio/CrewAI Integration (Not Supported)
     # ========================================================================
