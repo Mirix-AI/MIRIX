@@ -98,6 +98,7 @@ class QueueWorker:
             otid=proto_msg.otid if proto_msg.HasField("otid") else None,
             sender_id=proto_msg.sender_id if proto_msg.HasField("sender_id") else None,
             group_id=proto_msg.group_id if proto_msg.HasField("group_id") else None,
+            session_id=proto_msg.session_id if proto_msg.HasField("session_id") else None,
             filter_tags=None,
         )
 

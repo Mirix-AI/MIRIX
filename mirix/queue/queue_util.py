@@ -145,6 +145,8 @@ async def put_messages(
             proto_msg.sender_id = msg.sender_id
         if msg.group_id:
             proto_msg.group_id = msg.group_id
+        if msg.session_id:
+            proto_msg.session_id = msg.session_id
 
         proto_input_messages.append(proto_msg)
 

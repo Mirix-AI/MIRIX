@@ -1,6 +1,6 @@
 from typing import TYPE_CHECKING, List, Optional
 
-from sqlalchemy import JSON, ForeignKey, Index
+from sqlalchemy import JSON, CheckConstraint, ForeignKey, Index, String
 from sqlalchemy.orm import Mapped, declared_attr, mapped_column, relationship
 
 from mirix.orm.custom_columns import (
@@ -10,8 +10,12 @@ from mirix.orm.custom_columns import (
 )
 from mirix.orm.mixins import AgentMixin, OrganizationMixin, UserMixin
 from mirix.orm.sqlalchemy_base import SqlalchemyBase
-from mirix.schemas.message import Message as PydanticMessage
-from mirix.schemas.message import ToolReturn
+from mirix.schemas.message import (
+    SESSION_ID_MAX_LEN,
+    SESSION_ID_SQL_PATTERN,
+    Message as PydanticMessage,
+    ToolReturn,
+)
 from mirix.schemas.mirix_message_content import MessageContent
 from mirix.schemas.mirix_message_content import TextContent as PydanticTextContent
 from mirix.schemas.openai.openai import ToolCall as OpenAIToolCall
@@ -32,6 +36,21 @@ class Message(SqlalchemyBase, OrganizationMixin, UserMixin, AgentMixin):
         Index("ix_messages_created_at", "created_at", "id"),
         Index("ix_messages_client_user", "client_id", "user_id"),
         Index("ix_messages_agent_client_user", "agent_id", "client_id", "user_id"),
+        # Accelerates "list messages of an agent in a session, newest first".
+        Index(
+            "ix_messages_agent_session_created_at",
+            "agent_id",
+            "session_id",
+            "created_at",
+        ),
+        # Backstop the app-level validator: DB must never store an invalid session_id.
+        # Uses the Postgres `~` operator, so emit the constraint only on Postgres
+        # (SQLite, used for some local/test setups, has no POSIX regex operator).
+        # Pattern derived from mirix.schemas.message so there's one source of truth.
+        CheckConstraint(
+            f"session_id IS NULL OR session_id ~ '{SESSION_ID_SQL_PATTERN}'",
+            name="ck_messages_session_id_format",
+        ).ddl_if(dialect="postgresql"),
     )
     __pydantic_model__ = PydanticMessage
 
@@ -77,6 +96,13 @@ class Message(SqlalchemyBase, OrganizationMixin, UserMixin, AgentMixin):
     sender_id: Mapped[Optional[str]] = mapped_column(
         nullable=True,
         doc="The id of the sender of the message, can be an identity id or agent id",
+    )
+    session_id: Mapped[Optional[str]] = mapped_column(
+        String(SESSION_ID_MAX_LEN),
+        nullable=True,
+        doc="Top-level conversation/session identifier for grouping messages. "
+        "Enforced by app validator and DB CHECK constraint "
+        f"(pattern {SESSION_ID_SQL_PATTERN}).",
     )
 
     # Relationships

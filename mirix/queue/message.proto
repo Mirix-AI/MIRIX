@@ -98,6 +98,9 @@ message MessageCreate {
 
   // Optional multi-agent group id
   optional string group_id = 7;
+
+  // Optional top-level session identifier (see mirix.schemas.message.MessageCreate.session_id).
+  optional string session_id = 8;
 }
 
 // List of message content parts (for structured content)
