@@ -46,7 +46,7 @@ asyncpg
 aiosqlite
 httpx
 ipdb
-protobuf>=5.0.0,<6.0.0
+protobuf>=5.27.2,<6.0.0
 redis[hiredis]>=7.0.1,<8.0.0
 aiokafka>=0.13.0,<0.14.0
 asyncddgs

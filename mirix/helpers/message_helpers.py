@@ -62,4 +62,5 @@ def prepare_input_message_create(message: MessageCreate, agent_id: str, **kwargs
         otid=message.otid,
         sender_id=message.sender_id,
         group_id=message.group_id,
+        session_id=message.session_id,
     )

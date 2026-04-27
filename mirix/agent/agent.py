@@ -946,6 +946,10 @@ class Agent(BaseAgent):
         if response_message_id is not None:
             assert response_message_id.startswith("message-"), response_message_id
 
+        # Inherit the triggering input's session_id so synthesized assistant/tool
+        # messages from this step stay in the same session (Codex review C1).
+        input_session_id = getattr(input_message, "session_id", None)
+
         messages = []  # append these to the history when done
         function_name = None
 
@@ -988,6 +992,7 @@ class Agent(BaseAgent):
                     agent_id=self.agent_state.id,
                     model=self.model,
                     openai_message_dict=response_message.model_dump(),
+                    session_id=input_session_id,
                 )
             )  # extend conversation with assistant's reply
 
@@ -1037,6 +1042,7 @@ class Agent(BaseAgent):
                                 "content": function_response,
                                 "tool_call_id": tool_call_id,
                             },
+                            session_id=input_session_id,
                         )
                     )  # extend conversation with function response
                     self.interface.function_message(f"Error: {error_msg}", msg_obj=messages[-1])
@@ -1062,6 +1068,7 @@ class Agent(BaseAgent):
                                 "content": function_response,
                                 "tool_call_id": tool_call_id,
                             },
+                            session_id=input_session_id,
                         )
                     )  # extend conversation with function response
                     self.interface.function_message(f"Error: {error_msg}", msg_obj=messages[-1])
@@ -1111,6 +1118,7 @@ class Agent(BaseAgent):
                                 "content": function_response,
                                 "tool_call_id": tool_call_id,
                             },
+                            session_id=input_session_id,
                         )
                     )
                     self.interface.function_message(f"Validation Error: {validation_error}", msg_obj=messages[-1])
@@ -1197,6 +1205,7 @@ class Agent(BaseAgent):
                                 "content": function_response,
                                 "tool_call_id": tool_call_id,
                             },
+                            session_id=input_session_id,
                         )
                     )  # extend conversation with function response
                     self.interface.function_message(f"Ran {function_name}()", msg_obj=messages[-1])
@@ -1218,6 +1227,7 @@ class Agent(BaseAgent):
                                 "content": function_response,
                                 "tool_call_id": tool_call_id,
                             },
+                            session_id=input_session_id,
                         )
                     )  # extend conversation with function response
                     self.interface.function_message(f"Ran {function_name}()", msg_obj=messages[-1])
@@ -1237,6 +1247,7 @@ class Agent(BaseAgent):
                             "content": function_response,
                             "tool_call_id": tool_call_id,
                         },
+                        session_id=input_session_id,
                     )
                 )  # extend conversation with function response
                 self.interface.function_message(f"Ran {function_name}()", msg_obj=messages[-1])
@@ -1423,6 +1434,7 @@ class Agent(BaseAgent):
                                 "role": "user",
                                 "content": message_content,
                             },
+                            session_id=input_session_id,
                         )
 
                         # persist the message to the database
@@ -1465,6 +1477,7 @@ class Agent(BaseAgent):
                     agent_id=self.agent_state.id,
                     model=self.model,
                     openai_message_dict=response_message.model_dump(),
+                    session_id=input_session_id,
                 )
             )  # extend conversation with assistant's reply
             self.interface.internal_monologue(response_message.content, msg_obj=messages[-1])
@@ -1541,187 +1554,205 @@ class Agent(BaseAgent):
 
         first_input_message = input_messages[0] if isinstance(input_messages, list) else input_messages
 
-        # Convert MessageCreate objects to Message objects
-        if not isinstance(input_messages, list):
-            input_messages = [input_messages]
-        message_objects = [
-            (
-                m
-                if isinstance(m, Message)
-                else prepare_input_message_create(
-                    m,
-                    self.agent_state.id,
-                    wrap_user_message=False,
-                    wrap_system_message=True,
-                )
-            )
-            for m in input_messages
-        ]
+        # Derive the session_id for this step once so all synthesized messages
+        # (heartbeats, warnings, meta-memory bootstrap, summaries) inherit it.
+        step_session_id = getattr(first_input_message, "session_id", None)
+        # Expose on self so helpers called without an explicit session_id
+        # (e.g. summarize_messages_inplace) can pick it up. Save the prior
+        # value and restore in `finally` so a step() that raises or completes
+        # cannot leave a stale session_id stashed for the next caller (Codex review v4).
+        prev_session_id = getattr(self, "_current_step_session_id", None)
+        self._current_step_session_id = step_session_id
+        try:
 
-        extra_message_objects = (
-            [
-                prepare_input_message_create(
-                    m,
-                    self.agent_state.id,
-                    wrap_user_message=False,
-                    wrap_system_message=True,
-                )
-                for m in extra_messages
-            ]
-            if extra_messages is not None
-            else None
-        )
-        next_input_message = message_objects
-        counter = 0
-        total_usage = UsageStatistics()
-        step_count = 0
-
-        initial_message_count = len(
-            await self.agent_manager.get_in_context_messages(
-                agent_state=self.agent_state, actor=self.actor, user=self.user
-            )
-        )
-
-        if self.agent_state.is_type(AgentType.reflexion_agent):
-            # clear previous messages
-            in_context_messages = await self.agent_manager.get_in_context_messages(
-                agent_state=self.agent_state, actor=self.actor, user=self.user
-            )
-            in_context_messages = in_context_messages[:1]
-            await self.agent_manager.set_in_context_messages(
-                agent_id=self.agent_state.id,
-                message_ids=[message.id for message in in_context_messages],
-                actor=self.actor,
-            )
-
-        # Initialize the LLM client once per step to reuse across retries.
-        llm_client = LLMClient.create(
-            llm_config=self.agent_state.llm_config,
-        )
-
-        while True:
-            kwargs["first_message"] = False
-            kwargs["step_count"] = step_count
-
-            if self.agent_state.is_type(AgentType.meta_memory_agent, AgentType.chat_agent) and step_count == 0:
-                # When the agent first gets the screenshots, we need to extract the topic to search the query.
-                try:
-                    topics = await self._extract_topics_from_messages(next_input_message)
-
-                    if topics is not None:
-                        kwargs["topics"] = topics
-                    else:
-                        printv(f"[Mirix.Agent.{self.agent_state.name}] WARNING: No topics extracted from screenshots")
-
-                except Exception as e:
-                    printv(
-                        f"[Mirix.Agent.{self.agent_state.name}] INFO: Error in extracting the topic from the screenshots: {e}"
+            # Convert MessageCreate objects to Message objects
+            if not isinstance(input_messages, list):
+                input_messages = [input_messages]
+            message_objects = [
+                (
+                    m
+                    if isinstance(m, Message)
+                    else prepare_input_message_create(
+                        m,
+                        self.agent_state.id,
+                        wrap_user_message=False,
+                        wrap_system_message=True,
                     )
-                    pass
-
-            if self.agent_state.is_type(AgentType.meta_memory_agent) and step_count == 0:
-                meta_message = prepare_input_message_create(
-                    MessageCreate(
-                        role="user",
-                        content="[System Message] As the meta memory manager, analyze the provided content and perform your function.",
-                        filter_tags=self.filter_tags,
-                    ),
-                    self.agent_state.id,
-                    wrap_user_message=False,
-                    wrap_system_message=True,
                 )
-                next_input_message.append(meta_message)
+                for m in input_messages
+            ]
 
-            step_response = await self.inner_step(
-                first_input_messge=first_input_message,
-                messages=next_input_message,
-                extra_messages=extra_message_objects,
-                initial_message_count=initial_message_count,
-                chaining=chaining,
-                llm_client=llm_client,
-                **kwargs,
+            extra_message_objects = (
+                [
+                    prepare_input_message_create(
+                        m,
+                        self.agent_state.id,
+                        wrap_user_message=False,
+                        wrap_system_message=True,
+                    )
+                    for m in extra_messages
+                ]
+                if extra_messages is not None
+                else None
+            )
+            next_input_message = message_objects
+            counter = 0
+            total_usage = UsageStatistics()
+            step_count = 0
+
+            initial_message_count = len(
+                await self.agent_manager.get_in_context_messages(
+                    agent_state=self.agent_state, actor=self.actor, user=self.user
+                )
             )
 
-            continue_chaining = step_response.continue_chaining
-            function_failed = step_response.function_failed
-            token_warning = step_response.in_context_memory_warning
-            usage = step_response.usage
+            if self.agent_state.is_type(AgentType.reflexion_agent):
+                # clear previous messages
+                in_context_messages = await self.agent_manager.get_in_context_messages(
+                    agent_state=self.agent_state, actor=self.actor, user=self.user
+                )
+                in_context_messages = in_context_messages[:1]
+                await self.agent_manager.set_in_context_messages(
+                    agent_id=self.agent_state.id,
+                    message_ids=[message.id for message in in_context_messages],
+                    actor=self.actor,
+                )
 
-            step_count += 1
-            total_usage += usage
-            counter += 1
-            self.interface.step_complete()
+            # Initialize the LLM client once per step to reuse across retries.
+            llm_client = LLMClient.create(
+                llm_config=self.agent_state.llm_config,
+            )
 
-            # logger.debug("Saving agent state")
-            # save updated state
+            while True:
+                kwargs["first_message"] = False
+                kwargs["step_count"] = step_count
+
+                if self.agent_state.is_type(AgentType.meta_memory_agent, AgentType.chat_agent) and step_count == 0:
+                    # When the agent first gets the screenshots, we need to extract the topic to search the query.
+                    try:
+                        topics = await self._extract_topics_from_messages(next_input_message)
+
+                        if topics is not None:
+                            kwargs["topics"] = topics
+                        else:
+                            printv(f"[Mirix.Agent.{self.agent_state.name}] WARNING: No topics extracted from screenshots")
+
+                    except Exception as e:
+                        printv(
+                            f"[Mirix.Agent.{self.agent_state.name}] INFO: Error in extracting the topic from the screenshots: {e}"
+                        )
+                        pass
+
+                if self.agent_state.is_type(AgentType.meta_memory_agent) and step_count == 0:
+                    meta_message = prepare_input_message_create(
+                        MessageCreate(
+                            role="user",
+                            content="[System Message] As the meta memory manager, analyze the provided content and perform your function.",
+                            filter_tags=self.filter_tags,
+                            session_id=step_session_id,
+                        ),
+                        self.agent_state.id,
+                        wrap_user_message=False,
+                        wrap_system_message=True,
+                    )
+                    next_input_message.append(meta_message)
+
+                step_response = await self.inner_step(
+                    first_input_messge=first_input_message,
+                    messages=next_input_message,
+                    extra_messages=extra_message_objects,
+                    initial_message_count=initial_message_count,
+                    chaining=chaining,
+                    llm_client=llm_client,
+                    **kwargs,
+                )
+
+                continue_chaining = step_response.continue_chaining
+                function_failed = step_response.function_failed
+                token_warning = step_response.in_context_memory_warning
+                usage = step_response.usage
+
+                step_count += 1
+                total_usage += usage
+                counter += 1
+                self.interface.step_complete()
+
+                # logger.debug("Saving agent state")
+                # save updated state
+                await save_agent(self)
+
+                # Chain stops
+                if not chaining and (not function_failed):
+                    printv(f"[Mirix.Agent.{self.agent_state.name}] INFO: No chaining, stopping after one step")
+                    break
+                elif max_chaining_steps is not None and counter == max_chaining_steps:
+                    # Add warning message based on agent type
+                    if self.agent_state.is_type(AgentType.chat_agent):
+                        warning_content = "[System Message] You have reached the maximum chaining steps. Please call 'send_message' to send your response to the user."
+                    else:
+                        warning_content = "[System Message] You have reached the maximum chaining steps. Please call 'finish_memory_update' to end the chaining."
+                    next_input_message = Message.dict_to_message(
+                        agent_id=self.agent_state.id,
+                        model=self.model,
+                        openai_message_dict={
+                            "role": "user",
+                            "content": warning_content,
+                        },
+                        session_id=step_session_id,
+                    )
+                    continue  # give agent one more chance to respond
+                elif max_chaining_steps is not None and counter > max_chaining_steps:
+                    printv(
+                        f"[Mirix.Agent.{self.agent_state.name}] INFO: Hit max chaining steps, stopping after {counter} steps"
+                    )
+                    break
+                # Chain handlers
+                elif token_warning and summarizer_settings.send_memory_warning_message:
+                    assert self.agent_state.created_by_id is not None
+                    next_input_message = Message.dict_to_message(
+                        agent_id=self.agent_state.id,
+                        model=self.model,
+                        openai_message_dict={
+                            "role": "user",  # TODO: change to system?
+                            "content": get_token_limit_warning(),
+                        },
+                        session_id=step_session_id,
+                    )
+                    continue  # always chain
+                elif function_failed:
+                    assert self.agent_state.created_by_id is not None
+                    next_input_message = Message.dict_to_message(
+                        agent_id=self.agent_state.id,
+                        model=self.model,
+                        openai_message_dict={
+                            "role": "user",  # TODO: change to system?
+                            "content": get_contine_chaining(FUNC_FAILED_HEARTBEAT_MESSAGE),
+                        },
+                        session_id=step_session_id,
+                    )
+                    continue  # always chain
+                elif continue_chaining:
+                    assert self.agent_state.created_by_id is not None
+                    next_input_message = Message.dict_to_message(
+                        agent_id=self.agent_state.id,
+                        model=self.model,
+                        openai_message_dict={
+                            "role": "user",  # TODO: change to system?
+                            "content": get_contine_chaining(REQ_HEARTBEAT_MESSAGE),
+                        },
+                        session_id=step_session_id,
+                    )
+                    continue  # always chain
+                # Mirix no-op / yield
+                else:
+                    break
+
+            # Save the message_ids
             await save_agent(self)
 
-            # Chain stops
-            if not chaining and (not function_failed):
-                printv(f"[Mirix.Agent.{self.agent_state.name}] INFO: No chaining, stopping after one step")
-                break
-            elif max_chaining_steps is not None and counter == max_chaining_steps:
-                # Add warning message based on agent type
-                if self.agent_state.is_type(AgentType.chat_agent):
-                    warning_content = "[System Message] You have reached the maximum chaining steps. Please call 'send_message' to send your response to the user."
-                else:
-                    warning_content = "[System Message] You have reached the maximum chaining steps. Please call 'finish_memory_update' to end the chaining."
-                next_input_message = Message.dict_to_message(
-                    agent_id=self.agent_state.id,
-                    model=self.model,
-                    openai_message_dict={
-                        "role": "user",
-                        "content": warning_content,
-                    },
-                )
-                continue  # give agent one more chance to respond
-            elif max_chaining_steps is not None and counter > max_chaining_steps:
-                printv(
-                    f"[Mirix.Agent.{self.agent_state.name}] INFO: Hit max chaining steps, stopping after {counter} steps"
-                )
-                break
-            # Chain handlers
-            elif token_warning and summarizer_settings.send_memory_warning_message:
-                assert self.agent_state.created_by_id is not None
-                next_input_message = Message.dict_to_message(
-                    agent_id=self.agent_state.id,
-                    model=self.model,
-                    openai_message_dict={
-                        "role": "user",  # TODO: change to system?
-                        "content": get_token_limit_warning(),
-                    },
-                )
-                continue  # always chain
-            elif function_failed:
-                assert self.agent_state.created_by_id is not None
-                next_input_message = Message.dict_to_message(
-                    agent_id=self.agent_state.id,
-                    model=self.model,
-                    openai_message_dict={
-                        "role": "user",  # TODO: change to system?
-                        "content": get_contine_chaining(FUNC_FAILED_HEARTBEAT_MESSAGE),
-                    },
-                )
-                continue  # always chain
-            elif continue_chaining:
-                assert self.agent_state.created_by_id is not None
-                next_input_message = Message.dict_to_message(
-                    agent_id=self.agent_state.id,
-                    model=self.model,
-                    openai_message_dict={
-                        "role": "user",  # TODO: change to system?
-                        "content": get_contine_chaining(REQ_HEARTBEAT_MESSAGE),
-                    },
-                )
-                continue  # always chain
-            # Mirix no-op / yield
-            else:
-                break
-
-        # Save the message_ids
-        await save_agent(self)
-
-        return MirixUsageStatistics(**total_usage.model_dump(), step_count=step_count)
+            return MirixUsageStatistics(**total_usage.model_dump(), step_count=step_count)
+        finally:
+            self._current_step_session_id = prev_session_id
 
     async def build_system_prompt_with_memories(
         self,
@@ -2561,7 +2592,12 @@ These keywords have been used to retrieve relevant memories from the database.
                 )
                 raise e
 
-    async def step_user_message(self, user_message_str: str, **kwargs) -> AgentStepResponse:
+    async def step_user_message(
+        self,
+        user_message_str: str,
+        session_id: Optional[str] = None,
+        **kwargs,
+    ) -> AgentStepResponse:
         """Takes a basic user message string, turns it into a stringified JSON with extra metadata, then sends it to the agent
 
         Example:
@@ -2593,12 +2629,25 @@ These keywords have been used to retrieve relevant memories from the database.
             agent_id=self.agent_state.id,
             model=self.model,
             openai_message_dict=openai_message_dict,
+            session_id=session_id,
             # created_at=timestamp,
         )
 
-        return await self.inner_step(messages=[user_message], **kwargs)
+        # Seed the step-level session context so any pre-persist summarization
+        # triggered inside inner_step() / _get_ai_reply() stamps the correct
+        # session_id on the summary message (Codex review v3, Important).
+        prev_session_id = getattr(self, "_current_step_session_id", None)
+        self._current_step_session_id = session_id
+        try:
+            return await self.inner_step(messages=[user_message], **kwargs)
+        finally:
+            self._current_step_session_id = prev_session_id
 
-    async def summarize_messages_inplace(self, existing_file_uris: Optional[List[str]] = None):
+    async def summarize_messages_inplace(
+        self,
+        existing_file_uris: Optional[List[str]] = None,
+        session_id: Optional[str] = None,
+    ):
         in_context_messages = await self.agent_manager.get_in_context_messages(
             agent_state=self.agent_state, actor=self.actor, user=self.user
         )
@@ -2674,13 +2723,26 @@ These keywords have been used to retrieve relevant memories from the database.
         )
         packed_summary_message = {"role": "user", "content": summary_message}
 
-        # Prepend the summary
+        # Prepend the summary. Preference order for the summary's session_id:
+        #   1. explicit `session_id` argument (caller-provided, e.g. step_user_message)
+        #   2. _current_step_session_id stashed by Agent.step() for the current step
+        #   3. the latest in-context message's session_id (inherits whatever session
+        #      the conversation being summarized is already in)
+        summary_session_id = session_id
+        if summary_session_id is None:
+            summary_session_id = getattr(self, "_current_step_session_id", None)
+        if summary_session_id is None:
+            for m in reversed(in_context_messages):
+                if getattr(m, "session_id", None):
+                    summary_session_id = m.session_id
+                    break
         self.agent_state = await self.agent_manager.prepend_to_in_context_messages(
             messages=[
                 Message.dict_to_message(
                     agent_id=self.agent_state.id,
                     model=self.model,
                     openai_message_dict=packed_summary_message,
+                    session_id=summary_session_id,
                 )
             ],
             agent_id=self.agent_state.id,
