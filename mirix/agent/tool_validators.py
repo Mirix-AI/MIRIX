@@ -195,18 +195,48 @@ def validate_resource_memory_update(function_name: str, args: dict) -> Optional[
 @register_validator("skill_create")
 def validate_skill_create(function_name: str, args: dict) -> Optional[str]:
     """Validate skill_create arguments."""
-    if not args.get("name", "").strip():
+    from mirix.schemas.procedural_memory import (
+        SKILL_ENTRY_TYPES,
+        SKILL_MAX_DESCRIPTION_LEN,
+        SKILL_MAX_INSTRUCTIONS_LEN,
+        SKILL_MAX_NAME_LEN,
+    )
+
+    name = args.get("name", "")
+    if not name.strip():
         return "Validation error: 'name' cannot be empty."
-    if not args.get("description", "").strip():
+    if len(name) > SKILL_MAX_NAME_LEN:
+        return f"Validation error: 'name' exceeds max length {SKILL_MAX_NAME_LEN}."
+    description = args.get("description", "")
+    if not description.strip():
         return "Validation error: 'description' cannot be empty."
-    if not args.get("instructions", "").strip():
+    if len(description) > SKILL_MAX_DESCRIPTION_LEN:
+        return f"Validation error: 'description' exceeds max length {SKILL_MAX_DESCRIPTION_LEN}."
+    instructions = args.get("instructions", "")
+    if not instructions.strip():
         return "Validation error: 'instructions' cannot be empty."
+    if len(instructions) > SKILL_MAX_INSTRUCTIONS_LEN:
+        return f"Validation error: 'instructions' exceeds max length {SKILL_MAX_INSTRUCTIONS_LEN}."
+    entry_type = args.get("entry_type", "")
+    if not entry_type:
+        return "Validation error: 'entry_type' cannot be empty."
+    if entry_type not in SKILL_ENTRY_TYPES:
+        return (
+            f"Validation error: 'entry_type' must be one of: {sorted(SKILL_ENTRY_TYPES)}."
+        )
     return None
 
 
 @register_validator("skill_edit")
 def validate_skill_edit(function_name: str, args: dict) -> Optional[str]:
     """Validate skill_edit arguments."""
+    from mirix.schemas.procedural_memory import (
+        SKILL_ENTRY_TYPES,
+        SKILL_MAX_DESCRIPTION_LEN,
+        SKILL_MAX_INSTRUCTIONS_LEN,
+        SKILL_MAX_NAME_LEN,
+    )
+
     if not args.get("skill_id", "").strip():
         return "Validation error: 'skill_id' cannot be empty."
     field = args.get("field", "")
@@ -221,9 +251,22 @@ def validate_skill_edit(function_name: str, args: dict) -> Optional[str]:
             return f"Validation error: 'old_text' is required for text field '{field}'."
         if args.get("new_text") is None:
             return f"Validation error: 'new_text' is required for text field '{field}'."
+        new_text = args.get("new_text") or ""
+        caps = {
+            "name": SKILL_MAX_NAME_LEN,
+            "description": SKILL_MAX_DESCRIPTION_LEN,
+            "instructions": SKILL_MAX_INSTRUCTIONS_LEN,
+        }
+        if len(new_text) > caps[field]:
+            return f"Validation error: 'new_text' for field '{field}' exceeds max length {caps[field]}."
     else:
-        if args.get("value") is None:
+        value = args.get("value")
+        if value is None:
             return f"Validation error: 'value' is required for field '{field}'."
+        if field == "entry_type" and value not in SKILL_ENTRY_TYPES:
+            return (
+                f"Validation error: 'entry_type' must be one of: {sorted(SKILL_ENTRY_TYPES)}."
+            )
     return None
 
 

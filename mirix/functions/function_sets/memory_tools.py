@@ -504,7 +504,7 @@ async def skill_read(self: "Agent", name_or_id: str) -> str:
     if name_or_id.startswith("proc"):
         try:
             skill = await self.procedural_memory_manager.get_item_by_id(
-                item_id=name_or_id, user=self.user, timezone_str="UTC"
+                item_id=name_or_id, user=self.user, timezone_str="UTC", actor=self.actor
             )
         except Exception:
             pass
@@ -583,6 +583,8 @@ async def skill_create(
             return f"Skill '{name}' already exists (ID: {skill.id}). Use skill_edit to modify it, or skill_delete to remove it first."
 
     try:
+        from mirix.orm.errors import UniqueConstraintViolationError
+
         created = await self.procedural_memory_manager.insert_procedure(
             agent_state=self.agent_state,
             agent_id=agent_id,
@@ -600,6 +602,13 @@ async def skill_create(
             user_id=user_id,
         )
         return f"Skill '{name}' created successfully (ID: {created.id}, version: 0.1.0)."
+    except UniqueConstraintViolationError:
+        # Race: pre-check missed a concurrent create. Surface a clean message
+        # to the agent so it knows to read/edit the existing skill instead.
+        return (
+            f"Skill '{name}' already exists. Use skill_read to inspect it, "
+            f"skill_edit to modify it, or skill_delete to remove it first."
+        )
     except Exception as e:
         logger.error("[skill_create] FAILED for '%s': %s", name, e)
         traceback.print_exc()
@@ -617,30 +626,36 @@ async def skill_edit(
     """
     Edit an existing skill. For text fields (name, description, instructions), use old_text/new_text
     to do a find-and-replace patch. For other fields (triggers, examples, entry_type), use value
-    to replace the entire field.
+    to replace the entire field. For list/dict fields (triggers, examples), value must be a JSON string.
 
     Args:
         skill_id (str): The ID of the skill to edit.
         field (str): The field to modify — "name", "description", "instructions", "entry_type", "triggers", or "examples".
         old_text (str): For text fields: the text to find and replace.
         new_text (str): For text fields: the replacement text.
-        value (str): For non-text fields: the new value for the entire field (JSON string for lists/dicts).
+        value (str): For non-text fields: the new value for the entire field.
+            - entry_type: a plain string such as "workflow" / "guide" / "script".
+            - triggers:   a JSON-encoded list of strings, e.g. '["on error", "nightly"]'.
+            - examples:   a JSON-encoded list of objects, e.g. '[{"input": "...", "output": "..."}]'.
 
     Returns:
         str: Confirmation of the edit with the new version number.
     """
+    import json as _json
+
     from mirix.schemas.procedural_memory import ProceduralMemoryItemUpdate
 
     text_fields = {"name", "description", "instructions"}
-    value_fields = {"triggers", "examples", "entry_type"}
-    valid_fields = text_fields | value_fields
+    json_list_fields = {"triggers", "examples"}
+    plain_value_fields = {"entry_type"}
+    valid_fields = text_fields | json_list_fields | plain_value_fields
 
     if field not in valid_fields:
         return f"Invalid field '{field}'. Must be one of: {', '.join(sorted(valid_fields))}."
 
     try:
         skill = await self.procedural_memory_manager.get_item_by_id(
-            item_id=skill_id, user=self.user, timezone_str="UTC"
+            item_id=skill_id, user=self.user, timezone_str="UTC", actor=self.actor
         )
     except Exception:
         return f"Skill '{skill_id}' not found."
@@ -668,7 +683,30 @@ async def skill_edit(
         pattern = re.sub(r'\\\s+', r'\\s+', pattern)
         new_value = re.sub(pattern, new_text, current_value, count=1)
         update_data[field] = new_value
+    elif field in json_list_fields:
+        if value is None:
+            return f"For field '{field}', the value parameter is required (JSON string)."
+        # triggers/examples are typed List[str] / List[dict] in the schema.
+        # The agent delivers them as JSON strings, so decode + validate here
+        # rather than letting the raw string hit Pydantic and blow up.
+        try:
+            decoded = _json.loads(value)
+        except (TypeError, _json.JSONDecodeError) as exc:
+            return (
+                f"Invalid JSON for field '{field}': {exc}. "
+                f"Pass a JSON-encoded list, e.g. '[\"trigger-a\", \"trigger-b\"]'."
+            )
+        if not isinstance(decoded, list):
+            return f"Field '{field}' must be a JSON array, got {type(decoded).__name__}."
+        if field == "triggers":
+            if not all(isinstance(x, str) for x in decoded):
+                return "Field 'triggers' must be a JSON array of strings."
+        else:  # examples
+            if not all(isinstance(x, dict) for x in decoded):
+                return "Field 'examples' must be a JSON array of objects."
+        update_data[field] = decoded
     else:
+        # plain_value_fields: entry_type
         if value is None:
             return f"For field '{field}', the value parameter is required."
         update_data[field] = value
@@ -681,6 +719,7 @@ async def skill_edit(
             item_update=ProceduralMemoryItemUpdate.model_validate(update_data),
             user=self.user,
             actor=self.actor,
+            agent_state=self.agent_state,
         )
         return f"Skill '{updated.name}' updated (field: {field}, new version: {new_version})."
     except Exception as e:
@@ -701,7 +740,7 @@ async def skill_delete(self: "Agent", skill_id: str) -> str:
     """
     try:
         await self.procedural_memory_manager.delete_procedure_by_id(
-            procedure_id=skill_id, actor=self.actor
+            procedure_id=skill_id, actor=self.actor, user=self.user
         )
         return f"Skill '{skill_id}' deleted successfully."
     except Exception as e:

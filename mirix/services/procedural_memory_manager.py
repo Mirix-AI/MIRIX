@@ -7,10 +7,12 @@ from rank_bm25 import BM25Okapi
 from rapidfuzz import fuzz
 from sqlalchemy import delete, func, select, text
 
+from sqlalchemy.exc import IntegrityError
+
 from mirix.constants import BUILD_EMBEDDINGS_FOR_MEMORY
 from mirix.embeddings import embedding_model
 from mirix.log import get_logger
-from mirix.orm.errors import NoResultFound
+from mirix.orm.errors import NoResultFound, UniqueConstraintViolationError
 from mirix.orm.procedural_memory import ProceduralMemoryItem
 from mirix.schemas.agent import AgentState
 from mirix.schemas.client import Client as PydanticClient
@@ -24,6 +26,38 @@ from mirix.settings import settings
 from mirix.utils import enforce_types
 
 logger = get_logger(__name__)
+
+
+# Whitelisted searchable text fields and their associated ORM columns.
+# Kept as a constant so every search path uses the same mapping — no eval(),
+# no silent column fallbacks, and unknown fields can be rejected early.
+_SEARCHABLE_TEXT_FIELDS: Dict[str, str] = {
+    "description": "description",
+    "instructions": "instructions",
+    "entry_type": "entry_type",
+    "name": "name",
+}
+
+_EMBEDDING_FIELDS: Dict[str, str] = {
+    "description": "description_embedding",
+    "instructions": "instructions_embedding",
+}
+
+
+def _resolve_text_column(search_field: str):
+    """Return the ORM column for a text search field, or None if not whitelisted."""
+    column_name = _SEARCHABLE_TEXT_FIELDS.get(search_field)
+    if column_name is None:
+        return None
+    return getattr(ProceduralMemoryItem, column_name)
+
+
+def _resolve_embedding_column(search_field: str):
+    """Return the ORM embedding column for a text search field."""
+    column_name = _EMBEDDING_FIELDS.get(search_field)
+    if column_name is None:
+        return None
+    return getattr(ProceduralMemoryItem, column_name)
 
 
 class ProceduralMemoryManager:
@@ -284,128 +318,89 @@ class ProceduralMemoryManager:
 
         where_clause = " AND ".join(where_clauses)
 
-        # Try AND query first for more precise results
-        try:
-            and_query_sql = text(
+        async def _fetch_ordered_items(tsquery_value):
+            # Rank via raw SQL for ts_rank_cd, but fetch only IDs to avoid
+            # hydrating partial ORM instances (which silently drops triggers,
+            # examples, version, filter_tags, etc.). Full skill rows are then
+            # loaded through SQLAlchemy so every schema field is present.
+            params = {**query_params, "tsquery": tsquery_value}
+            id_query_sql = text(
                 f"""
-                SELECT
-                    id, created_at, entry_type, name, description, instructions,
-                    instructions_embedding, description_embedding, embedding_config,
-                    organization_id, last_modify, user_id,
-                    {rank_sql} as rank_score
+                SELECT id, {rank_sql} as rank_score
                 FROM procedural_memory
                 WHERE {where_clause}
                 ORDER BY rank_score DESC, created_at DESC
                 LIMIT :limit_val
-            """
+                """
             )
+            rows = (await session.execute(id_query_sql, params)).all()
+            ordered_ids = [row.id for row in rows]
+            if not ordered_ids:
+                return []
+            items_result = await session.execute(
+                select(ProceduralMemoryItem).where(ProceduralMemoryItem.id.in_(ordered_ids))
+            )
+            items_by_id = {item.id: item for item in items_result.scalars().all()}
+            return [items_by_id[item_id] for item_id in ordered_ids if item_id in items_by_id]
 
-            result = await session.execute(and_query_sql, query_params)
-            results = result.all()
-
-            # If AND query returns sufficient results, use them
-            if len(results) >= min(limit or 10, 10):
-                procedures = []
-                for row in results:
-                    data = dict(row._mapping)
-                    # Remove the rank_score field before creating the object
-                    data.pop("rank_score", None)
-
-                    # Parse JSON fields that are returned as strings from raw SQL
-                json_fields = ["last_modify", "embedding_config"]
-                for field in json_fields:
-                    if field in data and isinstance(data[field], str):
-                        try:
-                            data[field] = json.loads(data[field])
-                        except (json.JSONDecodeError, TypeError):
-                            pass
-
-                    # Parse embedding fields
-                    embedding_fields = ["instructions_embedding", "description_embedding"]
-                    for field in embedding_fields:
-                        if field in data and data[field] is not None:
-                            data[field] = self._parse_embedding_field(data[field])
-
-                    procedures.append(ProceduralMemoryItem(**data))
-
+        # Try AND query first for more precise results.
+        try:
+            procedures = await _fetch_ordered_items(tsquery_string_and)
+            if len(procedures) >= min(limit or 10, 10):
                 return [procedure.to_pydantic() for procedure in procedures]
-
         except Exception as e:
             logger.error("PostgreSQL AND query error: %s", e)
 
-        # If AND query fails or returns too few results, try OR query
+        # If AND query fails or returns too few results, try OR query.
         try:
-            # Update query params for OR query
-            or_query_params = query_params.copy()
-            or_query_params["tsquery"] = tsquery_string_or
-
-            or_query_sql = text(
-                f"""
-                SELECT
-                    id, created_at, entry_type, name, description, instructions,
-                    instructions_embedding, description_embedding, embedding_config,
-                    organization_id, last_modify, user_id,
-                    {rank_sql} as rank_score
-                FROM procedural_memory
-                WHERE {where_clause}
-                ORDER BY rank_score DESC, created_at DESC
-                LIMIT :limit_val
-            """
-            )
-
-            results = await session.execute(or_query_sql, or_query_params)
-
-            procedures = []
-            for row in results:
-                data = dict(row._mapping)
-                # Remove the rank_score field before creating the object
-                data.pop("rank_score", None)
-
-                # Parse JSON fields that are returned as strings from raw SQL
-                json_fields = ["last_modify", "embedding_config"]
-                for field in json_fields:
-                    if field in data and isinstance(data[field], str):
-                        try:
-                            data[field] = json.loads(data[field])
-                        except (json.JSONDecodeError, TypeError):
-                            pass
-
-                # Parse embedding fields
-                embedding_fields = ["instructions_embedding", "description_embedding"]
-                for field in embedding_fields:
-                    if field in data and data[field] is not None:
-                        data[field] = self._parse_embedding_field(data[field])
-
-                procedures.append(ProceduralMemoryItem(**data))
-
+            procedures = await _fetch_ordered_items(tsquery_string_or)
             return [procedure.to_pydantic() for procedure in procedures]
-
         except Exception as e:
             # If there's an error with the tsquery, fall back to simpler search
             logger.error("PostgreSQL full-text search error: %s", e)
-            # Fall back to simple ILIKE search
-            fallback_field = (
-                getattr(ProceduralMemoryItem, search_field)
-                if search_field and hasattr(ProceduralMemoryItem, search_field)
-                else ProceduralMemoryItem.description
+            # Fall back to simple ILIKE search on a whitelisted field
+            fallback_column = _resolve_text_column(search_field) or ProceduralMemoryItem.description
+            fallback_query = (
+                select(ProceduralMemoryItem)
+                .where(ProceduralMemoryItem.user_id == user.id)
+                .where(func.lower(fallback_column).contains(query_text.lower()))
+                .order_by(ProceduralMemoryItem.created_at.desc())
             )
-            fallback_query = base_query.where(func.lower(fallback_field).contains(query_text.lower())).order_by(
-                ProceduralMemoryItem.created_at.desc()
+
+            from mirix.database.filter_tags_query import apply_filter_tags_sqlalchemy
+
+            fallback_query = apply_filter_tags_sqlalchemy(
+                fallback_query, ProceduralMemoryItem, filter_tags, scopes=scopes
             )
 
             if limit:
                 fallback_query = fallback_query.limit(limit)
 
-            results = await session.execute(fallback_query)
-            procedures = [ProceduralMemoryItem(**dict(row._mapping)) for row in results]
+            result = await session.execute(fallback_query)
+            procedures = result.scalars().all()
             return [procedure.to_pydantic() for procedure in procedures]
 
     @update_timezone
     @enforce_types
     async def get_item_by_id(
-        self, item_id: str, user: PydanticUser, timezone_str: str
+        self,
+        item_id: str,
+        user: PydanticUser,
+        timezone_str: str,
+        actor: Optional[PydanticClient] = None,
     ) -> Optional[PydanticProceduralMemoryItem]:
-        """Fetch a procedural memory item by ID (with cache - Redis or IPS Cache)."""
+        """Fetch a procedural memory item by ID (with cache - Redis or IPS Cache).
+
+        Access control (see ``delete_procedure_by_id`` for the same pattern):
+
+        * ``actor`` → organization scope via ``apply_access_predicate``.
+        * ``user``  → explicit post-load ``user_id`` equality check.
+
+        Passing only ``user`` is not enough, because ``SqlalchemyBase.read``
+        only runs the access predicate when ``actor`` is truthy. The cache
+        hit path is gated the same way so a stale cache entry for another
+        user cannot leak via this endpoint either.
+        """
         cache_provider = None
         try:
             from mirix.database.cache_provider import get_cache_provider
@@ -416,29 +411,44 @@ class ProceduralMemoryManager:
                 cache_key = f"{cache_provider.PROCEDURAL_PREFIX}{item_id}"
                 cached_data = await cache_provider.get_json(cache_key)
                 if cached_data:
+                    # Cache is keyed by id only, so re-check ownership before
+                    # returning — otherwise a same-org attacker could fetch
+                    # someone else's cached skill.
+                    if cached_data.get("user_id") != user.id:
+                        raise NoResultFound(
+                            f"Procedural memory item with id {item_id} not found."
+                        )
                     logger.debug("Cache HIT for procedural memory %s", item_id)
                     return PydanticProceduralMemoryItem(**cached_data)
+        except NoResultFound:
+            raise
         except Exception as e:
             logger.warning("Cache read failed for procedural memory %s: %s", item_id, e)
 
         async with self.session_maker() as session:
             try:
-                item = await ProceduralMemoryItem.read(db_session=session, identifier=item_id, user=user)
-                pydantic_item = item.to_pydantic()
-
-                try:
-                    if cache_provider:
-                        from mirix.settings import settings
-
-                        cache_key = f"{cache_provider.PROCEDURAL_PREFIX}{item_id}"
-                        data = pydantic_item.model_dump(mode="json")
-                        await cache_provider.set_json(cache_key, data, ttl=settings.redis_ttl_default)
-                except Exception as e:
-                    logger.warning("Failed to populate cache: %s", e)
-
-                return pydantic_item
+                item = await ProceduralMemoryItem.read(
+                    db_session=session, identifier=item_id, actor=actor
+                )
             except NoResultFound:
                 raise NoResultFound(f"Procedural memory item with id {item_id} not found.")
+
+            if getattr(item, "user_id", None) != user.id:
+                raise NoResultFound(f"Procedural memory item with id {item_id} not found.")
+
+            pydantic_item = item.to_pydantic()
+
+            try:
+                if cache_provider:
+                    from mirix.settings import settings
+
+                    cache_key = f"{cache_provider.PROCEDURAL_PREFIX}{item_id}"
+                    data = pydantic_item.model_dump(mode="json")
+                    await cache_provider.set_json(cache_key, data, ttl=settings.redis_ttl_default)
+            except Exception as e:
+                logger.warning("Failed to populate cache: %s", e)
+
+            return pydantic_item
 
     @update_timezone
     @enforce_types
@@ -513,7 +523,16 @@ class ProceduralMemoryManager:
 
         async with self.session_maker() as session:
             item = ProceduralMemoryItem(**data_dict)
-            await item.create_with_redis(session, actor=actor, use_cache=use_cache)
+            try:
+                await item.create_with_redis(session, actor=actor, use_cache=use_cache)
+            except IntegrityError as exc:
+                # uq_procedural_memory_org_user_name — surface a domain-level
+                # duplicate error so callers don't need to parse SQLSTATE.
+                if "uq_procedural_memory_org_user_name" in str(exc.orig):
+                    raise UniqueConstraintViolationError(
+                        f"Skill with name '{data_dict.get('name')}' already exists for this user."
+                    ) from exc
+                raise
             return item.to_pydantic()
 
     @enforce_types
@@ -522,11 +541,62 @@ class ProceduralMemoryManager:
         item_update: ProceduralMemoryItemUpdate,
         user: PydanticUser,
         actor: PydanticClient,
+        agent_state: Optional[AgentState] = None,
     ) -> PydanticProceduralMemoryItem:
-        """Update an existing procedural memory item."""
+        """Update an existing procedural memory item.
+
+        When description/instructions change and agent_state is provided with
+        embedding_config, the corresponding embeddings are recomputed so that
+        vector search does not serve stale vectors against fresh text. Callers
+        that cannot supply agent_state can pre-compute embeddings themselves
+        and put them on item_update directly.
+        """
+        update_data = item_update.model_dump(exclude_unset=True)
+
+        # Recompute embeddings for text fields that changed, when we have a
+        # config and the caller didn't already supply embeddings explicitly.
+        if BUILD_EMBEDDINGS_FOR_MEMORY and agent_state is not None:
+            embedding_config = agent_state.embedding_config
+            embed_model = None
+            if (
+                "description" in update_data
+                and "description_embedding" not in update_data
+            ):
+                embed_model = await embedding_model(embedding_config)
+                update_data["description_embedding"] = await embed_model.get_text_embedding(
+                    update_data["description"] or ""
+                )
+            if (
+                "instructions" in update_data
+                and "instructions_embedding" not in update_data
+            ):
+                if embed_model is None:
+                    embed_model = await embedding_model(embedding_config)
+                update_data["instructions_embedding"] = await embed_model.get_text_embedding(
+                    update_data["instructions"] or ""
+                )
+            if embed_model is not None and "embedding_config" not in update_data:
+                update_data["embedding_config"] = embedding_config
+
         async with self.session_maker() as session:
-            item = await ProceduralMemoryItem.read(db_session=session, identifier=item_update.id, user=user)
-            update_data = item_update.model_dump(exclude_unset=True)
+            # Same two-step auth as delete_procedure_by_id/get_item_by_id:
+            # actor enables org-scope via apply_access_predicate, and the
+            # explicit user_id check guarantees per-user ownership even
+            # when the base read does not filter on user.
+            try:
+                item = await ProceduralMemoryItem.read(
+                    db_session=session, identifier=item_update.id, actor=actor
+                )
+            except NoResultFound:
+                raise NoResultFound(
+                    f"Procedural memory item with id {item_update.id} not found."
+                )
+
+            if getattr(item, "user_id", None) != user.id:
+                raise NoResultFound(
+                    f"Procedural memory item with id {item_update.id} not found."
+                )
+
             for k, v in update_data.items():
                 if k not in ["id", "updated_at"]:  # Exclude updated_at - handled by update() method
                     setattr(item, k, v)
@@ -717,22 +787,12 @@ class ProceduralMemoryManager:
                 return [event.to_pydantic() for event in procedural_memory]
 
             else:
+                # Select full ORM entities so every schema field (triggers,
+                # examples, version, filter_tags, updated_at, client_id, ...)
+                # survives the round-trip. Projecting a subset and re-hydrating
+                # silently loses columns.
                 base_query = (
-                    select(
-                        ProceduralMemoryItem.id.label("id"),
-                        ProceduralMemoryItem.created_at.label("created_at"),
-                        ProceduralMemoryItem.entry_type.label("entry_type"),
-                        ProceduralMemoryItem.name.label("name"),
-                        ProceduralMemoryItem.description.label("description"),
-                        ProceduralMemoryItem.instructions.label("instructions"),
-                        ProceduralMemoryItem.instructions_embedding.label("instructions_embedding"),
-                        ProceduralMemoryItem.description_embedding.label("description_embedding"),
-                        ProceduralMemoryItem.embedding_config.label("embedding_config"),
-                        ProceduralMemoryItem.organization_id.label("organization_id"),
-                        ProceduralMemoryItem.last_modify.label("last_modify"),
-                        ProceduralMemoryItem.user_id.label("user_id"),
-                        ProceduralMemoryItem.agent_id.label("agent_id"),
-                    )
+                    select(ProceduralMemoryItem)
                     .where(ProceduralMemoryItem.user_id == user.id)
                     .where(ProceduralMemoryItem.organization_id == organization_id)
                 )
@@ -744,19 +804,30 @@ class ProceduralMemoryManager:
                 )
 
                 if search_method == "embedding":
+                    embedding_column = _resolve_embedding_column(search_field)
+                    if embedding_column is None:
+                        raise ValueError(
+                            f"Invalid search_field '{search_field}' for embedding search. "
+                            f"Allowed: {sorted(_EMBEDDING_FIELDS)}."
+                        )
                     main_query = await build_query(
                         base_query=base_query,
                         query_text=query,
                         embedded_text=embedded_text,
                         embed_query=True,
                         embedding_config=agent_state.embedding_config,
-                        search_field=eval("ProceduralMemoryItem." + search_field + "_embedding"),
+                        search_field=embedding_column,
                         target_class=ProceduralMemoryItem,
                         similarity_threshold=similarity_threshold,
                     )
 
                 elif search_method == "string_match":
-                    search_field_obj = eval("ProceduralMemoryItem." + search_field)
+                    search_field_obj = _resolve_text_column(search_field)
+                    if search_field_obj is None:
+                        raise ValueError(
+                            f"Invalid search_field '{search_field}' for string_match. "
+                            f"Allowed: {sorted(_SEARCHABLE_TEXT_FIELDS)}."
+                        )
                     main_query = base_query.where(func.lower(search_field_obj).contains(query.lower()))
 
                 elif search_method == "bm25":
@@ -865,12 +936,7 @@ class ProceduralMemoryManager:
                     main_query = main_query.limit(limit)
 
                 result = await session.execute(main_query)
-                results = result.all()
-
-                procedures = []
-                for row in results:
-                    data = dict(row._mapping)
-                    procedures.append(ProceduralMemoryItem(**data))
+                procedures = result.scalars().all()
 
                 return [procedure.to_pydantic() for procedure in procedures]
 
@@ -939,21 +1005,49 @@ class ProceduralMemoryManager:
         except Exception as e:
             raise e
 
-    async def delete_procedure_by_id(self, procedure_id: str, actor: PydanticClient) -> None:
-        """Delete a procedural memory item by ID (removes from cache)."""
+    async def delete_procedure_by_id(
+        self,
+        procedure_id: str,
+        actor: PydanticClient,
+        user: Optional[PydanticUser] = None,
+    ) -> None:
+        """Delete a procedural memory item by ID (removes from cache).
+
+        Ownership is enforced on three axes so no code path gets weaker checks
+        than another:
+
+        * ``actor`` → organization-scope via ``apply_access_predicate`` (the
+          base ``read`` only runs access checks when ``actor`` is truthy).
+        * ``user`` → explicit ``user_id`` equality check after the row is
+          loaded. Relying on ``AccessType.USER`` alone is not enough because
+          callers historically passed only ``user`` without ``actor``, which
+          silently disables all access filtering in ``SqlalchemyBase.read``.
+          The post-load check is the belt-and-braces version.
+        """
         async with self.session_maker() as session:
             try:
-                item = await ProceduralMemoryItem.read(db_session=session, identifier=procedure_id, actor=actor)
-                # Remove from cache
-                from mirix.database.cache_provider import get_cache_provider
-
-                cache_provider = get_cache_provider()
-                if cache_provider:
-                    cache_key = f"{cache_provider.PROCEDURAL_PREFIX}{procedure_id}"
-                    await cache_provider.delete(cache_key)
-                await item.hard_delete(session)
+                item = await ProceduralMemoryItem.read(
+                    db_session=session,
+                    identifier=procedure_id,
+                    actor=actor,
+                )
             except NoResultFound:
                 raise NoResultFound(f"Procedural memory item with id {procedure_id} not found.")
+
+            if user is not None and getattr(item, "user_id", None) != user.id:
+                # Hide the record entirely — a distinct "forbidden" response
+                # would leak existence of skills that belong to other users
+                # under the same org.
+                raise NoResultFound(f"Procedural memory item with id {procedure_id} not found.")
+
+            # Remove from cache
+            from mirix.database.cache_provider import get_cache_provider
+
+            cache_provider = get_cache_provider()
+            if cache_provider:
+                cache_key = f"{cache_provider.PROCEDURAL_PREFIX}{procedure_id}"
+                await cache_provider.delete(cache_key)
+            await item.hard_delete(session)
 
     @enforce_types
     async def delete_by_client_id(self, actor: PydanticClient) -> int:

@@ -2,7 +2,7 @@ import datetime as dt
 from datetime import datetime
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import JSON, Column, ForeignKey, Index, String, text
+from sqlalchemy import JSON, Column, ForeignKey, Index, String, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, declared_attr, mapped_column, relationship
 
 from mirix.constants import MAX_EMBEDDING_DIM
@@ -108,11 +108,13 @@ class ProceduralMemoryItem(SqlalchemyBase, OrganizationMixin, UserMixin):
         description_embedding = Column(CommonVector, nullable=True)
         instructions_embedding = Column(CommonVector, nullable=True)
 
-    # Database indexes for efficient querying
+    # Database indexes for efficient querying.
+    # NB: use an explicit ``is not None`` filter rather than ``filter(None, ...)``
+    # because an un-attached UniqueConstraint is falsy (it iterates over its
+    # columns which are empty until binding), so plain truthiness would drop it.
     __table_args__ = tuple(
-        filter(
-            None,
-            [
+        item
+        for item in [
                 # Organization-level query optimization indexes
                 (
                     Index("ix_procedural_memory_organization_id", "organization_id")
@@ -148,16 +150,14 @@ class ProceduralMemoryItem(SqlalchemyBase, OrganizationMixin, UserMixin):
                     if settings.mirix_pg_uri_no_default
                     else None
                 ),
-                (
-                    Index(
-                        "ix_procedural_memory_org_user_name",
-                        "organization_id",
-                        "user_id",
-                        "name",
-                        postgresql_using="btree",
-                    )
-                    if settings.mirix_pg_uri_no_default
-                    else None
+                # Enforce per-user skill-name uniqueness at the DB level. The
+                # application also pre-checks via a search, but that is racy
+                # under concurrent creates — this constraint closes the race.
+                UniqueConstraint(
+                    "organization_id",
+                    "user_id",
+                    "name",
+                    name="uq_procedural_memory_org_user_name",
                 ),
                 # SQLite indexes
                 (
@@ -165,8 +165,8 @@ class ProceduralMemoryItem(SqlalchemyBase, OrganizationMixin, UserMixin):
                     if not settings.mirix_pg_uri_no_default
                     else None
                 ),
-            ],
-        )
+        ]
+        if item is not None
     )
 
     @declared_attr

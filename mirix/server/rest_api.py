@@ -4489,6 +4489,7 @@ class UpdateProceduralMemoryRequest(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
     instructions: Optional[str] = None
+    entry_type: Optional[str] = None
     triggers: Optional[List[str]] = None
     examples: Optional[List[dict]] = None
 
@@ -4555,6 +4556,18 @@ async def update_procedural_memory(
         raise HTTPException(status_code=404, detail=f"User {user_id} not found")
 
     try:
+        from mirix.functions.function_sets.memory_tools import _bump_patch_version
+
+        # Load current skill so we can auto-bump the version on any change.
+        try:
+            current_skill = await server.procedural_memory_manager.get_item_by_id(
+                item_id=memory_id, user=user, timezone_str="UTC", actor=client
+            )
+        except Exception:
+            raise HTTPException(status_code=404, detail=f"Procedural memory {memory_id} not found")
+        if not current_skill:
+            raise HTTPException(status_code=404, detail=f"Procedural memory {memory_id} not found")
+
         procedural_update_data = {"id": memory_id}
         if request.name is not None:
             procedural_update_data["name"] = request.name
@@ -4562,15 +4575,30 @@ async def update_procedural_memory(
             procedural_update_data["description"] = request.description
         if request.instructions is not None:
             procedural_update_data["instructions"] = request.instructions
+        if request.entry_type is not None:
+            procedural_update_data["entry_type"] = request.entry_type
         if request.triggers is not None:
             procedural_update_data["triggers"] = request.triggers
         if request.examples is not None:
             procedural_update_data["examples"] = request.examples
 
+        # Auto-bump version when anything actually changed so the legacy
+        # endpoint matches /v1/skills/{id} semantics.
+        if len(procedural_update_data) > 1:
+            current_version = getattr(current_skill, "version", "0.1.0") or "0.1.0"
+            procedural_update_data["version"] = _bump_patch_version(current_version)
+
+        # Pick an agent state so the manager can refresh embeddings for text edits.
+        agent_state = None
+        agents = await server.agent_manager.list_agents(actor=client, limit=1)
+        if agents:
+            agent_state = agents[0]
+
         updated_memory = await server.procedural_memory_manager.update_item(
             item_update=ProceduralMemoryItemUpdate.model_validate(procedural_update_data),
             user=user,
             actor=client,
+            agent_state=agent_state,
         )
         return {
             "success": True,
@@ -4580,8 +4608,12 @@ async def update_procedural_memory(
                 "name": updated_memory.name,
                 "description": updated_memory.description,
                 "instructions": updated_memory.instructions,
+                "entry_type": updated_memory.entry_type,
+                "version": getattr(updated_memory, "version", None),
             },
         }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=404, detail=str(e))
 
@@ -4589,6 +4621,7 @@ async def update_procedural_memory(
 @router.delete("/memory/procedural/{memory_id}")
 async def delete_procedural_memory(
     memory_id: str,
+    user_id: Optional[str] = None,
     authorization: Optional[str] = Header(None),
     http_request: Request = None,
 ):
@@ -4601,8 +4634,20 @@ async def delete_procedural_memory(
 
     server = get_server()
 
+    # Resolve user so delete authorization matches read/update scoping.
+    if not user_id:
+        from mirix.services.admin_user_manager import ClientAuthManager
+
+        user_id = ClientAuthManager.get_admin_user_id_for_client(client.id)
+
+    user = await server.user_manager.get_user_by_id(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail=f"User {user_id} not found")
+
     try:
-        await server.procedural_memory_manager.delete_procedure_by_id(memory_id, actor=client)
+        await server.procedural_memory_manager.delete_procedure_by_id(
+            memory_id, actor=client, user=user
+        )
         return {"success": True, "message": f"Procedural memory {memory_id} deleted"}
     except Exception as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -4847,7 +4892,7 @@ async def get_skill(
 
     try:
         skill = await server.procedural_memory_manager.get_item_by_id(
-            item_id=skill_id, user=user, timezone_str=timezone_str
+            item_id=skill_id, user=user, timezone_str=timezone_str, actor=client
         )
     except Exception:
         raise HTTPException(status_code=404, detail=f"Skill {skill_id} not found")
@@ -4905,13 +4950,15 @@ async def create_skill(
         raise HTTPException(status_code=404, detail="No agents found for this client")
     agent_state = agents[0]
 
-    # Check for duplicate name
+    # Check for duplicate name. Use an exact string match on the `name`
+    # column so a name like "deploy-production" is not silently accepted
+    # just because no existing description contains that token.
     existing = await server.procedural_memory_manager.list_procedures(
         agent_state=agent_state,
         user=user,
         query=request.name,
-        search_field="description",
-        search_method="bm25",
+        search_field="name",
+        search_method="string_match",
         limit=200,
         timezone_str=timezone_str,
         use_cache=False,
@@ -4938,6 +4985,9 @@ async def create_skill(
             organization_id=user.organization_id,
             user_id=user_id,
         )
+    except UniqueConstraintViolationError as e:
+        # Race: pre-check missed a concurrent insert. DB is source of truth.
+        raise HTTPException(status_code=409, detail=str(e))
     except Exception as e:
         logger.error("Failed to create skill: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to create skill: {str(e)}")
@@ -4989,7 +5039,7 @@ async def patch_skill(
     # Get current skill to read its version
     try:
         current_skill = await server.procedural_memory_manager.get_item_by_id(
-            item_id=skill_id, user=user, timezone_str=timezone_str
+            item_id=skill_id, user=user, timezone_str=timezone_str, actor=client
         )
     except Exception:
         raise HTTPException(status_code=404, detail=f"Skill {skill_id} not found")
@@ -5016,11 +5066,18 @@ async def patch_skill(
     current_version = getattr(current_skill, "version", "0.1.0") or "0.1.0"
     update_data["version"] = _bump_patch_version(current_version)
 
+    # Pull an agent state so the manager can refresh embeddings on text edits.
+    agent_state = None
+    agents = await server.agent_manager.list_agents(actor=client, limit=1)
+    if agents:
+        agent_state = agents[0]
+
     try:
         updated = await server.procedural_memory_manager.update_item(
             item_update=ProceduralMemoryItemUpdate.model_validate(update_data),
             user=user,
             actor=client,
+            agent_state=agent_state,
         )
     except Exception as e:
         logger.error("Failed to update skill %s: %s", skill_id, e, exc_info=True)
@@ -5043,6 +5100,7 @@ async def patch_skill(
 @router.delete("/v1/skills/{skill_id}")
 async def delete_skill(
     skill_id: str,
+    user_id: Optional[str] = None,
     authorization: Optional[str] = Header(None),
     http_request: Request = None,
 ):
@@ -5054,8 +5112,20 @@ async def delete_skill(
     client, auth_type = await get_client_from_jwt_or_api_key(authorization, http_request)
     server = get_server()
 
+    # Resolve user so delete authorization matches the read/update scoping.
+    if not user_id:
+        from mirix.services.admin_user_manager import ClientAuthManager
+
+        user_id = ClientAuthManager.get_admin_user_id_for_client(client.id)
+
+    user = await server.user_manager.get_user_by_id(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail=f"User {user_id} not found")
+
     try:
-        await server.procedural_memory_manager.delete_procedure_by_id(skill_id, actor=client)
+        await server.procedural_memory_manager.delete_procedure_by_id(
+            skill_id, actor=client, user=user
+        )
         return {"success": True, "message": f"Skill {skill_id} deleted"}
     except Exception as e:
         raise HTTPException(status_code=404, detail=str(e))
