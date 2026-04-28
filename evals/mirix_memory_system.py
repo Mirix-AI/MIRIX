@@ -87,7 +87,18 @@ class MirixMemorySystem:
 
         if memories.get("memories"):
             for memory_type, data in memories["memories"].items():
-                if not data or data.get("total_count", 0) == 0:
+                if not data:
+                    continue
+
+                # Graph memory: pre-formatted context string, not structured items
+                if memory_type == "graph":
+                    graph_ctx = data.get("context", "")
+                    if graph_ctx:
+                        memories_found = True
+                        memory_context_lines.append(graph_ctx)
+                    continue
+
+                if data.get("total_count", 0) == 0:
                     continue
 
                 # Prefer items, but fall back to recent/relevant shapes Mirix may return
