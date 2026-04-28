@@ -433,6 +433,7 @@ class MessageManager:
         filters: Optional[Dict] = None,
         query_text: Optional[str] = None,
         ascending: bool = True,
+        session_id: Optional[str] = None,
     ) -> List[PydanticMessage]:
         """List user messages with flexible filtering and pagination options.
 
@@ -443,6 +444,7 @@ class MessageManager:
             limit: Maximum number of records to return
             filters: Additional filters to apply
             query_text: Optional text to search for in message content
+            session_id: Optional session id to filter by (exact match on column).
 
         Returns:
             List[PydanticMessage] - List of messages matching the criteria
@@ -461,6 +463,7 @@ class MessageManager:
             filters=message_filters,
             query_text=query_text,
             ascending=ascending,
+            session_id=session_id,
         )
 
     @update_timezone
@@ -477,6 +480,7 @@ class MessageManager:
         query_text: Optional[str] = None,
         ascending: bool = True,
         use_cache: bool = True,
+        session_id: Optional[str] = None,
     ) -> List[PydanticMessage]:
         """List messages with flexible filtering and pagination options.
 
@@ -501,6 +505,8 @@ class MessageManager:
                 message_filters.update({"organization_id": actor.organization_id})
             if filters:
                 message_filters.update(filters)
+            if session_id is not None:
+                message_filters["session_id"] = session_id
 
             results = await MessageModel.list(
                 db_session=session,

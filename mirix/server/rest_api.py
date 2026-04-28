@@ -17,12 +17,12 @@ import httpx
 from fastapi import APIRouter, Body, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from mirix.helpers.message_helpers import prepare_input_message_create
 from mirix.llm_api.llm_client import LLMClient
 from mirix.log import get_logger
-from mirix.orm.errors import NoResultFound
+from mirix.orm.errors import NoResultFound, UniqueConstraintViolationError
 from mirix.schemas.agent import AgentState, AgentType, CreateAgent
 from mirix.schemas.block import Block, BlockUpdate, CreateBlock, Human, Persona
 from mirix.schemas.client import Client, ClientCreate, ClientUpdate
@@ -36,7 +36,7 @@ from mirix.schemas.environment_variables import (
 from mirix.schemas.file import FileMetadata
 from mirix.schemas.llm_config import LLMConfig
 from mirix.schemas.memory import ArchivalMemorySummary, Memory, RecallMemorySummary
-from mirix.schemas.message import Message, MessageCreate
+from mirix.schemas.message import Message, MessageCreate, _validate_session_id
 from mirix.schemas.mirix_response import MirixResponse
 from mirix.schemas.organization import Organization
 from mirix.schemas.procedural_memory import ProceduralMemoryItemUpdate
@@ -1024,6 +1024,7 @@ class SendMessageRequest(BaseModel):
     role: str
     user_id: Optional[str] = None  # End-user ID for message attribution
     name: Optional[str] = None
+    session_id: Optional[str] = None  # Top-level session identifier
     stream_steps: bool = False
     stream_tokens: bool = False
     filter_tags: Optional[Dict[str, Any]] = None  # Filter tags support
@@ -1032,6 +1033,11 @@ class SendMessageRequest(BaseModel):
     )
     block_filter_tags_update_mode: Optional[str] = "merge"  # "merge" or "replace"
     use_cache: bool = True  # Control Redis cache behavior
+
+    @field_validator("session_id")
+    @classmethod
+    def _check_session_id(cls, v: Optional[str]) -> Optional[str]:
+        return _validate_session_id(v)
 
 
 @app.post("/agents/{agent_id}/messages", response_model=MirixResponse)
@@ -1076,6 +1082,7 @@ async def send_message_to_agent(
             role=MessageRole(request.role),
             content=request.message,
             name=request.name,
+            session_id=request.session_id,
         )
 
         # Put message on queue for processing
@@ -1994,12 +2001,31 @@ class AddMemoryRequest(BaseModel):
     chaining: bool = True
     verbose: bool = False
     filter_tags: Optional[Dict[str, Any]] = None
+    session_id: Optional[str] = None  # Batch-level session id applied to every message in this request
     block_filter_tags: Optional[Dict[str, Any]] = (
         None  # Applied only when blocks are created (e.g. from default template)
     )
     block_filter_tags_update_mode: Optional[str] = "merge"  # "merge" or "replace"
     use_cache: bool = True  # Control Redis cache behavior
     occurred_at: Optional[str] = None  # Optional ISO 8601 timestamp string for episodic memory
+
+    @field_validator("session_id")
+    @classmethod
+    def _check_session_id(cls, v: Optional[str]) -> Optional[str]:
+        return _validate_session_id(v)
+
+    @model_validator(mode="after")
+    def _check_session_id_agrees_with_filter_tags(self) -> "AddMemoryRequest":
+        # Codex review I1: if both the top-level session_id and filter_tags.session_id are
+        # provided, they must match. Otherwise message-scope and memory-scope silently diverge.
+        if self.session_id is not None and isinstance(self.filter_tags, dict):
+            tag_sid = self.filter_tags.get("session_id")
+            if tag_sid is not None and tag_sid != self.session_id:
+                raise ValueError(
+                    "session_id and filter_tags['session_id'] must agree; "
+                    f"got {self.session_id!r} vs {tag_sid!r}"
+                )
+        return self
 
 
 @router.post("/memory/add")
@@ -2079,6 +2105,12 @@ async def add_memory(
 
     input_messages = convert_message_to_mirix_message(message)
 
+    # Batch-level session_id: stamp every message that didn't carry its own.
+    if request.session_id is not None:
+        for msg_create in input_messages:
+            if msg_create.session_id is None:
+                msg_create.session_id = request.session_id
+
     # Add client scope to filter_tags (create if not provided)
     if request.filter_tags is not None:
         # Create a copy to avoid modifying the original request
@@ -2086,6 +2118,11 @@ async def add_memory(
     else:
         # Create new filter_tags if not provided
         filter_tags = {}
+
+    # Mirror session_id into filter_tags so extracted memories inherit it too.
+    # The model_validator on AddMemoryRequest has already ensured agreement if both were set.
+    if request.session_id is not None:
+        filter_tags["session_id"] = request.session_id
 
     if request.block_filter_tags is not None and not isinstance(request.block_filter_tags, dict):
         raise HTTPException(status_code=400, detail="block_filter_tags must be a dict when provided")
@@ -2184,10 +2221,20 @@ async def add_memory_sync(
 
     input_messages = convert_message_to_mirix_message(message)
 
+    # Batch-level session_id: stamp every message that didn't carry its own.
+    if request.session_id is not None:
+        for msg_create in input_messages:
+            if msg_create.session_id is None:
+                msg_create.session_id = request.session_id
+
     if request.filter_tags is not None:
         filter_tags = dict(request.filter_tags)
     else:
         filter_tags = {}
+
+    # The AddMemoryRequest model_validator already ensured agreement if both were set.
+    if request.session_id is not None:
+        filter_tags["session_id"] = request.session_id
 
     if client.write_scope is None:
         raise HTTPException(status_code=403, detail="Client has no write_scope - cannot create memories")
