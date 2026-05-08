@@ -389,6 +389,72 @@ git commit -m "[VEPEAGE-000] eval: add format adapter (skill schema + round seri
 
 ---
 
+## Task 3.5 (plan patch): Fill MIRIX REST skill payload with `description` + `instructions`
+
+Surfaced during T3 spec/code review. The plan's `mirix_to_metaclaw` adapter
+(T3) and the consumers in T6/T7 assume `instructions` is in the MIRIX
+response. It is not:
+
+- `GET /v1/skills` returns `id/name/entry_type/description/version/timestamps` — no `instructions`.
+- `POST /v1/skills/evolve` `changes[*]` returns `id/name/entry_type/version` — no `description`, no `instructions`.
+
+User decision: fix the MIRIX endpoints (vs. client-side hydrate). This is
+a surface-API schema enhancement; existing consumers are not broken
+because we only add fields.
+
+**Files:** `mirix/server/rest_api.py` (two spots).
+
+- [ ] **Step 3.5.1:** In `evolve_skills` function (around line 4783), modify `_skill_summary`:
+
+```python
+def _skill_summary(skill):
+    return {
+        "id": skill.id,
+        "name": skill.name,
+        "entry_type": skill.entry_type,
+        "description": skill.description,
+        "instructions": skill.instructions,
+        "version": getattr(skill, "version", None),
+    }
+```
+
+- [ ] **Step 3.5.2:** In `list_skills` (around line 4847), add `instructions` to the per-skill dict:
+
+```python
+"skills": [
+    {
+        "id": s.id,
+        "name": s.name,
+        "entry_type": s.entry_type,
+        "description": s.description,
+        "instructions": s.instructions,
+        "version": getattr(s, "version", None),
+        "created_at": (s.created_at.isoformat() if getattr(s, "created_at", None) else None),
+        "updated_at": (s.updated_at.isoformat() if getattr(s, "updated_at", None) else None),
+    }
+    for s in skills
+],
+```
+
+- [ ] **Step 3.5.3:** Verify by running the existing skill REST integration tests:
+
+```bash
+pytest tests/test_skill_integration.py -v
+```
+
+Expected: same green status as before (no test references the missing fields, so adding them doesn't break anything; if a test fails for an unrelated reason, capture it but don't try to fix in this task).
+
+- [ ] **Step 3.5.4:** Commit:
+
+```bash
+git add mirix/server/rest_api.py
+git commit -m "[VEPEAGE-000] api: include description+instructions in /v1/skills + /v1/skills/evolve responses"
+```
+
+(Optional follow-up — not in this task: add an explicit assertion test for the new fields in `tests/test_skill_integration.py`. Out of scope here because the eval harness's own tests in T5+ exercise these fields end-to-end.)
+
+---
+
 ## Task 4: `llm_config_helpers.py` — build OpenRouter LLMConfig
 
 **Files:**
