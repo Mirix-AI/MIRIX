@@ -106,11 +106,15 @@ async def _amain(args: argparse.Namespace) -> int:
     workspace = _prepare_workspace(run_dir)
     logger.info("Workspace prepared at %s", workspace)
 
-    # MIRIX wiring
+    # MIRIX wiring. Skipped in --dry-run (no LLM at all) and in
+    # --no-skills (baseline: real LLM + scoring but no MIRIX
+    # retrieve/evolve, equivalent to running the bench against a raw
+    # agent with no procedural memory).
+    use_mirix = not args.dry_run and not args.no_skills
     mirix = None
     evolver = None
     skill_mgr = None
-    if not args.dry_run:
+    if use_mirix:
         mirix = MirixClient(
             base_url=args.mirix_url,
             user_id=args.user_id,
@@ -176,8 +180,12 @@ async def _amain(args: argparse.Namespace) -> int:
             # loop.) `run_round` is still sync because it does blocking
             # subprocess.run + sync OpenAI calls, so we keep that on a
             # thread per CLAUDE.md async rules.
-            skills = await skill_mgr.retrieve_async(question, args.top_k)
-            logger.info("[%s/%s] retrieved %d skills", day, round_id, len(skills))
+            if use_mirix:
+                skills = await skill_mgr.retrieve_async(question, args.top_k)
+                logger.info("[%s/%s] retrieved %d skills", day, round_id, len(skills))
+            else:
+                skills = []
+                logger.info("[%s/%s] (no-skills baseline)", day, round_id)
             cfg = RunnerConfig(
                 chat_model=chat_model, workspace=workspace,
                 max_turns=args.max_turns, wallclock_cap_s=args.wallclock_cap,
@@ -197,7 +205,7 @@ async def _amain(args: argparse.Namespace) -> int:
         evolve_status = "skipped"
         # Stable shape for downstream consumers: always emit produced_skills.
         diff_summary: dict = {"produced_skills": []}
-        if not args.dry_run and not args.no_evolve:
+        if use_mirix and not args.no_evolve:
             try:
                 metaclaw_skills = await evolver.evolve(round_results, current_skills={})
                 evolve_status = "ok"
@@ -280,6 +288,10 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--mirix-timeout", type=float, default=600.0)
     p.add_argument("--no-evolve", action="store_true",
                    help="Skip day-end evolve calls (debug).")
+    p.add_argument("--no-skills", action="store_true",
+                   help="Baseline: real LLM + scoring, but no MIRIX retrieve "
+                        "or evolve. Equivalent to running the bench against "
+                        "a raw agent with no procedural memory.")
     p.add_argument("--dry-run", action="store_true",
                    help="Skip all LLM and MIRIX calls; emit stub metrics for plumbing tests.")
     p.add_argument("--log-level", default="INFO")
