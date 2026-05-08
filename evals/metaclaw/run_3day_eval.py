@@ -42,7 +42,14 @@ def _run_id() -> str:
 
 
 def _prepare_workspace(run_dir: Path) -> Path:
-    """Copy workspaces/shared/ into run_dir/workspace/. Carries across all days."""
+    """Copy workspaces/shared/ into run_dir/workspace/. Carries across all days.
+
+    The single-snapshot, cross-day-shared workspace is the paper's convention
+    (see spec D12 in docs/superpowers/specs/2026-05-08-mirix-metaclaw-eval-design.md
+    and metaclaw-bench/all_tests_metaclaw.json `workspace_src`). day02 / day03
+    questions reference files day01 / day02 produced — resetting between days
+    would invalidate the bench design.
+    """
     ws = run_dir / "workspace"
     if ws.exists():
         shutil.rmtree(ws)
@@ -78,7 +85,10 @@ async def _amain(args: argparse.Namespace) -> int:
     from evals.metaclaw.mirix_client import MirixClient
     from evals.metaclaw.mirix_skill_evolver import MirixSkillEvolver
     from evals.metaclaw.mirix_skill_manager import MirixSkillManager
-    from evals.metaclaw.round_runner import RunnerConfig, run_round
+    from evals.metaclaw.round_runner import (
+        RunnerConfig,
+        run_round,
+    )
 
     if not args.dry_run:
         assert_openrouter_env()
@@ -106,6 +116,7 @@ async def _amain(args: argparse.Namespace) -> int:
             logger.error("MIRIX server not reachable at %s. "
                          "Start it with: python scripts/start_server.py --port 8531",
                          args.mirix_url)
+            await mirix.aclose()
             return 2
         evolver = MirixSkillEvolver(mirix_client=mirix)
         skill_mgr = MirixSkillManager(mirix_client=mirix)
@@ -115,8 +126,15 @@ async def _amain(args: argparse.Namespace) -> int:
     chat_model = os.environ.get("EVAL_CHAT_MODEL", DEFAULT_CHAT_MODEL)
     if not args.dry_run:
         from openai import OpenAI
+        api_key = os.environ.get("OPENAI_API_KEY")
+        if not api_key:
+            # assert_openrouter_env() should have caught this; defense-in-depth.
+            logger.error("OPENAI_API_KEY is not set; cannot construct OpenAI client.")
+            if mirix is not None:
+                await mirix.aclose()
+            return 2
         openai_client = OpenAI(
-            api_key=os.environ["OPENAI_API_KEY"],
+            api_key=api_key,
             base_url=os.environ.get("OPENAI_API_BASE", OPENROUTER_BASE_URL),
         )
 
@@ -138,8 +156,7 @@ async def _amain(args: argparse.Namespace) -> int:
 
             if args.dry_run:
                 # No LLM, no MIRIX — produce a deterministic stub for plumbing tests
-                from evals.metaclaw.format_adapter import RoundResult as RR
-                rr = RR(
+                rr = RoundResult(
                     round_id=round_id, round_type=round_type, question=question,
                     final_answer="(dry-run)", reward=0.0, eval_outcome="fail",
                     feedback=_expected_feedback(r, "fail"), error="dry_run",
@@ -148,13 +165,20 @@ async def _amain(args: argparse.Namespace) -> int:
                 logger.info("[%s/%s] dry-run", day, round_id)
                 continue
 
-            skills = skill_mgr.retrieve(question, top_k=args.top_k)
+            # `skill_mgr.retrieve` is sync (parent contract) and `run_round` is
+            # sync (LLM tool loop with subprocess.run inside). Wrap both in
+            # asyncio.to_thread to keep this event loop responsive — matches
+            # the project's async rules in CLAUDE.md.
+            skills = await asyncio.to_thread(
+                skill_mgr.retrieve, question, args.top_k
+            )
             logger.info("[%s/%s] retrieved %d skills", day, round_id, len(skills))
             cfg = RunnerConfig(
                 chat_model=chat_model, workspace=workspace,
                 max_turns=args.max_turns, wallclock_cap_s=args.wallclock_cap,
             )
-            rr = run_round(
+            rr = await asyncio.to_thread(
+                run_round,
                 openai_client=openai_client, cfg=cfg,
                 round_id=round_id, round_type=round_type,
                 question=question, eval_block=eval_block, skills=skills,
@@ -166,7 +190,8 @@ async def _amain(args: argparse.Namespace) -> int:
 
         # Day-end evolve
         evolve_status = "skipped"
-        diff_summary = {"created": [], "edited": [], "deleted": []}
+        # Stable shape for downstream consumers: always emit produced_skills.
+        diff_summary: dict = {"produced_skills": []}
         if not args.dry_run and not args.no_evolve:
             try:
                 metaclaw_skills = await evolver.evolve(round_results, current_skills={})
@@ -203,7 +228,7 @@ async def _amain(args: argparse.Namespace) -> int:
     summary["finished_at"] = dt.datetime.now().isoformat()
     (run_dir / "summary.json").write_text(json.dumps(summary, indent=2, default=str))
     _write_summary_md(run_dir, summary)
-    logger.info("Done. Summary at %s/summary.md", run_dir)
+    logger.info("Done. Summary at %s", run_dir / "summary.md")
 
     if mirix is not None:
         await mirix.aclose()
@@ -229,14 +254,22 @@ def _write_summary_md(run_dir: Path, summary: dict) -> None:
 
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
+    # Imported here (not at module top) so `python -m evals.metaclaw.run_3day_eval --help`
+    # without sibling deps still surfaces the help string.
+    from evals.metaclaw.mirix_skill_manager import DEFAULT_TOP_K
+    from evals.metaclaw.round_runner import (
+        DEFAULT_MAX_TURNS,
+        DEFAULT_WALLCLOCK_S,
+    )
+
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--days", nargs="+", choices=["day01", "day02", "day03"],
                    help="Subset of days to run (default: all three).")
     p.add_argument("--max-rounds", type=int, default=0,
                    help="Cap rounds per day (0 = no cap; useful for smoke).")
-    p.add_argument("--max-turns", type=int, default=20)
-    p.add_argument("--wallclock-cap", type=float, default=300.0)
-    p.add_argument("--top-k", type=int, default=6)
+    p.add_argument("--max-turns", type=int, default=DEFAULT_MAX_TURNS)
+    p.add_argument("--wallclock-cap", type=float, default=DEFAULT_WALLCLOCK_S)
+    p.add_argument("--top-k", type=int, default=DEFAULT_TOP_K)
     p.add_argument("--user-id", type=str, default="eval-metaclaw-3day")
     p.add_argument("--mirix-url", type=str, default="http://127.0.0.1:8531")
     p.add_argument("--mirix-timeout", type=float, default=600.0)

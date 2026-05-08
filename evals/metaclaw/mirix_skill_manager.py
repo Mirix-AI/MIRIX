@@ -17,6 +17,12 @@ from evals.metaclaw.format_adapter import mirix_to_metaclaw
 from evals.metaclaw.mirix_client import MirixClient
 
 
+# Single source of truth for the retrieval top-k default; the driver
+# imports this so its CLI default and the manager's runtime default cannot
+# drift out of sync.
+DEFAULT_TOP_K = 6
+
+
 class MirixSkillManager(SkillManager):
     """Subclass whose retrieve() delegates to MIRIX REST."""
 
@@ -31,7 +37,7 @@ class MirixSkillManager(SkillManager):
         }
         self.generation: int = 0
 
-    def retrieve(self, query: str, top_k: int = 6) -> list[dict[str, Any]]:
+    def retrieve(self, query: str, top_k: int = DEFAULT_TOP_K) -> list[dict[str, Any]]:
         skills = _run_sync(self.mirix.search_skills(query=query, limit=top_k))
         return [mirix_to_metaclaw(s) for s in skills]
 
