@@ -52,3 +52,6 @@ test_*.db
 .persist
 docs/superpowers/
 .claude/
+
+# Third-party repos cloned for evals (cloned via plan tasks, not committed)
+third_party/
