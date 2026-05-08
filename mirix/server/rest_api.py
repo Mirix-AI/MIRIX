@@ -4780,6 +4780,8 @@ async def evolve_skills(
             "id": skill.id,
             "name": skill.name,
             "entry_type": skill.entry_type,
+            "description": skill.description,
+            "instructions": skill.instructions,
             "version": getattr(skill, "version", None),
         }
 
@@ -4853,6 +4855,7 @@ async def list_skills(
                 "name": s.name,
                 "entry_type": s.entry_type,
                 "description": s.description,
+                "instructions": s.instructions,
                 "version": getattr(s, "version", None),
                 "created_at": (s.created_at.isoformat() if getattr(s, "created_at", None) else None),
                 "updated_at": (s.updated_at.isoformat() if getattr(s, "updated_at", None) else None),
