@@ -14,19 +14,40 @@ The loop terminates when:
 from __future__ import annotations
 
 import json
-import os
 import re
-import shlex
 import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
 
 from evals.metaclaw.format_adapter import RoundResult
 
 
+# Module-level constants — keep tunables visible at the top.
+BASH_TIMEOUT_S = 60
+SCORE_FILE_CHECK_TIMEOUT_S = 60
+STDOUT_TRUNC = 4000
+STDERR_TRUNC = 2000
+READ_FILE_MAX = 102_400
+TRANSCRIPT_TRUNC = 1000
+DEFAULT_MAX_TURNS = 20
+DEFAULT_WALLCLOCK_S = 300.0
+
+
 _BBOX_RE = re.compile(r"\\bbox\{([^}]+)\}")
+
+
+def _is_inside_workspace(p: Path, workspace: Path) -> bool:
+    """True iff *p* (already resolved) is workspace itself or a descendant.
+
+    Uses Path.is_relative_to — the substring `startswith` shortcut would
+    treat /tmp/ws_evil as inside /tmp/ws.
+    """
+    try:
+        p.relative_to(workspace.resolve())
+    except ValueError:
+        return False
+    return True
 
 
 def parse_bbox_answer(text: str) -> list[str]:
@@ -50,32 +71,49 @@ def score_file_check(eval_block: dict, workspace: Path) -> tuple[float, str]:
     expect = int(eval_block.get("expect_exit", 0))
     if not cmd:
         return (0.0, "fail")
-    proc = subprocess.run(
-        cmd, shell=True, cwd=str(workspace),
-        capture_output=True, text=True, timeout=60,
-    )
+    try:
+        proc = subprocess.run(
+            cmd, shell=True, cwd=str(workspace),
+            capture_output=True, text=True, timeout=SCORE_FILE_CHECK_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired:
+        return (0.0, "fail")
     return (1.0, "pass") if proc.returncode == expect else (0.0, "fail")
 
 
 # -- Tools -------------------------------------------------------------------
 
 def _tool_bash(workspace: Path, command: str) -> str:
-    proc = subprocess.run(
-        command, shell=True, cwd=str(workspace),
-        capture_output=True, text=True, timeout=60,
-    )
-    out = (proc.stdout or "")[-4000:]
-    err = (proc.stderr or "")[-2000:]
+    try:
+        proc = subprocess.run(
+            command, shell=True, cwd=str(workspace),
+            capture_output=True, text=True, timeout=BASH_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired as e:
+        partial_out = e.stdout if isinstance(e.stdout, str) else (
+            (e.stdout or b"").decode("utf-8", errors="replace")
+        )
+        partial_err = e.stderr if isinstance(e.stderr, str) else (
+            (e.stderr or b"").decode("utf-8", errors="replace")
+        )
+        return (
+            f"exit=124\n"
+            f"stdout:\n{partial_out[-STDOUT_TRUNC:]}\n"
+            f"stderr:\n{partial_err[-STDERR_TRUNC:]}\n"
+            f"(timeout after {BASH_TIMEOUT_S}s)"
+        )
+    out = (proc.stdout or "")[-STDOUT_TRUNC:]
+    err = (proc.stderr or "")[-STDERR_TRUNC:]
     return f"exit={proc.returncode}\nstdout:\n{out}\nstderr:\n{err}"
 
 
 def _tool_read_file(workspace: Path, path: str) -> str:
     p = (workspace / path).resolve()
-    if not str(p).startswith(str(workspace.resolve())):
+    if not _is_inside_workspace(p, workspace):
         return "ERROR: path escapes workspace"
     if not p.exists():
         return f"ERROR: not found: {path}"
-    data = p.read_bytes()[:102_400]
+    data = p.read_bytes()[:READ_FILE_MAX]
     try:
         return data.decode("utf-8")
     except UnicodeDecodeError:
@@ -84,7 +122,7 @@ def _tool_read_file(workspace: Path, path: str) -> str:
 
 def _tool_write_file(workspace: Path, path: str, content: str) -> str:
     p = (workspace / path).resolve()
-    if not str(p).startswith(str(workspace.resolve())):
+    if not _is_inside_workspace(p, workspace):
         return "ERROR: path escapes workspace"
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(content, encoding="utf-8")
@@ -93,7 +131,7 @@ def _tool_write_file(workspace: Path, path: str, content: str) -> str:
 
 def _tool_list_dir(workspace: Path, path: str = ".") -> str:
     p = (workspace / path).resolve()
-    if not str(p).startswith(str(workspace.resolve())):
+    if not _is_inside_workspace(p, workspace):
         return "ERROR: path escapes workspace"
     if not p.is_dir():
         return f"ERROR: not a directory: {path}"
@@ -140,7 +178,8 @@ _TOOLS_SCHEMA: list[dict] = [
 ]
 
 
-def _dispatch_tool(name: str, args: dict, workspace: Path) -> str:
+def _dispatch_tool(name: str, args: dict, workspace: Path) -> str:  # noqa: D401
+    """Single dispatch table over the four tool names; returns the tool string."""
     if name == "bash":
         return _tool_bash(workspace, args.get("command", ""))
     if name == "read_file":
@@ -158,8 +197,9 @@ def _dispatch_tool(name: str, args: dict, workspace: Path) -> str:
 class RunnerConfig:
     chat_model: str
     workspace: Path
-    max_turns: int = 20
-    wallclock_cap_s: float = 300.0
+    max_turns: int = DEFAULT_MAX_TURNS
+    wallclock_cap_s: float = DEFAULT_WALLCLOCK_S
+    tool_choice: str = "auto"
 
 
 SYSTEM_PROMPT_BASE = (
@@ -213,7 +253,7 @@ def run_round(
             model=cfg.chat_model,
             messages=messages,
             tools=_TOOLS_SCHEMA,
-            tool_choice="auto",
+            tool_choice=cfg.tool_choice,
         )
         choice = resp.choices[0]
         msg = choice.message
@@ -223,16 +263,22 @@ def run_round(
                                 "arguments": tc.function.arguments}
                                for tc in (msg.tool_calls or [])
                            ]})
-        messages.append({
+        # Build the assistant entry for the conversation history. Some
+        # OpenAI-compatible servers (and stricter SDK versions) reject an
+        # assistant message with an empty `tool_calls: []` array — we omit
+        # the key entirely when there are no tool calls.
+        assistant_entry: dict = {
             "role": "assistant",
             "content": msg.content or "",
-            "tool_calls": [
+        }
+        if msg.tool_calls:
+            assistant_entry["tool_calls"] = [
                 {"id": tc.id, "type": "function",
                  "function": {"name": tc.function.name,
                               "arguments": tc.function.arguments}}
-                for tc in (msg.tool_calls or [])
-            ],
-        })
+                for tc in msg.tool_calls
+            ]
+        messages.append(assistant_entry)
         if not msg.tool_calls:
             final_text = msg.content or ""
             break
@@ -243,7 +289,7 @@ def run_round(
                 args = {}
             result = _dispatch_tool(tc.function.name, args, cfg.workspace)
             transcript.append({"role": "tool", "name": tc.function.name,
-                               "result": result[:1000]})
+                               "result": result[:TRANSCRIPT_TRUNC]})
             messages.append({
                 "role": "tool", "tool_call_id": tc.id, "content": result,
             })

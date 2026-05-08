@@ -8,6 +8,10 @@ from evals.metaclaw.round_runner import (
     parse_bbox_answer,
     score_file_check,
     score_multi_choice,
+    _tool_read_file,
+    _tool_write_file,
+    _tool_list_dir,
+    _tool_bash,
 )
 
 
@@ -148,3 +152,73 @@ def test_run_round_turn_limit_marks_error(tmp_path: Path):
     )
     assert res.error == "turn_limit"
     assert res.reward == 0.0
+
+
+# -- Regression tests for code-review-driven fixes ---------------------------
+
+def test_tool_read_file_rejects_traversal_via_sibling_prefix(tmp_path: Path):
+    """`/tmp/ws_evil/secret.txt` must not be treated as inside `/tmp/ws/`.
+
+    Regression for the substring-prefix check that previously accepted any
+    path whose string-form started with the workspace path string.
+    """
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    sibling = tmp_path / "ws_evil"
+    sibling.mkdir()
+    (sibling / "secret.txt").write_text("forbidden", encoding="utf-8")
+
+    # Use a relative path that resolves into the sibling directory.
+    out = _tool_read_file(workspace, "../ws_evil/secret.txt")
+    assert "ERROR: path escapes workspace" in out
+
+
+def test_tool_read_file_rejects_absolute_outside_path(tmp_path: Path):
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    elsewhere = tmp_path / "elsewhere.txt"
+    elsewhere.write_text("nope", encoding="utf-8")
+
+    out = _tool_read_file(workspace, str(elsewhere))
+    assert "ERROR: path escapes workspace" in out
+
+
+def test_tool_write_file_rejects_traversal(tmp_path: Path):
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+
+    out = _tool_write_file(workspace, "../escaped.txt", "x")
+    assert "ERROR: path escapes workspace" in out
+    assert not (tmp_path / "escaped.txt").exists()
+
+
+def test_tool_list_dir_rejects_traversal(tmp_path: Path):
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    (tmp_path / "outside").mkdir()
+
+    out = _tool_list_dir(workspace, "../outside")
+    assert "ERROR: path escapes workspace" in out
+
+
+def test_tool_bash_timeout_returns_message_not_exception(tmp_path: Path, monkeypatch):
+    """A bash command that exceeds BASH_TIMEOUT_S must not propagate
+    `subprocess.TimeoutExpired`; instead it returns a string with exit=124.
+    """
+    import evals.metaclaw.round_runner as rr
+    # Reduce timeout so the test is fast
+    monkeypatch.setattr(rr, "BASH_TIMEOUT_S", 1)
+
+    out = rr._tool_bash(tmp_path, "sleep 5")
+    assert "exit=124" in out
+    assert "timeout" in out.lower()
+
+
+def test_score_file_check_timeout_returns_fail(tmp_path: Path, monkeypatch):
+    import evals.metaclaw.round_runner as rr
+    monkeypatch.setattr(rr, "SCORE_FILE_CHECK_TIMEOUT_S", 1)
+
+    reward, outcome = rr.score_file_check(
+        {"command": "sleep 5", "expect_exit": 0}, workspace=tmp_path
+    )
+    assert (reward, outcome) == (0.0, "fail")
