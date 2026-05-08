@@ -1289,17 +1289,21 @@ class Agent(BaseAgent):
                         )
                         if memory_item:
                             memory_item = memory_item[0]
+                            # Phase 1 of skill-evolve replaced the legacy
+                            # summary+steps shape with name/description/
+                            # instructions/version. Surface the new fields.
                             memory_item_str = ""
-                            memory_item_str += "[Procedural Memory ID]: " + memory_item.id + "\n"
+                            memory_item_str += "[Skill ID]: " + memory_item.id + "\n"
+                            memory_item_str += "[Name]: " + memory_item.name + "\n"
                             memory_item_str += "[Entry Type]: " + memory_item.entry_type + "\n"
-                            memory_item_str += "[Summary]: " + (memory_item.summary or "N/A") + "\n"
-                            memory_item_str += "[Steps]: " + "; ".join(memory_item.steps) + "\n"
+                            memory_item_str += "[Description]: " + (memory_item.description or "N/A") + "\n"
+                            memory_item_str += "[Instructions]: " + (memory_item.instructions or "N/A") + "\n"
+                            memory_item_str += "[Version]: " + str(getattr(memory_item, "version", "0.1.0")) + "\n"
+                            ts = memory_item.last_modify.get("timestamp") if isinstance(memory_item.last_modify, dict) else None
+                            ts_str = ts.strftime("%Y-%m-%d %H:%M:%S") if hasattr(ts, "strftime") else str(ts)
+                            op = memory_item.last_modify.get("operation") if isinstance(memory_item.last_modify, dict) else "?"
                             memory_item_str += (
-                                "[Last Modified]: "
-                                + memory_item.last_modify["operation"]
-                                + " at "
-                                + memory_item.last_modify["timestamp"].strftime("%Y-%m-%d %H:%M:%S")
-                                + "\n"
+                                "[Last Modified]: " + str(op) + " at " + ts_str + "\n"
                             )
                             memory_item_str = memory_item_str.strip()
 

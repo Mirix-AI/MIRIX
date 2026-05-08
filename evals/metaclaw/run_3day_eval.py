@@ -165,13 +165,14 @@ async def _amain(args: argparse.Namespace) -> int:
                 logger.info("[%s/%s] dry-run", day, round_id)
                 continue
 
-            # `skill_mgr.retrieve` is sync (parent contract) and `run_round` is
-            # sync (LLM tool loop with subprocess.run inside). Wrap both in
-            # asyncio.to_thread to keep this event loop responsive — matches
-            # the project's async rules in CLAUDE.md.
-            skills = await asyncio.to_thread(
-                skill_mgr.retrieve, question, args.top_k
-            )
+            # Retrieval: use the async path so the shared MirixClient stays
+            # on this event loop. (The sync `retrieve()` would spin up a new
+            # loop in a worker thread, and httpx.AsyncClient objects already
+            # awaited on the main loop are not re-awaitable from a worker
+            # loop.) `run_round` is still sync because it does blocking
+            # subprocess.run + sync OpenAI calls, so we keep that on a
+            # thread per CLAUDE.md async rules.
+            skills = await skill_mgr.retrieve_async(question, args.top_k)
             logger.info("[%s/%s] retrieved %d skills", day, round_id, len(skills))
             cfg = RunnerConfig(
                 chat_model=chat_model, workspace=workspace,

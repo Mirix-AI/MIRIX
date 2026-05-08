@@ -37,23 +37,26 @@ class MirixSkillManager(SkillManager):
         }
         self.generation: int = 0
 
-    def retrieve(self, query: str, top_k: int = DEFAULT_TOP_K) -> list[dict[str, Any]]:
-        skills = _run_sync(self.mirix.search_skills(query=query, limit=top_k))
+    async def retrieve_async(
+        self, query: str, top_k: int = DEFAULT_TOP_K
+    ) -> list[dict[str, Any]]:
+        """Async path used by the eval driver: avoids the
+        sync-bridge-into-a-thread-loop bug that caused httpx.AsyncClient
+        objects bound to the main loop to be re-awaited from a worker
+        loop. Driver code should `await` this directly.
+        """
+        skills = await self.mirix.search_skills(query=query, limit=top_k)
         return [mirix_to_metaclaw(s) for s in skills]
 
+    def retrieve(self, query: str, top_k: int = DEFAULT_TOP_K) -> list[dict[str, Any]]:
+        """Sync path for parity with metaclaw's parent SkillManager.retrieve.
 
-def _run_sync(coro):
-    """Run an async coroutine from a sync caller. Works whether or not an
-    event loop is already running in the current thread."""
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = None
-    if loop and loop.is_running():
-        # We are inside an async context already — bounce onto a fresh loop
-        # in a thread. Acceptable here because retrieve() is on the bench
-        # path, not on a tight inner loop.
-        import concurrent.futures
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            return pool.submit(asyncio.run, coro).result()
-    return asyncio.run(coro)
+        Routes through asyncio.run when no loop is active. NOT safe to
+        call from inside an already-running event loop while sharing a
+        MirixClient that was first awaited on the main loop — use
+        retrieve_async() in that case.
+        """
+        return asyncio.run(self._retrieve_coro(query, top_k))
+
+    async def _retrieve_coro(self, query: str, top_k: int):
+        return await self.retrieve_async(query, top_k)

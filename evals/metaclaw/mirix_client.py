@@ -5,6 +5,12 @@ Endpoints used:
                                round messages, returns created/edited/deleted diff
     GET  /v1/skills?...      — search skills (BM25); used for retrieval
     GET  /health             — liveness probe
+
+Auth: REST endpoints require a client identity. We send X-Client-Id on
+every request, pointing at the default admin client that MIRIX creates
+on first server boot. This is the dev-mode shortcut used by the auth
+middleware (see rest_api.py: get_client_from_jwt_or_api_key — direct
+X-Client-Id is honored without needing an API key for local dev).
 """
 from __future__ import annotations
 
@@ -12,17 +18,24 @@ from typing import Any
 
 import httpx
 
+# MIRIX seeds this client row on first boot. See
+# `mirix.services.client_manager.create_default_client` and the
+# `default_client` row in the `clients` table.
+DEFAULT_CLIENT_ID = "client-00000000-0000-4000-8000-000000000000"
+
 
 class MirixClient:
     def __init__(
         self,
         base_url: str = "http://127.0.0.1:8531",
         user_id: str = "eval-metaclaw-3day",
+        client_id: str = DEFAULT_CLIENT_ID,
         timeout: float = 600.0,
         _client: httpx.AsyncClient | None = None,
     ):
         self.base_url = base_url.rstrip("/")
         self.user_id = user_id
+        self.client_id = client_id
         self._timeout = timeout
         self._client = _client            # injectable for tests
         self._owns_client = _client is None
@@ -30,7 +43,9 @@ class MirixClient:
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None:
             self._client = httpx.AsyncClient(
-                base_url=self.base_url, timeout=self._timeout
+                base_url=self.base_url,
+                timeout=self._timeout,
+                headers={"X-Client-Id": self.client_id},
             )
         return self._client
 

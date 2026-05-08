@@ -4690,12 +4690,23 @@ async def evolve_skills(
 
     timezone_str = getattr(user, "timezone", None) or "UTC"
 
-    # Find the procedural memory agent among meta agent's children
+    # Find the procedural memory agent among meta agent's children. The
+    # comment said "among meta agent's children" but the original implementation
+    # only walked the top-level agent list — list_agents() defaults to
+    # parent_id=None and only top-level meta agents come back, with their
+    # `children` populated. Walk both top-level and children so this works
+    # whether the procedural agent lives standalone or under a meta agent.
     all_agents = await server.agent_manager.list_agents(actor=client)
     proc_agent_state = None
     for agent in all_agents:
         if agent.agent_type == AgentType.procedural_memory_agent:
             proc_agent_state = agent
+            break
+        for child in (agent.children or []):
+            if child.agent_type == AgentType.procedural_memory_agent:
+                proc_agent_state = child
+                break
+        if proc_agent_state is not None:
             break
 
     if not proc_agent_state:
@@ -4718,11 +4729,16 @@ async def evolve_skills(
     before_ids = {s.id for s in before_skills}
     before_map = {s.id: s for s in before_skills}
 
-    # Build input messages for the agent
+    # Build input messages for the agent. PydanticMessage requires
+    # content as a list of typed content parts; the `text=` kwarg on
+    # the schema was removed when the message model migrated to typed
+    # content unions, so we wrap the combined text in a TextContent.
+    from mirix.schemas.mirix_message_content import TextContent
+
     combined_text = "\n".join(request.messages)
     input_message = PydanticMessage(
         role="user",
-        text=combined_text,
+        content=[TextContent(text=combined_text)],
         agent_id=proc_agent_state.id,
         name="user",
     )
