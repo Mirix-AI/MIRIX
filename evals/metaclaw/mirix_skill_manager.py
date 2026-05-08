@@ -20,8 +20,11 @@ from evals.metaclaw.mirix_client import MirixClient
 class MirixSkillManager(SkillManager):
     """Subclass whose retrieve() delegates to MIRIX REST."""
 
-    def __init__(self, mirix_client: MirixClient, **kwargs: Any) -> None:
+    def __init__(self, mirix_client: MirixClient) -> None:
         # Bypass parent __init__ (which requires a skills_dir to scan).
+        # No **kwargs forwarding: this subclass does not honor the parent's
+        # constructor knobs (skills_dir, retrieval_mode, embedding_model_path,
+        # task_specific_top_k); accepting them silently would be a footgun.
         self.mirix = mirix_client
         self.skills: dict[str, Any] = {
             "general_skills": [], "task_specific_skills": {}, "common_mistakes": []

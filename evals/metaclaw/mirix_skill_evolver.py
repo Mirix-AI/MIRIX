@@ -24,9 +24,15 @@ from evals.metaclaw.mirix_client import MirixClient
 class MirixSkillEvolver(SkillEvolver):
     """Subclass that delegates evolve() to MIRIX's REST endpoint."""
 
-    def __init__(self, mirix_client: MirixClient | None, **kwargs: Any) -> None:
+    def __init__(self, mirix_client: MirixClient | None) -> None:
         # Bypass parent __init__: it expects OpenAI env vars we don't need
         # here because the LLM call happens inside MIRIX, not in this class.
+        # No **kwargs forwarding: this subclass does not honor the parent's
+        # constructor knobs (max_new_skills, azure_deployment,
+        # max_completion_tokens, llm_client, history_path); accepting them
+        # silently would be a footgun. update_history / history_path are
+        # kept as no-op state because inherited get_update_summary() reads
+        # update_history.
         self.mirix = mirix_client
         self.update_history: list[dict] = []
         self.history_path = None
