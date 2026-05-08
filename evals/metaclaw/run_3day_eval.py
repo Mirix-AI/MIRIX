@@ -26,7 +26,11 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 METACLAW_BENCH = REPO_ROOT / "third_party" / "MetaClaw" / "benchmark" / "data" / "metaclaw-bench"
 EVAL_DIR = METACLAW_BENCH / "eval"
 WORKSPACE_SRC = METACLAW_BENCH / "workspaces" / "shared"
-SCORE_SCRIPT_DIR = REPO_ROOT / "third_party" / "MetaClaw" / "scripts"
+# The bench's eval.command lines say `python scripts/check_iso8601.py ...`,
+# resolved relative to the workspace cwd. The check scripts live under
+# benchmark/data/metaclaw-bench/eval/scripts/ — NOT MetaClaw/scripts/, which
+# was the wrong path the first run used.
+SCORE_SCRIPT_DIR = METACLAW_BENCH / "eval" / "scripts"
 DEFAULT_DAYS = ["day01", "day02", "day03"]
 
 
