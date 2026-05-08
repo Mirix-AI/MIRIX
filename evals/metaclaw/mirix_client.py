@@ -4,7 +4,7 @@ Endpoints used:
     POST /v1/skills/evolve   — trigger ProceduralMemoryAgent on a batch of
                                round messages, returns created/edited/deleted diff
     GET  /v1/skills?...      — search skills (BM25); used for retrieval
-    GET  /healthz / /        — liveness probe
+    GET  /health             — liveness probe
 """
 from __future__ import annotations
 
@@ -55,18 +55,22 @@ class MirixClient:
         self,
         query: str,
         limit: int = 6,
-        search_method: str = "bm25",
-        search_field: str = "description",
+        search_method: str = "bm25",      # kept on signature; server hard-codes bm25
+        search_field: str = "description",  # kept on signature; server hard-codes description
     ) -> list[dict[str, Any]]:
-        """GET /v1/skills?query=...&search_method=bm25&search_field=description&limit=N."""
+        """GET /v1/skills?query=...&limit=N&user_id=...
+
+        The MIRIX endpoint currently hard-codes search_method=bm25 and
+        search_field=description internally, so we don't send them on the
+        wire. Method kwargs are kept for forward-compat if/when the route
+        adds them as accepted query params.
+        """
         client = await self._get_client()
         resp = await client.get(
             "/v1/skills",
             params={
                 "query": query,
                 "limit": limit,
-                "search_method": search_method,
-                "search_field": search_field,
                 "user_id": self.user_id,
             },
         )
@@ -77,7 +81,7 @@ class MirixClient:
     async def health(self) -> bool:
         client = await self._get_client()
         try:
-            resp = await client.get("/")
+            resp = await client.get("/health")
             return resp.status_code == 200
         except httpx.HTTPError:
             return False

@@ -56,23 +56,40 @@ async def test_search_skills_calls_bm25_and_returns_skills():
         skills = await client.search_skills("datetime format", limit=3)
 
     assert "/v1/skills" in seen["url"]
-    assert "search_method=bm25" in seen["url"]
     assert "query=datetime+format" in seen["url"] or "query=datetime%20format" in seen["url"]
     assert "limit=3" in seen["url"]
+    assert "user_id=user-1" in seen["url"]
+    # search_method/search_field are NOT sent on the wire (server hard-codes them)
+    assert "search_method" not in seen["url"]
+    assert "search_field" not in seen["url"]
     assert skills[0]["name"] == "iso8601"
 
 
 @pytest.mark.asyncio
 async def test_health_returns_true_on_200():
-    transport = httpx.MockTransport(lambda r: httpx.Response(200, json={"status": "ok"}))
+    seen = {}
+
+    def handler(req):
+        seen["url"] = str(req.url)
+        return httpx.Response(200, json={"status": "ok"})
+
+    transport = httpx.MockTransport(handler)
     async with httpx.AsyncClient(transport=transport, base_url="http://x") as ac:
         client = MirixClient(base_url="http://x", user_id="u", _client=ac)
         assert await client.health() is True
+    assert seen["url"].endswith("/health")
 
 
 @pytest.mark.asyncio
 async def test_health_returns_false_on_500():
-    transport = httpx.MockTransport(lambda r: httpx.Response(500))
+    seen = {}
+
+    def handler(req):
+        seen["url"] = str(req.url)
+        return httpx.Response(500)
+
+    transport = httpx.MockTransport(handler)
     async with httpx.AsyncClient(transport=transport, base_url="http://x") as ac:
         client = MirixClient(base_url="http://x", user_id="u", _client=ac)
         assert await client.health() is False
+    assert seen["url"].endswith("/health")
