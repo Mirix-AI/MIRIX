@@ -55,3 +55,6 @@ docs/superpowers/
 
 # Third-party repos cloned for evals (cloned via plan tasks, not committed)
 third_party/
+
+# Eval run outputs (per-run metrics + summaries; recorded in docs/superpowers/eval-results/ for traceability)
+evals/metaclaw/reports/
