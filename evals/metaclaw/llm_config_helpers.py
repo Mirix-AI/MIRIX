@@ -29,21 +29,22 @@ def openrouter_embedding_config(
     model: str | None = None,
     dim: int | None = None,
 ) -> EmbeddingConfig:
+    raw_dim = dim if dim is not None else os.environ.get("EVAL_EMBED_DIM", DEFAULT_EMBED_DIM)
     return EmbeddingConfig(
         embedding_model=model or os.environ.get("EVAL_EMBED_MODEL", DEFAULT_EMBED_MODEL),
         embedding_endpoint_type="openai",
         embedding_endpoint=OPENROUTER_BASE_URL,
-        embedding_dim=int(dim or os.environ.get("EVAL_EMBED_DIM", DEFAULT_EMBED_DIM)),
+        embedding_dim=int(raw_dim),
         embedding_chunk_size=300,
     )
 
 
 def assert_openrouter_env() -> None:
     """Fail fast if env is not configured."""
-    missing = [k for k in ("OPENAI_API_KEY",) if not os.environ.get(k)]
+    missing = [k for k in ("OPENAI_API_KEY", "OPENAI_API_BASE") if not os.environ.get(k)]
     if missing:
         raise EnvironmentError(
             f"Missing env vars: {missing}. "
-            f"Set OPENAI_API_KEY to your OpenRouter key, "
+            f"Set OPENAI_API_KEY to your OpenRouter key and "
             f"OPENAI_API_BASE to {OPENROUTER_BASE_URL}."
         )
