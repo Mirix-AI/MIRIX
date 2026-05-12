@@ -50,3 +50,6 @@ test-results/
 test_*.db
 *.log
 .persist
+# Eval harness outputs
+third_party/
+evals/metaclaw/reports/
