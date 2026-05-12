@@ -122,19 +122,36 @@ class LegacyMirixClient:
 ```python
 class LegacyMirixEvolver(SkillEvolver):
     def __init__(self, mirix: LegacyMirixClient):
-        # bypass parent __init__ — we only need interface parity
+        # bypass parent __init__ — we only need interface parity.
+        # update_history / history_path kept as no-op state because
+        # inherited get_update_summary() reads update_history.
         self.mirix = mirix
+        self.update_history: list[dict] = []
+        self.history_path = None
 
-    def should_evolve(self, *a, **kw) -> bool:
+    def should_evolve(self, batch, threshold: float = 0.0) -> bool:
+        # Driver-driven: always allow.
         return True
 
-    async def evolve_async(self, rounds: list[RoundResult]) -> dict:
-        for r in rounds:
-            await self.mirix.add_memory(round_to_message(r))
-        return {"sent": len(rounds)}
+    async def evolve(
+        self,
+        failed_samples: Iterable[RoundResult],
+        current_skills: dict | None = None,   # signature parity
+    ) -> list[dict]:
+        """Iterate rounds, POST each to /memory/add_sync. Per-round errors
+        are logged and skipped (one bad POST must not nuke a 12-round day —
+        see §6 'POST /memory/add non-2xx'). Returns [] because legacy
+        /memory/add_sync does not surface the created procedural_memory
+        rows in its response, and querying for the diff would be racy."""
+        for r in failed_samples:
+            try:
+                await self.mirix.add_memory(round_to_message(r))
+            except Exception as e:
+                logger.warning("legacy evolve POST failed for round %s: %s", r.round_id, e)
+        return []
 ```
 
-Mirrors `MirixSkillEvolver`. Reuses `round_to_message(r)` verbatim — same serialisation, only the endpoint differs.
+Mirrors `MirixSkillEvolver` exactly — same parent class, same signature `(failed_samples, current_skills=None) -> list[dict]`, same no-op `update_history`/`history_path` fields, same `should_evolve(batch, threshold)` signature. The only meaningful difference is that the result list is always empty (because main's `/memory/add_sync` doesn't return created rows, and we choose not to make a second roundtrip).
 
 ### 4.3 `evals/metaclaw/mirix_legacy_manager.py` (new)
 
