@@ -42,12 +42,12 @@ branch: eval/original-mirix-3day  (from main d6e7c14)
   │ round_runner.py      │  evolve │  • meta_agent                   │
   │ (unchanged)          ├────────▶│    └─ procedural_memory_agent   │
   │                      │ POST    │       (old prompt + old tools)  │
-  │                      │ /v1/    │  • ORM: summary+steps           │
-  │                      │ memory/ │  • postgres                     │
-  │                      │ add     │    mirix_pgvector_legacy_eval   │
+  │                      │ /memory │  • ORM: summary+steps           │
+  │                      │ /add_   │  • postgres                     │
+  │                      │ sync    │    mirix_pgvector_legacy_eval   │
   │                      │         │    (port 5434)                  │
   │                      │ retrieve│                                 │
-  │                      ├────────▶│  GET /v1/memory/search?         │
+  │                      ├────────▶│  GET /memory/search?         │
   │                      │ system  │       memory_type=procedural    │
   │                      │ prompt  │       &query=...                │
   └──────────────────────┘         └────────────────────────────────┘
@@ -59,7 +59,7 @@ branch: eval/original-mirix-3day  (from main d6e7c14)
 
 **Invariants (control variables)**: bench data (`metaclaw-bench/eval/day01..day03`), Qwen3 tool loop, LLM, embedding, scorers, evolve/retrieve grain, cold start, workspace persistence.
 
-**Variables under test (causal)**: procedural memory ORM schema (`summary+steps` ↔ `name/description/instructions/triggers/examples/version`), procedural_memory_agent prompt and tools, REST endpoints (`/v1/memory/*` ↔ `/v1/skills/*`).
+**Variables under test (causal)**: procedural memory ORM schema (`summary+steps` ↔ `name/description/instructions/triggers/examples/version`), procedural_memory_agent prompt and tools, REST endpoints (legacy `/memory/*` unprefixed on main ↔ skill-evolve `/v1/skills/*` literal).
 
 ## 4. Components & Contracts
 
@@ -74,12 +74,12 @@ class LegacyMirixClient:
                  client_id=DEFAULT_CLIENT_ID, timeout=600.0, _client=None): ...
 
     async def _resolve_meta_agent_id(self) -> str:
-        """One-time bootstrap: GET /v1/agents → find the agent whose name is
+        """One-time bootstrap: GET /agents → find the agent whose name is
         DEFAULT_META_AGENT_NAME. Cached on the instance after first call.
-        Raises if no meta agent exists (caller can call /v1/agents/meta/initialize)."""
+        Raises if no meta agent exists (caller can call /agents/meta/initialize)."""
 
     async def add_memory(self, message_text: str) -> dict:
-        """POST /v1/memory/add_sync. Synchronous: blocks until the meta_agent
+        """POST /memory/add_sync. Synchronous: blocks until the meta_agent
         finishes processing (which is exactly the behaviour we want — by the
         time evolve returns, procedural_memory writes are durable).
 
@@ -93,7 +93,7 @@ class LegacyMirixClient:
         """
 
     async def search_procedural(self, query: str, limit: int = 6) -> list[dict]:
-        """GET /v1/memory/search with query params:
+        """GET /memory/search with query params:
             memory_type=procedural
             search_method=bm25            # explicit — server default is 'embedding'
             search_field=summary          # primary descriptive field on old schema
@@ -113,9 +113,9 @@ class LegacyMirixClient:
 
 **Auth**: `X-Client-Id` header on every request, defaulting to the seeded admin client.
 
-**Why `add_sync` not `add`**: `/v1/memory/add` is Kafka-backed (`put_messages`) and returns `{status: "queued"}` immediately. The next round's retrieve might miss writes from the previous round → silent confounder. `/v1/memory/add_sync` calls `server.send_messages(...)` inline and blocks until the agent finishes (`rest_api.py` lines 2131-2236 on main). Default path is `add_sync`; `add` is not used.
+**Why `add_sync` not `add`**: `/memory/add` is Kafka-backed (`put_messages`) and returns `{status: "queued"}` immediately. The next round's retrieve might miss writes from the previous round → silent confounder. `/memory/add_sync` calls `server.send_messages(...)` inline and blocks until the agent finishes (`rest_api.py` lines 2131-2236 on main). Default path is `add_sync`; `add` is not used.
 
-**meta_agent_id bootstrap**: on first `add_memory`/`search_procedural` call (or via an explicit `await client.ensure_ready()` from the driver), the client fetches `GET /v1/agents` and picks the agent whose name is `meta_memory_agent`. The resulting id is cached. If the row is missing, the driver must call `POST /v1/agents/meta/initialize` once at server-bootstrap time (handled in §8 step 2).
+**meta_agent_id bootstrap**: on first `add_memory`/`search_procedural` call (or via an explicit `await client.ensure_ready()` from the driver), the client fetches `GET /agents` and picks the agent whose name is `meta_memory_agent`. The resulting id is cached. If the row is missing, the driver must call `POST /agents/meta/initialize` once at server-bootstrap time (handled in §8 step 2).
 
 ### 4.2 `evals/metaclaw/mirix_legacy_evolver.py` (new)
 
@@ -188,7 +188,7 @@ When `--legacy`, default `--mirix-url` to `http://127.0.0.1:8532` if user didn't
 Round N starts
   │
   ├─ skill_mgr.retrieve_async(query=question, top_k=6)
-  │     GET /v1/memory/search?memory_type=procedural&query=<question>&limit=6
+  │     GET /memory/search?memory_type=procedural&query=<question>&limit=6
   │       → procedural_memory_manager.list_procedures (BM25 on summary+steps)
   │       → rows
   │     legacy_procedural_to_metaclaw(rows) → [{name, description, content, category}]
@@ -202,7 +202,7 @@ Round N starts
   │
   └─ evolver.evolve_async([RoundResult])
         for r in rounds:
-            POST /v1/memory/add  body={"message": round_to_message(r), "user_id": ...}
+            POST /memory/add  body={"message": round_to_message(r), "user_id": ...}
               → meta_agent → procedural_memory_agent
               → decides whether to call procedural_memory_insert/update
               → row appended to procedural_memory table
@@ -215,8 +215,8 @@ Day N ends → same workspace dir reused for Day N+1
 
 | Failure | Handling |
 |---------|----------|
-| `POST /v1/memory/add` non-2xx | Log full response body + status; record `evolve_error` on the RoundResult; continue to next round. Do not raise (evolve failure must not kill a 12-round run). |
-| `GET /v1/memory/search` non-2xx | Treat as empty retrieval; record `retrieve_error`; continue. |
+| `POST /memory/add` non-2xx | Log full response body + status; record `evolve_error` on the RoundResult; continue to next round. Do not raise (evolve failure must not kill a 12-round run). |
+| `GET /memory/search` non-2xx | Treat as empty retrieval; record `retrieve_error`; continue. |
 | `httpx.HTTPError` (network / timeout) | Same as non-2xx — log and degrade to empty skills. |
 | `procedural_memory_agent` writes 0 rows after first day | Tripwire (see §7 R1). |
 | Server not reachable on port 8532 at startup | Driver fails fast with a clear message ("`Is the legacy server running? Try \`python scripts/start_server.py --port 8532\``"). |
@@ -227,21 +227,21 @@ Day N ends → same workspace dir reused for Day N+1
 | ID | Risk | Detection | Mitigation |
 |----|------|-----------|------------|
 | R1 | procedural_memory_agent's old prompt is conservative and never calls `procedural_memory_insert/update` for our evolve messages → retrieve always returns empty → arm collapses to no-skills baseline. | After day01, `SELECT count(*) FROM procedural_memory WHERE user_id='eval-legacy-3day'`. If 0, R1 fired. | Apply D10: add the reflection prefix to evolve messages and re-run. Document the toggle in the result write-up. |
-| R2 | `/v1/memory/add` is queue-backed (Kafka) so the write is async; the next round's retrieve may not see it yet. | (Pre-emptively avoided.) | **Default path** is `/v1/memory/add_sync` (line 2131 on main), which calls `send_messages` inline. `/v1/memory/add` is never used by this harness. |
+| R2 | `/memory/add` is queue-backed (Kafka) so the write is async; the next round's retrieve may not see it yet. | (Pre-emptively avoided.) | **Default path** is `/memory/add_sync` (line 2131 on main), which calls `send_messages` inline. `/memory/add` is never used by this harness. |
 | R3 | DB migration drift if the legacy postgres is somehow reused. | Hard-isolate: dedicated container, dedicated volume, port 5434. Server is started against `MIRIX_PG_URI` pointing at port 5434. | Don't share databases. Bring up via separate docker-compose file or `docker run`. |
 | R4 | Port 8531 already taken by the feat/skill-evolve server on a dev machine. | Driver health-check before run. | Legacy server uses 8532; driver defaults mirror that when `--legacy`. |
 | R5 | The structured markdown of `round_to_message` is not interpreted as a "task to reflect on" by the old meta_agent → routing falls to the chat path. | Same tripwire as R1. | Same mitigation as R1 (D10 prefix). |
-| R6 | Main may not seed the default admin client row. | `GET /v1/clients` after server start. | Server-start subroutine calls `POST /v1/clients/create_or_get` against `client-00000000-0000-4000-8000-000000000000`. |
+| R6 | Main may not seed the default admin client row. | `GET /clients` after server start. | Server-start subroutine calls `POST /clients/create_or_get` against `client-00000000-0000-4000-8000-000000000000`. |
 | R7 | Old procedural_memory schema requires `entry_type` (NOT NULL?). If the agent fails to set it, writes raise. | Watch server logs during dry-run. | Read main's ORM and schema — if `entry_type` is required, fallback prompt nudges the agent to set it. |
 | R8 | Embedding column shape mismatch — main may not write embeddings for procedural_memory. | Inspect rows after first write. | Acceptable. BM25 search path uses text columns, not embeddings, so retrieval still works. |
-| R9 | `meta_memory_agent` row does not exist after fresh server boot, so `_resolve_meta_agent_id` raises. | Driver pre-flight: `GET /v1/agents`. | Driver calls `POST /v1/agents/meta/initialize` once before the first day. This is the same bootstrap step the dashboard performs on first launch. |
+| R9 | `meta_memory_agent` row does not exist after fresh server boot, so `_resolve_meta_agent_id` raises. | Driver pre-flight: `GET /agents`. | Driver calls `POST /agents/meta/initialize` once before the first day. This is the same bootstrap step the dashboard performs on first launch. |
 
 ## 8. Testing & Verification
 
 **Pre-run smoke (sequential gates)**
 
 1. `pytest -q evals/metaclaw/tests/` — all existing tests pass.
-2. Spin up legacy postgres on 5434 + legacy server on 8532. `GET /health` returns 200. **Bootstrap**: `POST /v1/clients/create_or_get` (default admin client) → `POST /v1/agents/meta/initialize` (meta_memory_agent + 6 children) → `GET /v1/agents` to verify `meta_memory_agent` exists.
+2. Spin up legacy postgres on 5434 + legacy server on 8532. `GET /health` returns 200. **Bootstrap**: `POST /clients/create_or_get` (default admin client) → `POST /agents/meta/initialize` (meta_memory_agent + 6 children) → `GET /agents` to verify `meta_memory_agent` exists.
 3. **Dry-run round** with `--legacy --dry-run` — driver path through new client / evolver / manager runs without exception.
 4. **Single live round** with `--legacy --max-rounds 1` on day01 — verify exactly one row appears in `procedural_memory` table for the legacy user.
 5. **R1 tripwire**: if step 4 produces 0 rows, switch on the reflection prefix and re-test before committing to the full 3-day run.
