@@ -1,18 +1,18 @@
 """Async wrapper around the *original* MIRIX REST endpoints used by this
 eval harness — the pre-skill-evolve world.
 
-Endpoints used:
-    GET  /v1/agents                        — find meta_memory_agent id
-    POST /v1/memory/add_sync               — synchronously feed a round to
-                                              meta_agent (routes to
-                                              procedural_memory_agent which
-                                              writes summary+steps rows)
-    GET  /v1/memory/search?memory_type=procedural
-                                           — BM25 retrieval over procedural
-                                              memory by summary
-    GET  /health                            — liveness probe
+Endpoints used (main's rest_api.py mounts routes unprefixed):
+    GET  /agents                        — find meta_memory_agent id
+    POST /memory/add_sync               — synchronously feed a round to
+                                            meta_agent (routes to
+                                            procedural_memory_agent which
+                                            writes summary+steps rows)
+    GET  /memory/search?memory_type=procedural
+                                        — BM25 retrieval over procedural
+                                            memory by summary
+    GET  /health                         — liveness probe
 
-We deliberately use /v1/memory/add_sync (not /v1/memory/add) — the latter
+We deliberately use /memory/add_sync (not /memory/add) — the latter
 queues via Kafka and would let writes lag a round behind retrieves,
 silently degrading this arm to the no-skills baseline.
 """
@@ -63,7 +63,7 @@ class LegacyMirixClient:
         if self._meta_agent_id is not None:
             return self._meta_agent_id
         client = await self._get_client()
-        resp = await client.get("/v1/agents")
+        resp = await client.get("/agents")
         resp.raise_for_status()
         agents = resp.json()
         for a in agents:
@@ -72,16 +72,16 @@ class LegacyMirixClient:
                 return self._meta_agent_id
         raise RuntimeError(
             f"No agent named {DEFAULT_META_AGENT_NAME!r} found on the server. "
-            f"Call POST /v1/agents/meta/initialize first."
+            f"Call POST /agents/meta/initialize first."
         )
 
     async def add_memory(self, message_text: str) -> dict[str, Any]:
-        """POST /v1/memory/add_sync. Synchronous — by the time this returns,
+        """POST /memory/add_sync. Synchronous — by the time this returns,
         any procedural-memory writes from the meta_agent are durable."""
         agent_id = await self._resolve_meta_agent_id()
         client = await self._get_client()
         resp = await client.post(
-            "/v1/memory/add_sync",
+            "/memory/add_sync",
             json={
                 "meta_agent_id": agent_id,
                 "messages": [{"role": "user", "content": message_text}],
@@ -93,11 +93,11 @@ class LegacyMirixClient:
         return resp.json()
 
     async def search_procedural(self, query: str, limit: int = 6) -> list[dict[str, Any]]:
-        """GET /v1/memory/search?memory_type=procedural&search_method=bm25
+        """GET /memory/search?memory_type=procedural&search_method=bm25
         &search_field=summary&query=...&limit=...&user_id=..."""
         client = await self._get_client()
         resp = await client.get(
-            "/v1/memory/search",
+            "/memory/search",
             params={
                 "memory_type": "procedural",
                 "search_method": "bm25",

@@ -21,7 +21,7 @@ def _mock_transport(handler):
 
 @pytest.mark.asyncio
 async def test_resolve_meta_agent_id_picks_correct_agent():
-    """GET /v1/agents must be filtered to the meta_memory_agent row."""
+    """GET /agents must be filtered to the meta_memory_agent row."""
     captured = {}
 
     def handler(req: httpx.Request) -> httpx.Response:
@@ -40,7 +40,7 @@ async def test_resolve_meta_agent_id_picks_correct_agent():
         cli = LegacyMirixClient(_client=client)
         agent_id = await cli._resolve_meta_agent_id()
         assert agent_id == "agent-2"
-        assert captured == {"method": "GET", "path": "/v1/agents"}
+        assert captured == {"method": "GET", "path": "/agents"}
 
 
 @pytest.mark.asyncio
@@ -59,7 +59,7 @@ async def test_add_memory_posts_to_add_sync_with_correct_body():
     captured = {}
 
     def handler(req: httpx.Request) -> httpx.Response:
-        if req.url.path == "/v1/agents":
+        if req.url.path == "/agents":
             return httpx.Response(200, json=[{"id": "ma-1", "name": DEFAULT_META_AGENT_NAME}])
         captured["path"] = req.url.path
         captured["body"] = json.loads(req.content)
@@ -69,7 +69,7 @@ async def test_add_memory_posts_to_add_sync_with_correct_body():
         cli = LegacyMirixClient(_client=client, user_id="eval-legacy-3day")
         out = await cli.add_memory("round-1 transcript text")
 
-    assert captured["path"] == "/v1/memory/add_sync"
+    assert captured["path"] == "/memory/add_sync"
     assert captured["body"] == {
         "meta_agent_id": "ma-1",
         "messages": [{"role": "user", "content": "round-1 transcript text"}],
@@ -107,7 +107,7 @@ async def test_search_procedural_sends_correct_query_params():
         cli = LegacyMirixClient(_client=client, user_id="eval-legacy-3day")
         rows = await cli.search_procedural(query="what is today's date format", limit=6)
 
-    assert captured["path"] == "/v1/memory/search"
+    assert captured["path"] == "/memory/search"
     assert captured["params"]["memory_type"] == "procedural"
     assert captured["params"]["search_method"] == "bm25"
     assert captured["params"]["search_field"] == "summary"
