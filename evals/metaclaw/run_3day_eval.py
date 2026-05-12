@@ -80,6 +80,15 @@ def _expected_feedback(round_obj: dict, outcome: str) -> str:
 async def _amain(args: argparse.Namespace) -> int:
     _setup_logging(args.log_level)
 
+    # --legacy and --no-skills are mutually exclusive.
+    if getattr(args, "legacy", False) and args.no_skills:
+        logger.error("--legacy and --no-skills are mutually exclusive")
+        return 2
+    # Resolve --mirix-url default based on arm (only if the user didn't override).
+    if args.mirix_url is None:
+        args.mirix_url = "http://127.0.0.1:8532" if args.legacy else "http://127.0.0.1:8531"
+        logger.info("Resolved --mirix-url to %s (default for arm)", args.mirix_url)
+
     from evals.metaclaw.format_adapter import RoundResult
     from evals.metaclaw.llm_config_helpers import (
         DEFAULT_CHAT_MODEL,
@@ -89,6 +98,9 @@ async def _amain(args: argparse.Namespace) -> int:
     from evals.metaclaw.mirix_client import MirixClient
     from evals.metaclaw.mirix_skill_evolver import MirixSkillEvolver
     from evals.metaclaw.mirix_skill_manager import MirixSkillManager
+    from evals.metaclaw.mirix_legacy_client import LegacyMirixClient
+    from evals.metaclaw.mirix_legacy_evolver import LegacyMirixEvolver
+    from evals.metaclaw.mirix_legacy_manager import LegacyMirixManager
     from evals.metaclaw.round_runner import (
         RunnerConfig,
         run_round,
@@ -115,19 +127,44 @@ async def _amain(args: argparse.Namespace) -> int:
     evolver = None
     skill_mgr = None
     if use_mirix:
-        mirix = MirixClient(
-            base_url=args.mirix_url,
-            user_id=args.user_id,
-            timeout=args.mirix_timeout,
-        )
-        if not await mirix.health():
-            logger.error("MIRIX server not reachable at %s. "
-                         "Start it with: python scripts/start_server.py --port 8531",
-                         args.mirix_url)
-            await mirix.aclose()
-            return 2
-        evolver = MirixSkillEvolver(mirix_client=mirix)
-        skill_mgr = MirixSkillManager(mirix_client=mirix)
+        if args.legacy:
+            mirix = LegacyMirixClient(
+                base_url=args.mirix_url,
+                user_id=args.user_id,
+                timeout=args.mirix_timeout,
+            )
+            if not await mirix.health():
+                logger.error("Legacy MIRIX server not reachable at %s. "
+                             "Start it with: python scripts/start_server.py --port 8532",
+                             args.mirix_url)
+                await mirix.aclose()
+                return 2
+            try:
+                meta_agent_id = await mirix._resolve_meta_agent_id()
+                logger.info("Legacy preflight: meta_memory_agent id = %s", meta_agent_id)
+            except Exception as e:
+                logger.error("Legacy preflight failed: %s. "
+                             "Bootstrap with: curl -X POST %s/agents/meta/initialize "
+                             "-H 'X-Client-Id: client-00000000-0000-4000-8000-000000000000' -d '{}'",
+                             e, args.mirix_url)
+                await mirix.aclose()
+                return 2
+            evolver = LegacyMirixEvolver(mirix=mirix)
+            skill_mgr = LegacyMirixManager(mirix=mirix)
+        else:
+            mirix = MirixClient(
+                base_url=args.mirix_url,
+                user_id=args.user_id,
+                timeout=args.mirix_timeout,
+            )
+            if not await mirix.health():
+                logger.error("MIRIX server not reachable at %s. "
+                             "Start it with: python scripts/start_server.py --port 8531",
+                             args.mirix_url)
+                await mirix.aclose()
+                return 2
+            evolver = MirixSkillEvolver(mirix_client=mirix)
+            skill_mgr = MirixSkillManager(mirix_client=mirix)
 
     # OpenAI client for the agent loop
     openai_client = None
@@ -146,7 +183,13 @@ async def _amain(args: argparse.Namespace) -> int:
             base_url=os.environ.get("OPENAI_API_BASE", OPENROUTER_BASE_URL),
         )
 
-    summary = {"run_id": run_id, "days": [], "started_at": dt.datetime.now().isoformat()}
+    arm = "legacy" if args.legacy else ("no_skills" if args.no_skills else "skills")
+    summary = {
+        "run_id": run_id,
+        "arm": arm,
+        "days": [],
+        "started_at": dt.datetime.now().isoformat(),
+    }
 
     for day in days:
         logger.info("=== %s ===", day)
@@ -251,6 +294,7 @@ async def _amain(args: argparse.Namespace) -> int:
 def _write_summary_md(run_dir: Path, summary: dict) -> None:
     lines = ["# MIRIX × MetaClaw Eval Summary", "",
              f"Run id: `{summary['run_id']}`",
+             f"**arm**: {summary.get('arm', 'skills')}",
              f"Started: {summary['started_at']}",
              f"Finished: {summary['finished_at']}", "",
              "## Per-day pass rate", "",
@@ -284,7 +328,9 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--wallclock-cap", type=float, default=DEFAULT_WALLCLOCK_S)
     p.add_argument("--top-k", type=int, default=DEFAULT_TOP_K)
     p.add_argument("--user-id", type=str, default="eval-metaclaw-3day")
-    p.add_argument("--mirix-url", type=str, default="http://127.0.0.1:8531")
+    p.add_argument("--mirix-url", type=str, default=None,
+                   help="MIRIX server URL. Default: http://127.0.0.1:8531 for skills "
+                        "mode, http://127.0.0.1:8532 for --legacy mode.")
     p.add_argument("--mirix-timeout", type=float, default=600.0)
     p.add_argument("--no-evolve", action="store_true",
                    help="Skip day-end evolve calls (debug).")
@@ -292,6 +338,11 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
                    help="Baseline: real LLM + scoring, but no MIRIX retrieve "
                         "or evolve. Equivalent to running the bench against "
                         "a raw agent with no procedural memory.")
+    p.add_argument("--legacy", action="store_true",
+                   help="Use original (pre-skill-evolve) MIRIX procedural memory "
+                        "endpoints (/memory/add_sync + /memory/search) instead of "
+                        "/v1/skills/*. Default port flips to 8532 when set. "
+                        "Mutually exclusive with --no-skills.")
     p.add_argument("--dry-run", action="store_true",
                    help="Skip all LLM and MIRIX calls; emit stub metrics for plumbing tests.")
     p.add_argument("--log-level", default="INFO")
