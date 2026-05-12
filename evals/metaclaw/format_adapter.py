@@ -49,3 +49,18 @@ def round_to_message(r: RoundResult) -> str:
     if r.error:
         parts += ["", f"**Error:** {r.error}"]
     return "\n".join(parts)
+
+
+def legacy_procedural_to_metaclaw(row: dict) -> dict:
+    """Map a main-branch procedural_memory row to the metaclaw skill-shape.
+
+    Old schema fields: summary, steps, entry_type.
+    Target shape (same as mirix_to_metaclaw): name, description, content, category.
+    """
+    entry_type = row.get("entry_type") or "procedure"
+    return {
+        "name": entry_type,
+        "description": row.get("summary") or "",
+        "content": row.get("steps") or "",
+        "category": entry_type,
+    }
