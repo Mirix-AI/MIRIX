@@ -47,3 +47,30 @@ def test_null_values_treated_as_missing():
         "content": "",
         "category": "procedure",
     }
+
+
+def test_list_steps_joined_with_newlines():
+    """MIRIX procedural_memory.steps is List[str]; round_runner calls
+    `.strip()` on `content`, so the adapter must flatten lists to a string."""
+    row = {
+        "summary": "Convert dates",
+        "steps": ["Identify date string", "Parse to UTC", "Emit ISO 8601"],
+        "entry_type": "guide",
+    }
+    out = legacy_procedural_to_metaclaw(row)
+    assert out["content"] == "Identify date string\nParse to UTC\nEmit ISO 8601"
+    # Result must support `.strip()` (i.e. be a str).
+    assert isinstance(out["content"], str)
+
+
+def test_empty_list_steps_yields_empty_string():
+    out = legacy_procedural_to_metaclaw({"summary": "x", "steps": []})
+    assert out["content"] == ""
+    assert isinstance(out["content"], str)
+
+
+def test_list_steps_skips_none_and_stringifies():
+    row = {"steps": ["a", None, 2, "b"]}
+    out = legacy_procedural_to_metaclaw(row)
+    # None entries are dropped; non-strings are coerced via str().
+    assert out["content"] == "a\n2\nb"

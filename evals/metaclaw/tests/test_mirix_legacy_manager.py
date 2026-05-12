@@ -72,6 +72,34 @@ async def test_retrieve_async_empty_rows_yields_empty_list():
     assert out == []
 
 
+@pytest.mark.asyncio
+async def test_retrieve_async_handles_list_shape_steps_from_real_mirix():
+    """Real MIRIX procedural_memory.steps is List[str]. Verify end-to-end
+    that the manager flattens it into a `.strip()`-safe string, since
+    round_runner.build_system_prompt() calls `.strip()` on `content`.
+    """
+    rows = [
+        {
+            "summary": "Convert dates",
+            "steps": ["Identify date", "Emit ISO 8601"],
+            "entry_type": "guide",
+        }
+    ]
+    mgr = LegacyMirixManager(mirix=FakeMirix(rows))
+    out = await mgr.retrieve_async("dates")
+    assert out == [
+        {
+            "name": "guide",
+            "description": "Convert dates",
+            "content": "Identify date\nEmit ISO 8601",
+            "category": "guide",
+        }
+    ]
+    # Round_runner downstream contract: must be str.
+    assert isinstance(out[0]["content"], str)
+    out[0]["content"].strip()  # would raise AttributeError if list leaked through
+
+
 def test_no_op_state_fields_present():
     """Parent class / dashboard code may read self.skills / self.generation."""
     mgr = LegacyMirixManager(mirix=FakeMirix([]))

@@ -56,11 +56,25 @@ def legacy_procedural_to_metaclaw(row: dict) -> dict:
 
     Old schema fields: summary, steps, entry_type.
     Target shape (same as mirix_to_metaclaw): name, description, content, category.
+
+    Note: in MIRIX's procedural_memory schema/ORM, `steps` is a `list[str]`
+    (see mirix/schemas/procedural_memory.py and mirix/orm/procedural_memory.py).
+    Consumers like round_runner.build_system_prompt() call `.strip()` on
+    `content`, so we must collapse list-shape steps into a newline-joined
+    string here. Some test fixtures and historical rows store steps as a
+    bare string — we accept either shape.
     """
     entry_type = row.get("entry_type") or "procedure"
+    steps = row.get("steps")
+    if isinstance(steps, list):
+        # Stringify each element defensively (steps is typed List[str] but
+        # serialized JSON might round-trip with stray non-strings).
+        content = "\n".join(str(s) for s in steps if s is not None)
+    else:
+        content = steps or ""
     return {
         "name": entry_type,
         "description": row.get("summary") or "",
-        "content": row.get("steps") or "",
+        "content": content,
         "category": entry_type,
     }
