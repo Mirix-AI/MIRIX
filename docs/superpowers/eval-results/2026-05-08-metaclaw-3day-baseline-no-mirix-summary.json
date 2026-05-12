@@ -1,0 +1,274 @@
+{
+  "run_id": "20260508-151956-2b9fe9",
+  "days": [
+    {
+      "day": "day01",
+      "n_rounds": 10,
+      "n_passed": 2,
+      "pass_rate": 0.2,
+      "per_round": [
+        {
+          "id": "r1",
+          "type": "file_check",
+          "outcome": "fail",
+          "reward": 0.0,
+          "error": null
+        },
+        {
+          "id": "r2",
+          "type": "file_check",
+          "outcome": "fail",
+          "reward": 0.0,
+          "error": null
+        },
+        {
+          "id": "r3",
+          "type": "multi_choice",
+          "outcome": "pass",
+          "reward": 1.0,
+          "error": null
+        },
+        {
+          "id": "r4",
+          "type": "file_check",
+          "outcome": "fail",
+          "reward": 0.0,
+          "error": null
+        },
+        {
+          "id": "r5",
+          "type": "file_check",
+          "outcome": "fail",
+          "reward": 0.0,
+          "error": null
+        },
+        {
+          "id": "r6",
+          "type": "multi_choice",
+          "outcome": "pass",
+          "reward": 1.0,
+          "error": null
+        },
+        {
+          "id": "r7",
+          "type": "file_check",
+          "outcome": "fail",
+          "reward": 0.0,
+          "error": null
+        },
+        {
+          "id": "r8",
+          "type": "multi_choice",
+          "outcome": "fail",
+          "reward": 0.0,
+          "error": null
+        },
+        {
+          "id": "r9",
+          "type": "file_check",
+          "outcome": "fail",
+          "reward": 0.0,
+          "error": null
+        },
+        {
+          "id": "r10",
+          "type": "multi_choice",
+          "outcome": "fail",
+          "reward": 0.0,
+          "error": null
+        }
+      ],
+      "evolve_status": "skipped",
+      "evolve_diff": {
+        "produced_skills": []
+      }
+    },
+    {
+      "day": "day02",
+      "n_rounds": 11,
+      "n_passed": 3,
+      "pass_rate": 0.2727272727272727,
+      "per_round": [
+        {
+          "id": "r1",
+          "type": "file_check",
+          "outcome": "fail",
+          "reward": 0.0,
+          "error": null
+        },
+        {
+          "id": "r2",
+          "type": "file_check",
+          "outcome": "fail",
+          "reward": 0.0,
+          "error": null
+        },
+        {
+          "id": "r3",
+          "type": "file_check",
+          "outcome": "fail",
+          "reward": 0.0,
+          "error": null
+        },
+        {
+          "id": "r4",
+          "type": "multi_choice",
+          "outcome": "pass",
+          "reward": 1.0,
+          "error": null
+        },
+        {
+          "id": "r5",
+          "type": "file_check",
+          "outcome": "fail",
+          "reward": 0.0,
+          "error": null
+        },
+        {
+          "id": "r6",
+          "type": "file_check",
+          "outcome": "fail",
+          "reward": 0.0,
+          "error": null
+        },
+        {
+          "id": "r7",
+          "type": "multi_choice",
+          "outcome": "pass",
+          "reward": 1.0,
+          "error": null
+        },
+        {
+          "id": "r8",
+          "type": "file_check",
+          "outcome": "fail",
+          "reward": 0.0,
+          "error": null
+        },
+        {
+          "id": "r9",
+          "type": "multi_choice",
+          "outcome": "pass",
+          "reward": 1.0,
+          "error": null
+        },
+        {
+          "id": "r10",
+          "type": "file_check",
+          "outcome": "fail",
+          "reward": 0.0,
+          "error": null
+        },
+        {
+          "id": "r11",
+          "type": "multi_choice",
+          "outcome": "fail",
+          "reward": 0.0,
+          "error": null
+        }
+      ],
+      "evolve_status": "skipped",
+      "evolve_diff": {
+        "produced_skills": []
+      }
+    },
+    {
+      "day": "day03",
+      "n_rounds": 12,
+      "n_passed": 6,
+      "pass_rate": 0.5,
+      "per_round": [
+        {
+          "id": "r1",
+          "type": "file_check",
+          "outcome": "pass",
+          "reward": 1.0,
+          "error": null
+        },
+        {
+          "id": "r2",
+          "type": "file_check",
+          "outcome": "fail",
+          "reward": 0.0,
+          "error": null
+        },
+        {
+          "id": "r3",
+          "type": "multi_choice",
+          "outcome": "fail",
+          "reward": 0.0,
+          "error": null
+        },
+        {
+          "id": "r4",
+          "type": "file_check",
+          "outcome": "pass",
+          "reward": 1.0,
+          "error": null
+        },
+        {
+          "id": "r5",
+          "type": "file_check",
+          "outcome": "fail",
+          "reward": 0.0,
+          "error": null
+        },
+        {
+          "id": "r6",
+          "type": "multi_choice",
+          "outcome": "pass",
+          "reward": 1.0,
+          "error": null
+        },
+        {
+          "id": "r7",
+          "type": "file_check",
+          "outcome": "fail",
+          "reward": 0.0,
+          "error": null
+        },
+        {
+          "id": "r8",
+          "type": "file_check",
+          "outcome": "pass",
+          "reward": 1.0,
+          "error": null
+        },
+        {
+          "id": "r9",
+          "type": "multi_choice",
+          "outcome": "pass",
+          "reward": 1.0,
+          "error": null
+        },
+        {
+          "id": "r10",
+          "type": "file_check",
+          "outcome": "fail",
+          "reward": 0.0,
+          "error": null
+        },
+        {
+          "id": "r11",
+          "type": "multi_choice",
+          "outcome": "pass",
+          "reward": 1.0,
+          "error": null
+        },
+        {
+          "id": "r12",
+          "type": "file_check",
+          "outcome": "fail",
+          "reward": 0.0,
+          "error": null
+        }
+      ],
+      "evolve_status": "skipped",
+      "evolve_diff": {
+        "produced_skills": []
+      }
+    }
+  ],
+  "started_at": "2026-05-08T15:19:57.143969",
+  "finished_at": "2026-05-08T15:40:20.283367"
+}
