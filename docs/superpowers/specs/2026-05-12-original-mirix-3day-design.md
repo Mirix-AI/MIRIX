@@ -160,12 +160,23 @@ DEFAULT_TOP_K = 6
 
 class LegacyMirixManager(SkillManager):
     def __init__(self, mirix: LegacyMirixClient):
+        # Bypass parent __init__ (which requires a skills_dir to scan).
+        # No-op state mirrors MirixSkillManager — parent class and dashboard
+        # code may read self.skills / self.generation.
         self.mirix = mirix
+        self.skills: dict[str, Any] = {
+            "general_skills": [], "task_specific_skills": {}, "common_mistakes": []
+        }
+        self.generation: int = 0
 
-    async def retrieve_async(self, query: str, top_k: int = DEFAULT_TOP_K) -> list[dict]:
+    async def retrieve_async(
+        self, query: str, top_k: int = DEFAULT_TOP_K
+    ) -> list[dict[str, Any]]:
         rows = await self.mirix.search_procedural(query=query, limit=top_k)
         return [legacy_procedural_to_metaclaw(r) for r in rows]
 ```
+
+Mirrors `MirixSkillManager.retrieve_async` exactly. The driver awaits this directly (`run_3day_eval.py:184`); no sync `retrieve` is added because the driver doesn't use it.
 
 ### 4.4 `evals/metaclaw/format_adapter.py` (extend)
 
