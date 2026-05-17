@@ -72,6 +72,40 @@ services:
       start_period: 5s
 
   # ==========================================================================
+  # Neo4j (graph memory backend, only used when MIRIX_ENABLE_GRAPH_MEMORY=true)
+  # ==========================================================================
+  neo4j:
+    image: neo4j:5.20-community
+    container_name: mirix_neo4j
+    restart: unless-stopped
+    # Only starts when explicitly requested via:
+    #   docker compose --profile graph up -d
+    # Without the profile, `docker compose up` skips this service entirely,
+    # so users who don't enable graph memory pay zero overhead.
+    profiles: ["graph"]
+    networks:
+      default:
+        aliases:
+          - mirix-neo4j
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    environment:
+      - NEO4J_AUTH=${MIRIX_NEO4J_USER:-neo4j}/${MIRIX_NEO4J_PASSWORD:-mirix_neo4j_dev}
+      - NEO4J_PLUGINS=["apoc"]
+      - NEO4J_dbms_memory_heap_max__size=2G
+      - NEO4J_dbms_memory_pagecache_size=1G
+    volumes:
+      - ./.persist/neo4j-data:/data
+      - ./.persist/neo4j-logs:/logs
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:7474 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # ==========================================================================
   # Mirix API Backend
   # ==========================================================================
   # FastAPI-based REST API server that exposes all Mirix endpoints.
@@ -99,6 +133,13 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      # neo4j is profile-gated ("graph"). required: false means mirix_api
+      # starts even when the neo4j service isn't included in the compose run.
+      # When graph memory is enabled, bring it up with:
+      #   docker compose --profile graph up -d
+      neo4j:
+        condition: service_healthy
+        required: false
     networks:
       default:
         aliases:
@@ -131,6 +172,15 @@ services:
       - MIRIX_REDIS_ENABLED=true
       - MIRIX_REDIS_HOST=redis
       - MIRIX_REDIS_PORT=6379
+
+      # =======================================================================
+      # Neo4j Configuration (graph memory)
+      # =======================================================================
+      # Used when MIRIX_ENABLE_GRAPH_MEMORY=true.
+      - MIRIX_ENABLE_GRAPH_MEMORY=${MIRIX_ENABLE_GRAPH_MEMORY:-false}
+      - MIRIX_NEO4J_URI=bolt://neo4j:7687
+      - MIRIX_NEO4J_USER=${MIRIX_NEO4J_USER:-neo4j}
+      - MIRIX_NEO4J_PASSWORD=${MIRIX_NEO4J_PASSWORD:-mirix_neo4j_dev}
       # - MIRIX_REDIS_PASSWORD=           # Set if Redis requires auth
       # - MIRIX_REDIS_DB=0                # Redis database number
       # Alternative: Full Redis URI (overrides individual settings)
