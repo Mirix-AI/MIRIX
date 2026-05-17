@@ -959,7 +959,40 @@ class SemanticMemoryManager:
     ) -> PydanticSemanticMemoryItem:
         """
         Create a new semantic memory entry using provided parameters.
+
+        Auto-route: when ``filter_tags`` contains a ``source_meta`` dict
+        (chunk_id / serial / occurred_at) AND ``name`` is shaped like
+        ``"<entity> / <relation>"``, the call is forwarded to
+        ``upsert_with_conflict_resolution`` for deterministic merge with
+        ``prior_values`` history. Otherwise the legacy free-form path is
+        used unchanged.
         """
+        # ---- conflict-resolution auto-route ------------------------------
+        source_meta = (filter_tags or {}).get("source_meta")
+        if source_meta and isinstance(name, str) and " / " in name:
+            entity, _, relation = name.partition(" / ")
+            entity, relation = entity.strip(), relation.strip()
+            if entity and relation:
+                # The ``source_meta`` dict is the per-ingest payload sent by
+                # the client. Carry every field through as the source_ref
+                # so the ordering tuple (occurred_at > serial > created_at)
+                # in the manager can use whichever fields are present.
+                return await self.upsert_with_conflict_resolution(
+                    actor=actor,
+                    agent_state=agent_state,
+                    agent_id=agent_id,
+                    entity=entity,
+                    relation=relation,
+                    value=summary,
+                    source_ref=dict(source_meta),
+                    organization_id=organization_id,
+                    extra_filter_tags={
+                        k: v for k, v in (filter_tags or {}).items() if k != "source_meta"
+                    },
+                    use_cache=use_cache,
+                    client_id=client_id,
+                    user_id=user_id,
+                )
         try:
             # Set defaults for required fields
             from mirix.services.user_manager import UserManager
@@ -1008,26 +1041,245 @@ class SemanticMemoryManager:
 
             # Note: Item is already added to clustering tree in create_item()
 
-            # Graph memory: extract entities/relations from semantic item (async, non-blocking)
+            # Graph memory write path (v4): writes to G_semantic in Neo4j.
+            # Each semantic item becomes a (:Concept) node; LightRAG-style
+            # extraction adds (:SemanticEntity) + [:SEM_RELATES], and an LLM
+            # judgement step builds (:Concept)-[:CONCEPT_RELATES]->(:Concept)
+            # edges to existing top-K similar concepts. Sync hook — failures
+            # logged but do not affect the PG insert that already completed.
             if settings.enable_graph_memory:
                 try:
-                    from mirix.services.graph_memory_manager import GraphMemoryManager
-                    gm = GraphMemoryManager()
-                    await gm.process_for_graph(
-                        text=f"{name}: {summary}\n{details or ''}",
+                    from mirix.services.semantic_graph_manager import SemanticGraphManager
+
+                    await SemanticGraphManager().process_concept(
+                        concept_id=semantic_item.id,
+                        name=name,
                         summary=summary,
-                        details=details,
-                        event_time=datetime.now(timezone.utc),
+                        details=details or "",
                         agent_state=agent_state,
                         organization_id=organization_id,
                         user_id=user_id or "unknown",
                     )
                 except Exception as graph_err:
-                    logger.warning("Graph memory processing failed (non-fatal): %s", graph_err)
+                    logger.warning("Semantic graph write failed (non-fatal): %s", graph_err)
 
             return semantic_item
         except Exception as e:
             raise e
+
+    @staticmethod
+    def _build_cr_filter_tags(
+        entity: str,
+        relation: str,
+        existing: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Merge the conflict-resolution lookup keys into a filter_tags dict.
+
+        ``cr_entity`` and ``cr_relation`` are the index used by
+        ``upsert_with_conflict_resolution`` to find the canonical item for a
+        given (entity, relation) pair within a user_id. Other tags
+        (scope, project_id, ...) are preserved.
+        """
+        out: Dict[str, Any] = dict(existing or {})
+        out["cr_entity"] = entity
+        out["cr_relation"] = relation
+        return out
+
+    @staticmethod
+    def _source_ref_key(source_ref: Optional[Dict[str, Any]]) -> tuple:
+        """Total ordering for source refs.
+
+        Priority: occurred_at > serial > created_at (caller fills created_at
+        when nothing else is available). All missing → very small key, so
+        the caller's new ref wins ties via the explicit ``-1`` fallback.
+        """
+        if not source_ref:
+            return (0, "", -1, "")
+        # occurred_at: ISO 8601 strings compare lexicographically when in UTC.
+        occurred = source_ref.get("occurred_at") or ""
+        serial = source_ref.get("serial")
+        created = source_ref.get("created_at") or ""
+        # Each tier becomes its own sort key; "" sorts before any real value.
+        return (
+            1 if occurred else 0, occurred,
+            1 if serial is not None else 0, serial if serial is not None else -1,
+            1 if created else 0, created,
+        )
+
+    async def _find_by_entity_relation(
+        self,
+        entity: str,
+        relation: str,
+        user_id: str,
+        actor: PydanticClient,
+    ) -> Optional[SemanticMemoryItem]:
+        """Lookup the existing canonical item for (entity, relation) under
+        this user, or None. Uses the ``cr_entity`` / ``cr_relation`` keys
+        the upsert path writes into ``filter_tags``.
+        """
+        async with self.session_maker() as session:
+            # Postgres: filter_tags is JSONB; use ->> operator. SQLite path
+            # falls back to a Python-side filter for the small subset that
+            # already matches user_id.
+            if settings.mirix_pg_uri_no_default:
+                stmt = (
+                    select(SemanticMemoryItem)
+                    .where(SemanticMemoryItem.user_id == user_id)
+                    .where(text("(filter_tags->>'cr_entity') = :ent"))
+                    .where(text("(filter_tags->>'cr_relation') = :rel"))
+                    .params(ent=entity, rel=relation)
+                    .limit(1)
+                )
+                result = await session.execute(stmt)
+                row = result.scalar_one_or_none()
+                return row
+            # SQLite fallback
+            stmt = select(SemanticMemoryItem).where(
+                SemanticMemoryItem.user_id == user_id
+            )
+            result = await session.execute(stmt)
+            for row in result.scalars().all():
+                ft = row.filter_tags or {}
+                if ft.get("cr_entity") == entity and ft.get("cr_relation") == relation:
+                    return row
+            return None
+
+    async def upsert_with_conflict_resolution(
+        self,
+        actor: PydanticClient,
+        agent_state: AgentState,
+        agent_id: str,
+        entity: str,
+        relation: str,
+        value: str,
+        source_ref: Dict[str, Any],
+        organization_id: str,
+        status: str = "asserted",
+        extra_filter_tags: Optional[Dict[str, Any]] = None,
+        use_cache: bool = True,
+        client_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+    ) -> PydanticSemanticMemoryItem:
+        """Deterministic upsert of a (entity, relation, value) fact.
+
+        Lookup the existing canonical item for this (entity, relation) and:
+
+        - If no existing item, insert a new one with ``name = "<entity> /
+          <relation>"``, ``summary = value``, ``source_refs = [source_ref]``,
+          and ``filter_tags`` carrying ``cr_entity``/``cr_relation``.
+        - If the new source_ref has a strictly larger sort key than the
+          existing canonical's most recent ref, replace the canonical:
+          old summary/source_refs move into ``prior_values`` with status
+          ``"superseded"``; new value becomes the current ``summary``.
+        - Otherwise append the new ref to ``prior_values`` as a late-arriving
+          older version (so the audit trail is preserved without changing
+          the current canonical).
+        - ``status="corrected"`` forces a replace and marks the displaced
+          version with ``status="corrected"`` regardless of source_ref order.
+
+        Returns the canonical item after the upsert.
+
+        No LLM is involved in this method — the merge is deterministic on
+        the contents of ``source_ref``.
+        """
+        from mirix.services.user_manager import UserManager
+
+        if client_id is None:
+            client_id = actor.id
+        if user_id is None:
+            user_id = UserManager.ADMIN_USER_ID
+
+        existing = await self._find_by_entity_relation(entity, relation, user_id, actor)
+        merged_tags = self._build_cr_filter_tags(entity, relation, extra_filter_tags)
+
+        if existing is None:
+            # Cold path: behave like a regular insert, but seed source_refs
+            # and stash the cr_entity/cr_relation in filter_tags.
+            name = f"{entity} / {relation}"
+            details = f"Current value: {value}"
+            item = await self.insert_semantic_item(
+                actor=actor,
+                agent_state=agent_state,
+                agent_id=agent_id,
+                name=name,
+                summary=value,
+                details=details,
+                source=str(source_ref) if source_ref else "",
+                organization_id=organization_id,
+                filter_tags=merged_tags,
+                use_cache=use_cache,
+                client_id=client_id,
+                user_id=user_id,
+            )
+            # Patch source_refs onto the row in-place; insert_semantic_item
+            # doesn't take it as a parameter to keep the legacy surface stable.
+            async with self.session_maker() as session:
+                db_row = await SemanticMemoryItem.read(
+                    db_session=session, identifier=item.id, actor=actor
+                )
+                db_row.source_refs = [source_ref] if source_ref else []
+                await session.commit()
+                await session.refresh(db_row)
+                return db_row.to_pydantic()
+
+        # Hot path: an existing canonical exists. Compare source_refs and
+        # decide whether the new ref supersedes it.
+        existing_refs: List[Dict[str, Any]] = list(existing.source_refs or [])
+        # The "most recent" existing ref is the max under our ordering.
+        existing_top = max(existing_refs, key=self._source_ref_key) if existing_refs else None
+        new_wins = (
+            status == "corrected"
+            or existing_top is None
+            or self._source_ref_key(source_ref) > self._source_ref_key(existing_top)
+        )
+
+        async with self.session_maker() as session:
+            db_row = await SemanticMemoryItem.read(
+                db_session=session, identifier=existing.id, actor=actor
+            )
+            now_iso = datetime.now(timezone.utc).isoformat()
+
+            if new_wins:
+                # Move the current value into prior_values, swap in the new.
+                prior_entry = {
+                    "value": db_row.summary,
+                    "source_refs": list(db_row.source_refs or []),
+                    "status": "corrected" if status == "corrected" else "superseded",
+                    "moved_at": now_iso,
+                }
+                db_row.prior_values = list(db_row.prior_values or []) + [prior_entry]
+                db_row.summary = value
+                db_row.details = f"Current value: {value}"
+                db_row.source_refs = [source_ref] if source_ref else []
+                # Keep the cr_entity/cr_relation tags intact while merging
+                # any extra tags from this update.
+                merged_existing = self._build_cr_filter_tags(
+                    entity, relation, {**(db_row.filter_tags or {}), **(extra_filter_tags or {})}
+                )
+                db_row.filter_tags = merged_existing
+                db_row.last_modify = {
+                    "timestamp": now_iso,
+                    "operation": "cr_supersede" if status != "corrected" else "cr_correct",
+                }
+            else:
+                # Late-arriving older fact — record in prior_values, don't
+                # touch the canonical.
+                prior_entry = {
+                    "value": value,
+                    "source_refs": [source_ref] if source_ref else [],
+                    "status": "superseded",
+                    "moved_at": now_iso,
+                    "note": "late-arrived older fact",
+                }
+                db_row.prior_values = list(db_row.prior_values or []) + [prior_entry]
+                db_row.last_modify = {
+                    "timestamp": now_iso,
+                    "operation": "cr_record_late",
+                }
+
+            await session.commit()
+            await session.refresh(db_row)
+            return db_row.to_pydantic()
 
     async def delete_semantic_item_by_id(self, semantic_memory_id: str, actor: PydanticClient) -> None:
         """Delete a semantic memory item by ID (removes from cache)."""

@@ -48,7 +48,10 @@ class MirixMemorySystem:
 
     def __init__(self, user_id: Optional[str] = None, mirix_config_path: Optional[str] = None, client_id: Optional[str] = None, org_id: Optional[str] = None, client: Optional[MirixClient] = None):
         if client is None:
-            self.client = MirixClient(client_id=client_id, org_id=org_id, base_url="http://127.0.0.1:8531", write_scope="read_write")
+            # Long timeout: v4 graph hooks add per-chunk LLM extraction + Neo4j writes
+            # for both episodic and semantic graphs, easily pushing single-chunk processing
+            # past the 60s default. 600s gives headroom; LightRAG retrievals are still fast.
+            self.client = MirixClient(client_id=client_id, org_id=org_id, base_url="http://127.0.0.1:8531", write_scope="read_write", timeout=600)
             config_path = Path(mirix_config_path) if mirix_config_path else Path(__file__).with_name("mirix_openai.yaml")
             with config_path.open("r", encoding="utf-8") as handle:
                 config = yaml.safe_load(handle) or {}
@@ -75,10 +78,14 @@ class MirixMemorySystem:
         return response
 
     def wrap_user_prompt(self, prompt: str):
+        # The retrieve endpoint's topic-extraction step iterates msg["content"]
+        # expecting a list of {type, text} dicts (multimodal format). Passing a
+        # bare string here silently degrades to topics="" → LightRAG retrieve
+        # gets an empty query → empty graph context.
         memories = asyncio.run(self.client.retrieve_with_conversation(
             user_id=self.user_id,
             messages=[
-                {'role': 'user', 'content': prompt}
+                {'role': 'user', 'content': [{'type': 'text', 'text': prompt}]}
             ]
         ))
 

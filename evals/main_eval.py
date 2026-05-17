@@ -141,8 +141,13 @@ def main() -> None:
     parser.add_argument(
         "--output_path",
         type=Path,
-        default=Path("results"),
-        help="Output folder for per-sample JSON results.",
+        default=Path("locomo_run"),
+        help=(
+            "Output sub-folder name. The path is resolved relative to "
+            "<repo>/evals/results/locomo/, so passing 'foo' writes to "
+            "evals/results/locomo/foo. Absolute paths are still honored "
+            "but warned about, since they bypass the locomo namespace."
+        ),
     )
     parser.add_argument(
         "--mirix_config_path",
@@ -159,8 +164,43 @@ def main() -> None:
     mirix_client_id = os.environ.get("MIRIX_CLIENT_ID", "mirix-eval-client")
     mirix_org_id = os.environ.get("MIRIX_ORG_ID", "mirix-eval-org")
 
-    output_path = args.output_path
+    # Force every main_eval run into the LoCoMo namespace so MAB and LoCoMo
+    # outputs cannot bleed into each other. The user can still pass an
+    # absolute path to break out (e.g. for one-off experiments), but a warning
+    # makes the divergence explicit.
+    locomo_root = Path(__file__).resolve().parent / "results" / "locomo"
+    if args.output_path.is_absolute():
+        print(
+            f"[main_eval] WARNING: --output_path is absolute ({args.output_path}); "
+            f"writing outside evals/results/locomo/ namespace.",
+        )
+        output_path = args.output_path
+    else:
+        output_path = locomo_root / args.output_path
     output_path.mkdir(parents=True, exist_ok=True)
+    print(f"[main_eval] writing per-sample results to {output_path}")
+
+    # Server-side token tracker is always-on (see mirix/database/token_tracker.py).
+    # We just need to (a) reset before each sample's ingest, (b) snapshot after
+    # ingest to get "build" tokens, (c) snapshot after QA to get "query" tokens.
+    import httpx
+    server_base = "http://127.0.0.1:8531"
+    def _reset_tokens():
+        try:
+            httpx.post(f"{server_base}/debug/token_stats/reset", timeout=10)
+        except Exception:
+            pass
+    def _snapshot_tokens():
+        try:
+            r = httpx.get(f"{server_base}/debug/token_stats", timeout=10)
+            return r.json().get("stats", {})
+        except Exception:
+            return {}
+    def _sum_tokens(stats):
+        s = {"prompt": 0, "completion": 0, "total": 0, "calls": 0}
+        for v in stats.values():
+            for k in s: s[k] += v.get(k, 0)
+        return s
 
     for item in items:
         sample_id = item.get("sample_id")
@@ -185,6 +225,9 @@ def main() -> None:
         memory_system = MirixMemorySystem(user_id=sample_id,
                     mirix_config_path=str(args.mirix_config_path),
                     client=task_agent.mirix_client)
+
+        # Reset server-side token counter so build_tokens reflects only this sample's ingest
+        _reset_tokens()
 
         conversation = item.get("conversation", {})
         for idx, session in enumerate(iter_sessions(conversation), start=1):
@@ -214,6 +257,11 @@ def main() -> None:
             }
             sample_result["timings"]["add_chunk"][idx_key] = elapsed
             save_sample_result(sample_path, sample_result)
+
+        # Snapshot build tokens (everything since reset, before any QA runs)
+        build_stats = _snapshot_tokens()
+        sample_result["token_stats"] = {"build_raw": build_stats, "build_sum": _sum_tokens(build_stats)}
+        save_sample_result(sample_path, sample_result)
 
         qa_list = item.get("qa", [])
         if args.max_questions is not None:
@@ -299,6 +347,22 @@ def main() -> None:
         memories_path = output_path / f"{sample_id}_memories.json"
         with memories_path.open("w", encoding="utf-8") as handle:
             json.dump(all_memories, handle, ensure_ascii=False, indent=2)
+
+        # Snapshot post-QA total tokens. "query_tokens" is server-side retrieval
+        # cost only (keyword extraction + LightRAG sub-calls). The actual QA
+        # answer LLM call goes through task_agent (client-side OpenAI), tracked
+        # separately in records[*].usage_total.
+        post_qa_stats = _snapshot_tokens()
+        post_qa_sum = _sum_tokens(post_qa_stats)
+        build_sum = sample_result.get("token_stats", {}).get("build_sum", {})
+        query_sum = {
+            k: max(post_qa_sum.get(k, 0) - build_sum.get(k, 0), 0)
+            for k in ("prompt", "completion", "total", "calls")
+        }
+        sample_result.setdefault("token_stats", {})
+        sample_result["token_stats"]["query_raw"] = post_qa_stats
+        sample_result["token_stats"]["query_sum"] = query_sum
+        save_sample_result(sample_path, sample_result)
 
 
 if __name__ == "__main__":
