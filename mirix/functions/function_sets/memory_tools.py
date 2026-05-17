@@ -183,6 +183,15 @@ async def episodic_memory_merge(
         Optional[str]: None is always returned as this function does not produce a response.
     """
 
+    # Carry the ingest's source_meta (if any) through to update_event so
+    # the merged episodic event records the current chunk/turn as
+    # additional provenance.
+    _filter_tags = getattr(self, "filter_tags", None) or {}
+    _additional_source_ref = (
+        dict(_filter_tags["source_meta"])
+        if isinstance(_filter_tags.get("source_meta"), dict)
+        else None
+    )
     try:
         episodic_memory = await self.episodic_memory_manager.update_event(
             event_id=event_id,
@@ -191,6 +200,7 @@ async def episodic_memory_merge(
             actor=self.actor,
             agent_state=self.agent_state,
             update_mode="replace",
+            additional_source_ref=_additional_source_ref,
         )
     except Exception as e:
         print(
