@@ -132,6 +132,8 @@ UNIVERSAL_MEMORY_TOOLS = [
     "finish_memory_update",
     "list_memory_within_timerange",
 ]
+AUTO_DREAM_V2_READ_TOOLS = ["search_in_memory", "list_memory_within_timerange", "get_source_messages", "check_memory"]
+AUTO_DREAM_V2_WRITE_TOOLS = ["synthesize_memory", "retire_memory_region", "finish_memory_update"]
 ALL_TOOLS = list(
     set(
         BASE_TOOLS
@@ -146,6 +148,8 @@ ALL_TOOLS = list(
         + CHAT_AGENT_TOOLS
         + EXTRAS_TOOLS
         + MCP_TOOLS
+        + AUTO_DREAM_V2_READ_TOOLS
+        + AUTO_DREAM_V2_WRITE_TOOLS
     )
 )
 

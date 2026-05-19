@@ -1849,6 +1849,73 @@ class MirixClient(AbstractClient):
 
         return await self._request("GET", "/memory/components", params=params, headers=headers)
 
+    async def auto_dream(
+        self,
+        user_id: str,
+        memory_types: Optional[List[str]] = None,
+        headers: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Run the auto-dream self-reflection pipeline for a user.
+
+        Consolidates memories by removing redundancies and resolving conflicts
+        across the specified memory types.
+
+        Args:
+            user_id: End-user whose memories to consolidate
+            memory_types: Which memory types to process (default: all except core)
+
+        Returns:
+            AutoDreamResponse dict with stats on removed/merged/resolved items
+        """
+        await self._ensure_user_exists(user_id, headers=headers)
+
+        body: Dict[str, Any] = {}
+        if memory_types is not None:
+            body["memory_types"] = memory_types
+
+        return await self._request(
+            "POST",
+            "/memory/auto_dream",
+            params={"user_id": user_id},
+            json=body,
+            headers=headers,
+        )
+
+    async def auto_dream_v2(
+        self,
+        user_id: str,
+        memory_types: Optional[List[str]] = None,
+        headers: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Run the Auto-Dreamer v2 offline memory consolidation pipeline for a user.
+
+        Implements region rewriting inspired by the Auto-Dreamer paper: the agent
+        surveys the working region, synthesizes generalized replacements, and retires
+        the source entries.
+
+        Args:
+            user_id: End-user whose memories to consolidate
+            memory_types: Which memory types to include (default: episodic, semantic, procedural)
+
+        Returns:
+            AutoDreamV2Response dict with working-region stats
+        """
+        await self._ensure_user_exists(user_id, headers=headers)
+
+        body: Dict[str, Any] = {}
+        if memory_types is not None:
+            body["memory_types"] = memory_types
+
+        return await self._request(
+            "POST",
+            "/memory/auto_dream_v2",
+            params={"user_id": user_id},
+            json=body,
+            headers=headers,
+        )
+
     # ========================================================================
     # LangChain/Composio/CrewAI Integration (Not Supported)
     # ========================================================================

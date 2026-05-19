@@ -25,6 +25,8 @@ import mirix.server.utils as server_utils
 import mirix.system as system
 from mirix.agent import (
     Agent,
+    AutoDreamAgent,
+    AutoDreamV2Agent,
     BackgroundAgent,
     CoreMemoryAgent,
     EpisodicMemoryAgent,
@@ -685,6 +687,10 @@ class AsyncServer(Server):
                 agent = ReflexionAgent(agent_state=agent_state, **common_kwargs)
             elif agent_state.agent_type == AgentType.background_agent:
                 agent = BackgroundAgent(agent_state=agent_state, **common_kwargs)
+            elif agent_state.agent_type == AgentType.auto_dream_agent:
+                agent = AutoDreamAgent(agent_state=agent_state, **common_kwargs)
+            elif agent_state.agent_type == AgentType.auto_dream_v2_agent:
+                agent = AutoDreamV2Agent(agent_state=agent_state, **common_kwargs)
             else:
                 raise ValueError(f"Invalid agent type {agent_state.agent_type}")
 
