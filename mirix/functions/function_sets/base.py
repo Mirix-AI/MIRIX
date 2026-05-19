@@ -1,7 +1,24 @@
-from typing import Optional
+import asyncio
+import logging
+from typing import List, Optional
 
 from mirix.agent import Agent, AgentState
 from mirix.utils import convert_timezone_to_utc
+
+logger = logging.getLogger(__name__)
+
+
+def _fire_access_log(results: List[dict], memory_type: str, user_id: str, org_id: Optional[str]) -> None:
+    """Fire-and-forget access log write so retrieval tracking doesn't block search."""
+    entries = [(r["id"], memory_type) for r in results if "id" in r]
+    if not entries:
+        return
+    from mirix.services.memory_access_log_manager import MemoryAccessLogManager
+    mgr = MemoryAccessLogManager()
+    try:
+        asyncio.create_task(mgr.log_access(entries, user_id, org_id))
+    except RuntimeError:
+        pass
 
 
 async def send_message(self: "Agent", agent_state: "AgentState", message: str) -> Optional[str]:
@@ -159,6 +176,7 @@ async def search_in_memory(
             for x in episodic_memory
         ]
         if memory_type == "episodic":
+            _fire_access_log(formatted_results_from_episodic, "episodic", self.user.id, getattr(self.actor, "organization_id", None))
             return formatted_results_from_episodic, len(formatted_results_from_episodic)
 
     if memory_type == "resource" or memory_type == "all":
@@ -185,6 +203,7 @@ async def search_in_memory(
             for x in resource_memories
         ]
         if memory_type == "resource":
+            _fire_access_log(formatted_results_resource, "resource", self.user.id, getattr(self.actor, "organization_id", None))
             return formatted_results_resource, len(formatted_results_resource)
 
     if memory_type == "procedural" or memory_type == "all":
@@ -209,6 +228,7 @@ async def search_in_memory(
             for x in procedural_memories
         ]
         if memory_type == "procedural":
+            _fire_access_log(formatted_results_procedural, "procedural", self.user.id, getattr(self.actor, "organization_id", None))
             return formatted_results_procedural, len(formatted_results_procedural)
 
     if memory_type == "knowledge_vault" or memory_type == "all":
@@ -235,6 +255,7 @@ async def search_in_memory(
             for x in knowledge_vault_memories
         ]
         if memory_type == "knowledge_vault":
+            _fire_access_log(formatted_results_knowledge_vault, "knowledge_vault", self.user.id, getattr(self.actor, "organization_id", None))
             return formatted_results_knowledge_vault, len(formatted_results_knowledge_vault)
 
     if memory_type == "semantic" or memory_type == "all":
@@ -261,12 +282,19 @@ async def search_in_memory(
             for x in semantic_memories
         ]
         if memory_type == "semantic":
+            _fire_access_log(formatted_results_semantic, "semantic", self.user.id, getattr(self.actor, "organization_id", None))
             return formatted_results_semantic, len(formatted_results_semantic)
 
     else:
         raise ValueError(
             f"Memory type '{memory_type}' is not supported. Please choose from 'episodic', 'resource', 'procedural', 'knowledge_vault', 'semantic'."
         )
+    org_id = getattr(self.actor, "organization_id", None)
+    _fire_access_log(formatted_results_from_episodic, "episodic", self.user.id, org_id)
+    _fire_access_log(formatted_results_resource, "resource", self.user.id, org_id)
+    _fire_access_log(formatted_results_procedural, "procedural", self.user.id, org_id)
+    _fire_access_log(formatted_results_knowledge_vault, "knowledge_vault", self.user.id, org_id)
+    _fire_access_log(formatted_results_semantic, "semantic", self.user.id, org_id)
     return (
         formatted_results_from_episodic
         + formatted_results_resource

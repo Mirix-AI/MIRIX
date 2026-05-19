@@ -41,6 +41,8 @@ class MemoryAgentStates:
         self.resource_memory_agent_state: Optional[AgentState] = None
         self.reflexion_agent_state: Optional[AgentState] = None
         self.background_agent_state: Optional[AgentState] = None
+        self.auto_dream_agent_state: Optional[AgentState] = None
+        self.auto_dream_v2_agent_state: Optional[AgentState] = None
 
     def set_agent_state(self, name: str, state: AgentState):
         """Set an agent state by name."""
@@ -68,6 +70,8 @@ class MemoryAgentStates:
             "resource_memory_agent_state": self.resource_memory_agent_state,
             "reflexion_agent_state": self.reflexion_agent_state,
             "background_agent_state": self.background_agent_state,
+            "auto_dream_agent_state": self.auto_dream_agent_state,
+            "auto_dream_v2_agent_state": self.auto_dream_v2_agent_state,
         }
 
     def get_all_agent_states_list(self) -> List[Optional[AgentState]]:
@@ -82,6 +86,8 @@ class MemoryAgentStates:
             self.resource_memory_agent_state,
             self.reflexion_agent_state,
             self.background_agent_state,
+            self.auto_dream_agent_state,
+            self.auto_dream_v2_agent_state,
         ]
 
 
@@ -139,6 +145,18 @@ MEMORY_AGENT_CONFIGS = [
         "name": "background_agent",
         "agent_type": AgentType.background_agent,
         "attr_name": "background_agent_state",
+        "include_base_tools": False,
+    },
+    {
+        "name": "auto_dream_agent",
+        "agent_type": AgentType.auto_dream_agent,
+        "attr_name": "auto_dream_agent_state",
+        "include_base_tools": False,
+    },
+    {
+        "name": "auto_dream_v2_agent",
+        "agent_type": AgentType.auto_dream_v2_agent,
+        "attr_name": "auto_dream_v2_agent_state",
         "include_base_tools": False,
     },
 ]
@@ -293,6 +311,10 @@ class MetaAgent(BaseAgent):
                 self.memory_agent_states.reflexion_agent_state = agent_state
             elif agent_state.name == "background_agent":
                 self.memory_agent_states.background_agent_state = agent_state
+            elif agent_state.name == "auto_dream_agent":
+                self.memory_agent_states.auto_dream_agent_state = agent_state
+            elif agent_state.name == "auto_dream_v2_agent":
+                self.memory_agent_states.auto_dream_v2_agent_state = agent_state
 
         printv(f"[Mirix.Agent.{self.agent_state.name}] INFO: Loaded existing memory agent states")
 

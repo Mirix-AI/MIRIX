@@ -970,11 +970,24 @@ class Agent(BaseAgent):
                     assert tool_call.id is not None  # should be defined
 
             if (
+                self.agent_state.agent_type is not None
+                and response_message.tool_calls is not None
+                and len(response_message.tool_calls) > 1
+            ):
+                # Memory agents must execute at most one tool call per turn to avoid
+                # duplicate state mutations (e.g. double-inserting the same memory entry).
+                self.logger.warning(
+                    "Memory agent %s returned %d tool calls; truncating to first to prevent duplicate mutations",
+                    self.agent_state.agent_type,
+                    len(response_message.tool_calls),
+                )
+                response_message.tool_calls = response_message.tool_calls[:1]
+            elif (
                 response_message.tool_calls is not None
                 and len(response_message.tool_calls) > 1
             ):
                 self.logger.info(
-                    "Memory agent %s returned %d tool call(s); executing each sequentially",
+                    "Agent %s returned %d tool call(s); executing each sequentially",
                     self.agent_state.agent_type,
                     len(response_message.tool_calls),
                 )
