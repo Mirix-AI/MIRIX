@@ -108,6 +108,14 @@ async def initialize():
     except Exception as e:
         logger.warning("Redis async init failed: %s", e)
 
+    # Initialize Neo4j driver if graph memory is enabled. No-op otherwise.
+    try:
+        from mirix.database.neo4j_client import init_neo4j_client
+
+        await init_neo4j_client()
+    except Exception as e:
+        logger.warning("Neo4j init failed: %s — graph memory will be unavailable", e)
+
     # Initialize AsyncServer (singleton) and create default org/user/client
     server = get_server()
     await server.ensure_defaults()
@@ -153,6 +161,14 @@ async def cleanup():
     queue_manager = get_queue_manager()
     await queue_manager.cleanup()
     logger.info("Queue service stopped")
+
+    # Close Neo4j driver if initialized
+    try:
+        from mirix.database.neo4j_client import close_neo4j_driver
+
+        await close_neo4j_driver()
+    except Exception as e:
+        logger.warning("Error closing Neo4j driver: %s", e)
 
 
 @asynccontextmanager
@@ -679,6 +695,34 @@ async def global_exception_handler(request: Request, exc: Exception):
 async def health_check():
     """Health check endpoint."""
     return {"status": "healthy", "service": "mirix-api"}
+
+
+@router.get("/debug/token_stats")
+async def debug_token_stats():
+    """Return cumulative LLM token usage recorded server-side since last reset.
+
+    Tracker is off by default; only counts data after a POST to
+    /debug/token_stats/reset (which enables it).
+    """
+    from mirix.database.token_tracker import is_enabled, snapshot
+    return {"enabled": is_enabled(), "stats": snapshot()}
+
+
+@router.post("/debug/token_stats/reset")
+async def debug_token_stats_reset():
+    """Wipe counters and enable the tracker. Idempotent."""
+    from mirix.database.token_tracker import enable, reset
+    reset()
+    enable()
+    return {"status": "reset", "enabled": True}
+
+
+@router.post("/debug/token_stats/disable")
+async def debug_token_stats_disable():
+    """Turn the tracker off (recording becomes a no-op again)."""
+    from mirix.database.token_tracker import disable
+    disable()
+    return {"status": "disabled"}
 
 
 # ============================================================================
@@ -1944,6 +1988,10 @@ async def initialize_meta_agent(
             create_params["agents"] = meta_config["agents"]
         if "system_prompts" in meta_config:
             create_params["system_prompts"] = meta_config["system_prompts"]
+        if "enable_conflict_resolution" in meta_config:
+            create_params["enable_conflict_resolution"] = bool(
+                meta_config["enable_conflict_resolution"]
+            )
 
     # Check if meta agent already exists for this client
     # list_agents now automatically filters by client (organization_id + _created_by_id)
@@ -1983,6 +2031,68 @@ async def initialize_meta_agent(
         )
 
     return meta_agent
+
+
+async def _augment_source_meta_with_server_fallbacks(
+    filter_tags: dict,
+    user_id: str,
+    n_turns: int,
+    request_occurred_at: Optional[str],
+    server: AsyncServer,
+) -> None:
+    """Mutate ``filter_tags`` in place so it carries a ``source_meta`` dict
+    with at least ``turn_id``, ``chunk_id``, and ``occurred_at`` set.
+
+    Policy:
+
+    1. Anything the client already put in ``filter_tags["source_meta"]``
+       wins. This lets callers with domain knowledge (e.g. the MAB
+       adapter which knows the serial range of a chunk) carry their
+       fields through unchanged.
+    2. Fields the client did NOT set get filled from the server:
+         - ``turn_id``  : next per-user counter (one per input message)
+         - ``chunk_id`` : next per-user counter (one per /memory/add call)
+         - ``occurred_at`` : the request's ``occurred_at`` if provided,
+                             else server wall-clock ISO 8601.
+    3. ``serial`` is never auto-filled. It is a domain-specific signal
+       (e.g. FactConsolidation's numbered fact list) and only present
+       when the caller explicitly set it.
+
+    This is the single point that makes conflict resolution + source
+    provenance general: every ``/memory/add`` (sync or async) ends up
+    with the same ``source_meta`` contract, regardless of which client
+    sent it.
+    """
+    from datetime import timezone as _dt_tz
+
+    existing = filter_tags.get("source_meta")
+    if not isinstance(existing, dict):
+        existing = {}
+    else:
+        existing = dict(existing)  # don't mutate the caller's dict
+
+    needs_turn = "turn_id" not in existing
+    needs_chunk = "chunk_id" not in existing
+    if needs_turn or needs_chunk:
+        reserved = await server.user_manager.reserve_source_ids(
+            user_id=user_id, n_turns=max(n_turns, 1)
+        )
+        if needs_turn:
+            # For a multi-message batch we record the *first* turn_id of
+            # the batch; the agent is free to walk the message list if it
+            # needs per-message granularity. Single-message ingests are
+            # the common case and this is exact.
+            existing["turn_id"] = reserved["turn_id_start"]
+        if needs_chunk:
+            existing["chunk_id"] = reserved["chunk_id"]
+
+    if "occurred_at" not in existing:
+        if request_occurred_at:
+            existing["occurred_at"] = request_occurred_at
+        else:
+            existing["occurred_at"] = datetime.now(_dt_tz.utc).isoformat()
+
+    filter_tags["source_meta"] = existing
 
 
 class AddMemoryRequest(BaseModel):
@@ -2100,6 +2210,20 @@ async def add_memory(
         raise HTTPException(status_code=403, detail="Client has no write_scope - cannot create memories")
     filter_tags["scope"] = client.write_scope
 
+    # Merge client-provided source_meta with server-side fallbacks (turn_id,
+    # chunk_id, occurred_at). This is what makes conflict resolution +
+    # source provenance general: clients with their own source knowledge
+    # (e.g. the MAB adapter knows the chunk's serial range) keep what they
+    # passed; clients that pass nothing still get turn_id / chunk_id /
+    # occurred_at auto-filled from the server.
+    await _augment_source_meta_with_server_fallbacks(
+        filter_tags=filter_tags,
+        user_id=user_id,
+        n_turns=len(input_messages),
+        request_occurred_at=request.occurred_at,
+        server=server,
+    )
+
     # Queue for async processing instead of synchronous execution
     # Note: actor is Client for org-level access control
     #       user_id represents the actual end-user (or admin user if not provided)
@@ -2192,6 +2316,16 @@ async def add_memory_sync(
     if client.write_scope is None:
         raise HTTPException(status_code=403, detail="Client has no write_scope - cannot create memories")
     filter_tags["scope"] = client.write_scope
+
+    # Same server-side source_meta fallback as the async path; see helper
+    # docstring for details.
+    await _augment_source_meta_with_server_fallbacks(
+        filter_tags=filter_tags,
+        user_id=user_id,
+        n_turns=len(input_messages),
+        request_occurred_at=request.occurred_at,
+        server=server,
+    )
 
     from mirix.services.user_manager import UserManager
 
@@ -2300,6 +2434,28 @@ async def retrieve_memories_by_keywords(
     except:
         timezone_str = "UTC"
     memories = {}
+
+    # LightRAG-style dual-level graph retrieval (P3). Supplements flat memory
+    # retrieval with KG entities/relations + episodic chunks. Returns an empty
+    # context string when no hits — caller is robust to that.
+    if settings.enable_graph_memory:
+        try:
+            from mirix.services.graph_retriever_dispatcher import GraphRetrieverDispatcher
+
+            logger.info(
+                "Graph retrieve: user_id=%s, key_words=%r (len=%d)",
+                user_id, (key_words or "")[:120], len(key_words or ""),
+            )
+            graph_context = await GraphRetrieverDispatcher().retrieve(
+                query=key_words,
+                user_id=user_id,
+                agent_state=agent_state,
+            )
+            logger.info("Graph retrieve result: ctx_len=%d", len(graph_context or ""))
+            if graph_context:
+                memories["graph"] = {"context": graph_context}
+        except Exception as e:
+            logger.error("Graph retrieval failed: %s", e, exc_info=True)
 
     # Get episodic memories (recent + relevant) with optional temporal filtering
     try:

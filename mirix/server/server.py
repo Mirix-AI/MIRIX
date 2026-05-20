@@ -453,9 +453,15 @@ else:
 
 
 async def ensure_tables_created():
-    """Create all tables on the async engine. Call from FastAPI lifespan startup."""
+    """Create all tables on the async engine. Call from FastAPI lifespan startup.
+
+    Order matters: startup migrations (e.g. dropping retired tables) must run
+    *before* ``create_all`` so the new ORM state is what gets materialized.
+    """
     if USE_PGLITE:
         return
+    from mirix.database.startup_migrations import run_startup_migrations
+    await run_startup_migrations(engine)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
