@@ -857,6 +857,11 @@ class EpisodicMemoryManager:
                         EpisodicEvent.last_modify.label("last_modify"),
                         EpisodicEvent.user_id.label("user_id"),
                         EpisodicEvent.agent_id.label("agent_id"),
+                        # source_refs must be selected explicitly: it is NOT
+                        # nullable on the Pydantic schema, so leaving it
+                        # unloaded makes to_pydantic() pass source_refs=None
+                        # and fail validation (empties the whole search).
+                        EpisodicEvent.source_refs.label("source_refs"),
                     )
                     .where(EpisodicEvent.user_id == user.id)
                     .where(EpisodicEvent.organization_id == organization_id)
