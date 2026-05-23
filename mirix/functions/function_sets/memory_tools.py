@@ -1089,8 +1089,7 @@ async def trigger_memory_update(self: "Agent", user_message: object, memory_type
 
             system_msg = TextContent(
                 text=(
-                    "[System Message] According to the instructions, the retrieved memories "
-                    "and the above content, update the corresponding memory."
+                    "[System] Update the memory based on the instructions. Do not miss any important information."
                 )
             )
 

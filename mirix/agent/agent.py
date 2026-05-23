@@ -1265,6 +1265,7 @@ class Agent(BaseAgent):
                                 should_clear_history = True
                                 self.logger.info(f"should_clear_history=True (finish_memory_update called)")
                                 break
+
                 else:
                     self.logger.debug(
                         f"Clearing skipped - CLEAR_HISTORY_AFTER_MEMORY_UPDATE={CLEAR_HISTORY_AFTER_MEMORY_UPDATE}, is_chat_agent={self.agent_state.is_type(AgentType.chat_agent)}"
@@ -1408,35 +1409,35 @@ class Agent(BaseAgent):
                     elif self.agent_state.name.endswith("core_memory_agent"):
                         memory_item_str = self.blocks_in_memory.compile() if self.blocks_in_memory else ""
 
-                    # Optionally create a summary message showing last edited memory item
-                    if memory_item_str:
-                        if self.agent_state.name.endswith("core_memory_agent"):
-                            message_content = "Current Full Core Memory:\n\n" + memory_item_str
-                        else:
-                            message_content = "Last edited memory item:\n\n" + memory_item_str
+                        # Optionally create a summary message showing last edited memory item
+                        if memory_item_str:
+                            if self.agent_state.name.endswith("core_memory_agent"):
+                                message_content = "Current Full Core Memory:\n\n" + memory_item_str
+                            else:
+                                message_content = "Last edited memory item:\n\n" + memory_item_str
 
-                        # create a new message
-                        new_message = Message.dict_to_message(
-                            agent_id=self.agent_state.id,
-                            model=self.model,
-                            openai_message_dict={
-                                "role": "user",
-                                "content": message_content,
-                            },
-                        )
+                            # create a new message
+                            new_message = Message.dict_to_message(
+                                agent_id=self.agent_state.id,
+                                model=self.model,
+                                openai_message_dict={
+                                    "role": "user",
+                                    "content": message_content,
+                                },
+                            )
 
-                        # persist the message to the database
-                        persisted_message = await self.message_manager.create_message(
-                            new_message,
-                            actor=self.actor,  # Client for write operations (audit trail)
-                            client_id=self.client_id,  # From actor (Client)
-                            user_id=(
-                                self.user_id if self.user_id else UserManager.ADMIN_USER_ID
-                            ),  # Fallback to default user
-                        )
+                            # persist the message to the database
+                            persisted_message = await self.message_manager.create_message(
+                                new_message,
+                                actor=self.actor,  # Client for write operations (audit trail)
+                                client_id=self.client_id,  # From actor (Client)
+                                user_id=(
+                                    self.user_id if self.user_id else UserManager.ADMIN_USER_ID
+                                ),  # Fallback to default user
+                            )
 
-                        # append the persisted message ID to the message list
-                        message_ids.append(persisted_message.id)
+                            # append the persisted message ID to the message list
+                            message_ids.append(persisted_message.id)
 
                     # Clear history for all non-chat agents when should_clear_history is True
                     # This applies to meta_memory_agent and all memory sub-agents
@@ -1622,8 +1623,12 @@ class Agent(BaseAgent):
             if self.agent_state.is_type(AgentType.meta_memory_agent) and step_count == 0:
                 meta_message = prepare_input_message_create(
                     MessageCreate(
-                        role="user",
-                        content="[System Message] As the meta memory manager, analyze the provided content and perform your function.",
+                        role=MessageRole.user,
+                        content="[System Message] As the meta memory manager, analyze the provided content and trigger the appropriate memory updates.",
+                        name=None,
+                        otid=None,
+                        sender_id=None,
+                        group_id=None,
                         filter_tags=self.filter_tags,
                     ),
                     self.agent_state.id,

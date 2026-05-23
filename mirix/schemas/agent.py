@@ -108,7 +108,9 @@ class AgentState(OrmMetadataBase, validate_assignment=True):
         """
         for at in agent_types:
             # Direct enum comparison (works for both enum and string values due to str, Enum)
-            if self.agent_type == at or at.value in self.name:
+            if self.agent_type == at:
+                return True
+            elif "meta_memory_agent" not in self.name and at.value in self.name:
                 return True
         return False
 

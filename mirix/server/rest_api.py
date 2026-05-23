@@ -414,13 +414,8 @@ async def extract_topics_and_temporal_info(
             # Convert from OpenAI format to internal format
             new_messages = []
             for msg in messages:
-                new_messages.append(
-                    {
-                        "type": "text",
-                        "text": "[USER]" if msg["role"] == "user" else "[ASSISTANT]",
-                    }
-                )
-                new_messages.extend(msg["content"])
+                prefix = "[USER]" if msg["role"] == "user" else "[ASSISTANT]"
+                new_messages.extend([{"type": "text", "text": prefix + " " + part} for part in msg["content"]])
             messages = new_messages
 
         temporary_messages = convert_message_to_mirix_message(messages)
@@ -2058,21 +2053,16 @@ async def add_memory(
         # We need to convert the message to the format in "content"
         new_message = []
         for msg in message:
-            new_message.append(
-                {
-                    "type": "text",
-                    "text": "[USER]" if msg["role"] == "user" else "[ASSISTANT]",
-                }
-            )
+            prefix = "[USER]" if msg["role"] == "user" else "[ASSISTANT]"
 
             # Handle both string and list content
             content = msg["content"]
             if isinstance(content, str):
                 # Content is a string - convert to proper format
-                new_message.append({"type": "text", "text": content})
+                new_message.append({"type": "text", "text": prefix + " " + content})
             elif isinstance(content, list):
                 # Content is already a list - extend as before
-                new_message.extend(content)
+                new_message.extend([{"type": "text", "text": prefix + " " + part} for part in content])
             else:
                 raise ValueError(f"Invalid content type: {type(content)}")
         message = new_message
@@ -2167,17 +2157,12 @@ async def add_memory_sync(
     if isinstance(message, list) and "role" in message[0].keys():
         new_message = []
         for msg in message:
-            new_message.append(
-                {
-                    "type": "text",
-                    "text": "[USER]" if msg["role"] == "user" else "[ASSISTANT]",
-                }
-            )
+            prefix = "[USER]" if msg["role"] == "user" else "[ASSISTANT]"
             content = msg["content"]
             if isinstance(content, str):
-                new_message.append({"type": "text", "text": content})
+                new_message.append({"type": "text", "text": prefix + " " + content})
             elif isinstance(content, list):
-                new_message.extend(content)
+                new_message.extend([{"type": "text", "text": prefix + " " + part} for part in content])
             else:
                 raise ValueError(f"Invalid content type: {type(content)}")
         message = new_message
