@@ -64,8 +64,16 @@ class MirixMemorySystem:
         self.user_id = user_id if user_id is not None else str(uuid.uuid4())
 
 
-    def add_chunk(self, chunk: str, raw_input: Optional[str] = None, async_add: bool = False):
-        response = asyncio.run(self.client.add(
+    def add_chunk(self, chunk: str, raw_input: Optional[str] = None, async_add: bool = False,
+                  occurred_at: Optional[str] = None):
+        """Ingest one chunk.
+
+        occurred_at: optional ISO 8601 timestamp for when this chunk's events
+        happened. Passing it anchors the episodic agent's occurred_at instead
+        of letting the LLM guess a year (LongMemEval conversations carry their
+        own per-session "Chat Time" — see longmem_eval.py).
+        """
+        add_kwargs = dict(
             user_id=self.user_id,
             messages=[
                 {"role": "user", "content": chunk}
@@ -74,7 +82,10 @@ class MirixMemorySystem:
             chaining=False,
             filter_tags={"scope": "read_write", "kind": "conversation_session"},
             async_add=async_add,
-        ))
+        )
+        if occurred_at is not None:
+            add_kwargs["occurred_at"] = occurred_at
+        response = asyncio.run(self.client.add(**add_kwargs))
         return response
 
     def wrap_user_prompt(self, prompt: str):
