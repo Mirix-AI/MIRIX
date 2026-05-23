@@ -34,7 +34,13 @@ logger = get_logger(__name__)
 
 
 # Total token budget across both graphs (split 50/50 per Q2 decision).
-DEFAULT_MAX_TOTAL_TOKENS = 12000
+# Raised 12k -> 24k: at 12k the formatted graph context measured ~13k tokens
+# on LongMemEval-S, i.e. already over budget — apply_budget_to_search was
+# truncating the tail, which starves counting/enumeration questions whose
+# evidence is spread across many sessions. 24k doubles recall headroom while
+# staying well under the ~32k "graph context should be <= 1/3 of the window"
+# discipline for a 128k-window model.
+DEFAULT_MAX_TOTAL_TOKENS = 24000
 
 
 class GraphRetrieverDispatcher:

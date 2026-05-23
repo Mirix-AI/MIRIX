@@ -2457,27 +2457,79 @@ async def retrieve_memories_by_keywords(
         except Exception as e:
             logger.error("Graph retrieval failed: %s", e, exc_info=True)
 
-    # Get episodic memories (recent + relevant) with optional temporal filtering
-    try:
-        episodic_manager = server.episodic_memory_manager
+    # v5: when graph memory is enabled, episodic + semantic retrieval is served
+    # entirely by the dual-graph retriever above. The flat episodic/semantic
+    # search below is skipped (kept as a fallback for graph-disabled mode).
+    # The other four memory types (resource / procedural / knowledge_vault /
+    # core) have no graph counterpart and are always retrieved flat.
+    if settings.enable_graph_memory:
+        memories["episodic"] = {"total_count": 0, "recent": [], "relevant": []}
+        memories["semantic"] = {"total_count": 0, "items": []}
+    else:
+        # Get episodic memories (recent + relevant) with optional temporal filtering
+        try:
+            episodic_manager = server.episodic_memory_manager
 
-        # Get recent episodic memories with temporal filter
-        recent_episodic = await episodic_manager.list_episodic_memory(
-            agent_state=agent_state,  # Not accessed during BM25 search
-            user=user,
-            limit=limit,
-            timezone_str=timezone_str,
-            filter_tags=filter_tags,
-            scopes=scopes,
-            use_cache=use_cache,
-            start_date=start_date,
-            end_date=end_date,
-        )
+            # Get recent episodic memories with temporal filter
+            recent_episodic = await episodic_manager.list_episodic_memory(
+                agent_state=agent_state,  # Not accessed during BM25 search
+                user=user,
+                limit=limit,
+                timezone_str=timezone_str,
+                filter_tags=filter_tags,
+                scopes=scopes,
+                use_cache=use_cache,
+                start_date=start_date,
+                end_date=end_date,
+            )
 
-        # Get relevant episodic memories based on keywords with temporal filter
-        relevant_episodic = []
-        if key_words:
-            relevant_episodic = await episodic_manager.list_episodic_memory(
+            # Get relevant episodic memories based on keywords with temporal filter
+            relevant_episodic = []
+            if key_words:
+                relevant_episodic = await episodic_manager.list_episodic_memory(
+                    agent_state=agent_state,  # Not accessed during BM25 search
+                    user=user,
+                    query=key_words,
+                    search_field="details",
+                    search_method=search_method,
+                    limit=limit,
+                    timezone_str=timezone_str,
+                    filter_tags=filter_tags,
+                    scopes=scopes,
+                    start_date=start_date,
+                    end_date=end_date,
+                )
+
+            memories["episodic"] = {
+                "total_count": await episodic_manager.get_total_number_of_items(user=user),
+                "recent": [
+                    {
+                        "id": event.id,
+                        "timestamp": (event.occurred_at.isoformat() if event.occurred_at else None),
+                        "summary": event.summary,
+                        "details": event.details,
+                    }
+                    for event in recent_episodic
+                ],
+                "relevant": [
+                    {
+                        "id": event.id,
+                        "timestamp": (event.occurred_at.isoformat() if event.occurred_at else None),
+                        "summary": event.summary,
+                        "details": event.details,
+                    }
+                    for event in relevant_episodic
+                ],
+            }
+        except Exception as e:
+            logger.error("Error retrieving episodic memories: %s", e)
+            memories["episodic"] = {"total_count": 0, "recent": [], "relevant": []}
+
+        # Get semantic memories
+        try:
+            semantic_manager = server.semantic_memory_manager
+
+            semantic_items = await semantic_manager.list_semantic_items(
                 agent_state=agent_state,  # Not accessed during BM25 search
                 user=user,
                 query=key_words,
@@ -2487,67 +2539,24 @@ async def retrieve_memories_by_keywords(
                 timezone_str=timezone_str,
                 filter_tags=filter_tags,
                 scopes=scopes,
-                start_date=start_date,
-                end_date=end_date,
+                use_cache=use_cache,
             )
 
-        memories["episodic"] = {
-            "total_count": await episodic_manager.get_total_number_of_items(user=user),
-            "recent": [
-                {
-                    "id": event.id,
-                    "timestamp": (event.occurred_at.isoformat() if event.occurred_at else None),
-                    "summary": event.summary,
-                    "details": event.details,
-                }
-                for event in recent_episodic
-            ],
-            "relevant": [
-                {
-                    "id": event.id,
-                    "timestamp": (event.occurred_at.isoformat() if event.occurred_at else None),
-                    "summary": event.summary,
-                    "details": event.details,
-                }
-                for event in relevant_episodic
-            ],
-        }
-    except Exception as e:
-        logger.error("Error retrieving episodic memories: %s", e)
-        memories["episodic"] = {"total_count": 0, "recent": [], "relevant": []}
-
-    # Get semantic memories
-    try:
-        semantic_manager = server.semantic_memory_manager
-
-        semantic_items = await semantic_manager.list_semantic_items(
-            agent_state=agent_state,  # Not accessed during BM25 search
-            user=user,
-            query=key_words,
-            search_field="details",
-            search_method=search_method,
-            limit=limit,
-            timezone_str=timezone_str,
-            filter_tags=filter_tags,
-            scopes=scopes,
-            use_cache=use_cache,
-        )
-
-        memories["semantic"] = {
-            "total_count": await semantic_manager.get_total_number_of_items(user=user),
-            "items": [
-                {
-                    "id": item.id,
-                    "name": item.name,
-                    "summary": item.summary,
-                    "details": item.details,
-                }
-                for item in semantic_items
-            ],
-        }
-    except Exception as e:
-        logger.error("Error retrieving semantic memories: %s", e)
-        memories["semantic"] = {"total_count": 0, "items": []}
+            memories["semantic"] = {
+                "total_count": await semantic_manager.get_total_number_of_items(user=user),
+                "items": [
+                    {
+                        "id": item.id,
+                        "name": item.name,
+                        "summary": item.summary,
+                        "details": item.details,
+                    }
+                    for item in semantic_items
+                ],
+            }
+        except Exception as e:
+            logger.error("Error retrieving semantic memories: %s", e)
+            memories["semantic"] = {"total_count": 0, "items": []}
 
     # Get resource memories
     try:
