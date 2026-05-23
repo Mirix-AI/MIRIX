@@ -662,9 +662,13 @@ async def semantic_memory_insert(self: "Agent", items: List[SemanticMemoryItemBa
                     agent_state=self.agent_state,
                     agent_id=agent_id,
                     name=item["name"],
-                    summary=item["summary"],
-                    details=item["details"],
-                    source=item["source"],
+                    summary=item.get("summary", ""),
+                    details=item.get("details", ""),
+                    # The LLM sometimes omits `source` (it is the least
+                    # semantically essential field, and is sometimes folded
+                    # into details). Default to "" so the whole item is not
+                    # dropped over a missing provenance string.
+                    source=item.get("source", ""),
                     organization_id=self.actor.organization_id,
                     actor=self.actor,
                     filter_tags=filter_tags if filter_tags else None,

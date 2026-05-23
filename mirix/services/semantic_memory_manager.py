@@ -803,6 +803,11 @@ class SemanticMemoryManager:
                         SemanticMemoryItem.last_modify.label("last_modify"),
                         SemanticMemoryItem.user_id.label("user_id"),
                         SemanticMemoryItem.agent_id.label("agent_id"),
+                        # source_refs / prior_values are non-nullable on the
+                        # Pydantic schema; selecting them explicitly avoids
+                        # to_pydantic() passing None and failing validation.
+                        SemanticMemoryItem.source_refs.label("source_refs"),
+                        SemanticMemoryItem.prior_values.label("prior_values"),
                     )
                     .where(SemanticMemoryItem.user_id == user.id)
                     .where(SemanticMemoryItem.organization_id == organization_id)
