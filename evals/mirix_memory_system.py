@@ -48,7 +48,10 @@ class MirixMemorySystem:
 
     def __init__(self, user_id: Optional[str] = None, mirix_config_path: Optional[str] = None, client_id: Optional[str] = None, org_id: Optional[str] = None, client: Optional[MirixClient] = None):
         if client is None:
-            self.client = MirixClient(client_id=client_id, org_id=org_id, base_url="http://127.0.0.1:8531", write_scope="read_write")
+            # Long timeout: v4 graph hooks add per-chunk LLM extraction + Neo4j writes
+            # for both episodic and semantic graphs, easily pushing single-chunk processing
+            # past the 60s default. 600s gives headroom; LightRAG retrievals are still fast.
+            self.client = MirixClient(client_id=client_id, org_id=org_id, base_url="http://127.0.0.1:8531", write_scope="read_write", timeout=600)
             config_path = Path(mirix_config_path) if mirix_config_path else Path(__file__).with_name("mirix_openai.yaml")
             with config_path.open("r", encoding="utf-8") as handle:
                 config = yaml.safe_load(handle) or {}
@@ -61,8 +64,16 @@ class MirixMemorySystem:
         self.user_id = user_id if user_id is not None else str(uuid.uuid4())
 
 
-    def add_chunk(self, chunk: str, raw_input: Optional[str] = None, async_add: bool = False):
-        response = asyncio.run(self.client.add(
+    def add_chunk(self, chunk: str, raw_input: Optional[str] = None, async_add: bool = False,
+                  occurred_at: Optional[str] = None):
+        """Ingest one chunk.
+
+        occurred_at: optional ISO 8601 timestamp for when this chunk's events
+        happened. Passing it anchors the episodic agent's occurred_at instead
+        of letting the LLM guess a year (LongMemEval conversations carry their
+        own per-session "Chat Time" — see longmem_eval.py).
+        """
+        add_kwargs = dict(
             user_id=self.user_id,
             messages=[
                 {"role": "user", "content": chunk}
@@ -71,14 +82,21 @@ class MirixMemorySystem:
             chaining=False,
             filter_tags={"scope": "read_write", "kind": "conversation_session"},
             async_add=async_add,
-        ))
+        )
+        if occurred_at is not None:
+            add_kwargs["occurred_at"] = occurred_at
+        response = asyncio.run(self.client.add(**add_kwargs))
         return response
 
     def wrap_user_prompt(self, prompt: str):
+        # The retrieve endpoint's topic-extraction step iterates msg["content"]
+        # expecting a list of {type, text} dicts (multimodal format). Passing a
+        # bare string here silently degrades to topics="" → LightRAG retrieve
+        # gets an empty query → empty graph context.
         memories = asyncio.run(self.client.retrieve_with_conversation(
             user_id=self.user_id,
             messages=[
-                {'role': 'user', 'content': prompt}
+                {'role': 'user', 'content': [{'type': 'text', 'text': prompt}]}
             ]
         ))
 
@@ -87,7 +105,18 @@ class MirixMemorySystem:
 
         if memories.get("memories"):
             for memory_type, data in memories["memories"].items():
-                if not data or data.get("total_count", 0) == 0:
+                if not data:
+                    continue
+
+                # Graph memory: pre-formatted context string, not structured items
+                if memory_type == "graph":
+                    graph_ctx = data.get("context", "")
+                    if graph_ctx:
+                        memories_found = True
+                        memory_context_lines.append(graph_ctx)
+                    continue
+
+                if data.get("total_count", 0) == 0:
                     continue
 
                 # Prefer items, but fall back to recent/relevant shapes Mirix may return

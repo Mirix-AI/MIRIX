@@ -32,7 +32,7 @@ class TaskAgent:
         self.model = model
         self.user_id = user_id
         self.max_tool_rounds = max_tool_rounds
-        self.mirix_client = MirixClient(client_id=client_id, org_id=org_id, base_url="http://127.0.0.1:8531", write_scope="read_write")
+        self.mirix_client = MirixClient(client_id=client_id, org_id=org_id, base_url="http://127.0.0.1:8531", write_scope="read_write", timeout=600)
         self.user_id = user_id if user_id is not None else str(uuid.uuid4())
         config_path = Path(mirix_config_path)
         with config_path.open("r", encoding="utf-8") as handle:

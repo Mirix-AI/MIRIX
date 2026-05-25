@@ -85,6 +85,18 @@ class EpisodicEvent(SqlalchemyBase, OrganizationMixin, UserMixin):
         JSON, nullable=True, default=None, doc="Custom filter tags for filtering and categorization"
     )
 
+    # Provenance pointers for this event. Same shape as the equivalent field
+    # on SemanticMemoryItem: a list of small dicts pointing back to the
+    # input units (turn_id / chunk_id / serial / occurred_at) that the
+    # event was extracted from. Empty when the legacy free-form ingest path
+    # is used.
+    source_refs: Mapped[list] = mapped_column(
+        JSON,
+        nullable=False,
+        default=list,
+        doc="Provenance pointers (turn_id / chunk_id / serial / occurred_at).",
+    )
+
     embedding_config: Mapped[Optional[dict]] = mapped_column(
         EmbeddingConfigColumn, nullable=True, doc="Embedding configuration"
     )

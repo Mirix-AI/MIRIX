@@ -565,6 +565,16 @@ class EpisodicMemoryManager:
                 summary_embedding = None
                 embedding_config = None
 
+            # Source provenance: when the /memory/add caller (or the
+            # server-side fallback in rest_api._augment_source_meta_with_
+            # server_fallbacks) attaches a ``source_meta`` dict to
+            # filter_tags, copy it onto the episodic event's
+            # ``source_refs``. We do not strip it from filter_tags so that
+            # downstream filtering / debug still sees it.
+            source_refs_for_event: list = []
+            if filter_tags and isinstance(filter_tags.get("source_meta"), dict):
+                source_refs_for_event = [dict(filter_tags["source_meta"])]
+
             event = await self.create_episodic_memory(
                 PydanticEpisodicEvent(
                     occurred_at=timestamp,
@@ -580,6 +590,7 @@ class EpisodicMemoryManager:
                     details_embedding=details_embedding,
                     embedding_config=embedding_config,
                     filter_tags=filter_tags,
+                    source_refs=source_refs_for_event,
                     last_modify={
                         "timestamp": datetime.now(dt.timezone.utc).isoformat(),
                         "operation": "created",
@@ -590,6 +601,25 @@ class EpisodicMemoryManager:
                 user_id=user_id,
                 use_cache=use_cache,
             )
+
+            # Graph memory write path (v4): writes to G_episodic in Neo4j.
+            # Sync hook — failures logged but do not affect the PG insert that
+            # already completed.
+            if settings.enable_graph_memory:
+                try:
+                    from mirix.services.episodic_graph_manager import EpisodicGraphManager
+
+                    await EpisodicGraphManager().process_episode(
+                        episode_id=event.id,
+                        summary=summary,
+                        details=details,
+                        occurred_at=timestamp,
+                        agent_state=agent_state,
+                        organization_id=organization_id,
+                        user_id=user_id or "unknown",
+                    )
+                except Exception as graph_err:
+                    logger.warning("Episodic graph write failed (non-fatal): %s", graph_err)
 
             return event
 
@@ -857,6 +887,11 @@ class EpisodicMemoryManager:
                         EpisodicEvent.last_modify.label("last_modify"),
                         EpisodicEvent.user_id.label("user_id"),
                         EpisodicEvent.agent_id.label("agent_id"),
+                        # source_refs must be selected explicitly: it is NOT
+                        # nullable on the Pydantic schema, so leaving it
+                        # unloaded makes to_pydantic() pass source_refs=None
+                        # and fail validation (empties the whole search).
+                        EpisodicEvent.source_refs.label("source_refs"),
                     )
                     .where(EpisodicEvent.user_id == user.id)
                     .where(EpisodicEvent.organization_id == organization_id)
@@ -1270,6 +1305,7 @@ class EpisodicMemoryManager:
         actor: PydanticClient = None,
         agent_state: AgentState = None,
         update_mode: str = "append",
+        additional_source_ref: Optional[Dict[str, Any]] = None,
     ):
         """
         Update the selected events
@@ -1282,6 +1318,11 @@ class EpisodicMemoryManager:
             agent_state: Agent state containing embedding configuration (needed for embedding regeneration)
             update_mode: How to handle new_details - "append" (default) appends to existing,
                         "replace" overwrites existing details entirely
+            additional_source_ref: Optional source-provenance dict from the
+                current ingest call (turn_id / chunk_id / serial /
+                occurred_at). When supplied, it is appended to the event's
+                ``source_refs`` list so a merged event still carries the
+                trail of every ingest that contributed to it.
         """
 
         async with self.session_maker() as session:
@@ -1314,6 +1355,15 @@ class EpisodicMemoryManager:
                     await embed_model.get_text_embedding(selected_event.details)
                 )
                 selected_event.embedding_config = agent_state.embedding_config
+
+            # Append the current ingest's source_ref to the event's
+            # provenance trail (if provided). Late-arriving ingests that
+            # merge into an existing event keep their pointer in the list
+            # rather than being lost.
+            if additional_source_ref:
+                existing_refs = list(selected_event.source_refs or [])
+                existing_refs.append(dict(additional_source_ref))
+                selected_event.source_refs = existing_refs
 
             # Update last_modify field with timestamp and operation info
             selected_event.last_modify = {
