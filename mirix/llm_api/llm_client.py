@@ -48,5 +48,11 @@ class LLMClient:
                 return GoogleAIClient(
                     llm_config=llm_config,
                 )
+            case "litellm":
+                from mirix.llm_api.litellm_client import LiteLLMClient
+
+                return LiteLLMClient(
+                    llm_config=llm_config,
+                )
             case _:
                 return None

@@ -103,6 +103,9 @@ dev = [
     "flake8",
     "mypy>=1.0.0",
 ]
+litellm = [
+    "litellm>=1.80.0,<1.87.0",
+]
 voice = [
     "SpeechRecognition",
     "pydub",
