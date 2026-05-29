@@ -111,6 +111,18 @@ full = [
     "SpeechRecognition",
     "pydub",
 ]
+# MetaClaw 30-day eval harness (vendored under evals/metaclaw/).
+# Install with: pip install -e ".[eval]"
+eval = [
+    "fastapi",
+    "uvicorn[standard]",
+    "httpx",
+    "tiktoken",
+    "click>=8.0",
+    "pyyaml>=6.0",
+    "openai",
+    "python-dotenv",
+]
 
 [project.urls]
 Homepage = "https://mirix.io"
@@ -122,7 +134,7 @@ Issues = "https://github.com/Mirix-AI/MIRIX/issues"
 mirix = "mirix.__main__:main"
 
 [tool.setuptools.packages.find]
-exclude = ["tests*", "scripts*", "frontend*", "public_evaluations*", "mirix_env*"]
+exclude = ["tests*", "scripts*", "frontend*", "public_evaluations*", "mirix_env*", "evals*"]
 
 [tool.setuptools.package-data]
 mirix = [

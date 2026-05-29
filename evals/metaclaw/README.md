@@ -1,44 +1,26 @@
-# MIRIX × MetaClaw Evolution-Bench Eval Harness
+# MetaClaw 30-day eval
 
-Evaluates MIRIX's procedural memory subsystem as a drop-in replacement
-for MetaClaw's `SkillEvolver` / `SkillManager` on `metaclaw-bench`
-days 01–03 (P1 ISO 8601 datetime preference).
+This package runs the vendored MetaClaw 30-day benchmark under two arms:
 
-See `docs/superpowers/specs/2026-05-08-mirix-metaclaw-eval-design.md`
-for the design.
+- **`metaclaw`** — upstream skill backend (file-based skill bank under the proxy)
+- **`mirix`** — MIRIX REST-backed skill retrieval + evolution
 
-## Prerequisites
+See `cli.py` for the CLI entry point (`python -m evals.metaclaw …`) and
+`runner.py` for the per-arm orchestration.
 
-1. PostgreSQL container running (`docker ps | grep e2e-postgres`).
-2. MetaClaw cloned to `third_party/MetaClaw/` (see plan Task 1).
-3. Environment variables exported (see `.env.example` below).
+## Smoke tests (offline)
 
-## Environment
+Verifies the eval plumbing without spending real LLM tokens, without spawning
+the real `clawdbot` / `openclaw` daemons, and without requiring a running MIRIX
+server. Uses tiny FastAPI stubs (LLM-shaped + MIRIX-shaped) injected via the
+runner's DI hooks (`proxy_starter`, `proxy_stopper`, `bench_runner`,
+`extra_env`).
 
-```bash
-export OPENAI_API_KEY="<your-openrouter-key>"        # OpenRouter key
-export OPENAI_API_BASE="https://openrouter.ai/api/v1"
-export EVAL_CHAT_MODEL="openai/gpt-5.2"
-export EVAL_EMBED_MODEL="google/gemini-embedding-001"
-export EVAL_EMBED_DIM="1536"                          # truncate gemini to MIRIX dim
-```
+    pytest -m integration evals/metaclaw/tests/test_smoke.py -v
 
-## Running
+Expected runtime: well under 2 min. Default pytest runs (without
+`-m integration`) skip these tests via the project's `pytest.ini`.
 
-Start the MIRIX API server in a separate terminal:
-
-```bash
-python scripts/start_server.py --port 8531
-```
-
-Then run the harness:
-
-```bash
-# Smoke (one round)
-python -m evals.metaclaw.run_3day_eval --days day01 --max-rounds 1
-
-# Full 3-day e2e
-python -m evals.metaclaw.run_3day_eval
-```
-
-Reports land in `evals/metaclaw/reports/<run-id>/`.
+These smoke tests are safe to run concurrently with a live eval — they never
+invoke `clawdbot`, `openclaw`, the vendored bench subprocess, or the real
+MetaClaw proxy.

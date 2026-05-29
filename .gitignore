@@ -53,3 +53,18 @@ test_*.db
 # Eval harness outputs
 third_party/
 evals/metaclaw/reports/
+evals/metaclaw/runs/
+# Per-test "work/" copies the bench drops next to the dataset
+evals/metaclaw/data/work/
+# Aligned-harness run artifacts
+evals/metaclaw_aligned/runs/
+# Archived pre-align eval run reports (regenerable artifacts, not source)
+evals/_archive/**/reports/
+# Captured conversation / scoring traces from eval runs
+records/
+
+# Local planning scratchpad (mattpocock skill convention)
+.scratch/
+
+# Private project instructions (never checked in)
+CLAUDE.local.md

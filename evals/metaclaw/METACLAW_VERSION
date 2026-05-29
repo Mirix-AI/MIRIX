@@ -1,0 +1,5 @@
+metaclaw_sha=fc163ba8a12ba5e6950544c3e0d55707c16e2a7e
+metaclaw_version=0.4.1
+vendored_at=2026-05-28
+upstream=https://github.com/aiming-lab/MetaClaw
+notes=benchmark/data/ omitted (deduplicated against evals/metaclaw/data/); benchmark code + metaclaw/ package are byte-identical to upstream.

@@ -100,6 +100,10 @@ For more API examples, see `samples/run_client.py`.
 
 Mirix is released under the Apache License 2.0. See the [LICENSE](LICENSE) file for more details.
 
+### Third-party code
+
+- Includes vendored code from [aiming-lab/MetaClaw](https://github.com/aiming-lab/MetaClaw) (MIT) under `evals/metaclaw/vendor/` and the 30-day benchmark dataset under `evals/metaclaw/data/`. See `evals/metaclaw/PAPER_LICENSE` and `evals/metaclaw/METACLAW_VERSION` for the pinned SHA and full license text.
+
 ## Contact
 
 For questions, suggestions, or issues, please open an issue on the GitHub repository or contact us at `founders@mirix.io`
