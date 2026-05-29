@@ -3984,7 +3984,13 @@ async def list_memory_components(
         raise HTTPException(status_code=404, detail=f"User {user_id} not found")
 
     timezone_str = getattr(user, "timezone", None) or "UTC"
-    limit = max(1, min(limit, 200))  # guardrails
+    # limit <= 0 means "no limit" (return all items per memory type); positive
+    # is clamped. Old max(1, min(limit,200)) forced 0->1 and capped at 200, so
+    # token accounting only ever saw a 50/200-item sample.
+    if limit <= 0:
+        limit = None
+    else:
+        limit = min(limit, 10000)
 
     # Need an agent state for memory manager configuration
     agents = await server.agent_manager.list_agents(

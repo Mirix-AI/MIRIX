@@ -183,6 +183,15 @@ async def episodic_memory_merge(
         Optional[str]: None is always returned as this function does not produce a response.
     """
 
+    # Carry the ingest's source_meta (if any) through to update_event so
+    # the merged episodic event records the current chunk/turn as
+    # additional provenance.
+    _filter_tags = getattr(self, "filter_tags", None) or {}
+    _additional_source_ref = (
+        dict(_filter_tags["source_meta"])
+        if isinstance(_filter_tags.get("source_meta"), dict)
+        else None
+    )
     try:
         episodic_memory = await self.episodic_memory_manager.update_event(
             event_id=event_id,
@@ -191,6 +200,7 @@ async def episodic_memory_merge(
             actor=self.actor,
             agent_state=self.agent_state,
             update_mode="replace",
+            additional_source_ref=_additional_source_ref,
         )
     except Exception as e:
         print(
@@ -652,9 +662,13 @@ async def semantic_memory_insert(self: "Agent", items: List[SemanticMemoryItemBa
                     agent_state=self.agent_state,
                     agent_id=agent_id,
                     name=item["name"],
-                    summary=item["summary"],
-                    details=item["details"],
-                    source=item["source"],
+                    summary=item.get("summary", ""),
+                    details=item.get("details", ""),
+                    # The LLM sometimes omits `source` (it is the least
+                    # semantically essential field, and is sometimes folded
+                    # into details). Default to "" so the whole item is not
+                    # dropped over a missing provenance string.
+                    source=item.get("source", ""),
                     organization_id=self.actor.organization_id,
                     actor=self.actor,
                     filter_tags=filter_tags if filter_tags else None,

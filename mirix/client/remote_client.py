@@ -1844,7 +1844,9 @@ class MirixClient(AbstractClient):
             "user_id": user_id,
             "memory_type": memory_type,
         }
-        if limit:
+        # limit=0 means "no limit" (server treats <=0 as unbounded); the old
+        # `if limit:` dropped 0 as falsy, so token accounting only saw a sample.
+        if limit is not None:
             params["limit"] = limit
 
         return await self._request("GET", "/memory/components", params=params, headers=headers)
