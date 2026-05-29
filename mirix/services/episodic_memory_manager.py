@@ -1275,6 +1275,7 @@ class EpisodicMemoryManager:
         actor: PydanticClient = None,
         agent_state: AgentState = None,
         update_mode: str = "append",
+        additional_source_ref: Optional[Dict[str, Any]] = None,
     ):
         """
         Update the selected events
@@ -1287,6 +1288,11 @@ class EpisodicMemoryManager:
             agent_state: Agent state containing embedding configuration (needed for embedding regeneration)
             update_mode: How to handle new_details - "append" (default) appends to existing,
                         "replace" overwrites existing details entirely
+            additional_source_ref: Optional source-provenance dict from the
+                current ingest call (turn_id / chunk_id / serial /
+                occurred_at). When supplied, it is appended to the event's
+                ``source_refs`` list so a merged event still carries the
+                trail of every ingest that contributed to it.
         """
 
         async with self.session_maker() as session:
@@ -1319,6 +1325,15 @@ class EpisodicMemoryManager:
                     await embed_model.get_text_embedding(selected_event.details)
                 )
                 selected_event.embedding_config = agent_state.embedding_config
+
+            # Append the current ingest's source_ref to the event's
+            # provenance trail (if provided). Late-arriving ingests that
+            # merge into an existing event keep their pointer in the list
+            # rather than being lost.
+            if additional_source_ref:
+                existing_refs = list(selected_event.source_refs or [])
+                existing_refs.append(dict(additional_source_ref))
+                selected_event.source_refs = existing_refs
 
             # Update last_modify field with timestamp and operation info
             selected_event.last_modify = {
