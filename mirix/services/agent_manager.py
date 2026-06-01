@@ -5,6 +5,8 @@ from typing import Dict, List, Optional
 from sqlalchemy.orm import Session
 
 from mirix.constants import (
+    AUTO_DREAM_V2_READ_TOOLS,
+    AUTO_DREAM_V2_WRITE_TOOLS,
     BASE_TOOLS,
     CHAT_AGENT_TOOLS,
     CORE_MEMORY_BLOCK_CHAR_LIMIT,
@@ -137,6 +139,20 @@ class AgentManager:
             tool_names.extend(META_MEMORY_TOOLS + UNIVERSAL_MEMORY_TOOLS)
         if agent_create.agent_type == AgentType.reflexion_agent:
             tool_names.extend(SEARCH_MEMORY_TOOLS + CHAT_AGENT_TOOLS + UNIVERSAL_MEMORY_TOOLS + EXTRAS_TOOLS)
+        if agent_create.agent_type == AgentType.auto_dream_agent:
+            # v1 dream consolidator: needs all memory-edit tools so it can call
+            # episodic_memory_replace / semantic_memory_update / etc. (the tools
+            # the prompt explicitly tells it to use)
+            tool_names.extend(
+                EPISODIC_MEMORY_TOOLS
+                + SEMANTIC_MEMORY_TOOLS
+                + PROCEDURAL_MEMORY_TOOLS
+                + RESOURCE_MEMORY_TOOLS
+                + KNOWLEDGE_VAULT_TOOLS
+                + UNIVERSAL_MEMORY_TOOLS
+            )
+        if agent_create.agent_type == AgentType.auto_dream_v2_agent:
+            tool_names.extend(AUTO_DREAM_V2_READ_TOOLS + AUTO_DREAM_V2_WRITE_TOOLS)
 
         # Remove duplicates
         tool_names = list(set(tool_names))
@@ -574,6 +590,17 @@ class AgentManager:
             tool_names.extend(BASE_TOOLS + CHAT_AGENT_TOOLS + EXTRAS_TOOLS)
         if agent_state.agent_type == AgentType.reflexion_agent:
             tool_names.extend(SEARCH_MEMORY_TOOLS + CHAT_AGENT_TOOLS + UNIVERSAL_MEMORY_TOOLS + EXTRAS_TOOLS)
+        if agent_state.agent_type == AgentType.auto_dream_agent:
+            tool_names.extend(
+                EPISODIC_MEMORY_TOOLS
+                + SEMANTIC_MEMORY_TOOLS
+                + PROCEDURAL_MEMORY_TOOLS
+                + RESOURCE_MEMORY_TOOLS
+                + KNOWLEDGE_VAULT_TOOLS
+                + UNIVERSAL_MEMORY_TOOLS
+            )
+        if agent_state.agent_type == AgentType.auto_dream_v2_agent:
+            tool_names.extend(AUTO_DREAM_V2_READ_TOOLS + AUTO_DREAM_V2_WRITE_TOOLS)
 
         ## extract the existing tool names for the agent
         existing_tools = agent_state.tools
@@ -1522,8 +1549,9 @@ class AgentManager:
         user: Optional[PydanticUser] = None,
     ) -> List[PydanticMessage]:
         message_ids = agent_state.message_ids
+        if not message_ids:
+            return []
         messages = await self.message_manager.get_messages_by_ids(message_ids=message_ids, actor=actor)
-        # Handle empty message list (e.g., after deletion)
         if not messages:
             return []
 

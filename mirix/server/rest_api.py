@@ -395,7 +395,7 @@ async def get_client_and_org(
 
 async def extract_topics_and_temporal_info(
     messages: List[Dict[str, Any]], llm_config: LLMConfig
-) -> tuple[Optional[str], Optional[str]]:
+) -> tuple[Optional[str], Optional[str], Optional[Dict[str, int]]]:
     """
     Extract topics AND temporal expressions from a list of messages using LLM.
 
@@ -407,22 +407,18 @@ async def extract_topics_and_temporal_info(
         llm_config: LLM configuration to use for extraction
 
     Returns:
-        Tuple of (topics, temporal_expression) where both can be None
+        Tuple of (topics, temporal_expression, usage) where any can be None
         - topics: String with topics separated by ';'
         - temporal_expression: String with temporal phrase or None if not found
+        - usage: {prompt_tokens, completion_tokens, total_tokens} from the LLM call, or None on error
     """
     try:
         if isinstance(messages, list) and "role" in messages[0].keys():
             # Convert from OpenAI format to internal format
             new_messages = []
             for msg in messages:
-                new_messages.append(
-                    {
-                        "type": "text",
-                        "text": "[USER]" if msg["role"] == "user" else "[ASSISTANT]",
-                    }
-                )
-                new_messages.extend(msg["content"])
+                prefix = "[USER]" if msg["role"] == "user" else "[ASSISTANT]"
+                new_messages.extend([{"type": "text", "text": prefix + " " + part} for part in msg["content"]])
             messages = new_messages
 
         temporary_messages = convert_message_to_mirix_message(messages)
@@ -498,6 +494,16 @@ async def extract_topics_and_temporal_info(
                 force_tool_call="update_topic_and_time",
             )
 
+            # Capture usage so callers can attribute QA-time topic-extraction cost
+            usage_obj = getattr(response, "usage", None)
+            usage_dict: Optional[Dict[str, int]] = None
+            if usage_obj is not None:
+                usage_dict = {
+                    "prompt_tokens":     int(getattr(usage_obj, "prompt_tokens", 0) or 0),
+                    "completion_tokens": int(getattr(usage_obj, "completion_tokens", 0) or 0),
+                    "total_tokens":      int(getattr(usage_obj, "total_tokens", 0) or 0),
+                }
+
             # Extract topics and temporal expression from the response
             for choice in response.choices:
                 if (
@@ -512,15 +518,18 @@ async def extract_topics_and_temporal_info(
                         # Clean up empty strings
                         temporal_expr = temporal_expr.strip() if temporal_expr else None
                         logger.debug("Extracted topics: %s, temporal: %s", topics, temporal_expr)
-                        return topics, temporal_expr
+                        return topics, temporal_expr, usage_dict
                     except (json.JSONDecodeError, KeyError) as parse_error:
                         logger.warning("Failed to parse extraction response: %s", parse_error)
                         continue
 
+            # Tool call missing — return usage anyway so caller can attribute the cost
+            return None, None, usage_dict
+
     except Exception as e:
         logger.error("Error in extracting topics and temporal info: %s", e)
 
-    return None, None
+    return None, None, None
 
 
 async def extract_topics_from_messages(
@@ -539,7 +548,7 @@ async def extract_topics_from_messages(
     Returns:
         Extracted topics as a string (separated by ';') or None if extraction fails
     """
-    topics, _ = await extract_topics_and_temporal_info(messages, llm_config)
+    topics, _, _ = await extract_topics_and_temporal_info(messages, llm_config)
     return topics
 
 
@@ -2060,21 +2069,16 @@ async def add_memory(
         # We need to convert the message to the format in "content"
         new_message = []
         for msg in message:
-            new_message.append(
-                {
-                    "type": "text",
-                    "text": "[USER]" if msg["role"] == "user" else "[ASSISTANT]",
-                }
-            )
+            prefix = "[USER]" if msg["role"] == "user" else "[ASSISTANT]"
 
             # Handle both string and list content
             content = msg["content"]
             if isinstance(content, str):
                 # Content is a string - convert to proper format
-                new_message.append({"type": "text", "text": content})
+                new_message.append({"type": "text", "text": prefix + " " + content})
             elif isinstance(content, list):
                 # Content is already a list - extend as before
-                new_message.extend(content)
+                new_message.extend([{"type": "text", "text": prefix + " " + part} for part in content])
             else:
                 raise ValueError(f"Invalid content type: {type(content)}")
         message = new_message
@@ -2169,17 +2173,12 @@ async def add_memory_sync(
     if isinstance(message, list) and "role" in message[0].keys():
         new_message = []
         for msg in message:
-            new_message.append(
-                {
-                    "type": "text",
-                    "text": "[USER]" if msg["role"] == "user" else "[ASSISTANT]",
-                }
-            )
+            prefix = "[USER]" if msg["role"] == "user" else "[ASSISTANT]"
             content = msg["content"]
             if isinstance(content, str):
-                new_message.append({"type": "text", "text": content})
+                new_message.append({"type": "text", "text": prefix + " " + content})
             elif isinstance(content, list):
-                new_message.extend(content)
+                new_message.extend([{"type": "text", "text": prefix + " " + part} for part in content])
             else:
                 raise ValueError(f"Invalid content type: {type(content)}")
         message = new_message
@@ -2215,7 +2214,7 @@ async def add_memory_sync(
             )
         )
 
-    await server.send_messages(
+    usage_stats = await server.send_messages(
         actor=client,
         agent_id=meta_agent.id,
         input_messages=input_messages,
@@ -2231,12 +2230,19 @@ async def add_memory_sync(
 
     logger.debug("Memory processed synchronously: %s", meta_agent.id)
 
+    usage_dict = (
+        usage_stats.model_dump()
+        if hasattr(usage_stats, "model_dump")
+        else (usage_stats or {})
+    )
+
     return {
         "success": True,
         "message": "Memory processed successfully",
         "status": "processed",
         "agent_id": meta_agent.id,
         "message_count": len(input_messages),
+        "usage": usage_dict,
     }
 
 
@@ -2594,9 +2600,10 @@ async def retrieve_memory_with_conversation(
                     request.local_model_for_retrieval,
                 )
 
+        topic_extraction_usage: Optional[Dict[str, int]] = None
         if topics is None:
             # NEW: Extract both topics and temporal expression
-            topics, temporal_expr = await extract_topics_and_temporal_info(
+            topics, temporal_expr, topic_extraction_usage = await extract_topics_and_temporal_info(
                 request.messages, llm_config
             )
 
@@ -2606,6 +2613,7 @@ async def retrieve_memory_with_conversation(
         # No content - skip LLM call and retrieve recent items
         logger.debug("No content in messages - retrieving recent items")
         key_words = ""
+        topic_extraction_usage = None
 
     # NEW: Parse temporal expression to date range
     start_date: Optional[datetime] = None
@@ -2680,6 +2688,9 @@ async def retrieve_memory_with_conversation(
             else None
         ),
         "memories": memories,
+        # Server-side LLM cost for topic/temporal extraction. Eval needs this to
+        # account for retrieval-time tokens in token-efficiency comparisons.
+        "topic_extraction_usage": topic_extraction_usage,
     }
 
 
@@ -4001,7 +4012,11 @@ async def list_memory_components(
         raise HTTPException(status_code=404, detail=f"User {user_id} not found")
 
     timezone_str = getattr(user, "timezone", None) or "UTC"
-    limit = max(1, min(limit, 200))  # guardrails
+    # limit <= 0 means "no cap" (return everything); positive values get clamped to 10000
+    if limit is None or limit <= 0:
+        limit = 10000
+    else:
+        limit = min(limit, 10000)
 
     # Need an agent state for memory manager configuration
     agents = await server.agent_manager.list_agents(

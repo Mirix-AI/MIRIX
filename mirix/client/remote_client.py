@@ -1843,9 +1843,8 @@ class MirixClient(AbstractClient):
         params: Dict[str, Any] = {
             "user_id": user_id,
             "memory_type": memory_type,
+            "limit": limit,
         }
-        if limit:
-            params["limit"] = limit
 
         return await self._request("GET", "/memory/components", params=params, headers=headers)
 

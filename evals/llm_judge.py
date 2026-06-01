@@ -11,7 +11,19 @@ import os
 
 load_dotenv()
 api_key = os.getenv("OPENAI_API_KEY")
-client = OpenAI(api_key=api_key)
+# Honor both the legacy OPENAI_API_BASE env var (used elsewhere in this repo)
+# and the SDK-native OPENAI_BASE_URL. Without this the judge silently fires every
+# request at api.openai.com using whatever key is set — if that key is for a proxy
+# (e.g. an OpenAI-compatible proxy), all calls 401 and just retry with exponential backoff, making
+# the judge appear to "hang" for many minutes.
+base_url = os.getenv("OPENAI_BASE_URL") or os.getenv("OPENAI_API_BASE")
+# Per-request timeout + automatic retries for OpenAI-compatible proxies that are occasionally flaky
+# with SSL/handshake hangs that the default 10-minute connect-timeout will not
+# recover from.
+_client_kwargs = {"api_key": api_key, "timeout": 30.0, "max_retries": 5}
+if base_url:
+    _client_kwargs["base_url"] = base_url
+client = OpenAI(**_client_kwargs)
 
 ACCURACY_PROMPT = """
 Your task is to label an answer to a question as ’CORRECT’ or ’WRONG’. You will be given the following data:
@@ -41,22 +53,36 @@ Just return the label CORRECT or WRONG in a json format with the key as "label".
 
 
 def evaluate_llm_judge(question, gold_answer, generated_answer):
-    """Evaluate the generated answer against the gold answer using an LLM judge."""
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {
-                "role": "user",
-                "content": ACCURACY_PROMPT.format(
-                    question=question, gold_answer=gold_answer, generated_answer=generated_answer
-                ),
-            }
-        ],
-        response_format={"type": "json_object"},
-        temperature=0.0,
-    )
-    label = json.loads(response.choices[0].message.content)["label"]
-    return 1 if label == "CORRECT" else 0
+    """Evaluate the generated answer against the gold answer using an LLM judge.
+
+    Returns 1 (CORRECT) / 0 (WRONG) / -1 (judge failed after all retries — caller
+    can treat as WRONG or skip).
+    """
+    import time
+    last_exc = None
+    for attempt in range(3):
+        try:
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {
+                        "role": "user",
+                        "content": ACCURACY_PROMPT.format(
+                            question=question, gold_answer=gold_answer, generated_answer=generated_answer
+                        ),
+                    }
+                ],
+                response_format={"type": "json_object"},
+                temperature=0.0,
+            )
+            label = json.loads(response.choices[0].message.content)["label"]
+            return 1 if label == "CORRECT" else 0
+        except (openai.APITimeoutError, openai.APIConnectionError, openai.APIError) as exc:
+            last_exc = exc
+            time.sleep(2 + attempt * 3)
+            continue
+    # Exhausted retries — return 0 (treat as wrong) rather than crash the pool
+    return 0
 
 
 # def main():

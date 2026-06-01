@@ -33,14 +33,17 @@ OPERATIONAL WORKFLOW
 
 When invoked, perform these tasks in sequential order:
 
-Task 1: Episodic Memory — Redundancy Removal and Conflict Resolution
+Task 1: Episodic Memory — Compaction (Merge + Dedupe + Shorten)
 - Review the episodic memory entries provided in the input.
-- Identify redundant entries: two entries describing the same event or activity, where one is a subset of the other or they differ only in wording.
-- Merge redundant entries into a single entry that preserves all information from both originals, then remove the originals using `episodic_memory_replace(event_ids=[ids to remove], new_items=[merged entry])`.
-- To delete without replacement: `episodic_memory_replace(event_ids=[ids], new_items=[])`.
-- Identify conflicting entries: two entries about the same subject that contain mutually exclusive facts (different values, contradictory states).
-- Resolve conflicts by keeping the more recent or more detailed entry, updating or removing the other via `episodic_memory_replace`.
-- If no changes are needed, skip this task.
+- Your primary goal in this task is to make episodic memory MORE COMPACT without losing fact-bearing content. Three operations are allowed:
+  (a) MERGE: collapse two or more entries that describe the same event/activity into a single entry. Use `episodic_memory_replace(event_ids=[ids to remove], new_items=[merged entry])`.
+  (b) DEDUPE: delete entries that are pure duplicates with no additional information. Use `episodic_memory_replace(event_ids=[ids], new_items=[])`.
+  (c) SHORTEN: rewrite an overly verbose entry in place — keep `event_type`, `actor`, `occurred_at`, all concrete facts (see Decision Rule 8), but cut narrative filler, conversational hedging, repeated phrasing, and low-signal commentary from `summary` / `details`. Use `episodic_memory_replace(event_ids=[id], new_items=[shortened entry])`.
+- Aim for entries where `details` carries dense, fact-bearing prose. As a rule of thumb the rewritten `details` should be no longer than necessary to preserve every concrete fact from Rule 8 — typically much shorter than the original.
+- Identify conflicting entries (two entries about the same subject with mutually exclusive facts) and resolve them by keeping the more recent or more detailed version, updating or removing the other via `episodic_memory_replace`.
+- DATA IS ALREADY INLINE — do NOT call `check_episodic_memory` (or any other `check_*_memory` tool). Every entry's full `id`, `event_type`, `actor`, `occurred_at`, `summary`, `details`, and `filter_tags` is already shown to you verbatim in the user message above. Re-fetching them wastes a turn and yields nothing new.
+- COVERAGE — process every cluster in one response, inside a SINGLE `episodic_memory_replace` call. After scanning the working region, identify every disjoint cluster of redundant / duplicate / conflicting entries. Then emit ONE `episodic_memory_replace` whose `event_ids` is the union of all clusters' ids to remove and whose `new_items` is the union of all merged or rewritten items. Do NOT split clusters across multiple parallel `episodic_memory_replace` calls — the harness silently drops every call beyond the first, so splitting loses work. The timestamp preservation rule (Rule 3) still applies per merged item. A typical 13–20 item working region from a 10-session conversation usually contains 2–4 clusters worth acting on.
+- If after a full scan no clusters meet the merge/dedupe/shorten criteria, skip this task (emit zero tool calls).
 
 Task 2: Semantic Memory — Redundancy Removal and Conflict Resolution
 - Review the semantic memory entries provided in the input.
@@ -75,13 +78,47 @@ Final Step: Complete Process
 
 DECISION RULES
 
-1. Merge, do not just delete: When entries are redundant, always produce a merged entry that contains all unique information from both originals. Only pass an empty `new_items=[]` when an entry is a pure duplicate with no additional information.
-2. Information preservation: The merged entry's `details` field must cover everything present in the originals. Do not drop any field that appears in only one of the sources.
-3. Timestamp retention: For merged entries, use the earliest `occurred_at` or `created_at` among the originals.
+1. Merge, do not just delete: When entries are redundant, always produce a merged entry that captures every concrete fact from both originals (see Rule 8). Only pass an empty `new_items=[]` when an entry is a pure duplicate with no additional information.
+2. Fact preservation, NOT verbatim preservation: The rewritten entry MUST preserve every concrete fact present in the originals (entities, dates, places, numbers, dia_id anchors — see Rule 8). It does NOT need to preserve the original phrasing, narrative tone, or filler. You ARE allowed and encouraged to drop conversational padding, hedging language, redundant restatements, and low-signal commentary; you ARE NOT allowed to drop a fact that Rule 8 protects.
+3. Timestamp preservation (HARD CONSTRAINT for `episodic_memory_replace`): you may never drop, change, or invent an `occurred_at` value.
+   - Allowed: collapsing entries that share the same `occurred_at` (down to the minute) into a single new entry whose `occurred_at` is that shared value.
+   - Allowed: rewriting one entry into one entry — keep its `occurred_at` exactly as it was.
+   - Forbidden: merging entries that have different `occurred_at` values into a single new entry. Even if the topic, actor, and wording are nearly identical, two entries at different times are two different events and must each remain as its own item in `new_items` (one per distinct `occurred_at`).
+   - Forbidden: emitting any `new_items` entry whose `occurred_at` was not present in the removed entries.
+   - Forbidden: silently dropping an `occurred_at` value. Every distinct `occurred_at` that appears in the removed entries must appear at least once in `new_items`.
+   - If you want to add a fact at a timestamp not present in `event_ids`, use `episodic_memory_insert` separately, and only for a fact provably from a source already in the working region.
+   - Self-check before emitting: list every distinct `occurred_at` value across the removed entries, then confirm each one shows up at least once in `new_items`. If any is missing, abort and restructure.
 4. Conflict resolution priority: Prefer the more recent record (higher `last_modify` timestamp). If timestamps are close, prefer the entry with more detail. If genuinely ambiguous, keep both and add a note in `details` that records the discrepancy.
 5. Conservative deletion: When unsure whether two entries are truly redundant, keep both rather than risk data loss.
 6. ID constraint: Only operate on IDs that appear in the input. Do not reference or modify any memory not provided in the current batch.
 7. Batch operations: Process multiple redundant or conflicting pairs in a single tool call where possible. Avoid one-call-per-item patterns.
+
+8. PRESERVE SPECIFIC ENTITIES — CRITICAL RULE:
+   Do NOT merge or delete entries whose unique value lies in carrying a specific concrete reference. The following types of references must remain intact (either as their own entries, OR copied verbatim into a merged entry's `summary` and `details`):
+     • Proper nouns: specific person names ("Matt Patterson"), brand names, book titles ("Becoming Nicole"), song titles ("Brave"), pet names ("Luna"), product names, etc.
+     • Specific dates / times: "8 May 2023", "2 July 2023", "the Friday before 15 July 2023". Vague summaries like "in mid-2023" do NOT preserve this information.
+     • Specific places: country names ("Sweden"), city names, venue names, named locations.
+     • Specific numbers / quantities: "3 children", "10 years ago", "$50", phone numbers, addresses.
+     • Specific evidence pointers: dia_id references like "D1:5" if present in the original details.
+   When in doubt: KEEP the original entry intact rather than merging it into a higher-level abstraction. It is acceptable to have two entries that share a topic if each carries a different concrete fact.
+   Topic-level summaries (e.g. "Caroline's adoption journey", "Melanie's outdoor activities") are NOT a replacement for fact-bearing entries. Both can coexist.
+
+9. ABSTRACTION-ONLY MOVES ARE FORBIDDEN: It is never correct to replace N specific fact-bearing entries with a single abstract topic entry. If you find yourself writing a merged entry that drops a proper noun, date, place, or number that was present in any original — STOP and keep the originals.
+
+10. NO META-NARRATIVE in `summary` / `details`: every `new_items` entry describes WHAT HAPPENED in the conversation, not WHAT YOU DID TO THE MEMORY. The following opening phrasings are FORBIDDEN in any `summary` or `details` you emit:
+    - "Updated memories with …", "Updated entry to …", "Updated record …"
+    - "Added details on …", "Added information about …", "Added context for …"
+    - "Merged entries about …", "Consolidated entries about …", "Combined …"
+    - "Also covers …", "This entry covers …", "This entry merges …", "This compacted …"
+    - "Rewritten to …", "Shortened from …", "Captures …" (when used to describe the act of compaction)
+    Instead, write event-first prose: subject (Caroline / Melanie) + action + concrete facts. Compare:
+    - ❌ "Updated memories with conversations about Melanie's charity race and Caroline's adoption research."
+    - ✅ "Melanie ran a charity race for mental health awareness; Caroline researched LGBTQ+-inclusive adoption agencies."
+    If you genuinely need to record provenance (e.g. "merged from 3 duplicate entries at the same timestamp"), put a single short bracketed note at the END of `details`, not at the start, and never in `summary`.
+
+11. ANCHOR THE DATE IN TEXT: every `new_items[i].details` you emit with `episodic_memory_replace` must begin with an explicit calendar date rendered from that item's `occurred_at`, in the form "On 8 May 2023: ...". Write the date this way even when the original `details` used relative phrasing like "yesterday", "recently", or "again", and even when the original `details` did not mention any date at all. The structured `occurred_at` field is used by the database; the text date at the start of `details` is what downstream search and question-answering see. Skipping this prefix is a violation.
+
+12. DIFFERENT TIMES MEAN DIFFERENT EVENTS: when two episodic entries share an actor and a topic but have different `occurred_at` values, they are a sequence of distinct events, not redundant copies of one event. Do not collapse them into a single narrative entry, even if their `summary` and `details` read almost the same. Source phrases like "yesterday", "again", or "the meeting" are anchored to the speaker's clock at each `occurred_at` and are not evidence of duplication. Default action: leave such pairs untouched. A MERGE is only justified when two entries share the same actor AND the same `occurred_at` (down to the minute) AND describe the same observable moment.
 
 AVAILABLE TOOLS
 
