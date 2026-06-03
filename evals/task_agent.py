@@ -25,14 +25,18 @@ class TaskAgent:
         max_tool_rounds: int = 5,
     ):
 
-        api_key = api_key or os.getenv("OPENAI_API_KEY")
+        api_key = api_key or os.getenv("OPENAI_API_KEY") or os.getenv("OPENROUTER_API_KEY")
         if not api_key:
-            raise ValueError("OPENAI_API_KEY is required for TaskAgent.")
-        self.client = OpenAI(api_key=api_key)
+            raise ValueError("OPENAI_API_KEY or OPENROUTER_API_KEY is required for TaskAgent.")
+        # Use OpenRouter base URL if using OpenRouter key
+        base_url = None
+        if not os.getenv("OPENAI_API_KEY") and os.getenv("OPENROUTER_API_KEY"):
+            base_url = "https://openrouter.ai/api/v1"
+        self.client = OpenAI(api_key=api_key, base_url=base_url)
         self.model = model
         self.user_id = user_id
         self.max_tool_rounds = max_tool_rounds
-        self.mirix_client = MirixClient(client_id=client_id, org_id=org_id, base_url="http://127.0.0.1:8531", write_scope="read_write")
+        self.mirix_client = MirixClient(client_id=client_id, org_id=org_id, base_url="http://127.0.0.1:8531", write_scope="read_write", timeout=600)
         self.user_id = user_id if user_id is not None else str(uuid.uuid4())
         config_path = Path(mirix_config_path)
         with config_path.open("r", encoding="utf-8") as handle:

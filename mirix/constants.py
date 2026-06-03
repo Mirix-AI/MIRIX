@@ -84,6 +84,13 @@ OPENAI_CONTEXT_WINDOW_ERROR_SUBSTRING = "maximum context length"
 IN_CONTEXT_MEMORY_KEYWORD = "CORE_MEMORY"
 
 MAX_CHAINING_STEPS = int(os.getenv("MAX_CHAINING_STEPS", "10"))
+# Procedural skill-evolve (eval / POST /v1/skills/evolve) drives ONE persistent
+# procedural agent statelessly per call. A skill round can legitimately survey
+# many existing skills and create/edit several, so it needs a far larger chaining
+# (tool-use) budget than the default chat path. Overridable via env; only the
+# evolve path passes this into step(max_chaining_steps=...), so the global
+# MAX_CHAINING_STEPS for normal meta-agent flow is untouched.
+SKILL_EVOLVE_MAX_CHAINING_STEPS = int(os.getenv("SKILL_EVOLVE_MAX_CHAINING_STEPS", "50"))
 MAX_RETRIEVAL_LIMIT_IN_SYSTEM = 10
 
 # tokenizers
@@ -114,7 +121,7 @@ EPISODIC_MEMORY_TOOLS = [
     "episodic_memory_replace",
     "check_episodic_memory",
 ]
-PROCEDURAL_MEMORY_TOOLS = ["procedural_memory_insert", "procedural_memory_update"]
+SKILL_TOOLS = ["skill_list", "skill_read", "skill_create", "skill_edit", "skill_delete"]
 RESOURCE_MEMORY_TOOLS = ["resource_memory_insert", "resource_memory_update"]
 KNOWLEDGE_VAULT_TOOLS = ["knowledge_vault_insert", "knowledge_vault_update"]
 SEMANTIC_MEMORY_TOOLS = [
@@ -137,7 +144,7 @@ ALL_TOOLS = list(
         BASE_TOOLS
         + CORE_MEMORY_TOOLS
         + EPISODIC_MEMORY_TOOLS
-        + PROCEDURAL_MEMORY_TOOLS
+        + SKILL_TOOLS
         + RESOURCE_MEMORY_TOOLS
         + KNOWLEDGE_VAULT_TOOLS
         + SEMANTIC_MEMORY_TOOLS
@@ -248,3 +255,9 @@ LOAD_IMAGE_CONTENT_FOR_LAST_MESSAGE_ONLY = os.getenv("LOAD_IMAGE_CONTENT_FOR_LAS
     "yes",
 )
 BUILD_EMBEDDINGS_FOR_MEMORY = os.getenv("BUILD_EMBEDDINGS_FOR_MEMORY", "true").lower() in ("true", "1", "yes")
+SKILL_TRIGGER_MESSAGE_THRESHOLD = int(os.getenv("SKILL_TRIGGER_MESSAGE_THRESHOLD", "10"))
+# Number of *sessions* (distinct message.session_id values) that must accumulate
+# on an agent for a given user before procedural-memory extraction auto-fires.
+# Counted against a persisted cursor (agent_trigger_state), so restarts and
+# multiple workers all see the same value.
+SKILL_TRIGGER_SESSION_THRESHOLD = int(os.getenv("SKILL_TRIGGER_SESSION_THRESHOLD", "5"))

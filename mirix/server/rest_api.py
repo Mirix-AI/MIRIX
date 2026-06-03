@@ -17,12 +17,12 @@ import httpx
 from fastapi import APIRouter, Body, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from mirix.helpers.message_helpers import prepare_input_message_create
 from mirix.llm_api.llm_client import LLMClient
 from mirix.log import get_logger
-from mirix.orm.errors import NoResultFound
+from mirix.orm.errors import NoResultFound, UniqueConstraintViolationError
 from mirix.schemas.agent import AgentState, AgentType, CreateAgent
 from mirix.schemas.block import Block, BlockUpdate, CreateBlock, Human, Persona
 from mirix.schemas.client import Client, ClientCreate, ClientUpdate
@@ -36,7 +36,7 @@ from mirix.schemas.environment_variables import (
 from mirix.schemas.file import FileMetadata
 from mirix.schemas.llm_config import LLMConfig
 from mirix.schemas.memory import ArchivalMemorySummary, Memory, RecallMemorySummary
-from mirix.schemas.message import Message, MessageCreate
+from mirix.schemas.message import Message, MessageCreate, _validate_session_id
 from mirix.schemas.mirix_response import MirixResponse
 from mirix.schemas.organization import Organization
 from mirix.schemas.procedural_memory import ProceduralMemoryItemUpdate
@@ -1024,6 +1024,7 @@ class SendMessageRequest(BaseModel):
     role: str
     user_id: Optional[str] = None  # End-user ID for message attribution
     name: Optional[str] = None
+    session_id: Optional[str] = None  # Top-level session identifier
     stream_steps: bool = False
     stream_tokens: bool = False
     filter_tags: Optional[Dict[str, Any]] = None  # Filter tags support
@@ -1032,6 +1033,11 @@ class SendMessageRequest(BaseModel):
     )
     block_filter_tags_update_mode: Optional[str] = "merge"  # "merge" or "replace"
     use_cache: bool = True  # Control Redis cache behavior
+
+    @field_validator("session_id")
+    @classmethod
+    def _check_session_id(cls, v: Optional[str]) -> Optional[str]:
+        return _validate_session_id(v)
 
 
 @app.post("/agents/{agent_id}/messages", response_model=MirixResponse)
@@ -1076,6 +1082,7 @@ async def send_message_to_agent(
             role=MessageRole(request.role),
             content=request.message,
             name=request.name,
+            session_id=request.session_id,
         )
 
         # Put message on queue for processing
@@ -1994,12 +2001,31 @@ class AddMemoryRequest(BaseModel):
     chaining: bool = True
     verbose: bool = False
     filter_tags: Optional[Dict[str, Any]] = None
+    session_id: Optional[str] = None  # Batch-level session id applied to every message in this request
     block_filter_tags: Optional[Dict[str, Any]] = (
         None  # Applied only when blocks are created (e.g. from default template)
     )
     block_filter_tags_update_mode: Optional[str] = "merge"  # "merge" or "replace"
     use_cache: bool = True  # Control Redis cache behavior
     occurred_at: Optional[str] = None  # Optional ISO 8601 timestamp string for episodic memory
+
+    @field_validator("session_id")
+    @classmethod
+    def _check_session_id(cls, v: Optional[str]) -> Optional[str]:
+        return _validate_session_id(v)
+
+    @model_validator(mode="after")
+    def _check_session_id_agrees_with_filter_tags(self) -> "AddMemoryRequest":
+        # Codex review I1: if both the top-level session_id and filter_tags.session_id are
+        # provided, they must match. Otherwise message-scope and memory-scope silently diverge.
+        if self.session_id is not None and isinstance(self.filter_tags, dict):
+            tag_sid = self.filter_tags.get("session_id")
+            if tag_sid is not None and tag_sid != self.session_id:
+                raise ValueError(
+                    "session_id and filter_tags['session_id'] must agree; "
+                    f"got {self.session_id!r} vs {tag_sid!r}"
+                )
+        return self
 
 
 @router.post("/memory/add")
@@ -2079,6 +2105,12 @@ async def add_memory(
 
     input_messages = convert_message_to_mirix_message(message)
 
+    # Batch-level session_id: stamp every message that didn't carry its own.
+    if request.session_id is not None:
+        for msg_create in input_messages:
+            if msg_create.session_id is None:
+                msg_create.session_id = request.session_id
+
     # Add client scope to filter_tags (create if not provided)
     if request.filter_tags is not None:
         # Create a copy to avoid modifying the original request
@@ -2086,6 +2118,11 @@ async def add_memory(
     else:
         # Create new filter_tags if not provided
         filter_tags = {}
+
+    # Mirror session_id into filter_tags so extracted memories inherit it too.
+    # The model_validator on AddMemoryRequest has already ensured agreement if both were set.
+    if request.session_id is not None:
+        filter_tags["session_id"] = request.session_id
 
     if request.block_filter_tags is not None and not isinstance(request.block_filter_tags, dict):
         raise HTTPException(status_code=400, detail="block_filter_tags must be a dict when provided")
@@ -2184,10 +2221,20 @@ async def add_memory_sync(
 
     input_messages = convert_message_to_mirix_message(message)
 
+    # Batch-level session_id: stamp every message that didn't carry its own.
+    if request.session_id is not None:
+        for msg_create in input_messages:
+            if msg_create.session_id is None:
+                msg_create.session_id = request.session_id
+
     if request.filter_tags is not None:
         filter_tags = dict(request.filter_tags)
     else:
         filter_tags = {}
+
+    # The AddMemoryRequest model_validator already ensured agreement if both were set.
+    if request.session_id is not None:
+        filter_tags["session_id"] = request.session_id
 
     if client.write_scope is None:
         raise HTTPException(status_code=403, detail="Client has no write_scope - cannot create memories")
@@ -2434,7 +2481,7 @@ async def retrieve_memories_by_keywords(
             agent_state=agent_state,  # Not accessed during BM25 search
             user=user,
             query=key_words,
-            search_field="summary",
+            search_field="description",
             search_method=search_method,
             limit=limit,
             timezone_str=timezone_str,
@@ -2449,7 +2496,8 @@ async def retrieve_memories_by_keywords(
                 {
                     "id": procedure.id,
                     "entry_type": procedure.entry_type,
-                    "summary": procedure.summary,
+                    "name": procedure.name,
+                    "description": procedure.description,
                 }
                 for procedure in procedures
             ],
@@ -2829,7 +2877,7 @@ async def search_memory(
         search_field: Field to search in. Options vary by memory type:
                      - episodic: "summary", "details"
                      - resource: "summary", "content"
-                     - procedural: "summary", "steps"
+                     - procedural: "description", "instructions"
                      - knowledge_vault: "caption", "secret_value"
                      - semantic: "name", "summary", "details"
                      - For "all": use "null" (default)
@@ -3046,7 +3094,7 @@ async def search_memory(
                     user=user,
                     query=query,
                     embedded_text=(embedded_text if search_method == "embedding" and query else None),
-                    search_field=search_field if search_field != "null" else "steps",
+                    search_field=search_field if search_field != "null" else "description",
                     search_method=search_method,
                     limit=limit,
                     timezone_str=timezone_str,
@@ -3059,8 +3107,9 @@ async def search_memory(
                         "memory_type": "procedural",
                         "id": x.id,
                         "entry_type": x.entry_type,
-                        "summary": x.summary,
-                        "steps": x.steps,
+                        "name": x.name,
+                        "description": x.description,
+                        "instructions": x.instructions,
                     }
                     for x in memories
                 ]
@@ -3239,7 +3288,7 @@ async def search_memory(
                 user=user,
                 query=query,
                 embedded_text=(embedded_text if search_method == "embedding" and query else None),
-                search_field=search_field if search_field != "null" else "summary",
+                search_field=search_field if search_field != "null" else "description",
                 search_method=search_method,
                 limit=limit,
                 timezone_str=timezone_str,
@@ -3253,8 +3302,9 @@ async def search_memory(
                         "memory_type": "procedural",
                         "id": x.id,
                         "entry_type": x.entry_type,
-                        "summary": x.summary,
-                        "steps": x.steps,
+                        "name": x.name,
+                        "description": x.description,
+                        "instructions": x.instructions,
                     }
                     for x in procedural_memories
                 ]
@@ -3617,7 +3667,7 @@ async def search_memory_all_users(
                     organization_id=effective_org_id,
                     query=query,
                     embedded_text=(embedded_text if search_method == "embedding" and query else None),
-                    search_field=search_field if search_field != "null" else "summary",
+                    search_field=search_field if search_field != "null" else "description",
                     search_method=search_method,
                     limit=limit,
                     timezone_str="UTC",
@@ -3630,8 +3680,9 @@ async def search_memory_all_users(
                         "memory_type": "procedural",
                         "id": x.id,
                         "entry_type": x.entry_type,
-                        "summary": x.summary,
-                        "steps": x.steps,
+                        "name": x.name,
+                        "description": x.description,
+                        "instructions": x.instructions,
                         "user_id": str(x.user_id),
                     }
                     for x in memories
@@ -3795,7 +3846,7 @@ async def search_memory_all_users(
                 organization_id=effective_org_id,
                 query=query,
                 embedded_text=(embedded_text if search_method == "embedding" and query else None),
-                search_field=search_field if search_field != "null" else "summary",
+                search_field=search_field if search_field != "null" else "description",
                 search_method=search_method,
                 limit=limit,
                 timezone_str="UTC",
@@ -3810,8 +3861,9 @@ async def search_memory_all_users(
                         "user_id": x.user_id,
                         "id": x.id,
                         "entry_type": x.entry_type,
-                        "summary": x.summary,
-                        "steps": x.steps,
+                        "name": x.name,
+                        "description": x.description,
+                        "instructions": x.instructions,
                     }
                     for x in procedural_memories
                 ]
@@ -4067,7 +4119,7 @@ async def list_memory_components(
             agent_state=agent_state,
             user=user,
             query="",
-            search_field="summary",
+            search_field="description",
             search_method="bm25",
             limit=limit,
             timezone_str=timezone_str,
@@ -4078,8 +4130,9 @@ async def list_memory_components(
                 {
                     "id": item.id,
                     "entry_type": item.entry_type,
-                    "summary": item.summary,
-                    "steps": item.steps,
+                    "name": item.name,
+                    "description": item.description,
+                    "instructions": item.instructions,
                     "created_at": (item.created_at.isoformat() if getattr(item, "created_at", None) else None),
                     "updated_at": (item.updated_at.isoformat() if getattr(item, "updated_at", None) else None),
                 }
@@ -4192,7 +4245,7 @@ async def list_memory_fields(
     fields_by_type = {
         "episodic": ["summary", "details"],
         "semantic": ["name", "summary", "details"],
-        "procedural": ["summary", "steps"],
+        "procedural": ["description", "instructions"],
         "resource": ["summary", "content"],
         "knowledge_vault": ["caption", "secret_value"],
         "core": ["label", "value"],
@@ -4433,8 +4486,43 @@ async def delete_semantic_memory(
 class UpdateProceduralMemoryRequest(BaseModel):
     """Request model for updating a procedural memory."""
 
-    summary: Optional[str] = None
-    steps: Optional[List[str]] = None
+    name: Optional[str] = None
+    description: Optional[str] = None
+    instructions: Optional[str] = None
+    entry_type: Optional[str] = None
+    triggers: Optional[List[str]] = None
+    examples: Optional[List[dict]] = None
+
+
+class CreateSkillRequest(BaseModel):
+    """Request model for creating a skill."""
+
+    name: str
+    description: str
+    instructions: str
+    entry_type: str
+    triggers: Optional[List[str]] = []
+    examples: Optional[List[dict]] = []
+    user_id: Optional[str] = None
+
+
+class PatchSkillRequest(BaseModel):
+    """Request model for updating a skill (partial update)."""
+
+    name: Optional[str] = None
+    description: Optional[str] = None
+    instructions: Optional[str] = None
+    entry_type: Optional[str] = None
+    triggers: Optional[List[str]] = None
+    examples: Optional[List[dict]] = None
+    user_id: Optional[str] = None
+
+
+class SkillEvolveRequest(BaseModel):
+    """Request model for triggering skill evolution from messages."""
+
+    messages: List[str]
+    user_id: Optional[str] = None
 
 
 @router.patch("/memory/procedural/{memory_id}")
@@ -4468,26 +4556,64 @@ async def update_procedural_memory(
         raise HTTPException(status_code=404, detail=f"User {user_id} not found")
 
     try:
+        from mirix.functions.function_sets.memory_tools import _bump_patch_version
+
+        # Load current skill so we can auto-bump the version on any change.
+        try:
+            current_skill = await server.procedural_memory_manager.get_item_by_id(
+                item_id=memory_id, user=user, timezone_str="UTC", actor=client
+            )
+        except Exception:
+            raise HTTPException(status_code=404, detail=f"Procedural memory {memory_id} not found")
+        if not current_skill:
+            raise HTTPException(status_code=404, detail=f"Procedural memory {memory_id} not found")
+
         procedural_update_data = {"id": memory_id}
-        if request.summary is not None:
-            procedural_update_data["summary"] = request.summary
-        if request.steps is not None:
-            procedural_update_data["steps"] = request.steps
+        if request.name is not None:
+            procedural_update_data["name"] = request.name
+        if request.description is not None:
+            procedural_update_data["description"] = request.description
+        if request.instructions is not None:
+            procedural_update_data["instructions"] = request.instructions
+        if request.entry_type is not None:
+            procedural_update_data["entry_type"] = request.entry_type
+        if request.triggers is not None:
+            procedural_update_data["triggers"] = request.triggers
+        if request.examples is not None:
+            procedural_update_data["examples"] = request.examples
+
+        # Auto-bump version when anything actually changed so the legacy
+        # endpoint matches /v1/skills/{id} semantics.
+        if len(procedural_update_data) > 1:
+            current_version = getattr(current_skill, "version", "0.1.0") or "0.1.0"
+            procedural_update_data["version"] = _bump_patch_version(current_version)
+
+        # Pick an agent state so the manager can refresh embeddings for text edits.
+        agent_state = None
+        agents = await server.agent_manager.list_agents(actor=client, limit=1)
+        if agents:
+            agent_state = agents[0]
 
         updated_memory = await server.procedural_memory_manager.update_item(
             item_update=ProceduralMemoryItemUpdate.model_validate(procedural_update_data),
             user=user,
             actor=client,
+            agent_state=agent_state,
         )
         return {
             "success": True,
             "message": f"Procedural memory {memory_id} updated",
             "memory": {
                 "id": updated_memory.id,
-                "summary": updated_memory.summary,
-                "steps": updated_memory.steps,
+                "name": updated_memory.name,
+                "description": updated_memory.description,
+                "instructions": updated_memory.instructions,
+                "entry_type": updated_memory.entry_type,
+                "version": getattr(updated_memory, "version", None),
             },
         }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=404, detail=str(e))
 
@@ -4495,6 +4621,7 @@ async def update_procedural_memory(
 @router.delete("/memory/procedural/{memory_id}")
 async def delete_procedural_memory(
     memory_id: str,
+    user_id: Optional[str] = None,
     authorization: Optional[str] = Header(None),
     http_request: Request = None,
 ):
@@ -4507,9 +4634,577 @@ async def delete_procedural_memory(
 
     server = get_server()
 
+    # Resolve user so delete authorization matches read/update scoping.
+    if not user_id:
+        from mirix.services.admin_user_manager import ClientAuthManager
+
+        user_id = ClientAuthManager.get_admin_user_id_for_client(client.id)
+
+    user = await server.user_manager.get_user_by_id(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail=f"User {user_id} not found")
+
     try:
-        await server.procedural_memory_manager.delete_procedure_by_id(memory_id, actor=client)
+        await server.procedural_memory_manager.delete_procedure_by_id(
+            memory_id, actor=client, user=user
+        )
         return {"success": True, "message": f"Procedural memory {memory_id} deleted"}
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+# ============================================================================
+# Skill Endpoints (v1/skills)
+# ============================================================================
+
+
+async def _reset_agent_in_context_to_system(server, agent_id: str, actor) -> None:
+    """Force an agent's in-context history back to system-message-only.
+
+    Used by the skill-evolve endpoint to keep each evolve call STATELESS. The eval
+    drives ONE persistent procedural agent via repeated /v1/skills/evolve calls, so
+    we hard-reset before and after every call. Unlike the in-agent
+    finish_memory_update clear path, this is UNCONDITIONAL — it does not depend on
+    the LLM calling finish_memory_update or on all tool calls succeeding, so a
+    dirty-finished call can never leak messages into the next evolve and grow the
+    context unbounded.
+
+    Keeps index 0 (the system message) and hard-deletes the now-detached
+    conversation/tool/heartbeat messages so the DB does not accumulate them.
+    Idempotent: a no-op when the context is already system-only (or empty).
+
+    Concurrency: the read-then-write (read message_ids -> set [system] ->
+    delete-detached) is NOT atomic. The caller must serialize evolve calls per
+    agent. The eval driver is sequential, so this is safe there; a production
+    caller that may issue concurrent evolves for the SAME procedural agent should
+    add per-agent locking to avoid one reset deleting another call's mid-chain
+    messages.
+    """
+    refreshed = await server.agent_manager.get_agent_by_id(agent_id=agent_id, actor=actor)
+    msg_ids = refreshed.message_ids or []
+    if len(msg_ids) <= 1:
+        return  # already system-only (or empty) — nothing to clear
+    await server.agent_manager.set_in_context_messages(
+        agent_id=agent_id, message_ids=[msg_ids[0]], actor=actor
+    )
+    await server.message_manager.delete_detached_messages_for_agent(
+        agent_id=agent_id, actor=actor
+    )
+
+
+@router.post("/v1/skills/evolve")
+async def evolve_skills(
+    request: SkillEvolveRequest,
+    authorization: Optional[str] = Header(None),
+    http_request: Request = None,
+):
+    """
+    Trigger the Procedural Agent to extract/evolve skills from messages.
+
+    Snapshots skills before and after, then returns a diff of created/edited/deleted skills.
+
+    **Accepts both JWT (dashboard) and Client API Key (programmatic).**
+    """
+    from mirix.agent import ProceduralMemoryAgent
+    from mirix.constants import SKILL_EVOLVE_MAX_CHAINING_STEPS
+    from mirix.schemas.message import Message as PydanticMessage
+
+    client, auth_type = await get_client_from_jwt_or_api_key(authorization, http_request)
+    server = get_server()
+
+    # Resolve user
+    user_id = request.user_id
+    if not user_id:
+        from mirix.services.admin_user_manager import ClientAuthManager
+
+        user_id = ClientAuthManager.get_admin_user_id_for_client(client.id)
+
+    user = await server.user_manager.get_user_by_id(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail=f"User {user_id} not found")
+
+    timezone_str = getattr(user, "timezone", None) or "UTC"
+
+    # Find the procedural memory agent among meta agent's children. The
+    # comment said "among meta agent's children" but the original implementation
+    # only walked the top-level agent list — list_agents() defaults to
+    # parent_id=None and only top-level meta agents come back, with their
+    # `children` populated. Walk both top-level and children so this works
+    # whether the procedural agent lives standalone or under a meta agent.
+    all_agents = await server.agent_manager.list_agents(actor=client)
+    proc_agent_state = None
+    for agent in all_agents:
+        if agent.agent_type == AgentType.procedural_memory_agent:
+            proc_agent_state = agent
+            break
+        for child in (agent.children or []):
+            if child.agent_type == AgentType.procedural_memory_agent:
+                proc_agent_state = child
+                break
+        if proc_agent_state is not None:
+            break
+
+    if not proc_agent_state:
+        raise HTTPException(
+            status_code=404,
+            detail="No procedural memory agent found. Initialize a meta agent first.",
+        )
+
+    # Snapshot skills before
+    before_skills = await server.procedural_memory_manager.list_procedures(
+        agent_state=proc_agent_state,
+        user=user,
+        query="",
+        search_field="description",
+        search_method="bm25",
+        limit=1000,
+        timezone_str=timezone_str,
+        use_cache=False,
+    )
+    before_ids = {s.id for s in before_skills}
+    before_map = {s.id: s for s in before_skills}
+
+    # Build input messages for the agent. PydanticMessage requires
+    # content as a list of typed content parts; the `text=` kwarg on
+    # the schema was removed when the message model migrated to typed
+    # content unions, so we wrap the combined text in a TextContent.
+    from mirix.schemas.mirix_message_content import TextContent
+
+    combined_text = "\n".join(request.messages)
+    input_message = PydanticMessage(
+        role="user",
+        content=[TextContent(text=combined_text)],
+        agent_id=proc_agent_state.id,
+        name="user",
+    )
+
+    # Instantiate and run the procedural agent
+    proc_agent = ProceduralMemoryAgent(
+        agent_state=proc_agent_state,
+        interface=server.default_interface_factory(),
+        actor=client,
+        user=user,
+    )
+
+    # Force a clean, empty context BEFORE this evolve so the procedural agent
+    # never inherits messages from a prior (possibly dirty-finished) evolve call.
+    await _reset_agent_in_context_to_system(server, proc_agent_state.id, client)
+
+    try:
+        await proc_agent.step(
+            input_messages=[input_message],
+            chaining=True,
+            # Skill rounds can be long (survey many skills, read/create/edit
+            # several). Raise the chaining/tool budget for the evolve path only;
+            # the global MAX_CHAINING_STEPS for normal meta flow is untouched.
+            max_chaining_steps=SKILL_EVOLVE_MAX_CHAINING_STEPS,
+            actor=client,
+            user=user,
+        )
+    except Exception as e:
+        logger.error("Skill evolve agent step failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Skill evolution failed: {str(e)}")
+    finally:
+        # Unconditionally clear the in-context history AFTER the call (even on
+        # error) so the next evolve starts empty regardless of whether the LLM
+        # reached finish_memory_update or a tool failed. Cleanup failures must
+        # not mask the real result/error, so they are logged, not raised.
+        try:
+            await _reset_agent_in_context_to_system(server, proc_agent_state.id, client)
+        except Exception as cleanup_err:
+            logger.warning(
+                "Post-evolve procedural context reset failed: %s", cleanup_err
+            )
+
+    # Snapshot skills after
+    after_skills = await server.procedural_memory_manager.list_procedures(
+        agent_state=proc_agent_state,
+        user=user,
+        query="",
+        search_field="description",
+        search_method="bm25",
+        limit=1000,
+        timezone_str=timezone_str,
+        use_cache=False,
+    )
+    after_ids = {s.id for s in after_skills}
+    after_map = {s.id: s for s in after_skills}
+
+    # Compute diff
+    created_ids = after_ids - before_ids
+    deleted_ids = before_ids - after_ids
+    common_ids = before_ids & after_ids
+    edited_ids = set()
+    for sid in common_ids:
+        before_item = before_map[sid]
+        after_item = after_map[sid]
+        if (
+            before_item.version != after_item.version
+            or before_item.instructions != after_item.instructions
+            or before_item.description != after_item.description
+        ):
+            edited_ids.add(sid)
+
+    def _skill_summary(skill):
+        return {
+            "id": skill.id,
+            "name": skill.name,
+            "entry_type": skill.entry_type,
+            "description": skill.description,
+            "instructions": skill.instructions,
+            "version": getattr(skill, "version", None),
+        }
+
+    return {
+        "success": True,
+        "changes": {
+            "created": [_skill_summary(after_map[sid]) for sid in created_ids],
+            "edited": [_skill_summary(after_map[sid]) for sid in edited_ids],
+            "deleted": [_skill_summary(before_map[sid]) for sid in deleted_ids],
+        },
+        "summary": {
+            "created_count": len(created_ids),
+            "edited_count": len(edited_ids),
+            "deleted_count": len(deleted_ids),
+        },
+    }
+
+
+@router.get("/v1/skills")
+async def list_skills(
+    query: str = "",
+    limit: int = 50,
+    user_id: Optional[str] = None,
+    authorization: Optional[str] = Header(None),
+    http_request: Request = None,
+):
+    """
+    List or search skills (procedural memory items).
+
+    **Accepts both JWT (dashboard) and Client API Key (programmatic).**
+    """
+    client, auth_type = await get_client_from_jwt_or_api_key(authorization, http_request)
+    server = get_server()
+
+    # Resolve user
+    if not user_id:
+        from mirix.services.admin_user_manager import ClientAuthManager
+
+        user_id = ClientAuthManager.get_admin_user_id_for_client(client.id)
+
+    user = await server.user_manager.get_user_by_id(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail=f"User {user_id} not found")
+
+    timezone_str = getattr(user, "timezone", None) or "UTC"
+    limit = max(1, min(limit, 200))
+
+    # Need an agent state for the manager
+    agents = await server.agent_manager.list_agents(actor=client, limit=1)
+    if not agents:
+        raise HTTPException(status_code=404, detail="No agents found for this client")
+    agent_state = agents[0]
+
+    # Skill retrieval method: BM25 (keyword) by default; override to "embedding"
+    # (vector similarity) via env for the MetaClaw eval A/B experiment.
+    import os as _os
+
+    _skill_search_method = _os.environ.get("MIRIX_SKILL_SEARCH_METHOD", "bm25")
+    skills = await server.procedural_memory_manager.list_procedures(
+        agent_state=agent_state,
+        user=user,
+        query=query,
+        search_field="description",
+        search_method=_skill_search_method,
+        limit=limit,
+        timezone_str=timezone_str,
+    )
+
+    total_count = await server.procedural_memory_manager.get_total_number_of_items(user=user)
+
+    return {
+        "success": True,
+        "skills": [
+            {
+                "id": s.id,
+                "name": s.name,
+                "entry_type": s.entry_type,
+                "description": s.description,
+                "instructions": s.instructions,
+                "version": getattr(s, "version", None),
+                "created_at": (s.created_at.isoformat() if getattr(s, "created_at", None) else None),
+                "updated_at": (s.updated_at.isoformat() if getattr(s, "updated_at", None) else None),
+            }
+            for s in skills
+        ],
+        "total_count": total_count,
+    }
+
+
+@router.get("/v1/skills/{skill_id}")
+async def get_skill(
+    skill_id: str,
+    user_id: Optional[str] = None,
+    authorization: Optional[str] = Header(None),
+    http_request: Request = None,
+):
+    """
+    Get a single skill by ID with full content.
+
+    **Accepts both JWT (dashboard) and Client API Key (programmatic).**
+    """
+    client, auth_type = await get_client_from_jwt_or_api_key(authorization, http_request)
+    server = get_server()
+
+    # Resolve user
+    if not user_id:
+        from mirix.services.admin_user_manager import ClientAuthManager
+
+        user_id = ClientAuthManager.get_admin_user_id_for_client(client.id)
+
+    user = await server.user_manager.get_user_by_id(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail=f"User {user_id} not found")
+
+    timezone_str = getattr(user, "timezone", None) or "UTC"
+
+    try:
+        skill = await server.procedural_memory_manager.get_item_by_id(
+            item_id=skill_id, user=user, timezone_str=timezone_str, actor=client
+        )
+    except Exception:
+        raise HTTPException(status_code=404, detail=f"Skill {skill_id} not found")
+
+    if not skill:
+        raise HTTPException(status_code=404, detail=f"Skill {skill_id} not found")
+
+    return {
+        "success": True,
+        "skill": {
+            "id": skill.id,
+            "name": skill.name,
+            "entry_type": skill.entry_type,
+            "description": skill.description,
+            "instructions": skill.instructions,
+            "triggers": skill.triggers,
+            "examples": skill.examples,
+            "version": getattr(skill, "version", None),
+            "created_at": (skill.created_at.isoformat() if getattr(skill, "created_at", None) else None),
+            "updated_at": (skill.updated_at.isoformat() if getattr(skill, "updated_at", None) else None),
+        },
+    }
+
+
+@router.post("/v1/skills", status_code=201)
+async def create_skill(
+    request: CreateSkillRequest,
+    authorization: Optional[str] = Header(None),
+    http_request: Request = None,
+):
+    """
+    Create a new skill. Returns 409 if a skill with the same name already exists.
+
+    **Accepts both JWT (dashboard) and Client API Key (programmatic).**
+    """
+    client, auth_type = await get_client_from_jwt_or_api_key(authorization, http_request)
+    server = get_server()
+
+    # Resolve user
+    user_id = request.user_id
+    if not user_id:
+        from mirix.services.admin_user_manager import ClientAuthManager
+
+        user_id = ClientAuthManager.get_admin_user_id_for_client(client.id)
+
+    user = await server.user_manager.get_user_by_id(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail=f"User {user_id} not found")
+
+    timezone_str = getattr(user, "timezone", None) or "UTC"
+
+    # Need an agent state for insert
+    agents = await server.agent_manager.list_agents(actor=client, limit=1)
+    if not agents:
+        raise HTTPException(status_code=404, detail="No agents found for this client")
+    agent_state = agents[0]
+
+    # Check for duplicate name. Use an exact string match on the `name`
+    # column so a name like "deploy-production" is not silently accepted
+    # just because no existing description contains that token.
+    existing = await server.procedural_memory_manager.list_procedures(
+        agent_state=agent_state,
+        user=user,
+        query=request.name,
+        search_field="name",
+        search_method="string_match",
+        limit=200,
+        timezone_str=timezone_str,
+        use_cache=False,
+    )
+    for skill in existing:
+        if skill.name == request.name:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Skill with name '{request.name}' already exists (ID: {skill.id})",
+            )
+
+    try:
+        created = await server.procedural_memory_manager.insert_procedure(
+            agent_state=agent_state,
+            agent_id=agent_state.id,
+            name=request.name,
+            description=request.description,
+            instructions=request.instructions,
+            entry_type=request.entry_type,
+            triggers=request.triggers or [],
+            examples=request.examples or [],
+            version="0.1.0",
+            actor=client,
+            organization_id=user.organization_id,
+            user_id=user_id,
+        )
+    except UniqueConstraintViolationError as e:
+        # Race: pre-check missed a concurrent insert. DB is source of truth.
+        raise HTTPException(status_code=409, detail=str(e))
+    except Exception as e:
+        logger.error("Failed to create skill: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to create skill: {str(e)}")
+
+    return {
+        "success": True,
+        "skill": {
+            "id": created.id,
+            "name": created.name,
+            "entry_type": created.entry_type,
+            "description": created.description,
+            "instructions": created.instructions,
+            "version": getattr(created, "version", "0.1.0"),
+            "created_at": (created.created_at.isoformat() if getattr(created, "created_at", None) else None),
+        },
+    }
+
+
+@router.patch("/v1/skills/{skill_id}")
+async def patch_skill(
+    skill_id: str,
+    request: PatchSkillRequest,
+    authorization: Optional[str] = Header(None),
+    http_request: Request = None,
+):
+    """
+    Partially update a skill. Auto-bumps the version.
+
+    **Accepts both JWT (dashboard) and Client API Key (programmatic).**
+    """
+    from mirix.functions.function_sets.memory_tools import _bump_patch_version
+
+    client, auth_type = await get_client_from_jwt_or_api_key(authorization, http_request)
+    server = get_server()
+
+    # Resolve user
+    user_id = request.user_id
+    if not user_id:
+        from mirix.services.admin_user_manager import ClientAuthManager
+
+        user_id = ClientAuthManager.get_admin_user_id_for_client(client.id)
+
+    user = await server.user_manager.get_user_by_id(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail=f"User {user_id} not found")
+
+    timezone_str = getattr(user, "timezone", None) or "UTC"
+
+    # Get current skill to read its version
+    try:
+        current_skill = await server.procedural_memory_manager.get_item_by_id(
+            item_id=skill_id, user=user, timezone_str=timezone_str, actor=client
+        )
+    except Exception:
+        raise HTTPException(status_code=404, detail=f"Skill {skill_id} not found")
+
+    if not current_skill:
+        raise HTTPException(status_code=404, detail=f"Skill {skill_id} not found")
+
+    # Build update data, auto-bump version
+    update_data = {"id": skill_id}
+    if request.name is not None:
+        update_data["name"] = request.name
+    if request.description is not None:
+        update_data["description"] = request.description
+    if request.instructions is not None:
+        update_data["instructions"] = request.instructions
+    if request.entry_type is not None:
+        update_data["entry_type"] = request.entry_type
+    if request.triggers is not None:
+        update_data["triggers"] = request.triggers
+    if request.examples is not None:
+        update_data["examples"] = request.examples
+
+    # Auto-bump version
+    current_version = getattr(current_skill, "version", "0.1.0") or "0.1.0"
+    update_data["version"] = _bump_patch_version(current_version)
+
+    # Pull an agent state so the manager can refresh embeddings on text edits.
+    agent_state = None
+    agents = await server.agent_manager.list_agents(actor=client, limit=1)
+    if agents:
+        agent_state = agents[0]
+
+    try:
+        updated = await server.procedural_memory_manager.update_item(
+            item_update=ProceduralMemoryItemUpdate.model_validate(update_data),
+            user=user,
+            actor=client,
+            agent_state=agent_state,
+        )
+    except Exception as e:
+        logger.error("Failed to update skill %s: %s", skill_id, e, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to update skill: {str(e)}")
+
+    return {
+        "success": True,
+        "skill": {
+            "id": updated.id,
+            "name": updated.name,
+            "entry_type": updated.entry_type,
+            "description": updated.description,
+            "instructions": updated.instructions,
+            "version": getattr(updated, "version", None),
+            "updated_at": (updated.updated_at.isoformat() if getattr(updated, "updated_at", None) else None),
+        },
+    }
+
+
+@router.delete("/v1/skills/{skill_id}")
+async def delete_skill(
+    skill_id: str,
+    user_id: Optional[str] = None,
+    authorization: Optional[str] = Header(None),
+    http_request: Request = None,
+):
+    """
+    Delete a skill by ID.
+
+    **Accepts both JWT (dashboard) and Client API Key (programmatic).**
+    """
+    client, auth_type = await get_client_from_jwt_or_api_key(authorization, http_request)
+    server = get_server()
+
+    # Resolve user so delete authorization matches the read/update scoping.
+    if not user_id:
+        from mirix.services.admin_user_manager import ClientAuthManager
+
+        user_id = ClientAuthManager.get_admin_user_id_for_client(client.id)
+
+    user = await server.user_manager.get_user_by_id(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail=f"User {user_id} not found")
+
+    try:
+        await server.procedural_memory_manager.delete_procedure_by_id(
+            skill_id, actor=client, user=user
+        )
+        return {"success": True, "message": f"Skill {skill_id} deleted"}
     except Exception as e:
         raise HTTPException(status_code=404, detail=str(e))
 

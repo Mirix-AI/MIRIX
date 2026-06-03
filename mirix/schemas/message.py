@@ -45,6 +45,44 @@ from mirix.schemas.openai.openai import ToolCall as OpenAIToolCall
 from mirix.system import unpack_message
 
 
+import re
+
+# Single source of truth for the session_id column. The DB CHECK constraint in
+# mirix/orm/message.py and the SQL migration in scripts/migrate_add_message_session_id.sql
+# are derived from these — keep them in sync via tests/test_session_id.py.
+SESSION_ID_MAX_LEN = 64
+SESSION_ID_ALLOWED_CHARS = "A-Za-z0-9_-"
+# Python-side Pattern: at least 1 char. The length cap is enforced separately so
+# we can return a precise error message.
+SESSION_ID_PATTERN = f"^[{SESSION_ID_ALLOWED_CHARS}]+$"
+# DB-side pattern includes the length cap inline because Postgres regex has no
+# "length=max" notion beyond a bounded quantifier.
+SESSION_ID_SQL_PATTERN = f"^[{SESSION_ID_ALLOWED_CHARS}]{{1,{SESSION_ID_MAX_LEN}}}$"
+_SESSION_ID_RE = re.compile(SESSION_ID_PATTERN)
+
+
+def _validate_session_id(value: Optional[str]) -> Optional[str]:
+    """Shared validator for the top-level session_id field.
+
+    Accepts None or a non-empty string of [A-Za-z0-9_-], up to SESSION_ID_MAX_LEN.
+    Rejects empty strings so the DB layer never stores an ambiguous "".
+    """
+    if value is None:
+        return None
+    if not isinstance(value, str) or value == "":
+        raise ValueError("session_id must be a non-empty string or null")
+    if len(value) > SESSION_ID_MAX_LEN:
+        raise ValueError(
+            f"session_id exceeds max length of {SESSION_ID_MAX_LEN}"
+        )
+    if not _SESSION_ID_RE.match(value):
+        raise ValueError(
+            f"session_id must match [{SESSION_ID_ALLOWED_CHARS}]+ "
+            "(letters, digits, '_' or '-')"
+        )
+    return value
+
+
 class BaseMessage(OrmMetadataBase):
     __id_prefix__ = "message"
 
@@ -69,9 +107,22 @@ class MessageCreate(BaseModel):
         description="The id of the sender of the message, can be an identity id or agent id",
     )
     group_id: Optional[str] = Field(None, description="The multi-agent group that the message was sent in")
+    session_id: Optional[str] = Field(
+        None,
+        description=(
+            "Optional top-level conversation/session identifier. Messages sharing a session_id "
+            "belong to the same logical interaction. Must match [a-zA-Z0-9_-]+ and be <= 64 chars."
+        ),
+        examples=["sess-xyz"],
+    )
     filter_tags: Optional[Dict[str, Any]] = Field(
         None, description="Optional tags for filtering and categorizing this message and related memories"
     )
+
+    @field_validator("session_id")
+    @classmethod
+    def _check_session_id(cls, v: Optional[str]) -> Optional[str]:
+        return _validate_session_id(v)
 
     def model_dump(self, to_orm: bool = False, **kwargs) -> Dict[str, Any]:
         data = super().model_dump(**kwargs)
@@ -100,6 +151,15 @@ class MessageUpdate(BaseModel):
     # created_at: Optional[datetime] = Field(None, description="The time the message was created.")
     tool_calls: Optional[List[OpenAIToolCall,]] = Field(None, description="The list of tool calls requested.")
     tool_call_id: Optional[str] = Field(None, description="The id of the tool call.")
+    session_id: Optional[str] = Field(
+        None,
+        description="Update the message's top-level session_id. Same validation as MessageCreate.session_id.",
+    )
+
+    @field_validator("session_id")
+    @classmethod
+    def _check_session_id(cls, v: Optional[str]) -> Optional[str]:
+        return _validate_session_id(v)
 
     def model_dump(self, to_orm: bool = False, **kwargs) -> Dict[str, Any]:
         data = super().model_dump(**kwargs)
@@ -157,6 +217,13 @@ class Message(BaseMessage):
         None,
         description="The id of the sender of the message, can be an identity id or agent id",
     )
+    session_id: Optional[str] = Field(
+        None,
+        description=(
+            "Top-level conversation/session identifier. Messages sharing a session_id belong to "
+            "the same logical interaction. Indexed column; must match [a-zA-Z0-9_-]+ and be <= 64 chars."
+        ),
+    )
     # This overrides the optional base orm schema, created_at MUST exist on all messages objects
     created_at: datetime = Field(
         default_factory=get_utc_time,
@@ -178,6 +245,11 @@ class Message(BaseMessage):
         roles = ["system", "assistant", "user", "tool"]
         assert v in roles, f"Role must be one of {roles}"
         return v
+
+    @field_validator("session_id")
+    @classmethod
+    def _check_session_id(cls, v: Optional[str]) -> Optional[str]:
+        return _validate_session_id(v)
 
     def to_json(self):
         json_message = vars(self)
@@ -457,6 +529,7 @@ class Message(BaseMessage):
         name: Optional[str] = None,
         group_id: Optional[str] = None,
         tool_returns: Optional[List[ToolReturn]] = None,
+        session_id: Optional[str] = None,
     ):
         """Convert a ChatCompletion message object into a Message object (synced to DB)"""
         if not created_at:
@@ -516,6 +589,7 @@ class Message(BaseMessage):
                     id=str(id),
                     tool_returns=tool_returns,
                     group_id=group_id,
+                    session_id=session_id,
                 )
             else:
                 return Message(
@@ -530,6 +604,7 @@ class Message(BaseMessage):
                     created_at=created_at,
                     tool_returns=tool_returns,
                     group_id=group_id,
+                    session_id=session_id,
                 )
 
         elif "function_call" in openai_message_dict and openai_message_dict["function_call"] is not None:
@@ -565,6 +640,7 @@ class Message(BaseMessage):
                     id=str(id),
                     tool_returns=tool_returns,
                     group_id=group_id,
+                    session_id=session_id,
                 )
             else:
                 return Message(
@@ -579,6 +655,7 @@ class Message(BaseMessage):
                     created_at=created_at,
                     tool_returns=tool_returns,
                     group_id=group_id,
+                    session_id=session_id,
                 )
 
         else:
@@ -628,6 +705,7 @@ class Message(BaseMessage):
                     id=str(id),
                     tool_returns=tool_returns,
                     group_id=group_id,
+                    session_id=session_id,
                 )
             else:
                 return Message(
@@ -642,6 +720,7 @@ class Message(BaseMessage):
                     created_at=created_at,
                     tool_returns=tool_returns,
                     group_id=group_id,
+                    session_id=session_id,
                 )
 
     def to_openai_dict_search_results(self, max_tool_id_length: int = TOOL_CALL_ID_MAX_LEN) -> dict:

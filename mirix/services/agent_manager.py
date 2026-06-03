@@ -14,7 +14,7 @@ from mirix.constants import (
     KNOWLEDGE_VAULT_TOOLS,
     MCP_TOOLS,
     META_MEMORY_TOOLS,
-    PROCEDURAL_MEMORY_TOOLS,
+    SKILL_TOOLS,
     RESOURCE_MEMORY_TOOLS,
     SEARCH_MEMORY_TOOLS,
     SEMANTIC_MEMORY_TOOLS,
@@ -124,7 +124,7 @@ class AgentManager:
         if agent_create.agent_type == AgentType.episodic_memory_agent:
             tool_names.extend(EPISODIC_MEMORY_TOOLS + UNIVERSAL_MEMORY_TOOLS)
         if agent_create.agent_type == AgentType.procedural_memory_agent:
-            tool_names.extend(PROCEDURAL_MEMORY_TOOLS + UNIVERSAL_MEMORY_TOOLS)
+            tool_names.extend(SKILL_TOOLS + UNIVERSAL_MEMORY_TOOLS)
         if agent_create.agent_type == AgentType.resource_memory_agent:
             tool_names.extend(RESOURCE_MEMORY_TOOLS + UNIVERSAL_MEMORY_TOOLS)
         if agent_create.agent_type == AgentType.knowledge_vault_memory_agent:
@@ -559,7 +559,7 @@ class AgentManager:
         if agent_state.agent_type == AgentType.episodic_memory_agent:
             tool_names.extend(EPISODIC_MEMORY_TOOLS + UNIVERSAL_MEMORY_TOOLS)
         if agent_state.agent_type == AgentType.procedural_memory_agent:
-            tool_names.extend(PROCEDURAL_MEMORY_TOOLS + UNIVERSAL_MEMORY_TOOLS)
+            tool_names.extend(SKILL_TOOLS + UNIVERSAL_MEMORY_TOOLS)
         if agent_state.agent_type == AgentType.resource_memory_agent:
             tool_names.extend(RESOURCE_MEMORY_TOOLS + UNIVERSAL_MEMORY_TOOLS)
         if agent_state.agent_type == AgentType.knowledge_vault_memory_agent:
@@ -1588,7 +1588,10 @@ class AgentManager:
             actor: The Client performing the operation.
             user_id: The user whose messages to trim. If None, trims all non-system messages.
         """
-        message_ids = await self.get_agent_by_id(agent_id=agent_id, actor=actor).message_ids
+        # get_agent_by_id is async — await the coroutine FIRST, then read .message_ids.
+        # `await X.message_ids` would bind await to the attribute access on the un-awaited
+        # coroutine -> "AttributeError: 'coroutine' object has no attribute 'message_ids'".
+        message_ids = (await self.get_agent_by_id(agent_id=agent_id, actor=actor)).message_ids
         system_message_id = message_ids[0]
         message_ids = message_ids[1:]
 
@@ -1624,7 +1627,10 @@ class AgentManager:
             actor: The Client performing the operation.
             user_id: The user whose messages to remove. If None, removes all non-system messages.
         """
-        message_ids = await self.get_agent_by_id(agent_id=agent_id, actor=actor).message_ids
+        # get_agent_by_id is async — await the coroutine FIRST, then read .message_ids.
+        # `await X.message_ids` would bind await to the attribute access on the un-awaited
+        # coroutine -> "AttributeError: 'coroutine' object has no attribute 'message_ids'".
+        message_ids = (await self.get_agent_by_id(agent_id=agent_id, actor=actor)).message_ids
         system_message_id = message_ids[0]  # 0 is system message
 
         # Keep system message and only filter out messages belonging to the specified user
@@ -1644,7 +1650,10 @@ class AgentManager:
         actor: PydanticClient,
         user_id: Optional[str] = None,
     ) -> PydanticAgentState:
-        message_ids = await self.get_agent_by_id(agent_id=agent_id, actor=actor).message_ids
+        # get_agent_by_id is async — await the coroutine FIRST, then read .message_ids.
+        # `await X.message_ids` would bind await to the attribute access on the un-awaited
+        # coroutine -> "AttributeError: 'coroutine' object has no attribute 'message_ids'".
+        message_ids = (await self.get_agent_by_id(agent_id=agent_id, actor=actor)).message_ids
         new_messages = await self.message_manager.create_many_messages(messages, actor=actor, user_id=user_id)
         message_ids = [message_ids[0]] + [m.id for m in new_messages] + message_ids[1:]
         return await self.set_in_context_messages(agent_id=agent_id, message_ids=message_ids, actor=actor)

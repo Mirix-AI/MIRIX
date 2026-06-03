@@ -10,7 +10,10 @@ import { useSearchParams } from 'react-router-dom';
 interface MemoryResult {
   memory_type: string;
   id: string;
+  name?: string;
   summary?: string;
+  description?: string;
+  instructions?: string;
   details?: string;
   content?: string;
   caption?: string;
@@ -54,9 +57,10 @@ interface SemanticMemory {
 
 interface ProceduralMemory {
   id: string;
+  name?: string;
   entry_type?: string;
-  summary?: string;
-  steps?: string[];
+  description?: string;
+  instructions?: string;
   created_at?: string;
   updated_at?: string;
 }
@@ -103,7 +107,7 @@ const DEFAULT_FIELDS: Record<MemoryTypeFilter, string[]> = {
   all: [],
   episodic: ['summary', 'details'],
   semantic: ['name', 'summary', 'details'],
-  procedural: ['summary', 'steps'],
+  procedural: ['description', 'instructions'],
   resource: ['summary', 'content'],
   knowledge_vault: ['caption', 'secret_value'],
   core: ['label', 'value'],
@@ -448,8 +452,8 @@ export const Memories: React.FC = () => {
                     {item.created_at && <span>{formatDate(item.created_at)}</span>}
                   </div>
                   <div className="flex items-start justify-between gap-2">
-                    <div className="font-semibold text-base">{item.summary || 'No summary'}</div>
-                    {item.steps && item.steps.length > 0 && (
+                    <div className="font-semibold text-base">{item.name || item.description || 'No description'}</div>
+                    {item.instructions && (
                       <button
                         type="button"
                         onClick={() => toggleProcedural(item.id)}
@@ -467,16 +471,17 @@ export const Memories: React.FC = () => {
                       </button>
                     )}
                   </div>
-                  {item.steps && item.steps.length > 0 ? (
+                  {item.name && item.description && (
+                    <p className="text-sm text-muted-foreground">{item.description}</p>
+                  )}
+                  {item.instructions ? (
                     expandedProcedural[item.id] ? (
-                      <ul className="list-decimal space-y-1 pl-5 text-sm text-muted-foreground">
-                        {item.steps.map((step, idx) => (
-                          <li key={`${item.id}-step-${idx}`}>{step}</li>
-                        ))}
-                      </ul>
+                      <p className="text-sm text-muted-foreground whitespace-pre-wrap">
+                        {item.instructions}
+                      </p>
                     ) : null
                   ) : (
-                    <p className="text-sm text-muted-foreground">No steps recorded.</p>
+                    <p className="text-sm text-muted-foreground">No instructions recorded.</p>
                   )}
                 </CardContent>
               </Card>
@@ -732,10 +737,14 @@ export const Memories: React.FC = () => {
                       )}
                     </div>
                     <h4 className="font-medium text-lg mb-1">
-                      {memory.summary || memory.caption || 'No summary'}
+                      {memory.memory_type === 'procedural'
+                        ? (memory.name || memory.description || 'No description')
+                        : (memory.summary || memory.caption || 'No summary')}
                     </h4>
                     <p className="text-sm text-muted-foreground line-clamp-3">
-                      {memory.details || memory.content || 'No additional details.'}
+                      {memory.memory_type === 'procedural'
+                        ? (memory.instructions || memory.description || 'No additional details.')
+                        : (memory.details || memory.content || 'No additional details.')}
                     </p>
                   </div>
                 </Card>

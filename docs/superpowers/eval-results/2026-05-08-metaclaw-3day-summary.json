@@ -1,0 +1,280 @@
+{
+  "run_id": "20260508-134433-8362f8",
+  "days": [
+    {
+      "day": "day01",
+      "n_rounds": 10,
+      "n_passed": 1,
+      "pass_rate": 0.1,
+      "per_round": [
+        {
+          "id": "r1",
+          "type": "file_check",
+          "outcome": "fail",
+          "reward": 0.0,
+          "error": null
+        },
+        {
+          "id": "r2",
+          "type": "file_check",
+          "outcome": "fail",
+          "reward": 0.0,
+          "error": null
+        },
+        {
+          "id": "r3",
+          "type": "multi_choice",
+          "outcome": "pass",
+          "reward": 1.0,
+          "error": null
+        },
+        {
+          "id": "r4",
+          "type": "file_check",
+          "outcome": "fail",
+          "reward": 0.0,
+          "error": null
+        },
+        {
+          "id": "r5",
+          "type": "file_check",
+          "outcome": "fail",
+          "reward": 0.0,
+          "error": null
+        },
+        {
+          "id": "r6",
+          "type": "multi_choice",
+          "outcome": "fail",
+          "reward": 0.0,
+          "error": null
+        },
+        {
+          "id": "r7",
+          "type": "file_check",
+          "outcome": "fail",
+          "reward": 0.0,
+          "error": null
+        },
+        {
+          "id": "r8",
+          "type": "multi_choice",
+          "outcome": "fail",
+          "reward": 0.0,
+          "error": null
+        },
+        {
+          "id": "r9",
+          "type": "file_check",
+          "outcome": "fail",
+          "reward": 0.0,
+          "error": null
+        },
+        {
+          "id": "r10",
+          "type": "multi_choice",
+          "outcome": "fail",
+          "reward": 0.0,
+          "error": null
+        }
+      ],
+      "evolve_status": "ok",
+      "evolve_diff": {
+        "produced_skills": [
+          "validate-and-normalize-json-timestamps-for-log-analysis-reports"
+        ]
+      }
+    },
+    {
+      "day": "day02",
+      "n_rounds": 11,
+      "n_passed": 10,
+      "pass_rate": 0.9090909090909091,
+      "per_round": [
+        {
+          "id": "r1",
+          "type": "file_check",
+          "outcome": "pass",
+          "reward": 1.0,
+          "error": null
+        },
+        {
+          "id": "r2",
+          "type": "file_check",
+          "outcome": "pass",
+          "reward": 1.0,
+          "error": null
+        },
+        {
+          "id": "r3",
+          "type": "file_check",
+          "outcome": "pass",
+          "reward": 1.0,
+          "error": null
+        },
+        {
+          "id": "r4",
+          "type": "multi_choice",
+          "outcome": "pass",
+          "reward": 1.0,
+          "error": null
+        },
+        {
+          "id": "r5",
+          "type": "file_check",
+          "outcome": "pass",
+          "reward": 1.0,
+          "error": null
+        },
+        {
+          "id": "r6",
+          "type": "file_check",
+          "outcome": "pass",
+          "reward": 1.0,
+          "error": null
+        },
+        {
+          "id": "r7",
+          "type": "multi_choice",
+          "outcome": "pass",
+          "reward": 1.0,
+          "error": null
+        },
+        {
+          "id": "r8",
+          "type": "file_check",
+          "outcome": "pass",
+          "reward": 1.0,
+          "error": null
+        },
+        {
+          "id": "r9",
+          "type": "multi_choice",
+          "outcome": "fail",
+          "reward": 0.0,
+          "error": null
+        },
+        {
+          "id": "r10",
+          "type": "file_check",
+          "outcome": "pass",
+          "reward": 1.0,
+          "error": null
+        },
+        {
+          "id": "r11",
+          "type": "multi_choice",
+          "outcome": "pass",
+          "reward": 1.0,
+          "error": null
+        }
+      ],
+      "evolve_status": "ok",
+      "evolve_diff": {
+        "produced_skills": [
+          "normalize-project-management-json-time-fields-iso8601-plus0800"
+        ]
+      }
+    },
+    {
+      "day": "day03",
+      "n_rounds": 12,
+      "n_passed": 8,
+      "pass_rate": 0.6666666666666666,
+      "per_round": [
+        {
+          "id": "r1",
+          "type": "file_check",
+          "outcome": "pass",
+          "reward": 1.0,
+          "error": "turn_limit"
+        },
+        {
+          "id": "r2",
+          "type": "file_check",
+          "outcome": "fail",
+          "reward": 0.0,
+          "error": null
+        },
+        {
+          "id": "r3",
+          "type": "multi_choice",
+          "outcome": "pass",
+          "reward": 1.0,
+          "error": null
+        },
+        {
+          "id": "r4",
+          "type": "file_check",
+          "outcome": "pass",
+          "reward": 1.0,
+          "error": null
+        },
+        {
+          "id": "r5",
+          "type": "file_check",
+          "outcome": "fail",
+          "reward": 0.0,
+          "error": "wallclock_cap"
+        },
+        {
+          "id": "r6",
+          "type": "multi_choice",
+          "outcome": "pass",
+          "reward": 1.0,
+          "error": null
+        },
+        {
+          "id": "r7",
+          "type": "file_check",
+          "outcome": "pass",
+          "reward": 1.0,
+          "error": null
+        },
+        {
+          "id": "r8",
+          "type": "file_check",
+          "outcome": "pass",
+          "reward": 1.0,
+          "error": null
+        },
+        {
+          "id": "r9",
+          "type": "multi_choice",
+          "outcome": "pass",
+          "reward": 1.0,
+          "error": null
+        },
+        {
+          "id": "r10",
+          "type": "file_check",
+          "outcome": "fail",
+          "reward": 0.0,
+          "error": null
+        },
+        {
+          "id": "r11",
+          "type": "multi_choice",
+          "outcome": "fail",
+          "reward": 0.0,
+          "error": null
+        },
+        {
+          "id": "r12",
+          "type": "file_check",
+          "outcome": "pass",
+          "reward": 1.0,
+          "error": null
+        }
+      ],
+      "evolve_status": "ok",
+      "evolve_diff": {
+        "produced_skills": [
+          "produce-daily-api-log-analysis-json-report-bundle"
+        ]
+      }
+    }
+  ],
+  "started_at": "2026-05-08T13:44:33.886562",
+  "finished_at": "2026-05-08T14:09:53.240327"
+}

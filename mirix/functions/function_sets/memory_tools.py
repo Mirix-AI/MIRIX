@@ -20,7 +20,7 @@ from mirix.observability.langfuse_client import get_langfuse_client
 from mirix.schemas.episodic_memory import EpisodicEventForLLM
 from mirix.schemas.knowledge_vault import KnowledgeVaultItemBase
 from mirix.schemas.mirix_message_content import TextContent
-from mirix.schemas.procedural_memory import ProceduralMemoryItemBase
+
 from mirix.schemas.resource_memory import ResourceMemoryItemBase
 from mirix.schemas.semantic_memory import SemanticMemoryItemBase
 
@@ -437,134 +437,315 @@ async def resource_memory_update(self: "Agent", old_ids: List[str], new_items: L
         )
 
 
-async def procedural_memory_insert(self: "Agent", items: List[ProceduralMemoryItemBase]):
-    """
-    The tool to insert new procedures into procedural memory. Note that the `summary` should not be a general term such as "guide" or "workflow" but rather a more informative description of the procedure.
+def _bump_patch_version(version: str) -> str:
+    """Increment patch version: '0.1.0' -> '0.1.1'.
 
     Args:
-        items (array): List of procedural memory items to insert.
+        version (str): Semver version string to bump.
+    """
+    try:
+        parts = version.split(".")
+        parts[-1] = str(int(parts[-1]) + 1)
+        return ".".join(parts)
+    except (ValueError, IndexError):
+        return "0.1.1"
+
+
+async def skill_list(self: "Agent", query: str = "", limit: int = 50) -> str:
+    """
+    List skills with optional search query.
+
+    Args:
+        query (str): Optional search term to filter skills. Empty string returns all skills.
+        limit (int): Maximum number of skills to return. Default 50.
 
     Returns:
-        Optional[str]: Message about insertion results including any duplicates detected.
+        str: Formatted list of skills with id, name, description, entry_type, and version.
     """
-    agent_id = self.agent_state.parent_id if self.agent_state.parent_id is not None else self.agent_state.id
-
-    # Get filter_tags, use_cache, client_id, and user_id from agent instance
     filter_tags = getattr(self, "filter_tags", None)
     use_cache = getattr(self, "use_cache", True)
-    client_id = getattr(self, "client_id", None)
-    user_id = getattr(self, "user_id", None)
 
-    inserted_count = 0
-    skipped_count = 0
-    skipped_summaries = []
+    skills = await self.procedural_memory_manager.list_procedures(
+        agent_state=self.agent_state,
+        user=self.user,
+        query=query,
+        search_field="description" if query else "",
+        search_method="bm25" if query else "",
+        limit=limit,
+        filter_tags=filter_tags if filter_tags else None,
+        use_cache=use_cache,
+    )
 
-    for item in items:
-        # Check for existing similar procedures (by summary and filter_tags)
-        existing_procedures = await self.procedural_memory_manager.list_procedures(
+    if not skills:
+        return "No skills found."
+
+    lines = []
+    for skill in skills:
+        lines.append(
+            f"[ID: {skill.id}] {skill.name} (v{skill.version}) - {skill.entry_type}: {skill.description}"
+        )
+    return "\n".join(lines)
+
+
+async def skill_read(self: "Agent", name_or_id: str) -> str:
+    """
+    Read the complete content of a skill by name or ID.
+
+    Args:
+        name_or_id (str): The skill name (e.g. "deploy-production") or ID (e.g. "proc-xxx").
+
+    Returns:
+        str: Full skill content including all fields.
+    """
+    filter_tags = getattr(self, "filter_tags", None)
+    use_cache = getattr(self, "use_cache", True)
+    skill = None
+
+    if name_or_id.startswith("proc"):
+        try:
+            skill = await self.procedural_memory_manager.get_item_by_id(
+                item_id=name_or_id, user=self.user, timezone_str="UTC", actor=self.actor
+            )
+        except Exception:
+            pass
+
+    if skill is None:
+        results = await self.procedural_memory_manager.list_procedures(
             agent_state=self.agent_state,
-            user=self.user,  # User for read operations (data filtering)
-            query="",  # Get all procedures
-            limit=1000,  # Get enough to check for duplicates
+            user=self.user,
+            query=name_or_id,
+            search_field="name",
+            search_method="string_match",
+            limit=1,
             filter_tags=filter_tags if filter_tags else None,
             use_cache=use_cache,
         )
+        if results:
+            skill = results[0]
 
-        # Check if this procedure already exists
-        is_duplicate = False
-        for existing in existing_procedures:
-            if existing.summary == item["summary"] and existing.steps == item["steps"]:
-                is_duplicate = True
-                skipped_count += 1
-                skipped_summaries.append(item["summary"])
-                break
+    if skill is None:
+        return f"Skill '{name_or_id}' not found."
 
-        if not is_duplicate:
-            try:
-                await self.procedural_memory_manager.insert_procedure(
-                    agent_state=self.agent_state,
-                    agent_id=agent_id,
-                    entry_type=item["entry_type"],
-                    summary=item["summary"],
-                    steps=item["steps"],
-                    actor=self.actor,
-                    organization_id=self.user.organization_id,
-                    filter_tags=filter_tags if filter_tags else None,
-                    use_cache=use_cache,
-                    user_id=user_id,
-                )
-            except Exception as e:
-                print(
-                    f"[procedural_memory_insert] insert_procedure FAILED for "
-                    f"item {item!r}: {e}"
-                )
-                traceback.print_exc()
-                raise
-            inserted_count += 1
-
-    # Return feedback message
-    if skipped_count > 0:
-        skipped_list = ", ".join(f"'{s}'" for s in skipped_summaries[:3])
-        if len(skipped_summaries) > 3:
-            skipped_list += f" and {len(skipped_summaries) - 3} more"
-        return f"Inserted {inserted_count} new procedure(s). Skipped {skipped_count} duplicate(s): {skipped_list}."
-    elif inserted_count > 0:
-        return f"Successfully inserted {inserted_count} new procedure(s)."
-    else:
-        return "No procedures were inserted."
+    parts = [
+        f"ID: {skill.id}",
+        f"Name: {skill.name}",
+        f"Version: {skill.version}",
+        f"Entry Type: {skill.entry_type}",
+        f"Description: {skill.description}",
+        f"Instructions:\n{skill.instructions}",
+        f"Triggers: {skill.triggers}",
+        f"Examples: {skill.examples}",
+    ]
+    return "\n".join(parts)
 
 
-async def procedural_memory_update(self: "Agent", old_ids: List[str], new_items: List[ProceduralMemoryItemBase]):
+async def skill_create(
+    self: "Agent",
+    name: str,
+    description: str,
+    instructions: str,
+    entry_type: str,
+    triggers: List[str] = None,
+    examples: List[dict] = None,
+) -> str:
     """
-    The tool to update/delete items in the procedural memory. To update the memory, set the old_ids to be the ids of the items that needs to be updated and new_items as the updated items. Note that the number of new items does not need to be the same as the number of old ids as it is not a one-to-one mapping. To delete the memory, set the old_ids to be the ids of the items that needs to be deleted and new_items as an empty list.
+    Create a new skill. Fails if a skill with the same name already exists.
 
     Args:
-        old_ids (array): List of ids of the items to be deleted (or updated).
-        new_items (array): List of new procedural memory items to insert. If this is an empty list, then it means that the items are being deleted.
+        name (str): Concise kebab-case identifier (e.g. "deploy-production").
+        description (str): What this skill does and when it's useful.
+        instructions (str): Detailed instructions as plain text.
+        entry_type (str): Category — "workflow", "guide", or "script".
+        triggers (array): Optional list of conditions that indicate this skill is relevant.
+        examples (array): Optional list of input/output examples.
 
     Returns:
-        Optional[str]: None is always returned as this function does not produce a response.
+        str: Confirmation with the created skill's ID.
     """
     agent_id = self.agent_state.parent_id if self.agent_state.parent_id is not None else self.agent_state.id
-
-    # Get filter_tags, use_cache, client_id, and user_id from agent instance
     filter_tags = getattr(self, "filter_tags", None)
     use_cache = getattr(self, "use_cache", True)
-    client_id = getattr(self, "client_id", None)
     user_id = getattr(self, "user_id", None)
 
-    for old_id in old_ids:
-        try:
-            await self.procedural_memory_manager.delete_procedure_by_id(procedure_id=old_id, actor=self.actor)
-        except Exception as e:
-            print(
-                f"[procedural_memory_update] delete_procedure_by_id FAILED for "
-                f"old_id {old_id!r}: {e}"
-            )
-            traceback.print_exc()
-            raise
+    # Name dedup check
+    existing = await self.procedural_memory_manager.list_procedures(
+        agent_state=self.agent_state,
+        user=self.user,
+        query=name,
+        search_field="name",
+        search_method="string_match",
+        limit=100,
+        filter_tags=filter_tags if filter_tags else None,
+        use_cache=use_cache,
+    )
+    for skill in existing:
+        if skill.name == name:
+            return f"Skill '{name}' already exists (ID: {skill.id}). Use skill_edit to modify it, or skill_delete to remove it first."
 
-    for item in new_items:
+    try:
+        from mirix.orm.errors import UniqueConstraintViolationError
+
+        created = await self.procedural_memory_manager.insert_procedure(
+            agent_state=self.agent_state,
+            agent_id=agent_id,
+            name=name,
+            description=description,
+            instructions=instructions,
+            entry_type=entry_type,
+            triggers=triggers or [],
+            examples=examples or [],
+            version="0.1.0",
+            actor=self.actor,
+            organization_id=self.user.organization_id,
+            filter_tags=filter_tags if filter_tags else None,
+            use_cache=use_cache,
+            user_id=user_id,
+        )
+        return f"Skill '{name}' created successfully (ID: {created.id}, version: 0.1.0)."
+    except UniqueConstraintViolationError:
+        # Race: pre-check missed a concurrent create. Surface a clean message
+        # to the agent so it knows to read/edit the existing skill instead.
+        return (
+            f"Skill '{name}' already exists. Use skill_read to inspect it, "
+            f"skill_edit to modify it, or skill_delete to remove it first."
+        )
+    except Exception as e:
+        logger.error("[skill_create] FAILED for '%s': %s", name, e)
+        traceback.print_exc()
+        raise
+
+
+async def skill_edit(
+    self: "Agent",
+    skill_id: str,
+    field: str,
+    old_text: str = None,
+    new_text: str = None,
+    value: str = None,
+) -> str:
+    """
+    Edit an existing skill. For text fields (name, description, instructions), use old_text/new_text
+    to do a find-and-replace patch. For other fields (triggers, examples, entry_type), use value
+    to replace the entire field. For list/dict fields (triggers, examples), value must be a JSON string.
+
+    Args:
+        skill_id (str): The ID of the skill to edit.
+        field (str): The field to modify — "name", "description", "instructions", "entry_type", "triggers", or "examples".
+        old_text (str): For text fields: the text to find and replace.
+        new_text (str): For text fields: the replacement text.
+        value (str): For non-text fields: the new value for the entire field.
+            - entry_type: a plain string such as "workflow" / "guide" / "script".
+            - triggers:   a JSON-encoded list of strings, e.g. '["on error", "nightly"]'.
+            - examples:   a JSON-encoded list of objects, e.g. '[{"input": "...", "output": "..."}]'.
+
+    Returns:
+        str: Confirmation of the edit with the new version number.
+    """
+    import json as _json
+
+    from mirix.schemas.procedural_memory import ProceduralMemoryItemUpdate
+
+    text_fields = {"name", "description", "instructions"}
+    json_list_fields = {"triggers", "examples"}
+    plain_value_fields = {"entry_type"}
+    valid_fields = text_fields | json_list_fields | plain_value_fields
+
+    if field not in valid_fields:
+        return f"Invalid field '{field}'. Must be one of: {', '.join(sorted(valid_fields))}."
+
+    try:
+        skill = await self.procedural_memory_manager.get_item_by_id(
+            item_id=skill_id, user=self.user, timezone_str="UTC", actor=self.actor
+        )
+    except Exception:
+        return f"Skill '{skill_id}' not found."
+
+    update_data = {"id": skill_id}
+
+    if field in text_fields:
+        if old_text is None or new_text is None:
+            return f"For text field '{field}', both old_text and new_text are required."
+
+        current_value = getattr(skill, field, "")
+
+        # Normalize whitespace for matching
+        normalized_current = " ".join(current_value.split())
+        normalized_old = " ".join(old_text.split())
+
+        if normalized_old not in normalized_current:
+            return (
+                f"old_text not found in field '{field}'. "
+                f"Current value:\n{current_value}"
+            )
+
+        import re
+        pattern = re.escape(old_text)
+        pattern = re.sub(r'\\\s+', r'\\s+', pattern)
+        new_value = re.sub(pattern, new_text, current_value, count=1)
+        update_data[field] = new_value
+    elif field in json_list_fields:
+        if value is None:
+            return f"For field '{field}', the value parameter is required (JSON string)."
+        # triggers/examples are typed List[str] / List[dict] in the schema.
+        # The agent delivers them as JSON strings, so decode + validate here
+        # rather than letting the raw string hit Pydantic and blow up.
         try:
-            await self.procedural_memory_manager.insert_procedure(
-                agent_state=self.agent_state,
-                agent_id=agent_id,
-                entry_type=item["entry_type"],
-                summary=item["summary"],
-                steps=item["steps"],
-                actor=self.actor,
-                organization_id=self.actor.organization_id,
-                filter_tags=filter_tags if filter_tags else None,
-                use_cache=use_cache,
-                user_id=user_id,
+            decoded = _json.loads(value)
+        except (TypeError, _json.JSONDecodeError) as exc:
+            return (
+                f"Invalid JSON for field '{field}': {exc}. "
+                f"Pass a JSON-encoded list, e.g. '[\"trigger-a\", \"trigger-b\"]'."
             )
-        except Exception as e:
-            print(
-                f"[procedural_memory_update] insert_procedure FAILED for item "
-                f"{item!r}: {e}"
-            )
-            traceback.print_exc()
-            raise
+        if not isinstance(decoded, list):
+            return f"Field '{field}' must be a JSON array, got {type(decoded).__name__}."
+        if field == "triggers":
+            if not all(isinstance(x, str) for x in decoded):
+                return "Field 'triggers' must be a JSON array of strings."
+        else:  # examples
+            if not all(isinstance(x, dict) for x in decoded):
+                return "Field 'examples' must be a JSON array of objects."
+        update_data[field] = decoded
+    else:
+        # plain_value_fields: entry_type
+        if value is None:
+            return f"For field '{field}', the value parameter is required."
+        update_data[field] = value
+
+    new_version = _bump_patch_version(getattr(skill, "version", "0.1.0"))
+    update_data["version"] = new_version
+
+    try:
+        updated = await self.procedural_memory_manager.update_item(
+            item_update=ProceduralMemoryItemUpdate.model_validate(update_data),
+            user=self.user,
+            actor=self.actor,
+            agent_state=self.agent_state,
+        )
+        return f"Skill '{updated.name}' updated (field: {field}, new version: {new_version})."
+    except Exception as e:
+        logger.error("[skill_edit] FAILED for '%s': %s", skill_id, e)
+        traceback.print_exc()
+        raise
+
+
+async def skill_delete(self: "Agent", skill_id: str) -> str:
+    """
+    Delete a skill by ID.
+
+    Args:
+        skill_id (str): The ID of the skill to delete.
+
+    Returns:
+        str: Confirmation message.
+    """
+    try:
+        await self.procedural_memory_manager.delete_procedure_by_id(
+            procedure_id=skill_id, actor=self.actor, user=self.user
+        )
+        return f"Skill '{skill_id}' deleted successfully."
+    except Exception as e:
+        logger.error("[skill_delete] FAILED for '%s': %s", skill_id, e)
+        return f"Failed to delete skill '{skill_id}': {e}"
 
 
 async def check_semantic_memory(
@@ -975,6 +1156,60 @@ async def trigger_memory_update(self: "Agent", user_message: object, memory_type
     if not isinstance(user_message, dict):
         raise TypeError(f"user_message must be a dictionary, got {type(user_message).__name__}: {user_message}")
 
+    # Fixed-interval procedural trigger: auto-include "procedural" once
+    # SKILL_TRIGGER_SESSION_THRESHOLD distinct message sessions have accrued
+    # on this (agent, user) pair since the last fire. The cursor lives in the
+    # agent_trigger_state table; the running count is derived from messages
+    # at query time so there is only one source of truth and restarts/multi-
+    # worker deployments all agree.
+    #
+    # `check_and_claim_fire` is the single atomic entry point: it serializes
+    # the threshold-check + cursor-advance under SELECT FOR UPDATE so two
+    # concurrent workers can never double-fire for the same window, and it
+    # advances the cursor to the observed MAX(messages.created_at) so the
+    # next window cannot skip messages inserted mid-check.
+    from mirix.constants import SKILL_TRIGGER_SESSION_THRESHOLD
+    from mirix.schemas.agent_trigger_state import TRIGGER_TYPE_PROCEDURAL_SKILL
+    from mirix.services.agent_trigger_state_manager import AgentTriggerStateManager
+
+    # Messages are stored against the top-level (chat) agent, not the meta
+    # agent, so count sessions on the parent when this tool runs inside a
+    # child memory agent — matches the convention used elsewhere in this module.
+    trigger_agent_id = (
+        self.agent_state.parent_id
+        if self.agent_state.parent_id is not None
+        else self.agent_state.id
+    )
+    trigger_user_id = self.user.id if self.user else None
+    trigger_org_id = self.actor.organization_id if getattr(self, "actor", None) else None
+    current_session_id = getattr(self, "_current_step_session_id", None)
+
+    if trigger_user_id is None:
+        # No user scope — we cannot bookkeep a per-user cursor. Skip the
+        # auto-trigger rather than silently lumping all users together.
+        logger.debug("Skipping session-based procedural trigger: no user on agent.")
+    else:
+        trigger_mgr = AgentTriggerStateManager()
+        claim = await trigger_mgr.check_and_claim_fire(
+            agent_id=trigger_agent_id,
+            user_id=trigger_user_id,
+            trigger_type=TRIGGER_TYPE_PROCEDURAL_SKILL,
+            threshold=SKILL_TRIGGER_SESSION_THRESHOLD,
+            organization_id=trigger_org_id,
+            current_session_id=current_session_id,
+        )
+        if claim.fired:
+            if "procedural" not in memory_types:
+                memory_types = list(memory_types) + ["procedural"]
+            logger.info(
+                "Auto-triggering procedural memory update "
+                "(sessions_since=%d, threshold=%d, agent=%s, user=%s)",
+                claim.sessions_since,
+                SKILL_TRIGGER_SESSION_THRESHOLD,
+                trigger_agent_id,
+                trigger_user_id,
+            )
+
     # De-duplicate memory types while preserving order.
     # The MetaMemoryAgent (LLM) can occasionally emit duplicates (e.g., ["semantic", "semantic"]).
     # Running duplicates in parallel can cause races (e.g., double-deletes).
@@ -1104,6 +1339,11 @@ async def trigger_memory_update(self: "Agent", user_message: object, memory_type
             else:
                 message_copy.content = [system_msg]
 
+            chaining = user_message.get("chaining", False)
+            # Procedural agent needs chaining for multi-step CLI workflow
+            if memory_type == "procedural":
+                chaining = True
+
             # Extract topics and retrieved_memories from parent agent to pass to sub-agents
             # This ensures sub-agents use the same keywords for memory retrieval
             retrieved_memories = user_message.get("retrieved_memories", None)
@@ -1158,7 +1398,7 @@ async def trigger_memory_update(self: "Agent", user_message: object, memory_type
 
                     await memory_agent.step(
                         input_messages=message_copy,
-                        chaining=user_message.get("chaining", False),
+                        chaining=chaining,
                         actor=actor,
                         user=user,
                         topics=topics,
@@ -1168,7 +1408,7 @@ async def trigger_memory_update(self: "Agent", user_message: object, memory_type
                 # No tracing available, run directly
                 await memory_agent.step(
                     input_messages=message_copy,
-                    chaining=user_message.get("chaining", False),
+                    chaining=chaining,
                     actor=actor,
                     user=user,
                     topics=topics,
