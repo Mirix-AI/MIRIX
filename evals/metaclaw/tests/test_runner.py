@@ -249,6 +249,29 @@ def test_run_arm_writes_proxy_yaml_with_skills_only(tmp_path: Path) -> None:
     assert "auto_evolve: true" in body
     assert "retrieval_mode: template" in body
     assert "enabled: false" in body  # rl/scheduler/memory
+    # metaclaw arm keeps paper's default top_k=6
+    assert "top_k: 6" in body
+
+
+def test_mirix_arm_raises_skill_top_k_to_10(tmp_path: Path) -> None:
+    """The mirix arm's flat single-bucket retrieve needs a higher top_k to
+    inject a count comparable to metaclaw's three-bucket retrieve (~8.5 avg).
+    The metaclaw arm must stay at paper's default 6."""
+    starter, captured = _fake_proxy_starter()
+    stopper, _ = _fake_proxy_stopper()
+    bench, _ = _fake_bench(rc=0)
+    run_arm(
+        arm="mirix",
+        days=1,
+        out_dir=tmp_path / "mirix_topk",
+        proxy_starter=starter,
+        proxy_stopper=stopper,
+        bench_runner=bench,
+        mirix_url="http://127.0.0.1:8531",
+    )
+    body = captured[0]["yaml"].read_text()
+    assert "top_k: 10" in body
+    assert "top_k: 6" not in body
 
 
 # ---------------------------------------------------------------------------
@@ -453,3 +476,41 @@ def test_extra_meta_lands_in_run_meta_json(tmp_path: Path) -> None:
     assert meta["estimated_wallclock_seconds_max"] == 1800
     # Canonical key not overwritten.
     assert meta["arm"] == "metaclaw"
+
+
+# ---------------------------------------------------------------------------
+# python->python3 shim: vendored file_check checkers invoke `python ...` via
+# /bin/sh, which exits 127 on hosts that only ship `python3` — silently scoring
+# every file_check 0 and collapsing the file-check completion metric to 0%.
+# ---------------------------------------------------------------------------
+
+
+def test_ensure_python_shim_noop_when_python_present(tmp_path: Path) -> None:
+    """If `python` already resolves on the given PATH, no shim is created."""
+    fake = tmp_path / "python"
+    fake.write_text("#!/bin/sh\n")
+    fake.chmod(0o755)
+    assert runner._ensure_python_shim(str(tmp_path)) is None
+
+
+def test_ensure_python_shim_creates_symlink_when_missing() -> None:
+    """When PATH lacks `python`, a shim dir with python->sys.executable is made."""
+    import os
+    import sys
+
+    shim = runner._ensure_python_shim("/no/such/python/dir")
+    assert shim == runner.EVALS_METACLAW_ROOT / ".pyshim"
+    py = shim / "python"
+    assert py.is_symlink()
+    assert os.path.realpath(str(py)) == os.path.realpath(sys.executable)
+
+
+def test_compose_subprocess_env_exposes_python_on_path(tmp_path: Path) -> None:
+    """The composed checker env must always resolve `python` (the fix's goal);
+    otherwise vendored file_check checkers exit 127 and Compl collapses to 0%."""
+    import shutil
+
+    env = runner._compose_subprocess_env(
+        metaclaw_root=tmp_path, proxy_port=12345, bench_env={}
+    )
+    assert shutil.which("python", path=env["PATH"]) is not None

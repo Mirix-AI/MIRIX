@@ -1077,3 +1077,95 @@ def test_run_clean_removes_work_dirs(tmp_path: Path) -> None:
     assert not (tmp_path / "data" / "work").exists()
     assert not (tmp_path / "other" / "work").exists()
     assert (tmp_path / "data" / "eval").exists()
+
+
+# ---------------------------------------------------------------------------
+# Agent-id routing: the agent must run as the patched per-test agent, not the
+# implicit `main` agent. Regression guard for the "Compl silently → 0" bug
+# where openclaw fell back to `main`/workspace-main and file_check scored an
+# empty per-test workspace. See _patch_agent_workspace / _run_openclaw_agent.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_run_question_forwards_agent_id(tmp_path: Path) -> None:
+    """_run_question must forward agent_id down to _run_openclaw_agent."""
+    from src.infer.infer_cmd import _run_question
+
+    result_path = tmp_path / "t1" / "g1" / "q1" / "infer_result.json"
+    mock = AsyncMock(return_value=(0, "answer", ""))
+    with patch("src.infer.infer_cmd._run_openclaw_agent", new=mock):
+        await _run_question(
+            test_id="t1",
+            group_id="g1",
+            round_id="q1",
+            query="Q?",
+            agent_id="metaclaw_agent",
+            session_id="sess-123",
+            openclaw_config_path=tmp_path / "openclaw.json",
+            openclaw_state_dir=tmp_path / "state",
+            log_dir=tmp_path / "logs",
+            result_path=result_path,
+            project_root=tmp_path,
+            retry=0,
+        )
+    mock.assert_awaited_once()
+    assert mock.call_args.kwargs["agent_id"] == "metaclaw_agent"
+
+
+@pytest.mark.asyncio
+async def test_run_openclaw_agent_includes_agent_flag(tmp_path: Path) -> None:
+    """_run_openclaw_agent passes `--agent <id>` so openclaw binds to the
+    patched per-test agent instead of falling back to the implicit `main`."""
+    from src.infer import infer_cmd
+
+    captured: dict = {}
+
+    async def fake_exec(*args, **kwargs):
+        captured["args"] = args
+        proc = MagicMock()
+        proc.communicate = AsyncMock(return_value=(b"ok", b""))
+        proc.returncode = 0
+        return proc
+
+    with patch("asyncio.create_subprocess_exec", new=fake_exec):
+        rc, out, _ = await infer_cmd._run_openclaw_agent(
+            session_id="s1",
+            message="hi",
+            openclaw_config_path=tmp_path / "c.json",
+            openclaw_state_dir=tmp_path / "st",
+            project_root=tmp_path,
+            agent_id="metaclaw_agent",
+        )
+
+    assert rc == 0
+    args = captured["args"]
+    assert "--agent" in args, f"--agent missing from command: {args}"
+    assert args[args.index("--agent") + 1] == "metaclaw_agent"
+
+
+@pytest.mark.asyncio
+async def test_run_openclaw_agent_omits_agent_flag_when_none(tmp_path: Path) -> None:
+    """When agent_id is None the `--agent` flag must NOT be emitted."""
+    from src.infer import infer_cmd
+
+    captured: dict = {}
+
+    async def fake_exec(*args, **kwargs):
+        captured["args"] = args
+        proc = MagicMock()
+        proc.communicate = AsyncMock(return_value=(b"ok", b""))
+        proc.returncode = 0
+        return proc
+
+    with patch("asyncio.create_subprocess_exec", new=fake_exec):
+        await infer_cmd._run_openclaw_agent(
+            session_id="s1",
+            message="hi",
+            openclaw_config_path=tmp_path / "c.json",
+            openclaw_state_dir=tmp_path / "st",
+            project_root=tmp_path,
+            agent_id=None,
+        )
+
+    assert "--agent" not in captured["args"]

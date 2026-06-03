@@ -401,10 +401,20 @@ async def _run_openclaw_agent(
     }
     if gateway_port is not None:
         env["OPENCLAW_GATEWAY_PORT"] = str(gateway_port)
-    proc = await asyncio.create_subprocess_exec(
+    cmd = [
         "openclaw", "agent",
         "--session-id", session_id,
         "--message", message,
+    ]
+    # Bind the run to the named agent. openclaw's `--agent <id>` "overrides
+    # routing bindings", so the per-test workspace patched onto this agent by
+    # _patch_agent_workspace is honored. Without it openclaw falls back to the
+    # implicit `main` agent (workspace-main), file_check scores an empty
+    # per-test workspace, and Compl silently → 0. See _patch_agent_workspace.
+    if agent_id is not None:
+        cmd += ["--agent", agent_id]
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
         cwd=str(project_root),
         env=env,
         stdout=asyncio.subprocess.PIPE,
@@ -797,6 +807,7 @@ async def _run_question(
             openclaw_config_path=openclaw_config_path,
             openclaw_state_dir=openclaw_state_dir,
             project_root=project_root,
+            agent_id=agent_id,
             gateway_port=gateway_port,
         )
         if rc == 0:
@@ -939,6 +950,7 @@ async def _run_group(
                 project_root=project_root,
                 gateway_port=gateway_port,
                 retry=retry,
+                agent_id=agent_id,
                 question_type=question_type,
             )
 
@@ -992,6 +1004,7 @@ async def _run_group(
             openclaw_config_path=openclaw_config_path,
             openclaw_state_dir=work_openclaw_state_dir,
             project_root=project_root,
+            agent_id=agent_id,
             gateway_port=gateway_port,
         )
         feedback_marker.parent.mkdir(parents=True, exist_ok=True)

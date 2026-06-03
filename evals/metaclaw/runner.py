@@ -478,13 +478,23 @@ def _build_metaclaw_root(per_run_workspace: Path, scratch_root: Path) -> Path:
 
 
 def _write_proxy_yaml(
-    yaml_path: Path, skills_dir: Path, port: int, bench_env: dict
+    yaml_path: Path,
+    skills_dir: Path,
+    port: int,
+    bench_env: dict,
+    skill_top_k: int = 6,
 ) -> None:
     """Write a minimal ``skills_only`` proxy config.
 
     The proxy's launcher loads this YAML; the LLM credentials are baked into
     the YAML (MetaClaw's loader doesn't auto-substitute env vars).  We disable
     RL + scheduler + memory because slice #1 only exercises the skill pipeline.
+
+    ``skill_top_k`` controls ``skills.top_k`` — the number of skills
+    ``_inject_skills`` requests per turn (``self.config.skill_top_k``).  The
+    metaclaw arm keeps paper's default 6 (its three-bucket retrieve still adds
+    task-specific + mistakes on top); the mirix arm raises it so MIRIX's single
+    flat bucket injects a comparable count (mirix only returns this many total).
     """
     contents = (
         "mode: skills_only\n"
@@ -502,7 +512,7 @@ def _write_proxy_yaml(
         f"  dir: {skills_dir}\n"
         "  auto_evolve: true\n"
         "  retrieval_mode: template\n"
-        "  top_k: 6\n"
+        f"  top_k: {skill_top_k}\n"
         "  task_specific_top_k: 10\n"
         "memory:\n"
         "  enabled: false\n"
@@ -923,7 +933,14 @@ def run_arm(
 
         # Allocate proxy port + write YAML.
         port = _find_free_port()
-        _write_proxy_yaml(proxy_yaml, skills_dir, port, bench_env_overrides)
+        # mirix arm returns a single flat bucket, so raise its top_k to 10 to
+        # match the count metaclaw's three-bucket retrieve injects (~8.5 avg).
+        # metaclaw keeps paper's default 6 (it still adds task-specific +
+        # mistakes on top).
+        _skill_top_k = 10 if arm == "mirix" else 6
+        _write_proxy_yaml(
+            proxy_yaml, skills_dir, port, bench_env_overrides, skill_top_k=_skill_top_k
+        )
 
         # Compose subprocess env.
         subprocess_env = _compose_subprocess_env(
@@ -1005,6 +1022,60 @@ def run_arm(
     return result
 
 
+def _ensure_python_shim(path_value: str) -> Optional[Path]:
+    """Guarantee a ``python`` executable resolves for the checker subprocesses.
+
+    The vendored ``file_check`` checkers run ``python scripts/check_*.py`` via
+    ``/bin/sh``.  On hosts that only ship ``python3`` (e.g. macOS without a
+    Homebrew/pyenv ``python`` shim), that command exits 127 ("python: command
+    not found"), so EVERY file_check silently scores 0 and the file-check
+    completion metric (Compl) collapses to 0% with no error ever surfaced to the
+    runner — while multiple-choice questions (scored inline, no ``python`` call)
+    keep working, which makes the failure easy to miss.
+
+    If ``python`` already resolves on ``path_value`` we return None (no shim
+    needed).  Otherwise we create a stable shim dir containing ``python`` ->
+    the current interpreter (``sys.executable``) and return it so the caller can
+    prepend it to PATH.
+    """
+    import shutil
+
+    if shutil.which("python", path=path_value):
+        return None  # `python` already available — no shim needed
+    target = sys.executable
+    if not target:
+        return None
+    shim_dir = EVALS_METACLAW_ROOT / ".pyshim"
+    shim = shim_dir / "python"
+
+    def _points_at_target() -> bool:
+        return shim.is_symlink() and os.path.realpath(str(shim)) == os.path.realpath(target)
+
+    try:
+        shim_dir.mkdir(parents=True, exist_ok=True)
+        if _points_at_target():
+            return shim_dir  # already correct — idempotent fast path
+        # Atomically (re)point the shim so concurrent runs (e.g. --arm both) can't
+        # trip over each other: build a pid-unique temp symlink, then os.replace
+        # it onto `python` (atomic + overwrites). Avoids the unlink+symlink TOCTOU.
+        tmp = shim_dir / f".python.{os.getpid()}.tmp"
+        try:
+            if tmp.is_symlink() or tmp.exists():
+                tmp.unlink()
+            tmp.symlink_to(target)
+            os.replace(str(tmp), str(shim))
+        finally:
+            if tmp.is_symlink() or tmp.exists():
+                try:
+                    tmp.unlink()
+                except OSError:
+                    pass
+    except OSError:
+        # A concurrent run may have already installed a correct shim — use it.
+        return shim_dir if _points_at_target() else None
+    return shim_dir
+
+
 def _compose_subprocess_env(
     *,
     metaclaw_root: Path,
@@ -1035,6 +1106,12 @@ def _compose_subprocess_env(
     node_bin = _node_v22_bin()
     if node_bin:
         base["PATH"] = node_bin + ":" + base.get("PATH", "")
+
+    # The vendored file_check checkers invoke `python scripts/check_*.py` via
+    # /bin/sh; without a `python` on PATH that exits 127 and Compl silently → 0.
+    python_shim = _ensure_python_shim(base.get("PATH", ""))
+    if python_shim:
+        base["PATH"] = str(python_shim) + ":" + base["PATH"]
 
     base["METACLAW_ROOT"] = str(metaclaw_root)
     base["METACLAW_PROXY_PORT"] = str(proxy_port)

@@ -56,6 +56,8 @@ evals/metaclaw/reports/
 evals/metaclaw/runs/
 # Per-test "work/" copies the bench drops next to the dataset
 evals/metaclaw/data/work/
+# Runtime python->python3 shim dir minted by _compose_subprocess_env
+evals/metaclaw/.pyshim/
 # Aligned-harness run artifacts
 evals/metaclaw_aligned/runs/
 # Archived pre-align eval run reports (regenerable artifacts, not source)
