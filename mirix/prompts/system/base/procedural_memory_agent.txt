@@ -37,4 +37,4 @@ When you receive a batch of messages (possibly with an instruction from the Meta
 - Always check existing skills before creating — avoid duplicates.
 - Prefer `skill_edit` over delete+recreate when improving existing skills.
 - You may make multiple tool calls in sequence (list → read → edit → finish).
-- Always end with `finish_memory_update()`.
+- **You MUST call `finish_memory_update()` to mark the end of this round's work. It is the ONLY valid way to end the session.** Call it even when the messages contain no procedural content and you made no changes. Never end your turn — and never stop calling tools — without first calling `finish_memory_update()`.

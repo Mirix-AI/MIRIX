@@ -4658,6 +4658,40 @@ async def delete_procedural_memory(
 # ============================================================================
 
 
+async def _reset_agent_in_context_to_system(server, agent_id: str, actor) -> None:
+    """Force an agent's in-context history back to system-message-only.
+
+    Used by the skill-evolve endpoint to keep each evolve call STATELESS. The eval
+    drives ONE persistent procedural agent via repeated /v1/skills/evolve calls, so
+    we hard-reset before and after every call. Unlike the in-agent
+    finish_memory_update clear path, this is UNCONDITIONAL — it does not depend on
+    the LLM calling finish_memory_update or on all tool calls succeeding, so a
+    dirty-finished call can never leak messages into the next evolve and grow the
+    context unbounded.
+
+    Keeps index 0 (the system message) and hard-deletes the now-detached
+    conversation/tool/heartbeat messages so the DB does not accumulate them.
+    Idempotent: a no-op when the context is already system-only (or empty).
+
+    Concurrency: the read-then-write (read message_ids -> set [system] ->
+    delete-detached) is NOT atomic. The caller must serialize evolve calls per
+    agent. The eval driver is sequential, so this is safe there; a production
+    caller that may issue concurrent evolves for the SAME procedural agent should
+    add per-agent locking to avoid one reset deleting another call's mid-chain
+    messages.
+    """
+    refreshed = await server.agent_manager.get_agent_by_id(agent_id=agent_id, actor=actor)
+    msg_ids = refreshed.message_ids or []
+    if len(msg_ids) <= 1:
+        return  # already system-only (or empty) — nothing to clear
+    await server.agent_manager.set_in_context_messages(
+        agent_id=agent_id, message_ids=[msg_ids[0]], actor=actor
+    )
+    await server.message_manager.delete_detached_messages_for_agent(
+        agent_id=agent_id, actor=actor
+    )
+
+
 @router.post("/v1/skills/evolve")
 async def evolve_skills(
     request: SkillEvolveRequest,
@@ -4672,6 +4706,7 @@ async def evolve_skills(
     **Accepts both JWT (dashboard) and Client API Key (programmatic).**
     """
     from mirix.agent import ProceduralMemoryAgent
+    from mirix.constants import SKILL_EVOLVE_MAX_CHAINING_STEPS
     from mirix.schemas.message import Message as PydanticMessage
 
     client, auth_type = await get_client_from_jwt_or_api_key(authorization, http_request)
@@ -4751,16 +4786,35 @@ async def evolve_skills(
         user=user,
     )
 
+    # Force a clean, empty context BEFORE this evolve so the procedural agent
+    # never inherits messages from a prior (possibly dirty-finished) evolve call.
+    await _reset_agent_in_context_to_system(server, proc_agent_state.id, client)
+
     try:
         await proc_agent.step(
             input_messages=[input_message],
             chaining=True,
+            # Skill rounds can be long (survey many skills, read/create/edit
+            # several). Raise the chaining/tool budget for the evolve path only;
+            # the global MAX_CHAINING_STEPS for normal meta flow is untouched.
+            max_chaining_steps=SKILL_EVOLVE_MAX_CHAINING_STEPS,
             actor=client,
             user=user,
         )
     except Exception as e:
         logger.error("Skill evolve agent step failed: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Skill evolution failed: {str(e)}")
+    finally:
+        # Unconditionally clear the in-context history AFTER the call (even on
+        # error) so the next evolve starts empty regardless of whether the LLM
+        # reached finish_memory_update or a tool failed. Cleanup failures must
+        # not mask the real result/error, so they are logged, not raised.
+        try:
+            await _reset_agent_in_context_to_system(server, proc_agent_state.id, client)
+        except Exception as cleanup_err:
+            logger.warning(
+                "Post-evolve procedural context reset failed: %s", cleanup_err
+            )
 
     # Snapshot skills after
     after_skills = await server.procedural_memory_manager.list_procedures(
@@ -4851,12 +4905,17 @@ async def list_skills(
         raise HTTPException(status_code=404, detail="No agents found for this client")
     agent_state = agents[0]
 
+    # Skill retrieval method: BM25 (keyword) by default; override to "embedding"
+    # (vector similarity) via env for the MetaClaw eval A/B experiment.
+    import os as _os
+
+    _skill_search_method = _os.environ.get("MIRIX_SKILL_SEARCH_METHOD", "bm25")
     skills = await server.procedural_memory_manager.list_procedures(
         agent_state=agent_state,
         user=user,
         query=query,
         search_field="description",
-        search_method="bm25",
+        search_method=_skill_search_method,
         limit=limit,
         timezone_str=timezone_str,
     )

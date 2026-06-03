@@ -3,13 +3,14 @@ import re
 import string
 from typing import Any, Dict, List, Optional
 
+import numpy as np
 from rank_bm25 import BM25Okapi
 from rapidfuzz import fuzz
 from sqlalchemy import delete, func, select, text
 
 from sqlalchemy.exc import IntegrityError
 
-from mirix.constants import BUILD_EMBEDDINGS_FOR_MEMORY
+from mirix.constants import BUILD_EMBEDDINGS_FOR_MEMORY, MAX_EMBEDDING_DIM
 from mirix.embeddings import embedding_model
 from mirix.log import get_logger
 from mirix.orm.errors import NoResultFound, UniqueConstraintViolationError
@@ -26,6 +27,30 @@ from mirix.settings import settings
 from mirix.utils import enforce_types
 
 logger = get_logger(__name__)
+
+
+def _pad_to_max(vec):
+    """Pad a raw embedding to MAX_EMBEDDING_DIM with trailing zeros.
+
+    The CREATE path pads via the PydanticProceduralMemoryItem.pad_embeddings
+    field_validator, and the vector-search query path pads explicitly
+    (see the ``search_method == "embedding"`` branch). The UPDATE path
+    recomputes embeddings into a plain dict that bypasses the schema
+    validator, so it must pad here too — otherwise a raw (e.g. 3072-dim)
+    vector is written straight onto the Vector(4096) column and SQLAlchemy's
+    compare_values raises "operands could not be broadcast together with
+    shapes (4096,) (N,)" on the next UPDATE. Zero-padding is cosine-preserving
+    (the appended dims contribute nothing to dot product or norms), so stored
+    and query vectors stay consistent at MAX_EMBEDDING_DIM.
+    """
+    if vec is None:
+        return None
+    arr = np.array(vec)
+    if arr.shape[0] == MAX_EMBEDDING_DIM:
+        return list(vec)
+    return np.pad(
+        arr, (0, MAX_EMBEDDING_DIM - arr.shape[0]), mode="constant"
+    ).tolist()
 
 
 # Whitelisted searchable text fields and their associated ORM columns.
@@ -563,8 +588,10 @@ class ProceduralMemoryManager:
                 and "description_embedding" not in update_data
             ):
                 embed_model = await embedding_model(embedding_config)
-                update_data["description_embedding"] = await embed_model.get_text_embedding(
-                    update_data["description"] or ""
+                update_data["description_embedding"] = _pad_to_max(
+                    await embed_model.get_text_embedding(
+                        update_data["description"] or ""
+                    )
                 )
             if (
                 "instructions" in update_data
@@ -572,8 +599,10 @@ class ProceduralMemoryManager:
             ):
                 if embed_model is None:
                     embed_model = await embedding_model(embedding_config)
-                update_data["instructions_embedding"] = await embed_model.get_text_embedding(
-                    update_data["instructions"] or ""
+                update_data["instructions_embedding"] = _pad_to_max(
+                    await embed_model.get_text_embedding(
+                        update_data["instructions"] or ""
+                    )
                 )
             if embed_model is not None and "embedding_config" not in update_data:
                 update_data["embedding_config"] = embedding_config
@@ -672,6 +701,12 @@ class ProceduralMemoryManager:
         """
         query = query.strip() if query else ""
         is_empty_query = not query or query == ""
+
+        # Pad any caller-supplied embedding to MAX_EMBEDDING_DIM at the point of
+        # CONSUMPTION (not just where we recompute it), so a raw provider vector
+        # (e.g. 3072-dim) passed in by REST callers never reaches the Vector(4096)
+        # PG column or the DIM=4096 Redis index unpadded.
+        embedded_text = _pad_to_max(embedded_text)
 
         # Extract organization_id from user for multi-tenant isolation
         organization_id = user.organization_id
@@ -1250,6 +1285,11 @@ class ProceduralMemoryManager:
         """
         List procedural memories across ALL users in an organization.
         """
+        # Pad any caller-supplied embedding to MAX_EMBEDDING_DIM at the point of
+        # CONSUMPTION (REST callers may pass a raw 3072-dim vector) so it never
+        # reaches the Vector(4096) PG column or DIM=4096 Redis index unpadded.
+        embedded_text = _pad_to_max(embedded_text)
+
         from mirix.database.redis_client import get_redis_client
 
         redis_client = get_redis_client()
@@ -1342,7 +1382,12 @@ class ProceduralMemoryManager:
                 if embedded_text is None:
                     from mirix.embeddings import embedding_model
 
-                    embedded_text = await (await embedding_model(embedding_config)).get_text_embedding(query)
+                    # Pad to MAX_EMBEDDING_DIM so a raw (e.g. 3072-dim) query
+                    # vector matches the Vector(4096) column. (Caller-supplied
+                    # embeddings are already padded at function entry above.)
+                    embedded_text = _pad_to_max(
+                        await (await embedding_model(embedding_config)).get_text_embedding(query)
+                    )
 
                 # Determine which embedding field to search
                 if search_field == "description":

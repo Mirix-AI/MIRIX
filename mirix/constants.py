@@ -84,6 +84,13 @@ OPENAI_CONTEXT_WINDOW_ERROR_SUBSTRING = "maximum context length"
 IN_CONTEXT_MEMORY_KEYWORD = "CORE_MEMORY"
 
 MAX_CHAINING_STEPS = int(os.getenv("MAX_CHAINING_STEPS", "10"))
+# Procedural skill-evolve (eval / POST /v1/skills/evolve) drives ONE persistent
+# procedural agent statelessly per call. A skill round can legitimately survey
+# many existing skills and create/edit several, so it needs a far larger chaining
+# (tool-use) budget than the default chat path. Overridable via env; only the
+# evolve path passes this into step(max_chaining_steps=...), so the global
+# MAX_CHAINING_STEPS for normal meta-agent flow is untouched.
+SKILL_EVOLVE_MAX_CHAINING_STEPS = int(os.getenv("SKILL_EVOLVE_MAX_CHAINING_STEPS", "50"))
 MAX_RETRIEVAL_LIMIT_IN_SYSTEM = 10
 
 # tokenizers

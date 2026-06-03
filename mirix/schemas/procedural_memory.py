@@ -189,6 +189,26 @@ class ProceduralMemoryItemUpdate(MirixBase):
         None, description="The embedding configuration used by the skill"
     )
 
+    @field_validator("description_embedding", "instructions_embedding")
+    @classmethod
+    def pad_embeddings(cls, embedding: Optional[List[float]]) -> Optional[List[float]]:
+        """Pad embeddings to `MAX_EMBEDDING_DIM` so REST-supplied vectors on the
+        UPDATE path are stored at the same width as every other write path
+        (the CREATE schema pads identically). Without this a raw provider
+        vector (e.g. 3072-dim) would mismatch the Vector(4096) column and break
+        SQLAlchemy compare_values on the next UPDATE."""
+        import numpy as np
+
+        if embedding and len(embedding) != MAX_EMBEDDING_DIM:
+            np_embedding = np.array(embedding)
+            padded_embedding = np.pad(
+                np_embedding,
+                (0, MAX_EMBEDDING_DIM - np_embedding.shape[0]),
+                mode="constant",
+            )
+            return padded_embedding.tolist()
+        return embedding
+
     filter_tags: Optional[Dict[str, Any]] = Field(
         None, description="Custom filter tags for filtering and categorization"
     )
