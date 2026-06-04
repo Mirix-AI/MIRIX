@@ -7,6 +7,10 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import tiktoken
 from llm_judge import evaluate_llm_judge
+from llm_judge_mab import SUPPORTED_TASKS as MAB_SUPPORTED_TASKS
+from llm_judge_mab import evaluate_mab_judge
+from llm_judge_mab_summary import evaluate_mab_summary_judge
+from llm_judge_substring import evaluate_substring_judge
 from tqdm import tqdm
 
 def load_json(path: Path) -> Optional[Dict[str, Any]]:
@@ -148,9 +152,13 @@ def build_judge_tasks(
     records: Dict[str, Dict[str, Any]],
     base_index: int,
     cached_lookup: Dict[Tuple[Any, Any], Dict[str, Any]],
-) -> Tuple[List[Optional[Dict[str, Any]]], List[Tuple[int, str, Any, Any, Any, Any, Any]]]:
+) -> Tuple[List[Optional[Dict[str, Any]]], List[Tuple[int, str, Any, Any, Any, Any, Any, Any, Any]]]:
     results: List[Optional[Dict[str, Any]]] = []
-    tasks: List[Tuple[int, str, Any, Any, Any, Any, Any]] = []
+    # Task tuple = (idx, sample_id, qidx, category, question, expected,
+    # predicted, question_id, keypoints). keypoints is populated by
+    # lru_eval for summarization records (mab_summary judge); other
+    # runners leave it None and other judges ignore it.
+    tasks: List[Tuple[int, str, Any, Any, Any, Any, Any, Any, Any]] = []
 
     for local_idx, (_, record) in enumerate(sorted_record_items(records)):
         if not isinstance(record, dict):
@@ -208,17 +216,80 @@ def build_judge_tasks(
                 question,
                 expected_answer,
                 predicted_answer,
+                record.get("question_id"),
+                record.get("keypoints"),
             )
         )
 
     return results, tasks
 
 
-def judge_task(task: Tuple[int, str, Any, Any, Any, Any, Any]) -> Tuple[int, int, str]:
-    idx, _sample_id, _question_index, _category, question, expected_answer, predicted_answer = task
+def judge_task(task: Tuple[int, str, Any, Any, Any, Any, Any, Any, Any]) -> Tuple[int, float, str, Optional[Dict[str, Any]]]:
+    idx, _sample_id, _question_index, _category, question, expected_answer, predicted_answer, _question_id, _keypoints = task
     score = evaluate_llm_judge(question, expected_answer, predicted_answer)
     label = "CORRECT" if score == 1 else "WRONG"
-    return idx, score, label
+    return idx, score, label, None
+
+
+def judge_task_substring(task: Tuple[int, str, Any, Any, Any, Any, Any, Any, Any]) -> Tuple[int, float, str, Optional[Dict[str, Any]]]:
+    """Substring-match judge (no LLM). For RULER / SQuAD / HotpotQA-style QA."""
+    idx, _sample_id, _question_index, _category, _question, expected_answer, predicted_answer, _question_id, _keypoints = task
+    score = evaluate_substring_judge(predicted_answer, expected_answer)
+    label = "CORRECT" if score == 1 else "WRONG"
+    return idx, score, label, None
+
+
+def judge_task_mab(task: Tuple[int, str, Any, Any, Any, Any, Any, Any, Any]) -> Tuple[int, float, str, Optional[Dict[str, Any]]]:
+    """MemoryAgentBench-aligned judge. Routes by ``category`` to per-task prompts.
+
+    Abstention detection: if ``question_id`` carries the ``_abs`` suffix
+    (matches official llm_based_eval/longmem_qa_evaluate.py behaviour),
+    route to the abstention prompt instead of the category prompt. Old
+    records without ``question_id`` quietly default to abstention=False.
+
+    Unknown categories fall back to the generic LoCoMo judge so a mixed-source
+    run does not crash; they are tagged ``WRONG-unknown-cat`` in the label so
+    they are easy to spot in the output.
+    """
+    idx, _sample_id, _question_index, category, question, expected_answer, predicted_answer, question_id, _keypoints = task
+    abstention = isinstance(question_id, str) and "_abs" in question_id
+    if isinstance(category, str) and category in MAB_SUPPORTED_TASKS:
+        score = evaluate_mab_judge(
+            question, expected_answer, predicted_answer, category,
+            abstention=abstention,
+        )
+        label = "CORRECT" if score == 1 else "WRONG"
+        if abstention:
+            label += "-abs"
+    else:
+        score = evaluate_llm_judge(question, expected_answer, predicted_answer)
+        label = ("CORRECT" if score == 1 else "WRONG") + "-unknown-cat"
+    return idx, score, label, None
+
+
+def judge_task_mab_summary(task: Tuple[int, str, Any, Any, Any, Any, Any, Any, Any]) -> Tuple[int, float, str, Optional[Dict[str, Any]]]:
+    """Official MAB summarization judge (LRU / infbench_sum_eng_shots2).
+
+    Runs three gpt-4o-2024-05-13 calls per record (fluency, recall,
+    precision) and folds them into F1. The per-record ``score`` is F1
+    (a float in [0,1]); the four sub-scores live in ``details`` so the
+    metrics file can report averaged_fluency / recall / precision / F1
+    matching the official ``averaged_metrics`` shape.
+    """
+    idx, _sample_id, _question_index, _category, _question, expected_answer, predicted_answer, _question_id, keypoints = task
+    details = evaluate_mab_summary_judge(
+        generated_summary=predicted_answer or "",
+        expert_summary=expected_answer or "",
+        keypoints=keypoints or [],
+    )
+    f1 = details["f1"]
+    label = (
+        f"F1={f1:.3f} "
+        f"(fluency={details['fluency']}, "
+        f"recall={details['recall_found']}/{details['recall_total']}, "
+        f"precision={details['precision_found']}/{details['precision_total']})"
+    )
+    return idx, f1, label, details
 
 
 def main() -> None:
@@ -236,12 +307,41 @@ def main() -> None:
         default=None,
         help="Output JSON file (default: <input_dir>/metrics.json).",
     )
+    parser.add_argument(
+        "--judge",
+        choices=("default", "mab", "substring", "mab_summary"),
+        default="default",
+        help=(
+            "Which judge to use:\n"
+            "  default     — generic LoCoMo LLM judge (gpt-4o-mini, CORRECT/WRONG).\n"
+            "  mab         — MemoryAgentBench-aligned (gpt-4o, per-category prompts,\n"
+            "                yes/no scoring, abstention via question_id _abs suffix).\n"
+            "                Required for LongMemEval-S to be leaderboard-comparable.\n"
+            "  substring   — substring_exact_match (no LLM). For RULER / SQuAD /\n"
+            "                HotpotQA-style QA where answers are short needles.\n"
+            "  mab_summary — MAB summarization judge for LRU / infbench_sum (gpt-4o-\n"
+            "                2024-05-13, three calls per record → fluency*P*R/(P+R)\n"
+            "                F1). Records must carry `keypoints`."
+        ),
+    )
+    parser.add_argument(
+        "--mab-judge",
+        action="store_true",
+        help="Deprecated alias for --judge mab. Kept for backwards compatibility.",
+    )
     args = parser.parse_args()
 
     input_dir = args.input_dir
     output_file = args.output_file or (input_dir / "metrics.json")
 
-    cached_metrics = load_json(output_file) if output_file.exists() else None
+    # Honour the legacy boolean alias.
+    if args.mab_judge and args.judge == "default":
+        args.judge = "mab"
+
+    # When switching judges, the cached labels were produced by another
+    # judge and are not comparable. Only reuse cache when --judge default.
+    use_cache = (args.judge == "default")
+    cached_metrics = load_json(output_file) if (output_file.exists() and use_cache) else None
     cached_judge_results = None
     if isinstance(cached_metrics, dict):
         cached_judge_results = cached_metrics.get("llm_judge_results")
@@ -269,7 +369,7 @@ def main() -> None:
     total_correct = 0
     total_judged = 0
     judge_results: List[Optional[Dict[str, Any]]] = []
-    judge_tasks: List[Tuple[int, str, Any, Any, Any, Any, Any]] = []
+    judge_tasks: List[Tuple[int, str, Any, Any, Any, Any, Any, Any]] = []
 
     # Initialize tiktoken encoding for gpt-4o-mini
     encoding = tiktoken.encoding_for_model("gpt-4o-mini")
@@ -319,15 +419,31 @@ def main() -> None:
     if judge_tasks:
         task_by_index = {task[0]: task for task in judge_tasks}
         ctx = mp.get_context("spawn")
-        with ctx.Pool(processes=16) as pool:
-            for idx, score, label in tqdm(
-                pool.imap(judge_task, judge_tasks),
+        judge_fn = {
+            "mab": judge_task_mab,
+            "substring": judge_task_substring,
+            "default": judge_task,
+            "mab_summary": judge_task_mab_summary,
+        }[args.judge]
+        # Substring is local-only; one worker is enough and avoids
+        # spawning 16 idle processes for a free op. mab_summary makes
+        # three sequential gpt-4o calls per task — keep concurrency
+        # modest to respect rate limits.
+        if args.judge == "substring":
+            pool_size = 1
+        elif args.judge == "mab_summary":
+            pool_size = 4
+        else:
+            pool_size = 16
+        with ctx.Pool(processes=pool_size) as pool:
+            for idx, score, label, details in tqdm(
+                pool.imap(judge_fn, judge_tasks),
                 total=len(judge_tasks),
-                desc="Evaluating records",
+                desc=f"Evaluating records ({args.judge} judge)",
             ):
                 task = task_by_index[idx]
-                _, sample_id, question_index, category, question, expected_answer, predicted_answer = task
-                judge_results[idx] = {
+                _, sample_id, question_index, category, question, expected_answer, predicted_answer, _question_id, _keypoints = task
+                entry = {
                     "sample_id": sample_id,
                     "question_index": question_index,
                     "category": category,
@@ -337,6 +453,9 @@ def main() -> None:
                     "expected_answer": expected_answer,
                     "predicted_answer": predicted_answer,
                 }
+                if details is not None:
+                    entry["details"] = details
+                judge_results[idx] = entry
                 if category != 5:
                     total_correct += score
                     total_judged += 1
@@ -353,13 +472,16 @@ def main() -> None:
         memory_file_count += 1
 
     finalized_results = [result for result in judge_results if result is not None]
-    total_correct = 0
+    # Scores are kept as floats so mab_summary's per-record F1 ([0,1]) is
+    # averaged correctly; for binary judges this still gives an integer
+    # count out of total_judged.
+    total_correct: float = 0.0
     total_judged = 0
     for result in finalized_results:
         if isinstance(result, dict) and result.get("category") != 5:
             score = result.get("score")
             if isinstance(score, (int, float)):
-                total_correct += int(score)
+                total_correct += float(score)
                 total_judged += 1
 
     accuracy = (total_correct / total_judged) if total_judged else None
@@ -377,16 +499,33 @@ def main() -> None:
             continue
         key = str(category)
         entry = category_metrics.setdefault(
-            key, {"category": category, "total_judged": 0, "total_correct": 0, "accuracy": None}
+            key, {"category": category, "total_judged": 0, "total_correct": 0.0, "accuracy": None}
         )
         score = result.get("score")
         if isinstance(score, (int, float)):
             entry["total_judged"] += 1
-            entry["total_correct"] += int(score)
+            entry["total_correct"] += float(score)
 
     for entry in category_metrics.values():
         judged = entry.get("total_judged", 0)
         entry["accuracy"] = (entry["total_correct"] / judged) if judged else None
+
+    # Official MAB summarization metric — averages of per-record sub-scores.
+    # Only present when the run used the mab_summary judge.
+    summarization_metrics: Optional[Dict[str, float]] = None
+    if args.judge == "mab_summary":
+        sub = {"fluency": [], "recall": [], "precision": [], "f1": []}
+        for result in finalized_results:
+            details = result.get("details") if isinstance(result, dict) else None
+            if not isinstance(details, dict):
+                continue
+            for key in sub:
+                v = details.get(key)
+                if isinstance(v, (int, float)):
+                    sub[key].append(float(v))
+        summarization_metrics = {
+            f"gpt-4-{k}": (sum(vs) / len(vs)) if vs else 0.0 for k, vs in sub.items()
+        }
 
     average_memory_tokens = (total_memory_tokens / memory_file_count) if memory_file_count else None
 
@@ -407,6 +546,7 @@ def main() -> None:
             "total_memory_tokens": total_memory_tokens,
             "memory_file_count": memory_file_count,
             "average_memory_tokens": average_memory_tokens,
+            **(summarization_metrics or {}),
         },
         "accuracy_by_category": category_metrics,
         "latency_breakdown_seconds": latency_totals,

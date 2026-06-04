@@ -8,6 +8,7 @@ from typing import Dict, Iterable, List, Optional
 
 from mirix_memory_system import MirixMemorySystem
 from task_agent import TaskAgent
+from _eval_db import dump_memories
 
 
 instructions = """Instructions:
@@ -297,7 +298,7 @@ def main() -> None:
             print_qa(qidx, question, expected_answer, predicted)
 
         try:
-            all_memories = memory_system.list_all_memories(limit=0)
+            all_memories = dump_memories(sample_id)
         except Exception as exc:
             all_memories = {
                 "success": False,
