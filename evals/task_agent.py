@@ -32,7 +32,11 @@ class TaskAgent:
         self.model = model
         self.user_id = user_id
         self.max_tool_rounds = max_tool_rounds
-        self.mirix_client = MirixClient(client_id=client_id, org_id=org_id, base_url="http://127.0.0.1:8531", write_scope="read_write")
+        # timeout: per-request budget. Question-answer calls are short,
+        # but this client is shared with the ingest path (see
+        # MirixMemorySystem) where a single /memory/add_sync on a 4096-
+        # token chunk takes 3-6 min server-side. Keep 30 min headroom.
+        self.mirix_client = MirixClient(client_id=client_id, org_id=org_id, base_url="http://127.0.0.1:8531", write_scope="read_write", timeout=1800)
         self.user_id = user_id if user_id is not None else str(uuid.uuid4())
         config_path = Path(mirix_config_path)
         with config_path.open("r", encoding="utf-8") as handle:
@@ -147,6 +151,10 @@ class TaskAgent:
         if not params or not isinstance(params, dict):
             return {"success": False, "error": "Missing search parameters.", "skipped": True}
 
+        # Drop keys the LLM occasionally hallucinates with falsy/blank names —
+        # `**params` would TypeError on '' or None keys and kill the whole eval.
+        params = {k: v for k, v in params.items() if isinstance(k, str) and k}
+
         # Set reasonable defaults for better search quality
         if 'search_method' not in params or params['search_method'] is None:
             params['search_method'] = "embedding"
@@ -155,7 +163,14 @@ class TaskAgent:
         if 'limit' not in params or params['limit'] is None or params['limit'] < 10:
             params['limit'] = 15  # Get more candidates for better coverage
 
-        results = asyncio.run(self.mirix_client.search(user_id=resolved_user_id, **params))
+        try:
+            results = asyncio.run(self.mirix_client.search(user_id=resolved_user_id, **params))
+        except TypeError as e:
+            # MirixClient.search rejected an unknown kwarg (LLM produced
+            # a key not in the schema). Skip this search rather than
+            # crashing the entire eval — model will see empty results
+            # and try another query.
+            return {"success": False, "error": f"Invalid search args: {e}", "skipped": True}
 
         if results['success']:
             for result in results['results']:
