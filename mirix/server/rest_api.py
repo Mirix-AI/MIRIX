@@ -69,7 +69,7 @@ logger = get_logger(__name__)
 from mirix.queue import initialize_queue
 from mirix.queue.manager import get_manager as get_queue_manager
 from mirix.queue.queue_util import put_messages
-
+from mirix.server.constants import MAX_MEMORY_LIMIT
 # Initialize server (single instance shared across all requests)
 _server: Optional[AsyncServer] = None
 
@@ -3886,7 +3886,7 @@ async def search_memory_all_users(
                 any_scopes=client.read_scopes,
                 filter_tags=block_filter_tags_parsed,
                 auto_create_from_default=False,
-                limit=limit or 50,
+                limit=limit,
             )
             logger.info(
                 "Cross-user search core memory: found %d blocks for org=%s, scopes=%s, block_filter_tags=%s",
@@ -3938,7 +3938,7 @@ async def search_memory_all_users(
 async def list_memory_components(
     user_id: Optional[str] = None,
     memory_type: str = "all",
-    limit: int = 50,
+    limit: Optional[int] = None,
     authorization: Optional[str] = Header(None),
     http_request: Request = None,
 ):
@@ -3984,7 +3984,7 @@ async def list_memory_components(
         raise HTTPException(status_code=404, detail=f"User {user_id} not found")
 
     timezone_str = getattr(user, "timezone", None) or "UTC"
-    limit = max(1, min(limit, 200))  # guardrails
+    limit = max(1, min(limit if limit is not None else MAX_MEMORY_LIMIT, MAX_MEMORY_LIMIT))
 
     # Need an agent state for memory manager configuration
     agents = await server.agent_manager.list_agents(

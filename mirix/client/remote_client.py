@@ -414,8 +414,13 @@ class MirixClient(AbstractClient):
             if json:
                 logger.debug("[MirixClient] Request body: %s", json)
 
+        # Per-request timeout is set from self.timeout so a caller can
+        # raise it via MirixClient(timeout=...) without rebuilding the
+        # AsyncClient. RetryTransport propagates request.extensions
+        # ['timeout'] to the wrapped AsyncHTTPTransport unchanged.
         response = await self._client.request(
-            method=method, url=url, json=json, params=params, headers=headers
+            method=method, url=url, json=json, params=params, headers=headers,
+            timeout=self.timeout,
         )
         try:
             response.raise_for_status()
@@ -1823,7 +1828,7 @@ class MirixClient(AbstractClient):
         self,
         user_id: str,
         memory_type: str = "all",
-        limit: int = 50,
+        limit: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         """

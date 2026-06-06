@@ -297,7 +297,7 @@ def main() -> None:
             print_qa(qidx, question, expected_answer, predicted)
 
         try:
-            all_memories = memory_system.list_all_memories(limit=0)
+            all_memories = memory_system.list_all_memories()
         except Exception as exc:
             all_memories = {
                 "success": False,

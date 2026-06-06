@@ -112,6 +112,18 @@ class RedisMemoryClient:
 
             self.client = Redis(connection_pool=self.pool)
 
+            # Latched flag: when Redis is reachable but missing the
+            # RedisJSON + RediSearch modules (a stock OSS Redis), every
+            # set_json / search_* call raises ResponseError("unknown
+            # command 'JSON.SET'" / "'FT.SEARCH'"). The system still
+            # works (PG is authoritative; Redis is a cache layer), but
+            # without latching we log one error per memory item ingested
+            # — thousands of lines on a full eval. First failure logs a
+            # single WARNING and flips this flag; subsequent calls
+            # short-circuit via _check_modules_missing(). Reset to
+            # False to re-probe.
+            self._modules_missing = False
+
             # Log configuration
             logger.info(
                 "Redis connection pool initialized: %s (max_connections=%d, " "socket_timeout=%ds, keepalive=%s)",
@@ -135,6 +147,27 @@ class RedisMemoryClient:
                 protocol = parts[0].split("://")[0]
                 return f"{protocol}://****@{parts[1]}"
         return uri
+
+    def _check_modules_missing(self, exc: Exception) -> bool:
+        """Detect ``unknown command 'JSON.SET'`` / ``'FT.SEARCH'`` errors
+        from a stock Redis missing RedisJSON + RediSearch and latch
+        ``self._modules_missing`` so future calls short-circuit.
+
+        Returns True when the caller should swallow the exception and
+        return its empty/False sentinel; False when the caller should
+        keep its normal error-logging path.
+        """
+        if "unknown command" in str(exc).lower():
+            if not self._modules_missing:
+                logger.warning(
+                    "Redis JSON/Search modules not loaded — skipping "
+                    "Redis cache writes/queries for the rest of this "
+                    "process. PG remains authoritative. Original: %s",
+                    exc,
+                )
+                self._modules_missing = True
+            return True
+        return False
 
     async def ping(self) -> bool:
         """Test Redis connection."""
@@ -809,6 +842,8 @@ class RedisMemoryClient:
         Returns:
             True if successful
         """
+        if self._modules_missing:
+            return False
         try:
             # Use JSON.SET command
             await self.client.json().set(key, "$", data)
@@ -819,6 +854,8 @@ class RedisMemoryClient:
             logger.debug("Stored JSON: %s", key)
             return True
         except Exception as e:
+            if self._check_modules_missing(e):
+                return False
             logger.error("Failed to set JSON for %s: %s", key, e)
             return False
 
@@ -916,6 +953,8 @@ class RedisMemoryClient:
                 end_date=datetime(2025, 11, 19, 23, 59, 59)
             )
         """
+        if self._modules_missing:
+            return []
         try:
             from mirix.database.filter_tags_query import can_redis_handle
 
@@ -1004,6 +1043,8 @@ class RedisMemoryClient:
             return documents
 
         except Exception as e:
+            if self._check_modules_missing(e):
+                return []
             logger.warning("Redis text search failed for index %s with query '%s': %s", index_name, query[:50], e)
             return []
 
@@ -1050,6 +1091,8 @@ class RedisMemoryClient:
                 filter_tags={"expert_id": "expert-123"}
             )
         """
+        if self._modules_missing:
+            return []
         try:
             from mirix.database.filter_tags_query import can_redis_handle
 
@@ -1137,6 +1180,8 @@ class RedisMemoryClient:
             return documents
 
         except Exception as e:
+            if self._check_modules_missing(e):
+                return []
             logger.warning(
                 "Redis vector search failed for index %s (vector_field: %s): %s", index_name, vector_field, e
             )
@@ -1184,6 +1229,8 @@ class RedisMemoryClient:
                 end_date=datetime(2025, 11, 19, 23, 59, 59)
             )
         """
+        if self._modules_missing:
+            return []
         try:
             from mirix.database.filter_tags_query import can_redis_handle
 
@@ -1255,6 +1302,8 @@ class RedisMemoryClient:
             return documents
 
         except Exception as e:
+            if self._check_modules_missing(e):
+                return []
             logger.warning("Redis recent search failed for index %s (sort_by: %s): %s", index_name, sort_by, e)
             return []
 
@@ -1286,6 +1335,8 @@ class RedisMemoryClient:
         Returns:
             List of recent documents sorted by timestamp (descending)
         """
+        if self._modules_missing:
+            return []
         try:
             from mirix.database.filter_tags_query import can_redis_handle
 
@@ -1345,6 +1396,8 @@ class RedisMemoryClient:
             return [self._doc_to_dict(doc) for doc in results.docs]
 
         except Exception as e:
+            if self._check_modules_missing(e):
+                return []
             logger.warning("Redis org search failed for index %s: %s", index_name, e)
             return []
 
@@ -1378,6 +1431,8 @@ class RedisMemoryClient:
         Returns:
             List of documents sorted by similarity
         """
+        if self._modules_missing:
+            return []
         try:
             from mirix.database.filter_tags_query import can_redis_handle
 
@@ -1439,6 +1494,8 @@ class RedisMemoryClient:
             return [self._doc_to_dict(doc) for doc in results.docs]
 
         except Exception as e:
+            if self._check_modules_missing(e):
+                return []
             logger.warning("Redis vector search failed for org search: %s", e)
             return []
 
@@ -1472,6 +1529,8 @@ class RedisMemoryClient:
         Returns:
             List of matching documents
         """
+        if self._modules_missing:
+            return []
         try:
             from mirix.database.filter_tags_query import can_redis_handle
 
@@ -1527,6 +1586,8 @@ class RedisMemoryClient:
             return [self._doc_to_dict(doc) for doc in results.docs]
 
         except Exception as e:
+            if self._check_modules_missing(e):
+                return []
             logger.warning("Redis text search failed for org search: %s", e)
             return []
 

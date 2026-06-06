@@ -654,7 +654,7 @@ async def semantic_memory_insert(self: "Agent", items: List[SemanticMemoryItemBa
                     name=item["name"],
                     summary=item["summary"],
                     details=item["details"],
-                    source=item["source"],
+                    source=item.get("source", ""),
                     organization_id=self.actor.organization_id,
                     actor=self.actor,
                     filter_tags=filter_tags if filter_tags else None,
