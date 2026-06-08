@@ -24,6 +24,7 @@ from mirix.llm_api.llm_client import LLMClient
 from mirix.log import get_logger
 from mirix.orm.errors import NoResultFound
 from mirix.schemas.agent import AgentState, AgentType, CreateAgent
+from mirix.schemas.auto_dream import AutoDreamRequest
 from mirix.schemas.block import Block, BlockUpdate, CreateBlock, Human, Persona
 from mirix.schemas.client import Client, ClientCreate, ClientUpdate
 from mirix.schemas.embedding_config import EmbeddingConfig
@@ -5061,6 +5062,64 @@ async def cleanup_raw_memories(
     except Exception as e:
         logger.error("Cleanup job failed: %s", e)
         raise HTTPException(status_code=500, detail=f"Cleanup job failed: {str(e)}")
+
+
+@router.post("/memory/auto_dream")
+async def auto_dream_handler(
+    request_body: AutoDreamRequest,
+    user_id: Optional[str] = Query(None, description="User ID to run auto dream for"),
+    authorization: Optional[str] = Header(None),
+    http_request: Request = None,
+):
+    """
+    Run the auto dream self-reflection pipeline for a user.
+
+    Fetches memories in the specified time window (default: since last dream → now),
+    then invokes the AutoDreamAgent to remove redundancies and resolve conflicts.
+
+    Args:
+        start_date: Start of time window (default: last auto dream time, or 30 days ago)
+        end_date: End of time window (default: now)
+        memory_types: Which memory types to process
+        dry_run: If true, return counts without applying any changes
+        model: Override the LLM model (e.g. "gpt-4.1-mini" for testing)
+    """
+    from mirix.schemas.auto_dream import AutoDreamRequest, AutoDreamResponse
+    from mirix.services.auto_dream_manager import AutoDreamManager
+
+    client, auth_type = await get_client_from_jwt_or_api_key(authorization, http_request)
+    server = get_server()
+
+    if user_id:
+        user = await server.user_manager.get_user_by_id(user_id=user_id)
+    else:
+        from mirix.services.admin_user_manager import ClientAuthManager
+        user = await server.user_manager.get_user_by_id(
+            user_id=ClientAuthManager.get_admin_user_id_for_client(client.id)
+        )
+
+    meta_agents = await server.agent_manager.list_agents(actor=client)
+    meta_agent_state = next(
+        (a for a in meta_agents if a.agent_type == AgentType.meta_memory_agent),
+        None,
+    )
+    if meta_agent_state is None:
+        raise HTTPException(
+            status_code=400,
+            detail="No meta agent found for this client. Call /agents/meta/initialize first.",
+        )
+
+    try:
+        mgr = AutoDreamManager()
+        return await mgr.run(
+            request=request_body,
+            user=user,
+            actor=client,
+            meta_agent_state=meta_agent_state,
+        )
+    except Exception as e:
+        logger.error("Auto dream failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Auto dream failed: {str(e)}")
 
 
 class UpdateResourceMemoryRequest(BaseModel):

@@ -33,9 +33,11 @@ __all__ = [
     "ReflexionAgent",
     "ResourceMemoryAgent",
     "SemanticMemoryAgent",
+    "AutoDreamAgent",
 ]
 
 from mirix.agent.agent import Agent, AgentState, save_agent
+from mirix.agent.auto_dream_agent import AutoDreamAgent
 from mirix.agent.background_agent import BackgroundAgent
 from mirix.agent.core_memory_agent import CoreMemoryAgent
 from mirix.agent.episodic_memory_agent import EpisodicMemoryAgent
