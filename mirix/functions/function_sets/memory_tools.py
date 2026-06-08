@@ -1204,3 +1204,62 @@ async def finish_memory_update(self: "Agent") -> str:
         str: Empty string (no response content).
     """
     return ""
+
+
+async def check_memory(self: "Agent", entries: List[dict]) -> str:
+    """
+    Inspect specific memory entries by their IDs. Use this to read the full content of entries
+    you already have IDs for, without performing a new search.
+
+    Mirrors the paper's ``check_memory(ids=[...])`` navigation tool for the working region.
+
+    Args:
+        entries: List of dicts, each with ``"id"`` (str) and ``"type"``
+                 (one of "episodic", "semantic", "procedural", "resource", "knowledge_vault").
+                 Up to 30 entries per call.
+
+    Returns:
+        str: JSON-formatted list of entry details, or error messages for entries not found.
+    """
+    import json
+
+    if self.user is None:
+        return "[error] user not set"
+
+    entries = entries[:30]
+    tz = "UTC"
+    results = []
+
+    for spec in entries:
+        eid = spec.get("id", "")
+        etype = spec.get("type", "")
+        if not eid or not etype:
+            results.append({"id": eid, "type": etype, "error": "malformed spec"})
+            continue
+        try:
+            if etype == "episodic":
+                entry = await self.episodic_memory_manager.get_episodic_memory_by_id(eid, user=self.user)
+                data = entry.model_dump(exclude_none=True)
+            elif etype == "semantic":
+                entry = await self.semantic_memory_manager.get_semantic_item_by_id(eid, user=self.user, timezone_str=tz)
+                data = entry.model_dump(exclude_none=True)
+            elif etype == "procedural":
+                entry = await self.procedural_memory_manager.get_item_by_id(eid, user=self.user, timezone_str=tz)
+                data = entry.model_dump(exclude_none=True)
+            elif etype == "resource":
+                entry = await self.resource_memory_manager.get_item_by_id(eid, user=self.user)
+                data = entry.model_dump(exclude_none=True)
+            elif etype == "knowledge_vault":
+                entry = await self.knowledge_vault_manager.get_item_by_id(eid, user=self.user, timezone_str=tz)
+                data = entry.model_dump(exclude_none=True)
+            else:
+                results.append({"id": eid, "type": etype, "error": f"unknown type: {etype}"})
+                continue
+            for key in list(data.keys()):
+                if key.endswith("_embedding"):
+                    del data[key]
+            results.append(data)
+        except Exception as e:
+            results.append({"id": eid, "type": etype, "error": str(e)})
+
+    return json.dumps(results, ensure_ascii=False, default=str, indent=2)
