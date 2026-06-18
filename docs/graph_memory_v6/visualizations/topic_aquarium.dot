@@ -1,0 +1,106 @@
+digraph G {
+  graph [rankdir=LR, bgcolor="white", splines=true, overlap=false, nodesep=0.35, ranksep=1.0];
+  node [fontname="Helvetica", fontsize=10, style="filled,rounded", penwidth=1.2];
+  edge [fontname="Helvetica", fontsize=8, color="#9aa4b2", arrowsize=0.55];
+  label="Aquarium / Fish Detail";
+  labelloc="t";
+  fontsize=20;
+
+  subgraph cluster_entities {
+    label="V6Entity";
+    color="#d8dee9";
+    style="rounded";
+    e_v6ent_66b5ac051f2b4fafb577f7e1 [shape=ellipse, fillcolor="#eeeeee", color="#777777", label="Lemon Tetras\\n(Other, d=9)"];
+    e_v6ent_0510651c73fc4dea9c98fac6 [shape=ellipse, fillcolor="#eeeeee", color="#777777", label="Golden Honey Gouramis\\n(Other, d=7)"];
+    e_v6ent_4ce56803dadf4815bfc8ccd4 [shape=ellipse, fillcolor="#eeeeee", color="#777777", label="Neon Tetras\\n(Other, d=7)"];
+    e_v6ent_38752679e7e7408883a54b1f [shape=ellipse, fillcolor="#eeeeee", color="#777777", label="Pleco Catfish\\n(Other, d=6)"];
+    e_v6ent_588c8f1c5fc7442eaa2a846f [shape=ellipse, fillcolor="#eeeeee", color="#777777", label="Betta Fish\\n(Other, d=4)"];
+    e_v6ent_76ec0c0b6ea54161a59b2add [shape=ellipse, fillcolor="#eeeeee", color="#777777", label="20-Gallon Community\\nAquarium\\n(Other, d=3)"];
+    e_v6ent_33f255ea3b08429a902b2754 [shape=ellipse, fillcolor="#eeeeee", color="#777777", label="Community Aquarium\\n(Other, d=3)"];
+    e_v6ent_ffc7a137b3f645598d76d1a2 [shape=ellipse, fillcolor="#eee4ff", color="#7c5bc7", label="Gourami Aggression\\n(Concept, d=3)"];
+    e_v6ent_9bd2e0fd51a749e4884bd369 [shape=ellipse, fillcolor="#eee4ff", color="#7c5bc7", label="Schooling Fish\\n(Concept, d=3)"];
+    e_v6ent_eec743b377854d25a06e91cb [shape=ellipse, fillcolor="#eeeeee", color="#777777", label="Gouramis\\n(Other, d=2)"];
+    e_v6ent_6bab973106704f2cbfc8d13f [shape=ellipse, fillcolor="#eeeeee", color="#777777", label="10-Gallon Betta Tank\\n(Other, d=1)"];
+    e_v6ent_b4619a1263b04978b4613072 [shape=ellipse, fillcolor="#eeeeee", color="#777777", label="20-Gallon Aquarium\\n(Other, d=1)"];
+    e_v6ent_0695144f338949559a579612 [shape=ellipse, fillcolor="#eeeeee", color="#777777", label="Aggressive Gouramis\\n(Other, d=1)"];
+    e_v6ent_e0c87b9a991940a1982a11e1 [shape=ellipse, fillcolor="#eee4ff", color="#7c5bc7", label="Aquarium Decorations\\n(Concept, d=1)"];
+  }
+
+  subgraph cluster_memories {
+    label="V6MemoryRef -> PG flat memory";
+    color="#d8dee9";
+    style="rounded";
+    m_episodic_ep_MEVM [shape=box, fillcolor="#fff2bf", color="#b38a00", label="E: 2023-05-22\\nAssistant detailed compatibility\\nand care tips for adding Lemon\\nTetras and Zebra Danios to the\\nexisting 20-gallon community tank."];
+    m_episodic_ep_IAXG [shape=box, fillcolor="#fff2bf", color="#b38a00", label="E: 2023-05-22\\nUser considers adding schooling\\nfish Lemon Tetras and Zebra Danios\\nto 20-gallon community tank with\\nneon tetras, golden honey\\ngouramis..."];
+    m_episodic_ep_DH95 [shape=box, fillcolor="#fff2bf", color="#b38a00", label="E: 2023-05-22\\nAssistant provided detailed care\\ninstructions for Java Moss and\\nAnacharis and their interactions\\nwith neon tetras, golden honey\\ngouram..."];
+    m_episodic_ep_CNIO [shape=box, fillcolor="#fff2bf", color="#b38a00", label="E: 2023-05-22\\nUser plans to add live plants Java\\nMoss and Anacharis to 20-gallon\\ncommunity aquarium with neon\\ntetras, golden honey gouramis, and\\nple..."];
+    m_semantic_sem_HMAD [shape=component, fillcolor="#dff7ff", color="#2f7f9f", label="S: 2026-06-12\\nTreasure Chest Decoration in\\n20-Gallon Community Aquarium"];
+    m_semantic_sem_MKCK [shape=component, fillcolor="#dff7ff", color="#2f7f9f", label="S: 2026-06-12\\nLemon Tetras and Zebra Danios\\nCompatibility in Community\\nAquarium"];
+    m_semantic_sem_GEKU [shape=component, fillcolor="#dff7ff", color="#2f7f9f", label="S: 2026-06-12\\nJava Moss and Anacharis in\\nCommunity Aquarium"];
+    m_episodic_ep_U751 [shape=box, fillcolor="#fff2bf", color="#b38a00", label="E: 2023-05-27\\nUser reports trying to distract\\naggressive gouramis with extra\\nfood and decorations, considering\\nadding schooling fish, and\\ninquires a..."];
+    m_semantic_sem_DFNM [shape=component, fillcolor="#dff7ff", color="#2f7f9f", label="S: 2026-06-12\\nLemon Tetras and Zebra Danios\\nBehavior and Tank Requirements"];
+    m_episodic_ep_S4J3 [shape=box, fillcolor="#fff2bf", color="#b38a00", label="E: 2023-05-27\\nAssistant confirmed frozen\\nbloodworms are a good treat for\\nbetta fish and gave feeding tips."];
+    m_semantic_sem_FZ2Z [shape=component, fillcolor="#dff7ff", color="#2f7f9f", label="S: 2026-06-12\\nBubbles the Betta Fish"];
+    m_semantic_sem_I7C6 [shape=component, fillcolor="#dff7ff", color="#2f7f9f", label="S: 2026-06-12\\nFeeding Betta Fish Frozen\\nBloodworms"];
+    m_episodic_ep_XLQC [shape=box, fillcolor="#fff2bf", color="#b38a00", label="E: 2023-05-27\\nAssistant advised on gourami\\naggression, compatibility with\\nschooling fish, and tank\\nconsiderations in a 20-gallon\\naquarium."];
+    m_episodic_ep_YC41 [shape=box, fillcolor="#fff2bf", color="#b38a00", label="E: 2023-05-27\\nUser plans to add schooling fish\\nlemon tetras and zebra danios to\\n20-gallon community tank and\\ninquires about their behavior and\\ntank..."];
+    m_semantic_sem_XUEA [shape=component, fillcolor="#dff7ff", color="#2f7f9f", label="S: 2026-06-12\\nGourami Aggression and Schooling\\nFish Addition"];
+    m_semantic_sem_S83B [shape=component, fillcolor="#dff7ff", color="#2f7f9f", label="S: 2026-06-12\\nLemon Tetras"];
+    m_semantic_sem_SBX0 [shape=component, fillcolor="#dff7ff", color="#2f7f9f", label="S: 2026-06-12\\nGourami Aggression and Tank\\nCompatibility"];
+    m_episodic_ep_DU2X [shape=box, fillcolor="#fff2bf", color="#b38a00", label="E: 2023-05-27\\nUser plans to add live aquatic\\nplants to upgraded freshwater\\ntanks including a 20-gallon\\ncommunity tank and a 10-gallon\\nbetta tank."];
+    m_episodic_ep_SLGS [shape=box, fillcolor="#fff2bf", color="#b38a00", label="E: 2023-05-22\\nUser plans to add decorations\\nincluding treasure chest to\\n20-gallon community aquarium with\\nartificial coral and rocks for\\nfish hiding..."];
+    m_semantic_sem_WIML [shape=component, fillcolor="#dff7ff", color="#2f7f9f", label="S: 2026-06-12\\nZebra Danios"];
+    m_semantic_sem_OIEZ [shape=component, fillcolor="#dff7ff", color="#2f7f9f", label="S: 2026-06-12\\nAquarium Decorations for Community\\nTanks"];
+  }
+
+  e_v6ent_0510651c73fc4dea9c98fac6 -> m_episodic_ep_MEVM [label="APPEARS_IN", color="#5f8dd3"];
+  e_v6ent_0510651c73fc4dea9c98fac6 -> m_episodic_ep_IAXG [label="APPEARS_IN", color="#5f8dd3"];
+  e_v6ent_0510651c73fc4dea9c98fac6 -> m_episodic_ep_DH95 [label="APPEARS_IN", color="#5f8dd3"];
+  e_v6ent_0510651c73fc4dea9c98fac6 -> m_episodic_ep_CNIO [label="APPEARS_IN", color="#5f8dd3"];
+  e_v6ent_0510651c73fc4dea9c98fac6 -> m_semantic_sem_HMAD [label="DESCRIBED_BY", color="#9b6bd3"];
+  e_v6ent_0510651c73fc4dea9c98fac6 -> m_semantic_sem_MKCK [label="DESCRIBED_BY", color="#9b6bd3"];
+  e_v6ent_0510651c73fc4dea9c98fac6 -> m_semantic_sem_GEKU [label="DESCRIBED_BY", color="#9b6bd3"];
+  e_v6ent_0695144f338949559a579612 -> m_episodic_ep_U751 [label="APPEARS_IN", color="#5f8dd3"];
+  e_v6ent_33f255ea3b08429a902b2754 -> m_semantic_sem_DFNM [label="DESCRIBED_BY", color="#9b6bd3"];
+  e_v6ent_33f255ea3b08429a902b2754 -> m_semantic_sem_MKCK [label="DESCRIBED_BY", color="#9b6bd3"];
+  e_v6ent_33f255ea3b08429a902b2754 -> m_semantic_sem_GEKU [label="DESCRIBED_BY", color="#9b6bd3"];
+  e_v6ent_38752679e7e7408883a54b1f -> m_episodic_ep_MEVM [label="APPEARS_IN", color="#5f8dd3"];
+  e_v6ent_38752679e7e7408883a54b1f -> m_episodic_ep_IAXG [label="APPEARS_IN", color="#5f8dd3"];
+  e_v6ent_38752679e7e7408883a54b1f -> m_episodic_ep_DH95 [label="APPEARS_IN", color="#5f8dd3"];
+  e_v6ent_38752679e7e7408883a54b1f -> m_semantic_sem_HMAD [label="DESCRIBED_BY", color="#9b6bd3"];
+  e_v6ent_38752679e7e7408883a54b1f -> m_semantic_sem_MKCK [label="DESCRIBED_BY", color="#9b6bd3"];
+  e_v6ent_38752679e7e7408883a54b1f -> m_semantic_sem_GEKU [label="DESCRIBED_BY", color="#9b6bd3"];
+  e_v6ent_4ce56803dadf4815bfc8ccd4 -> m_episodic_ep_MEVM [label="APPEARS_IN", color="#5f8dd3"];
+  e_v6ent_4ce56803dadf4815bfc8ccd4 -> m_episodic_ep_IAXG [label="APPEARS_IN", color="#5f8dd3"];
+  e_v6ent_4ce56803dadf4815bfc8ccd4 -> m_episodic_ep_DH95 [label="APPEARS_IN", color="#5f8dd3"];
+  e_v6ent_4ce56803dadf4815bfc8ccd4 -> m_episodic_ep_CNIO [label="APPEARS_IN", color="#5f8dd3"];
+  e_v6ent_4ce56803dadf4815bfc8ccd4 -> m_semantic_sem_HMAD [label="DESCRIBED_BY", color="#9b6bd3"];
+  e_v6ent_4ce56803dadf4815bfc8ccd4 -> m_semantic_sem_MKCK [label="DESCRIBED_BY", color="#9b6bd3"];
+  e_v6ent_4ce56803dadf4815bfc8ccd4 -> m_semantic_sem_GEKU [label="DESCRIBED_BY", color="#9b6bd3"];
+  e_v6ent_588c8f1c5fc7442eaa2a846f -> m_episodic_ep_S4J3 [label="APPEARS_IN", color="#5f8dd3"];
+  e_v6ent_588c8f1c5fc7442eaa2a846f -> m_episodic_ep_U751 [label="APPEARS_IN", color="#5f8dd3"];
+  e_v6ent_588c8f1c5fc7442eaa2a846f -> m_semantic_sem_FZ2Z [label="DESCRIBED_BY", color="#9b6bd3"];
+  e_v6ent_588c8f1c5fc7442eaa2a846f -> m_semantic_sem_I7C6 [label="DESCRIBED_BY", color="#9b6bd3"];
+  e_v6ent_66b5ac051f2b4fafb577f7e1 -> m_episodic_ep_XLQC [label="APPEARS_IN", color="#5f8dd3"];
+  e_v6ent_66b5ac051f2b4fafb577f7e1 -> m_episodic_ep_YC41 [label="APPEARS_IN", color="#5f8dd3"];
+  e_v6ent_66b5ac051f2b4fafb577f7e1 -> m_episodic_ep_MEVM [label="APPEARS_IN", color="#5f8dd3"];
+  e_v6ent_66b5ac051f2b4fafb577f7e1 -> m_episodic_ep_IAXG [label="APPEARS_IN", color="#5f8dd3"];
+  e_v6ent_66b5ac051f2b4fafb577f7e1 -> m_semantic_sem_XUEA [label="DESCRIBED_BY", color="#9b6bd3"];
+  e_v6ent_66b5ac051f2b4fafb577f7e1 -> m_semantic_sem_S83B [label="DESCRIBED_BY", color="#9b6bd3"];
+  e_v6ent_66b5ac051f2b4fafb577f7e1 -> m_semantic_sem_SBX0 [label="DESCRIBED_BY", color="#9b6bd3"];
+  e_v6ent_66b5ac051f2b4fafb577f7e1 -> m_semantic_sem_DFNM [label="DESCRIBED_BY", color="#9b6bd3"];
+  e_v6ent_6bab973106704f2cbfc8d13f -> m_episodic_ep_DU2X [label="APPEARS_IN", color="#5f8dd3"];
+  e_v6ent_76ec0c0b6ea54161a59b2add -> m_episodic_ep_SLGS [label="APPEARS_IN", color="#5f8dd3"];
+  e_v6ent_76ec0c0b6ea54161a59b2add -> m_episodic_ep_CNIO [label="APPEARS_IN", color="#5f8dd3"];
+  e_v6ent_76ec0c0b6ea54161a59b2add -> m_semantic_sem_HMAD [label="DESCRIBED_BY", color="#9b6bd3"];
+  e_v6ent_9bd2e0fd51a749e4884bd369 -> m_episodic_ep_U751 [label="APPEARS_IN", color="#5f8dd3"];
+  e_v6ent_9bd2e0fd51a749e4884bd369 -> m_episodic_ep_XLQC [label="APPEARS_IN", color="#5f8dd3"];
+  e_v6ent_9bd2e0fd51a749e4884bd369 -> m_semantic_sem_WIML [label="DESCRIBED_BY", color="#9b6bd3"];
+  e_v6ent_b4619a1263b04978b4613072 -> m_episodic_ep_XLQC [label="APPEARS_IN", color="#5f8dd3"];
+  e_v6ent_e0c87b9a991940a1982a11e1 -> m_semantic_sem_OIEZ [label="DESCRIBED_BY", color="#9b6bd3"];
+  e_v6ent_eec743b377854d25a06e91cb -> m_semantic_sem_XUEA [label="DESCRIBED_BY", color="#9b6bd3"];
+  e_v6ent_eec743b377854d25a06e91cb -> m_semantic_sem_SBX0 [label="DESCRIBED_BY", color="#9b6bd3"];
+  e_v6ent_ffc7a137b3f645598d76d1a2 -> m_episodic_ep_XLQC [label="APPEARS_IN", color="#5f8dd3"];
+  e_v6ent_ffc7a137b3f645598d76d1a2 -> m_semantic_sem_XUEA [label="DESCRIBED_BY", color="#9b6bd3"];
+  e_v6ent_ffc7a137b3f645598d76d1a2 -> m_semantic_sem_SBX0 [label="DESCRIBED_BY", color="#9b6bd3"];
+}
