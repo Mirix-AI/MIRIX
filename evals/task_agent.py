@@ -35,7 +35,8 @@ class TaskAgent:
         # timeout: per-request budget. Question-answer calls are short,
         # but this client is shared with the ingest path (see
         # MirixMemorySystem) where a single /memory/add_sync on a 4096-
-        # token chunk takes 3-6 min server-side. Keep 30 min headroom.
+        # token chunk takes 3-6 min server-side. Graph hooks can add
+        # extraction + Neo4j writes, so keep 30 min headroom.
         self.mirix_client = MirixClient(client_id=client_id, org_id=org_id, base_url="http://127.0.0.1:8531", write_scope="read_write", timeout=1800)
         self.user_id = user_id if user_id is not None else str(uuid.uuid4())
         config_path = Path(mirix_config_path)
