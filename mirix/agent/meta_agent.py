@@ -144,6 +144,39 @@ MEMORY_AGENT_CONFIGS = [
 ]
 
 
+# Appended to the semantic_memory_agent system prompt when
+# enable_conflict_resolution=True is passed at create_meta_agent time.
+# Steers the agent away from free-form merge of conflicting facts.
+# See docs/mab_conflict_resolution_and_provenance.md.
+_CONFLICT_RESOLUTION_POLICY_PROMPT = """\
+## Conflict resolution policy
+
+When ingesting a fact that asserts a value for some (entity, relation)
+already covered by an existing semantic item:
+
+- DO NOT merge the new value into a hedging free-text summary
+  ("X, though some data says Y", "incorrectly attributed",
+  "according to some sources").
+- DO NOT use your own world knowledge to choose which value is "correct".
+- The user's most recent assertion is authoritative.
+
+When you call ``semantic_memory_insert`` for a fact of this shape, write:
+
+  - ``name``: ``"<entity> / <relation>"`` (e.g. ``"Thomas Kyd / born in"``)
+  - ``summary``: the raw value, verbatim (e.g. ``"Leeds"``). No paraphrasing.
+  - ``details``: short context only.
+
+The manager will then preserve any prior canonical value with a
+``superseded`` marker in ``prior_values`` based on source ordering — you
+do not have to hedge in ``summary`` to keep the old value safe.
+
+For free-form concepts that do not fit a triple shape (multi-paragraph
+how-tos, abstract topics), keep calling ``semantic_memory_insert``
+normally; the manager will route those down the legacy free-form path
+unchanged.
+"""
+
+
 class MetaAgent(BaseAgent):
     """
     MetaAgent manages all memory-related sub-agents for coordinated memory operations.
