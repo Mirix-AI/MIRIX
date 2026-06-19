@@ -183,3 +183,18 @@ class MirixMemorySystem:
             memory_type=memory_type,
             limit=limit,
         ))
+
+    def compact_graph(self):
+        """v8 finalize: prune singleton anchors (no-op for other graph versions).
+
+        Uses a standalone synchronous HTTP call instead of the shared async
+        MirixClient: routing it through asyncio.run(self.client...) would reuse
+        the client's event-loop-bound connection pool and break the subsequent
+        QA requests ("Event loop is closed").
+        """
+        import httpx
+        base = self.client.base_url.rstrip("/")
+        with httpx.Client(timeout=120) as c:
+            resp = c.post(f"{base}/memory/graph/compact", json={"user_id": self.user_id})
+            resp.raise_for_status()
+            return resp.json()

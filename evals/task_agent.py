@@ -196,7 +196,15 @@ class TaskAgent:
         raw_input_id = params.get("raw_input_id")
         if not raw_input_id:
             return {"success": False, "error": "raw_input_id is required."}
-        return self.mirix_client.check_raw_item(raw_input_id)
+        fn = getattr(self.mirix_client, "check_raw_item", None)
+        if fn is None:
+            return {"success": False, "error": "Raw item lookup is unavailable; answer from the memories already retrieved."}
+        try:
+            import inspect
+            res = fn(raw_input_id)
+            return asyncio.run(res) if inspect.isawaitable(res) else res
+        except Exception as e:
+            return {"success": False, "error": f"Raw item lookup failed: {e}"}
 
     def _serialize_tool_calls(self, tool_calls: Any) -> list:
         serialized = []
@@ -291,6 +299,8 @@ class TaskAgent:
                 tools=None if is_last_round else (tools or None),
                 tool_choice=None if is_last_round else ("auto" if tools else None),
                 max_completion_tokens=128,
+                temperature=0,
+                seed=42,
             )
 
             usage = getattr(response, "usage", None)

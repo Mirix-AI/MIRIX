@@ -621,7 +621,7 @@ class EpisodicMemoryManager:
                             organization_id=organization_id,
                             user_id=user_id or "unknown",
                         )
-                    elif settings.graph_version == "v7":
+                    elif settings.graph_version in ("v7", "v8"):
                         from mirix.services.graph_memory_manager_v7 import V7GraphManager
 
                         source_meta = (

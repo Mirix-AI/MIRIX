@@ -431,7 +431,21 @@ async def extract_topics_and_temporal_info(
             new_messages = []
             for msg in messages:
                 prefix = "[USER]" if msg["role"] == "user" else "[ASSISTANT]"
-                new_messages.extend([{"type": "text", "text": prefix + " " + part} for part in msg["content"]])
+                content = msg["content"]
+                # content may be a bare string, a list of strings, or the
+                # multimodal list-of-dicts format ([{"type": "text", "text": ...}]).
+                if isinstance(content, str):
+                    parts = [content]
+                elif isinstance(content, list):
+                    parts = [
+                        part.get("text", "") if isinstance(part, dict) else str(part)
+                        for part in content
+                    ]
+                else:
+                    parts = [str(content)]
+                new_messages.extend(
+                    [{"type": "text", "text": prefix + " " + part} for part in parts if part]
+                )
             messages = new_messages
 
         temporary_messages = convert_message_to_mirix_message(messages)
@@ -2240,6 +2254,24 @@ async def add_memory(
         "agent_id": meta_agent.id,
         "message_count": len(input_messages),
     }
+
+
+class CompactGraphRequest(BaseModel):
+    """Request model for the v8 graph-compaction finalize step."""
+
+    user_id: str
+
+
+@router.post("/memory/graph/compact")
+async def compact_graph_memory(request: CompactGraphRequest):
+    """v8 finalize: prune singleton (degree-1) anchors from a user's graph.
+
+    No-op unless MIRIX_GRAPH_VERSION == 'v8'. Call once after all of a user's
+    memories have been ingested (an anchor's final degree is only known then).
+    """
+    from mirix.services.graph_memory_manager_v7 import V7GraphManager
+
+    return await V7GraphManager().prune_singletons(request.user_id)
 
 
 @router.post("/memory/add_sync")

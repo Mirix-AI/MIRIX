@@ -66,6 +66,35 @@ _GENERIC_SUFFIXES = (
 
 _SPECIFIC_HINT_RE = re.compile(r"(\d|[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+|['\u2019])")
 
+# Anchor merge key (A): collapses case / punctuation / word-order and
+# singular/plural so "Mobile App"/"Mobile Apps", "Flight"/"Flights",
+# "Price"/"Prices" merge onto ONE V7Anchor instead of fragmenting into
+# near-duplicate nodes. Deliberately conservative \u2014 numbers are preserved
+# (so "10 Gallons" != "20 Gallons", and distinct dates stay distinct) and only
+# plural endings are normalized (no verb stemming, so "Training" != "Trains").
+_ANCHOR_STOPWORDS = {"the", "a", "an", "of", "and", "or", "to", "for", "in", "on", "with"}
+
+
+def _singularize(token: str) -> str:
+    if token.isdigit() or len(token) < 4:
+        return token
+    if token.endswith(("ss", "us", "is")):
+        return token
+    if token.endswith("ies"):
+        return token[:-3] + "y"
+    if re.search(r"(ses|xes|zes|ches|shes)$", token):
+        return token[:-2]
+    if token.endswith("s"):
+        return token[:-1]
+    return token
+
+
+def anchor_canonical_key(name: str) -> str:
+    """Canonical merge key for a V7 anchor name (see note above)."""
+    cleaned = re.sub(r"[^a-z0-9 ]", " ", (name or "").lower())
+    tokens = {_singularize(t) for t in cleaned.split() if t and t not in _ANCHOR_STOPWORDS}
+    return " ".join(sorted(tokens))
+
 
 @dataclass(frozen=True)
 class V7AnchorCandidate:
@@ -92,7 +121,7 @@ class V7GraphManager:
         occurred_at: Optional[object] = None,
         source_meta: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
-        if not settings.enable_graph_memory or settings.graph_version != "v7":
+        if not settings.enable_graph_memory or settings.graph_version not in ("v7", "v8"):
             return {"skipped": "disabled"}
 
         from mirix.database.neo4j_client import get_neo4j_driver
@@ -163,7 +192,7 @@ class V7GraphManager:
         by_name: dict[str, V7AnchorCandidate] = {}
         for entity in entities:
             name = self._clean_name(entity.name)
-            nl = normalize_name(name)
+            nl = anchor_canonical_key(name)
             if not name or not nl:
                 continue
             score = self._specificity_score(name, entity.entity_type or "Other")
@@ -249,23 +278,24 @@ class V7GraphManager:
                     m.memory_type = $memory_type,
                     m.user_id = $user_id,
                     m.organization_id = $organization_id,
-                    m.title = $title,
                     m.preview = $preview,
                     m.source_key = $source_key,
-                    m.source_meta_json = $source_meta_json,
                     m.updated_at = $now,
                     m.created_at = coalesce(m.created_at, $now)
                 SET m.timestamp = $timestamp
                 """,
+                # NOTE: title and source_meta_json are intentionally NOT stored.
+                # The retriever only reads memory_id (then fetches full details
+                # from PG), and V7_SUPPORTED_BY is built from source_key — so both
+                # fields were write-only dead weight. preview is kept as a short
+                # debug snippet (it already falls back to title when no summary).
                 id=ref_id,
                 memory_id=memory_id,
                 memory_type=source_kind,
                 user_id=user_id,
                 organization_id=organization_id,
-                title=title[:120],
                 preview=preview,
                 source_key=source_key,
-                source_meta_json=json.dumps(source_meta, sort_keys=True),
                 timestamp=timestamp,
                 now=now,
             )
@@ -433,3 +463,49 @@ class V7GraphManager:
         if source_meta.get("occurred_at"):
             return f"occurred_at:{source_meta['occurred_at']}"
         return None
+
+    # ------------------------------------------------------------- v8 finalize
+
+    async def prune_singletons(self, user_id: str) -> dict[str, Any]:
+        """v8 finalize pass: delete degree-1 anchors — anchors that link only a
+        single memory ref and therefore create no cross-memory retrieval path
+        (the value a graph adds over flat PG vector search). An anchor's final
+        degree is only known after ALL of a user's memories are ingested, so
+        this must run ONCE at the end of ingestion, not incrementally.
+
+        No-op unless ``graph_version == 'v8'`` — v7 keeps every admitted anchor.
+        Safe: only anchor nodes are removed (never memory refs or PG rows), and
+        every memory remains reachable via its multi-degree anchors, the
+        V7_SUPPORTED_BY / V7_NEXT_MEMORY bridges, and flat PG search.
+        """
+        if not settings.enable_graph_memory or settings.graph_version != "v8":
+            return {"skipped": "not_v8"}
+
+        from mirix.database.neo4j_client import get_neo4j_driver
+
+        driver = get_neo4j_driver()
+        if driver is None:
+            return {"skipped": "no_driver"}
+
+        async with driver.session(database=settings.neo4j_database) as session:
+            count_res = await session.run(
+                """
+                MATCH (a:V7Anchor {user_id: $uid})-[:V7_APPEARS_IN|V7_DESCRIBED_BY]->(m:V7MemoryRef)
+                WITH a, count(DISTINCT m) AS deg WHERE deg = 1
+                RETURN count(a) AS n
+                """,
+                uid=user_id,
+            )
+            rec = await count_res.single()
+            n = int(rec["n"]) if rec else 0
+            if n:
+                await session.run(
+                    """
+                    MATCH (a:V7Anchor {user_id: $uid})-[:V7_APPEARS_IN|V7_DESCRIBED_BY]->(m:V7MemoryRef)
+                    WITH a, count(DISTINCT m) AS deg WHERE deg = 1
+                    DETACH DELETE a
+                    """,
+                    uid=user_id,
+                )
+        logger.info("v8 prune_singletons: removed %d degree-1 anchors for user=%s", n, user_id)
+        return {"pruned": n}

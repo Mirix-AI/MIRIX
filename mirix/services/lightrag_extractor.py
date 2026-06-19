@@ -145,7 +145,7 @@ async def call_openai_chat(
     *,
     temperature: float = 0.0,
     max_tokens: int = 4000,
-    timeout: float = 60.0,
+    timeout: float = 180.0,
     api_key: Optional[str] = None,
     api_base: Optional[str] = None,
 ) -> str:
@@ -211,7 +211,7 @@ async def extract_entities_and_relations(
     try:
         raw = await call_openai_chat(system_prompt, user_prompt, model=llm_model)
     except Exception as e:
-        logger.warning("LightRAG extraction LLM call failed: %s", e)
+        logger.warning("LightRAG extraction LLM call failed: %s: %s", type(e).__name__, e)
         return ExtractionResult()
 
     parsed = parse_extraction_output(raw)
