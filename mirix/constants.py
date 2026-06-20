@@ -132,6 +132,17 @@ UNIVERSAL_MEMORY_TOOLS = [
     "finish_memory_update",
     "list_memory_within_timerange",
 ]
+AUTO_DREAM_TOOLS = list(
+    set(
+        CORE_MEMORY_TOOLS
+        + EPISODIC_MEMORY_TOOLS
+        + PROCEDURAL_MEMORY_TOOLS
+        + RESOURCE_MEMORY_TOOLS
+        + KNOWLEDGE_VAULT_TOOLS
+        + SEMANTIC_MEMORY_TOOLS
+        + UNIVERSAL_MEMORY_TOOLS
+    )
+)
 ALL_TOOLS = list(
     set(
         BASE_TOOLS

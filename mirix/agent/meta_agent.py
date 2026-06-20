@@ -41,6 +41,7 @@ class MemoryAgentStates:
         self.resource_memory_agent_state: Optional[AgentState] = None
         self.reflexion_agent_state: Optional[AgentState] = None
         self.background_agent_state: Optional[AgentState] = None
+        self.auto_dream_agent_state: Optional[AgentState] = None
 
     def set_agent_state(self, name: str, state: AgentState):
         """Set an agent state by name."""
@@ -68,6 +69,7 @@ class MemoryAgentStates:
             "resource_memory_agent_state": self.resource_memory_agent_state,
             "reflexion_agent_state": self.reflexion_agent_state,
             "background_agent_state": self.background_agent_state,
+            "auto_dream_agent_state": self.auto_dream_agent_state,
         }
 
     def get_all_agent_states_list(self) -> List[Optional[AgentState]]:
@@ -82,6 +84,7 @@ class MemoryAgentStates:
             self.resource_memory_agent_state,
             self.reflexion_agent_state,
             self.background_agent_state,
+            self.auto_dream_agent_state,
         ]
 
 
@@ -139,6 +142,12 @@ MEMORY_AGENT_CONFIGS = [
         "name": "background_agent",
         "agent_type": AgentType.background_agent,
         "attr_name": "background_agent_state",
+        "include_base_tools": False,
+    },
+    {
+        "name": "auto_dream_agent",
+        "agent_type": AgentType.auto_dream_agent,
+        "attr_name": "auto_dream_agent_state",
         "include_base_tools": False,
     },
 ]
@@ -275,24 +284,26 @@ class MetaAgent(BaseAgent):
         """Load existing memory agent states from the server."""
         for agent_state in existing_agents:
             # Map agent names to their corresponding attribute names
-            if agent_state.name == "episodic_memory_agent":
+            if agent_state.is_type(AgentType.episodic_memory_agent):
                 self.memory_agent_states.episodic_memory_agent_state = agent_state
-            elif agent_state.name == "procedural_memory_agent":
+            elif agent_state.is_type(AgentType.procedural_memory_agent):
                 self.memory_agent_states.procedural_memory_agent_state = agent_state
-            elif agent_state.name == "knowledge_vault_memory_agent":
+            elif agent_state.is_type(AgentType.knowledge_vault_memory_agent):
                 self.memory_agent_states.knowledge_vault_memory_agent_state = agent_state
-            elif agent_state.name == "meta_memory_agent":
+            elif agent_state.is_type(AgentType.meta_memory_agent):
                 self.memory_agent_states.meta_memory_agent_state = agent_state
-            elif agent_state.name == "semantic_memory_agent":
+            elif agent_state.is_type(AgentType.semantic_memory_agent):
                 self.memory_agent_states.semantic_memory_agent_state = agent_state
-            elif agent_state.name == "core_memory_agent":
+            elif agent_state.is_type(AgentType.core_memory_agent):
                 self.memory_agent_states.core_memory_agent_state = agent_state
-            elif agent_state.name == "resource_memory_agent":
+            elif agent_state.is_type(AgentType.resource_memory_agent):
                 self.memory_agent_states.resource_memory_agent_state = agent_state
-            elif agent_state.name == "reflexion_agent":
+            elif agent_state.is_type(AgentType.reflexion_agent):
                 self.memory_agent_states.reflexion_agent_state = agent_state
-            elif agent_state.name == "background_agent":
+            elif agent_state.is_type(AgentType.background_agent):
                 self.memory_agent_states.background_agent_state = agent_state
+            elif agent_state.is_type(AgentType.auto_dream_agent):
+                self.memory_agent_states.auto_dream_agent_state = agent_state
 
         printv(f"[Mirix.Agent.{self.agent_state.name}] INFO: Loaded existing memory agent states")
 

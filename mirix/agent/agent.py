@@ -1514,8 +1514,8 @@ class Agent(BaseAgent):
         if user:
             self.user = user
 
-            # Only load blocks for core_memory_agent (other agent types don't use blocks)
-            if self.agent_state.is_type(AgentType.core_memory_agent):
+            # Load blocks for agents that can directly edit core memory.
+            if self.agent_state.is_type(AgentType.core_memory_agent, AgentType.auto_dream_agent):
                 # Load existing blocks for this user, scoped by the client's write_scope.
                 # auto_create_from_default=True will create blocks from template if they don't exist for this scope.
                 # filter_tags_set_on_create is applied only when new blocks are created (e.g. from default template).

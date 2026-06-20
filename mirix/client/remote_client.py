@@ -1854,6 +1854,45 @@ class MirixClient(AbstractClient):
 
         return await self._request("GET", "/memory/components", params=params, headers=headers)
 
+    async def auto_dream(
+        self,
+        user_id: str,
+        mode: str = "experience",
+        dry_run: bool = False,
+        model: Optional[str] = None,
+        headers: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Run the auto-dream self-reflection pipeline for a user.
+
+        Consolidates memories by removing redundancies and resolving conflicts
+        across the specified memory types.
+
+        Args:
+            user_id: End-user whose memories to consolidate
+            mode: Which memory mode to process. One of: core, episodic, semantic,
+                resource, procedural, knowledge, experience. experience processes
+                episodic, semantic, and knowledge together.
+            dry_run: If true, fetch and count memories without invoking the agent.
+            model: Optional model override for this auto-dream run.
+
+        Returns:
+            AutoDreamResponse dict with stats on removed/merged/resolved items
+        """
+        await self._ensure_user_exists(user_id, headers=headers)
+
+        body: Dict[str, Any] = {"mode": mode, "dry_run": dry_run}
+        if model is not None:
+            body["model"] = model
+
+        return await self._request(
+            "POST",
+            "/memory/auto_dream",
+            params={"user_id": user_id},
+            json=body,
+            headers=headers,
+        )
+
     # ========================================================================
     # LangChain/Composio/CrewAI Integration (Not Supported)
     # ========================================================================

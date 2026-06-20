@@ -33,6 +33,7 @@ class AgentType(str, Enum):
     meta_memory_agent = "meta_memory_agent"
     semantic_memory_agent = "semantic_memory_agent"
     core_memory_agent = "core_memory_agent"
+    auto_dream_agent = "auto_dream_agent"
 
 
 class AgentState(OrmMetadataBase, validate_assignment=True):
