@@ -59,6 +59,29 @@ class SemanticMemoryItem(SemanticMemoryItemBase):
         ],
     )
 
+    # Provenance pointers for this item. See `mirix.orm.semantic_memory`.
+    source_refs: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description=(
+            "Provenance pointers for the input units this item was extracted from. "
+            "Each entry is a small dict like "
+            "{'turn_id': int, 'chunk_id': int, 'serial': int, 'occurred_at': iso8601}; "
+            "any subset of those keys may be present. Populated only by the "
+            "conflict-resolution / provenance path; legacy free-form inserts leave it empty."
+        ),
+    )
+
+    # Prior values that have been superseded by the current ``summary`` / ``details``.
+    prior_values: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description=(
+            "History of replaced values from the conflict-resolution path. "
+            "Each entry: {'value': str, 'source_refs': list, "
+            "'status': 'superseded'|'corrected'|'coexists', 'moved_at': iso8601}. "
+            "Empty for legacy items."
+        ),
+    )
+
     # need to validate both details_embedding and summary_embedding to ensure they are the same size
     @field_validator("details_embedding", "summary_embedding", "name_embedding")
     @classmethod
@@ -109,6 +132,12 @@ class SemanticMemoryItemUpdate(MirixBase):
     )
     filter_tags: Optional[Dict[str, Any]] = Field(
         None, description="Custom filter tags for filtering and categorization"
+    )
+    source_refs: Optional[List[Dict[str, Any]]] = Field(
+        None, description="Replace the item's source_refs list (conflict-resolution path)."
+    )
+    prior_values: Optional[List[Dict[str, Any]]] = Field(
+        None, description="Replace the item's prior_values list (conflict-resolution path)."
     )
 
 

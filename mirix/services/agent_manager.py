@@ -293,6 +293,18 @@ class AgentManager:
             elif agent_name in default_system_prompts:
                 custom_system = default_system_prompts[agent_name]
 
+            # Opt-in: append the conflict-resolution policy to the semantic
+            # memory agent's system prompt so the agent prefers the new
+            # `semantic_memory_upsert_fact` tool. Default off — legacy
+            # behaviour is preserved.
+            if (
+                getattr(meta_agent_create, "enable_conflict_resolution", False)
+                and agent_name == "semantic_memory_agent"
+                and custom_system
+            ):
+                from mirix.agent.meta_agent import _CONFLICT_RESOLUTION_POLICY_PROMPT
+                custom_system = custom_system + "\n\n" + _CONFLICT_RESOLUTION_POLICY_PROMPT
+
             # Create the agent using CreateAgent schema with parent_id
             agent_create = CreateAgent(
                 name=f"{meta_agent_name}_{agent_name}",
@@ -479,6 +491,16 @@ class AgentManager:
                 elif agent_name in default_system_prompts:
                     custom_system = default_system_prompts[agent_name]
 
+                # Mirror the create path: if conflict-resolution is enabled
+                # on this update, append the policy to the semantic agent.
+                if (
+                    getattr(meta_agent_update, "enable_conflict_resolution", False)
+                    and agent_name == "semantic_memory_agent"
+                    and custom_system
+                ):
+                    from mirix.agent.meta_agent import _CONFLICT_RESOLUTION_POLICY_PROMPT
+                    custom_system = custom_system + "\n\n" + _CONFLICT_RESOLUTION_POLICY_PROMPT
+
                 # Use the updated configs or fall back to meta agent's configs
                 llm_config = meta_agent_update.llm_config or meta_agent_state.llm_config
                 embedding_config = meta_agent_update.embedding_config or meta_agent_state.embedding_config
@@ -538,6 +560,11 @@ class AgentManager:
                         actor=actor,
                     )
 
+        # When conflict_resolution is toggled, re-apply the semantic agent's
+        # system prompt AND make sure the new upsert tool is attached.
+        # Without the latter, the agent sees the policy but has no
+        # `semantic_memory_upsert_fact` in its tool list and falls back to
+        # `semantic_memory_insert`.
         # Refresh the meta agent state with updated children
         meta_agent_state = await self.get_agent_by_id(agent_id=meta_agent_id, actor=actor)
         updated_children = await self.list_agents(actor=actor, parent_id=meta_agent_id)
