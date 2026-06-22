@@ -18,8 +18,10 @@ import json
 import os
 import re
 import shutil
+import signal
 import socket
 import subprocess
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -36,6 +38,57 @@ from src.infer.prompts import (
 )
 from src.infer.query_reader import QueryReader, get_default_query_reader
 from src.utils import get_project_root, resolve_path
+
+
+# ---------------------------------------------------------------------------
+# Distill health tracking (FIX7 — silent-swallow defense)
+# ---------------------------------------------------------------------------
+#
+# The C5 records pipeline POSTs one {query, answer} per graded round to the
+# proxy's ``/v1/skills/distill_round``.  That endpoint returns HTTP 200 EVEN ON
+# FAILURE — its body is ``{"ok": false, "error": ...}`` when the downstream
+# MIRIX distiller errored (api_server.py:1055-1058), and the
+# ``MirixEvolverAdapter`` likewise returns ``{"ok": false}`` on an HTTP error to
+# MIRIX.  An HTTP-status-only success check therefore counts a degenerate run as
+# healthy.  We track failures in a PROCESS-LEVEL counter (the bench is a single
+# process; the records path runs strictly serial, but we still guard the
+# counter with a lock because ``_trigger_distill_round`` is invoked via
+# ``asyncio.to_thread``) and persist it so the post-run sanity gate can refuse
+# to trust the delta when ANY distill round failed.
+_DISTILL_HEALTH_LOCK = threading.Lock()
+_DISTILL_FAILURES = 0
+_DISTILL_ATTEMPTS = 0
+
+
+def _record_distill_result(ok: bool) -> None:
+    """Record one distill-round attempt and whether it succeeded.
+
+    ``ok`` is True ONLY when the proxy round-tripped a body with
+    ``"ok": true`` — see ``_trigger_distill_round``.  Any other outcome
+    (connection error, non-2xx, ``ok:false``, bad JSON) is a FAILURE.
+    """
+    global _DISTILL_FAILURES, _DISTILL_ATTEMPTS
+    with _DISTILL_HEALTH_LOCK:
+        _DISTILL_ATTEMPTS += 1
+        if not ok:
+            _DISTILL_FAILURES += 1
+
+
+def get_distill_health() -> dict:
+    """Return a snapshot of the distill-round health counters."""
+    with _DISTILL_HEALTH_LOCK:
+        return {
+            "distill_attempts": _DISTILL_ATTEMPTS,
+            "distill_failures": _DISTILL_FAILURES,
+        }
+
+
+def reset_distill_health() -> None:
+    """Reset the counters (used by tests so they don't leak across cases)."""
+    global _DISTILL_FAILURES, _DISTILL_ATTEMPTS
+    with _DISTILL_HEALTH_LOCK:
+        _DISTILL_FAILURES = 0
+        _DISTILL_ATTEMPTS = 0
 
 
 # ---------------------------------------------------------------------------
@@ -340,8 +393,79 @@ async def _start_work_gateway(
             env=env,
             stdout=log_fh,
             stderr=log_fh,
+            # H3: put the gateway in its OWN session/process-group so that any
+            # detached children it spawns share its pgid. On teardown we reap the
+            # whole group (os.killpg) — without this a crashed/forcibly-killed
+            # gateway leaves children reparented to init (orphan daemons).
+            start_new_session=True,
         )
     return proc, log_path
+
+
+async def _teardown_gateway(
+    gateway_proc,
+    work_openclaw_state_dir: Path | None,
+    gateway_port: int | None = None,
+) -> None:
+    """Stop a per-test gateway and clean up after it (H3).
+
+    Best-effort and never raises: teardown runs in a ``finally`` and must not
+    mask the real error (or fail a healthy run).
+
+    1. Terminate the gateway process if still running (SIGTERM, then SIGKILL on
+       timeout).
+    2. Reap the gateway's WHOLE process group (``os.killpg`` with SIGKILL) so any
+       detached children started under ``start_new_session=True`` cannot orphan
+       to init. Guarded against ProcessLookupError (group already gone) and
+       platforms without ``killpg`` (Windows).
+    3. ``shutil.rmtree`` the per-test ``openclaw_state_<uuid>`` work copy so the
+       hundreds-of-dirs accumulation stops. Workers default to 1 (tests run
+       serially), so this copy is never shared with a concurrent worker.
+    """
+    # (1) terminate the process itself.
+    try:
+        if getattr(gateway_proc, "returncode", 0) is None:
+            gateway_proc.terminate()
+            try:
+                await asyncio.wait_for(gateway_proc.wait(), timeout=8.0)
+            except asyncio.TimeoutError:
+                gateway_proc.kill()
+                await gateway_proc.wait()
+            if gateway_port is not None:
+                print(f"Gateway on port {gateway_port} stopped.")
+    except ProcessLookupError:
+        pass
+    except Exception as e:  # noqa: BLE001 — teardown must never raise
+        print(f"  [teardown] WARN: error stopping gateway: {e}")
+
+    # (2) reap the whole process group so detached children don't orphan.
+    # Because the gateway was started with start_new_session=True it is a session
+    # leader, so its process-group id EQUALS its pid. If the leader already
+    # exited, os.getpgid(pid) raises ProcessLookupError — but detached children
+    # may still be alive in that group, so we fall back to pid-as-pgid rather
+    # than skipping the reap entirely (codex P1).
+    pid = getattr(gateway_proc, "pid", None)
+    killpg = getattr(os, "killpg", None)
+    getpgid = getattr(os, "getpgid", None)
+    if pid is not None and killpg is not None:
+        pgid = pid  # session leader: pgid == pid (fallback if getpgid fails)
+        if getpgid is not None:
+            try:
+                pgid = getpgid(pid)
+            except ProcessLookupError:
+                pgid = pid  # leader gone — reap the group by its leader pid
+            except Exception:  # noqa: BLE001 — fall back to pid-as-pgid
+                pgid = pid
+        try:
+            killpg(pgid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass  # group already fully gone — fine
+        except Exception as e:  # noqa: BLE001 — best-effort
+            print(f"  [teardown] WARN: error reaping gateway process group: {e}")
+
+    # (3) remove the per-test work copy.
+    if work_openclaw_state_dir is not None:
+        shutil.rmtree(work_openclaw_state_dir, ignore_errors=True)
 
 
 def _read_gateway_log(log_path: Path, max_bytes: int = 8192) -> str:
@@ -868,7 +992,9 @@ async def _run_group(
     workspace_path: Path,
     gateway_port: int | None = None,
     buffer_turns_port: int | None = None,
-) -> None:
+    skill_records_port: int | None = None,
+    round_index_base: int = 0,
+) -> int:
     """Run all rounds within a group serially.
 
     Implements:
@@ -876,6 +1002,16 @@ async def _run_group(
     - Inline scoring: scores each round immediately after the agent responds
     - Resume support: skips rounds that already have inline_score in their result
     - Standalone feedback: sends a final no-answer feedback message after the last round
+    - C5 records ingestion: when *skill_records_port* is set, POST exactly one
+      {query, answer} per graded round to /v1/skills/distill_round (one-round lag +
+      evolve-every-N-rounds handled downstream); flush at session end.
+
+    ``round_index_base`` is the count of rounds already consumed by *prior groups
+    of the SAME session* (codex P2-B): the C5 ``round_index`` must be SESSION-GLOBAL
+    (monotonic across every group sharing ``original_session_id``), not group-local.
+    Were it group-local, a multi-group day would reset the watermark to 1 mid-session
+    and mis-count the evolve-every-5 boundary. Returns the new running total so the
+    caller can thread it into the next group.
     """
     async with semaphore:
         group_id = group["id"]
@@ -883,14 +1019,26 @@ async def _run_group(
 
         rounds = group.get("rounds", [])
         if not rounds:
-            return
+            return round_index_base
 
         # prev_inline_score / prev_round_record: track state needed to build
         # feedback text for the *next* round (or standalone at the end).
         prev_inline_score: dict | None = None
         prev_round_record: dict | None = None
+        # C5: a SESSION-GLOBAL 1-based round index; the distiller's watermark is
+        # round_index, so it must increase monotonically per round across the whole
+        # session (every group), NOT reset per group. We offset the group-local
+        # enumerate by the rounds already seen in prior groups (round_index_base).
+        # Resume-skipped rounds still ADVANCE this index (they ARE rounds in the
+        # session) so the watermark/cadence stays aligned with the original run
+        # (codex P1-B): the evolve cadence keys off this deterministic index, so a
+        # resumed run fires evolve at the SAME global rounds {5,10,15,…} as a fresh
+        # run — skipped rounds simply don't re-POST (they were distilled originally).
+        last_round_index = round_index_base
 
-        for round_record in rounds:
+        for local_index, round_record in enumerate(rounds, start=1):
+            round_index = round_index_base + local_index
+            last_round_index = round_index
             round_id = round_record["id"]
             question_type = round_record.get("type", "multi_choice")
             result_path = out_dir / test_id / group_id / round_id / "infer_result.json"
@@ -982,20 +1130,48 @@ async def _run_group(
                     buffer_turns_port,
                 )
 
+            # --- C5 records ingestion: push exactly ONE {query, answer} per round ---
+            # query carries the round-(t-1) [Previous Feedback] block (one-round
+            # lag) verbatim; the answer is the agent's FINAL graded answer. The
+            # round's OWN grade (inline_score) is NEVER sent (§3 G1/G3).
+            if skill_records_port is not None:
+                # FIX7: the return is intentionally NOT captured here — failures
+                # are recorded inside _trigger_distill_round via
+                # _record_distill_result (it enforces the ok-contract and bumps
+                # the process-level distill_failures counter the sanity gate
+                # reads). Do NOT reintroduce a bare "if not ok: pass" swallow.
+                await asyncio.to_thread(
+                    _trigger_distill_round,
+                    original_session_id,
+                    test_id,  # day
+                    round_id,
+                    round_index,
+                    query,
+                    result.get("answer", ""),
+                    skill_records_port,
+                    False,  # not session_done yet
+                )
+
             prev_inline_score = inline_score
             prev_round_record = round_record
 
+        # NOTE: the C5 session_done flush is NOT sent here. With a SESSION-GLOBAL
+        # round_index a session may span multiple groups (the eval_flow.json
+        # fallback emits one group per annotation), and flushing per group would
+        # prematurely clear the distiller's one-round-lag buffer mid-session. The
+        # flush is sent exactly once, after the LAST group, by ``_run_one_test``.
+
         # --- Standalone feedback after last round ---
         if prev_inline_score is None or prev_round_record is None:
-            return
+            return last_round_index
 
         feedback_marker = out_dir / test_id / group_id / "feedback_sent.marker"
         if feedback_marker.exists():
-            return
+            return last_round_index
 
         standalone_text = _build_feedback_text(prev_round_record, prev_inline_score)
         if not standalone_text:
-            return
+            return last_round_index
 
         print(f"  [feedback] sending standalone feedback for {test_id}/{group_id}")
         await _run_openclaw_agent(
@@ -1009,6 +1185,7 @@ async def _run_group(
         )
         feedback_marker.parent.mkdir(parents=True, exist_ok=True)
         feedback_marker.touch()
+        return last_round_index
 
 
 # ---------------------------------------------------------------------------
@@ -1028,6 +1205,7 @@ async def _run_one_test(
     outer_semaphore: asyncio.Semaphore,
     query_reader: QueryReader,
     buffer_turns_port: int | None = None,
+    skill_records_port: int | None = None,
 ) -> None:
     """Run all groups for one test scenario under its own work copy and gateway.
 
@@ -1072,10 +1250,12 @@ async def _run_one_test(
         # can take ~20s on a cold-cache laptop (see ~/.config/.. logs).
         ready = await _wait_for_gateway(gateway_port, timeout=60.0)
         if not ready:
-            if gateway_proc.returncode is None:
-                gateway_proc.terminate()
-                await gateway_proc.wait()
+            # H3: read the log BEFORE teardown (teardown removes the work copy
+            # the log lives in), then reap the group + clean up the work copy.
             output = _read_gateway_log(gateway_log)
+            await _teardown_gateway(
+                gateway_proc, work_openclaw_state_dir, gateway_port=gateway_port
+            )
             raise RuntimeError(
                 f"[{test_id}] Gateway on port {gateway_port} did not become ready. "
                 f"State dir: {work_openclaw_state_dir}"
@@ -1085,9 +1265,15 @@ async def _run_one_test(
 
         # One semaphore per test: groups are always serial within a test
         group_semaphore = asyncio.Semaphore(1)
+        # C5 (codex P2-B): the per-round index must be SESSION-GLOBAL — every group
+        # in this test shares the same ``session_id`` (``original_session_id``), so
+        # we thread a running total across groups instead of letting each group
+        # restart at 1. ``session_round_total`` is also the watermark for the single
+        # end-of-session flush below.
+        session_round_total = 0
         try:
             for group in groups:
-                await _run_group(
+                session_round_total = await _run_group(
                     test_id=test_id,
                     group=group,
                     agent_id=agent_id,
@@ -1104,22 +1290,41 @@ async def _run_one_test(
                     workspace_path=workspace_copy,
                     gateway_port=gateway_port,
                     buffer_turns_port=buffer_turns_port,
+                    skill_records_port=skill_records_port,
+                    round_index_base=session_round_total,
+                )
+            # --- C5: session_done flush (drop the last buffered round; no successor) ---
+            # Sent exactly ONCE per session, after the last group, with the
+            # SESSION-GLOBAL last round index as the watermark. Clears the
+            # distiller's one-round-lag buffer for this whole session.
+            if skill_records_port is not None and session_round_total > 0:
+                # FIX7: failures recorded inside _trigger_distill_round (ok-contract
+                # + distill_failures counter). Return intentionally not captured.
+                await asyncio.to_thread(
+                    _trigger_distill_round,
+                    session_id,
+                    test_id,  # day
+                    "",  # round_id unused on flush
+                    session_round_total,
+                    "",  # no query on flush
+                    "",  # no answer on flush
+                    skill_records_port,
+                    True,  # session_done
                 )
         finally:
-            if gateway_proc.returncode is None:
-                gateway_proc.terminate()
-                try:
-                    await asyncio.wait_for(gateway_proc.wait(), timeout=8.0)
-                except asyncio.TimeoutError:
-                    gateway_proc.kill()
-                    await gateway_proc.wait()
-                print(f"[{test_id}] Gateway on port {gateway_port} stopped.")
-            else:
-                output = _read_gateway_log(gateway_log)
+            # H3: detect a crashed gateway BEFORE teardown (teardown is
+            # idempotent and reaps the group + removes the work copy in ALL
+            # cases — including a crash, which previously leaked the work copy).
+            crashed = gateway_proc.returncode is not None
+            crash_output = _read_gateway_log(gateway_log) if crashed else ""
+            await _teardown_gateway(
+                gateway_proc, work_openclaw_state_dir, gateway_port=gateway_port
+            )
+            if crashed:
                 raise RuntimeError(
                     f"[{test_id}] Gateway on port {gateway_port} crashed "
                     f"(exit={gateway_proc.returncode})."
-                    + (f"\nGateway output:\n{output}" if output else "")
+                    + (f"\nGateway output:\n{crash_output}" if crash_output else "")
                 )
 
 
@@ -1194,6 +1399,99 @@ def _trigger_buffer_turn(
         return False
     except Exception as e:
         print(f"  [buffer_turn] ERROR: {e} [session={session_id[:20]}]")
+        return False
+
+
+def _trigger_distill_round(
+    session_id: str,
+    day: str,
+    round_id: str,
+    round_index: int,
+    query: str,
+    answer: str,
+    proxy_port: int = 30000,
+    final: bool = False,
+) -> bool:
+    """C5 (new MIRIX-records harness) — push ONE graded round to the proxy.
+
+    POSTs ``{session_id, day, round_id, round_index, query, answer,
+    session_done}`` to ``POST /v1/skills/distill_round``. The proxy forwards to
+    MIRIX's per-round distiller (one-round lag handled server-side) and fires
+    evolve-from-records every N graded rounds.
+
+    LEAKAGE GUARD (§3 G1/G3): we send ONLY the agent-visible ``query`` (which the
+    bench already built via ``with_feedback`` so it carries the round-(t-1)
+    feedback) and the agent's FINAL graded ``answer``. We DELIBERATELY do not send
+    ``inline_score`` / ``eval.command`` / ``eval.answer`` / ``feedback.options`` —
+    the round's OWN grade is never sent (the distiller derives it one round later).
+
+    ``final=True`` flags session_done so the proxy flushes the last buffered round
+    (no successor → no graded record).
+
+    SUCCESS CONTRACT (FIX7 — silent-swallow defense). The proxy's
+    ``/v1/skills/distill_round`` returns HTTP 200 EVEN ON FAILURE — its body is
+    ``{"ok": false, "error": ...}`` when the downstream MIRIX distiller errored
+    (api_server.py:1055-1058), and the ``MirixEvolverAdapter`` likewise returns
+    ``{"ok": false}`` on an HTTP error to MIRIX. We therefore treat a round as
+    successful ONLY when the round-tripped body carries ``ok is True``. Anything
+    else — connection error, non-2xx, ``ok:false``, or non-JSON body — is a
+    FAILURE. Every attempt is recorded via :func:`_record_distill_result` so the
+    post-run sanity gate can refuse to trust a degenerate run. Returns True on a
+    contract-success, False otherwise (never raises into the bench loop).
+    """
+    import urllib.request
+    import urllib.error
+
+    url = f"http://localhost:{proxy_port}/v1/skills/distill_round"
+    payload = json.dumps({
+        "session_id": session_id,
+        "day": day,
+        "round_id": round_id,
+        "round_index": round_index,
+        # query carries the [Previous Feedback] block verbatim; answer is final.
+        "query": query,
+        "answer": answer,
+        "session_done": bool(final),
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        url, data=payload, method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=600) as resp:
+            raw = resp.read().decode()
+            try:
+                result = json.loads(raw)
+            except (ValueError, json.JSONDecodeError):
+                print(
+                    f"  [distill_round] ERROR: non-JSON body {raw[:200]!r} "
+                    f"[session={session_id[:20]}]"
+                )
+                _record_distill_result(False)
+                return False
+            # Contract: HTTP 2xx is NECESSARY but not SUFFICIENT. The proxy 200s
+            # even on downstream failure; only ``ok is True`` counts as success.
+            if result.get("ok") is not True:
+                print(
+                    f"  [distill_round] ERROR: ok={result.get('ok')!r} "
+                    f"error={result.get('error')!r} [session={session_id[:20]}]"
+                )
+                _record_distill_result(False)
+                return False
+            if result.get("evolved"):
+                print(
+                    f"  [distill_round] evolved at watermark={result.get('watermark')} "
+                    f"[session={session_id[:20]}]"
+                )
+            _record_distill_result(True)
+            return True
+    except urllib.error.HTTPError as e:
+        print(f"  [distill_round] ERROR: HTTP {e.code} [session={session_id[:20]}]")
+        _record_distill_result(False)
+        return False
+    except Exception as e:
+        print(f"  [distill_round] ERROR: {e} [session={session_id[:20]}]")
+        _record_distill_result(False)
         return False
 
 
@@ -1276,6 +1574,7 @@ async def _run_one_all_tests(
     memory: bool = False,
     memory_proxy_port: int = 30000,
     buffer_turns: bool = False,
+    skill_records: bool = False,
 ) -> None:
     """Process all test scenarios in one all_tests.json.
 
@@ -1321,9 +1620,16 @@ async def _run_one_all_tests(
 
     test_list = all_tests.get("test", [])
 
-    _need_serial = (scene_per_train is not None and scene_per_train > 0) or memory or buffer_turns
+    _need_serial = (
+        (scene_per_train is not None and scene_per_train > 0)
+        or memory
+        or buffer_turns
+        or skill_records
+    )
     if _need_serial:
-        # Serial execution: needed for scene-per-train, memory ingest, or buffer_turns ordering.
+        # Serial execution: needed for scene-per-train, memory ingest, buffer_turns,
+        # or skill_records ordering (the one-round lag + cross-day skill bank both
+        # require strict past→future order).
         if workers != 1 and (scene_per_train is not None and scene_per_train > 0):
             print(
                 f"[warn] --scene-per-train requires serial execution; "
@@ -1337,6 +1643,11 @@ async def _run_one_all_tests(
         if workers != 1 and buffer_turns:
             print(
                 f"[warn] --buffer-turns requires serial execution; "
+                f"overriding workers from {workers} to 1"
+            )
+        if workers != 1 and skill_records:
+            print(
+                f"[warn] --skill-records requires serial execution; "
                 f"overriding workers from {workers} to 1"
             )
         total_scenes = len(test_list)
@@ -1353,6 +1664,7 @@ async def _run_one_all_tests(
                 outer_semaphore=outer_semaphore,
                 query_reader=query_reader,
                 buffer_turns_port=memory_proxy_port if buffer_turns else None,
+                skill_records_port=memory_proxy_port if skill_records else None,
             )
             # Skip memory ingest and RL training after the last scene
             # — no more scenes to benefit from the updated state.
@@ -1405,6 +1717,7 @@ def run_infer(
     memory: bool = False,
     memory_proxy_port: int = 30000,
     buffer_turns: bool = False,
+    skill_records: bool = False,
 ) -> None:
     """Run batch inference on all tests in all_tests.json (or directory).
 
@@ -1450,6 +1763,11 @@ def run_infer(
         )
     elif memory:
         print(f"\n[info] Memory ingestion enabled: ingest after each scene (proxy port {memory_proxy_port})")
+    if skill_records:
+        print(
+            f"\n[info] C5 records harness enabled: POST /v1/skills/distill_round "
+            f"per round + evolve-every-N-rounds (proxy port {memory_proxy_port})"
+        )
 
     async def _main() -> None:
         for f in all_tests_files:
@@ -1474,6 +1792,7 @@ def run_infer(
                 memory=memory,
                 memory_proxy_port=memory_proxy_port,
                 buffer_turns=buffer_turns,
+                skill_records=skill_records,
             )
 
     asyncio.run(_main())

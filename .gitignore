@@ -2,6 +2,9 @@ test
 __pycache__
 tmp
 .env
+.venv/
+.venv*/
+.venv310.bak/
 storage
 responses
 collected_images

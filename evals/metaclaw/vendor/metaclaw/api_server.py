@@ -28,6 +28,7 @@ import time
 from itertools import count
 from typing import Any, Optional
 
+import httpx
 import uvicorn
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -41,6 +42,109 @@ from .skill_manager import SkillManager
 from .utils import run_llm
 
 logger = logging.getLogger(__name__)
+
+
+# --------------------------------------------------------------------------- #
+# H1 — Fail-fast on a sustained upstream (OpenRouter) ConnectError storm.       #
+#                                                                              #
+# Root cause this guards: a transient network drop on the path to OpenRouter   #
+# makes every proxy forward raise ``httpx.ConnectError`` ("All connection      #
+# attempts failed"). openclaw then retries in a tight loop (13,060x observed),  #
+# rewriting its session .jsonl until a per-day fence latches and collapses the  #
+# remaining days to ~0% — a ~3h SILENT degenerate run. We instead bound the    #
+# per-forward retry and track *process-wide consecutive* connect failures; once #
+# they cross a threshold we raise a DISTINCT fatal error that aborts the run    #
+# within minutes with a legible "upstream OpenRouter unreachable" message.      #
+#                                                                              #
+# Tuning rationale (conservative — must NOT trip on a single transient blip,    #
+# nor on normal HTTP 4xx/5xx which carry a status and are a DIFFERENT mode):    #
+#   * _CONNECT_RETRY_ATTEMPTS  — bounded in-forward retries on ConnectError.    #
+#     A real momentary blip recovers within a couple of short backoffs.        #
+#   * _CONNECT_FAILFAST_THRESHOLD — number of *consecutive* fully-failed        #
+#     forwards (each having already exhausted its in-forward retries) that      #
+#     constitutes a sustained outage. Any single success anywhere resets the    #
+#     streak, so isolated blips never accumulate toward the trip.              #
+# --------------------------------------------------------------------------- #
+
+# In-forward bounded retry on transport ConnectError before counting the
+# forward as a hard connect failure.
+_CONNECT_RETRY_ATTEMPTS = 3
+# Base backoff (seconds) between in-forward retries; grows ~exponentially but is
+# capped so the whole bounded-retry window stays at a few seconds, not minutes.
+_CONNECT_RETRY_BASE_BACKOFF_S = 0.5
+_CONNECT_RETRY_MAX_BACKOFF_S = 4.0
+# Consecutive fully-failed forwards that trip the process-wide fail-fast. With
+# ~3 in-forward attempts each, 8 means we abort after roughly two dozen real
+# connect attempts spanning a sustained outage — minutes, not the prior ~3h.
+_CONNECT_FAILFAST_THRESHOLD = 8
+
+
+class UpstreamUnreachableError(RuntimeError):
+    """Fatal: the upstream LLM endpoint (e.g. OpenRouter) is unreachable.
+
+    Raised once a *sustained* run of transport-connect failures is detected.
+    Deliberately NOT an :class:`fastapi.HTTPException`: it must propagate up and
+    ABORT the run rather than be returned as an HTTP response the agent retries.
+    Distinct from HTTP 4xx/5xx (those carry an upstream status and are handled
+    as normal upstream errors — they are not this failure mode).
+    """
+
+    def __init__(self, endpoint: str, consecutive_failures: int):
+        self.endpoint = endpoint
+        self.consecutive_failures = consecutive_failures
+        super().__init__(
+            f"Upstream LLM endpoint unreachable: {consecutive_failures} consecutive "
+            f"transport-connect failures forwarding to {endpoint!r}. Aborting the run "
+            f"(network path to upstream is down). This is NOT an HTTP/auth error."
+        )
+
+
+class _ConnectFailureTracker:
+    """Process-wide counter of *consecutive* upstream connect failures.
+
+    Thread/async-safe enough for this use: forwards are awaited on a single
+    event loop, and the only mutation is a bare integer increment/reset guarded
+    by a lock so a stray background task can't interleave a partial update.
+    """
+
+    def __init__(self, threshold: int = _CONNECT_FAILFAST_THRESHOLD):
+        self.threshold = threshold
+        self._consecutive = 0
+        self.tripped = False
+        self._lock = threading.Lock()
+
+    def record_success(self) -> None:
+        """A forward succeeded — clear the streak (a blip recovered).
+
+        Once the latch has tripped it STAYS tripped: the run is already doomed
+        and must abort, so a late/racing success must not silently un-fail it
+        (codex P2).
+        """
+        with self._lock:
+            if self.tripped:
+                return
+            self._consecutive = 0
+
+    def record_connect_failure(self) -> bool:
+        """Record one fully-failed forward; return True if this trips fail-fast."""
+        with self._lock:
+            self._consecutive += 1
+            if self._consecutive >= self.threshold:
+                self.tripped = True
+            return self.tripped
+
+    def assert_alive(self, endpoint: str = "upstream") -> None:
+        """Raise :class:`UpstreamUnreachableError` if the fail-fast has tripped.
+
+        Reads the latch under the lock so a concurrent record_*() can't expose a
+        torn ``tripped``/``_consecutive`` pair (codex P2).
+        """
+        with self._lock:
+            tripped = self.tripped
+            consecutive = self._consecutive
+        if tripped:
+            raise UpstreamUnreachableError(endpoint, consecutive)
+
 
 _GREEN = "\033[32m"
 _YELLOW = "\033[33m"
@@ -519,6 +623,10 @@ class MetaClawAPIServer:
         # Optional LastRequestTracker for scheduler idle detection
         self._last_request_tracker = last_request_tracker
 
+        # H1: process-wide fail-fast on a sustained upstream connect-failure
+        # storm (see _ConnectFailureTracker / UpstreamUnreachableError).
+        self._connect_failure_tracker = _ConnectFailureTracker()
+
         self._served_model = config.served_model_name
         self._expected_api_key = config.api_key
         os.makedirs(config.record_dir, exist_ok=True)
@@ -607,6 +715,34 @@ class MetaClawAPIServer:
     def _build_app(self) -> FastAPI:
         app = FastAPI(title="MetaClaw Proxy")
         app.state.owner = self
+
+        @app.exception_handler(UpstreamUnreachableError)
+        async def _upstream_unreachable_handler(request: Request, exc: UpstreamUnreachableError):
+            # H1: a sustained upstream outage has tripped the fail-fast. Returning
+            # a normal 5xx is not enough — openclaw RETRIES 5xx in a tight loop
+            # (that was the original 13,060-retry storm). So we also signal the
+            # proxy's own uvicorn server to exit: once it stops accepting, the
+            # very next openclaw forward gets connection-refused and the bench
+            # aborts the run fast, with this legible reason on record.
+            owner: MetaClawAPIServer = request.app.state.owner
+            logger.error(
+                "[OpenClaw] FATAL UPSTREAM_UNREACHABLE — shutting down proxy to abort "
+                "run. endpoint=%s consecutive_failures=%d",
+                exc.endpoint, exc.consecutive_failures,
+            )
+            srv = getattr(owner, "_server", None)
+            if srv is not None:
+                srv.should_exit = True
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "error": {
+                        "type": "upstream_unreachable",
+                        "message": str(exc),
+                        "endpoint": exc.endpoint,
+                    }
+                },
+            )
 
         @app.get("/healthz")
         async def healthz():
@@ -997,6 +1133,66 @@ class MetaClawAPIServer:
             )
             return JSONResponse(content={"added": added})
 
+        @app.post("/v1/skills/distill_round")
+        async def skills_distill_round(
+            request: Request,
+            authorization: Optional[str] = Header(default=None),
+        ):
+            """C5 (new MIRIX-records harness) — push ONE graded round downstream.
+
+            Request body (built by the bench's ``_trigger_distill_round``):
+              {"session_id","day","round_id","round_index","query","answer",
+               "session_done"}
+
+            ``query`` is the agent-visible message for the round (already carrying
+            the round-(t-1) ``[Previous Feedback]`` block); ``answer`` is the
+            agent's FINAL graded answer. NO oracle field (inline_score / eval.* /
+            feedback.options / reward) is accepted or read here — the body shape is
+            literally the agent-visible {question, answer}. The skill evolver
+            (``MirixEvolverAdapter``) forwards this to MIRIX's per-round distiller
+            and fires evolve-from-records every N completed graded rounds.
+
+            Only active when ``skill_evolution_mode == "mirix_records"`` AND a
+            records-capable evolver is wired; otherwise returns 503 so a misrouted
+            call is loud rather than silently dropping the round. The legacy
+            ``raw_transcript`` path (``_session_turns`` + every-N-turns evolve) is
+            never touched by this endpoint.
+            """
+            owner: MetaClawAPIServer = request.app.state.owner
+            await owner._check_auth(authorization)
+            mode = getattr(owner.config, "skill_evolution_mode", "raw_transcript")
+            if mode != "mirix_records":
+                raise HTTPException(
+                    status_code=503,
+                    detail=(
+                        "skill_evolution_mode != 'mirix_records'; the per-round "
+                        "distill endpoint is inactive (old arms use the "
+                        "raw-transcript every-N-turns path)"
+                    ),
+                )
+            evolver = owner.skill_evolver
+            if evolver is None or not hasattr(evolver, "distill_round"):
+                raise HTTPException(
+                    status_code=503,
+                    detail="records evolver not wired (need METACLAW_EVOLVER_PROVIDER=mirix)",
+                )
+            body = await request.json()
+            session_id = str(body.get("session_id", "")).strip()
+            try:
+                result = await evolver.distill_round(
+                    day=str(body.get("day", "")),
+                    round_id=str(body.get("round_id", "")),
+                    round_index=int(body.get("round_index", 0)),
+                    query=body.get("query", "") or "",
+                    answer=body.get("answer", "") or "",
+                    session_id=session_id or None,
+                    session_done=bool(body.get("session_done", False)),
+                )
+            except Exception as e:  # noqa: BLE001 — never 500 the bench loop
+                logger.warning("[Skills] distill_round failed: %s", e)
+                return JSONResponse(content={"ok": False, "error": str(e)})
+            return JSONResponse(content=result)
+
         return app
 
     async def _check_auth(self, authorization: Optional[str]):
@@ -1338,7 +1534,18 @@ class MetaClawAPIServer:
                     "response_text": response_text_simple,
                 }
                 evolution_every_n = getattr(self.config, "skill_evolution_every_n_turns", 10)
-                _want_evolution = self.skill_evolver and self.config.enable_skill_evolution and evolution_every_n > 0
+                # C5: the legacy per-turn raw-transcript buffer+evolve runs ONLY in
+                # the default "raw_transcript" mode (= mirix-old-harness regression
+                # baseline + native). In "mirix_records" mode the bench drives
+                # evolution message-by-message via /v1/skills/distill_round, so this
+                # path is disabled to avoid double-evolving.
+                _evo_mode = getattr(self.config, "skill_evolution_mode", "raw_transcript")
+                _want_evolution = (
+                    self.skill_evolver
+                    and self.config.enable_skill_evolution
+                    and evolution_every_n > 0
+                    and _evo_mode == "raw_transcript"
+                )
                 _want_memory = self.memory_manager is not None
                 if _want_evolution:
                     self._session_turns.setdefault(session_id, []).append(turn_entry)
@@ -1428,7 +1635,19 @@ class MetaClawAPIServer:
             # Skill evolution + memory: buffer turns for all modes (RL and skills_only).
             turn_entry = {"prompt_text": prompt_text, "response_text": response_text}
             evolution_every_n = getattr(self.config, "skill_evolution_every_n_turns", 10)
-            _want_evolution = self.skill_evolver and self.config.enable_skill_evolution and evolution_every_n > 0
+            # C5 (codex P2-A): gate the legacy per-turn raw-transcript evolve on
+            # skill_evolution_mode here TOO, symmetric with the tokenizer-None
+            # (skills_only) branch above. In "mirix_records" mode the bench drives
+            # evolution message-by-message via /v1/skills/distill_round, so this
+            # tokenizer-present (RL/teacher) path must NOT also fire the every-N-turns
+            # evolve, or a records run with a real tokenizer loaded would double-evolve.
+            _evo_mode = getattr(self.config, "skill_evolution_mode", "raw_transcript")
+            _want_evolution = (
+                self.skill_evolver
+                and self.config.enable_skill_evolution
+                and evolution_every_n > 0
+                and _evo_mode == "raw_transcript"
+            )
             _want_memory = self.memory_manager is not None
             if _want_evolution:
                 self._session_turns.setdefault(session_id, []).append(turn_entry)
@@ -2046,15 +2265,27 @@ class MetaClawAPIServer:
         }
 
     async def _forward_to_openai_compat(self, body: dict[str, Any]) -> dict[str, Any]:
-        """Forward to a real OpenAI-compatible API (skills_only mode)."""
-        import httpx
+        """Forward to a real OpenAI-compatible API (skills_only mode).
 
+        H1: wraps the upstream POST in a bounded retry on transport
+        ``httpx.ConnectError`` and threads a process-wide consecutive-connect-
+        failure tracker. A single transient blip is retried and (if it recovers)
+        succeeds; a *sustained* outage trips a fatal :class:`UpstreamUnreachableError`
+        so the run aborts within minutes instead of spinning for hours. HTTP
+        status errors (4xx/5xx) are a different mode and never touch the tracker.
+        """
         api_base = self.config.llm_api_base.rstrip("/")
         if not api_base:
             raise HTTPException(
                 status_code=503,
                 detail="llm_api_base is not configured. Run 'metaclaw setup' first.",
             )
+
+        # Fail-fast: if a prior sustained outage already tripped the tracker,
+        # abort immediately rather than mounting yet another doomed forward.
+        tracker = getattr(self, "_connect_failure_tracker", None)
+        if tracker is not None:
+            tracker.assert_alive(api_base)
 
         # Strip Tinker-specific fields not supported by standard OpenAI APIs
         send_body = {
@@ -2072,48 +2303,113 @@ class MetaClawAPIServer:
             headers.setdefault("HTTP-Referer", "https://github.com/aiming-lab/MetaClaw")
             headers.setdefault("X-Title", "MetaClaw")
 
-        try:
-            async with httpx.AsyncClient(timeout=600.0) as client:
-                resp = await client.post(
-                    f"{api_base}/chat/completions",
-                    json=send_body,
-                    headers=headers,
-                )
-                resp.raise_for_status()
-                result = resp.json()
-
-            # Robustness: if the upstream API returns tool calls / reasoning
-            # inlined in content text instead of structured fields, parse them.
-            for choice in result.get("choices", []):
-                msg = choice.get("message")
-                if not msg or msg.get("role") != "assistant":
+        # --- Bounded retry on transport connect failure ----------------------- #
+        # Use an explicit short *connect* timeout (separate from the long read
+        # timeout) so a blackholed upstream surfaces as a ConnectTimeout in
+        # seconds rather than hanging on the 600s read budget — and route BOTH
+        # ConnectError and ConnectTimeout through the fail-fast (codex P1:
+        # ConnectTimeout is NOT a subclass of ConnectError, so a blackholed host
+        # would otherwise escape the failfast and fall through to a plain 502).
+        _timeout = httpx.Timeout(600.0, connect=10.0)
+        last_connect_err: Exception | None = None
+        for attempt in range(_CONNECT_RETRY_ATTEMPTS):
+            try:
+                async with httpx.AsyncClient(timeout=_timeout) as client:
+                    resp = await client.post(
+                        f"{api_base}/chat/completions",
+                        json=send_body,
+                        headers=headers,
+                    )
+                    resp.raise_for_status()
+                    result = resp.json()
+                break  # success — leave the retry loop
+            except (httpx.ConnectError, httpx.ConnectTimeout) as e:
+                # Transport-level connect failure ("All connection attempts
+                # failed") or connect timeout (blackholed host) — the network
+                # path to upstream is down. Retry with a short capped backoff;
+                # only count it as a hard failure once the bounded attempts are
+                # exhausted.
+                last_connect_err = e
+                if attempt < _CONNECT_RETRY_ATTEMPTS - 1:
+                    backoff = min(
+                        _CONNECT_RETRY_BASE_BACKOFF_S * (2 ** attempt),
+                        _CONNECT_RETRY_MAX_BACKOFF_S,
+                    )
+                    logger.warning(
+                        "[OpenClaw] upstream ConnectError (attempt %d/%d) to %s: %s — "
+                        "retrying in %.1fs",
+                        attempt + 1, _CONNECT_RETRY_ATTEMPTS, api_base, e, backoff,
+                    )
+                    await asyncio.sleep(backoff)
                     continue
-                content = msg.get("content") or ""
-                has_tool_calls = bool(msg.get("tool_calls"))
-                has_reasoning = bool(msg.get("reasoning_content"))
-                if not content or (has_tool_calls and has_reasoning):
-                    continue  # already fully structured
-                cleaned, parsed_tools, parsed_reasoning = _extract_tool_calls_from_text(content)
-                if parsed_tools or parsed_reasoning:
-                    msg["content"] = cleaned
-                    if parsed_reasoning and not has_reasoning:
-                        msg["reasoning_content"] = parsed_reasoning
-                    if parsed_tools and not has_tool_calls:
-                        msg["tool_calls"] = parsed_tools
-                        choice["finish_reason"] = "tool_calls"
+                # Exhausted in-forward retries: this forward is a hard connect
+                # failure. Bump the process-wide streak; if it crosses the
+                # threshold a sustained outage is confirmed → fatal abort.
+                if tracker is not None and tracker.record_connect_failure():
+                    logger.error(
+                        "[OpenClaw] UPSTREAM UNREACHABLE — %d consecutive connect "
+                        "failures to %s. Aborting run.",
+                        tracker.threshold, api_base,
+                    )
+                    raise UpstreamUnreachableError(api_base, tracker.threshold) from e
+                logger.error(
+                    "[OpenClaw] upstream connect failed (transient, streak not yet "
+                    "fatal) to %s: %s", api_base, e,
+                )
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Upstream connect error (transient): {e}",
+                ) from e
+            except httpx.HTTPStatusError as e:
+                # A status response means the connection itself worked — reset
+                # the connect streak. This is NOT the connect-failure mode.
+                if tracker is not None:
+                    tracker.record_success()
+                upstream_status = e.response.status_code
+                upstream_body = e.response.text[:500]
+                logger.error(
+                    "[OpenClaw] upstream LLM error: %s %s",
+                    upstream_status, upstream_body[:200],
+                )
+                # Pass through 4xx client errors so callers see the real cause
+                # (e.g. 401 invalid API key, 429 rate limited). Upstream 5xx → 502.
+                http_status = upstream_status if 400 <= upstream_status < 500 else 502
+                raise HTTPException(status_code=http_status, detail=upstream_body) from e
+            except Exception as e:
+                logger.error("[OpenClaw] LLM forward failed: %s", e, exc_info=True)
+                raise HTTPException(status_code=502, detail=f"LLM forward error: {e}") from e
+        else:  # pragma: no cover - loop always breaks or raises
+            raise HTTPException(
+                status_code=502,
+                detail=f"Upstream connect error: {last_connect_err}",
+            )
 
-            return result
-        except httpx.HTTPStatusError as e:
-            upstream_status = e.response.status_code
-            upstream_body = e.response.text[:500]
-            logger.error("[OpenClaw] upstream LLM error: %s %s", upstream_status, upstream_body[:200])
-            # Pass through 4xx client errors so callers see the real cause
-            # (e.g. 401 invalid API key, 429 rate limited). Upstream 5xx become 502.
-            http_status = upstream_status if 400 <= upstream_status < 500 else 502
-            raise HTTPException(status_code=http_status, detail=upstream_body) from e
-        except Exception as e:
-            logger.error("[OpenClaw] LLM forward failed: %s", e, exc_info=True)
-            raise HTTPException(status_code=502, detail=f"LLM forward error: {e}") from e
+        # Reached only on a successful forward: a healthy round-trip clears any
+        # accumulated connect-failure streak (a blip recovered).
+        if tracker is not None:
+            tracker.record_success()
+
+        # Robustness: if the upstream API returns tool calls / reasoning
+        # inlined in content text instead of structured fields, parse them.
+        for choice in result.get("choices", []):
+            msg = choice.get("message")
+            if not msg or msg.get("role") != "assistant":
+                continue
+            content = msg.get("content") or ""
+            has_tool_calls = bool(msg.get("tool_calls"))
+            has_reasoning = bool(msg.get("reasoning_content"))
+            if not content or (has_tool_calls and has_reasoning):
+                continue  # already fully structured
+            cleaned, parsed_tools, parsed_reasoning = _extract_tool_calls_from_text(content)
+            if parsed_tools or parsed_reasoning:
+                msg["content"] = cleaned
+                if parsed_reasoning and not has_reasoning:
+                    msg["reasoning_content"] = parsed_reasoning
+                if parsed_tools and not has_tool_calls:
+                    msg["tool_calls"] = parsed_tools
+                    choice["finish_reason"] = "tool_calls"
+
+        return result
 
     # ------------------------------------------------------------------ #
     # Skill evolution (skills_only mode)                                  #

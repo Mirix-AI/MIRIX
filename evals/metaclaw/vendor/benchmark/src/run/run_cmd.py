@@ -14,7 +14,12 @@ import json
 from datetime import datetime
 from pathlib import Path
 
-from src.infer.infer_cmd import _find_all_tests_files, _run_one_all_tests
+from src.infer.infer_cmd import (
+    _find_all_tests_files,
+    _run_one_all_tests,
+    get_distill_health,
+    reset_distill_health,
+)
 from src.infer.query_reader import get_default_query_reader
 from src.report.report_cmd import run_report
 from src.scoring.scoring_cmd import run_scoring
@@ -84,7 +89,8 @@ def run_run(
     memory: bool = False,
     memory_proxy_port: int = 30000,
     buffer_turns: bool = False,
-) -> None:
+    skill_records: bool = False,
+) -> int:
     """Run infer → scoring → report pipeline.
 
     Args:
@@ -97,7 +103,21 @@ def run_run(
         memory_proxy_port: MetaClaw proxy port for memory / buffer_turn calls.
         buffer_turns: If True, use incremental ingestion via buffer_turn per round
                       and flush_session after each scene.
+
+    Returns:
+        The number of distill-round FAILURES recorded during this run (0 means
+        every graded round distilled cleanly under the ``--skill-records``
+        path; non-zero means the records pipeline silently degraded — the caller
+        (``cmd_run``) turns this into a non-zero process exit so the runner /
+        sanity gate refuse to trust the delta). Always 0 for non-records arms.
     """
+    # FIX7 / codex P2: the distill counters are process-global. The CLI
+    # subprocess path starts clean, but an in-process caller (e.g. a test, or a
+    # future harness that invokes run_run twice in one interpreter) would
+    # otherwise leak the prior run's failures into this run's health snapshot.
+    # Reset at the start so the returned count + sidecar describe THIS run only.
+    reset_distill_health()
+
     input_path = resolve_path(input_arg)
     if not input_path.exists():
         raise FileNotFoundError(f"Input path not found: {input_path}")
@@ -144,6 +164,7 @@ def run_run(
                 memory=memory,
                 memory_proxy_port=memory_proxy_port,
                 buffer_turns=buffer_turns,
+                skill_records=skill_records,
             )
 
             # Step 2: Scoring
@@ -178,4 +199,27 @@ def run_run(
     if len(per_file_reports) > 1:
         _generate_combined_reports(out_base, per_file_reports)
 
+    # FIX7 — silent-swallow defense. Persist the distill-round health so the
+    # post-run sanity gate (run_v1_eval.sh) and the runner can detect a records
+    # pipeline that degraded mid-run (HTTP 200 + ok:false rounds). Written for
+    # EVERY run; for non-records arms the counters are simply 0.
+    health = get_distill_health()
+    health["skill_records"] = bool(skill_records)
+    health_path = out_base / "distill_health.json"
+    health_path.write_text(json.dumps(health, indent=2), encoding="utf-8")
+    print(f"Written: {health_path}  ({health})")
+
+    distill_failures = int(health.get("distill_failures", 0))
+    if skill_records and distill_failures > 0:
+        print(
+            "\n"
+            "================================================================\n"
+            f"  DISTILL FAILURES: {distill_failures}/"
+            f"{health.get('distill_attempts')} graded rounds failed to distill.\n"
+            "  The mirix-records pipeline DEGRADED mid-run — the accuracy delta\n"
+            "  is NOT trustworthy. See distill_health.json + proxy.log.\n"
+            "================================================================"
+        )
+
     print(f"\nRun complete. Results in: {out_base}")
+    return distill_failures

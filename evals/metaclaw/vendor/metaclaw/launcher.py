@@ -143,6 +143,9 @@ class MetaClawLauncher:
                     skill_evolver = MirixEvolverAdapter(  # [D6 mod 2026-05-28]
                         base_url=os.environ["METACLAW_MIRIX_BASE_URL"],  # [D6 mod 2026-05-28]
                         user_id=os.environ["METACLAW_MIRIX_USER_ID"],  # [D6 mod 2026-05-28]
+                        # C5: evolve cadence for the records (new) mode. Ignored by
+                        # the raw-transcript path, so old arms are unaffected.
+                        evolve_every_n_rounds=getattr(cfg, "skill_evolution_every_n_rounds", 5),  # [C5 2026-06-16]
                     )  # [D6 mod 2026-05-28]
                     logger.info(  # [D6 mod 2026-05-28]
                         "[Launcher] MirixEvolverAdapter active (base=%s user=%s)",  # [D6 mod 2026-05-28]

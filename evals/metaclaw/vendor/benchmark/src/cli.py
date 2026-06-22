@@ -44,6 +44,7 @@ def cmd_infer(args: argparse.Namespace) -> None:
         memory=args.memory,
         memory_proxy_port=args.memory_proxy_port,
         buffer_turns=args.buffer_turns,
+        skill_records=getattr(args, "skill_records", False),
     )
 
 
@@ -81,7 +82,7 @@ def cmd_report(args: argparse.Namespace) -> None:
 
 def cmd_run(args: argparse.Namespace) -> None:
     from src.run.run_cmd import run_run
-    run_run(
+    distill_failures = run_run(
         input_arg=args.input,
         output_arg=args.output,
         workers=args.workers,
@@ -90,7 +91,16 @@ def cmd_run(args: argparse.Namespace) -> None:
         memory=args.memory,
         memory_proxy_port=args.memory_proxy_port,
         buffer_turns=args.buffer_turns,
+        skill_records=getattr(args, "skill_records", False),
     )
+    # FIX7 — silent-swallow defense. Under --skill-records, a non-zero
+    # distill-failure count means the records pipeline degraded (HTTP 200 +
+    # ok:false rounds the bench used to treat as success). Exit non-zero so the
+    # runner records a failed arm and the post-run sanity gate refuses to trust
+    # the accuracy delta. Exit code 3 is distinct from runner.py's rc=2
+    # (missing-proxy-port guard) to keep the two failure modes separable.
+    if distill_failures and getattr(args, "skill_records", False):
+        sys.exit(3)
 
 
 # ---------------------------------------------------------------------------
@@ -177,6 +187,16 @@ def main() -> None:
         help=(
             "Incremental memory ingestion: POST /buffer_turn after every round and "
             "POST /flush_session after each scene.  Takes precedence over --memory."
+        ),
+    )
+    infer_parser.add_argument(
+        "--skill-records",
+        action="store_true",
+        default=False,
+        help=(
+            "C5 new harness: POST /v1/skills/distill_round after every graded "
+            "round (one-round-lag distill + evolve-every-N-rounds), and "
+            "session_done flush after each scene.  Independent of --buffer-turns."
         ),
     )
 
@@ -269,6 +289,16 @@ def main() -> None:
         help=(
             "Incremental memory ingestion: POST /buffer_turn after every round and "
             "POST /flush_session after each scene.  Takes precedence over --memory."
+        ),
+    )
+    run_parser.add_argument(
+        "--skill-records",
+        action="store_true",
+        default=False,
+        help=(
+            "C5 new harness: POST /v1/skills/distill_round after every graded "
+            "round (one-round-lag distill + evolve-every-N-rounds), and "
+            "session_done flush after each scene.  Independent of --buffer-turns."
         ),
     )
 

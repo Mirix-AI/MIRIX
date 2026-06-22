@@ -58,6 +58,16 @@ class MetaClawConfig:
     skill_evolution_every_n_turns: int = 10  # Every N conversation turns (main turns), run skill evolution on those turns (RL and skills_only)
     skill_update_threshold: float = 0.4       # Evolve when success rate < threshold (trainer batch evolution)
     max_new_skills: int = 3
+    # ── C5 (new MIRIX-records harness) — gated mode; default preserves old arms ──
+    # "raw_transcript" (default): the legacy every-N-turns batch path
+    #   (`_evolve_skills_for_session` via `_session_turns`) — UNCHANGED, so the
+    #   mirix-old-harness regression baseline + native arms keep behaving exactly
+    #   as before. "mirix_records": the message-by-message path — per-round
+    #   /v1/skills/distill-round + evolve every N graded ROUNDS via the C5 endpoint
+    #   (`POST /v1/skills/distill_round` on this proxy → MirixEvolverAdapter).
+    skill_evolution_mode: str = "raw_transcript"
+    # Evolve every N completed graded ROUNDS in mirix_records mode (DESIGN §0/§C5).
+    skill_evolution_every_n_rounds: int = 5
 
     # ------------------------------------------------------------------ #
     # Memory                                                              #

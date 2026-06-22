@@ -6,8 +6,10 @@ These tests pin the contract requested for the MetaClaw eval:
      is forced empty (system-message-only).
   2. After each call the history is force-cleared again — UNCONDITIONALLY, even
      when the agent step raised — so the next evolve always starts empty.
-  3. The evolve path runs with a raised chaining/tool budget
-     (SKILL_EVOLVE_MAX_CHAINING_STEPS, default 50), not the global chat default.
+  3. The evolve path runs with its own bounded chaining/tool budget
+     (SKILL_EVOLVE_MAX_CHAINING_STEPS), not the global chat default. The cap is a
+     wall-clock ceiling (env-overridable) that bounds a runaway curator well
+     below the request timeout, not a hard-pinned magic number.
 
 They are pure-mock and require no DB, server process, or LLM API key.
 """
@@ -188,6 +190,14 @@ async def test_evolve_postclears_even_when_step_raises(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_evolve_default_budget_is_fifty():
-    """Pin the requested default: the evolve tool/chaining budget is 50."""
-    assert SKILL_EVOLVE_MAX_CHAINING_STEPS == 50
+async def test_evolve_chaining_budget_is_a_bounded_ceiling():
+    """The evolve chaining budget is its own bounded wall-clock ceiling.
+
+    It must be (a) positive and (b) materially smaller than the chat default's
+    runaway potential — a curator converges in a few steps, so the cap exists
+    only to stop a pathological spin well before the request timeout. We pin the
+    intended default but assert the *property* (bounded, env-overridable) rather
+    than a magic number, so tuning the default never silently breaks this test.
+    """
+    assert SKILL_EVOLVE_MAX_CHAINING_STEPS == 15
+    assert 0 < SKILL_EVOLVE_MAX_CHAINING_STEPS <= 50

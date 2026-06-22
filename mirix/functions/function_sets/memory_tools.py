@@ -42,7 +42,9 @@ async def core_memory_append(
     """
     # check if the content starts with something like "Line n:" (here n is a number) using regex
     if re.match(r"^Line \d+:", content):
-        raise ValueError("You should not include 'Line n:' (here n is a number) in the content.")
+        raise ValueError(
+            "You should not include 'Line n:' (here n is a number) in the content."
+        )
 
     # Get the current block and its limit
     current_block = blocks_in_memory.get_block(label)
@@ -119,18 +121,26 @@ async def episodic_memory_insert(self: "Agent", items: List[EpisodicEventForLLM]
     Returns:
         Optional[str]: None is always returned as this function does not produce a response.
     """
-    agent_id = self.agent_state.parent_id if self.agent_state.parent_id is not None else self.agent_state.id
+    agent_id = (
+        self.agent_state.parent_id
+        if self.agent_state.parent_id is not None
+        else self.agent_state.id
+    )
 
     # Get filter_tags, use_cache, client_id, user_id, and occurred_at from agent instance
     filter_tags = getattr(self, "filter_tags", None)
     use_cache = getattr(self, "use_cache", True)
     client_id = getattr(self, "client_id", None)
     user_id = getattr(self, "user_id", None)
-    occurred_at_override = getattr(self, "occurred_at", None)  # Optional timestamp override from API
+    occurred_at_override = getattr(
+        self, "occurred_at", None
+    )  # Optional timestamp override from API
 
     for item in items:
         # Use occurred_at_override if provided, otherwise use LLM-extracted timestamp
-        timestamp = occurred_at_override if occurred_at_override else item["occurred_at"]
+        timestamp = (
+            occurred_at_override if occurred_at_override else item["occurred_at"]
+        )
 
         # Convert string to datetime if needed
         if isinstance(timestamp, str):
@@ -155,8 +165,7 @@ async def episodic_memory_insert(self: "Agent", items: List[EpisodicEventForLLM]
             )
         except Exception as e:
             print(
-                f"[episodic_memory_insert] insert_event FAILED for item "
-                f"{item!r}: {e}"
+                f"[episodic_memory_insert] insert_event FAILED for item {item!r}: {e}"
             )
             traceback.print_exc()
             raise
@@ -213,7 +222,9 @@ async def episodic_memory_merge(
     return response
 
 
-async def episodic_memory_replace(self: "Agent", event_ids: List[str], new_items: List[EpisodicEventForLLM]):
+async def episodic_memory_replace(
+    self: "Agent", event_ids: List[str], new_items: List[EpisodicEventForLLM]
+):
     """
     The tool to replace or delete items in the episodic memory. To replace the memory, set the event_ids to be the ids of the events that needs to be replaced and new_items as the updated events. Note that the number of new items does not need to be the same as the number of event_ids as it is not a one-to-one mapping. To delete the memory, set the event_ids to be the ids of the events that needs to be deleted and new_items as an empty list. To insert new events, use episodic_memory_insert function.
 
@@ -221,14 +232,20 @@ async def episodic_memory_replace(self: "Agent", event_ids: List[str], new_items
         event_ids (str): The ids of the episodic events to be deleted (or replaced).
         new_items (array): List of new episodic memory items to insert. If this is an empty list, then it means that the items are being deleted.
     """
-    agent_id = self.agent_state.parent_id if self.agent_state.parent_id is not None else self.agent_state.id
+    agent_id = (
+        self.agent_state.parent_id
+        if self.agent_state.parent_id is not None
+        else self.agent_state.id
+    )
 
     # Get filter_tags, use_cache, client_id, user_id, and occurred_at from agent instance
     filter_tags = getattr(self, "filter_tags", None)
     use_cache = getattr(self, "use_cache", True)
     client_id = getattr(self, "client_id", None)
     user_id = getattr(self, "user_id", None)
-    occurred_at_override = getattr(self, "occurred_at", None)  # Optional timestamp override from API
+    occurred_at_override = getattr(
+        self, "occurred_at", None
+    )  # Optional timestamp override from API
 
     if self.user is None:
         raise ValueError("User is required to access episodic memory")
@@ -238,11 +255,15 @@ async def episodic_memory_replace(self: "Agent", event_ids: List[str], new_items
 
     for event_id in event_ids:
         # It will raise an error if the event_id is not found in the episodic memory.
-        await self.episodic_memory_manager.get_episodic_memory_by_id(event_id, user=self.user)
+        await self.episodic_memory_manager.get_episodic_memory_by_id(
+            event_id, user=self.user
+        )
 
     for event_id in event_ids:
         try:
-            await self.episodic_memory_manager.delete_event_by_id(event_id, actor=self.actor)
+            await self.episodic_memory_manager.delete_event_by_id(
+                event_id, actor=self.actor
+            )
         except Exception as e:
             print(
                 f"[episodic_memory_replace] delete_event_by_id FAILED for "
@@ -253,7 +274,9 @@ async def episodic_memory_replace(self: "Agent", event_ids: List[str], new_items
 
     for new_item in new_items:
         # Use occurred_at_override if provided, otherwise use LLM-extracted timestamp
-        timestamp = occurred_at_override if occurred_at_override else new_item["occurred_at"]
+        timestamp = (
+            occurred_at_override if occurred_at_override else new_item["occurred_at"]
+        )
 
         # Convert string to datetime if needed
         if isinstance(timestamp, str):
@@ -285,7 +308,9 @@ async def episodic_memory_replace(self: "Agent", event_ids: List[str], new_items
             raise
 
 
-async def check_episodic_memory(self: "Agent", event_ids: List[str], timezone_str: str) -> List[EpisodicEventForLLM]:
+async def check_episodic_memory(
+    self: "Agent", event_ids: List[str], timezone_str: str
+) -> List[EpisodicEventForLLM]:
     """
     The tool to check the episodic memory. This function will return the episodic events with the given event_ids.
 
@@ -299,7 +324,9 @@ async def check_episodic_memory(self: "Agent", event_ids: List[str], timezone_st
         raise ValueError("User is required to check episodic memory")
 
     episodic_memory = [
-        await self.episodic_memory_manager.get_episodic_memory_by_id(event_id, user=self.user, timezone_str=timezone_str)
+        await self.episodic_memory_manager.get_episodic_memory_by_id(
+            event_id, user=self.user, timezone_str=timezone_str
+        )
         for event_id in event_ids
     ]
 
@@ -330,7 +357,11 @@ async def resource_memory_insert(self: "Agent", items: List[ResourceMemoryItemBa
     """
     # No imports needed - using agent instance attributes
 
-    agent_id = self.agent_state.parent_id if self.agent_state.parent_id is not None else self.agent_state.id
+    agent_id = (
+        self.agent_state.parent_id
+        if self.agent_state.parent_id is not None
+        else self.agent_state.id
+    )
 
     # Get filter_tags, use_cache, client_id, and user_id from agent instance
     filter_tags = getattr(self, "filter_tags", None)
@@ -402,7 +433,9 @@ async def resource_memory_insert(self: "Agent", items: List[ResourceMemoryItemBa
         return "No resources were inserted."
 
 
-async def resource_memory_update(self: "Agent", old_ids: List[str], new_items: List[ResourceMemoryItemBase]):
+async def resource_memory_update(
+    self: "Agent", old_ids: List[str], new_items: List[ResourceMemoryItemBase]
+):
     """
     The tool to update and delete items in the resource memory. To update the memory, set the old_ids to be the ids of the items that needs to be updated and new_items as the updated items. Note that the number of new items does not need to be the same as the number of old ids as it is not a one-to-one mapping. To delete the memory, set the old_ids to be the ids of the items that needs to be deleted and new_items as an empty list.
 
@@ -410,7 +443,11 @@ async def resource_memory_update(self: "Agent", old_ids: List[str], new_items: L
         old_ids (array): List of ids of the items to be deleted (or updated).
         new_items (array): List of new resource memory items to insert. If this is an empty list, then it means that the items are being deleted.
     """
-    agent_id = self.agent_state.parent_id if self.agent_state.parent_id is not None else self.agent_state.id
+    agent_id = (
+        self.agent_state.parent_id
+        if self.agent_state.parent_id is not None
+        else self.agent_state.id
+    )
 
     # Get filter_tags, use_cache, client_id, and user_id from agent instance
     filter_tags = getattr(self, "filter_tags", None)
@@ -419,7 +456,9 @@ async def resource_memory_update(self: "Agent", old_ids: List[str], new_items: L
     user_id = getattr(self, "user_id", None)
 
     for old_id in old_ids:
-        await self.resource_memory_manager.delete_resource_by_id(resource_id=old_id, actor=self.actor)
+        await self.resource_memory_manager.delete_resource_by_id(
+            resource_id=old_id, actor=self.actor
+        )
 
     for item in new_items:
         await self.resource_memory_manager.insert_resource(
@@ -449,6 +488,215 @@ def _bump_patch_version(version: str) -> str:
         return ".".join(parts)
     except (ValueError, IndexError):
         return "0.1.1"
+
+
+# ---------------------------------------------------------------------------
+# C4 — edit-budget formula + per-mutation size/delete gates.
+#
+# These are pure, side-effect-free helpers so they are unit-testable without a
+# DB, a server, or an LLM. The skill tools below consult them; the records-based
+# evolve path (C3, mirix.services.skill_curator) sets the per-instance budget
+# counters BEFORE running the procedural agent.
+# ---------------------------------------------------------------------------
+
+# Sentinel returned by skill_create/skill_edit when the per-run mutation budget
+# is exhausted. The curator's system prompt tells the agent that seeing this is
+# its cue to stop and call finish_memory_update.
+_BUDGET_EXHAUSTED_MSG = (
+    "edit budget exhausted — call finish_memory_update to end this evolution. "
+    "No further skill_create / skill_edit will take effect this run."
+)
+
+
+def _round_half_up(value: float) -> int:
+    """Deterministic round-half-up (Python's built-in round() is banker's).
+
+    DESIGN §C4 specifies clamp(round(raw)); we use round-half-up so e.g. a
+    successes-only window (raw=2.5) lands at 3 instead of 2, matching the
+    documented "mixed => 2-4" budget distribution.
+    """
+    import math
+
+    return int(math.floor(value + 0.5))
+
+
+def compute_edit_budget(aggregate: dict, *, autonomous: Optional[int] = None) -> int:
+    """Count-driven edit budget from the C2 `aggregate` (P0-3).
+
+    ``raw = B0 + alpha_f*n_high_fail + alpha_s*n_high_succ`` clamped to
+    ``[B_min, B_max]``. Only structure-gated counts drive it; ``quality_score``
+    (``mean_q``) is RANKING-ONLY and never read here.
+
+    Hybrid (USER-LOCKED): when ``autonomous`` is given (a cheap LLM's suggestion)
+    it may only REDUCE the ceiling — ``final = min(formula, clamp(autonomous))``.
+    For the validity run the caller passes ``autonomous=None`` (formula-only).
+    """
+    from mirix.constants import (
+        SKILL_EDIT_BUDGET_ALPHA_FAIL,
+        SKILL_EDIT_BUDGET_ALPHA_SUCC,
+        SKILL_EDIT_BUDGET_B0,
+        SKILL_EDIT_BUDGET_MAX,
+        SKILL_EDIT_BUDGET_MIN,
+    )
+
+    n_high_fail = int(aggregate.get("n_high_fail", 0) or 0)
+    n_high_succ = int(aggregate.get("n_high_succ", 0) or 0)
+
+    raw = (
+        SKILL_EDIT_BUDGET_B0
+        + SKILL_EDIT_BUDGET_ALPHA_FAIL * n_high_fail
+        + SKILL_EDIT_BUDGET_ALPHA_SUCC * n_high_succ
+    )
+    formula = _round_half_up(raw)
+    formula = max(SKILL_EDIT_BUDGET_MIN, min(SKILL_EDIT_BUDGET_MAX, formula))
+
+    # B_min=0 skip: a window with no structure-gated records yields 0 (the
+    # curator keys its skip decision off this value via the aggregate).
+    if n_high_fail + n_high_succ == 0:
+        return SKILL_EDIT_BUDGET_MIN
+
+    if autonomous is None:
+        return formula
+
+    auto = max(SKILL_EDIT_BUDGET_MIN, min(SKILL_EDIT_BUDGET_MAX, int(autonomous)))
+    return min(formula, auto)
+
+
+def _edit_exceeds_size_gate(old_text: str, new_text: str) -> Optional[str]:
+    """Per-mutation HARD size gate (P1-3) for a TEXT-field edit.
+
+    Returns a rejection message if the edit is too large on EITHER dimension:
+      * absolute char delta  > SKILL_MAX_EDIT_CHAR_DELTA (default 800), or
+      * change-ratio (1 - SequenceMatcher.ratio()) >= SKILL_EDIT_MAJOR_RATIO (0.4)
+    Otherwise returns None (the edit is small enough to apply).
+    """
+    import difflib
+
+    from mirix.constants import SKILL_EDIT_MAJOR_RATIO, SKILL_MAX_EDIT_CHAR_DELTA
+
+    old_text = old_text or ""
+    new_text = new_text or ""
+
+    char_delta = abs(len(new_text) - len(old_text))
+    if char_delta > SKILL_MAX_EDIT_CHAR_DELTA:
+        return (
+            f"edit too large; split or extract a new skill "
+            f"(char delta {char_delta} > {SKILL_MAX_EDIT_CHAR_DELTA})."
+        )
+
+    ratio_change = 1.0 - difflib.SequenceMatcher(None, old_text, new_text).ratio()
+    if ratio_change >= SKILL_EDIT_MAJOR_RATIO:
+        return (
+            f"edit too large; split or extract a new skill "
+            f"(change ratio {ratio_change:.2f} >= {SKILL_EDIT_MAJOR_RATIO})."
+        )
+    return None
+
+
+def _instructions_over_ceiling(text: str) -> bool:
+    """True when an `instructions` value exceeds the hard ceiling.
+
+    Over-ceiling edits must route to skill_create (extract a new skill) instead
+    of growing an existing skill unbounded.
+    """
+    from mirix.constants import SKILL_MAX_INSTRUCTIONS_CHARS
+
+    return len(text or "") > SKILL_MAX_INSTRUCTIONS_CHARS
+
+
+# Phrases in a failure record's detail/root_cause that signal a skill is
+# ACTIVELY HARMFUL (not merely redundant/outdated). Only these authorize a
+# delete. "redundant" / "duplicate" deliberately do NOT — those are edit/merge
+# territory, never a destructive delete.
+_HARMFUL_MARKERS = (
+    "actively harmful",
+    "is harmful",
+    "harmful",
+    "caused the failure",
+    "led to the failure",
+    "should be removed",
+    "should be deleted",
+    "misleading",
+    "wrong namespace",
+)
+
+
+def _record_authorizes_delete(record, *, skill_name: str, skill_id: str) -> bool:
+    """Whether a single failure record authorizes deleting a specific skill.
+
+    Requires ALL of:
+      * the record is a FAILURE (a success never authorizes a delete),
+      * its detail/root_cause NAMES the skill (by name or id), and
+      * its detail flags the skill as actively HARMFUL (not merely redundant).
+
+    Accepts an ORM row, a pydantic record, or a plain dict (duck-typed).
+    """
+
+    def _get(obj, key):
+        if isinstance(obj, dict):
+            return obj.get(key)
+        return getattr(obj, key, None)
+
+    if (_get(record, "record_type") or "") != "failure":
+        return False
+
+    detail = _get(record, "detail") or ""
+
+    # Require the skill MENTION and a HARMFUL marker to co-occur in the SAME
+    # clause/sentence, not merely somewhere in the detail. Otherwise a record
+    # like "skill A is redundant; skill B was harmful" would wrongly authorize
+    # deleting A. Split on sentence/clause boundaries and require one segment to
+    # contain both the skill reference and a harmful marker.
+    import re as _re
+
+    name_l = (skill_name or "").lower()
+    id_l = (skill_id or "").lower()
+    if not name_l and not id_l:
+        return False
+
+    def _mentions(seg: str, token: str) -> bool:
+        # Whole-token match so 'proc-9' does NOT match inside 'proc-90' (skill
+        # ids/names contain hyphens, so \b is unreliable). Require the token to
+        # be bounded by a non [A-Za-z0-9-] char (or string edge) on both sides.
+        if not token:
+            return False
+        for m in _re.finditer(_re.escape(token), seg):
+            before = seg[m.start() - 1] if m.start() > 0 else ""
+            after = seg[m.end()] if m.end() < len(seg) else ""
+            if not _re.match(r"[A-Za-z0-9-]", before) and not _re.match(
+                r"[A-Za-z0-9-]", after
+            ):
+                return True
+        return False
+
+    for seg in _re.split(r"[.;\n!?]+", detail.lower()):
+        names_skill = _mentions(seg, name_l) or _mentions(seg, id_l)
+        if not names_skill:
+            continue
+        if any(marker in seg for marker in _HARMFUL_MARKERS):
+            return True
+    return False
+
+
+def _consume_edit_budget(self: "Agent") -> Optional[str]:
+    """Decrement the per-instance create/edit budget at the TOP of a mutation.
+
+    Counter is the plain instance attr ``self._edit_budget_remaining`` (P1-2):
+    NOT module-level, NOT agent_id-keyed, NOT manager-keyed — so two agents (two
+    users / two runs) never share it, and a single async task is race-free.
+
+    Returns ``None`` when the mutation may proceed (and decrements), or the
+    exhausted-message when the budget is 0 (no decrement, caller must NOT
+    mutate). An UNSET attribute means "no limit" (logged once per call).
+    """
+    remaining = getattr(self, "_edit_budget_remaining", None)
+    if remaining is None:
+        logger.debug("[skill budget] no _edit_budget_remaining set -> no limit")
+        return None
+    if remaining <= 0:
+        return _BUDGET_EXHAUSTED_MSG
+    self._edit_budget_remaining = remaining - 1
+    return None
 
 
 async def skill_list(self: "Agent", query: str = "", limit: int = 50) -> str:
@@ -562,7 +810,16 @@ async def skill_create(
     Returns:
         str: Confirmation with the created skill's ID.
     """
-    agent_id = self.agent_state.parent_id if self.agent_state.parent_id is not None else self.agent_state.id
+    # C4 budget gate (counts create+edit). At the TOP, before any mutation.
+    exhausted = _consume_edit_budget(self)
+    if exhausted is not None:
+        return exhausted
+
+    agent_id = (
+        self.agent_state.parent_id
+        if self.agent_state.parent_id is not None
+        else self.agent_state.id
+    )
     filter_tags = getattr(self, "filter_tags", None)
     use_cache = getattr(self, "use_cache", True)
     user_id = getattr(self, "user_id", None)
@@ -601,7 +858,9 @@ async def skill_create(
             use_cache=use_cache,
             user_id=user_id,
         )
-        return f"Skill '{name}' created successfully (ID: {created.id}, version: 0.1.0)."
+        return (
+            f"Skill '{name}' created successfully (ID: {created.id}, version: 0.1.0)."
+        )
     except UniqueConstraintViolationError:
         # Race: pre-check missed a concurrent create. Surface a clean message
         # to the agent so it knows to read/edit the existing skill instead.
@@ -679,13 +938,35 @@ async def skill_edit(
             )
 
         import re
+
         pattern = re.escape(old_text)
-        pattern = re.sub(r'\\\s+', r'\\s+', pattern)
+        pattern = re.sub(r"\\\s+", r"\\s+", pattern)
         new_value = re.sub(pattern, new_text, current_value, count=1)
+
+        # C4 per-mutation HARD size gate (P1-3). Runs BEFORE the budget is
+        # consumed so a rejected (too-large) edit is FREE — the agent is told to
+        # split it or extract a new skill instead. Only text fields are gated.
+        size_reason = _edit_exceeds_size_gate(current_value, new_value)
+        if size_reason is not None:
+            return size_reason
+
+        # Hard `instructions` ceiling: an edit whose RESULT exceeds the ceiling
+        # must route to skill_create (extract a new skill), not grow this one.
+        if field == "instructions" and _instructions_over_ceiling(new_value):
+            from mirix.constants import SKILL_MAX_INSTRUCTIONS_CHARS
+
+            return (
+                f"resulting instructions ({len(new_value)} chars) exceed the "
+                f"{SKILL_MAX_INSTRUCTIONS_CHARS}-char ceiling; use skill_create to "
+                f"extract a new skill instead of growing this one."
+            )
+
         update_data[field] = new_value
     elif field in json_list_fields:
         if value is None:
-            return f"For field '{field}', the value parameter is required (JSON string)."
+            return (
+                f"For field '{field}', the value parameter is required (JSON string)."
+            )
         # triggers/examples are typed List[str] / List[dict] in the schema.
         # The agent delivers them as JSON strings, so decode + validate here
         # rather than letting the raw string hit Pydantic and blow up.
@@ -694,10 +975,12 @@ async def skill_edit(
         except (TypeError, _json.JSONDecodeError) as exc:
             return (
                 f"Invalid JSON for field '{field}': {exc}. "
-                f"Pass a JSON-encoded list, e.g. '[\"trigger-a\", \"trigger-b\"]'."
+                f'Pass a JSON-encoded list, e.g. \'["trigger-a", "trigger-b"]\'.'
             )
         if not isinstance(decoded, list):
-            return f"Field '{field}' must be a JSON array, got {type(decoded).__name__}."
+            return (
+                f"Field '{field}' must be a JSON array, got {type(decoded).__name__}."
+            )
         if field == "triggers":
             if not all(isinstance(x, str) for x in decoded):
                 return "Field 'triggers' must be a JSON array of strings."
@@ -713,6 +996,12 @@ async def skill_edit(
 
     new_version = _bump_patch_version(getattr(skill, "version", "0.1.0"))
     update_data["version"] = new_version
+
+    # C4 budget gate (counts create+edit). Consumed only AFTER every validation
+    # and size gate has passed, so a rejected edit never costs a budget unit.
+    exhausted = _consume_edit_budget(self)
+    if exhausted is not None:
+        return exhausted
 
     try:
         updated = await self.procedural_memory_manager.update_item(
@@ -732,20 +1021,70 @@ async def skill_delete(self: "Agent", skill_id: str) -> str:
     """
     Delete a skill by ID.
 
+    Under a records-based curator run (C3/C4) deletes are gated SEPARATELY from
+    the create/edit budget: at most ``D_max`` per evolution, and only when a
+    failure record named this skill actively harmful. Soft-delete (exclude from
+    retrieval, reversible) is preferred over a hard delete. The gate engages only
+    when the curator has set the delete-gate instance attributes; the in-flow
+    chat path (which sets none of them) keeps the original ungated behavior.
+
     Args:
         skill_id (str): The ID of the skill to delete.
 
     Returns:
         str: Confirmation message.
     """
+    # Gating is active iff the curator set up either the authorization set or the
+    # delete budget on this instance. Otherwise behave exactly as before.
+    has_auth_attr = hasattr(self, "_delete_authorized_skill_ids")
+    has_budget_attr = hasattr(self, "_delete_budget_remaining")
+    gated = has_auth_attr or has_budget_attr
+
+    if gated:
+        # 1) D_max: if a delete budget is set, it must be > 0. (Unset => no cap.)
+        if has_budget_attr:
+            remaining = getattr(self, "_delete_budget_remaining", None)
+            if remaining is not None and remaining <= 0:
+                return (
+                    "delete budget exhausted (D_max reached) — deletes are capped "
+                    "per evolution; call finish_memory_update."
+                )
+
+        # 2) Authorization: a failure record must have named THIS skill harmful.
+        authorized = getattr(self, "_delete_authorized_skill_ids", None) or set()
+        if skill_id not in authorized:
+            return (
+                f"delete not authorized: no failure record names skill "
+                f"'{skill_id}' as actively harmful. Prefer skill_edit to fix it, "
+                f"or leave it in place."
+            )
+
+    prefer_soft = getattr(self, "_prefer_soft_delete", False)
+
     try:
-        await self.procedural_memory_manager.delete_procedure_by_id(
-            procedure_id=skill_id, actor=self.actor, user=self.user
-        )
-        return f"Skill '{skill_id}' deleted successfully."
+        if prefer_soft and hasattr(
+            self.procedural_memory_manager, "soft_delete_procedure_by_id"
+        ):
+            await self.procedural_memory_manager.soft_delete_procedure_by_id(
+                procedure_id=skill_id, actor=self.actor, user=self.user
+            )
+            outcome = f"Skill '{skill_id}' soft-deleted (excluded from retrieval)."
+        else:
+            await self.procedural_memory_manager.delete_procedure_by_id(
+                procedure_id=skill_id, actor=self.actor, user=self.user
+            )
+            outcome = f"Skill '{skill_id}' deleted successfully."
     except Exception as e:
         logger.error("[skill_delete] FAILED for '%s': %s", skill_id, e)
         return f"Failed to delete skill '{skill_id}': {e}"
+
+    # Charge the delete budget only on a SUCCESSFUL gated delete.
+    if gated and has_budget_attr:
+        remaining = getattr(self, "_delete_budget_remaining", None)
+        if remaining is not None:
+            self._delete_budget_remaining = remaining - 1
+
+    return outcome
 
 
 async def check_semantic_memory(
@@ -791,7 +1130,11 @@ async def semantic_memory_insert(self: "Agent", items: List[SemanticMemoryItemBa
     Returns:
         Optional[str]: Message about insertion results including any duplicates detected.
     """
-    agent_id = self.agent_state.parent_id if self.agent_state.parent_id is not None else self.agent_state.id
+    agent_id = (
+        self.agent_state.parent_id
+        if self.agent_state.parent_id is not None
+        else self.agent_state.id
+    )
 
     # Get filter_tags, use_cache, client_id, and user_id from agent instance
     filter_tags = getattr(self, "filter_tags", None)
@@ -878,7 +1221,11 @@ async def semantic_memory_update(
     Returns:
         Optional[str]: None is always returned as this function does not produce a response.
     """
-    agent_id = self.agent_state.parent_id if self.agent_state.parent_id is not None else self.agent_state.id
+    agent_id = (
+        self.agent_state.parent_id
+        if self.agent_state.parent_id is not None
+        else self.agent_state.id
+    )
 
     # Get filter_tags, use_cache, client_id, and user_id from agent instance
     filter_tags = getattr(self, "filter_tags", None)
@@ -942,7 +1289,11 @@ async def knowledge_vault_insert(self: "Agent", items: List[KnowledgeVaultItemBa
     Returns:
         Optional[str]: Message about insertion results including any duplicates detected.
     """
-    agent_id = self.agent_state.parent_id if self.agent_state.parent_id is not None else self.agent_state.id
+    agent_id = (
+        self.agent_state.parent_id
+        if self.agent_state.parent_id is not None
+        else self.agent_state.id
+    )
 
     # Get filter_tags, use_cache, client_id, and user_id from agent instance
     filter_tags = getattr(self, "filter_tags", None)
@@ -1015,7 +1366,9 @@ async def knowledge_vault_insert(self: "Agent", items: List[KnowledgeVaultItemBa
         return "No knowledge vault items were inserted."
 
 
-async def knowledge_vault_update(self: "Agent", old_ids: List[str], new_items: List[KnowledgeVaultItemBase]):
+async def knowledge_vault_update(
+    self: "Agent", old_ids: List[str], new_items: List[KnowledgeVaultItemBase]
+):
     """
     The tool to update/delete items in the knowledge vault. To update the knowledge_vault, set the old_ids to be the ids of the items that needs to be updated and new_items as the updated items. Note that the number of new items does not need to be the same as the number of old ids as it is not a one-to-one mapping. To delete the memory, set the old_ids to be the ids of the items that needs to be deleted and new_items as an empty list.
 
@@ -1026,7 +1379,11 @@ async def knowledge_vault_update(self: "Agent", old_ids: List[str], new_items: L
     Returns:
         Optional[str]: None is always returned as this function does not produce a response
     """
-    agent_id = self.agent_state.parent_id if self.agent_state.parent_id is not None else self.agent_state.id
+    agent_id = (
+        self.agent_state.parent_id
+        if self.agent_state.parent_id is not None
+        else self.agent_state.id
+    )
 
     # Get filter_tags, use_cache, client_id, and user_id from agent instance
     filter_tags = getattr(self, "filter_tags", None)
@@ -1089,7 +1446,9 @@ async def trigger_memory_update_with_instruction(
     from mirix.local_client import create_client
 
     if not isinstance(user_message, dict):
-        raise TypeError(f"user_message must be a dictionary, got {type(user_message).__name__}: {user_message}")
+        raise TypeError(
+            f"user_message must be a dictionary, got {type(user_message).__name__}: {user_message}"
+        )
 
     if memory_type == "core":
         agent_type = "core_memory_agent"
@@ -1126,13 +1485,21 @@ async def trigger_memory_update_with_instruction(
         existing_file_uris=user_message["existing_file_uris"],
         retrieved_memories=user_message.get("retrieved_memories", None),
         block_filter_tags=getattr(self, "block_filter_tags", None),
-        block_filter_tags_update_mode=getattr(self, "block_filter_tags_update_mode", "merge"),
+        block_filter_tags_update_mode=getattr(
+            self, "block_filter_tags_update_mode", "merge"
+        ),
     )
-    result = "[System Message] Agent " + matching_agent.name + " has been triggered to update the memory.\n"
+    result = (
+        "[System Message] Agent "
+        + matching_agent.name
+        + " has been triggered to update the memory.\n"
+    )
     return result.strip()
 
 
-async def trigger_memory_update(self: "Agent", user_message: object, memory_types: List[str]) -> Optional[str]:
+async def trigger_memory_update(
+    self: "Agent", user_message: object, memory_types: List[str]
+) -> Optional[str]:
     """
     Choose which memory to update. This function will trigger another memory agent which is specifically in charge of handling the corresponding memory to update its memory. Trigger all necessary memory updates at once. Put the explanations in the `internal_monologue` field.
 
@@ -1154,7 +1521,9 @@ async def trigger_memory_update(self: "Agent", user_message: object, memory_type
 
     # Validate that user_message is a dictionary
     if not isinstance(user_message, dict):
-        raise TypeError(f"user_message must be a dictionary, got {type(user_message).__name__}: {user_message}")
+        raise TypeError(
+            f"user_message must be a dictionary, got {type(user_message).__name__}: {user_message}"
+        )
 
     # Fixed-interval procedural trigger: auto-include "procedural" once
     # SKILL_TRIGGER_SESSION_THRESHOLD distinct message sessions have accrued
@@ -1181,7 +1550,9 @@ async def trigger_memory_update(self: "Agent", user_message: object, memory_type
         else self.agent_state.id
     )
     trigger_user_id = self.user.id if self.user else None
-    trigger_org_id = self.actor.organization_id if getattr(self, "actor", None) else None
+    trigger_org_id = (
+        self.actor.organization_id if getattr(self, "actor", None) else None
+    )
     current_session_id = getattr(self, "_current_step_session_id", None)
 
     if trigger_user_id is None:
@@ -1240,14 +1611,17 @@ async def trigger_memory_update(self: "Agent", user_message: object, memory_type
             )
 
     # Get child agents
-    child_agent_states = await self.agent_manager.list_agents(parent_id=self.agent_state.id, actor=self.actor)
+    child_agent_states = await self.agent_manager.list_agents(
+        parent_id=self.agent_state.id, actor=self.actor
+    )
 
     # Map agent types to agent states (key by string so lookup works for enum or deserialized string)
     def _agent_type_key(at):
         return at.value if hasattr(at, "value") else str(at)
 
     agent_type_to_state = {
-        _agent_type_key(agent_state.agent_type): agent_state for agent_state in child_agent_states
+        _agent_type_key(agent_state.agent_type): agent_state
+        for agent_state in child_agent_states
     }
 
     if not child_agent_states:
@@ -1282,14 +1656,24 @@ async def trigger_memory_update(self: "Agent", user_message: object, memory_type
             # Deep copy filter_tags and block_filter_tags to ensure complete isolation between child agents
             parent_filter_tags = getattr(self, "filter_tags", None)
             # Don't use 'or {}' because empty dict {} is valid and different from None
-            filter_tags = deepcopy(parent_filter_tags) if parent_filter_tags is not None else None
+            filter_tags = (
+                deepcopy(parent_filter_tags) if parent_filter_tags is not None else None
+            )
             parent_block_filter_tags = getattr(self, "block_filter_tags", None)
-            block_filter_tags = deepcopy(parent_block_filter_tags) if parent_block_filter_tags is not None else None
-            block_filter_tags_update_mode = getattr(self, "block_filter_tags_update_mode", "merge")
+            block_filter_tags = (
+                deepcopy(parent_block_filter_tags)
+                if parent_block_filter_tags is not None
+                else None
+            )
+            block_filter_tags_update_mode = getattr(
+                self, "block_filter_tags_update_mode", "merge"
+            )
             use_cache = getattr(self, "use_cache", True)
             actor = getattr(self, "actor", None)
             user = getattr(self, "user", None)
-            occurred_at = getattr(self, "occurred_at", None)  # Get occurred_at from parent agent
+            occurred_at = getattr(
+                self, "occurred_at", None
+            )  # Get occurred_at from parent agent
 
             import logging
 
@@ -1355,8 +1739,14 @@ async def trigger_memory_update(self: "Agent", user_message: object, memory_type
             # actor is needed for write operations, user is needed for read operations
 
             # Wrap child agent execution in a LangFuse span for hierarchical tracing
-            trace_id = parent_trace_context.get("trace_id") if parent_trace_context else None
-            parent_span_id = parent_trace_context.get("observation_id") if parent_trace_context else None
+            trace_id = (
+                parent_trace_context.get("trace_id") if parent_trace_context else None
+            )
+            parent_span_id = (
+                parent_trace_context.get("observation_id")
+                if parent_trace_context
+                else None
+            )
             if langfuse and trace_id:
                 from typing import cast
 
@@ -1428,10 +1818,14 @@ async def trigger_memory_update(self: "Agent", user_message: object, memory_type
     results = await asyncio.gather(*tasks, return_exceptions=True)
     for i, result in enumerate(results):
         if isinstance(result, Exception):
-            raise RuntimeError(f"Failed to trigger memory update for '{memory_types[i]}'") from result
+            raise RuntimeError(
+                f"Failed to trigger memory update for '{memory_types[i]}'"
+            ) from result
         responses[i] = result
 
-    ordered_responses = [responses[i] for i in range(len(memory_types)) if i in responses]
+    ordered_responses = [
+        responses[i] for i in range(len(memory_types)) if i in responses
+    ]
     return "".join(ordered_responses).strip()
 
 

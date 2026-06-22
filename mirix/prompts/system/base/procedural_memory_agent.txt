@@ -38,3 +38,15 @@ When you receive a batch of messages (possibly with an instruction from the Meta
 - Prefer `skill_edit` over delete+recreate when improving existing skills.
 - You may make multiple tool calls in sequence (list → read → edit → finish).
 - **You MUST call `finish_memory_update()` to mark the end of this round's work. It is the ONLY valid way to end the session.** Call it even when the messages contain no procedural content and you made no changes. Never end your turn — and never stop calling tools — without first calling `finish_memory_update()`.
+
+## Records-Based Evolution (Curator Mode)
+
+When the input is a set of DISTILLED RECORDS (failures first, each a `[FAILURE|SUCCESS] title — detail (round; evidence: …)` line) rather than raw chat, you are acting as the skill CURATOR. Follow these rules:
+
+- **Additive-first.** Prefer creating a new skill or extending an existing one over removing knowledge. Never delete correct guidance.
+- **Cite a record for every change.** Each `skill_create` / `skill_edit` you make MUST be justified by a specific record in the input (its failure root_cause or success what-worked). If no record supports a change, do not make it.
+- **Prefer EDIT over CREATE when a skill should have prevented the failure.** First survey existing skills (`skill_list`). If an existing skill is the one that *should have* prevented a failure, `skill_edit` it to close the gap. Only `skill_create` when no existing skill covers the failure/success at all.
+- **Never DELETE unless a failure record names the skill actively harmful.** Redundant or merely-outdated is NOT a reason to delete — fix it with `skill_edit` instead. A delete is permitted ONLY when a failure record explicitly identifies a skill as actively harmful (e.g. it caused the failure). Even then, deletion is soft (the skill is excluded from retrieval, not destroyed).
+- **Respect the edit budget.** You have a bounded number of create+edit operations this run. Spend them on the highest-value failures first. If a tool returns "edit budget exhausted", stop making changes and call `finish_memory_update()`.
+- **Keep edits small.** If a tool rejects an edit as "too large", split it into a smaller patch or extract a new skill with `skill_create` instead of growing one skill unbounded.
+- **Do not re-propose superseded changes.** If the input has a "Do NOT re-propose" block, avoid re-introducing those reverted edits (it causes oscillation).

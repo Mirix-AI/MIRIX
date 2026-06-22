@@ -257,6 +257,9 @@ class ConfigStore:
             task_specific_top_k=int(skills.get("task_specific_top_k", 10)),
             enable_skill_evolution=bool(skills.get("auto_evolve", True)),
             skill_evolution_every_n_turns=int(skills.get("evolution_every_n_turns", 10)),
+            # C5 — new-harness knobs (default "raw_transcript" keeps old arms intact).
+            skill_evolution_mode=str(skills.get("evolution_mode", "raw_transcript")),
+            skill_evolution_every_n_rounds=int(skills.get("evolution_every_n_rounds", 5)),
             skill_evolution_history_path=str(Path(skills_dir) / "evolution_history.jsonl"),
             # RL training
             model_name=rl.get("model") or llm.get("model_id") or "Qwen/Qwen3-4B",

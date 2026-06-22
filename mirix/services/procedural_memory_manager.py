@@ -17,7 +17,9 @@ from mirix.orm.errors import NoResultFound, UniqueConstraintViolationError
 from mirix.orm.procedural_memory import ProceduralMemoryItem
 from mirix.schemas.agent import AgentState
 from mirix.schemas.client import Client as PydanticClient
-from mirix.schemas.procedural_memory import ProceduralMemoryItem as PydanticProceduralMemoryItem
+from mirix.schemas.procedural_memory import (
+    ProceduralMemoryItem as PydanticProceduralMemoryItem,
+)
 from mirix.schemas.procedural_memory import (
     ProceduralMemoryItemUpdate,
 )
@@ -48,9 +50,7 @@ def _pad_to_max(vec):
     arr = np.array(vec)
     if arr.shape[0] == MAX_EMBEDDING_DIM:
         return list(vec)
-    return np.pad(
-        arr, (0, MAX_EMBEDDING_DIM - arr.shape[0]), mode="constant"
-    ).tolist()
+    return np.pad(arr, (0, MAX_EMBEDDING_DIM - arr.shape[0]), mode="constant").tolist()
 
 
 # Whitelisted searchable text fields and their associated ORM columns.
@@ -133,7 +133,9 @@ class ProceduralMemoryManager:
         cleaned_text = self._clean_text_for_search(text)
 
         # Split into tokens and filter out empty strings and very short tokens
-        tokens = [token for token in cleaned_text.split() if token.strip() and len(token) > 1]
+        tokens = [
+            token for token in cleaned_text.split() if token.strip() and len(token) > 1
+        ]
         return tokens
 
     def _parse_embedding_field(self, embedding_value):
@@ -171,11 +173,17 @@ class ProceduralMemoryManager:
 
                 # Try comma-separated values
                 if "," in embedding_value:
-                    return [float(x.strip()) for x in embedding_value.split(",") if x.strip()]
+                    return [
+                        float(x.strip())
+                        for x in embedding_value.split(",")
+                        if x.strip()
+                    ]
 
                 # Try space-separated values
                 if " " in embedding_value:
-                    return [float(x.strip()) for x in embedding_value.split() if x.strip()]
+                    return [
+                        float(x.strip()) for x in embedding_value.split() if x.strip()
+                    ]
 
             # Try using the original deserialize_vector approach for binary data
             try:
@@ -195,7 +203,9 @@ class ProceduralMemoryManager:
             logger.error("Warning: Failed to parse embedding field: %s", e)
             return None
 
-    def _count_word_matches(self, item_data: Dict[str, Any], query_words: List[str], search_field: str = "") -> int:
+    def _count_word_matches(
+        self, item_data: Dict[str, Any], query_words: List[str], search_field: str = ""
+    ) -> int:
         """
         Count how many of the query words are present in the procedural memory item data.
 
@@ -284,7 +294,13 @@ class ProceduralMemoryManager:
         tsquery_parts = []
         for word in query_words:
             # Escape special characters for tsquery
-            escaped_word = word.replace("'", "''").replace("&", "").replace("|", "").replace("!", "").replace(":", "")
+            escaped_word = (
+                word.replace("'", "''")
+                .replace("&", "")
+                .replace("|", "")
+                .replace("!", "")
+                .replace(":", "")
+            )
             if escaped_word and len(escaped_word) > 1:  # Skip very short words
                 # Add both exact and prefix matching for better results
                 if len(escaped_word) >= 3:
@@ -312,9 +328,7 @@ class ProceduralMemoryManager:
             rank_sql = "ts_rank_cd(to_tsvector('english', coalesce(instructions, '')), to_tsquery('english', :tsquery), 32)"
         elif search_field == "entry_type":
             tsvector_sql = "to_tsvector('english', coalesce(entry_type, ''))"
-            rank_sql = (
-                "ts_rank_cd(to_tsvector('english', coalesce(entry_type, '')), to_tsquery('english', :tsquery), 32)"
-            )
+            rank_sql = "ts_rank_cd(to_tsvector('english', coalesce(entry_type, '')), to_tsquery('english', :tsquery), 32)"
         else:
             # Search across all relevant text fields with weighting
             tsvector_sql = """setweight(to_tsvector('english', coalesce(description, '')), 'A') ||
@@ -330,6 +344,9 @@ class ProceduralMemoryManager:
         where_clauses = [
             f"{tsvector_sql} @@ to_tsquery('english', :tsquery)",
             "user_id = :user_id",
+            # Exclude soft-deleted skills from the native PG full-text path too,
+            # so a curator soft-delete is excluded from retrieval everywhere.
+            "is_deleted = false",
         ]
         query_params = {
             "tsquery": tsquery_string_and,
@@ -363,10 +380,16 @@ class ProceduralMemoryManager:
             if not ordered_ids:
                 return []
             items_result = await session.execute(
-                select(ProceduralMemoryItem).where(ProceduralMemoryItem.id.in_(ordered_ids))
+                select(ProceduralMemoryItem).where(
+                    ProceduralMemoryItem.id.in_(ordered_ids)
+                )
             )
             items_by_id = {item.id: item for item in items_result.scalars().all()}
-            return [items_by_id[item_id] for item_id in ordered_ids if item_id in items_by_id]
+            return [
+                items_by_id[item_id]
+                for item_id in ordered_ids
+                if item_id in items_by_id
+            ]
 
         # Try AND query first for more precise results.
         try:
@@ -384,10 +407,14 @@ class ProceduralMemoryManager:
             # If there's an error with the tsquery, fall back to simpler search
             logger.error("PostgreSQL full-text search error: %s", e)
             # Fall back to simple ILIKE search on a whitelisted field
-            fallback_column = _resolve_text_column(search_field) or ProceduralMemoryItem.description
+            fallback_column = (
+                _resolve_text_column(search_field) or ProceduralMemoryItem.description
+            )
             fallback_query = (
                 select(ProceduralMemoryItem)
                 .where(ProceduralMemoryItem.user_id == user.id)
+                # Exclude soft-deleted skills on the PG FTS error fallback too.
+                .where(~ProceduralMemoryItem.is_deleted)
                 .where(func.lower(fallback_column).contains(query_text.lower()))
                 .order_by(ProceduralMemoryItem.created_at.desc())
             )
@@ -456,10 +483,14 @@ class ProceduralMemoryManager:
                     db_session=session, identifier=item_id, actor=actor
                 )
             except NoResultFound:
-                raise NoResultFound(f"Procedural memory item with id {item_id} not found.")
+                raise NoResultFound(
+                    f"Procedural memory item with id {item_id} not found."
+                )
 
             if getattr(item, "user_id", None) != user.id:
-                raise NoResultFound(f"Procedural memory item with id {item_id} not found.")
+                raise NoResultFound(
+                    f"Procedural memory item with id {item_id} not found."
+                )
 
             pydantic_item = item.to_pydantic()
 
@@ -469,7 +500,9 @@ class ProceduralMemoryManager:
 
                     cache_key = f"{cache_provider.PROCEDURAL_PREFIX}{item_id}"
                     data = pydantic_item.model_dump(mode="json")
-                    await cache_provider.set_json(cache_key, data, ttl=settings.redis_ttl_default)
+                    await cache_provider.set_json(
+                        cache_key, data, ttl=settings.redis_ttl_default
+                    )
             except Exception as e:
                 logger.warning("Failed to populate cache: %s", e)
 
@@ -490,7 +523,9 @@ class ProceduralMemoryManager:
             from sqlalchemy import DateTime, cast, text
 
             query = select(ProceduralMemoryItem).order_by(
-                cast(text("procedural_memory.last_modify ->> 'timestamp'"), DateTime).desc()
+                cast(
+                    text("procedural_memory.last_modify ->> 'timestamp'"), DateTime
+                ).desc()
             )
 
             # Filter by user_id for multi-user support
@@ -538,7 +573,9 @@ class ProceduralMemoryManager:
         required_fields = ["entry_type", "name"]
         for field in required_fields:
             if field not in data_dict:
-                raise ValueError(f"Required field '{field}' missing from procedural memory data")
+                raise ValueError(
+                    f"Required field '{field}' missing from procedural memory data"
+                )
 
         # Set client_id and user_id on the memory
         data_dict["client_id"] = client_id
@@ -627,10 +664,15 @@ class ProceduralMemoryManager:
                 )
 
             for k, v in update_data.items():
-                if k not in ["id", "updated_at"]:  # Exclude updated_at - handled by update() method
+                if k not in [
+                    "id",
+                    "updated_at",
+                ]:  # Exclude updated_at - handled by update() method
                     setattr(item, k, v)
             # updated_at is automatically set to current UTC time by item.update()
-            await item.update_with_redis(session, actor=actor)  # Updates Redis JSON cache
+            await item.update_with_redis(
+                session, actor=actor
+            )  # Updates Redis JSON cache
             return item.to_pydantic()
 
     @enforce_types
@@ -645,7 +687,9 @@ class ProceduralMemoryManager:
     async def get_total_number_of_items(self, user: PydanticUser) -> int:
         """Get the total number of items in the procedural memory for the user."""
         async with self.session_maker() as session:
-            query = select(func.count(ProceduralMemoryItem.id)).where(ProceduralMemoryItem.user_id == user.id)
+            query = select(func.count(ProceduralMemoryItem.id)).where(
+                ProceduralMemoryItem.user_id == user.id
+            )
             result = await session.execute(query)
             return result.scalar_one()
 
@@ -720,7 +764,10 @@ class ProceduralMemoryManager:
             try:
                 # Case 1: No query - get recent items (regardless of search_method)
                 if is_empty_query:
-                    logger.debug("Searching cache for recent procedural items with filter_tags=%s", filter_tags)
+                    logger.debug(
+                        "Searching cache for recent procedural items with filter_tags=%s",
+                        filter_tags,
+                    )
                     results = await redis_client.search_recent(
                         index_name=redis_client.PROCEDURAL_INDEX,
                         limit=limit or 50,
@@ -729,12 +776,19 @@ class ProceduralMemoryManager:
                         filter_tags=filter_tags,
                         scopes=scopes,
                     )
-                    logger.debug("Cache search returned %d results", len(results) if results else 0)
+                    logger.debug(
+                        "Cache search returned %d results",
+                        len(results) if results else 0,
+                    )
                     if results:
-                        logger.debug("Cache HIT: returned %d procedural items", len(results))
+                        logger.debug(
+                            "Cache HIT: returned %d procedural items", len(results)
+                        )
                         # Clean Redis-specific fields before Pydantic validation
                         results = redis_client.clean_redis_fields(results)
-                        return [PydanticProceduralMemoryItem(**item) for item in results]
+                        return [
+                            PydanticProceduralMemoryItem(**item) for item in results
+                        ]
                     # If no results, fall through to PostgreSQL (don't return empty list)
 
                 # Case 2: Vector similarity search
@@ -745,7 +799,9 @@ class ProceduralMemoryManager:
                         from mirix.constants import MAX_EMBEDDING_DIM
                         from mirix.embeddings import embedding_model
 
-                        embed_model = await embedding_model(agent_state.embedding_config)
+                        embed_model = await embedding_model(
+                            agent_state.embedding_config
+                        )
                         embedded_text = await embed_model.get_text_embedding(query)
                         embedded_text = np.array(embedded_text)
                         embedded_text = np.pad(
@@ -754,7 +810,11 @@ class ProceduralMemoryManager:
                             mode="constant",
                         ).tolist()
 
-                    vector_field = f"{search_field}_embedding" if search_field else "description_embedding"
+                    vector_field = (
+                        f"{search_field}_embedding"
+                        if search_field
+                        else "description_embedding"
+                    )
 
                     results = await redis_client.search_vector(
                         index_name=redis_client.PROCEDURAL_INDEX,
@@ -767,13 +827,22 @@ class ProceduralMemoryManager:
                         scopes=scopes,
                     )
                     if results:
-                        logger.debug("Cache vector search HIT: found %d procedural items", len(results))
+                        logger.debug(
+                            "Cache vector search HIT: found %d procedural items",
+                            len(results),
+                        )
                         # Clean Redis-specific fields before Pydantic validation
                         results = redis_client.clean_redis_fields(results)
-                        return [PydanticProceduralMemoryItem(**item) for item in results]
+                        return [
+                            PydanticProceduralMemoryItem(**item) for item in results
+                        ]
 
                 elif search_method in ["bm25", "string_match"]:
-                    fields = [search_field] if search_field else ["description", "instructions"]
+                    fields = (
+                        [search_field]
+                        if search_field
+                        else ["description", "instructions"]
+                    )
 
                     results = await redis_client.search_text(
                         index_name=redis_client.PROCEDURAL_INDEX,
@@ -786,19 +855,31 @@ class ProceduralMemoryManager:
                         scopes=scopes,
                     )
                     if results:
-                        logger.debug("Cache text search HIT: found %d procedural items", len(results))
+                        logger.debug(
+                            "Cache text search HIT: found %d procedural items",
+                            len(results),
+                        )
                         # Clean Redis-specific fields before Pydantic validation
                         results = redis_client.clean_redis_fields(results)
-                        return [PydanticProceduralMemoryItem(**item) for item in results]
+                        return [
+                            PydanticProceduralMemoryItem(**item) for item in results
+                        ]
 
             except Exception as e:
-                logger.warning("Cache search failed for procedural memory, falling back to PostgreSQL: %s", e)
+                logger.warning(
+                    "Cache search failed for procedural memory, falling back to PostgreSQL: %s",
+                    e,
+                )
 
         # Log when bypassing cache or Redis unavailable
         if not use_cache:
-            logger.debug("Bypassing cache (use_cache=False), querying PostgreSQL directly for procedural memory")
+            logger.debug(
+                "Bypassing cache (use_cache=False), querying PostgreSQL directly for procedural memory"
+            )
         elif not redis_client:
-            logger.debug("Cache unavailable, querying PostgreSQL directly for procedural memory")
+            logger.debug(
+                "Cache unavailable, querying PostgreSQL directly for procedural memory"
+            )
 
         async with self.session_maker() as session:
             if query == "":
@@ -806,10 +887,18 @@ class ProceduralMemoryManager:
                     select(ProceduralMemoryItem)
                     .where(ProceduralMemoryItem.user_id == user.id)
                     .where(ProceduralMemoryItem.organization_id == organization_id)
+                    # Exclude soft-deleted skills (curator soft-delete sets
+                    # is_deleted=True; they must NOT surface in retrieval or the
+                    # evolve before/after snapshots). The base SqlalchemyBase
+                    # reads filter ~is_deleted, but these raw fallback queries
+                    # build select() directly and would otherwise leak them.
+                    .where(~ProceduralMemoryItem.is_deleted)
                     .order_by(ProceduralMemoryItem.created_at.desc())
                 )
 
-                from mirix.database.filter_tags_query import apply_filter_tags_sqlalchemy
+                from mirix.database.filter_tags_query import (
+                    apply_filter_tags_sqlalchemy,
+                )
 
                 query_stmt = apply_filter_tags_sqlalchemy(
                     query_stmt, ProceduralMemoryItem, filter_tags, scopes=scopes
@@ -830,9 +919,14 @@ class ProceduralMemoryManager:
                     select(ProceduralMemoryItem)
                     .where(ProceduralMemoryItem.user_id == user.id)
                     .where(ProceduralMemoryItem.organization_id == organization_id)
+                    # Exclude soft-deleted skills from every search method too
+                    # (same reason as the empty-query branch above).
+                    .where(~ProceduralMemoryItem.is_deleted)
                 )
 
-                from mirix.database.filter_tags_query import apply_filter_tags_sqlalchemy
+                from mirix.database.filter_tags_query import (
+                    apply_filter_tags_sqlalchemy,
+                )
 
                 base_query = apply_filter_tags_sqlalchemy(
                     base_query, ProceduralMemoryItem, filter_tags, scopes=scopes
@@ -863,7 +957,9 @@ class ProceduralMemoryManager:
                             f"Invalid search_field '{search_field}' for string_match. "
                             f"Allowed: {sorted(_SEARCHABLE_TEXT_FIELDS)}."
                         )
-                    main_query = base_query.where(func.lower(search_field_obj).contains(query.lower()))
+                    main_query = base_query.where(
+                        func.lower(search_field_obj).contains(query.lower())
+                    )
 
                 elif search_method == "bm25":
                     # Check if we're using PostgreSQL - use native full-text search if available
@@ -883,7 +979,12 @@ class ProceduralMemoryManager:
                         # Fallback to in-memory BM25 for SQLite (legacy method)
                         # Load all candidate items (memory-intensive, kept for compatibility)
                         result = await session.execute(
-                            select(ProceduralMemoryItem).where(ProceduralMemoryItem.user_id == user.id)
+                            select(ProceduralMemoryItem)
+                            .where(ProceduralMemoryItem.user_id == user.id)
+                            # Exclude soft-deleted skills from the SQLite BM25
+                            # fallback too (this is the path the validity run's
+                            # before/after evolve snapshot uses).
+                            .where(~ProceduralMemoryItem.is_deleted)
                         )
                         all_items = result.scalars().all()
 
@@ -904,7 +1005,11 @@ class ProceduralMemoryManager:
                                 text_to_search = item.entry_type or ""
                             else:
                                 # Default to searching across all text fields
-                                texts = [item.description or "", item.entry_type or "", item.instructions or ""]
+                                texts = [
+                                    item.description or "",
+                                    item.entry_type or "",
+                                    item.instructions or "",
+                                ]
                                 text_to_search = " ".join(texts)
 
                             # Preprocess the text into tokens
@@ -946,7 +1051,10 @@ class ProceduralMemoryManager:
                 elif search_method == "fuzzy_match":
                     # For fuzzy matching, load all candidate items into memory.
                     result = await session.execute(
-                        select(ProceduralMemoryItem).where(ProceduralMemoryItem.user_id == user.id)
+                        select(ProceduralMemoryItem)
+                        .where(ProceduralMemoryItem.user_id == user.id)
+                        # Exclude soft-deleted skills from the fuzzy path too.
+                        .where(~ProceduralMemoryItem.is_deleted)
                     )
                     all_items = result.scalars().all()
                     scored_items = []
@@ -959,7 +1067,9 @@ class ProceduralMemoryManager:
 
                         # Compute a fuzzy matching score using partial_ratio,
                         # which is suited for comparing a short query to longer text.
-                        score = fuzz.partial_ratio(query.lower(), text_to_search.lower())
+                        score = fuzz.partial_ratio(
+                            query.lower(), text_to_search.lower()
+                        )
                         scored_items.append((score, item))
 
                     # Sort items by score in descending order and select the top ones.
@@ -998,8 +1108,12 @@ class ProceduralMemoryManager:
             if BUILD_EMBEDDINGS_FOR_MEMORY:
                 # TODO: need to check if we need to chunk the text
                 embed_model = await embedding_model(agent_state.embedding_config)
-                description_embedding = await embed_model.get_text_embedding(description)
-                instructions_embedding = await embed_model.get_text_embedding(instructions)
+                description_embedding = await embed_model.get_text_embedding(
+                    description
+                )
+                instructions_embedding = await embed_model.get_text_embedding(
+                    instructions
+                )
                 embedding_config = agent_state.embedding_config
             else:
                 description_embedding = None
@@ -1067,13 +1181,17 @@ class ProceduralMemoryManager:
                     actor=actor,
                 )
             except NoResultFound:
-                raise NoResultFound(f"Procedural memory item with id {procedure_id} not found.")
+                raise NoResultFound(
+                    f"Procedural memory item with id {procedure_id} not found."
+                )
 
             if user is not None and getattr(item, "user_id", None) != user.id:
                 # Hide the record entirely — a distinct "forbidden" response
                 # would leak existence of skills that belong to other users
                 # under the same org.
-                raise NoResultFound(f"Procedural memory item with id {procedure_id} not found.")
+                raise NoResultFound(
+                    f"Procedural memory item with id {procedure_id} not found."
+                )
 
             # Remove from cache
             from mirix.database.cache_provider import get_cache_provider
@@ -1083,6 +1201,49 @@ class ProceduralMemoryManager:
                 cache_key = f"{cache_provider.PROCEDURAL_PREFIX}{procedure_id}"
                 await cache_provider.delete(cache_key)
             await item.hard_delete(session)
+
+    async def soft_delete_procedure_by_id(
+        self,
+        procedure_id: str,
+        actor: PydanticClient,
+        user: Optional[PydanticUser] = None,
+    ) -> None:
+        """Soft-delete a skill: flag ``is_deleted=True`` so it is excluded from
+        retrieval (`read`/`list_procedures` filter `~is_deleted`) WITHOUT
+        destroying the row. This is the curator's PREFERRED delete (C4, P1-4):
+        it is reversible (un-set the flag) and keeps the skill auditable, unlike
+        the hard ``delete_procedure_by_id`` which removes it entirely.
+
+        Same three-axis ownership enforcement as ``delete_procedure_by_id``.
+        """
+        async with self.session_maker() as session:
+            try:
+                item = await ProceduralMemoryItem.read(
+                    db_session=session,
+                    identifier=procedure_id,
+                    actor=actor,
+                )
+            except NoResultFound:
+                raise NoResultFound(
+                    f"Procedural memory item with id {procedure_id} not found."
+                )
+
+            if user is not None and getattr(item, "user_id", None) != user.id:
+                raise NoResultFound(
+                    f"Procedural memory item with id {procedure_id} not found."
+                )
+
+            # Evict the cache so the soft-deleted skill stops being served.
+            from mirix.database.cache_provider import get_cache_provider
+
+            cache_provider = get_cache_provider()
+            if cache_provider:
+                cache_key = f"{cache_provider.PROCEDURAL_PREFIX}{procedure_id}"
+                await cache_provider.delete(cache_key)
+
+            item.is_deleted = True
+            session.add(item)
+            await session.commit()
 
     @enforce_types
     async def delete_by_client_id(self, actor: PydanticClient) -> int:
@@ -1101,7 +1262,9 @@ class ProceduralMemoryManager:
         async with self.session_maker() as session:
             # Get IDs for Redis cleanup (only fetch IDs, not full objects)
             result = await session.execute(
-                select(ProceduralMemoryItem.id).where(ProceduralMemoryItem.client_id == actor.id)
+                select(ProceduralMemoryItem.id).where(
+                    ProceduralMemoryItem.client_id == actor.id
+                )
             )
             item_ids = [row[0] for row in result.all()]
 
@@ -1110,14 +1273,20 @@ class ProceduralMemoryManager:
                 return 0
 
             # Bulk delete in single query
-            await session.execute(delete(ProceduralMemoryItem).where(ProceduralMemoryItem.client_id == actor.id))
+            await session.execute(
+                delete(ProceduralMemoryItem).where(
+                    ProceduralMemoryItem.client_id == actor.id
+                )
+            )
 
             await session.commit()
 
         # Batch delete from Redis cache (outside of session context)
         redis_client = get_redis_client()
         if redis_client and item_ids:
-            redis_keys = [f"{redis_client.PROCEDURAL_PREFIX}{item_id}" for item_id in item_ids]
+            redis_keys = [
+                f"{redis_client.PROCEDURAL_PREFIX}{item_id}" for item_id in item_ids
+            ]
 
             # Delete in batches to avoid command size limits
             BATCH_SIZE = 1000
@@ -1239,7 +1408,9 @@ class ProceduralMemoryManager:
         async with self.session_maker() as session:
             # Get IDs for Redis cleanup (only fetch IDs, not full objects)
             result = await session.execute(
-                select(ProceduralMemoryItem.id).where(ProceduralMemoryItem.user_id == user_id)
+                select(ProceduralMemoryItem.id).where(
+                    ProceduralMemoryItem.user_id == user_id
+                )
             )
             item_ids = [row[0] for row in result.all()]
 
@@ -1248,14 +1419,20 @@ class ProceduralMemoryManager:
                 return 0
 
             # Bulk delete in single query
-            await session.execute(delete(ProceduralMemoryItem).where(ProceduralMemoryItem.user_id == user_id))
+            await session.execute(
+                delete(ProceduralMemoryItem).where(
+                    ProceduralMemoryItem.user_id == user_id
+                )
+            )
 
             await session.commit()
 
         # Batch delete from Redis cache (outside of session context)
         redis_client = get_redis_client()
         if redis_client and item_ids:
-            redis_keys = [f"{redis_client.PROCEDURAL_PREFIX}{item_id}" for item_id in item_ids]
+            redis_keys = [
+                f"{redis_client.PROCEDURAL_PREFIX}{item_id}" for item_id in item_ids
+            ]
 
             # Delete in batches to avoid command size limits
             BATCH_SIZE = 1000
@@ -1306,9 +1483,15 @@ class ProceduralMemoryManager:
                         scopes=scopes,
                     )
                     if results:
-                        logger.debug("Cache: %d procedural memories for org %s", len(results), organization_id)
+                        logger.debug(
+                            "Cache: %d procedural memories for org %s",
+                            len(results),
+                            organization_id,
+                        )
                         results = redis_client.clean_redis_fields(results)
-                        return [PydanticProceduralMemoryItem(**item) for item in results]
+                        return [
+                            PydanticProceduralMemoryItem(**item) for item in results
+                        ]
 
                 elif search_method == "embedding":
                     if embedded_text is None:
@@ -1317,7 +1500,9 @@ class ProceduralMemoryManager:
                         from mirix.constants import MAX_EMBEDDING_DIM
                         from mirix.embeddings import embedding_model
 
-                        embedded_text = await (await embedding_model(agent_state.embedding_config)).get_text_embedding(query)
+                        embedded_text = await (
+                            await embedding_model(agent_state.embedding_config)
+                        ).get_text_embedding(query)
                         embedded_text = np.array(embedded_text)
                         embedded_text = np.pad(
                             embedded_text,
@@ -1325,7 +1510,11 @@ class ProceduralMemoryManager:
                             mode="constant",
                         ).tolist()
 
-                    vector_field = f"{search_field}_embedding" if search_field else "description_embedding"
+                    vector_field = (
+                        f"{search_field}_embedding"
+                        if search_field
+                        else "description_embedding"
+                    )
                     results = await redis_client.search_vector_by_org(
                         index_name=redis_client.PROCEDURAL_INDEX,
                         embedding=embedded_text,
@@ -1338,7 +1527,9 @@ class ProceduralMemoryManager:
                     if results:
                         logger.debug("Cache vector: %d results", len(results))
                         results = redis_client.clean_redis_fields(results)
-                        return [PydanticProceduralMemoryItem(**item) for item in results]
+                        return [
+                            PydanticProceduralMemoryItem(**item) for item in results
+                        ]
 
                 else:
                     results = await redis_client.search_text_by_org(
@@ -1354,12 +1545,16 @@ class ProceduralMemoryManager:
                     if results:
                         logger.debug("Cache text: %d results", len(results))
                         results = redis_client.clean_redis_fields(results)
-                        return [PydanticProceduralMemoryItem(**item) for item in results]
+                        return [
+                            PydanticProceduralMemoryItem(**item) for item in results
+                        ]
             except Exception as e:
                 logger.warning("Cache search failed: %s", e)
 
         async with self.session_maker() as session:
-            base_query = select(ProceduralMemoryItem).where(ProceduralMemoryItem.organization_id == organization_id)
+            base_query = select(ProceduralMemoryItem).where(
+                ProceduralMemoryItem.organization_id == organization_id
+            )
 
             from mirix.database.filter_tags_query import apply_filter_tags_sqlalchemy
 
@@ -1386,7 +1581,9 @@ class ProceduralMemoryManager:
                     # vector matches the Vector(4096) column. (Caller-supplied
                     # embeddings are already padded at function entry above.)
                     embedded_text = _pad_to_max(
-                        await (await embedding_model(embedding_config)).get_text_embedding(query)
+                        await (
+                            await embedding_model(embedding_config)
+                        ).get_text_embedding(query)
                     )
 
                 # Determine which embedding field to search
@@ -1397,12 +1594,16 @@ class ProceduralMemoryManager:
                 else:
                     embedding_field = ProceduralMemoryItem.description_embedding
 
-                embedding_query_field = embedding_field.cosine_distance(embedded_text).label("distance")
+                embedding_query_field = embedding_field.cosine_distance(
+                    embedded_text
+                ).label("distance")
                 base_query = base_query.add_columns(embedding_query_field)
 
                 # Apply similarity threshold if provided
                 if similarity_threshold is not None:
-                    base_query = base_query.where(embedding_query_field < similarity_threshold)
+                    base_query = base_query.where(
+                        embedding_query_field < similarity_threshold
+                    )
 
                 base_query = base_query.order_by(embedding_query_field)
 
@@ -1422,7 +1623,11 @@ class ProceduralMemoryManager:
                 tsvector = func.to_tsvector("english", text_field)
                 rank = func.ts_rank_cd(tsvector, tsquery).label("rank")
 
-                base_query = base_query.add_columns(rank).where(tsvector.op("@@")(tsquery)).order_by(rank.desc())
+                base_query = (
+                    base_query.add_columns(rank)
+                    .where(tsvector.op("@@")(tsquery))
+                    .order_by(rank.desc())
+                )
 
             if limit:
                 base_query = base_query.limit(limit)
