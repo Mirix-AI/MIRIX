@@ -521,8 +521,52 @@ class MessageManager:
 
             return [msg.to_pydantic() for msg in results]
 
+    @staticmethod
+    def _select_retained_session_ids(
+        session_first_seen: Dict[str, datetime],
+        retain_last_n_sessions: int,
+    ) -> set:
+        """Select the most-recent N session_ids to retain (DB-free, pure logic).
+
+        Args:
+            session_first_seen: mapping of session_id -> MIN(created_at) for that
+                session. session_id keys must be non-null (NULL session_ids are
+                never part of any retained session and must be filtered out by the
+                caller before building this mapping).
+            retain_last_n_sessions: how many of the most-recent sessions to retain.
+                <= 0 retains nothing.
+
+        Returns:
+            set of session_ids that should be retained (the N sessions whose first
+            message is the most recent). Ordering is by MIN(created_at) DESC, with
+            session_id as a deterministic tie-breaker so the window is stable.
+        """
+        if retain_last_n_sessions <= 0 or not session_first_seen:
+            return set()
+        # Sessions with a known first-seen timestamp: most-recent first, breaking
+        # ties on session_id (desc) for determinism. Sessions whose timestamp is
+        # None (no created_at on any row) are treated as OLDEST and ordered after
+        # the timestamped ones — this also avoids ever comparing None to datetime.
+        with_ts = sorted(
+            (kv for kv in session_first_seen.items() if kv[1] is not None),
+            key=lambda kv: (kv[1], kv[0]),
+            reverse=True,
+        )
+        without_ts = sorted(
+            (sid for sid, ts in session_first_seen.items() if ts is None),
+            reverse=True,
+        )
+        ordered = [sid for sid, _ in with_ts] + list(without_ts)
+        return set(ordered[:retain_last_n_sessions])
+
     @enforce_types
-    async def delete_detached_messages_for_agent(self, agent_id: str, actor: PydanticClient) -> int:
+    async def delete_detached_messages_for_agent(
+        self,
+        agent_id: str,
+        actor: PydanticClient,
+        retain_last_n_sessions: int = 0,
+        user_id: Optional[str] = None,
+    ) -> int:
         """
         Delete messages that belong to an agent but are not in the agent's current message_ids list.
 
@@ -532,6 +576,18 @@ class MessageManager:
         Args:
             agent_id: The ID of the agent to clean up messages for
             actor: The user performing this action
+            retain_last_n_sessions: When > 0, the raw messages of the most-recent N
+                sessions (by MIN(created_at) per session, descending) are EXCLUDED
+                from the hard-delete set even though they are detached from the
+                agent's message_ids. This preserves a bounded rolling window of raw
+                transcript so a later distiller / auto-dream pass can read it. The
+                retained rows are NOT re-added to message_ids / in-context (token
+                economy preserved). 0 (default) preserves the legacy behavior of
+                deleting every detached message.
+            user_id: Optional user scoping for the retained-session window. When
+                provided (and retain_last_n_sessions > 0), the most-recent-N session
+                set is computed per (agent, user) so one user's sessions never evict
+                or count toward another user's retained window on a shared agent.
 
         Returns:
             int: Number of messages deleted
@@ -548,7 +604,9 @@ class MessageManager:
             # Get current message_ids (messages that should be kept)
             current_message_ids = set(agent.message_ids or [])
 
-            # Find all messages for this agent
+            # Find all messages for this agent — a SINGLE snapshot used both to
+            # compute the retained rolling window and to pick delete candidates,
+            # so there is no read-read race between the two.
             all_messages = await MessageModel.list(
                 db_session=session,
                 agent_id=agent_id,
@@ -556,8 +614,49 @@ class MessageManager:
                 limit=None,  # Get all messages
             )
 
-            # Identify detached messages (not in current message_ids)
-            detached_messages = [msg for msg in all_messages if msg.id not in current_message_ids]
+            # Compute the set of session_ids to retain (bounded rolling window).
+            # When retention is active AND a user_id is given, BOTH the window and
+            # the delete scope are restricted to that user, so one user's cleanup
+            # can never evict or delete another user's retained sessions on a
+            # shared agent.
+            retained_session_ids: set = set()
+            scope_to_user = retain_last_n_sessions > 0 and user_id is not None
+            if retain_last_n_sessions > 0:
+                # Per-session first-seen timestamp, computed in-memory from the
+                # snapshot above (no second query). Mirrors agent_trigger_state's
+                # MIN(created_at)-per-session windowing. A session whose rows all
+                # lack created_at keeps a None timestamp and is treated as oldest.
+                session_first_seen: Dict[str, Optional[datetime]] = {}
+                for msg in all_messages:
+                    sid = msg.session_id
+                    if sid is None:
+                        continue
+                    if scope_to_user and msg.user_id != user_id:
+                        continue
+                    ts = msg.created_at
+                    if sid not in session_first_seen:
+                        session_first_seen[sid] = ts
+                    else:
+                        cur = session_first_seen[sid]
+                        if cur is None:
+                            session_first_seen[sid] = ts
+                        elif ts is not None and ts < cur:
+                            session_first_seen[sid] = ts
+                retained_session_ids = self._select_retained_session_ids(
+                    session_first_seen, retain_last_n_sessions
+                )
+
+            # Identify detached messages (not in current message_ids). Keep any
+            # message whose session_id is in the retained rolling window, and —
+            # when retention is user-scoped — only treat THIS user's messages as
+            # delete candidates so other users' rows are never touched.
+            detached_messages = [
+                msg
+                for msg in all_messages
+                if msg.id not in current_message_ids
+                and msg.session_id not in retained_session_ids
+                and (not scope_to_user or msg.user_id == user_id)
+            ]
 
             # Delete detached messages (and clean up Redis cache)
             deleted_count = 0
@@ -580,6 +679,13 @@ class MessageManager:
     async def cleanup_all_detached_messages(self, actor: PydanticClient) -> Dict[str, int]:
         """
         Cleanup detached messages for all agents in the organization.
+
+        WARNING: this is a destructive, organization-wide purge that does NOT honor
+        the last-N-session retention window (it hard-deletes every detached message
+        for every agent). Do NOT point it at the meta_memory_agent if you rely on the
+        MESSAGE_RETAIN_LAST_N_SESSIONS rolling window for session distillation /
+        auto-dream — use delete_detached_messages_for_agent(retain_last_n_sessions=...)
+        for retention-aware cleanup. Kept as an explicit legacy full-purge helper.
 
         Args:
             actor: The user performing this action

@@ -24,6 +24,7 @@ from mirix.constants import (
     MAX_CHAINING_STEPS,
     MAX_EMBEDDING_DIM,
     MAX_RETRIEVAL_LIMIT_IN_SYSTEM,
+    MESSAGE_RETAIN_LAST_N_SESSIONS,
     MIRIX_CORE_TOOL_MODULE_NAME,
     MIRIX_EXTRA_TOOL_MODULE_NAME,
     MIRIX_MEMORY_TOOL_MODULE_NAME,
@@ -1462,8 +1463,25 @@ class Agent(BaseAgent):
                         message_ids=message_ids,
                         actor=self.actor,
                     )
+                    # Retention: the meta_memory_agent holds the canonical user
+                    # conversation (the user/assistant turns + screenshots that came
+                    # in via add()). Retain the raw messages of its most-recent N
+                    # sessions (per user) instead of hard-deleting them, so a later
+                    # distiller / auto-dream pass can read the raw transcript. The
+                    # retained rows stay detached from message_ids (NOT re-added to
+                    # in-context — token economy preserved). The 6 memory sub-agents'
+                    # messages are transient extraction scratch, so they keep the
+                    # legacy full delete (retain=0).
+                    retain_n = (
+                        MESSAGE_RETAIN_LAST_N_SESSIONS
+                        if self.agent_state.is_type(AgentType.meta_memory_agent)
+                        else 0
+                    )
                     await self.message_manager.delete_detached_messages_for_agent(
-                        agent_id=self.agent_state.id, actor=self.actor
+                        agent_id=self.agent_state.id,
+                        actor=self.actor,
+                        retain_last_n_sessions=retain_n,
+                        user_id=self.user_id,
                     )
 
                     # Clear all messages since they were manually added to the conversation history

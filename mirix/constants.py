@@ -268,6 +268,15 @@ CLEAR_HISTORY_AFTER_MEMORY_UPDATE = os.getenv(
     "1",
     "yes",
 )
+# When clearing history after a memory update, retain the raw conversation
+# messages of the most-recent N sessions (per agent+user) instead of hard-deleting
+# them. These retained rows stay DETACHED from the agent's message_ids (NOT re-added
+# to any in-context list — token economy preserved); they exist only so a later
+# distiller / auto-dream pass can read the raw transcript. The window is a bounded
+# rolling window: when a new session arrives the oldest retained session ages out
+# and becomes eligible for deletion on the next clear. Default 5; 0 disables
+# retention entirely (legacy hard-delete-everything behavior).
+MESSAGE_RETAIN_LAST_N_SESSIONS = int(os.getenv("MESSAGE_RETAIN_LAST_N_SESSIONS", "5"))
 CALL_MEMORY_AGENT_IN_PARALLEL = os.getenv(
     "CALL_MEMORY_AGENT_IN_PARALLEL", "false"
 ).lower() in ("true", "1", "yes")
