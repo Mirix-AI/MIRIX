@@ -1,0 +1,41 @@
+# Mirix Configuration - OpenAI Setup
+# Simple configuration using OpenAI's GPT-4o-mini
+
+llm_config:
+  model: "openai/gpt-5.2"
+  model_endpoint_type: "openai"
+  api_key: "your-openrouter-api-key"
+  model_endpoint: "https://openrouter.ai/api/v1"
+  context_window: 128000
+
+topic_extraction_llm_config:
+  model: "openai/gpt-5.2"
+  model_endpoint_type: "openai"
+  api_key: "your-openrouter-api-key"
+  model_endpoint: "https://openrouter.ai/api/v1"
+  context_window: 128000
+
+embedding_config:
+  embedding_model: "Text Embedding 3 Small"
+  embedding_endpoint: "https://openrouter.ai/api/v1"
+  api_key: "your-openrouter-api-key"
+  embedding_endpoint_type: "openai"
+  embedding_dim: 1536
+
+build_embeddings_for_memory: true
+
+meta_agent_config:
+  system_prompts_folder: prompts/0201a/
+  agents:
+    - core_memory_agent
+    - resource_memory_agent
+    - semantic_memory_agent
+    - episodic_memory_agent
+    - procedural_memory_agent
+    - knowledge_vault_memory_agent
+  memory:
+    core:
+      - label: "human"
+        value: ""
+      - label: "persona"
+        value: "I am a helpful assistant."

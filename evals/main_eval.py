@@ -10,6 +10,16 @@ from mirix_memory_system import MirixMemorySystem
 from task_agent import TaskAgent
 
 
+instructions = """Instructions:
+
+1. Carefully analyze all utterances from both speakers.
+2. The conversation has a timestamp, but the events mentioned in the conversation may have different timestamps. You have to extract the exact date of the mentioned events. Remember that "mentioned at" is not the same as "occurred at" so this has to be noted in the memories.
+3. If there is a question about time references (like "last year", "two months ago", etc.), calculate the actual date based on the memory timestamp. For example, if a memory from 4 May 2022 mentions "went to India last year," then the trip occurred in 2021.
+4. Always convert relative time references to specific dates, months, or years. For example, convert "last year" to "2022" or "two months ago" to "March 2023" based on the conversation timestamp.
+5. Focus only on the content of the memories from both speakers. Do not confuse character names mentioned in memories with the actual users who created those memories.
+6. You are supposed to extract the event/fact/semantic knowledge from the conversation. For example, if the conversation happens at 2023 and the conversation says that "John went to India last year", then you should save the fact that "John went to India in 2022". Similarly for all other kinds of memories.
+7. Make sure to extract the facts about the characters, such as their name, age, gender, occupation, hometown, etc."""
+
 def load_locomo(path: Path) -> List[Dict]:
     with path.open("r", encoding="utf-8") as handle:
         data = json.load(handle)
@@ -35,17 +45,19 @@ def iter_sessions(conversation: Dict) -> Iterable[Dict]:
         }
 
 
-def format_session_chunk(session: Dict) -> str:
+def format_session_chunk(session: Dict, date_time: str) -> str:
+
     header = f"Session {session['number']}"
     if session.get("date_time"):
         header += f" ({session['date_time']})"
-    lines = [header]
+    lines = [f"You have access to the conversation between two speakers. The conversation is timestamped at {date_time}.\n"]
+    lines.append(instructions)
+    lines.append(header)
     for turn in session.get("turns", []):
         speaker = turn.get("speaker", "").strip()
         text = turn.get("text", "").strip()
         lines.append(f"{speaker}: {text}")
     return "\n".join(lines)
-
 
 def load_sample_result(path: Path) -> Optional[Dict]:
     if not path.exists():
@@ -191,18 +203,15 @@ def main() -> None:
             idx_key = str(idx)
             if idx_key in sample_result["responses"]:
                 continue
-            chunk = format_session_chunk(session)
             date_time_key = f"session_{idx}_date_time"
             date_time = conversation.get(date_time_key)
             if date_time is None:
                 date_time = conversation.get(f"session_{idx + 1}_date_time")
+            chunk = format_session_chunk(session, date_time=date_time)
 
-            # Timestamp context for memory agents
-            timestamp_context = f"The conversation is timestamped at {date_time}.\n\n" if date_time else ""
-            chunk_with_instruction = timestamp_context + chunk
             start = time.perf_counter()
 
-            response = memory_system.add_chunk(chunk_with_instruction, raw_input=chunk)
+            response = memory_system.add_chunk(chunk, raw_input=chunk)
 
             elapsed = time.perf_counter() - start
 
@@ -288,7 +297,7 @@ def main() -> None:
             print_qa(qidx, question, expected_answer, predicted)
 
         try:
-            all_memories = memory_system.list_all_memories(limit=0)
+            all_memories = memory_system.list_all_memories()
         except Exception as exc:
             all_memories = {
                 "success": False,

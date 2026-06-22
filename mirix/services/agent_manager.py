@@ -5,6 +5,7 @@ from typing import Dict, List, Optional
 from sqlalchemy.orm import Session
 
 from mirix.constants import (
+    AUTO_DREAM_TOOLS,
     BASE_TOOLS,
     CHAT_AGENT_TOOLS,
     CORE_MEMORY_BLOCK_CHAR_LIMIT,
@@ -137,6 +138,8 @@ class AgentManager:
             tool_names.extend(META_MEMORY_TOOLS + UNIVERSAL_MEMORY_TOOLS)
         if agent_create.agent_type == AgentType.reflexion_agent:
             tool_names.extend(SEARCH_MEMORY_TOOLS + CHAT_AGENT_TOOLS + UNIVERSAL_MEMORY_TOOLS + EXTRAS_TOOLS)
+        if agent_create.agent_type == AgentType.auto_dream_agent:
+            tool_names.extend(AUTO_DREAM_TOOLS)
 
         # Remove duplicates
         tool_names = list(set(tool_names))
@@ -216,6 +219,7 @@ class AgentManager:
             "meta_memory_agent": AgentType.meta_memory_agent,
             "reflexion_agent": AgentType.reflexion_agent,
             "background_agent": AgentType.background_agent,
+            "auto_dream_agent": AgentType.auto_dream_agent,
             "chat_agent": AgentType.chat_agent,
         }
 
@@ -372,6 +376,7 @@ class AgentManager:
             "meta_memory_agent": AgentType.meta_memory_agent,
             "reflexion_agent": AgentType.reflexion_agent,
             "background_agent": AgentType.background_agent,
+            "auto_dream_agent": AgentType.auto_dream_agent,
             "chat_agent": AgentType.chat_agent,
         }
 
@@ -574,6 +579,8 @@ class AgentManager:
             tool_names.extend(BASE_TOOLS + CHAT_AGENT_TOOLS + EXTRAS_TOOLS)
         if agent_state.agent_type == AgentType.reflexion_agent:
             tool_names.extend(SEARCH_MEMORY_TOOLS + CHAT_AGENT_TOOLS + UNIVERSAL_MEMORY_TOOLS + EXTRAS_TOOLS)
+        if agent_state.agent_type == AgentType.auto_dream_agent:
+            tool_names.extend(AUTO_DREAM_TOOLS)
 
         ## extract the existing tool names for the agent
         existing_tools = agent_state.tools

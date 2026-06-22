@@ -96,6 +96,45 @@ print(memories)
 ```
 For more API examples, see `samples/run_client.py`.
 
+### Auto-Dream Memory Consolidation
+
+MIRIX also exposes an auto-dream endpoint for explicit memory cleanup and consolidation. Auto-dream reviews existing memories, merges duplicates, resolves stale/conflicting entries where possible, and writes the result back through the memory tools.
+
+**REST endpoint:**
+```http
+POST /memory/auto_dream?user_id=demo-user
+Content-Type: application/json
+
+{
+  "mode": "experience",
+  "dry_run": false
+}
+```
+
+Supported `mode` values:
+
+| Mode | Memory component(s) reviewed |
+|---|---|
+| `core` | Core memory blocks |
+| `episodic` | Episodic memories |
+| `semantic` | Semantic memories |
+| `resource` | Resource memories |
+| `procedural` | Procedural memories |
+| `knowledge` | Knowledge Vault memories |
+| `experience` | Episodic, Semantic, and Knowledge Vault memories together |
+
+Use `dry_run: true` to fetch counts and inspect what would be processed without applying updates. The optional `model` field can override the auto-dream agent model for that request.
+
+Python client example:
+```python
+result = client.auto_dream(
+    user_id="demo-user",
+    mode="experience",
+    dry_run=False,
+)
+print(result)
+```
+
 ## License
 
 Mirix is released under the Apache License 2.0. See the [LICENSE](LICENSE) file for more details.

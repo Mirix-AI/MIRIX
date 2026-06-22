@@ -1178,7 +1178,7 @@ async def semantic_memory_insert(self: "Agent", items: List[SemanticMemoryItemBa
                     name=item["name"],
                     summary=item["summary"],
                     details=item["details"],
-                    source=item["source"],
+                    source=item.get("source", ""),
                     organization_id=self.actor.organization_id,
                     actor=self.actor,
                     filter_tags=filter_tags if filter_tags else None,
@@ -1708,8 +1708,7 @@ async def trigger_memory_update(
 
             system_msg = TextContent(
                 text=(
-                    "[System Message] According to the instructions, the retrieved memories "
-                    "and the above content, update the corresponding memory."
+                    "[System] Update the memory based on the instructions. Do not miss any important information."
                 )
             )
 

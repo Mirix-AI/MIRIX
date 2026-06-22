@@ -24,6 +24,7 @@ from mirix.llm_api.llm_client import LLMClient
 from mirix.log import get_logger
 from mirix.orm.errors import NoResultFound, UniqueConstraintViolationError
 from mirix.schemas.agent import AgentState, AgentType, CreateAgent
+from mirix.schemas.auto_dream import AutoDreamRequest
 from mirix.schemas.block import Block, BlockUpdate, CreateBlock, Human, Persona
 from mirix.schemas.client import Client, ClientCreate, ClientUpdate
 from mirix.schemas.embedding_config import EmbeddingConfig
@@ -69,7 +70,7 @@ logger = get_logger(__name__)
 from mirix.queue import initialize_queue
 from mirix.queue.manager import get_manager as get_queue_manager
 from mirix.queue.queue_util import put_messages
-
+from mirix.server.constants import MAX_MEMORY_LIMIT
 # Initialize server (single instance shared across all requests)
 _server: Optional[AsyncServer] = None
 
@@ -420,13 +421,8 @@ async def extract_topics_and_temporal_info(
             # Convert from OpenAI format to internal format
             new_messages = []
             for msg in messages:
-                new_messages.append(
-                    {
-                        "type": "text",
-                        "text": "[USER]" if msg["role"] == "user" else "[ASSISTANT]",
-                    }
-                )
-                new_messages.extend(msg["content"])
+                prefix = "[USER]" if msg["role"] == "user" else "[ASSISTANT]"
+                new_messages.extend([{"type": "text", "text": prefix + " " + part} for part in msg["content"]])
             messages = new_messages
 
         temporary_messages = convert_message_to_mirix_message(messages)
@@ -2133,21 +2129,16 @@ async def add_memory(
         # We need to convert the message to the format in "content"
         new_message = []
         for msg in message:
-            new_message.append(
-                {
-                    "type": "text",
-                    "text": "[USER]" if msg["role"] == "user" else "[ASSISTANT]",
-                }
-            )
+            prefix = "[USER]" if msg["role"] == "user" else "[ASSISTANT]"
 
             # Handle both string and list content
             content = msg["content"]
             if isinstance(content, str):
                 # Content is a string - convert to proper format
-                new_message.append({"type": "text", "text": content})
+                new_message.append({"type": "text", "text": prefix + " " + content})
             elif isinstance(content, list):
                 # Content is already a list - extend as before
-                new_message.extend(content)
+                new_message.extend([{"type": "text", "text": prefix + " " + part} for part in content])
             else:
                 raise ValueError(f"Invalid content type: {type(content)}")
         message = new_message
@@ -2262,17 +2253,12 @@ async def add_memory_sync(
     if isinstance(message, list) and "role" in message[0].keys():
         new_message = []
         for msg in message:
-            new_message.append(
-                {
-                    "type": "text",
-                    "text": "[USER]" if msg["role"] == "user" else "[ASSISTANT]",
-                }
-            )
+            prefix = "[USER]" if msg["role"] == "user" else "[ASSISTANT]"
             content = msg["content"]
             if isinstance(content, str):
-                new_message.append({"type": "text", "text": content})
+                new_message.append({"type": "text", "text": prefix + " " + content})
             elif isinstance(content, list):
-                new_message.extend(content)
+                new_message.extend([{"type": "text", "text": prefix + " " + part} for part in content])
             else:
                 raise ValueError(f"Invalid content type: {type(content)}")
         message = new_message
@@ -4201,7 +4187,7 @@ async def search_memory_all_users(
                 any_scopes=client.read_scopes,
                 filter_tags=block_filter_tags_parsed,
                 auto_create_from_default=False,
-                limit=limit or 50,
+                limit=limit,
             )
             logger.info(
                 "Cross-user search core memory: found %d blocks for org=%s, scopes=%s, block_filter_tags=%s",
@@ -4257,7 +4243,7 @@ async def search_memory_all_users(
 async def list_memory_components(
     user_id: Optional[str] = None,
     memory_type: str = "all",
-    limit: int = 50,
+    limit: Optional[int] = None,
     authorization: Optional[str] = Header(None),
     http_request: Request = None,
 ):
@@ -4305,7 +4291,7 @@ async def list_memory_components(
         raise HTTPException(status_code=404, detail=f"User {user_id} not found")
 
     timezone_str = getattr(user, "timezone", None) or "UTC"
-    limit = max(1, min(limit, 200))  # guardrails
+    limit = max(1, min(limit if limit is not None else MAX_MEMORY_LIMIT, MAX_MEMORY_LIMIT))
 
     # Need an agent state for memory manager configuration
     agents = await server.agent_manager.list_agents(actor=client, limit=1)
@@ -6635,6 +6621,66 @@ async def cleanup_raw_memories(
     except Exception as e:
         logger.error("Cleanup job failed: %s", e)
         raise HTTPException(status_code=500, detail=f"Cleanup job failed: {str(e)}")
+
+
+@router.post("/memory/auto_dream")
+async def auto_dream_handler(
+    request_body: AutoDreamRequest,
+    user_id: Optional[str] = Query(None, description="User ID to run auto dream for"),
+    authorization: Optional[str] = Header(None),
+    http_request: Request = None,
+):
+    """
+    Run the auto dream self-reflection pipeline for a user.
+
+    Fetches memories in the specified time window (default: since last dream → now),
+    then invokes the AutoDreamAgent to remove redundancies and resolve conflicts.
+
+    Args:
+        start_date: Start of time window (default: last auto dream time, or 30 days ago)
+        end_date: End of time window (default: now)
+        mode: Which auto-dream mode to process. One of: core, episodic, semantic,
+            resource, procedural, knowledge, experience. experience processes
+            episodic, semantic, and knowledge together in one agent pass.
+        dry_run: If true, return counts without applying any changes
+        model: Override the LLM model (e.g. "gpt-4.1-mini" for testing)
+    """
+    from mirix.schemas.auto_dream import AutoDreamRequest, AutoDreamResponse
+    from mirix.services.auto_dream_manager import AutoDreamManager
+
+    client, auth_type = await get_client_from_jwt_or_api_key(authorization, http_request)
+    server = get_server()
+
+    if user_id:
+        user = await server.user_manager.get_user_by_id(user_id=user_id)
+    else:
+        from mirix.services.admin_user_manager import ClientAuthManager
+        user = await server.user_manager.get_user_by_id(
+            user_id=ClientAuthManager.get_admin_user_id_for_client(client.id)
+        )
+
+    meta_agents = await server.agent_manager.list_agents(actor=client)
+    meta_agent_state = next(
+        (a for a in meta_agents if a.agent_type == AgentType.meta_memory_agent),
+        None,
+    )
+    if meta_agent_state is None:
+        raise HTTPException(
+            status_code=400,
+            detail="No meta agent found for this client. Call /agents/meta/initialize first.",
+        )
+
+    try:
+        mgr = AutoDreamManager()
+        return await mgr.run(
+            request=request_body,
+            user=user,
+            actor=client,
+            meta_agent_state=meta_agent_state,
+        )
+    except Exception as e:
+        logger.error("Auto dream failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Auto dream failed: {str(e)}")
 
 
 class UpdateResourceMemoryRequest(BaseModel):

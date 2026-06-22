@@ -414,8 +414,13 @@ class MirixClient(AbstractClient):
             if json:
                 logger.debug("[MirixClient] Request body: %s", json)
 
+        # Per-request timeout is set from self.timeout so a caller can
+        # raise it via MirixClient(timeout=...) without rebuilding the
+        # AsyncClient. RetryTransport propagates request.extensions
+        # ['timeout'] to the wrapped AsyncHTTPTransport unchanged.
         response = await self._client.request(
-            method=method, url=url, json=json, params=params, headers=headers
+            method=method, url=url, json=json, params=params, headers=headers,
+            timeout=self.timeout,
         )
         try:
             response.raise_for_status()
@@ -1818,6 +1823,75 @@ class MirixClient(AbstractClient):
             params["block_filter_tags"] = _json.dumps(block_filter_tags)
 
         return await self._request("GET", "/memory/search_all_users", params=params, headers=headers)
+
+    async def list_memory_components(
+        self,
+        user_id: str,
+        memory_type: str = "all",
+        limit: Optional[int] = None,
+        headers: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
+        """
+        List memory records grouped by component for the given user.
+
+        Args:
+            user_id: End-user whose memories to list
+            memory_type: One of "episodic", "semantic", "procedural", "resource",
+                        "knowledge_vault", "core", or "all" (default: "all")
+            limit: Maximum number of items to return per memory type (default: 50)
+
+        Returns:
+            Dict containing memories grouped by component type
+        """
+        await self._ensure_user_exists(user_id, headers=headers)
+
+        params: Dict[str, Any] = {
+            "user_id": user_id,
+            "memory_type": memory_type,
+        }
+        if limit:
+            params["limit"] = limit
+
+        return await self._request("GET", "/memory/components", params=params, headers=headers)
+
+    async def auto_dream(
+        self,
+        user_id: str,
+        mode: str = "experience",
+        dry_run: bool = False,
+        model: Optional[str] = None,
+        headers: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Run the auto-dream self-reflection pipeline for a user.
+
+        Consolidates memories by removing redundancies and resolving conflicts
+        across the specified memory types.
+
+        Args:
+            user_id: End-user whose memories to consolidate
+            mode: Which memory mode to process. One of: core, episodic, semantic,
+                resource, procedural, knowledge, experience. experience processes
+                episodic, semantic, and knowledge together.
+            dry_run: If true, fetch and count memories without invoking the agent.
+            model: Optional model override for this auto-dream run.
+
+        Returns:
+            AutoDreamResponse dict with stats on removed/merged/resolved items
+        """
+        await self._ensure_user_exists(user_id, headers=headers)
+
+        body: Dict[str, Any] = {"mode": mode, "dry_run": dry_run}
+        if model is not None:
+            body["model"] = model
+
+        return await self._request(
+            "POST",
+            "/memory/auto_dream",
+            params={"user_id": user_id},
+            json=body,
+            headers=headers,
+        )
 
     # ========================================================================
     # LangChain/Composio/CrewAI Integration (Not Supported)
