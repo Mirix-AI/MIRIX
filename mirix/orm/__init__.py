@@ -15,6 +15,7 @@ from mirix.orm.provider import Provider
 from mirix.orm.resource_memory import ResourceMemoryItem
 from mirix.orm.semantic_memory import SemanticMemoryItem
 from mirix.orm.skill_evolution_record import SkillEvolutionRecord
+from mirix.orm.skill_experience import SkillExperience
 from mirix.orm.step import Step
 from mirix.orm.tool import Tool
 from mirix.orm.tools_agents import ToolsAgents
@@ -38,6 +39,7 @@ __all__ = [
     "ResourceMemoryItem",
     "SemanticMemoryItem",
     "SkillEvolutionRecord",
+    "SkillExperience",
     "Step",
     "Tool",
     "ToolsAgents",

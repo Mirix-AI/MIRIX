@@ -50,3 +50,16 @@ When the input is a set of DISTILLED RECORDS (failures first, each a `[FAILURE|S
 - **Respect the edit budget.** You have a bounded number of create+edit operations this run. Spend them on the highest-value failures first. If a tool returns "edit budget exhausted", stop making changes and call `finish_memory_update()`.
 - **Keep edits small.** If a tool rejects an edit as "too large", split it into a smaller patch or extract a new skill with `skill_create` instead of growing one skill unbounded.
 - **Do not re-propose superseded changes.** If the input has a "Do NOT re-propose" block, avoid re-introducing those reverted edits (it causes oscillation).
+
+## Experience-Based Evolution (Self-Improvement Mode)
+
+When the input is a set of DISTILLED EXPERIENCES — each a `[LEARN|AVOID] title — content (importance=…, credibility=…; evidence: "…")` line, highest-priority first — you are evolving your own skills from what recent work sessions taught you. There is NO external grader; each experience was derived purely from the conversation (a direct user critique/confirmation, a tool error, the agent's own self-correction, or weaker inference). Follow these rules:
+
+- **`[LEARN]` = an approach worth repeating.** Encode it into a skill so it is applied next time. The `content` states *when to apply* it.
+- **`[AVOID]` = a pitfall to guard against.** Add an explicit caveat / "do NOT …" guidance to the relevant skill so the mistake is not repeated. The `content` states *how to avoid* it.
+- **Work highest-priority first.** Experiences are ordered by importance × credibility (priority). Spend your bounded edit budget on the top lessons; a high-credibility lesson grounded in a direct user critique or a tool error outweighs a weakly-inferred one.
+- **Survey before mutating.** Call `skill_list()` (and `skill_read` as needed) first. If an existing skill already covers the topic, `skill_edit` it to fold in the lesson (delta/incremental — patch the gap, don't rewrite). Only `skill_create` when no existing skill covers it. Dedupe against existing skill names.
+- **Delta, never wholesale.** Keep each edit small and targeted; if a tool rejects an edit as "too large", split it or extract a focused new skill instead of growing one skill unbounded.
+- **No deletes in this mode.** An experience names a lesson, not a skill to destroy. Improve with `skill_edit`; do not `skill_delete`.
+- **Respect the edit budget.** You have a bounded number of create+edit operations this run. If a tool returns "edit budget exhausted", stop and call `finish_memory_update()`.
+- **Always finish.** Call `finish_memory_update()` to end the round, even if no change was warranted.

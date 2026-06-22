@@ -19,6 +19,14 @@ class AutoDreamRequest(BaseModel):
     )
     dry_run: bool = Field(False, description="If true, return plan without applying changes")
     model: Optional[str] = Field(None, description="Override LLM model (e.g. gpt-4.1-mini for testing)")
+    last_n_sessions: Optional[int] = Field(
+        None,
+        description=(
+            "For mode='procedural' (general session-experience distillation): how "
+            "many of the meta agent's most-recent retained sessions to distill. "
+            "Defaults to MESSAGE_RETAIN_LAST_N_SESSIONS."
+        ),
+    )
 
     @field_validator("mode")
     @classmethod

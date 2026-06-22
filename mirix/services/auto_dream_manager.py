@@ -28,12 +28,15 @@ logger = logging.getLogger(__name__)
 # event_type used to tag auto_dream checkpoint records in episodic memory
 _CHECKPOINT_EVENT_TYPE = "auto_dream_checkpoint"
 
+# Generic "fetch current memories of these components -> one consolidation agent"
+# modes. mode='procedural' is intentionally NOT here: it is handled by the
+# dedicated session-experience path (_run_procedural_experience), which returns
+# before this mapping is ever consulted.
 _MODE_COMPONENTS = {
     "core": ["core"],
     "episodic": ["episodic"],
     "semantic": ["semantic"],
     "resource": ["resource"],
-    "procedural": ["procedural"],
     "knowledge": ["knowledge"],
     "experience": ["episodic", "semantic", "knowledge"],
 }
@@ -263,6 +266,152 @@ class AutoDreamManager:
         return await server.agent_manager.create_agent(agent_create=agent_create, actor=actor)
 
     # ------------------------------------------------------------------ #
+    # Goal 2/3 — general session-experience procedural path                #
+    # ------------------------------------------------------------------ #
+
+    async def _run_procedural_experience(
+        self,
+        *,
+        request: AutoDreamRequest,
+        user: PydanticUser,
+        actor: PydanticClient,
+        meta_agent_state: AgentState,
+        now: dt.datetime,
+    ) -> AutoDreamResponse:
+        """Goal-2 distillation (+ Goal-3 evolution unless dry_run).
+
+        This is the explicit "program call" entry point for general
+        session-experience distillation: calling
+        ``AutoDreamManager().run(AutoDreamRequest(mode='procedural', ...))``
+        runs it directly. It is ALSO fired every N sessions by the
+        ``trigger_memory_update`` claim path (see
+        ``functions/function_sets/memory_tools.py``).
+
+        Steps:
+          1. Resolve N (``request.last_n_sessions`` or
+             ``MESSAGE_RETAIN_LAST_N_SESSIONS``).
+          2. Enumerate the meta agent's most-recent N retained sessions.
+          3. Distill each session IN PARALLEL into pending SkillExperience rows.
+          4. dry_run → return counts; else run Goal-3 skill evolution over the
+             freshly-pending experiences, then write the dream checkpoint.
+        """
+        from mirix.constants import MESSAGE_RETAIN_LAST_N_SESSIONS
+        from mirix.services.session_experience_distiller import (
+            SessionExperienceDistiller,
+        )
+
+        n = request.last_n_sessions or MESSAGE_RETAIN_LAST_N_SESSIONS
+
+        # The dream agent inherits the meta agent's llm_config; allow a model
+        # override for testing (same convention as the generic path).
+        llm_config = meta_agent_state.llm_config
+        if request.model:
+            from copy import deepcopy
+
+            llm_config = deepcopy(llm_config)
+            llm_config.model = request.model
+
+        distiller = SessionExperienceDistiller(llm_config=llm_config)
+        session_ids = await distiller.enumerate_last_n_sessions(
+            agent_id=meta_agent_state.id,
+            user_id=user.id,
+            n=n,
+        )
+        logger.info(
+            "Auto dream (procedural): meta_agent=%s, last_n=%d, sessions=%s",
+            meta_agent_state.id,
+            n,
+            session_ids,
+        )
+
+        existing_skills = await self._existing_skill_summaries(user, meta_agent_state)
+        experiences = await distiller.distill_sessions(
+            meta_agent_state=meta_agent_state,
+            user=user,
+            actor=actor,
+            session_ids=session_ids,
+            existing_skills=existing_skills,
+        )
+
+        stats = {
+            "procedural": MemoryTypeStats(total=len(experiences)),
+        }
+
+        if request.dry_run:
+            return AutoDreamResponse(
+                start_date=None,
+                end_date=None,
+                processed=stats,
+                last_dream_at=now,
+                dry_run=True,
+                message=(
+                    f"Dry run — distilled {len(experiences)} experience(s) from "
+                    f"{len(session_ids)} session(s); Goal-3 evolution skipped."
+                ),
+            )
+
+        # -- Goal 3: evolve skills from the freshly-pending experiences. --
+        skills_changed = 0
+        try:
+            from mirix.services.skill_experience_curator import (
+                run_experience_evolution,
+            )
+
+            evolution = await run_experience_evolution(
+                user=user,
+                actor=actor,
+                meta_agent_state=meta_agent_state,
+            )
+            skills_changed = (evolution or {}).get("skills_changed", 0)
+        except ImportError:
+            # Goal-3 curator not yet present in this build — distillation alone
+            # is still valuable, so do not fail the run.
+            logger.info(
+                "Goal-3 experience curator unavailable; experiences persisted as pending."
+            )
+        except Exception as e:  # noqa: BLE001 — evolution failure mustn't lose experiences
+            logger.warning("Goal-3 experience evolution failed: %s", e)
+
+        await self.write_checkpoint(user, actor, meta_agent_state, now)
+
+        return AutoDreamResponse(
+            start_date=None,
+            end_date=None,
+            processed=stats,
+            last_dream_at=now,
+            dry_run=False,
+            message=(
+                f"Auto dream (procedural) completed: {len(experiences)} experience(s) "
+                f"from {len(session_ids)} session(s); {skills_changed} skill(s) changed."
+            ),
+        )
+
+    async def _existing_skill_summaries(
+        self,
+        user: PydanticUser,
+        meta_agent_state: AgentState,
+    ) -> list:
+        """Return [{name, description}] of existing procedural skills (dedup context).
+
+        Best-effort: a failure here just yields an empty list (the distiller
+        prompt treats it as "(none)").
+        """
+        try:
+            procedures = await self._fetch_procedural(user, meta_agent_state, None, None)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("Could not fetch existing skills for dedup context: %s", e)
+            return []
+        summaries = []
+        for p in procedures:
+            summaries.append(
+                {
+                    "name": getattr(p, "name", "") or "",
+                    "description": getattr(p, "description", "") or "",
+                }
+            )
+        return summaries
+
+    # ------------------------------------------------------------------ #
     # Main entry point                                                     #
     # ------------------------------------------------------------------ #
 
@@ -278,6 +427,24 @@ class AutoDreamManager:
 
         server = get_server()
         now = dt.datetime.now(dt.timezone.utc)
+
+        # ----------------------------------------------------------------- #
+        # Goal 2/3 — mode='procedural' is general per-session experience    #
+        # distillation (NOT the legacy procedure-consolidation pass). It    #
+        # reads the meta agent's last-N RETAINED sessions, distills each    #
+        # session's transcript IN PARALLEL into pending SkillExperience     #
+        # rows, then (Goal 3, unless dry_run) drives skill self-evolution   #
+        # from those experiences. Other modes fall through to the generic   #
+        # fetch → format → single-step path below, unchanged.               #
+        # ----------------------------------------------------------------- #
+        if request.mode == "procedural":
+            return await self._run_procedural_experience(
+                request=request,
+                user=user,
+                actor=actor,
+                meta_agent_state=meta_agent_state,
+                now=now,
+            )
 
         # -- resolve time window --
         end_date = request.end_date or now

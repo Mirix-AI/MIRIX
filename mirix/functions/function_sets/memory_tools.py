@@ -1429,6 +1429,111 @@ async def knowledge_vault_update(
             raise
 
 
+async def _resolve_meta_agent_state(self: "Agent"):
+    """Resolve the meta_memory_agent AgentState that owns the retained messages.
+
+    Goal-1 retention keeps the last-N sessions' raw messages on the
+    ``meta_memory_agent``. This tool runs inside a memory sub-agent, whose
+    ``parent_id`` is that meta agent. If this is already the meta agent, return
+    it; otherwise fetch the parent. Returns ``None`` when it cannot be resolved.
+    """
+    from mirix.schemas.agent import AgentType
+
+    state = getattr(self, "agent_state", None)
+    if state is None:
+        return None
+    try:
+        if state.is_type(AgentType.meta_memory_agent):
+            return state
+    except Exception:  # noqa: BLE001 — is_type guard, never fatal
+        pass
+    parent_id = getattr(state, "parent_id", None)
+    if not parent_id:
+        return None
+    try:
+        parent = await self.agent_manager.get_agent_by_id(
+            agent_id=parent_id, actor=self.actor
+        )
+    except Exception:  # noqa: BLE001
+        return None
+    try:
+        if parent is not None and parent.is_type(AgentType.meta_memory_agent):
+            return parent
+    except Exception:  # noqa: BLE001
+        pass
+    return parent
+
+
+async def _schedule_experience_auto_dream(self: "Agent", *, threshold: int) -> bool:
+    """Fire-and-forget the GENERAL session-experience auto-dream (Goal 2/3).
+
+    Resolves the meta agent (owner of the retained transcripts) and schedules
+    ``AutoDreamManager().run(mode='procedural', last_n_sessions=threshold)`` as a
+    background task. Guarded end-to-end: any failure (resolution, scheduling, or
+    the dream itself) is logged and swallowed so the chat turn is never broken.
+
+    Returns ``True`` iff the background dream task was actually scheduled. The
+    caller uses this to decide whether to ALSO enqueue the legacy "procedural"
+    memory update: when the dream is scheduled it owns the procedural agent
+    (Goal-3 evolves skills under the per-agent lock), so the legacy update must
+    NOT run concurrently on the same agent. When scheduling did not take (no
+    user/actor, unresolved meta agent, or an error), the caller falls back to
+    the legacy update so a fire is never silently dropped.
+    """
+    if getattr(self, "user", None) is None or getattr(self, "actor", None) is None:
+        logger.debug("Skipping experience auto-dream: no user/actor in scope.")
+        return False
+    try:
+        meta_agent_state = await _resolve_meta_agent_state(self)
+        if meta_agent_state is None:
+            logger.debug("Skipping experience auto-dream: could not resolve meta agent.")
+            return False
+
+        user = self.user
+        actor = self.actor
+
+        async def _run_dream():
+            try:
+                from mirix.schemas.auto_dream import AutoDreamRequest
+                from mirix.services.auto_dream_manager import AutoDreamManager
+
+                await AutoDreamManager().run(
+                    request=AutoDreamRequest(
+                        mode="procedural", last_n_sessions=threshold
+                    ),
+                    user=user,
+                    actor=actor,
+                    meta_agent_state=meta_agent_state,
+                )
+            except Exception as e:  # noqa: BLE001 — background task, never fatal
+                # The trigger window was already CLAIMED (check_and_claim_fire), so a
+                # failure here means this window's sessions won't be auto-distilled.
+                # Not data loss: the raw messages are retained (Goal 1), so a manual
+                # POST /memory/auto_dream (mode=procedural) re-distills the last-N
+                # retained sessions, and the next window still fires normally. Logged
+                # LOUD (ERROR + traceback) so a lost window is observable/greppable.
+                logger.error(
+                    "Experience auto-dream run FAILED for meta_agent=%s (window already "
+                    "claimed; recover via POST /memory/auto_dream mode=procedural): %s",
+                    meta_agent_state.id,
+                    e,
+                    exc_info=True,
+                )
+
+        import asyncio
+
+        asyncio.create_task(_run_dream())
+        logger.info(
+            "Scheduled experience auto-dream (mode=procedural, last_n=%d, meta_agent=%s)",
+            threshold,
+            meta_agent_state.id,
+        )
+        return True
+    except Exception as e:  # noqa: BLE001 — scheduling must never break the turn
+        logger.warning("Failed to schedule experience auto-dream: %s", e)
+        return False
+
+
 async def trigger_memory_update_with_instruction(
     self: "Agent", user_message: object, instruction: str, memory_type: str
 ) -> Optional[str]:
@@ -1570,15 +1675,37 @@ async def trigger_memory_update(
             current_session_id=current_session_id,
         )
         if claim.fired:
-            if "procedural" not in memory_types:
+            # Goal 2/3: on the every-N-sessions fire, schedule the GENERAL
+            # session-experience auto-dream (distill the last-N retained
+            # sessions → pending experiences → skill self-evolution via the
+            # procedural agent). Fire-and-forget so a failure here can never
+            # break the chat turn; the cadence reuses the claim we just won.
+            #
+            # IMPORTANT (concurrency): the experience auto-dream RESETS and steps
+            # the procedural agent's in-context history before/after its step
+            # (skill_experience_curator). The legacy "procedural" memory update
+            # below dispatches ProceduralMemoryAgent.step on the SAME agent via
+            # asyncio.gather. Running both concurrently would let one reset wipe
+            # the other's mid-chain context. So on the experience-dream fire we
+            # DO NOT also enqueue the legacy "procedural" update — Goal-3 already
+            # evolves skills from the freshly-distilled experiences, and it does
+            # so under skill_curator's per-agent lock. We only fall back to the
+            # legacy enqueue when scheduling the dream did not take.
+            scheduled = await _schedule_experience_auto_dream(
+                self,
+                threshold=SKILL_TRIGGER_SESSION_THRESHOLD,
+            )
+            if not scheduled and "procedural" not in memory_types:
                 memory_types = list(memory_types) + ["procedural"]
             logger.info(
-                "Auto-triggering procedural memory update "
-                "(sessions_since=%d, threshold=%d, agent=%s, user=%s)",
+                "Auto-triggering procedural skill evolution "
+                "(sessions_since=%d, threshold=%d, agent=%s, user=%s, "
+                "experience_dream_scheduled=%s)",
                 claim.sessions_since,
                 SKILL_TRIGGER_SESSION_THRESHOLD,
                 trigger_agent_id,
                 trigger_user_id,
+                scheduled,
             )
 
     # De-duplicate memory types while preserving order.
