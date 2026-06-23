@@ -67,15 +67,30 @@ def get_server() -> AsyncServer:
     return _server
 
 
-async def initialize():
+async def initialize(skip_bootstrap_writes: bool = False):
     """
     Initialize the Mirix server and queue services.
     This function can be called by external applications to initialize the server.
+
+    Args:
+        skip_bootstrap_writes: When True, skip the startup write operations —
+            table DDL (ensure_tables_created) and default org/user/client/tool
+            seeding (server.ensure_defaults). Set this on a process whose
+            database engine points at a read replica (read-only), where these
+            writes raise ReadOnlySQLTransactionError and crash startup. Such a
+            process relies on the writer/consumer having already created tables
+            and seeded defaults. Read-only initialization (provider overrides,
+            Redis, queue, LangFuse) still runs. Defaults to False (unchanged).
     """
     logger.info("Starting Mirix REST API server")
 
-    # Create database tables (async engine) before initializing server
-    await ensure_tables_created()
+    # Create database tables (async engine) before initializing server.
+    # Skipped on read-replica processes — DDL is a write and the writer has
+    # already created the tables.
+    if skip_bootstrap_writes:
+        logger.info("Skipping ensure_tables_created (read-replica process); " "tables are owned by the writer/consumer")
+    else:
+        await ensure_tables_created()
 
     # Initialize Redis (async ping, create_indexes, log stats)
     try:
@@ -94,7 +109,7 @@ async def initialize():
 
     # Initialize AsyncServer (singleton) and create default org/user/client
     server = get_server()
-    await server.ensure_defaults()
+    await server.ensure_defaults(skip_seed_writes=skip_bootstrap_writes)
     logger.info("AsyncServer initialized")
 
     # Initialize queue with server reference

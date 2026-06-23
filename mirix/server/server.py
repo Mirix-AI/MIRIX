@@ -646,14 +646,29 @@ class AsyncServer(Server):
                 )
             )
 
-    async def ensure_defaults(self) -> None:
-        """Create default org, admin user, default client, and load provider overrides (async)."""
-        if getattr(self, "_pending_defaults", False):
-            self.default_org = await self.organization_manager.create_default_organization()
-        self.admin_user = await self.user_manager.create_admin_user()
-        self.default_client = await self.client_manager.create_default_client()
-        await self.tool_manager.upsert_base_tools(actor=self.default_client)
-        self._pending_defaults = False
+    async def ensure_defaults(self, skip_seed_writes: bool = False) -> None:
+        """Create default org, admin user, default client, and load provider overrides (async).
+
+        Args:
+            skip_seed_writes: When True, skip the write operations that seed the
+                default org/admin-user/default-client/base-tools. Used by processes
+                whose database engine points at a read replica (read-only), where
+                these idempotent UPDATEs would fail with ReadOnlySQLTransactionError.
+                Such a process relies on the writer/consumer having already seeded
+                them. The provider-override load (a read) still runs so the process
+                can resolve LLM API keys. Defaults to False (full seed, unchanged).
+        """
+        if skip_seed_writes:
+            logger.info(
+                "ensure_defaults: skipping seed writes (read-replica process); " "loading provider overrides only"
+            )
+        else:
+            if getattr(self, "_pending_defaults", False):
+                self.default_org = await self.organization_manager.create_default_organization()
+            self.admin_user = await self.user_manager.create_admin_user()
+            self.default_client = await self.client_manager.create_default_client()
+            await self.tool_manager.upsert_base_tools(actor=self.default_client)
+            self._pending_defaults = False
         await self._load_provider_overrides()
 
     async def _load_provider_overrides(self) -> None:
