@@ -691,8 +691,23 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 @router.get("/health")
 async def health_check():
-    """Health check endpoint."""
-    return {"status": "healthy", "service": "mirix-api"}
+    """Health check endpoint.
+
+    Also reports the effective skill-trigger config so eval harnesses (e.g. the
+    MetaClaw generic arm) can fail fast when the in-band procedural trigger is
+    not disabled. The added fields are additive and backward-compatible.
+    """
+    from mirix.constants import (
+        MESSAGE_RETAIN_LAST_N_SESSIONS,
+        SKILL_TRIGGER_SESSION_THRESHOLD,
+    )
+
+    return {
+        "status": "healthy",
+        "service": "mirix-api",
+        "skill_trigger_session_threshold": SKILL_TRIGGER_SESSION_THRESHOLD,
+        "message_retain_last_n_sessions": MESSAGE_RETAIN_LAST_N_SESSIONS,
+    }
 
 
 # ============================================================================

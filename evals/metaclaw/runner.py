@@ -121,12 +121,16 @@ ARM_MIRIX_RECORDS = (
 )
 ARM_NO_SKILLS = "no-skills"  # floor: skills disabled
 ARM_NATIVE = "native"  # alias of metaclaw, for P1-10 naming clarity
+# Generic-arm (additive): MIRIX generic PRODUCTION memory path — ingest each turn
+# via /memory/add_sync + fire the blocking /memory/auto_dream barrier every 5 turns.
+ARM_MIRIX_GENERIC = "mirix-generic"
 
 # All arm values `run_arm` accepts directly (excludes `both`, which uses run_both).
 _SINGLE_ARMS = (
     ARM_METACLAW,
     ARM_MIRIX,
     ARM_MIRIX_RECORDS,
+    ARM_MIRIX_GENERIC,
     ARM_NO_SKILLS,
     ARM_NATIVE,
 )
@@ -168,6 +172,21 @@ def _resolve_arm(arm: str) -> ArmSpec:
             evolution_mode="mirix_records",
             skill_records=True,
             label="mirix-new-harness (per-round distill + records evolve every 5 rounds)",
+        )
+    if arm == ARM_MIRIX_GENERIC:
+        return ArmSpec(
+            skills_provider="mirix",  # retrieval via MirixSkillsAdapter (identical to records)
+            needs_mirix=True,
+            skills_enabled=True,
+            auto_evolve=True,
+            # REQUIRED: the proxy gates the distill_round route on this mode
+            # (api_server.py:1164) and the bench threads --memory-proxy-port. The
+            # mode string only controls the bench flag + proxy route + proxy YAML
+            # gate — the adapter is picked by METACLAW_EVOLVER_PROVIDER below, NOT
+            # by this mode. So the generic arm reuses "mirix_records" here.
+            evolution_mode="mirix_records",
+            skill_records=True,
+            label="mirix-generic (production memory path: /memory/add_sync + /memory/auto_dream every 5 turns)",
         )
     if arm == ARM_NO_SKILLS:
         return ArmSpec(
@@ -1329,12 +1348,30 @@ def run_arm(
                     "user_id": mirix_user_id,
                 },
             )
+        # The generic arm selects MirixGenericMemoryAdapter (production memory
+        # path: /memory/add_sync + /memory/auto_dream); every other mirix arm
+        # selects the records evolver. Only the evolver provider differs — both
+        # arms retrieve identically via MirixSkillsAdapter.
+        _evolver_provider = "mirix-generic" if arm == ARM_MIRIX_GENERIC else "mirix"
         mirix_env = {
             "METACLAW_SKILLS_PROVIDER": "mirix",
-            "METACLAW_EVOLVER_PROVIDER": "mirix",
+            "METACLAW_EVOLVER_PROVIDER": _evolver_provider,
             "METACLAW_MIRIX_BASE_URL": mirix_url,
             "METACLAW_MIRIX_USER_ID": mirix_user_id,
         }
+        if arm == ARM_MIRIX_GENERIC:
+            # Disable MIRIX's in-band fire-and-forget procedural-dream trigger so
+            # ONLY our explicit /memory/auto_dream barrier drives evolution
+            # (otherwise the in-band asyncio.create_task trigger races + double-
+            # consumes the retained sessions). SKILL_TRIGGER_SESSION_THRESHOLD is
+            # read by the MIRIX *server* process (mirix/constants.py); the runner
+            # only health-checks an already-running server, so for it to take
+            # effect the server MUST be launched with this env set, e.g.:
+            #   SKILL_TRIGGER_SESSION_THRESHOLD=1000000000 python scripts/start_server.py --port 8531
+            # We also export it into the proxy/bench subprocess env (harmless if
+            # the server reads its own) and rely on the adapter's degenerate_run
+            # health gate as the safety net if the server trigger is NOT disabled.
+            mirix_env["SKILL_TRIGGER_SESSION_THRESHOLD"] = str(10**9)
         # Best-effort reset of any prior skill state for this user_id.
         # Endpoint may not be deployed on every MIRIX build — a 404 is
         # logged and swallowed because the freshly-minted user_id we just

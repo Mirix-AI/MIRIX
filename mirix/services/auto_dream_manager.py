@@ -352,25 +352,37 @@ class AutoDreamManager:
 
         # -- Goal 3: evolve skills from the freshly-pending experiences. --
         skills_changed = 0
-        try:
-            from mirix.services.skill_experience_curator import (
-                run_experience_evolution,
-            )
+        evolution_changes: dict = {}
+        # Nothing distilled this round -> nothing to evolve. Skip outright so we
+        # never resolve/refresh the procedural agent for an empty batch (scoping
+        # to [] would B_min=0-skip anyway, but the agent plumbing would still run).
+        if experiences:
+            try:
+                from mirix.services.skill_experience_curator import (
+                    run_experience_evolution,
+                )
 
-            evolution = await run_experience_evolution(
-                user=user,
-                actor=actor,
-                meta_agent_state=meta_agent_state,
-            )
-            skills_changed = (evolution or {}).get("skills_changed", 0)
-        except ImportError:
-            # Goal-3 curator not yet present in this build — distillation alone
-            # is still valuable, so do not fail the run.
-            logger.info(
-                "Goal-3 experience curator unavailable; experiences persisted as pending."
-            )
-        except Exception as e:  # noqa: BLE001 — evolution failure mustn't lose experiences
-            logger.warning("Goal-3 experience evolution failed: %s", e)
+                evolution = await run_experience_evolution(
+                    user=user,
+                    actor=actor,
+                    meta_agent_state=meta_agent_state,
+                    # Scope evolution to THIS round's freshly-distilled experiences
+                    # only — never the accumulated cross-round pending pool. Earlier
+                    # rounds' leftover/low-signal experiences would dilute the curator
+                    # prompt and hurt skill quality; the docstring's "freshly-pending"
+                    # contract is now enforced by passing exactly the ids we just made.
+                    experience_ids=[e.id for e in experiences],
+                )
+                skills_changed = (evolution or {}).get("skills_changed", 0)
+                evolution_changes = (evolution or {}).get("changes", {}) or {}
+            except ImportError:
+                # Goal-3 curator not yet present in this build — distillation alone
+                # is still valuable, so do not fail the run.
+                logger.info(
+                    "Goal-3 experience curator unavailable; experiences persisted as pending."
+                )
+            except Exception as e:  # noqa: BLE001 — evolution failure mustn't lose experiences
+                logger.warning("Goal-3 experience evolution failed: %s", e)
 
         await self.write_checkpoint(user, actor, meta_agent_state, now)
 
@@ -380,6 +392,8 @@ class AutoDreamManager:
             processed=stats,
             last_dream_at=now,
             dry_run=False,
+            skills_changed=skills_changed,
+            changes=evolution_changes,
             message=(
                 f"Auto dream (procedural) completed: {len(experiences)} experience(s) "
                 f"from {len(session_ids)} session(s); {skills_changed} skill(s) changed."

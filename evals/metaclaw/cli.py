@@ -145,12 +145,14 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument(
         "--arm",
         required=True,
-        choices=("metaclaw", "mirix", "mirix-records", "no-skills", "native", "both"),
+        choices=("metaclaw", "mirix", "mirix-records", "mirix-generic", "no-skills", "native", "both"),
         help=(
             "Skill backend under test. 'metaclaw'/'native' = vendored skills_dir; "
             "'mirix' = MIRIX old harness (raw-transcript every-10-turn evolve, "
             "the regression baseline); 'mirix-records' = MIRIX NEW harness (C5: "
             "per-round distill + records evolution every 5 rounds); "
+            "'mirix-generic' = MIRIX generic production memory path "
+            "(/memory/add_sync + /memory/auto_dream every 5 turns); "
             "'no-skills' = floor (skills disabled); "
             "'both' = run metaclaw then mirix against a SHARED dataset slice and "
             "write a combined reports.md at the parent dir. Load-bearing delta = "
