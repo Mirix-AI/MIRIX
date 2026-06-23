@@ -624,3 +624,98 @@ class TestSoftDeleteExcludedFromRetrieval:
         assert "proc-gone" not in {r.id for r in sm}, (
             "string_match must exclude soft-deleted"
         )
+
+    async def test_list_procedures_by_org_excludes_soft_deleted(
+        self, session_maker, agent_id, user_a
+    ):
+        """Regression for BUG A: the org-wide retrieval
+        (`list_procedures_by_org`, served via `GET /memory/search_all_users`)
+        SQLAlchemy fallback previously omitted the `~is_deleted` predicate, so a
+        curator soft-delete (`is_deleted=True`) could leak across the whole org.
+        It must match the per-user `list_procedures` behaviour and exclude
+        soft-deleted skills.
+        """
+        from mirix.orm.procedural_memory import (
+            ProceduralMemoryItem as ProcORM,
+        )
+        from mirix.services.procedural_memory_manager import ProceduralMemoryManager
+
+        # Insert one live + one soft-deleted skill row directly (bypassing
+        # insert_procedure so we need no embedder).
+        async with session_maker() as session:
+            session.add(
+                ProcORM(
+                    id="org-proc-live",
+                    agent_id=agent_id,
+                    user_id=user_a.id,
+                    organization_id=user_a.organization_id,
+                    name="org-live-skill",
+                    entry_type="guide",
+                    description="a live skill",
+                    instructions="do the thing",
+                    is_deleted=False,
+                )
+            )
+            session.add(
+                ProcORM(
+                    id="org-proc-gone",
+                    agent_id=agent_id,
+                    user_id=user_a.id,
+                    organization_id=user_a.organization_id,
+                    name="org-gone-skill",
+                    entry_type="guide",
+                    description="a soft-deleted skill",
+                    instructions="do not surface me",
+                    is_deleted=True,
+                )
+            )
+            await session.commit()
+
+        mgr = ProceduralMemoryManager()
+        mgr.session_maker = session_maker
+
+        from mirix.schemas.agent import AgentState, AgentType
+        from mirix.schemas.embedding_config import EmbeddingConfig
+        from mirix.schemas.llm_config import LLMConfig
+
+        agent_state = AgentState(
+            id=agent_id,
+            name="proc",
+            system="s",
+            agent_type=AgentType.procedural_memory_agent,
+            llm_config=LLMConfig.default_config("gpt-4"),
+            embedding_config=EmbeddingConfig.default_config(provider="openai"),
+            tools=[],
+        )
+
+        # Empty-query path (recent sort) exercises the shared base_query that the
+        # fix patched and must exclude the soft-deleted skill org-wide.
+        results = await mgr.list_procedures_by_org(
+            agent_state=agent_state,
+            organization_id=user_a.organization_id,
+            query="",
+            search_field="description",
+            search_method="bm25",
+            limit=1000,
+            use_cache=False,
+        )
+        ids = {r.id for r in results}
+        assert "org-proc-live" in ids
+        assert "org-proc-gone" not in ids, (
+            "soft-deleted skill must be excluded from list_procedures_by_org"
+        )
+
+        # A non-empty query that falls through to the patched base_query (no PG
+        # full-text on SQLite, no embedding) must also exclude it.
+        text_results = await mgr.list_procedures_by_org(
+            agent_state=agent_state,
+            organization_id=user_a.organization_id,
+            query="skill",
+            search_field="description",
+            search_method="string_match",
+            limit=1000,
+            use_cache=False,
+        )
+        assert "org-proc-gone" not in {r.id for r in text_results}, (
+            "soft-deleted skill must be excluded from org-wide text search"
+        )

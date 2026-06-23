@@ -10,7 +10,7 @@ GENERAL :class:`SkillExperience` store produced by Goal-2 distillation.
 Flow (mirrors the load-bearing ordering of the records path so a context reset
 can never wipe the bookkeeping):
 
-    list_experiences(status="pending", priority DESC)
+    list_experiences(status="pending", priority DESC, ids=THIS ROUND's batch)
       -> aggregate -> compute_edit_budget (avoid weighted heavier than learn)
       -> B_min=0 early-exit when there is nothing structure-gated
       -> build compact payload (one block per experience, priority-ordered)
@@ -134,6 +134,7 @@ async def run_experience_evolution(
     user: PydanticUser,
     actor: PydanticClient,
     meta_agent_state: AgentState,
+    experience_ids: Optional[List[str]] = None,
     experience_manager=None,
 ) -> Dict:
     """Evolve skills from this (agent, user)'s PENDING experiences (Goal 3).
@@ -143,6 +144,15 @@ async def run_experience_evolution(
     ordering to :func:`_run_experience_evolution_core` (which is injectable for
     tests). Returns ``{skipped, budget, changes, influenced_skill_ids,
     consumed_count, skills_changed}``.
+
+    ``experience_ids`` scopes the run to ONE distillation round's freshly-made
+    experiences (the auto-dream procedural path passes exactly the ids it just
+    distilled from the last-N retained sessions). This keeps an evolve focused on
+    the current window: stale, lower-signal experiences from earlier rounds are
+    NOT re-surfaced (seeing the whole accumulated pool dilutes the prompt and
+    hurts skill quality). ``None`` (default) means "no scope" — evolve the whole
+    pending pool (legacy/standalone behavior); ``[]`` means the round produced
+    nothing, so there is nothing to evolve (clean B_min=0 skip).
 
     Safe to call with no pending experiences (B_min=0 early-exit, no agent spawn).
     """
@@ -248,6 +258,7 @@ async def run_experience_evolution(
         user_id=user.id,
         snapshot_skills=_snapshot,
         run_step=_run_step,
+        experience_ids=experience_ids,
     )
 
 
@@ -258,6 +269,7 @@ def _empty_result(budget: int, *, skipped: bool) -> Dict:
         "changes": {"created": [], "edited": [], "deleted": []},
         "influenced_skill_ids": [],
         "consumed_count": 0,
+        "superseded_count": 0,
         "skills_changed": 0,
     }
 
@@ -280,12 +292,16 @@ async def _run_experience_evolution_core(
     snapshot_skills,
     run_step,
     run_id: Optional[str] = None,
+    experience_ids: Optional[List[str]] = None,
 ) -> Dict:
     """The injectable core — no server/agent assembly, fully unit-testable.
 
     Collaborators (``snapshot_skills``, ``run_step``) are passed in so a test can
     drive the exact load-bearing ordering with mocks. The PER-AGENT lock makes
     concurrent evolves on the same procedural agent safe.
+
+    ``experience_ids`` scopes the run to one distillation round (see
+    :func:`run_experience_evolution`); ``None`` evolves the whole pending pool.
     """
     run_id = run_id or f"xprun-{uuid.uuid4().hex[:12]}"
     lock = _lock_for_agent(agent_id)
@@ -299,6 +315,7 @@ async def _run_experience_evolution_core(
             snapshot_skills=snapshot_skills,
             run_step=run_step,
             run_id=run_id,
+            experience_ids=experience_ids,
         )
 
 
@@ -312,15 +329,20 @@ async def _evolve_locked(
     snapshot_skills,
     run_step,
     run_id: str,
+    experience_ids: Optional[List[str]] = None,
 ) -> Dict:
-    # 1) Read this (meta-agent, user)'s pending experiences, priority-ordered
-    #    (importance*credibility DESC) — the experiences are keyed by the META
-    #    agent id (their provenance owner), not the procedural agent.
+    # 1) Read this round's pending experiences, priority-ordered
+    #    (importance*credibility DESC). Experiences are keyed by the META agent id
+    #    (their provenance owner), not the procedural agent. When the caller scopes
+    #    to a freshly-distilled batch (`experience_ids`), only those are loaded —
+    #    earlier rounds' leftover pending stay invisible so this evolve sees ONLY
+    #    the current window (`experience_ids=[]` -> nothing -> B_min=0 skip).
     experiences = await experience_manager.list_experiences(
         agent_id=meta_agent_id,
         user_id=user_id,
         status="pending",
         limit=_MAX_EXPERIENCES_PER_RUN,
+        ids=experience_ids,
     )
     exp_ids = [_attr(e, "id") for e in experiences]
 
@@ -383,6 +405,36 @@ async def _evolve_locked(
             influenced_skill_ids=influenced or None,
         )
 
+    # 7b) Retire this round's OVERFLOW: scoped experiences that didn't make the
+    #     per-run priority cap (`_MAX_EXPERIENCES_PER_RUN`). Future rounds only
+    #     pass THEIR freshly-distilled ids, so leaving these pending would strand
+    #     them forever (they'd never be re-surfaced). They are the round's
+    #     lowest-priority tail; supersede them so they stay out of sight while
+    #     remaining auditable (status='superseded', NOT hard-deleted). Only in
+    #     scoped mode — the unscoped/global path (experience_ids is None) leaves
+    #     leftovers pending on purpose so a later global sweep can pick them up.
+    superseded = 0
+    if experience_ids:
+        consumed_set = set(exp_ids)
+        overflow = [eid for eid in experience_ids if eid not in consumed_set]
+        if overflow:
+            # Owner-scope the supersede: even though production only ever passes
+            # this (meta-agent, user)'s freshly-distilled ids, constraining the
+            # update by owner guarantees a stray foreign id can never retire a
+            # different (agent, user)'s pending experience.
+            superseded = await experience_manager.mark_superseded(
+                ids=overflow,
+                agent_id=meta_agent_id,
+                user_id=user_id,
+            )
+            logger.info(
+                "[experience-curator] run=%s: superseded %d overflow experience(s) "
+                "beyond the per-run cap of %d",
+                run_id,
+                superseded,
+                _MAX_EXPERIENCES_PER_RUN,
+            )
+
     skills_changed = (
         len(changes["created"]) + len(changes["edited"]) + len(changes["deleted"])
     )
@@ -406,6 +458,7 @@ async def _evolve_locked(
         "changes": changes,
         "influenced_skill_ids": influenced,
         "consumed_count": consumed,
+        "superseded_count": superseded,
         "skills_changed": skills_changed,
         "run_id": run_id,
     }

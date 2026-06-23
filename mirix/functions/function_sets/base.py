@@ -95,7 +95,7 @@ async def search_in_memory(
     Args:
         memory_type: The type of memory to search in. It should be chosen from the following: "episodic", "resource", "procedural", "knowledge_vault", "semantic", "all". Here "all" means searching in all the memories.
         query: The keywords/query used to search in the memory.
-        search_field: The field to search in the memory. It should be chosen from the attributes of the corresponding memory. For "episodic" memory, it can be 'summary', 'details'; for "resource" memory, it can be 'summary', 'content'; for "procedural" memory, it can be 'summary', 'steps'; for "knowledge_vault", it can be 'secret_value', 'caption'; for semantic memory, it can be 'name', 'summary', 'details'. For "all", it should also be "null" as the system will search all memories with default fields.
+        search_field: The field to search in the memory. It should be chosen from the attributes of the corresponding memory. For "episodic" memory, it can be 'summary', 'details'; for "resource" memory, it can be 'summary', 'content'; for "procedural" memory, it can be 'description', 'instructions', 'entry_type', 'name' (default 'description'; note: 'embedding' search supports only 'description'/'instructions'); for "knowledge_vault", it can be 'secret_value', 'caption'; for semantic memory, it can be 'name', 'summary', 'details'. For "all", it should also be "null" as the system will search all memories with default fields.
         search_method: The method to search in the memory. Choose from:
             - 'bm25': BM25 ranking-based full-text search (fast and effective for keyword-based searches)
             - 'embedding': Vector similarity search using embeddings (most powerful, good for conceptual matches)

@@ -401,6 +401,33 @@ class TestCreateAndList:
         listed = await mgr.list_experiences(agent_id=agent_id, limit=2)
         assert len(listed) == 2
 
+    async def test_ids_scopes_to_given_set(self, session_maker, org, user_a):
+        # The Goal-3 curator passes THIS round's freshly-distilled ids so an
+        # evolve only sees its own batch, never the whole pending pool.
+        mgr = _manager(session_maker)
+        agent_id = await _insert_agent(session_maker, org.id)
+        owner = dict(agent_id=agent_id, user_id=user_a.id,
+                     organization_id=user_a.organization_id)
+        a = await mgr.create_experience(**owner, **_exp_kwargs("a", importance=0.9, credibility=0.9))
+        await mgr.create_experience(**owner, **_exp_kwargs("b", importance=0.8, credibility=0.8))
+        c = await mgr.create_experience(**owner, **_exp_kwargs("c", importance=0.7, credibility=0.7))
+        # Scope to a + c only; b must stay invisible.
+        scoped = await mgr.list_experiences(agent_id=agent_id, ids=[a.id, c.id])
+        # Priority-ordered WITHIN the scope (a=0.81 before c=0.49).
+        assert [e.id for e in scoped] == [a.id, c.id]
+
+    async def test_empty_ids_returns_nothing(self, session_maker, org, user_a):
+        mgr = _manager(session_maker)
+        agent_id = await _insert_agent(session_maker, org.id)
+        await mgr.create_experience(
+            agent_id=agent_id, user_id=user_a.id,
+            organization_id=user_a.organization_id, **_exp_kwargs(1),
+        )
+        # ids=[] is an explicit "scope to nothing" (distinct from ids=None).
+        assert await mgr.list_experiences(agent_id=agent_id, ids=[]) == []
+        # ids=None (default) still returns the row.
+        assert len(await mgr.list_experiences(agent_id=agent_id)) == 1
+
 
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="module")
@@ -551,3 +578,59 @@ class TestDistillThenConsume:
         consumed = await mgr.list_experiences(agent_id=agent_id, status="consumed")
         assert {c.consumed_by for c in consumed} == {result["run_id"]}
         _ = _json  # silence unused if branch above changes
+
+    async def test_overflow_beyond_cap_superseded_no_stranding_in_db(
+        self, session_maker, org, user_a
+    ):
+        """A round distilling MORE than the per-run cap leaves NOTHING pending in
+        the DB: the top _MAX_EXPERIENCES_PER_RUN are consumed and the lowest-
+        priority tail is superseded (real end-state, not just a fake call)."""
+        from mirix.services.skill_experience_curator import (
+            _MAX_EXPERIENCES_PER_RUN,
+            _run_experience_evolution_core,
+        )
+
+        mgr = _manager(session_maker)
+        agent_id = await _insert_agent(session_maker, org.id)
+        owner = dict(agent_id=agent_id, user_id=user_a.id,
+                     organization_id=user_a.organization_id)
+        n = _MAX_EXPERIENCES_PER_RUN + 1
+        created = []
+        for i in range(n):
+            # Strictly descending priority so the LAST one is the overflow tail.
+            rec = await mgr.create_experience(
+                **owner,
+                **_exp_kwargs(i, etype="worth_avoiding",
+                              importance=1.0, credibility=(n - i) / n),
+            )
+            created.append(rec)
+        all_ids = [r.id for r in created]
+
+        agent = type("Ag", (), {})()
+
+        async def snapshot():
+            return []
+
+        async def run_step(a, payload, budget):
+            pass
+
+        result = await _run_experience_evolution_core(
+            experience_manager=mgr, agent=agent, agent_id="proc-overflow",
+            meta_agent_id=agent_id, user_id=user_a.id,
+            snapshot_skills=snapshot, run_step=run_step,
+            experience_ids=all_ids,
+        )
+        assert result["consumed_count"] == _MAX_EXPERIENCES_PER_RUN
+        assert result["superseded_count"] == 1
+        # The load-bearing assertion: NOTHING from this round is left stranded.
+        assert await mgr.list_experiences(
+            agent_id=agent_id, status="pending", ids=all_ids, limit=n
+        ) == []
+        consumed = await mgr.list_experiences(
+            agent_id=agent_id, status="consumed", ids=all_ids, limit=n
+        )
+        superseded = await mgr.list_experiences(
+            agent_id=agent_id, status="superseded", ids=all_ids, limit=n
+        )
+        assert len(consumed) == _MAX_EXPERIENCES_PER_RUN
+        assert len(superseded) == 1

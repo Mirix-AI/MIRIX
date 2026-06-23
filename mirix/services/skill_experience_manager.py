@@ -98,6 +98,7 @@ class SkillExperienceManager:
         user_id: Optional[str] = None,
         status: Optional[str] = "pending",
         limit: int = 100,
+        ids: Optional[List[str]] = None,
     ) -> List[PydanticSkillExperience]:
         """Return this agent's experiences, prioritized for Goal-3 consumption.
 
@@ -105,9 +106,21 @@ class SkillExperienceManager:
         'pending'); `status=None` returns all statuses. Excludes soft-deleted
         rows.
 
+        `ids` scopes the result to an explicit id set (the Goal-3 curator passes
+        THIS evolution round's freshly-distilled experiences so a run only ever
+        sees its own batch, never the accumulated cross-round pending pool).
+        `ids=None` (default) applies no id filter; `ids=[]` is an explicit
+        "scope to nothing" and short-circuits to `[]` (so a round that distilled
+        zero experiences evolves over nothing rather than the whole pool).
+
         Ordering: `(importance * credibility) DESC` computed in SQL (the Goal-3
         priority), then `created_at DESC` as a stable tiebreak.
         """
+        # Explicit empty scope -> nothing (distinct from ids=None == "no filter").
+        # Also avoids emitting a degenerate `IN ()` predicate.
+        if ids is not None and len(ids) == 0:
+            return []
+
         priority = (SkillExperienceModel.importance * SkillExperienceModel.credibility)
         preds = [
             SkillExperienceModel.agent_id == agent_id,
@@ -117,6 +130,8 @@ class SkillExperienceManager:
             preds.append(SkillExperienceModel.user_id == user_id)
         if status is not None:
             preds.append(SkillExperienceModel.status == status)
+        if ids is not None:
+            preds.append(SkillExperienceModel.id.in_(ids))
 
         stmt = (
             select(SkillExperienceModel)
@@ -154,15 +169,35 @@ class SkillExperienceManager:
         )
 
     @enforce_types
-    async def mark_superseded(self, *, ids: List[str]) -> int:
+    async def mark_superseded(
+        self,
+        *,
+        ids: List[str],
+        agent_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+    ) -> int:
         """Soft-delete via status transition to 'superseded' (NOT is_deleted).
 
-        `list_experiences(status='pending')` already excludes them. Returns the
-        number updated.
+        Only rows still `pending` are transitioned (`require_pending`): an
+        experience that already did its job (`consumed`) must never be flipped to
+        `superseded`, so passing a mixed id set (e.g. a curator's "scoped minus
+        consumed" overflow) can only ever retire the still-pending leftovers.
+
+        `agent_id` / `user_id`, when given, additionally constrain the update to
+        that owner — so an id set that (defensively) contains a foreign owner's id
+        can never supersede a DIFFERENT (agent, user)'s experience.
+        `list_experiences(status='pending')` already excludes the result. Returns
+        the number updated.
         """
         if not ids:
             return 0
-        return await self._set_status(ids=ids, status="superseded")
+        return await self._set_status(
+            ids=ids,
+            status="superseded",
+            require_pending=True,
+            agent_id=agent_id,
+            user_id=user_id,
+        )
 
     async def _set_status(
         self,
@@ -172,12 +207,15 @@ class SkillExperienceManager:
         consumed_by: Optional[str] = None,
         influenced_skill_ids: Optional[List[str]] = None,
         require_pending: bool = False,
+        agent_id: Optional[str] = None,
+        user_id: Optional[str] = None,
     ) -> int:
         """Load-modify-save each row so updated_at / Redis cache stay consistent
         with the rest of the ORM (instead of a bulk UPDATE that bypasses both).
 
         When `require_pending` is set, only rows still in `status='pending'` are
-        transitioned (the rest are left untouched).
+        transitioned (the rest are left untouched). `agent_id` / `user_id`, when
+        given, additionally scope the update to that owner.
         """
         updated = 0
         async with self.session_maker() as session:
@@ -187,6 +225,10 @@ class SkillExperienceManager:
             ]
             if require_pending:
                 preds.append(SkillExperienceModel.status == "pending")
+            if agent_id is not None:
+                preds.append(SkillExperienceModel.agent_id == agent_id)
+            if user_id is not None:
+                preds.append(SkillExperienceModel.user_id == user_id)
             stmt = select(SkillExperienceModel).where(*preds)
             result = await session.execute(stmt)
             rows = result.scalars().all()

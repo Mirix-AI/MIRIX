@@ -1552,8 +1552,15 @@ class ProceduralMemoryManager:
                 logger.warning("Cache search failed: %s", e)
 
         async with self.session_maker() as session:
-            base_query = select(ProceduralMemoryItem).where(
-                ProceduralMemoryItem.organization_id == organization_id
+            base_query = (
+                select(ProceduralMemoryItem)
+                .where(ProceduralMemoryItem.organization_id == organization_id)
+                # Exclude soft-deleted skills (curator soft-delete sets
+                # is_deleted=True; they must NOT surface via org-wide retrieval).
+                # The base SqlalchemyBase reads filter ~is_deleted, but this raw
+                # fallback query builds select() directly and would otherwise
+                # leak them. Mirrors list_procedures' ~is_deleted predicate.
+                .where(~ProceduralMemoryItem.is_deleted)
             )
 
             from mirix.database.filter_tags_query import apply_filter_tags_sqlalchemy

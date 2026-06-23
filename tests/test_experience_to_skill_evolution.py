@@ -85,9 +85,17 @@ class _FakeExperienceManager:
     def __init__(self, experiences):
         self._experiences = experiences
         self.consumed_calls = []  # (ids, run_id, influenced)
+        self.superseded_calls = []  # [ids]
 
-    async def list_experiences(self, *, agent_id, user_id, status, limit):
+    async def list_experiences(self, *, agent_id, user_id, status, limit, ids=None):
         assert status == "pending"
+        # Mirror the real manager: ids=None -> no filter; ids=[] -> nothing;
+        # otherwise scope to the given id set (this round's batch).
+        if ids is not None:
+            if not ids:
+                return []
+            wanted = set(ids)
+            return [e for e in self._experiences if e.id in wanted][:limit]
         return list(self._experiences)[:limit]
 
     async def aggregate(self, *, ids):
@@ -103,6 +111,10 @@ class _FakeExperienceManager:
 
     async def mark_consumed(self, *, ids, run_id, influenced_skill_ids=None):
         self.consumed_calls.append((list(ids), run_id, influenced_skill_ids))
+        return len(ids)
+
+    async def mark_superseded(self, *, ids, agent_id=None, user_id=None):
+        self.superseded_calls.append(list(ids))
         return len(ids)
 
 
@@ -311,6 +323,119 @@ class TestEvolutionCore:
         assert result["budget"] == expected
         assert budget == expected
         assert result["consumed_count"] == 4
+
+
+# ===================== Round scoping (this window only) ====================
+
+
+@pytest.mark.asyncio
+class TestRoundScoping:
+    """A scoped evolve sees ONLY the round's freshly-distilled experiences.
+
+    The auto-dream procedural path passes the ids it just distilled so an evolve
+    never re-surfaces earlier rounds' leftover pending experiences (which would
+    dilute the curator prompt and hurt skill quality).
+    """
+
+    @staticmethod
+    async def _run(mgr, *, experience_ids):
+        agent = SimpleNamespace()
+        seen = {}
+
+        async def snapshot():
+            return []
+
+        async def run_step(a, payload, budget):
+            seen["payload"] = payload
+            seen["budget"] = budget
+
+        result = await _run_experience_evolution_core(
+            experience_manager=mgr, agent=agent,
+            agent_id="proc-1", meta_agent_id="meta-1", user_id="user-1",
+            snapshot_skills=snapshot, run_step=run_step,
+            experience_ids=experience_ids,
+        )
+        return result, seen
+
+    async def test_scopes_to_provided_ids_only(self):
+        # Pool has 2 "old" + 2 "new" pending; scope to the 2 new ones only.
+        old = [
+            _exp("sexp-old1", "worth_avoiding", 0.9, 0.9),
+            _exp("sexp-old2", "worth_learning", 0.9, 0.9),
+        ]
+        new = [
+            _exp("sexp-new1", "worth_avoiding", 0.6, 0.6),
+            _exp("sexp-new2", "worth_learning", 0.5, 0.5),
+        ]
+        mgr = _FakeExperienceManager(old + new)
+        new_ids = [e.id for e in new]
+
+        result, seen = await self._run(mgr, experience_ids=new_ids)
+
+        assert result["skipped"] is False
+        # Only the new batch is consumed — the old pending stays untouched.
+        consumed_ids, _run, _infl = mgr.consumed_calls[0]
+        assert set(consumed_ids) == {"sexp-new1", "sexp-new2"}
+        assert result["consumed_count"] == 2
+        # Budget reflects the scoped counts (1 avoid + 1 learn), NOT all four.
+        assert result["budget"] == compute_edit_budget(
+            {"n_high_fail": 1, "n_high_succ": 1}
+        )
+        # The old experiences' titles must NOT appear in the curator payload.
+        assert "title-sexp-old1" not in seen["payload"]
+        assert "title-sexp-old2" not in seen["payload"]
+        assert "title-sexp-new1" in seen["payload"]
+        # Whole scoped batch fit under the cap -> no overflow to supersede.
+        assert mgr.superseded_calls == []
+
+    async def test_overflow_beyond_cap_is_superseded_not_stranded(self):
+        # A single round distilling MORE than the per-run cap must not strand its
+        # lowest-priority tail as pending forever (future rounds pass only THEIR
+        # fresh ids). The top _MAX_EXPERIENCES_PER_RUN are consumed; the rest of
+        # THIS round's scoped ids are superseded (out of sight, still auditable).
+        from mirix.services.skill_experience_curator import _MAX_EXPERIENCES_PER_RUN
+
+        n = _MAX_EXPERIENCES_PER_RUN + 1
+        exps = [_exp(f"sexp-{i:03d}", "worth_avoiding", 0.9, 0.9) for i in range(n)]
+        mgr = _FakeExperienceManager(exps)
+        all_ids = [e.id for e in exps]
+
+        result, _seen = await self._run(mgr, experience_ids=all_ids)
+
+        consumed_ids, _run, _infl = mgr.consumed_calls[0]
+        assert len(consumed_ids) == _MAX_EXPERIENCES_PER_RUN
+        assert result["consumed_count"] == _MAX_EXPERIENCES_PER_RUN
+        # Exactly the overflow tail (those not consumed) is superseded — nothing
+        # from this round is left pending/stranded.
+        overflow = set(all_ids) - set(consumed_ids)
+        assert len(overflow) == 1
+        assert set(mgr.superseded_calls[0]) == overflow
+        assert result["superseded_count"] == 1
+
+    async def test_empty_ids_skips_even_with_pending_pool(self):
+        # A round that distilled nothing (ids=[]) must NOT sweep the pending pool.
+        mgr = _FakeExperienceManager([
+            _exp("sexp-old1", "worth_avoiding", 0.9, 0.9),
+        ])
+        result, seen = await self._run(mgr, experience_ids=[])
+        assert result["skipped"] is True
+        assert result["budget"] == 0
+        assert "payload" not in seen        # no step ran
+        assert mgr.consumed_calls == []     # nothing consumed
+
+    async def test_none_ids_evolves_whole_pool(self):
+        # Backward-compat: ids=None means "no scope" -> the whole pending pool.
+        mgr = _FakeExperienceManager([
+            _exp("sexp-a", "worth_avoiding", 0.9, 0.9),
+            _exp("sexp-b", "worth_learning", 0.7, 0.7),
+        ])
+        result, _seen = await self._run(mgr, experience_ids=None)
+        consumed_ids, _run, _infl = mgr.consumed_calls[0]
+        assert set(consumed_ids) == {"sexp-a", "sexp-b"}
+        assert result["consumed_count"] == 2
+        # Unscoped/global mode must NOT supersede leftovers — a later global
+        # sweep is meant to pick them up.
+        assert mgr.superseded_calls == []
 
 
 # ============================ Module hygiene ===============================
