@@ -48,6 +48,7 @@ from mirix.schemas.skill_experience import (
 from mirix.schemas.user import User as PydanticUser
 from mirix.helpers.json_parsing import parse_distiller_json_array
 from mirix.services.skill_experience_manager import SkillExperienceManager
+from mirix.constants import META_MEMORY_TOOLS, UNIVERSAL_MEMORY_TOOLS
 
 logger = get_logger(__name__)
 
@@ -61,6 +62,30 @@ _MAX_TRANSCRIPT_CHARS = 16000
 
 # Per-message content cap so one giant tool dump can't dominate the transcript.
 _MAX_MESSAGE_CHARS = 2000
+
+# MIRIX's OWN memory-management scaffolding must NEVER be distilled as if it were
+# the external conversation. The meta agent's session transcript comingles the
+# ingested external turns with the meta agent's own memory-update actions: the
+# "[System Message] As the meta memory manager …" instruction, its
+# trigger_memory_update / finish_memory_update tool calls, those tools' results,
+# and the automated continue/finish-chaining replies. Learning from the latter
+# yields meta-noise experiences like "trigger episodic memory update when the
+# system requests meta memory management" — i.e. the distiller learning to operate
+# MIRIX itself instead of the task. We drop those in _render_transcript (see
+# _is_mirix_scaffolding). Ingested external content is always [USER]/[ASSISTANT]-
+# tagged (the /memory/add role-collapse); MIRIX scaffolding never is.
+# Sourced from the agent tool registry (not hardcoded) so the filter tracks the
+# meta agent's tools as they change: trigger_memory_update + search_in_memory +
+# finish_memory_update + list_memory_within_timerange. The meta agent operates
+# ONLY these memory tools — it never makes external task tool calls — so a tool
+# call to ANY of them marks the message as MIRIX scaffolding.
+_MIRIX_MEMORY_TOOLS = frozenset(META_MEMORY_TOOLS) | frozenset(UNIVERSAL_MEMORY_TOOLS)
+_META_INSTRUCTION_MARKER = "As the meta memory manager, analyze the provided content"
+_CHAINING_MARKERS = (
+    '"contine_chaining"',
+    '"continue_chaining"',
+    "automated system message hidden from the user",
+)
 
 
 def _load_distiller_prompt() -> str:
@@ -216,6 +241,10 @@ class SessionExperienceDistiller:
                 return []
 
             transcript = self._render_transcript(msgs)
+            if not transcript.strip():
+                # Whole session was MIRIX scaffolding (no ingested external
+                # content) — nothing to learn; skip the LLM call entirely.
+                return []
             parsed = await self._call_llm(
                 agent_id=meta_agent_state.id,
                 session_id=session_id,
@@ -410,6 +439,10 @@ class SessionExperienceDistiller:
         """
         lines: List[str] = []
         for m in msgs:
+            # Never learn from MIRIX's own memory-management scaffolding — only
+            # from the ingested external conversation (see _is_mirix_scaffolding).
+            if cls._is_mirix_scaffolding(m):
+                continue
             role = cls._role_of(m)
             text = cls._content_text(m)
             if not text:
@@ -423,6 +456,67 @@ class SessionExperienceDistiller:
         head = transcript[: _MAX_TRANSCRIPT_CHARS // 2]
         tail = transcript[-(_MAX_TRANSCRIPT_CHARS // 2):]
         return f"{head}\n…[elided middle of session]…\n{tail}"
+
+    @staticmethod
+    def _plain_content_text(m) -> str:
+        """Plain text of a message's content (no tool-call surfacing)."""
+        content = getattr(m, "content", None)
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            out = []
+            for c in content:
+                txt = getattr(c, "text", None)
+                if txt and isinstance(txt, str):
+                    out.append(txt)
+            return " ".join(out)
+        return ""
+
+    @classmethod
+    def _is_mirix_scaffolding(cls, m) -> bool:
+        """True iff this message is MIRIX's OWN memory-management process output
+        rather than the ingested external conversation.
+
+        The distiller must learn ONLY from the external user/agent/tool messages
+        fed INTO MIRIX, never from the memory-producing (meta) agent's own
+        scaffolding — otherwise it distills meta-noise about operating MIRIX
+        itself. Three shapes of scaffolding appear on the meta agent's transcript:
+          1. memory-subagent tool RESULTS (role=tool from a memory-mgmt tool),
+          2. the meta agent's OWN tool CALLS (trigger/finish_memory_update),
+          3. MIRIX control messages (the meta-manager instruction + the automated
+             continue/finish-chaining replies).
+        Ingested external content is always [USER]/[ASSISTANT]-tagged and matches
+        none of these.
+        """
+        role = getattr(m, "role", None)
+        name = getattr(m, "name", None)
+        # (1) Memory tool RESULTS.
+        if role == MessageRole.tool and name in _MIRIX_MEMORY_TOOLS:
+            return True
+        # (2) The meta agent's own memory tool CALLS. The meta agent operates ONLY
+        #     memory tools and never makes external task tool calls (external tool
+        #     output is collapsed into [USER]/[ASSISTANT] text, never assistant
+        #     tool_calls on this transcript), so ANY memory tool_call — even mixed
+        #     with another memory tool like search_in_memory — is scaffolding.
+        tool_calls = getattr(m, "tool_calls", None)
+        if tool_calls:
+            for tc in tool_calls:
+                n = getattr(getattr(tc, "function", None), "name", None)
+                if n in _MIRIX_MEMORY_TOOLS:
+                    return True
+        # (3) Synthesized control messages (the meta-manager instruction + the
+        #     automated chaining replies). Gate on NON-external text: ingested
+        #     external content is always [USER]/[ASSISTANT]-tagged, so a turn that
+        #     merely QUOTES one of these markers is never dropped.
+        text = cls._plain_content_text(m)
+        if text and "[USER]" not in text and "[ASSISTANT]" not in text:
+            if text.lstrip().startswith("[System Message]"):
+                return True
+            if _META_INSTRUCTION_MARKER in text:
+                return True
+            if any(marker in text for marker in _CHAINING_MARKERS):
+                return True
+        return False
 
     @staticmethod
     def _role_of(m) -> str:

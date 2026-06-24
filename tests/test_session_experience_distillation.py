@@ -439,3 +439,149 @@ class TestNoMetaClawVocabulary:
         low = src.lower()
         for banned in ["metaclaw", "round_index", "quality_score", "oracle"]:
             assert banned not in low, f"MetaClaw term leaked into distiller: {banned!r}"
+
+
+# ===== Scaffolding filter — never learn from MIRIX's OWN memory machinery =====
+# Regression for the bug where the distiller read the META agent's own
+# memory-management process messages (the "[System Message] As the meta memory
+# manager…" instruction, its trigger_memory_update tool calls + results, and the
+# continue_chaining control replies) as if they were the external conversation,
+# producing meta-noise experiences like "trigger episodic memory update when the
+# system requests meta memory management". Only the ingested external turn must
+# survive into the distiller transcript.
+
+from mirix.schemas.enums import MessageRole  # noqa: E402
+
+
+def _mk_msg(role, *, texts=None, tool_calls=None, name=None):
+    content = [SimpleNamespace(text=t) for t in (texts or [])]
+    tcs = None
+    if tool_calls:
+        tcs = [
+            SimpleNamespace(function=SimpleNamespace(name=n, arguments=a))
+            for (n, a) in tool_calls
+        ]
+    return SimpleNamespace(role=role, content=content, tool_calls=tcs, name=name)
+
+
+# The 5 messages a meta-agent step actually persists per ingested turn (verbatim
+# shapes from the live DB for session smoke01-r1).
+_EXTERNAL_TURN = _mk_msg(
+    MessageRole.user,
+    texts=[
+        "[USER] Solve these. Q1: Which HTTP status means 'Not Found'? A) 200  B) 404  C) 500",
+        "[ASSISTANT] B) 404",
+    ],
+)
+_SYS_INSTRUCTION = _mk_msg(
+    MessageRole.user,
+    texts=[
+        "[System Message] As the meta memory manager, analyze the provided "
+        "content and trigger the appropriate memory updates."
+    ],
+)
+_TRIGGER_CALL = _mk_msg(
+    MessageRole.assistant,
+    tool_calls=[("trigger_memory_update", '{"memory_types":["episodic"]}')],
+)
+_TOOL_RESULT = _mk_msg(
+    MessageRole.tool,
+    name="trigger_memory_update",
+    texts=[
+        '{"status": "OK", "message": "[System Message] Agent '
+        'meta_memory_agent_episodic_memory_agent has been triggered to update the memory."}'
+    ],
+)
+_CHAINING = _mk_msg(
+    MessageRole.user,
+    texts=[
+        '{"type": "contine_chaining", "reason": "[This is an automated system '
+        'message hidden from the user] Function called using continue_chaining=true"}'
+    ],
+)
+
+_ALL_FIVE = [_EXTERNAL_TURN, _SYS_INSTRUCTION, _TRIGGER_CALL, _TOOL_RESULT, _CHAINING]
+
+
+class TestScaffoldingFilter:
+    def test_each_scaffolding_message_is_classified(self):
+        assert SessionExperienceDistiller._is_mirix_scaffolding(_SYS_INSTRUCTION) is True
+        assert SessionExperienceDistiller._is_mirix_scaffolding(_TRIGGER_CALL) is True
+        assert SessionExperienceDistiller._is_mirix_scaffolding(_TOOL_RESULT) is True
+        assert SessionExperienceDistiller._is_mirix_scaffolding(_CHAINING) is True
+
+    def test_external_turn_is_not_scaffolding(self):
+        assert SessionExperienceDistiller._is_mirix_scaffolding(_EXTERNAL_TURN) is False
+
+    def test_external_tool_call_is_kept(self):
+        # A NON-memory tool call belongs to the external task agent and MUST be
+        # kept (the distiller should learn from any user/agent/tool messages).
+        ext = _mk_msg(
+            MessageRole.assistant,
+            tool_calls=[("web_search", '{"q": "fifo data structure"}')],
+        )
+        assert SessionExperienceDistiller._is_mirix_scaffolding(ext) is False
+
+    def test_render_transcript_keeps_only_the_external_turn(self):
+        out = SessionExperienceDistiller._render_transcript(_ALL_FIVE)
+        # The external Q/A survives…
+        assert "B) 404" in out
+        assert "[USER]" in out and "[ASSISTANT]" in out
+        # …and NONE of MIRIX's own memory-management scaffolding leaks in.
+        assert "trigger_memory_update" not in out
+        assert "As the meta memory manager" not in out
+        assert "has been triggered to update the memory" not in out
+        assert "contine_chaining" not in out
+        assert "[System Message]" not in out
+
+    def test_transcript_is_exactly_one_line(self):
+        # 5 persisted messages -> exactly 1 distillable line (the external turn).
+        out = SessionExperienceDistiller._render_transcript(_ALL_FIVE)
+        assert len([ln for ln in out.splitlines() if ln.strip()]) == 1
+
+    def test_all_meta_memory_tools_are_scaffolding(self):
+        # Not just trigger_memory_update: finish_memory_update (a tool result) and
+        # search_in_memory / list_memory_within_timerange (tool calls) are all the
+        # meta agent's own memory ops (codex P2 2026-06-24).
+        finish = _mk_msg(MessageRole.tool, name="finish_memory_update", texts=["{}"])
+        search = _mk_msg(MessageRole.assistant, tool_calls=[("search_in_memory", "{}")])
+        listm = _mk_msg(
+            MessageRole.assistant, tool_calls=[("list_memory_within_timerange", "{}")]
+        )
+        assert SessionExperienceDistiller._is_mirix_scaffolding(finish) is True
+        assert SessionExperienceDistiller._is_mirix_scaffolding(search) is True
+        assert SessionExperienceDistiller._is_mirix_scaffolding(listm) is True
+
+    def test_mixed_memory_tool_calls_are_dropped(self):
+        # trigger_memory_update mixed with search_in_memory must still be dropped
+        # (ANY memory tool call → scaffolding, not ALL) (codex P2 2026-06-24).
+        mixed = _mk_msg(
+            MessageRole.assistant,
+            tool_calls=[("trigger_memory_update", "{}"), ("search_in_memory", "{}")],
+        )
+        assert SessionExperienceDistiller._is_mirix_scaffolding(mixed) is True
+
+    def test_external_turn_quoting_a_marker_is_kept(self):
+        # A real conversation that merely QUOTES the meta-instruction wording must
+        # NOT be dropped — the marker check is gated on non-[USER]/[ASSISTANT] text
+        # (codex P2 2026-06-24, false-positive guard).
+        quoting = _mk_msg(
+            MessageRole.user,
+            texts=[
+                "[USER] What does 'As the meta memory manager, analyze the provided "
+                "content' mean in MIRIX?",
+                "[ASSISTANT] It is the system instruction given to the meta agent.",
+            ],
+        )
+        assert SessionExperienceDistiller._is_mirix_scaffolding(quoting) is False
+        out = SessionExperienceDistiller._render_transcript([quoting])
+        assert "meta memory manager" in out  # survived
+
+    def test_scaffolding_only_session_renders_empty(self):
+        # A session with NO ingested external content (only MIRIX scaffolding)
+        # yields an empty transcript — the caller then skips the LLM entirely
+        # (codex P2 2026-06-24).
+        out = SessionExperienceDistiller._render_transcript(
+            [_SYS_INSTRUCTION, _TRIGGER_CALL, _TOOL_RESULT, _CHAINING]
+        )
+        assert out.strip() == ""
