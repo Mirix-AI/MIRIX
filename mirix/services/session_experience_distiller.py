@@ -68,6 +68,20 @@ _MAX_TRANSCRIPT_CHARS = 16000
 _MAX_MESSAGE_CHARS = 2000
 
 
+def _owner_org(actor: PydanticClient) -> str:
+    """Resolve the organization the Conversation Message Store was written under.
+
+    Ingestion records turns under ``client.organization_id or DEFAULT_ORG_ID``
+    (the column is nullable, but the write always resolves the fallback). Every
+    read/mark of that store MUST mirror it, otherwise a NULL-org client would
+    read/persist under ``None`` and its sessions would never distill (and, having
+    never been marked, would retry forever).
+    """
+    from mirix.constants import DEFAULT_ORG_ID
+
+    return actor.organization_id or DEFAULT_ORG_ID
+
+
 class _LLMCallError(Exception):
     """Raised on an OPERATIONAL LLM failure (no client, failed request, or
     malformed response) — as opposed to a legitimately empty distillation. Lets
@@ -250,7 +264,7 @@ class SessionExperienceDistiller:
             turns = await self._get_conversation_manager().list_turns_for_session(
                 session_id=session_id,
                 user_id=user.id,
-                organization_id=actor.organization_id,
+                organization_id=_owner_org(actor),
                 actor=actor,
             )
             if not turns:
@@ -343,7 +357,7 @@ class SessionExperienceDistiller:
                 exp = await mgr.create_experience(
                     agent_id=meta_agent_state.id,
                     user_id=user.id,
-                    organization_id=actor.organization_id,
+                    organization_id=_owner_org(actor),
                     session_id=session_id,
                     experience_type=exp_type,
                     title=title[: _TITLE_CAP],

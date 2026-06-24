@@ -63,18 +63,10 @@ CREATE INDEX IF NOT EXISTS ix_conversation_message_session_id
 
 COMMIT;
 
--- PHASE 2 — run these OUTSIDE a transaction (do NOT combine with this file via
--- `psql -1`). CONCURRENTLY avoids the write-blocking ACCESS EXCLUSIVE lock. If a
--- build fails midway, Postgres leaves an INVALID index behind; drop it and retry.
---
---   CREATE INDEX CONCURRENTLY IF NOT EXISTS
---       ix_conversation_message_org_user_session_created
---       ON conversation_message (organization_id, user_id, session_id, created_at);
---
---   CREATE INDEX CONCURRENTLY IF NOT EXISTS
---       ix_conversation_message_session_created
---       ON conversation_message (session_id, created_at);
---
---   CREATE INDEX CONCURRENTLY IF NOT EXISTS
---       ix_conversation_message_organization_id
---       ON conversation_message (organization_id);
+-- PHASE 2 — the composite indexes are built CONCURRENTLY in a SEPARATE,
+-- EXECUTABLE file: scripts/migrate_add_conversation_message_phase2.sql. They
+-- live there (rather than commented out here) because CREATE INDEX CONCURRENTLY
+-- cannot run inside a transaction block, so they must NOT share this file's
+-- BEGIN/COMMIT. Run that file next, OUTSIDE a transaction (plain `psql -f`, NOT
+-- `psql -1`/--single-transaction). New databases get these indexes via
+-- SQLAlchemy create_all and need neither migration file.

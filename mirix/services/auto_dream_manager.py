@@ -508,6 +508,24 @@ class AutoDreamManager:
             session_ids,
         )
 
+        if request.dry_run:
+            # A dry run has NO side effects: it does NOT distill (no LLM call, no
+            # SkillExperience writes), does NOT mark sessions distilled, does NOT
+            # evolve skills, and does NOT checkpoint. It reports how many sealed
+            # sessions WOULD be processed, leaving the rolling barrier untouched
+            # so a subsequent real run processes the same window.
+            return AutoDreamResponse(
+                start_date=None,
+                end_date=None,
+                processed={"procedural": MemoryTypeStats(total=0)},
+                last_dream_at=now,
+                dry_run=True,
+                message=(
+                    f"Dry run — {len(session_ids)} sealed session(s) would be "
+                    f"distilled; no experiences persisted, barrier not advanced."
+                ),
+            )
+
         existing_skills = await self._existing_skill_summaries(user, meta_agent_state)
         # distill_sessions returns (experiences, processed_session_ids): only the
         # SUCCESSFULLY-processed sessions (including legitimately-empty ones) are
@@ -524,24 +542,6 @@ class AutoDreamManager:
         stats = {
             "procedural": MemoryTypeStats(total=len(experiences)),
         }
-
-        if request.dry_run:
-            # A dry run must have NO side effects: it previews counts only. We
-            # deliberately do NOT mark the sessions distilled here, so the rolling
-            # barrier does not advance and a subsequent real run re-processes the
-            # same sealed window (matching the generic-mode dry_run contract,
-            # which also skips the checkpoint write).
-            return AutoDreamResponse(
-                start_date=None,
-                end_date=None,
-                processed=stats,
-                last_dream_at=now,
-                dry_run=True,
-                message=(
-                    f"Dry run — distilled {len(experiences)} experience(s) from "
-                    f"{len(session_ids)} session(s); Goal-3 evolution skipped."
-                ),
-            )
 
         # Advance the rolling barrier: mark every SUCCESSFULLY-processed session
         # distilled (idempotent; scoped to this (user, org)) so a later round —
