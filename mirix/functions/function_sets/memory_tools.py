@@ -1562,6 +1562,13 @@ async def trigger_memory_update_with_instruction(
     elif memory_type == "resource":
         agent_type = "resource_memory_agent"
     elif memory_type == "procedural":
+        # NOTE: this is the EXPLICIT, user-driven memory-correction path (the chat
+        # agent invokes this tool only when the user explicitly asks to insert /
+        # update / delete a specific memory). It is intentionally NOT subject to the
+        # "procedural has exactly one producer" gate applied to trigger_memory_update,
+        # which governs only AUTOMATIC extraction from a conversation transcript.
+        # Skill *learning* still flows solely through the distillation path; a direct
+        # user command to edit procedural memory is a different operation and is kept.
         agent_type = "procedural_memory_agent"
     elif memory_type == "knowledge_vault":
         agent_type = "knowledge_vault_memory_agent"
@@ -1609,7 +1616,7 @@ async def trigger_memory_update(
     Choose which memory to update. This function will trigger another memory agent which is specifically in charge of handling the corresponding memory to update its memory. Trigger all necessary memory updates at once. Put the explanations in the `internal_monologue` field.
 
     Args:
-        memory_types (List[str]): The types of memory to update. It should be chosen from the following: "core", "episodic", "resource", "procedural", "knowledge_vault", "semantic". For instance, ['episodic', 'resource'].
+        memory_types (List[str]): The types of memory to update. It should be chosen from the following: "core", "episodic", "resource", "knowledge_vault", "semantic". For instance, ['episodic', 'resource']. ("procedural" is still accepted for backward compatibility but is a no-op here: procedural/skill memory is produced solely by the conversation-store distillation path, not by this dispatch.)
 
     Returns:
         Optional[str]: None is always returned as this function does not produce a response.
@@ -1642,7 +1649,7 @@ async def trigger_memory_update(
     # concurrent workers can never double-fire for the same window, and it
     # advances the cursor to the observed MAX(messages.created_at) so the
     # next window cannot skip messages inserted mid-check.
-    from mirix.constants import SKILL_TRIGGER_SESSION_THRESHOLD
+    from mirix.constants import DEFAULT_ORG_ID, SKILL_TRIGGER_SESSION_THRESHOLD
     from mirix.schemas.agent_trigger_state import TRIGGER_TYPE_PROCEDURAL_SKILL
     from mirix.services.agent_trigger_state_manager import AgentTriggerStateManager
 
@@ -1656,7 +1663,9 @@ async def trigger_memory_update(
     )
     trigger_user_id = self.user.id if self.user else None
     trigger_org_id = (
-        self.actor.organization_id if getattr(self, "actor", None) else None
+        (self.actor.organization_id or DEFAULT_ORG_ID)
+        if getattr(self, "actor", None)
+        else None
     )
     current_session_id = getattr(self, "_current_step_session_id", None)
 
@@ -1675,28 +1684,22 @@ async def trigger_memory_update(
             current_session_id=current_session_id,
         )
         if claim.fired:
-            # Goal 2/3: on the every-N-sessions fire, schedule the GENERAL
-            # session-experience auto-dream (distill the last-N retained
+            # On the every-N-sessions fire, schedule the GENERAL
+            # session-experience auto-dream (distill the last-N sealed
             # sessions → pending experiences → skill self-evolution via the
             # procedural agent). Fire-and-forget so a failure here can never
             # break the chat turn; the cadence reuses the claim we just won.
             #
-            # IMPORTANT (concurrency): the experience auto-dream RESETS and steps
-            # the procedural agent's in-context history before/after its step
-            # (skill_experience_curator). The legacy "procedural" memory update
-            # below dispatches ProceduralMemoryAgent.step on the SAME agent via
-            # asyncio.gather. Running both concurrently would let one reset wipe
-            # the other's mid-chain context. So on the experience-dream fire we
-            # DO NOT also enqueue the legacy "procedural" update — Goal-3 already
-            # evolves skills from the freshly-distilled experiences, and it does
-            # so under skill_curator's per-agent lock. We only fall back to the
-            # legacy enqueue when scheduling the dream did not take.
+            # Procedural memory now has EXACTLY ONE producer: this distillation
+            # path. The legacy "procedural" memory update is no longer injected
+            # into the meta dispatch (it is filtered out below regardless), so we
+            # do not (and must not) fall back to enqueuing it here — that would
+            # both reintroduce the second producer and let its ProceduralMemoryAgent
+            # .step race the curator's reset of the same agent's in-context history.
             scheduled = await _schedule_experience_auto_dream(
                 self,
                 threshold=SKILL_TRIGGER_SESSION_THRESHOLD,
             )
-            if not scheduled and "procedural" not in memory_types:
-                memory_types = list(memory_types) + ["procedural"]
             logger.info(
                 "Auto-triggering procedural skill evolution "
                 "(sessions_since=%d, threshold=%d, agent=%s, user=%s, "
@@ -1707,6 +1710,24 @@ async def trigger_memory_update(
                 trigger_user_id,
                 scheduled,
             )
+
+    # Procedural memory has EXACTLY ONE producer: the Conversation Message Store
+    # distillation path (scheduled above as the experience auto-dream). The meta
+    # agent must never dispatch the procedural_memory_agent during normal
+    # extraction, so "procedural" is filtered out of memory_types here. It stays
+    # an accepted input value (a harmless no-op) so existing callers / LLM emissions
+    # don't error; it simply no longer dispatches. The procedural_memory_agent
+    # registration and infrastructure are retained for the distillation path.
+    filtered_memory_types = [mt for mt in memory_types if mt != "procedural"]
+    if len(filtered_memory_types) != len(memory_types):
+        logger.debug(
+            "Filtered 'procedural' out of trigger_memory_update dispatch "
+            "(procedural memory is produced solely by the distillation path): "
+            "%s -> %s",
+            list(memory_types),
+            filtered_memory_types,
+        )
+    memory_types = filtered_memory_types
 
     # De-duplicate memory types while preserving order.
     # The MetaMemoryAgent (LLM) can occasionally emit duplicates (e.g., ["semantic", "semantic"]).

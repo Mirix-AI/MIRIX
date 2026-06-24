@@ -24,7 +24,6 @@ from mirix.constants import (
     MAX_CHAINING_STEPS,
     MAX_EMBEDDING_DIM,
     MAX_RETRIEVAL_LIMIT_IN_SYSTEM,
-    MESSAGE_RETAIN_LAST_N_SESSIONS,
     MIRIX_CORE_TOOL_MODULE_NAME,
     MIRIX_EXTRA_TOOL_MODULE_NAME,
     MIRIX_MEMORY_TOOL_MODULE_NAME,
@@ -947,9 +946,17 @@ class Agent(BaseAgent):
         if response_message_id is not None:
             assert response_message_id.startswith("message-"), response_message_id
 
-        # Inherit the triggering input's session_id so synthesized assistant/tool
-        # messages from this step stay in the same session (Codex review C1).
-        input_session_id = getattr(input_message, "session_id", None)
+        # Only the chat_agent inherits the triggering input's session_id so its
+        # synthesized assistant/tool messages stay in the same session. For all
+        # non-chat agents (meta_memory_agent + the memory sub-agents) the
+        # synthesized messages carry NO session_id: session_id identifies an
+        # external conversation, never the memory-production machinery. Context
+        # reconstruction uses message_ids (not session_id), so nulling this is safe.
+        input_session_id = (
+            getattr(input_message, "session_id", None)
+            if self.agent_state.is_type(AgentType.chat_agent)
+            else None
+        )
 
         messages = []  # append these to the history when done
         function_name = None
@@ -1463,24 +1470,16 @@ class Agent(BaseAgent):
                         message_ids=message_ids,
                         actor=self.actor,
                     )
-                    # Retention: the meta_memory_agent holds the canonical user
-                    # conversation (the user/assistant turns + screenshots that came
-                    # in via add()). Retain the raw messages of its most-recent N
-                    # sessions (per user) instead of hard-deleting them, so a later
-                    # distiller / auto-dream pass can read the raw transcript. The
-                    # retained rows stay detached from message_ids (NOT re-added to
-                    # in-context — token economy preserved). The 6 memory sub-agents'
-                    # messages are transient extraction scratch, so they keep the
-                    # legacy full delete (retain=0).
-                    retain_n = (
-                        MESSAGE_RETAIN_LAST_N_SESSIONS
-                        if self.agent_state.is_type(AgentType.meta_memory_agent)
-                        else 0
-                    )
+                    # Retention: the memory-production machinery (meta_memory_agent
+                    # + the 6 memory sub-agents) is a pure transient producer again.
+                    # The canonical learnable conversation lives in the dedicated
+                    # Conversation Message Store, so the meta agent no longer needs to
+                    # retain a transcript for the distiller. All non-chat agents keep
+                    # the legacy full delete (retain=0) of detached extraction scratch.
                     await self.message_manager.delete_detached_messages_for_agent(
                         agent_id=self.agent_state.id,
                         actor=self.actor,
-                        retain_last_n_sessions=retain_n,
+                        retain_last_n_sessions=0,
                         user_id=self.user_id,
                     )
 
@@ -1579,7 +1578,14 @@ class Agent(BaseAgent):
 
         # Derive the session_id for this step once so all synthesized messages
         # (heartbeats, warnings, meta-memory bootstrap, summaries) inherit it.
-        step_session_id = getattr(first_input_message, "session_id", None)
+        # Only the chat_agent inherits it; for every non-chat agent the
+        # synthesized messages carry NO session_id (session_id identifies an
+        # external conversation, never the meta agent's own bookkeeping).
+        step_session_id = (
+            getattr(first_input_message, "session_id", None)
+            if self.agent_state.is_type(AgentType.chat_agent)
+            else None
+        )
         # Expose on self so helpers called without an explicit session_id
         # (e.g. summarize_messages_inplace) can pick it up. Other entrypoints
         # that skip step() (e.g. step_user_message) must set/reset this
@@ -2646,13 +2652,21 @@ These keywords have been used to retrieve relevant memories from the database.
             "name": name,
         }
 
+        # session_id identifies an external conversation and is only stamped on the
+        # chat_agent's messages. For any non-chat agent reaching this entrypoint the
+        # message (and the step-level session context below) must carry NO session_id,
+        # matching the guard applied to input_session_id/step_session_id in step().
+        effective_session_id = (
+            session_id if self.agent_state.is_type(AgentType.chat_agent) else None
+        )
+
         # Create the associated Message object (in the database)
         assert self.agent_state.created_by_id is not None, "User ID is not set"
         user_message = Message.dict_to_message(
             agent_id=self.agent_state.id,
             model=self.model,
             openai_message_dict=openai_message_dict,
-            session_id=session_id,
+            session_id=effective_session_id,
             # created_at=timestamp,
         )
 
@@ -2660,7 +2674,7 @@ These keywords have been used to retrieve relevant memories from the database.
         # triggered inside inner_step() / _get_ai_reply() stamps the correct
         # session_id on the summary message (Codex review v3, Important).
         prev_session_id = getattr(self, "_current_step_session_id", None)
-        self._current_step_session_id = session_id
+        self._current_step_session_id = effective_session_id
         try:
             return await self.inner_step(messages=[user_message], **kwargs)
         finally:
@@ -2746,19 +2760,24 @@ These keywords have been used to retrieve relevant memories from the database.
         )
         packed_summary_message = {"role": "user", "content": summary_message}
 
-        # Prepend the summary. Preference order for the summary's session_id:
+        # Prepend the summary. The summary is a synthesized message, so it follows
+        # the same rule as every other synthesized message: only the chat_agent
+        # carries a session_id; for any non-chat (memory-production) agent the
+        # summary carries NONE. Within the chat_agent, preference order is:
         #   1. explicit `session_id` argument (caller-provided, e.g. step_user_message)
         #   2. _current_step_session_id stashed by Agent.step() for the current step
         #   3. the latest in-context message's session_id (inherits whatever session
         #      the conversation being summarized is already in)
-        summary_session_id = session_id
-        if summary_session_id is None:
-            summary_session_id = getattr(self, "_current_step_session_id", None)
-        if summary_session_id is None:
-            for m in reversed(in_context_messages):
-                if getattr(m, "session_id", None):
-                    summary_session_id = m.session_id
-                    break
+        summary_session_id = None
+        if self.agent_state.is_type(AgentType.chat_agent):
+            summary_session_id = session_id
+            if summary_session_id is None:
+                summary_session_id = getattr(self, "_current_step_session_id", None)
+            if summary_session_id is None:
+                for m in reversed(in_context_messages):
+                    if getattr(m, "session_id", None):
+                        summary_session_id = m.session_id
+                        break
         self.agent_state = await self.agent_manager.prepend_to_in_context_messages(
             messages=[
                 Message.dict_to_message(

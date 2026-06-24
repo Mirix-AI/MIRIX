@@ -100,7 +100,11 @@ class TestPrepareInputMessageCreate:
 
 
 class TestDictToMessageSessionId:
-    """Codex review C1: internal agent-synthesized messages must inherit session_id."""
+    """dict_to_message must FAITHFULLY pass through whatever session_id it is
+    given (the chat_agent path supplies one; non-chat callers pass None). The
+    decoupling is enforced at the CALLER (see TestAgentStepPropagation, which
+    pins that non-chat callers pass None) — here we only pin the mechanism: the
+    kwarg round-trips and defaults to None when omitted."""
 
     def test_passes_session_id_through_kwarg(self):
         msg = Message.dict_to_message(
@@ -301,58 +305,147 @@ class TestQueueProtoSessionId:
 
 
 class TestAgentStepPropagation:
-    """Codex v2 review: heartbeat / warning / meta / summary messages inside Agent.step
-    must inherit session_id from the triggering input so session-scoped list queries
-    return the whole conversation, not just the initial user turn."""
+    """Decoupling lint (PRD: procedural-memory-distillation-decoupling).
 
-    def test_step_heartbeat_sites_include_session_id(self):
-        """Sanity check: each heartbeat dict_to_message site in Agent.step passes a session_id kwarg.
+    session_id identifies an EXTERNAL conversation, never the memory-production
+    machinery. The decoupling INVERTS the old rule: a non-chat agent
+    (meta_memory_agent + the memory sub-agents) must NOT stamp session_id on the
+    messages it synthesizes inside Agent.step — those are transient bookkeeping
+    that gets discarded after each extraction. Only the chat_agent path may keep
+    inheriting it.
 
-        We scan mirix/agent/agent.py between the start of Agent.step (line ~1450)
-        and the summary prepend (~2660) and require every Message.dict_to_message(
-        that synthesizes a user/system message in that window to include
-        session_id=step_session_id or session_id=input_session_id.
+    The synthesized-message sites bind session_id to two derived locals —
+    `input_session_id` (in the response-processing path) and `step_session_id`
+    (in the step loop / meta-bootstrap / summary path). The decoupling lives in
+    how those two locals are DERIVED: each is gated `... if <chat_agent> else
+    None`. We lint that derivation rather than every call site, so the test is
+    robust to whitespace and to call-site churn while still pinning the
+    behavior: for a non-chat agent the value is None, so nothing it synthesizes
+    carries a session_id.
+    """
+
+    # Tolerant whitespace between tokens so the lint never breaks on reformatting.
+    _WS = r"\s*"
+
+    def _gated_to_none_for_non_chat(self, src: str, local: str, attr_obj: str) -> bool:
+        """True iff `<local> = getattr(<attr_obj>, "session_id", None) if
+        <is chat_agent> else None` appears in `src`, whitespace-insensitively.
+
+        This is the load-bearing decoupling: the value is the input's session_id
+        ONLY for the chat_agent, and explicitly `None` for every other agent.
         """
         import re
+
+        ws = self._WS
+        # The assignment is wrapped in parens spanning several lines:
+        #   <local> = (
+        #       getattr(<attr_obj>, "session_id", None)
+        #       if self.agent_state.is_type(AgentType.chat_agent)
+        #       else None
+        #   )
+        # `\s*` (in self._WS) spans newlines, so allow an optional opening paren
+        # after `=` and tolerate arbitrary whitespace between every token.
+        pattern = (
+            rf"{re.escape(local)}{ws}={ws}\(?{ws}"
+            rf"getattr\({ws}{re.escape(attr_obj)}{ws},{ws}"
+            rf"[\"']session_id[\"']{ws},{ws}None{ws}\){ws}"
+            rf"if{ws}self\.agent_state\.is_type\({ws}AgentType\.chat_agent{ws}\){ws}"
+            rf"else{ws}None"
+        )
+        return re.search(pattern, src) is not None
+
+    def test_input_session_id_is_none_for_non_chat_agents(self):
+        """The response-path local `input_session_id` must resolve to None for
+        every non-chat agent, so the assistant/tool messages it stamps carry no
+        session_id."""
         from pathlib import Path
 
         src = Path("mirix/agent/agent.py").read_text()
-        # Heartbeat/meta/summary sites live after the step() signature.
-        # Grab each Message.dict_to_message(...) block by regex and require a session_id= kwarg inside.
-        blocks = re.findall(r"Message\.dict_to_message\(\n[\s\S]*?\n\s*\)", src)
-        assert blocks, "expected at least one dict_to_message call in agent.py"
-
-        missing = [b for b in blocks if "session_id=" not in b]
-        # After the fix there should be no occurrences without session_id.
-        assert not missing, (
-            f"These dict_to_message sites do not pass session_id:\n"
-            + "\n---\n".join(missing)
+        assert self._gated_to_none_for_non_chat(
+            src, "input_session_id", "input_message"
+        ), (
+            "input_session_id must be gated `... if chat_agent else None` so "
+            "non-chat synthesized messages carry NO session_id"
         )
 
-    def test_persisted_message_create_sites_include_session_id(self):
-        """Codex v3 follow-up: MessageCreate(...) sites that are persisted (turned
-        into a Message via prepare_input_message_create) must also inherit session_id.
+    def test_step_session_id_is_none_for_non_chat_agents(self):
+        """The step-loop local `step_session_id` (heartbeats, meta-bootstrap,
+        summaries) must resolve to None for every non-chat agent."""
+        from pathlib import Path
 
-        agent.py has two relevant MessageCreate() call sites: the meta-memory
-        bootstrap (persisted via prepare_input_message_create) and topic-extraction
-        scratch prompts (sent straight to the LLM, not persisted). We lint the
-        meta-bootstrap path specifically.
+        src = Path("mirix/agent/agent.py").read_text()
+        assert self._gated_to_none_for_non_chat(
+            src, "step_session_id", "first_input_message"
+        ), (
+            "step_session_id must be gated `... if chat_agent else None` so "
+            "non-chat synthesized messages carry NO session_id"
+        )
+
+    def test_synthesized_sites_never_bind_raw_input_session_id(self):
+        """Defense-in-depth: no synthesized message may read session_id straight
+        off the RAW triggering input, which would bypass the chat-agent gate and
+        leak the conversation id onto a non-chat agent's bookkeeping. The raw
+        inputs are `input_message` (response path) and `first_input_message`
+        (step path); their `.session_id` must only ever be read INSIDE the gated
+        derivation, never as a `session_id=` kwarg on a synthesized message.
         """
         import re
         from pathlib import Path
 
         src = Path("mirix/agent/agent.py").read_text()
-        # The meta-bootstrap MessageCreate is inside the `if ... meta_memory_agent ...` branch.
+        ws = self._WS
+        for raw in ("input_message", "first_input_message"):
+            # A `session_id=` kwarg that reads the raw input's session_id — in
+            # EITHER form, attribute access `<raw>.session_id` or
+            # `getattr(<raw>, "session_id", ...)` — would bypass the chat-agent
+            # gate and leak the conversation id. The legitimate gated derivation
+            # assigns getattr(...) to the LOCAL (`input_session_id = ...`), never
+            # to a `session_id=` kwarg, so it is not matched here.
+            attr_leak = re.search(
+                r"session_id" + ws + r"=" + ws + re.escape(raw) + r"\.session_id",
+                src,
+            )
+            getattr_leak = re.search(
+                r"session_id" + ws + r"=" + ws
+                + r"getattr\(" + ws + re.escape(raw) + ws + r",",
+                src,
+            )
+            assert attr_leak is None and getattr_leak is None, (
+                f"synthesized session_id must never bind {raw}'s session_id "
+                "directly (attribute or getattr) — it must go through the "
+                "chat-agent-gated local"
+            )
+
+    def test_meta_bootstrap_does_not_inherit_session_id_for_non_chat(self):
+        """The meta-memory bootstrap MessageCreate is persisted (via
+        prepare_input_message_create) on the meta_memory_agent — a NON-chat
+        agent. It must bind the gated `step_session_id` (which is None for the
+        meta agent), NOT a raw input attribute, so the bootstrap carries no
+        session_id.
+        """
+        import re
+        from pathlib import Path
+
+        src = Path("mirix/agent/agent.py").read_text()
+        ws = self._WS
         meta_block_match = re.search(
-            r"meta_message\s*=\s*prepare_input_message_create\(\n"
-            r"\s*MessageCreate\([\s\S]*?\)\s*,\n",
+            r"meta_message" + ws + r"=" + ws + r"prepare_input_message_create\("
+            r"[\s\S]*?MessageCreate\([\s\S]*?\)" + ws + r",",
             src,
         )
         assert meta_block_match, "meta-bootstrap MessageCreate block not found"
-        assert "session_id=step_session_id" in meta_block_match.group(0), (
-            "meta-memory bootstrap MessageCreate must carry session_id=step_session_id, "
-            f"got:\n{meta_block_match.group(0)}"
+        block = meta_block_match.group(0)
+        # It binds the gated local (whitespace/newline tolerant)…
+        assert re.search(
+            r"session_id" + ws + r"=" + ws + r"step_session_id", block
+        ), (
+            "meta-memory bootstrap must bind session_id=step_session_id "
+            f"(gated to None for the meta agent), got:\n{block}"
         )
+        # …and never a raw input attribute (attribute or getattr form).
+        for raw in ("input_message", "first_input_message"):
+            assert not re.search(re.escape(raw) + r"\.session_id", block)
+            assert not re.search(r"getattr\(" + ws + re.escape(raw) + ws + r",", block)
 
 
 class TestOrmSessionId:
@@ -374,19 +467,66 @@ class TestOrmSessionId:
 
 
 class TestStepUserMessageSessionContext:
-    """Codex review v3: step_user_message() bypasses step() and must still seed
-    _current_step_session_id for any pre-persist summary, then restore the prior value.
-    We inspect the source rather than run the coroutine (full step needs LLM + DB)."""
+    """step_user_message() bypasses step() but is the SAME decoupling site: it
+    synthesizes a user Message and seeds _current_step_session_id for any
+    pre-persist summary, then restores the prior value. Per the
+    procedural-memory-distillation-decoupling PRD this site is also GATED — a
+    non-chat agent must NOT inherit the conversation's session_id here either, so
+    the seeded value is gated `... if chat_agent else None` (not the raw
+    session_id argument). We inspect the source rather than run the coroutine
+    (full step needs LLM + DB)."""
 
-    def test_step_user_message_seeds_and_restores_stash(self):
+    def test_step_user_message_gates_session_id_for_non_chat(self):
         import inspect
+        import re
 
         from mirix.agent import agent as agent_mod
 
         src = inspect.getsource(agent_mod.Agent.step_user_message)
-        # Seeds current step session context for summarizer.
-        assert "self._current_step_session_id = session_id" in src
-        # Uses try/finally to restore the prior value — no leaks across calls.
+        ws = r"\s*"
+        # The gate must bind to `effective_session_id` SPECIFICALLY — i.e.
+        #   effective_session_id = (session_id if chat_agent else None)
+        # Binding the regex to the actual local that flows into the synthesized
+        # message defeats a decoy like `unused = session_id if chat_agent else
+        # None; effective_session_id = session_id`, which an unbound `... if
+        # chat_agent else None` match would wrongly accept.
+        gate = re.search(
+            r"effective_session_id" + ws + r"=" + ws + r"\(?" + ws
+            + r"session_id" + ws
+            + r"if" + ws + r"self\.agent_state\.is_type\(" + ws
+            + r"AgentType\.chat_agent" + ws + r"\)" + ws + r"else" + ws + r"None",
+            src,
+        )
+        assert gate is not None, (
+            "step_user_message must gate `effective_session_id = (session_id if "
+            "chat_agent else None)` so a non-chat agent's synthesized message "
+            "carries NO session_id"
+        )
+        # The synthesized message binds the GATED value, never the raw argument.
+        assert re.search(r"session_id" + ws + r"=" + ws + r"effective_session_id", src), (
+            "step_user_message's dict_to_message must bind the gated "
+            "effective_session_id, not the raw session_id argument"
+        )
+        # And it must NOT bind the raw `session_id` argument to the message.
+        assert not re.search(
+            r"dict_to_message\([\s\S]*?session_id" + ws + r"=" + ws + r"session_id\b",
+            src,
+        ), "step_user_message must not bind the RAW session_id argument"
+
+    def test_step_user_message_seeds_gated_value_and_restores_stash(self):
+        import inspect
+        import re
+
+        from mirix.agent import agent as agent_mod
+
+        src = inspect.getsource(agent_mod.Agent.step_user_message)
+        ws = r"\s*"
+        # Seeds the GATED session context for the summarizer (not the raw arg)…
+        assert re.search(
+            r"self\._current_step_session_id" + ws + r"=" + ws + r"effective_session_id",
+            src,
+        ), "must seed _current_step_session_id with the gated effective_session_id"
+        # …and uses try/finally to restore the prior value — no leaks across calls.
         assert "prev_session_id" in src
         assert "finally" in src
         assert "self._current_step_session_id = prev_session_id" in src

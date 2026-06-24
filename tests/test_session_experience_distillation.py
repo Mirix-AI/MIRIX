@@ -372,26 +372,29 @@ class TestPriorityOrdering:
 
         # Hand the payload builder experiences already in priority order (as the
         # manager would). The first block in the rendered prompt must be the
-        # highest-priority one, the last the lowest.
+        # highest-priority one, the last the lowest. The titles are deliberately
+        # chosen so the handed (priority) order is the REVERSE of lexical order
+        # (Zeta > Mu > Alpha by priority, but Alpha < Mu < Zeta lexically) — so a
+        # builder that accidentally sorted by title would FLIP them and fail.
         ordered = [
             SimpleNamespace(
-                experience_type="worth_avoiding", title="HIGH",
+                experience_type="worth_avoiding", title="Zeta",  # highest priority
                 content="c", importance=0.8, credibility=0.9,
                 evidence=_json.dumps({"quote": "", "signal_type": "inferred"}),
             ),
             SimpleNamespace(
-                experience_type="worth_learning", title="MID",
+                experience_type="worth_learning", title="Mu",  # middle priority
                 content="c", importance=0.5, credibility=0.6,
                 evidence=_json.dumps({"quote": "", "signal_type": "inferred"}),
             ),
             SimpleNamespace(
-                experience_type="worth_avoiding", title="LOW",
+                experience_type="worth_avoiding", title="Alpha",  # lowest priority
                 content="c", importance=0.9, credibility=0.1,
                 evidence=_json.dumps({"quote": "", "signal_type": "inferred"}),
             ),
         ]
         payload = build_experience_payload(ordered)
-        assert payload.index("HIGH") < payload.index("MID") < payload.index("LOW")
+        assert payload.index("Zeta") < payload.index("Mu") < payload.index("Alpha")
 
 
 # ===================== De-MetaClaw HARD assertion ===========================
@@ -441,147 +444,190 @@ class TestNoMetaClawVocabulary:
             assert banned not in low, f"MetaClaw term leaked into distiller: {banned!r}"
 
 
-# ===== Scaffolding filter — never learn from MIRIX's OWN memory machinery =====
-# Regression for the bug where the distiller read the META agent's own
-# memory-management process messages (the "[System Message] As the meta memory
-# manager…" instruction, its trigger_memory_update tool calls + results, and the
-# continue_chaining control replies) as if they were the external conversation,
-# producing meta-noise experiences like "trigger episodic memory update when the
-# system requests meta memory management". Only the ingested external turn must
-# survive into the distiller transcript.
+# ===== Source isolation — the distiller reads ONLY the Conversation Message Store =
+# The scaffolding-filter heuristic (_is_mirix_scaffolding) is DELETED. Correctness
+# now comes from STRUCTURE: the distiller's transcript source is the dedicated
+# Conversation Message Store — external turns with their REAL user/assistant roles
+# — never the meta agent's own `messages` thread. So MIRIX's memory-management
+# scaffolding (the "[System Message] As the meta memory manager…" instruction, its
+# trigger_memory_update tool calls + results, the continue_chaining control
+# replies) can NEVER reach the distiller: those rows simply do not live in this
+# store. These tests pin that structural isolation rather than a string heuristic.
 
-from mirix.schemas.enums import MessageRole  # noqa: E402
+
+def _conv_turn(role, content, *, session_id="sess-1"):
+    """A ConversationMessage-shaped row (real role + plain-text content), the
+    exact shape ConversationMessageManager.list_turns_for_session returns."""
+    return SimpleNamespace(
+        role=role, content=content, session_id=session_id, distilled_at=None
+    )
 
 
-def _mk_msg(role, *, texts=None, tool_calls=None, name=None):
-    content = [SimpleNamespace(text=t) for t in (texts or [])]
-    tcs = None
-    if tool_calls:
-        tcs = [
-            SimpleNamespace(function=SimpleNamespace(name=n, arguments=a))
-            for (n, a) in tool_calls
+class _RecordingConversationManager:
+    """In-memory stand-in for ConversationMessageManager.
+
+    Records every call so a test can prove the distiller pulled transcripts from
+    THIS store (and, by construction, never from MessageManager). Returns the
+    canned turns for a session; everything else is a no-op the distiller needs.
+    """
+
+    def __init__(self, turns_by_session=None, sealed=None):
+        self._turns_by_session = turns_by_session or {}
+        self._sealed = sealed or []
+        self.list_turns_calls = []
+        self.sealed_calls = []
+
+    async def list_turns_for_session(
+        self, *, session_id, user_id, organization_id, actor
+    ):
+        self.list_turns_calls.append(session_id)
+        return list(self._turns_by_session.get(session_id, []))
+
+    async def list_sealed_undistilled_sessions(
+        self, *, user_id, organization_id, actor, limit
+    ):
+        self.sealed_calls.append({"limit": limit})
+        return list(self._sealed[:limit])
+
+
+class TestRenderTranscriptFromConversationStore:
+    """_render_transcript operates on ConversationMessage rows with REAL roles
+    and plain-text content — no scaffolding shapes, no tool-call flattening."""
+
+    def test_real_roles_are_preserved(self):
+        turns = [
+            _conv_turn("user", "Q: which HTTP status means 'Not Found'?"),
+            _conv_turn("assistant", "404"),
         ]
-    return SimpleNamespace(role=role, content=content, tool_calls=tcs, name=name)
+        out = SessionExperienceDistiller._render_transcript(turns)
+        lines = [ln for ln in out.splitlines() if ln.strip()]
+        # Exactly the two real turns, with their real roles — not [USER]/[ASSISTANT].
+        assert lines == ["user: Q: which HTTP status means 'Not Found'?", "assistant: 404"]
+
+    def test_no_scaffolding_filtering_remains(self):
+        # The store never holds scaffolding, so the distiller does NOT strip it.
+        # A row whose content merely RESEMBLES old scaffolding is rendered verbatim
+        # (proving the heuristic is gone — the source is trusted by structure).
+        turns = [
+            _conv_turn(
+                "user",
+                "[System Message] As the meta memory manager, analyze the content.",
+            ),
+        ]
+        out = SessionExperienceDistiller._render_transcript(turns)
+        assert "As the meta memory manager" in out
+
+    def test_empty_content_turn_is_dropped(self):
+        turns = [_conv_turn("user", ""), _conv_turn("assistant", "real answer")]
+        out = SessionExperienceDistiller._render_transcript(turns)
+        assert out == "assistant: real answer"
+
+    def test_scaffolding_heuristic_is_deleted(self):
+        # The fragile string heuristic must be GONE — correctness is structural.
+        assert not hasattr(SessionExperienceDistiller, "_is_mirix_scaffolding")
+
+    def test_distiller_module_does_not_reference_scaffolding_terms(self):
+        src = inspect.getsource(SessionExperienceDistiller)
+        for banned in ("_is_mirix_scaffolding", "trigger_memory_update", "META_MEMORY_TOOLS"):
+            assert banned not in src, f"dead scaffolding reference left behind: {banned!r}"
 
 
-# The 5 messages a meta-agent step actually persists per ingested turn (verbatim
-# shapes from the live DB for session smoke01-r1).
-_EXTERNAL_TURN = _mk_msg(
-    MessageRole.user,
-    texts=[
-        "[USER] Solve these. Q1: Which HTTP status means 'Not Found'? A) 200  B) 404  C) 500",
-        "[ASSISTANT] B) 404",
-    ],
-)
-_SYS_INSTRUCTION = _mk_msg(
-    MessageRole.user,
-    texts=[
-        "[System Message] As the meta memory manager, analyze the provided "
-        "content and trigger the appropriate memory updates."
-    ],
-)
-_TRIGGER_CALL = _mk_msg(
-    MessageRole.assistant,
-    tool_calls=[("trigger_memory_update", '{"memory_types":["episodic"]}')],
-)
-_TOOL_RESULT = _mk_msg(
-    MessageRole.tool,
-    name="trigger_memory_update",
-    texts=[
-        '{"status": "OK", "message": "[System Message] Agent '
-        'meta_memory_agent_episodic_memory_agent has been triggered to update the memory."}'
-    ],
-)
-_CHAINING = _mk_msg(
-    MessageRole.user,
-    texts=[
-        '{"type": "contine_chaining", "reason": "[This is an automated system '
-        'message hidden from the user] Function called using continue_chaining=true"}'
-    ],
-)
+@pytest.mark.asyncio
+class TestDistillerReadsConversationStoreNotMetaMessages:
+    """The load-bearing isolation: the distiller's per-session transcript fetch
+    goes through the injected ConversationMessageManager, NEVER through the meta
+    agent's `messages` store (MessageManager)."""
 
-_ALL_FIVE = [_EXTERNAL_TURN, _SYS_INSTRUCTION, _TRIGGER_CALL, _TOOL_RESULT, _CHAINING]
+    async def test_distill_one_pulls_turns_from_conversation_store(self, monkeypatch):
+        # Hard guard: if the distiller ever touches MessageManager, blow up.
+        import mirix.services.message_manager as mm
 
+        def _boom(*a, **k):  # pragma: no cover - only fires on regression
+            raise AssertionError(
+                "distiller must NOT read meta agent messages via MessageManager"
+            )
 
-class TestScaffoldingFilter:
-    def test_each_scaffolding_message_is_classified(self):
-        assert SessionExperienceDistiller._is_mirix_scaffolding(_SYS_INSTRUCTION) is True
-        assert SessionExperienceDistiller._is_mirix_scaffolding(_TRIGGER_CALL) is True
-        assert SessionExperienceDistiller._is_mirix_scaffolding(_TOOL_RESULT) is True
-        assert SessionExperienceDistiller._is_mirix_scaffolding(_CHAINING) is True
+        monkeypatch.setattr(mm.MessageManager, "list_messages_for_agent", _boom)
 
-    def test_external_turn_is_not_scaffolding(self):
-        assert SessionExperienceDistiller._is_mirix_scaffolding(_EXTERNAL_TURN) is False
-
-    def test_external_tool_call_is_kept(self):
-        # A NON-memory tool call belongs to the external task agent and MUST be
-        # kept (the distiller should learn from any user/agent/tool messages).
-        ext = _mk_msg(
-            MessageRole.assistant,
-            tool_calls=[("web_search", '{"q": "fifo data structure"}')],
+        conv = _RecordingConversationManager(
+            turns_by_session={
+                "sess-x": [
+                    _conv_turn("user", "great, that worked", session_id="sess-x"),
+                    _conv_turn("assistant", "glad to help", session_id="sess-x"),
+                ]
+            }
         )
-        assert SessionExperienceDistiller._is_mirix_scaffolding(ext) is False
-
-    def test_render_transcript_keeps_only_the_external_turn(self):
-        out = SessionExperienceDistiller._render_transcript(_ALL_FIVE)
-        # The external Q/A survives…
-        assert "B) 404" in out
-        assert "[USER]" in out and "[ASSISTANT]" in out
-        # …and NONE of MIRIX's own memory-management scaffolding leaks in.
-        assert "trigger_memory_update" not in out
-        assert "As the meta memory manager" not in out
-        assert "has been triggered to update the memory" not in out
-        assert "contine_chaining" not in out
-        assert "[System Message]" not in out
-
-    def test_transcript_is_exactly_one_line(self):
-        # 5 persisted messages -> exactly 1 distillable line (the external turn).
-        out = SessionExperienceDistiller._render_transcript(_ALL_FIVE)
-        assert len([ln for ln in out.splitlines() if ln.strip()]) == 1
-
-    def test_all_meta_memory_tools_are_scaffolding(self):
-        # Not just trigger_memory_update: finish_memory_update (a tool result) and
-        # search_in_memory / list_memory_within_timerange (tool calls) are all the
-        # meta agent's own memory ops (codex P2 2026-06-24).
-        finish = _mk_msg(MessageRole.tool, name="finish_memory_update", texts=["{}"])
-        search = _mk_msg(MessageRole.assistant, tool_calls=[("search_in_memory", "{}")])
-        listm = _mk_msg(
-            MessageRole.assistant, tool_calls=[("list_memory_within_timerange", "{}")]
+        exp_mgr = _RecordingManager()
+        fake = _FakeLLMClient(MIXED_REPLY)
+        d = SessionExperienceDistiller(
+            llm_client=fake, experience_manager=exp_mgr, conversation_manager=conv
         )
-        assert SessionExperienceDistiller._is_mirix_scaffolding(finish) is True
-        assert SessionExperienceDistiller._is_mirix_scaffolding(search) is True
-        assert SessionExperienceDistiller._is_mirix_scaffolding(listm) is True
+        meta, user, actor = _meta_user_actor()
 
-    def test_mixed_memory_tool_calls_are_dropped(self):
-        # trigger_memory_update mixed with search_in_memory must still be dropped
-        # (ANY memory tool call → scaffolding, not ALL) (codex P2 2026-06-24).
-        mixed = _mk_msg(
-            MessageRole.assistant,
-            tool_calls=[("trigger_memory_update", "{}"), ("search_in_memory", "{}")],
+        out = await d._distill_one(
+            meta_agent_state=meta, user=user, actor=actor,
+            session_id="sess-x", skills_block="(none)",
         )
-        assert SessionExperienceDistiller._is_mirix_scaffolding(mixed) is True
+        # The transcript was fetched from the Conversation Message Store…
+        assert conv.list_turns_calls == ["sess-x"]
+        # …the LLM was called once, and experiences were produced.
+        assert fake.calls == 1
+        assert len(out) == 3
 
-    def test_external_turn_quoting_a_marker_is_kept(self):
-        # A real conversation that merely QUOTES the meta-instruction wording must
-        # NOT be dropped — the marker check is gated on non-[USER]/[ASSISTANT] text
-        # (codex P2 2026-06-24, false-positive guard).
-        quoting = _mk_msg(
-            MessageRole.user,
-            texts=[
-                "[USER] What does 'As the meta memory manager, analyze the provided "
-                "content' mean in MIRIX?",
-                "[ASSISTANT] It is the system instruction given to the meta agent.",
-            ],
+    async def test_empty_session_in_store_skips_llm(self):
+        conv = _RecordingConversationManager(turns_by_session={"empty": []})
+        fake = _FakeLLMClient(MIXED_REPLY)
+        d = SessionExperienceDistiller(
+            llm_client=fake,
+            experience_manager=_RecordingManager(),
+            conversation_manager=conv,
         )
-        assert SessionExperienceDistiller._is_mirix_scaffolding(quoting) is False
-        out = SessionExperienceDistiller._render_transcript([quoting])
-        assert "meta memory manager" in out  # survived
+        meta, user, actor = _meta_user_actor()
+        out = await d._distill_one(
+            meta_agent_state=meta, user=user, actor=actor,
+            session_id="empty", skills_block="(none)",
+        )
+        assert out == []
+        # No turns → no LLM call (the source store is the only thing consulted).
+        assert conv.list_turns_calls == ["empty"]
+        assert fake.calls == 0
 
-    def test_scaffolding_only_session_renders_empty(self):
-        # A session with NO ingested external content (only MIRIX scaffolding)
-        # yields an empty transcript — the caller then skips the LLM entirely
-        # (codex P2 2026-06-24).
-        out = SessionExperienceDistiller._render_transcript(
-            [_SYS_INSTRUCTION, _TRIGGER_CALL, _TOOL_RESULT, _CHAINING]
+    async def test_enumerate_sealed_sessions_delegates_to_store(self):
+        conv = _RecordingConversationManager(sealed=["s1", "s2", "s3"])
+        d = SessionExperienceDistiller(conversation_manager=conv)
+        _, user, actor = _meta_user_actor()
+        out = await d.enumerate_sealed_sessions(
+            user_id=user.id,
+            organization_id=actor.organization_id,
+            actor=actor,
+            limit=5,
         )
-        assert out.strip() == ""
+        # Enumeration comes from the store's sealed-session query, oldest-first.
+        assert out == ["s1", "s2", "s3"]
+        assert conv.sealed_calls == [{"limit": 5}]
+
+
+class TestDistillerSourceIsConversationStore:
+    """Static guard that the distiller's source-of-truth is the Conversation
+    Message Store and that it no longer enumerates the meta agent's messages."""
+
+    def test_distiller_fetches_via_conversation_manager(self):
+        src = inspect.getsource(SessionExperienceDistiller._distill_one)
+        assert "list_turns_for_session" in src
+        # Must NOT read the meta agent's message thread for distillation.
+        assert "list_messages_for_agent" not in src
+
+    def test_distiller_constructor_injects_conversation_manager(self):
+        sig = inspect.signature(SessionExperienceDistiller.__init__)
+        assert "conversation_manager" in sig.parameters
+
+    def test_distiller_does_not_import_message_manager(self):
+        # The distiller's source must not pull in the meta-agent MessageManager,
+        # nor query the meta `messages` store — that store is structurally out of
+        # reach. (`ConversationMessageManager` legitimately contains the substring
+        # "MessageManager", so we match the precise import / query forms instead.)
+        src = inspect.getsource(inspect.getmodule(SessionExperienceDistiller))
+        assert "from mirix.services.message_manager import" not in src
+        assert "list_messages_for_agent" not in src
+        # …and it DOES use the Conversation Message Store.
+        assert "ConversationMessageManager" in src

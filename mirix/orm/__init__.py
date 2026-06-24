@@ -5,6 +5,7 @@ from mirix.orm.block import Block
 from mirix.orm.client import Client
 from mirix.orm.client_api_key import ClientApiKey
 from mirix.orm.cloud_file_mapping import CloudFileMapping
+from mirix.orm.conversation_message import ConversationMessage
 from mirix.orm.episodic_memory import EpisodicEvent
 from mirix.orm.file import FileMetadata
 from mirix.orm.knowledge_vault import KnowledgeVaultItem
@@ -29,6 +30,7 @@ __all__ = [
     "Client",
     "ClientApiKey",
     "CloudFileMapping",
+    "ConversationMessage",
     "EpisodicEvent",
     "FileMetadata",
     "KnowledgeVaultItem",

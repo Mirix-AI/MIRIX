@@ -189,7 +189,7 @@ class TestAgentTriggerStateManagerSurface:
         mgr = AgentTriggerStateManager
         for name in (
             "get_state",
-            "count_distinct_sessions_since",
+            "count_sealed_undistilled_sessions",
             "check_and_claim_fire",
         ):
             assert hasattr(mgr, name), f"manager missing {name}"
@@ -219,18 +219,22 @@ class TestAgentTriggerStateManagerSurface:
         assert fields == {"fired", "sessions_since", "just_installed", "state"}
 
     def test_count_signature_accepts_expected_kwargs(self):
-        sig = inspect.signature(AgentTriggerStateManager.count_distinct_sessions_since)
+        # The cadence now counts SEALED, not-yet-distilled sessions in the
+        # Conversation Message Store, scoped per (user, org). The old
+        # cursor/watermark kwargs (since, tied_session_ids, exclude_session_id)
+        # are gone — distilled_at is the durable dedup, not a timestamp window.
+        sig = inspect.signature(
+            AgentTriggerStateManager.count_sealed_undistilled_sessions
+        )
         params = sig.parameters
-        for name in (
-            "agent_id",
-            "user_id",
-            "since",
-            "tied_session_ids",
-        ):
-            assert name in params, f"count_distinct_sessions_since missing kwarg {name}"
-        # exclude_session_id was only meaningful under MAX windowing; MIN
-        # filter subsumes it (the in-progress session's MIN is <= cursor).
-        assert "exclude_session_id" not in params
+        for name in ("user_id", "organization_id"):
+            assert name in params, (
+                f"count_sealed_undistilled_sessions missing kwarg {name}"
+            )
+        for gone in ("since", "tied_session_ids", "exclude_session_id", "agent_id"):
+            assert gone not in params, (
+                f"obsolete windowing kwarg {gone} should be gone"
+            )
 
     def test_uses_select_for_update(self):
         # The whole point of check_and_claim_fire is serializing two workers
@@ -241,66 +245,75 @@ class TestAgentTriggerStateManagerSurface:
             "check_and_claim_fire must lock the cursor row with SELECT FOR UPDATE"
         )
 
-    def test_excludes_soft_deleted_messages(self):
-        # Messages carry an is_deleted flag from CommonSqlalchemyMetaMixins.
-        # Leaving them in the count lets a user's deleted history keep
-        # firing procedural extraction — mirror message_manager's
-        # `is_deleted == False` convention.
-        agg_src = inspect.getsource(AgentTriggerStateManager._aggregate_window)
-        assert "MessageModel.is_deleted.is_(False)" in agg_src, (
-            "aggregate must exclude soft-deleted messages"
+    def test_excludes_soft_deleted_turns(self):
+        # Conversation turns carry an is_deleted flag from the common mixins.
+        # Leaving them in the count lets a user's wiped conversation keep
+        # firing procedural extraction — mirror the manager's filter.
+        agg_src = inspect.getsource(
+            AgentTriggerStateManager._aggregate_sealed_undistilled
+        )
+        assert "ConversationMessageModel.is_deleted.is_(False)" in agg_src, (
+            "aggregate must exclude soft-deleted conversation turns"
         )
 
-    def test_uses_min_semantics_not_max(self):
-        # MIN-based windowing is what prevents double-counting a session
-        # whose last message happens to fall in a future window. Each
-        # session's MIN(created_at) is immutable once the first message is
-        # inserted, so the HAVING filter `MIN > cursor` matches exactly
-        # one window. Reverting to MAX reintroduces that bug.
-        agg_src = inspect.getsource(AgentTriggerStateManager._aggregate_window)
-        assert "func.min(MessageModel.created_at)" in agg_src
-        assert "func.max(MessageModel.created_at)" not in agg_src
-        # Sanity: the filter clamps per-session MIN against the cursor via
-        # HAVING, not rows via WHERE — MIN is an aggregate.
-        assert ".having(" in agg_src
-
-    def test_count_and_tied_ids_from_single_query(self):
-        # count, watermark, and tied_ids MUST all come from one aggregate
-        # query. Running them as separate queries under READ COMMITTED
-        # allows a message that commits between them to land in tied_ids
-        # without being counted, which would drop its session forever.
-        agg_src = inspect.getsource(AgentTriggerStateManager._aggregate_window)
-        assert "group_by(MessageModel.session_id)" in agg_src, (
-            "tied-set and count must be derived from one GROUP BY query"
+    def test_seals_by_min_created_at_and_dedups_by_max_distilled_at(self):
+        # Sealing/order uses MIN(created_at) per session (first-appearance order,
+        # immutable once the first turn lands). Dedup uses MAX(distilled_at) IS
+        # NULL — a session counts iff none of its turns has been distilled.
+        agg_src = inspect.getsource(
+            AgentTriggerStateManager._aggregate_sealed_undistilled
         )
-        # And there must be no separate tied-ids query hanging around.
+        assert "func.min(ConversationMessageModel.created_at)" in agg_src
+        assert "func.max(ConversationMessageModel.distilled_at)" in agg_src
+        # created_at must NOT be aggregated with MAX (that would misorder sealing).
+        assert "func.max(ConversationMessageModel.created_at)" not in agg_src
+        # The open head (newest MIN) is dropped structurally so an in-progress
+        # session is never counted — sealing is not a HAVING timestamp window.
+        assert "grouped[:-1]" in agg_src
+
+    def test_sealed_set_from_single_group_by_query(self):
+        # The sealed-undistilled set comes from ONE GROUP BY session_id aggregate
+        # (order + distilled marker together), never separate queries.
+        agg_src = inspect.getsource(
+            AgentTriggerStateManager._aggregate_sealed_undistilled
+        )
+        assert "group_by(ConversationMessageModel.session_id)" in agg_src, (
+            "sealed set must be derived from one GROUP BY query"
+        )
+        # No leftover machinery from the old message-table windowing scheme.
         mgr_src = inspect.getsource(AgentTriggerStateManager)
         assert "_tied_session_ids_at" not in mgr_src
+        assert "_aggregate_window" not in mgr_src
 
-    def test_window_uses_tie_breaker(self):
-        # Guards against regressing to the naive `MIN > cursor` filter,
-        # which silently drops the rare case of a session whose first
-        # message has the exact watermark timestamp but committed after
-        # our SELECT.
-        agg_src = inspect.getsource(AgentTriggerStateManager._aggregate_window)
-        # Strictly-newer sessions are captured via `>`.
-        assert "per_session_min > since" in agg_src
-        # Sessions with MIN == cursor are captured via the tie-breaker,
-        # OR via the `>=` shortcut when no tied set exists.
-        assert "per_session_min >= since" in agg_src
-        assert "per_session_min == since" in agg_src
-        assert "session_id.notin_(tied_session_ids)" in agg_src
+    def test_dedup_is_distilled_at_not_timestamp_tiebreaker(self):
+        # The old MIN>cursor + tied-session tie-breaker windowing is gone.
+        # Dedup is now durable: a session drops out of the sealed-undistilled
+        # set once its turns are stamped distilled_at, so there is no timestamp
+        # watermark to tie-break and no risk of double-firing a session.
+        agg_src = inspect.getsource(
+            AgentTriggerStateManager._aggregate_sealed_undistilled
+        )
+        # A session is undistilled iff MAX(distilled_at) IS NULL.
+        assert "grp.last_distilled is None" in agg_src
+        # No resurrected watermark / tie-breaker machinery.
+        for gone in (
+            "per_session_min > since",
+            "session_id.notin_(tied_session_ids)",
+            "per_session_min == since",
+            ".having(",
+        ):
+            assert gone not in agg_src, f"obsolete windowing fragment {gone!r} present"
 
-    def test_advance_records_tied_set(self):
-        # When a fire claims, the new cursor must record both the watermark
-        # timestamp AND the session_ids tied to it. Missing tied set =>
-        # next window silently loses any concurrent insert at the same ts.
+    def test_fire_records_batch_for_diagnostics_only(self):
+        # On fire, the cursor records the oldest `threshold` sealed sessions it
+        # claimed — for diagnostics ONLY. It must NOT be subtracted from future
+        # counts (distilled_at is the real dedup; subtracting would strand a
+        # session that failed to distill from its own retry).
         src = inspect.getsource(AgentTriggerStateManager.check_and_claim_fire)
-        assert "last_fired_tied_session_ids = tied_ids" in src
-        # Tied ids come from the same aggregate query as the count, so
-        # they are mutually consistent with the counted set.
-        agg_src = inspect.getsource(AgentTriggerStateManager._aggregate_window)
-        assert "row.first_ts == watermark" in agg_src
+        assert "last_fired_tied_session_ids = fired_batch" in src
+        assert "fired_batch = all_sealed[:threshold]" in src
+        # The fire counts the full sealed set, not a tied-subtracted remainder.
+        assert "count = len(all_sealed)" in src
 
 
 # ----------------------------- memory_tools wiring -----------------------

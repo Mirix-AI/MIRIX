@@ -2088,6 +2088,44 @@ class AddMemoryRequest(BaseModel):
         return self
 
 
+def _extract_conversation_turns(messages: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+    """Extract clean per-role turns for the Conversation Message Store.
+
+    Reads the REAL roles from the raw add-memory payload (the same shape the
+    role-collapse branch consumes) and preserves them as 'user'/'assistant' —
+    NOT the [USER]/[ASSISTANT] role-collapsed blob the meta agent receives. The
+    store is the single source of truth for skill distillation, so it keeps the
+    true turn structure.
+
+    Only role-bearing payloads (`[{"role": ..., "content": ...}, ...]`) yield
+    turns; anything else (e.g. screenshot/content-only payloads) yields [] and
+    nothing is written. `content` may be a string or a list of string parts; a
+    list is joined with newlines to match how the collapse branch treats parts.
+    Roles other than 'user'/'assistant' are dropped — the store's schema only
+    knows those two, and a foreign role is not a learnable conversation turn.
+    """
+    if not (
+        isinstance(messages, list)
+        and messages
+        and isinstance(messages[0], dict)
+        and "role" in messages[0]
+    ):
+        return []
+
+    turns: List[Dict[str, str]] = []
+    for msg in messages:
+        role = msg.get("role")
+        if role not in ("user", "assistant"):
+            continue
+        content = msg.get("content", "")
+        if isinstance(content, list):
+            content = "\n".join(str(part) for part in content)
+        elif not isinstance(content, str):
+            content = str(content)
+        turns.append({"role": role, "content": content})
+    return turns
+
+
 @router.post("/memory/add")
 @with_langfuse_tracing
 async def add_memory(
@@ -2165,6 +2203,43 @@ async def add_memory(
         for msg_create in input_messages:
             if msg_create.session_id is None:
                 msg_create.session_id = request.session_id
+
+    # Conversation Message Store write (independent of the meta dispatch below).
+    # When the caller supplies a session_id, persist the external turns with
+    # their REAL user/assistant roles into the dedicated store that is the single
+    # source of truth for procedural-memory (skill) distillation. Without a
+    # session_id we write nothing here, so no procedural memory is produced — the
+    # other five components still extract via the unchanged meta dispatch.
+    #
+    # This write must be ADDITIVE: it is isolated in its own try/except so a store
+    # failure (DB error, validation, etc.) is logged but never aborts the primary
+    # memory ingestion (the put_messages dispatch below). Worst case is a missed
+    # session for skill distillation, not a dropped memory-add.
+    if request.session_id is not None:
+        conversation_turns = _extract_conversation_turns(request.messages)
+        if conversation_turns:
+            from mirix.services.conversation_message_manager import (
+                ConversationMessageManager,
+            )
+
+            store_org_id = (
+                client.organization_id
+                or server.organization_manager.DEFAULT_ORG_ID
+            )
+            try:
+                await ConversationMessageManager().record_turns(
+                    session_id=request.session_id,
+                    user_id=user_id,
+                    organization_id=store_org_id,
+                    turns=conversation_turns,
+                    actor=client,
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to record conversation turns to the store for "
+                    "session_id=%s; memory ingestion will still proceed",
+                    request.session_id,
+                )
 
     # Add client scope to filter_tags (create if not provided)
     if request.filter_tags is not None:
@@ -2285,6 +2360,40 @@ async def add_memory_sync(
         for msg_create in input_messages:
             if msg_create.session_id is None:
                 msg_create.session_id = request.session_id
+
+    # Conversation Message Store write (independent of the meta dispatch below).
+    # Mirrors /memory/add: a session_id'd add persists the external turns with
+    # their REAL user/assistant roles into the dedicated store the procedural
+    # distiller reads. No session_id -> no store write -> no procedural memory,
+    # while the other five components still extract via the unchanged dispatch.
+    #
+    # Isolated in its own try/except so a store failure is logged but never
+    # aborts the primary memory ingestion (the send_messages dispatch below).
+    if request.session_id is not None:
+        conversation_turns = _extract_conversation_turns(request.messages)
+        if conversation_turns:
+            from mirix.services.conversation_message_manager import (
+                ConversationMessageManager,
+            )
+
+            store_org_id = (
+                client.organization_id
+                or server.organization_manager.DEFAULT_ORG_ID
+            )
+            try:
+                await ConversationMessageManager().record_turns(
+                    session_id=request.session_id,
+                    user_id=user_id,
+                    organization_id=store_org_id,
+                    turns=conversation_turns,
+                    actor=client,
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to record conversation turns to the store for "
+                    "session_id=%s; memory ingestion will still proceed",
+                    request.session_id,
+                )
 
     if request.filter_tags is not None:
         filter_tags = dict(request.filter_tags)

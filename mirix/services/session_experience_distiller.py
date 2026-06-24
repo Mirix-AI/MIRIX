@@ -1,12 +1,22 @@
 """Goal 2 — General per-session experience distillation.
 
-Given the meta agent's last-N RETAINED sessions (Goal-1 keeps their raw
-messages), this distills each session's transcript, IN PARALLEL, into zero or
-more transferable :class:`SkillExperience` rows (status ``pending``). A single
+Given the sealed, not-yet-distilled sessions in the Conversation Message Store,
+this distills each session's transcript, IN PARALLEL, into zero or more
+transferable :class:`SkillExperience` rows (status ``pending``). A single
 session can yield MULTIPLE experiences and a MIX of ``worth_learning`` /
 ``worth_avoiding`` — there is no external success/failure oracle; the lessons
 are derived purely from the conversation content (user critique/confirmation,
 tool errors/retries, the agent's own self-corrections, or weak inference).
+
+The transcript source is the Conversation Message Store (the SINGLE source of
+truth for skill learning): a dedicated store of external conversation turns with
+their REAL ``user`` / ``assistant`` roles preserved, written only when an add
+request carried a ``session_id``. The distiller therefore can NEVER see the meta
+agent's own memory-management scaffolding (the "[System Message] As the meta
+memory manager …" instruction, its trigger/finish_memory_update tool calls and
+results, or the continue_chaining control replies) — those never enter this
+store. Correctness comes from structure (which table we read), not from a string
+heuristic, so the legacy ``_is_mirix_scaffolding`` filter is gone.
 
 Design points (CLAUDE.md async rules):
 * Async-only; never starts a nested event loop (the server loop is running).
@@ -18,19 +28,17 @@ Design points (CLAUDE.md async rules):
 * The system prompt is the rewritten general Experience-Distiller prompt at
   ``prompts/system/base/auto_dream_agent/procedural.txt``.
 
-Session enumeration mirrors ``AgentTriggerStateManager._aggregate_window``:
-``GROUP BY session_id`` with ``MIN(created_at)`` per session, ordered MIN DESC,
-take the most-recent N — these are the same sessions Goal-1 retained.
+Session enumeration delegates to
+``ConversationMessageManager.list_sealed_undistilled_sessions`` (sealed =
+a strictly-newer distinct session exists; oldest-first), so the rolling barrier
+never distills the in-progress head of the window.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
-import os
-from typing import Dict, List, Optional
-
-from sqlalchemy import func, select
+from typing import Dict, List, Optional, Tuple
 
 from mirix.log import get_logger
 from mirix.schemas.agent import AgentState
@@ -47,45 +55,36 @@ from mirix.schemas.skill_experience import (
 )
 from mirix.schemas.user import User as PydanticUser
 from mirix.helpers.json_parsing import parse_distiller_json_array
+from mirix.services.conversation_message_manager import ConversationMessageManager
 from mirix.services.skill_experience_manager import SkillExperienceManager
-from mirix.constants import META_MEMORY_TOOLS, UNIVERSAL_MEMORY_TOOLS
 
 logger = get_logger(__name__)
-
-# How many transcript messages to pull per session (high — we want the whole
-# retained session, but bounded so a runaway session can't blow up the prompt).
-_MAX_MESSAGES_PER_SESSION = 400
 
 # Per-transcript char budget. We keep the HEAD and TAIL (where the task framing
 # and the final user verdict / confirmation usually live) and elide the middle.
 _MAX_TRANSCRIPT_CHARS = 16000
 
-# Per-message content cap so one giant tool dump can't dominate the transcript.
+# Per-turn content cap so one giant turn can't dominate the transcript.
 _MAX_MESSAGE_CHARS = 2000
 
-# MIRIX's OWN memory-management scaffolding must NEVER be distilled as if it were
-# the external conversation. The meta agent's session transcript comingles the
-# ingested external turns with the meta agent's own memory-update actions: the
-# "[System Message] As the meta memory manager …" instruction, its
-# trigger_memory_update / finish_memory_update tool calls, those tools' results,
-# and the automated continue/finish-chaining replies. Learning from the latter
-# yields meta-noise experiences like "trigger episodic memory update when the
-# system requests meta memory management" — i.e. the distiller learning to operate
-# MIRIX itself instead of the task. We drop those in _render_transcript (see
-# _is_mirix_scaffolding). Ingested external content is always [USER]/[ASSISTANT]-
-# tagged (the /memory/add role-collapse); MIRIX scaffolding never is.
-# Sourced from the agent tool registry (not hardcoded) so the filter tracks the
-# meta agent's tools as they change: trigger_memory_update + search_in_memory +
-# finish_memory_update + list_memory_within_timerange. The meta agent operates
-# ONLY these memory tools — it never makes external task tool calls — so a tool
-# call to ANY of them marks the message as MIRIX scaffolding.
-_MIRIX_MEMORY_TOOLS = frozenset(META_MEMORY_TOOLS) | frozenset(UNIVERSAL_MEMORY_TOOLS)
-_META_INSTRUCTION_MARKER = "As the meta memory manager, analyze the provided content"
-_CHAINING_MARKERS = (
-    '"contine_chaining"',
-    '"continue_chaining"',
-    "automated system message hidden from the user",
-)
+
+class _LLMCallError(Exception):
+    """Raised on an OPERATIONAL LLM failure (no client, failed request, or
+    malformed response) — as opposed to a legitimately empty distillation. Lets
+    the per-session path mark the session as NOT processed so the barrier does
+    not advance and a later round retries it."""
+
+
+class _DistillFailed(Exception):
+    """Raised by ``_distill_one`` when a session could NOT be processed due to an
+    operational failure (DB read, LLM call, or persistence). ``distill_sessions``
+    catches it to EXCLUDE that session from ``processed_session_ids`` so the
+    barrier is not advanced past a failed conversation and a later round retries
+    it. Carries the offending ``session_id`` for diagnostics."""
+
+    def __init__(self, session_id: str):
+        self.session_id = session_id
+        super().__init__(session_id)
 
 
 def _load_distiller_prompt() -> str:
@@ -102,7 +101,7 @@ def _load_distiller_prompt() -> str:
 
 
 class SessionExperienceDistiller:
-    """Distill the meta agent's last-N retained sessions into experiences.
+    """Distill the sealed, not-yet-distilled conversation sessions into experiences.
 
     Args:
         llm_client: an instance exposing ``async send_llm_request(messages)``
@@ -112,6 +111,9 @@ class SessionExperienceDistiller:
             is not supplied. Required for a real completion.
         experience_manager: a :class:`SkillExperienceManager`; defaults to a
             fresh instance (constructed lazily so import never touches the DB).
+        conversation_manager: a :class:`ConversationMessageManager` — the source
+            of session enumeration and per-session transcripts. Defaults to a
+            fresh instance (constructed lazily so import never touches the DB).
     """
 
     def __init__(
@@ -120,55 +122,42 @@ class SessionExperienceDistiller:
         llm_client=None,
         llm_config=None,
         experience_manager: Optional[SkillExperienceManager] = None,
+        conversation_manager: Optional[ConversationMessageManager] = None,
     ):
         self._llm_client = llm_client
         self._llm_config = llm_config
         self._experience_manager = experience_manager
+        self._conversation_manager = conversation_manager
         self._system_prompt = _load_distiller_prompt()
 
     # ------------------------------------------------------------------ #
     # Session enumeration                                                 #
     # ------------------------------------------------------------------ #
 
-    async def enumerate_last_n_sessions(
+    async def enumerate_sealed_sessions(
         self,
         *,
-        agent_id: str,
-        user_id: Optional[str],
-        n: int,
+        user_id: str,
+        organization_id: str,
+        actor: PydanticClient,
+        limit: int,
     ) -> List[str]:
-        """Return the most-recent ``n`` session_ids for (agent[, user]).
+        """Return up to ``limit`` sealed, not-yet-distilled session_ids, OLDEST first.
 
-        Mirrors ``AgentTriggerStateManager._aggregate_window``: ``GROUP BY
-        session_id`` with ``MIN(created_at)`` per session, ordered MIN DESC,
-        skipping NULL session_ids and soft-deleted rows. Returns at most ``n``
-        session_ids, ordered most-recent-first.
+        Delegates to
+        :meth:`ConversationMessageManager.list_sealed_undistilled_sessions`.
+        "Sealed" = a strictly-newer distinct session exists, so the open head of
+        the window is never returned; only sessions whose turns have NULL
+        ``distilled_at`` survive. Scoped per ``(user, organization)``.
         """
-        if n <= 0:
+        if limit <= 0:
             return []
-        from mirix.orm.message import Message as MessageModel
-        from mirix.server.server import db_context
-
-        per_session_min = func.min(MessageModel.created_at).label("first_ts")
-        preds = [
-            MessageModel.agent_id == agent_id,
-            MessageModel.session_id.isnot(None),
-            MessageModel.is_deleted.is_(False),
-        ]
-        if user_id is not None:
-            preds.append(MessageModel.user_id == user_id)
-
-        stmt = (
-            select(MessageModel.session_id, per_session_min)
-            .where(*preds)
-            .group_by(MessageModel.session_id)
-            .order_by(per_session_min.desc())
-            .limit(n)
+        return await self._get_conversation_manager().list_sealed_undistilled_sessions(
+            user_id=user_id,
+            organization_id=organization_id,
+            actor=actor,
+            limit=limit,
         )
-        async with db_context() as session:
-            result = await session.execute(stmt)
-            rows = result.all()
-        return [row.session_id for row in rows if row.session_id is not None]
 
     # ------------------------------------------------------------------ #
     # Per-session distillation (parallel fan-out)                         #
@@ -182,19 +171,31 @@ class SessionExperienceDistiller:
         actor: PydanticClient,
         session_ids: List[str],
         existing_skills: Optional[List[Dict]] = None,
-    ) -> List[PydanticSkillExperience]:
+    ) -> Tuple[List[PydanticSkillExperience], List[str]]:
         """Distill each session IN PARALLEL into persisted experiences.
 
         Each session → one coroutine (fetch transcript → one LLM call → parse
         the JSON array → persist each element as a ``pending`` SkillExperience).
         Per-session try/except isolates failures: a single bad session yields an
-        empty list rather than crashing the whole gather. Returns the flat list
-        of all created experiences across sessions.
+        empty outcome rather than crashing the whole gather.
+
+        Returns ``(experiences, processed_session_ids)``:
+          * ``experiences``          — the flat list of all created experiences.
+          * ``processed_session_ids``— the session_ids that were SUCCESSFULLY
+            processed (including those that legitimately yielded zero
+            experiences). A session that hit an OPERATIONAL failure (bad
+            transcript fetch / LLM call / persistence) is OMITTED here, so the
+            caller leaves it undistilled and a later round retries it instead of
+            silently advancing the barrier past a failed conversation.
         """
         if not session_ids:
-            return []
+            return [], []
 
         skills_block = self._format_existing_skills(existing_skills or [])
+        # return_exceptions=True so one operationally-failed session surfaces as a
+        # _DistillFailed in `results` rather than crashing the whole gather; we map
+        # exceptions -> "not processed" and any returned list (even []) ->
+        # "processed".
         results = await asyncio.gather(
             *[
                 self._distill_one(
@@ -206,15 +207,25 @@ class SessionExperienceDistiller:
                 )
                 for sid in session_ids
             ],
-            return_exceptions=False,  # _distill_one never raises (own try/except)
+            return_exceptions=True,
         )
         created: List[PydanticSkillExperience] = []
-        for items in results:
-            created.extend(items)
+        processed_session_ids: List[str] = []
+        for sid, result in zip(session_ids, results):
+            if isinstance(result, BaseException):
+                # Operational failure (logged in _distill_one). Leave the session
+                # undistilled so a later round retries it.
+                continue
+            created.extend(result)
+            processed_session_ids.append(sid)
         logger.info(
-            "Distilled %d session(s) → %d experience(s)", len(session_ids), len(created)
+            "Distilled %d session(s) → %d experience(s); %d processed, %d failed",
+            len(session_ids),
+            len(created),
+            len(processed_session_ids),
+            len(session_ids) - len(processed_session_ids),
         )
-        return created
+        return created, processed_session_ids
 
     async def _distill_one(
         self,
@@ -225,25 +236,30 @@ class SessionExperienceDistiller:
         session_id: str,
         skills_block: str,
     ) -> List[PydanticSkillExperience]:
-        """Distill ONE session; never raises (returns [] on any failure)."""
-        try:
-            from mirix.services.message_manager import MessageManager
+        """Distill ONE session into persisted experiences.
 
-            msgs = await MessageManager().list_messages_for_agent(
-                agent_id=meta_agent_state.id,
+        Returns the (possibly empty) list of created experiences on success — a
+        legitimately empty session (no turns / no usable content / the model
+        returned ``[]``) is a SUCCESS that returns ``[]``. On an OPERATIONAL
+        failure (a failed transcript fetch / LLM call / persistence) it raises
+        :class:`_DistillFailed`, which :meth:`distill_sessions` catches to mark
+        the session as NOT processed (so its barrier is not advanced and a later
+        round retries it). It never lets any OTHER exception escape.
+        """
+        try:
+            turns = await self._get_conversation_manager().list_turns_for_session(
                 session_id=session_id,
-                ascending=True,
+                user_id=user.id,
+                organization_id=actor.organization_id,
                 actor=actor,
-                limit=_MAX_MESSAGES_PER_SESSION,
-                use_cache=False,
             )
-            if not msgs:
+            if not turns:
+                # Empty session: nothing to learn, but successfully processed.
                 return []
 
-            transcript = self._render_transcript(msgs)
+            transcript = self._render_transcript(turns)
             if not transcript.strip():
-                # Whole session was MIRIX scaffolding (no ingested external
-                # content) — nothing to learn; skip the LLM call entirely.
+                # No usable content — successfully processed, nothing to learn.
                 return []
             parsed = await self._call_llm(
                 agent_id=meta_agent_state.id,
@@ -252,6 +268,8 @@ class SessionExperienceDistiller:
                 skills_block=skills_block,
             )
             if not parsed:
+                # The model returned an empty array — a legitimate "nothing worth
+                # remembering" result. Processed successfully.
                 return []
 
             return await self._persist_experiences(
@@ -261,11 +279,22 @@ class SessionExperienceDistiller:
                 session_id=session_id,
                 parsed=parsed,
             )
-        except Exception as e:  # noqa: BLE001 — isolate per-session failures
+        except _DistillFailed:
+            # Already classified (e.g. total persistence failure) — propagate as-is
+            # so distill_sessions excludes this session from processed.
+            logger.warning(
+                "Session experience distill failed for session %s (operational)",
+                session_id,
+            )
+            raise
+        except Exception as e:  # noqa: BLE001 — classify as an operational failure
+            # DB read, LLM call (raised as _LLMCallError), or another operational
+            # error. Re-raise as _DistillFailed so distill_sessions leaves the
+            # session undistilled for a later retry instead of advancing the barrier.
             logger.warning(
                 "Session experience distill failed for session %s: %s", session_id, e
             )
-            return []
+            raise _DistillFailed(session_id) from e
 
     async def _persist_experiences(
         self,
@@ -276,8 +305,20 @@ class SessionExperienceDistiller:
         session_id: str,
         parsed: List[Dict],
     ) -> List[PydanticSkillExperience]:
+        """Persist each valid parsed item as a pending SkillExperience.
+
+        Per-row try/except means one bad row can't drop the rest. But if there
+        were valid rows to persist and EVERY persistence attempt raised (i.e. the
+        store is down, not just one malformed row), that is an operational failure
+        — raise :class:`_DistillFailed` so the session is NOT marked distilled and
+        a later round retries it, rather than silently advancing the barrier past
+        a conversation whose experiences never landed. Pure VALIDATION skips
+        (bad type / empty title) are not failures and never raise.
+        """
         mgr = self._get_experience_manager()
         created: List[PydanticSkillExperience] = []
+        attempted = 0  # valid rows we actually tried to persist
+        persist_errors = 0
         for item in parsed:
             exp_type = item.get("experience_type")
             if exp_type not in ("worth_learning", "worth_avoiding"):
@@ -297,6 +338,7 @@ class SessionExperienceDistiller:
             importance = _clamp01(item.get("importance"))
             credibility = _clamp01(item.get("credibility"))
             evidence = self._normalize_evidence(item.get("evidence"))
+            attempted += 1
             try:
                 exp = await mgr.create_experience(
                     agent_id=meta_agent_state.id,
@@ -313,12 +355,21 @@ class SessionExperienceDistiller:
                 )
                 created.append(exp)
             except Exception as e:  # noqa: BLE001 — one bad row mustn't drop the rest
+                persist_errors += 1
                 logger.warning(
                     "Failed to persist experience %r (session %s): %s",
                     title,
                     session_id,
                     e,
                 )
+
+        # Total persistence failure: we had valid rows but NONE landed and every
+        # attempt errored → the store is down. Signal an operational failure so
+        # the session is left undistilled for retry. (A partial success — at least
+        # one row landed — returns what persisted; a session with only validation
+        # skips has attempted==0 and is a clean empty result.)
+        if attempted > 0 and not created and persist_errors == attempted:
+            raise _DistillFailed(session_id)
         return created
 
     # ------------------------------------------------------------------ #
@@ -333,13 +384,19 @@ class SessionExperienceDistiller:
         transcript: str,
         skills_block: str,
     ) -> List[Dict]:
+        """Run ONE completion and parse a JSON array of experiences.
+
+        An empty ``[]`` is a legitimate "nothing worth remembering" result and is
+        returned normally. An OPERATIONAL failure (no client/config, a failed
+        request, or a malformed response) raises ``_LLMCallError`` instead of
+        returning ``[]`` — so the caller can tell a transient failure apart from a
+        genuinely empty session and NOT advance the barrier on the former.
+        """
         client = self._get_client()
         if client is None:
-            logger.warning(
-                "session distiller: no LLM client/config available; skipping session %s",
-                session_id,
+            raise _LLMCallError(
+                f"no LLM client/config available for session {session_id}"
             )
-            return []
 
         user_payload = (
             f"agent_id: {agent_id}\n"
@@ -363,14 +420,62 @@ class SessionExperienceDistiller:
         ]
         try:
             response = await client.send_llm_request(messages=messages)
-        except Exception as e:  # noqa: BLE001 — never crash the per-session path
-            logger.warning("session distiller: LLM request failed: %s", e)
-            return []
+        except Exception as e:  # noqa: BLE001 — surface as an operational failure
+            raise _LLMCallError(f"LLM request failed: {e}") from e
         try:
             content = response.choices[0].message.content
-        except (AttributeError, IndexError):
-            return []
-        return parse_distiller_json_array(content)
+        except (AttributeError, IndexError) as e:
+            raise _LLMCallError(f"malformed LLM response: {e}") from e
+
+        parsed = parse_distiller_json_array(content)
+        if not parsed and not self._is_explicit_empty_result(content):
+            # The shared parser returns [] both for a real empty array AND for
+            # unparseable output. A non-empty content that parsed to [] is most
+            # likely a TRANSIENT bad completion (truncation, a wrapped error), so
+            # we log it for observability. We do NOT raise here on purpose: this
+            # barrier has no durable per-session retry counter, so retrying a
+            # session the model *consistently* renders unparseable (e.g. it states
+            # "no experiences" in prose with no JSON) would peg the rolling window
+            # forever. Treating an unparseable empty as "nothing learned" advances
+            # the window at the cost of at most one session's learning on a one-off
+            # bad completion — the safer tradeoff than a permanently stuck barrier.
+            logger.warning(
+                "session distiller: non-empty LLM output for session %s parsed to "
+                "[] (treating as empty; possible transient bad completion)",
+                session_id,
+            )
+        return parsed
+
+    @staticmethod
+    def _is_explicit_empty_result(content) -> bool:
+        """True iff `content` legitimately represents "no experiences" rather than
+        unparseable garbage.
+
+        A model that means "nothing worth remembering" emits an empty array. We
+        treat empty/whitespace OR a content whose only JSON-array token is an empty
+        `[]` (optionally fenced / surrounded by prose) as a legitimate empty
+        result. Anything else that parsed to `[]` is malformed output, which
+        `_call_llm` raises on. Conservative by design: a false "explicit empty"
+        only costs one skipped (already-empty) session, never a wrongful retry.
+        """
+        if content is None:
+            return True
+        if not isinstance(content, str):
+            return False
+        text = content.strip()
+        if not text:
+            return True
+        # Strip a single ```json / ``` fence if present, then look at the payload.
+        import re as _re
+
+        fence = _re.search(r"```(?:json)?\s*(.*?)```", text, _re.DOTALL | _re.IGNORECASE)
+        if fence:
+            text = fence.group(1).strip()
+        # An explicit empty array (the only well-formed "nothing" the model emits).
+        # `[]`, `[ ]`, or those wrapped in a tiny bit of prose all qualify; a
+        # non-empty `[...]` would have parsed to a non-empty list and never reached
+        # here, so the only empty-array token we accept is a literal empty pair.
+        return _re.fullmatch(r"\[\s*\]", text) is not None
 
     def _get_client(self):
         if self._llm_client is not None:
@@ -388,6 +493,11 @@ class SessionExperienceDistiller:
         if self._experience_manager is None:
             self._experience_manager = SkillExperienceManager()
         return self._experience_manager
+
+    def _get_conversation_manager(self) -> ConversationMessageManager:
+        if self._conversation_manager is None:
+            self._conversation_manager = ConversationMessageManager()
+        return self._conversation_manager
 
     # ------------------------------------------------------------------ #
     # Rendering helpers (pure)                                            #
@@ -430,21 +540,19 @@ class SessionExperienceDistiller:
         return json.dumps({"quote": "", "signal_type": "inferred"}, ensure_ascii=False)
 
     @classmethod
-    def _render_transcript(cls, msgs) -> str:
-        """Render messages compactly as ``role: content`` lines.
+    def _render_transcript(cls, turns) -> str:
+        """Render conversation turns compactly as ``role: content`` lines.
 
-        Drops embeddings/heavy fields; flattens tool calls/returns to readable
-        text; caps each message; and bounds the whole transcript by keeping the
-        HEAD and TAIL (task framing + final verdict) and eliding the middle.
+        The source is the Conversation Message Store, so each turn already has a
+        REAL ``role`` ('user' | 'assistant') and a plain-text ``content`` — no
+        scaffolding, no tool-call flattening, no embeddings. We simply cap each
+        turn and bound the whole transcript by keeping the HEAD and TAIL (task
+        framing + final verdict) and eliding the middle.
         """
         lines: List[str] = []
-        for m in msgs:
-            # Never learn from MIRIX's own memory-management scaffolding — only
-            # from the ingested external conversation (see _is_mirix_scaffolding).
-            if cls._is_mirix_scaffolding(m):
-                continue
-            role = cls._role_of(m)
-            text = cls._content_text(m)
+        for t in turns:
+            role = cls._role_of(t)
+            text = cls._content_text(t)
             if not text:
                 continue
             if len(text) > _MAX_MESSAGE_CHARS:
@@ -458,104 +566,15 @@ class SessionExperienceDistiller:
         return f"{head}\n…[elided middle of session]…\n{tail}"
 
     @staticmethod
-    def _plain_content_text(m) -> str:
-        """Plain text of a message's content (no tool-call surfacing)."""
-        content = getattr(m, "content", None)
-        if isinstance(content, str):
-            return content
-        if isinstance(content, list):
-            out = []
-            for c in content:
-                txt = getattr(c, "text", None)
-                if txt and isinstance(txt, str):
-                    out.append(txt)
-            return " ".join(out)
-        return ""
-
-    @classmethod
-    def _is_mirix_scaffolding(cls, m) -> bool:
-        """True iff this message is MIRIX's OWN memory-management process output
-        rather than the ingested external conversation.
-
-        The distiller must learn ONLY from the external user/agent/tool messages
-        fed INTO MIRIX, never from the memory-producing (meta) agent's own
-        scaffolding — otherwise it distills meta-noise about operating MIRIX
-        itself. Three shapes of scaffolding appear on the meta agent's transcript:
-          1. memory-subagent tool RESULTS (role=tool from a memory-mgmt tool),
-          2. the meta agent's OWN tool CALLS (trigger/finish_memory_update),
-          3. MIRIX control messages (the meta-manager instruction + the automated
-             continue/finish-chaining replies).
-        Ingested external content is always [USER]/[ASSISTANT]-tagged and matches
-        none of these.
-        """
-        role = getattr(m, "role", None)
-        name = getattr(m, "name", None)
-        # (1) Memory tool RESULTS.
-        if role == MessageRole.tool and name in _MIRIX_MEMORY_TOOLS:
-            return True
-        # (2) The meta agent's own memory tool CALLS. The meta agent operates ONLY
-        #     memory tools and never makes external task tool calls (external tool
-        #     output is collapsed into [USER]/[ASSISTANT] text, never assistant
-        #     tool_calls on this transcript), so ANY memory tool_call — even mixed
-        #     with another memory tool like search_in_memory — is scaffolding.
-        tool_calls = getattr(m, "tool_calls", None)
-        if tool_calls:
-            for tc in tool_calls:
-                n = getattr(getattr(tc, "function", None), "name", None)
-                if n in _MIRIX_MEMORY_TOOLS:
-                    return True
-        # (3) Synthesized control messages (the meta-manager instruction + the
-        #     automated chaining replies). Gate on NON-external text: ingested
-        #     external content is always [USER]/[ASSISTANT]-tagged, so a turn that
-        #     merely QUOTES one of these markers is never dropped.
-        text = cls._plain_content_text(m)
-        if text and "[USER]" not in text and "[ASSISTANT]" not in text:
-            if text.lstrip().startswith("[System Message]"):
-                return True
-            if _META_INSTRUCTION_MARKER in text:
-                return True
-            if any(marker in text for marker in _CHAINING_MARKERS):
-                return True
-        return False
-
-    @staticmethod
-    def _role_of(m) -> str:
-        role = getattr(m, "role", None)
+    def _role_of(t) -> str:
+        """The real turn role of a ConversationMessage ('user' | 'assistant')."""
+        role = getattr(t, "role", None)
         return getattr(role, "value", None) or str(role) or "unknown"
 
     @staticmethod
-    def _content_text(m) -> str:
-        """Extract readable text from a PydanticMessage, including tool calls."""
-        parts: List[str] = []
-
-        content = getattr(m, "content", None)
+    def _content_text(t) -> str:
+        """Plain text of a ConversationMessage turn (content is already a str)."""
+        content = getattr(t, "content", None)
         if isinstance(content, str):
-            if content.strip():
-                parts.append(content.strip())
-        elif isinstance(content, list):
-            for c in content:
-                txt = getattr(c, "text", None)
-                if txt and isinstance(txt, str) and txt.strip():
-                    parts.append(txt.strip())
-
-        # Tool calls (assistant invoking a tool) — surface name + args so a
-        # tool error / retry pattern is visible to the distiller.
-        tool_calls = getattr(m, "tool_calls", None)
-        if tool_calls:
-            for tc in tool_calls:
-                fn = getattr(tc, "function", None)
-                name = getattr(fn, "name", None) if fn else None
-                args = getattr(fn, "arguments", None) if fn else None
-                if name:
-                    snippet = f"[tool_call {name}]"
-                    if args:
-                        snippet += f" {str(args)[:400]}"
-                    parts.append(snippet)
-
-        # Tool return content lives in `content` for role=tool; the loop above
-        # already captured it. Also surface a tool name when present.
-        name = getattr(m, "name", None)
-        if name and getattr(m, "role", None) == MessageRole.tool:
-            parts.append(f"[tool_result {name}]")
-
-        return " ".join(p for p in parts if p).strip()
+            return content.strip()
+        return ""
