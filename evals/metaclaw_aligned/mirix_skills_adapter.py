@@ -215,13 +215,24 @@ class MirixSkillsAdapter:
         paper category from the description prefix we set in add_skill."""
         uid = self._ensure_user_id()
         if self.variant == "skill-evolve":
+            # Unified search interface (GET /v1/skills removed). search_method=""
+            # -> server per-type default (procedural -> hybrid, env-overridable).
+            # Procedural rows are a superset of the old skill rows, so
+            # _mirix_skill_to_paper + the category restore below are unchanged.
             resp = self._http.get(
-                "/v1/skills",
-                params={"query": "", "limit": 500, "user_id": uid},
+                "/memory/search",
+                params={
+                    "memory_type": "procedural",
+                    "query": "",
+                    "limit": 500,
+                    "search_field": "description",
+                    "search_method": "",
+                    "user_id": uid,
+                },
             )
             resp.raise_for_status()
             payload = resp.json()
-            raw = payload.get("skills") if isinstance(payload, dict) else payload
+            raw = payload.get("results") if isinstance(payload, dict) else payload
             out = []
             for s in raw or []:
                 paper = _mirix_skill_to_paper(s)
@@ -263,13 +274,22 @@ class MirixSkillsAdapter:
         try:
             uid = self._ensure_user_id()
             if self.variant == "skill-evolve":
+                # Unified search interface (GET /v1/skills removed);
+                # search_method="" -> server per-type default (hybrid).
                 resp = self._http.get(
-                    "/v1/skills",
-                    params={"query": task_description, "limit": k, "user_id": uid},
+                    "/memory/search",
+                    params={
+                        "memory_type": "procedural",
+                        "query": task_description,
+                        "limit": k,
+                        "search_field": "description",
+                        "search_method": "",
+                        "user_id": uid,
+                    },
                 )
                 resp.raise_for_status()
                 payload = resp.json()
-                rows = payload.get("skills") if isinstance(payload, dict) else payload
+                rows = payload.get("results") if isinstance(payload, dict) else payload
                 return [_mirix_skill_to_paper(s) for s in (rows or [])]
             else:  # legacy
                 resp = self._http.get(

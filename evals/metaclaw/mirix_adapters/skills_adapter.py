@@ -2,9 +2,10 @@
 
 Used by the D6 dispatch in ``evals/metaclaw/vendor/metaclaw/launcher.py`` when
 ``METACLAW_SKILLS_PROVIDER=mirix``.  The MetaClaw paper proxy calls a
-duck-typed ``SkillManager``; this adapter routes the surface to MIRIX's
-``/v1/skills`` REST endpoints so retrieval (and, in slice #4, evolution) is
-backed by MIRIX procedural memory.
+duck-typed ``SkillManager``; this adapter routes the surface to MIRIX REST so
+retrieval (and, in slice #4, evolution) is backed by MIRIX procedural memory.
+Retrieval uses the unified search interface (``GET /memory/search?memory_type=
+procedural``; GET /v1/skills was removed); writes use ``POST /v1/skills``.
 
 Surface mirrors ``evals/metaclaw/vendor/metaclaw/skill_manager.py``:
 
@@ -77,7 +78,7 @@ def _restore_paper_category(
 
 
 def _mirix_skill_to_paper(row: Dict[str, Any]) -> Dict[str, Any]:
-    """Translate a MIRIX /v1/skills row → paper SkillManager dict.
+    """Translate a MIRIX procedural search row → paper SkillManager dict.
 
     MIRIX field ``instructions`` → paper field ``content``.
     Restores the original paper category from the ``[paper-category=X]``
@@ -196,17 +197,29 @@ class MirixSkillsAdapter:
     def retrieve(
         self, task_description: str, top_k: Optional[int] = None
     ) -> List[dict]:
-        """GET /v1/skills?query=&limit=&user_id=. Errors degrade to []."""
+        """GET /memory/search?memory_type=procedural&query=&limit=&user_id=.
+
+        Skill retrieval via the unified search interface (GET /v1/skills was
+        removed). search_method="" defers to the server's per-type default
+        (procedural -> hybrid, env-overridable). Errors degrade to [].
+        """
         k = top_k if top_k is not None else self.top_k
         try:
             uid = self._ensure_user_id()
             resp = self._http.get(
-                "/v1/skills",
-                params={"query": task_description, "limit": k, "user_id": uid},
+                "/memory/search",
+                params={
+                    "memory_type": "procedural",
+                    "query": task_description,
+                    "limit": k,
+                    "search_field": "description",
+                    "search_method": "",
+                    "user_id": uid,
+                },
             )
             resp.raise_for_status()
             payload = resp.json()
-            rows = payload.get("skills") if isinstance(payload, dict) else payload
+            rows = payload.get("results") if isinstance(payload, dict) else payload
             out = [_mirix_skill_to_paper(s) for s in (rows or [])]
             logger.info(
                 "[MirixSkillsAdapter] retrieve q=%r k=%d returned %d skills",
@@ -356,15 +369,26 @@ class MirixSkillsAdapter:
         return
 
     def _fetch_all_skills_paper_shape(self) -> List[dict]:
-        """GET /v1/skills?limit=500&user_id= and translate each row."""
+        """GET /memory/search?memory_type=procedural&limit=500 — full bank dump.
+
+        Empty query => the server returns recent items (method is moot for an
+        empty query). Translates each procedural row to paper shape.
+        """
         uid = self._ensure_user_id()
         resp = self._http.get(
-            "/v1/skills",
-            params={"query": "", "limit": 500, "user_id": uid},
+            "/memory/search",
+            params={
+                "memory_type": "procedural",
+                "query": "",
+                "limit": 500,
+                "search_field": "description",
+                "search_method": "",
+                "user_id": uid,
+            },
         )
         resp.raise_for_status()
         payload = resp.json()
-        rows = payload.get("skills") if isinstance(payload, dict) else payload
+        rows = payload.get("results") if isinstance(payload, dict) else payload
         return [_mirix_skill_to_paper(s) for s in (rows or [])]
 
     # ------------------------------------------------------------------ #

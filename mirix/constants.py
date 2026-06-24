@@ -358,3 +358,33 @@ SKILL_DELETE_BUDGET_MAX = int(os.getenv("SKILL_DELETE_BUDGET_MAX", "1"))
 
 # Records-based evolution window: evolve every N completed graded rounds.
 SKILL_EVOLVE_RECORDS_WINDOW = int(os.getenv("SKILL_EVOLVE_RECORDS_WINDOW", "5"))
+
+# ---------------------------------------------------------------------------
+# Procedural (skill) RETRIEVAL defaults.
+#
+# The single authoritative default for SEARCH-SURFACE procedural retrieval
+# (the REST /memory/search endpoint, the eval client, and the documented
+# recommendation for the search_in_memory agent tool). When a search surface
+# does NOT explicitly choose a method, procedural memory is retrieved with the
+# EverOS-aligned "hybrid" lane: BM25 (lexical) + embedding (dense) recall fused
+# with Reciprocal Rank Fusion.
+#
+# Override to "bm25" or "embedding" via env for latency-sensitive deployments
+# or A/B experiments. Internal pipelines that PIN a method explicitly (evolve
+# before/after snapshots, the per-step system-context prefetch) keep their
+# explicit choice and are not governed by this default.
+PROCEDURAL_DEFAULT_SEARCH_METHOD = os.getenv("MIRIX_SKILL_SEARCH_METHOD", "hybrid")
+
+# Reciprocal Rank Fusion constant for the procedural hybrid lane. k=60 is the
+# canonical RRF constant (everalgo.rank.fusion.rrf / RankConfig.rrf_k=60); the
+# fusion is rank-based, 1-based, and unweighted — raw BM25/cosine scores are
+# discarded, only rank positions feed the sum 1/(k+rank).
+SKILL_HYBRID_RRF_K = int(os.getenv("MIRIX_SKILL_HYBRID_RRF_K", "60"))
+
+# Over-fetch multiplier for each hybrid lane before fusion (EverOS
+# DEFAULT_RECALL_MULTIPLIER=2): each lane recalls limit*multiplier candidates so
+# fusion picks from a larger, higher-recall pool, then the result is sliced to
+# the requested limit.
+SKILL_HYBRID_RECALL_MULTIPLIER = int(
+    os.getenv("MIRIX_SKILL_HYBRID_RECALL_MULTIPLIER", "2")
+)

@@ -134,8 +134,8 @@ def test_skills_property_reflects_backend_state():
     def handler(req: httpx.Request) -> httpx.Response:
         if req.url.path == "/users/create_or_get":
             return _user_resolve_response()
-        if req.url.path == "/v1/skills":
-            return httpx.Response(200, json={"skills": [
+        if req.url.path == "/memory/search":
+            return httpx.Response(200, json={"results": [
                 {"name": "g1", "description": "[paper-category=general] gd", "instructions": "gc"},
                 {"name": "w1", "description": "[paper-category=workflow] wd", "instructions": "wc", "entry_type": "workflow"},
                 {"name": "c1", "description": "[paper-category=common_mistakes] cd", "instructions": "cc"},
@@ -191,12 +191,13 @@ def test_skill_evolve_retrieve_returns_paper_shape():
     def handler(req: httpx.Request) -> httpx.Response:
         if req.url.path == "/users/create_or_get":
             return _user_resolve_response()
-        assert req.url.path == "/v1/skills"
+        assert req.url.path == "/memory/search"
+        assert req.url.params.get("memory_type") == "procedural"
         assert req.url.params.get("query") == "fix dates"
         assert req.url.params.get("limit") == "3"
         assert req.url.params.get("user_id") == "user-resolved-1234"
         return httpx.Response(200, json={
-            "skills": [
+            "results": [
                 {"name": "s1", "description": "d1", "instructions": "c1", "entry_type": "workflow"},
                 {"name": "s2", "description": "d2", "instructions": "c2", "entry_type": "guide"},
             ],

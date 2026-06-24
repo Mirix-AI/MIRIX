@@ -557,8 +557,8 @@ def _mirix_ensure_client_write_scope(
     non-null write_scope: ``POST /agents/meta/initialize`` returns ``200 null``
     for a read-only client (rest_api.py:1972-1974) and creates NO agent. With no
     meta agent there is no procedural-memory sub-agent, so BOTH skill endpoints
-    the mirix arms drive — ``GET /v1/skills`` (rest_api.py:5688-5690) and
-    ``POST /v1/skills/distill-round`` (rest_api.py:5697-5699) — 404 ("No agents
+    the mirix arms drive — ``GET /memory/search?memory_type=procedural``
+    (retrieval) and ``POST /v1/skills/distill-round`` — 404 ("No agents
     found for this client" / "No procedural memory agent found"). So without this
     step ``_mirix_ensure_meta_agent``'s FIX5 guard (correctly) refuses to run and
     the whole records arm is dead.
@@ -719,9 +719,9 @@ def _mirix_ensure_meta_agent(
 
     Why this is REQUIRED for the records arm (not just a nicety): the server-side
     skill endpoints the mirix-records arm drives — ``POST /v1/skills/distill-round``
-    and ``GET /v1/skills`` — look up the procedural-memory agent by *walking the
-    existing agents for this client and 404 if none is found* (rest_api.py:5586-5603,
-    5688-5690). They NEVER create one. So minting a fresh user is not enough: with no
+    and ``GET /memory/search?memory_type=procedural`` — look up the procedural-memory
+    agent by *walking the existing agents for this client and 404 if none is found*
+    (rest_api.py:5586-5603). They NEVER create one. So minting a fresh user is not enough: with no
     meta agent under ``MIRIX_CLIENT_ID`` every distill POST 404s, the bench swallows
     it, and the run is degenerate (0 records, 0 evolves, retrieval always 404).
 
@@ -1379,10 +1379,10 @@ def run_arm(
         _mirix_reset_user_skills(mirix_url, mirix_user_id)
 
         # Ensure a meta agent (with a procedural-memory sub-agent) exists under our
-        # client. Without it, GET /v1/skills (retrieval, BOTH mirix arms) and
-        # POST /v1/skills/distill-round (records arm) 404 server-side — those
-        # endpoints look up the procedural agent and NEVER create one
-        # (rest_api.py:5586-5603, 5688-5690). On a fresh DB the old `mirix` arm
+        # client. Without it, GET /memory/search?memory_type=procedural (retrieval,
+        # BOTH mirix arms) and POST /v1/skills/distill-round (records arm) 404
+        # server-side — those endpoints look up the procedural agent and NEVER
+        # create one (rest_api.py:5586-5603). On a fresh DB the old `mirix` arm
         # would therefore retrieve 0 skills + never evolve, and the records arm
         # would also distill 0 records — both silently degenerate into a no-skills
         # run that is not comparable. So we ensure the agent for EVERY mirix-backed

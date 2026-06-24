@@ -99,6 +99,7 @@ async def search_in_memory(
         search_method: The method to search in the memory. Choose from:
             - 'bm25': BM25 ranking-based full-text search (fast and effective for keyword-based searches)
             - 'embedding': Vector similarity search using embeddings (most powerful, good for conceptual matches)
+            - 'hybrid': **RECOMMENDED for "procedural" memory** - fuses 'bm25' and 'embedding' via Reciprocal Rank Fusion (EverOS-style). Best recall/precision for skill lookup. Only valid for memory_type='procedural'; for any other memory_type (including 'all') it is treated as 'embedding'.
 
     Returns:
         str: Query result string
@@ -106,6 +107,16 @@ async def search_in_memory(
 
     if not self.user:
         raise ValueError("Can not search in memory. User is not set")
+
+    # "hybrid" is procedural-only — the other memory managers have no hybrid
+    # branch. Clamp to embedding for any non-procedural memory_type (including
+    # "all") BEFORE the field-validation checks below, so an unsupported combo
+    # like resource/content/hybrid resolves to embedding and then trips the same
+    # deterministic validation as resource/content/embedding — rather than
+    # slipping past the guard and later hitting a missing embedding column.
+    # (Procedural hybrid self-embeds the query in the manager; no precompute.)
+    if search_method == "hybrid" and memory_type != "procedural":
+        search_method = "embedding"
 
     if memory_type == "resource" and search_field == "content" and search_method == "embedding":
         raise ValueError("embedding is not supported for resource memory's 'content' field.")

@@ -3045,7 +3045,7 @@ async def search_memory(
     query: str = "",
     memory_type: str = "all",
     search_field: str = "null",
-    search_method: str = "embedding",
+    search_method: str = "",  # "" = per-memory-type default (see resolution below)
     limit: int = 10,
     authorization: Optional[str] = Header(None),
     filter_tags: Optional[str] = Query(None),
@@ -3074,7 +3074,11 @@ async def search_memory(
                      - knowledge_vault: "caption", "secret_value"
                      - semantic: "name", "summary", "details"
                      - For "all": use "null" (default)
-        search_method: Search method. Options: "bm25" (default), "embedding"
+        search_method: Search method. Options: "bm25", "embedding", and (procedural
+                    only) "hybrid" (BM25 + embedding fused via Reciprocal Rank Fusion).
+                    When omitted, defaults per memory type: procedural -> "hybrid"
+                    (override via MIRIX_SKILL_SEARCH_METHOD), all others -> "embedding".
+                    "hybrid" requested for a non-procedural type falls back to embedding.
         limit: Maximum number of results per memory type (default: 10)
         filter_tags: Optional JSON string of filter tags (scope added automatically)
         similarity_threshold: Optional similarity threshold for embedding search (0.0-2.0).
@@ -3176,8 +3180,23 @@ async def search_memory(
         except ValueError as e:
             logger.warning("Invalid end_date format: %s", e)
 
-    # Normalize empty search_method to the default (FastAPI passes "" for missing query params)
+    # Resolve the search method per memory type. FastAPI passes "" when the
+    # caller omits the query param, so "" is the "use the default" sentinel:
+    #   * procedural -> EverOS-aligned hybrid (BM25 + embedding fused via RRF),
+    #     env-overridable via MIRIX_SKILL_SEARCH_METHOD;
+    #   * every other type (incl. the cross-type "all" sweep) -> embedding.
+    from mirix.constants import PROCEDURAL_DEFAULT_SEARCH_METHOD
+
     if not search_method:
+        search_method = (
+            PROCEDURAL_DEFAULT_SEARCH_METHOD
+            if memory_type == "procedural"
+            else "embedding"
+        )
+    # "hybrid" is procedural-only — the other managers have no hybrid branch.
+    # For any non-procedural memory_type (including "all") fall back to
+    # embedding so those managers receive a method they support.
+    if search_method == "hybrid" and memory_type != "procedural":
         search_method = "embedding"
 
     # Validate search parameters
@@ -3217,6 +3236,10 @@ async def search_memory(
 
     # Collect results from requested memory types
     all_results = []
+    # Lossless parity with the deleted GET /v1/skills: populated (per-user
+    # procedural total) only on a single memory_type=="procedural" search and
+    # surfaced as the envelope's "total_count".
+    procedural_total_count = None
 
     # If searching all memory types, run searches concurrently for better performance
     if memory_type == "all":
@@ -3329,6 +3352,19 @@ async def search_memory(
                         "name": x.name,
                         "description": x.description,
                         "instructions": x.instructions,
+                        # Superset of the legacy GET /v1/skills row so callers
+                        # migrating off that (deleted) endpoint lose no fields.
+                        "version": getattr(x, "version", None),
+                        "created_at": (
+                            x.created_at.isoformat()
+                            if getattr(x, "created_at", None)
+                            else None
+                        ),
+                        "updated_at": (
+                            x.updated_at.isoformat()
+                            if getattr(x, "updated_at", None)
+                            else None
+                        ),
                     }
                     for x in memories
                 ]
@@ -3560,9 +3596,29 @@ async def search_memory(
                         "name": x.name,
                         "description": x.description,
                         "instructions": x.instructions,
+                        # Superset of the legacy GET /v1/skills row so callers
+                        # migrating off that (deleted) endpoint lose no fields.
+                        "version": getattr(x, "version", None),
+                        "created_at": (
+                            x.created_at.isoformat()
+                            if getattr(x, "created_at", None)
+                            else None
+                        ),
+                        "updated_at": (
+                            x.updated_at.isoformat()
+                            if getattr(x, "updated_at", None)
+                            else None
+                        ),
                     }
                     for x in procedural_memories
                 ]
+            )
+            # /v1/skills parity: report the user's total procedural count
+            # (the page's `count` is only len(results), not the global total).
+            procedural_total_count = (
+                await server.procedural_memory_manager.get_total_number_of_items(
+                    user=user
+                )
             )
         except Exception as e:
             logger.error("Error searching procedural memories: %s", e)
@@ -3671,7 +3727,7 @@ async def search_memory(
                 exc_info=True,
             )
 
-    return {
+    response = {
         "success": True,
         "query": query,
         "memory_type": memory_type,
@@ -3688,6 +3744,11 @@ async def search_memory(
         "results": all_results,
         "count": len(all_results),
     }
+    # /v1/skills parity: a single procedural search also reports the global
+    # per-user procedural total alongside the page count.
+    if procedural_total_count is not None:
+        response["total_count"] = procedural_total_count
+    return response
 
 
 @router.get("/memory/search_all_users")
@@ -3696,7 +3757,7 @@ async def search_memory_all_users(
     query: str,
     memory_type: str = "all",
     search_field: str = "null",
-    search_method: str = "embedding",
+    search_method: str = "",  # "" = per-memory-type default (see resolution below)
     limit: int = 10,
     client_id: Optional[str] = Query(None),
     org_id: Optional[str] = Query(None),
@@ -3830,8 +3891,23 @@ async def search_memory_all_users(
 
     agent_state = all_agents[0]
 
-    # Normalize empty search_method to the default (FastAPI passes "" for missing query params)
+    # Resolve the search method per memory type. FastAPI passes "" when the
+    # caller omits the query param, so "" is the "use the default" sentinel:
+    #   * procedural -> EverOS-aligned hybrid (BM25 + embedding fused via RRF),
+    #     env-overridable via MIRIX_SKILL_SEARCH_METHOD;
+    #   * every other type (incl. the cross-type "all" sweep) -> embedding.
+    from mirix.constants import PROCEDURAL_DEFAULT_SEARCH_METHOD
+
     if not search_method:
+        search_method = (
+            PROCEDURAL_DEFAULT_SEARCH_METHOD
+            if memory_type == "procedural"
+            else "embedding"
+        )
+    # "hybrid" is procedural-only — the other managers have no hybrid branch.
+    # For any non-procedural memory_type (including "all") fall back to
+    # embedding so those managers receive a method they support.
+    if search_method == "hybrid" and memory_type != "procedural":
         search_method = "embedding"
 
     # Validate search parameters
@@ -3991,6 +4067,19 @@ async def search_memory_all_users(
                         "name": x.name,
                         "description": x.description,
                         "instructions": x.instructions,
+                        # Uniform procedural-row superset across the unified
+                        # search surface (matches GET /memory/search).
+                        "version": getattr(x, "version", None),
+                        "created_at": (
+                            x.created_at.isoformat()
+                            if getattr(x, "created_at", None)
+                            else None
+                        ),
+                        "updated_at": (
+                            x.updated_at.isoformat()
+                            if getattr(x, "updated_at", None)
+                            else None
+                        ),
                         "user_id": str(x.user_id),
                     }
                     for x in memories
@@ -4206,6 +4295,19 @@ async def search_memory_all_users(
                         "name": x.name,
                         "description": x.description,
                         "instructions": x.instructions,
+                        # Uniform procedural-row superset across the unified
+                        # search surface (matches GET /memory/search).
+                        "version": getattr(x, "version", None),
+                        "created_at": (
+                            x.created_at.isoformat()
+                            if getattr(x, "created_at", None)
+                            else None
+                        ),
+                        "updated_at": (
+                            x.updated_at.isoformat()
+                            if getattr(x, "updated_at", None)
+                            else None
+                        ),
                     }
                     for x in procedural_memories
                 ]
@@ -5763,85 +5865,13 @@ async def distill_round(
     }
 
 
-@router.get("/v1/skills")
-async def list_skills(
-    query: str = "",
-    limit: int = 50,
-    user_id: Optional[str] = None,
-    authorization: Optional[str] = Header(None),
-    http_request: Request = None,
-):
-    """
-    List or search skills (procedural memory items).
-
-    **Accepts both JWT (dashboard) and Client API Key (programmatic).**
-    """
-    client, auth_type = await get_client_from_jwt_or_api_key(
-        authorization, http_request
-    )
-    server = get_server()
-
-    # Resolve user
-    if not user_id:
-        from mirix.services.admin_user_manager import ClientAuthManager
-
-        user_id = ClientAuthManager.get_admin_user_id_for_client(client.id)
-
-    user = await server.user_manager.get_user_by_id(user_id)
-    if not user:
-        raise HTTPException(status_code=404, detail=f"User {user_id} not found")
-
-    timezone_str = getattr(user, "timezone", None) or "UTC"
-    limit = max(1, min(limit, 200))
-
-    # Need an agent state for the manager
-    agents = await server.agent_manager.list_agents(actor=client, limit=1)
-    if not agents:
-        raise HTTPException(status_code=404, detail="No agents found for this client")
-    agent_state = agents[0]
-
-    # Skill retrieval method: BM25 (keyword) by default; override to "embedding"
-    # (vector similarity) via env for the MetaClaw eval A/B experiment.
-    import os as _os
-
-    _skill_search_method = _os.environ.get("MIRIX_SKILL_SEARCH_METHOD", "bm25")
-    skills = await server.procedural_memory_manager.list_procedures(
-        agent_state=agent_state,
-        user=user,
-        query=query,
-        search_field="description",
-        search_method=_skill_search_method,
-        limit=limit,
-        timezone_str=timezone_str,
-    )
-
-    total_count = await server.procedural_memory_manager.get_total_number_of_items(
-        user=user
-    )
-
-    return {
-        "success": True,
-        "skills": [
-            {
-                "id": s.id,
-                "name": s.name,
-                "entry_type": s.entry_type,
-                "description": s.description,
-                "instructions": s.instructions,
-                "version": getattr(s, "version", None),
-                "created_at": (
-                    s.created_at.isoformat() if getattr(s, "created_at", None) else None
-                ),
-                "updated_at": (
-                    s.updated_at.isoformat() if getattr(s, "updated_at", None) else None
-                ),
-            }
-            for s in skills
-        ],
-        "total_count": total_count,
-    }
-
-
+# NOTE: The skill LIST/SEARCH endpoint (GET /v1/skills) was removed. Procedural
+# memory (skills) is retrieved through the unified search interface:
+#     GET /memory/search?memory_type=procedural&query=...&search_method=hybrid
+# which returns a superset of the old skill row (adds version/created_at/
+# updated_at and a per-user total_count) and defaults to EverOS-style hybrid
+# retrieval. The single-skill GET /v1/skills/{skill_id} and the POST/PATCH/DELETE
+# mutation endpoints below are unaffected and remain.
 @router.get("/v1/skills/{skill_id}")
 async def get_skill(
     skill_id: str,

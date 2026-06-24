@@ -81,13 +81,14 @@ def test_retrieve_issues_correct_get_with_headers_and_params():
         captured.append(request)
         if request.url.path == "/users/create_or_get":
             return _user_resp("u-test")
-        # /v1/skills
+        # /memory/search (memory_type=procedural) — rows under "results".
         return httpx.Response(
             200,
             json={
                 "success": True,
-                "skills": [
+                "results": [
                     {
+                        "memory_type": "procedural",
                         "id": "p1",
                         "name": "alpha",
                         "description": "a skill",
@@ -95,6 +96,7 @@ def test_retrieve_issues_correct_get_with_headers_and_params():
                         "entry_type": "guide",
                     },
                     {
+                        "memory_type": "procedural",
                         "id": "p2",
                         "name": "beta",
                         "description": "another skill",
@@ -102,6 +104,7 @@ def test_retrieve_issues_correct_get_with_headers_and_params():
                         "entry_type": "workflow",
                     },
                 ],
+                "count": 2,
                 "total_count": 2,
             },
         )
@@ -116,12 +119,13 @@ def test_retrieve_issues_correct_get_with_headers_and_params():
         "category": "guide",
     }
 
-    # We expect: (1) POST /users/create_or_get, (2) GET /v1/skills.
+    # We expect: (1) POST /users/create_or_get, (2) GET /memory/search.
     assert [r.method + " " + r.url.path for r in captured] == [
         "POST /users/create_or_get",
-        "GET /v1/skills",
+        "GET /memory/search",
     ]
     get_req = captured[1]
+    assert get_req.url.params["memory_type"] == "procedural"
     assert get_req.url.params["query"] == "ship the rocket"
     assert get_req.url.params["limit"] == "3"
     assert get_req.url.params["user_id"] == "u-test"
@@ -144,7 +148,7 @@ def test_retrieve_relevant_is_alias_for_retrieve():
             return _user_resp("u-test")
         return httpx.Response(
             200,
-            json={"success": True, "skills": [], "total_count": 0},
+            json={"success": True, "results": [], "count": 0},
         )
 
     a = _make_adapter(handler)
@@ -167,7 +171,7 @@ def test_skills_property_buckets_by_category():
             200,
             json={
                 "success": True,
-                "skills": [
+                "results": [
                     {
                         "name": "skill-a",
                         "description": "[paper-category=general] a generic guide",
@@ -215,7 +219,7 @@ def test_skills_setter_is_noop():
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/users/create_or_get":
             return _user_resp("u-test")
-        return httpx.Response(200, json={"success": True, "skills": []})
+        return httpx.Response(200, json={"success": True, "results": []})
 
     a = _make_adapter(handler)
     # Paper code occasionally does `manager.skills = ...` defensively.  Must not raise.
@@ -257,7 +261,7 @@ def test_format_for_conversation_byte_identical_to_paper():
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/users/create_or_get":
             return _user_resp("u-test")
-        return httpx.Response(200, json={"success": True, "skills": []})
+        return httpx.Response(200, json={"success": True, "results": []})
 
     a = _make_adapter(handler)
 
@@ -435,11 +439,12 @@ def test_round_trip_preserves_paper_category():
                 "entry_type": body["entry_type"],
             }
             return httpx.Response(200, json={"success": True, "skill": stored["row"]})
-        if request.method == "GET" and request.url.path == "/v1/skills":
+        if request.method == "GET" and request.url.path == "/memory/search":
             rows = [stored["row"]] if stored else []
             return httpx.Response(
                 200,
-                json={"success": True, "skills": rows, "total_count": len(rows)},
+                json={"success": True, "results": rows, "count": len(rows),
+                      "total_count": len(rows)},
             )
         return httpx.Response(404)
 
@@ -521,7 +526,7 @@ def test_adapter_covers_paper_skillmanager_surface():
     """Every attribute api_server.py reads on SkillManager must exist on the adapter."""
 
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"success": True, "skills": []})
+        return httpx.Response(200, json={"success": True, "results": []})
 
     a = _make_adapter(handler)
     for attr in (
@@ -548,7 +553,7 @@ def test_get_skill_count_live_counts():
             200,
             json={
                 "success": True,
-                "skills": [
+                "results": [
                     {
                         "name": "g1",
                         "description": "[paper-category=general] x",

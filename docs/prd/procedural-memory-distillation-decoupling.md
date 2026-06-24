@@ -122,7 +122,7 @@ A good test here asserts **external behavior** — what skills get produced, wha
 
 ### Primary seam (highest, preferred — ideally the only one)
 
-- The **memory HTTP API** (`/memory/add`, `/memory/add_sync`) plus the **skills retrieval** (`/v1/skills`). This is the production-faithful seam and the same one the `mirix-generic` eval arm already drives.
+- The **memory HTTP API** (`/memory/add`, `/memory/add_sync`) plus the **skills retrieval** via the unified search interface (`GET /memory/search?memory_type=procedural`; the dedicated `GET /v1/skills` endpoint was removed and procedural retrieval now defaults to EverOS-style hybrid). This is the production-faithful seam and the same one the `mirix-generic` eval arm already drives.
 - Behaviors to assert end-to-end:
   - Drive ≥6 sessions **with** `session_id` → skills are produced, and contain **zero** self-referential / scaffolding noise (assert the absence of the "trigger memory update / meta memory manager" class).
   - Drive add **without** `session_id` → the five non-procedural components extract, **no** procedural/skill memory appears, and nothing is written to the Conversation Message Store.

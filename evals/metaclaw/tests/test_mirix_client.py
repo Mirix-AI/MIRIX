@@ -37,17 +37,20 @@ async def test_evolve_posts_messages_and_user_id():
 
 
 @pytest.mark.asyncio
-async def test_search_skills_calls_bm25_and_returns_skills():
+async def test_search_skills_uses_unified_search_and_returns_results():
     seen = {}
 
     def handler(req):
         seen["url"] = str(req.url)
+        # Unified search envelope: procedural rows under "results" (a superset
+        # of the old skill row), not "skills".
         return httpx.Response(
             200,
-            json={"skills": [{"id": "proc-1", "name": "iso8601",
-                              "description": "d", "instructions": "i",
-                              "entry_type": "guide", "version": "0.1.0"}],
-                  "total_count": 1},
+            json={"results": [{"memory_type": "procedural", "id": "proc-1",
+                               "name": "iso8601", "description": "d",
+                               "instructions": "i", "entry_type": "guide",
+                               "version": "0.1.0"}],
+                  "count": 1, "total_count": 1},
         )
 
     transport = httpx.MockTransport(handler)
@@ -55,13 +58,16 @@ async def test_search_skills_calls_bm25_and_returns_skills():
         client = MirixClient(base_url="http://x", user_id="user-1", _client=ac)
         skills = await client.search_skills("datetime format", limit=3)
 
-    assert "/v1/skills" in seen["url"]
+    # Retrieval goes through the unified /memory/search endpoint (GET /v1/skills removed).
+    assert "/memory/search" in seen["url"]
+    assert "memory_type=procedural" in seen["url"]
     assert "query=datetime+format" in seen["url"] or "query=datetime%20format" in seen["url"]
     assert "limit=3" in seen["url"]
     assert "user_id=user-1" in seen["url"]
-    # search_method/search_field are NOT sent on the wire (server hard-codes them)
-    assert "search_method" not in seen["url"]
-    assert "search_field" not in seen["url"]
+    # search_field/search_method ARE now sent (the server honors them);
+    # search_method="" defers to the server's per-type default (hybrid).
+    assert "search_field=description" in seen["url"]
+    assert "search_method=" in seen["url"]
     assert skills[0]["name"] == "iso8601"
 
 

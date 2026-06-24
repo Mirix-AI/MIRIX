@@ -138,7 +138,7 @@ def _build_stub_mirix_app() -> FastAPI:
       - runner._mirix_health_diagnose:        GET /health
       - runner._mirix_create_or_get_user:     POST /users/create_or_get
       - runner._mirix_reset_user_skills:      POST /v1/skills/reset
-      - MirixSkillManagerAdapter:             GET /v1/skills, POST /v1/skills
+      - MirixSkillManagerAdapter:             GET /memory/search (procedural), POST /v1/skills
       - MirixEvolverAdapter._preflight:       GET /openapi.json
       - MirixEvolverAdapter.evolve:           POST /v1/skills/evolve
     """
@@ -154,9 +154,11 @@ def _build_stub_mirix_app() -> FastAPI:
         uid = body.get("user_id") or "stub-user"
         return {"id": uid, "name": body.get("name", uid)}
 
-    @app.get("/v1/skills")
-    async def list_skills():
-        return {"skills": []}
+    @app.get("/memory/search")
+    async def search_memory():
+        # Skill retrieval now goes through the unified search interface
+        # (memory_type=procedural). GET /v1/skills was removed.
+        return {"results": []}
 
     @app.post("/v1/skills")
     async def create_skill(req: Request):

@@ -3,7 +3,10 @@
 Endpoints used:
     POST /v1/skills/evolve   — trigger ProceduralMemoryAgent on a batch of
                                round messages, returns created/edited/deleted diff
-    GET  /v1/skills?...      — search skills (BM25); used for retrieval
+    GET  /memory/search?memory_type=procedural&...
+                             — search skills via the unified search interface
+                               (procedural defaults to hybrid: BM25 + embedding
+                               fused with RRF). GET /v1/skills was removed.
     GET  /health             — liveness probe
 
 Auth: REST endpoints require a client identity. We send X-Client-Id on
@@ -70,28 +73,37 @@ class MirixClient:
         self,
         query: str,
         limit: int = 6,
-        search_method: str = "bm25",      # kept on signature; server hard-codes bm25
-        search_field: str = "description",  # kept on signature; server hard-codes description
+        search_method: str = "",            # "" = server's per-type default (env-driven)
+        search_field: str = "description",
     ) -> list[dict[str, Any]]:
-        """GET /v1/skills?query=...&limit=N&user_id=...
+        """GET /memory/search?memory_type=procedural&query=...&limit=N&...
 
-        The MIRIX endpoint currently hard-codes search_method=bm25 and
-        search_field=description internally, so we don't send them on the
-        wire. Method kwargs are kept for forward-compat if/when the route
-        adds them as accepted query params.
+        Skill (procedural-memory) retrieval goes through the unified search
+        interface — the dedicated GET /v1/skills endpoint was removed.
+        ``search_method=""`` defers to the server's per-memory-type default:
+        procedural resolves to "hybrid" (BM25 + embedding fused via Reciprocal
+        Rank Fusion), overridable for A/B via the MIRIX_SKILL_SEARCH_METHOD env
+        var — the same single knob the old endpoint used. Pass an explicit
+        "bm25"/"embedding"/"hybrid" to override per call. The procedural rows
+        returned are a superset of the old skill rows (same id/name/entry_type/
+        description/instructions/version/created_at/updated_at), so downstream
+        translators are unchanged.
         """
         client = await self._get_client()
         resp = await client.get(
-            "/v1/skills",
+            "/memory/search",
             params={
+                "memory_type": "procedural",
                 "query": query,
                 "limit": limit,
+                "search_field": search_field,
+                "search_method": search_method,
                 "user_id": self.user_id,
             },
         )
         resp.raise_for_status()
         body = resp.json()
-        return body.get("skills", [])
+        return body.get("results", [])
 
     async def health(self) -> bool:
         client = await self._get_client()

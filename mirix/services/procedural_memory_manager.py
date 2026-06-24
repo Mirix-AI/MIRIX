@@ -10,7 +10,12 @@ from sqlalchemy import delete, func, select, text
 
 from sqlalchemy.exc import IntegrityError
 
-from mirix.constants import BUILD_EMBEDDINGS_FOR_MEMORY, MAX_EMBEDDING_DIM
+from mirix.constants import (
+    BUILD_EMBEDDINGS_FOR_MEMORY,
+    MAX_EMBEDDING_DIM,
+    SKILL_HYBRID_RECALL_MULTIPLIER,
+    SKILL_HYBRID_RRF_K,
+)
 from mirix.embeddings import embedding_model
 from mirix.log import get_logger
 from mirix.orm.errors import NoResultFound, UniqueConstraintViolationError
@@ -83,6 +88,41 @@ def _resolve_embedding_column(search_field: str):
     if column_name is None:
         return None
     return getattr(ProceduralMemoryItem, column_name)
+
+
+def _rrf_fuse(
+    ranked_lists: List[List[PydanticProceduralMemoryItem]],
+    *,
+    k: int,
+    limit: Optional[int],
+) -> List[PydanticProceduralMemoryItem]:
+    """Fuse several ranked result lists with Reciprocal Rank Fusion.
+
+    Bit-for-bit aligned with EverOS/everalgo (``everalgo.rank.fusion.rrf``):
+    the fusion is RANK-BASED (raw BM25 ts_rank_cd and cosine scores are
+    intentionally discarded — only a result's POSITION in each lane feeds the
+    sum), 1-BASED (the top item in a lane has rank 1), and UNWEIGHTED (every
+    lane contributes ``1 / (k + rank)`` with no per-lane weight). ``k`` defaults
+    to the canonical 60.
+
+    Items are keyed by their stable ``id`` so the same skill surfaced by both
+    the lexical and the dense lane accumulates both contributions (the
+    hallmark of hybrid retrieval: agreement across lanes ranks higher). Items
+    with no ``id`` cannot be deduplicated across lanes and are skipped. The
+    fused list is sliced to ``limit`` (no slice when ``limit`` is falsy).
+    """
+    scores: Dict[str, float] = {}
+    items_by_id: Dict[str, PydanticProceduralMemoryItem] = {}
+    for ranked in ranked_lists:
+        for rank, item in enumerate(ranked, start=1):
+            item_id = getattr(item, "id", None)
+            if item_id is None:
+                continue
+            scores[item_id] = scores.get(item_id, 0.0) + 1.0 / (k + rank)
+            items_by_id.setdefault(item_id, item)
+    ordered_ids = sorted(scores, key=lambda i: scores[i], reverse=True)
+    fused = [items_by_id[i] for i in ordered_ids]
+    return fused[:limit] if limit else fused
 
 
 class ProceduralMemoryManager:
@@ -693,6 +733,133 @@ class ProceduralMemoryManager:
             result = await session.execute(query)
             return result.scalar_one()
 
+    async def _hybrid_search_for_user(
+        self,
+        *,
+        agent_state: AgentState,
+        user: PydanticUser,
+        query: str,
+        embedded_text: Optional[List[float]],
+        search_field: str,
+        limit: Optional[int],
+        timezone_str: Optional[str],
+        filter_tags: Optional[dict],
+        scopes: Optional[List[str]],
+        use_cache: bool,
+        similarity_threshold: Optional[float],
+    ) -> List[PydanticProceduralMemoryItem]:
+        """EverOS-aligned hybrid retrieval for :meth:`list_procedures`.
+
+        Reuses the EXISTING bm25 (lexical) and embedding (dense) branches as two
+        independent lanes — so all backend dispatch (PG ts_rank_cd, SQLite
+        BM25Okapi, Redis KNN, pgvector cosine) is inherited, not reimplemented —
+        then fuses them with RRF (see :func:`_rrf_fuse`).
+
+        The lanes run SEQUENTIALLY, not via ``asyncio.gather``. Each recursive
+        call opens its own short-lived session, so gathering would require two
+        simultaneous pooled connections on what can be a hot path (or, if forced
+        onto one session, would violate SQLAlchemy's "one operation per
+        AsyncSession at a time" rule and raise). The dense lane's latency is
+        dominated by the embedding API round-trip, not the indexed DB query, so
+        overlapping the two buys almost nothing; sequential is async-native and
+        uses a single pooled connection at a time.
+        """
+        effective_limit = limit or 50
+        recall_limit = max(
+            effective_limit * SKILL_HYBRID_RECALL_MULTIPLIER, effective_limit
+        )
+        # Lexical lane — no similarity_threshold (a dense-only quality floor).
+        sparse = await self.list_procedures(
+            agent_state=agent_state,
+            user=user,
+            query=query,
+            search_field=search_field,
+            search_method="bm25",
+            limit=recall_limit,
+            timezone_str=timezone_str,
+            filter_tags=filter_tags,
+            scopes=scopes,
+            use_cache=use_cache,
+        )
+        # Dense lane — embedding search needs a valid embedding column, so fall
+        # back to "description" when search_field is blank/non-embeddable.
+        dense_field = (
+            search_field if search_field in _EMBEDDING_FIELDS else "description"
+        )
+        dense = await self.list_procedures(
+            agent_state=agent_state,
+            user=user,
+            query=query,
+            embedded_text=embedded_text,
+            search_field=dense_field,
+            search_method="embedding",
+            limit=recall_limit,
+            timezone_str=timezone_str,
+            filter_tags=filter_tags,
+            scopes=scopes,
+            use_cache=use_cache,
+            similarity_threshold=similarity_threshold,
+        )
+        return _rrf_fuse(
+            [sparse, dense], k=SKILL_HYBRID_RRF_K, limit=effective_limit
+        )
+
+    async def _hybrid_search_for_org(
+        self,
+        *,
+        agent_state: AgentState,
+        organization_id: str,
+        query: str,
+        embedded_text: Optional[List[float]],
+        search_field: str,
+        limit: Optional[int],
+        timezone_str: Optional[str],
+        filter_tags: Optional[dict],
+        scopes: Optional[List[str]],
+        use_cache: bool,
+        similarity_threshold: Optional[float],
+    ) -> List[PydanticProceduralMemoryItem]:
+        """Org-wide counterpart of :meth:`_hybrid_search_for_user`.
+
+        Same RRF fusion, but each lane reuses :meth:`list_procedures_by_org`.
+        """
+        effective_limit = limit or 50
+        recall_limit = max(
+            effective_limit * SKILL_HYBRID_RECALL_MULTIPLIER, effective_limit
+        )
+        sparse = await self.list_procedures_by_org(
+            agent_state=agent_state,
+            organization_id=organization_id,
+            query=query,
+            search_field=search_field,
+            search_method="bm25",
+            limit=recall_limit,
+            timezone_str=timezone_str,
+            filter_tags=filter_tags,
+            scopes=scopes,
+            use_cache=use_cache,
+        )
+        dense_field = (
+            search_field if search_field in _EMBEDDING_FIELDS else "description"
+        )
+        dense = await self.list_procedures_by_org(
+            agent_state=agent_state,
+            organization_id=organization_id,
+            query=query,
+            embedded_text=embedded_text,
+            search_field=dense_field,
+            search_method="embedding",
+            limit=recall_limit,
+            timezone_str=timezone_str,
+            filter_tags=filter_tags,
+            scopes=scopes,
+            use_cache=use_cache,
+            similarity_threshold=similarity_threshold,
+        )
+        return _rrf_fuse(
+            [sparse, dense], k=SKILL_HYBRID_RRF_K, limit=effective_limit
+        )
+
     @update_timezone
     @enforce_types
     async def list_procedures(
@@ -719,9 +886,14 @@ class ProceduralMemoryManager:
             embedded_text: Pre-computed embedding for semantic search
             search_field: Field to search in ('description', 'instructions', 'entry_type')
             search_method: Search method to use:
+                - 'hybrid': **RECOMMENDED for skill retrieval** - EverOS-aligned
+                               fusion of the 'bm25' and 'embedding' lanes via
+                               Reciprocal Rank Fusion (rank-based, k=60). Best
+                               recall/precision for skill lookup; self-embeds the
+                               query, so no embedded_text need be supplied.
                 - 'embedding': Vector similarity search using embeddings
                 - 'string_match': Simple string containment search
-                - 'bm25': **RECOMMENDED** - PostgreSQL native full-text search (ts_rank_cd) when using PostgreSQL,
+                - 'bm25': PostgreSQL native full-text search (ts_rank_cd) when using PostgreSQL,
                                falls back to in-memory BM25 for SQLite
                 - 'fuzzy_match': Fuzzy string matching (legacy, kept for compatibility)
             limit: Maximum number of results to return
@@ -754,6 +926,27 @@ class ProceduralMemoryManager:
 
         # Extract organization_id from user for multi-tenant isolation
         organization_id = user.organization_id
+
+        # Hybrid retrieval (EverOS-aligned BM25 + embedding fused via RRF) is
+        # intercepted at the TOP — before the cache and PG/session branches — so
+        # it always routes through the two-lane fusion and is never partially
+        # served by a single-method cache path. Each lane (a recursive call)
+        # still uses the cache for its own bm25/embedding sub-query. Empty
+        # queries fall through to the recent-items path, where method is moot.
+        if search_method == "hybrid" and not is_empty_query:
+            return await self._hybrid_search_for_user(
+                agent_state=agent_state,
+                user=user,
+                query=query,
+                embedded_text=embedded_text,
+                search_field=search_field,
+                limit=limit,
+                timezone_str=timezone_str,
+                filter_tags=filter_tags,
+                scopes=scopes,
+                use_cache=use_cache,
+                similarity_threshold=similarity_threshold,
+            )
 
         # Try Redis Search first (if cache enabled and Redis is available)
         from mirix.database.redis_client import get_redis_client
@@ -1466,6 +1659,25 @@ class ProceduralMemoryManager:
         # CONSUMPTION (REST callers may pass a raw 3072-dim vector) so it never
         # reaches the Vector(4096) PG column or DIM=4096 Redis index unpadded.
         embedded_text = _pad_to_max(embedded_text)
+
+        # Hybrid retrieval (EverOS-aligned) intercepted at the TOP — before the
+        # cache block, whose `else` branch would otherwise feed "hybrid" to
+        # search_text_by_org as if it were a text method. See
+        # _hybrid_search_for_org. Empty queries fall through to recent-items.
+        if search_method == "hybrid" and query and query.strip():
+            return await self._hybrid_search_for_org(
+                agent_state=agent_state,
+                organization_id=organization_id,
+                query=query,
+                embedded_text=embedded_text,
+                search_field=search_field,
+                limit=limit,
+                timezone_str=timezone_str,
+                filter_tags=filter_tags,
+                scopes=scopes,
+                use_cache=use_cache,
+                similarity_threshold=similarity_threshold,
+            )
 
         from mirix.database.redis_client import get_redis_client
 
