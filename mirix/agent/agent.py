@@ -1952,35 +1952,20 @@ class Agent(BaseAgent):
                 "text": resource_memory,
             }
 
-        # Retrieve procedural memory
-        # Owning agents need IDs for merge/update operations, so always retrieve fresh
-        is_owning_agent = self.agent_state.is_type(AgentType.procedural_memory_agent, AgentType.reflexion_agent)
-        if is_owning_agent or "procedural" not in retrieved_memories:
-            current_procedural_memory = await self.procedural_memory_manager.list_procedures(
-                agent_state=self.agent_state,
-                user=self.user,
-                query=key_words,
-                embedded_text=embedded_text,
-                search_field="description",
-                search_method=search_method,
-                limit=MAX_RETRIEVAL_LIMIT_IN_SYSTEM,
-                timezone_str=timezone_str,
-            )
-            procedural_memory = ""
-            if len(current_procedural_memory) > 0:
-                for idx, skill in enumerate(current_procedural_memory):
-                    if is_owning_agent:
-                        procedural_memory += f"[Skill ID: {skill.id}] Name: {skill.name}; Description: {skill.description}; Version: {skill.version}\n"
-                    else:
-                        procedural_memory += (
-                            f"[{idx}] Name: {skill.name}; Description: {skill.description}\n"
-                        )
-            procedural_memory = procedural_memory.strip()
-            retrieved_memories["procedural"] = {
-                "total_number_of_items": await self.procedural_memory_manager.get_total_number_of_items(user=self.user),
-                "current_count": len(current_procedural_memory),
-                "text": procedural_memory,
-            }
+        # Procedural memory (skills) is intentionally NOT injected into any
+        # agent's system prompt. Skills are a RETRIEVAL TARGET, not ambient
+        # context:
+        #   * the procedural_memory_agent surveys them ON DEMAND via its
+        #     `skill_list` / `skill_read` tools (its system prompt explicitly
+        #     instructs "Survey existing skills: Call skill_list()"), and
+        #   * task-executing / external agents fetch them through the unified
+        #     search interface (GET /memory/search?memory_type=procedural, or
+        #     the search_in_memory tool).
+        # Passively broadcasting the whole skill list into every agent's prompt
+        # was redundant for the owner (it uses the tool) and pure token noise
+        # for the pure-extractor agents (episodic/semantic/resource/...), which
+        # never act on skills. Removing it also drops a per-prompt-build
+        # retrieval from the hot path.
 
         # Retrieve semantic memory
         # Owning agents need IDs for merge/update operations, so always retrieve fresh
@@ -2050,7 +2035,6 @@ These keywords have been used to retrieve relevant memories from the database.
         episodic_memory = retrieved_memories["episodic"]
         resource_memory = retrieved_memories["resource"]
         semantic_memory = retrieved_memories["semantic"]
-        procedural_memory = retrieved_memories["procedural"]
         knowledge_vault = retrieved_memories["knowledge_vault"]
 
         system_prompt = template.format(
@@ -2101,15 +2085,10 @@ These keywords have been used to retrieve relevant memories from the database.
             + "\n</resource_memory>\n"
         )
 
-        # Add procedural memory with counts
-        procedural_total = procedural_memory["total_number_of_items"] if procedural_memory else 0
-        procedural_text = procedural_memory["text"] if procedural_memory else ""
-        procedural_count = procedural_memory["current_count"] if procedural_memory else 0
-        system_prompt += (
-            f"\n<procedural_memory> ({procedural_count} out of {procedural_total} Items):\n"
-            + (procedural_text if procedural_text else "Empty")
-            + "\n</procedural_memory>"
-        )
+        # NOTE: no <procedural_memory> block — skills are retrieved on demand
+        # (procedural_memory_agent via skill_list; consumers via /memory/search),
+        # not broadcast into every prompt. See the procedural-retrieval removal
+        # note earlier in this method.
 
         return system_prompt
 
