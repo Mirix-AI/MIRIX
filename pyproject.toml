@@ -123,6 +123,10 @@ eval = [
     "openai",
     "python-dotenv",
 ]
+alfworld = [
+    "alfworld>=0.4.0",
+    "gymnasium>=0.29.0",
+]
 
 [project.urls]
 Homepage = "https://mirix.io"

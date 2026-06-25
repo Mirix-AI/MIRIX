@@ -57,6 +57,7 @@ test_*.db
 third_party/
 evals/metaclaw/reports/
 evals/metaclaw/runs/
+evals/alfworld/runs/
 # Per-test "work/" copies the bench drops next to the dataset
 evals/metaclaw/data/work/
 # Runtime python->python3 shim dir minted by _compose_subprocess_env
