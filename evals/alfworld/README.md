@@ -73,7 +73,7 @@ export OPENROUTER_API_KEY=...
 export MIRIX_URL=http://127.0.0.1:8531
 ```
 
-Default run:
+Default online run:
 
 ```bash
 python -m evals.alfworld \
@@ -102,6 +102,38 @@ Outputs are written to `evals/alfworld/runs/<arm>-<timestamp>/`:
 
 MIRIX session ids are generated with only letters, digits, `_`, and `-`, matching
 the server-side message validator.
+
+SkillOpt-aligned two-stage eval:
+
+```bash
+# Stage 1: generate MIRIX procedural skills from SkillOpt train only.
+python -m evals.alfworld \
+  --arm mirix \
+  --split train \
+  --episodes 0 \
+  --consolidate-every 5 \
+  --consolidate-final-remainder \
+  --mirix-user-id alfworld-skillopt-aligned \
+  --run-id alfworld-skillopt-train
+
+# Stage 2: evaluate the frozen MIRIX skill state on the full 134-item test split.
+python -m evals.alfworld \
+  --arm mirix \
+  --split test \
+  --episodes 0 \
+  --memory-mode frozen \
+  --mirix-user-id alfworld-skillopt-aligned \
+  --run-id alfworld-skillopt-test
+```
+
+In `frozen` memory mode the runner still retrieves existing procedural memories,
+but it does not call `/memory/add_sync` and does not trigger procedural
+consolidation. This keeps the 134 test episodes as held-out evaluation episodes
+instead of online adaptation data.
+
+The train split has 39 items. `--consolidate-final-remainder` keeps the normal
+5-episode consolidation cadence and then performs one final consolidation for the
+remaining 4 train episodes before the frozen test run.
 
 Use `--dry-run` to validate item selection without importing ALFWorld or calling
 models:

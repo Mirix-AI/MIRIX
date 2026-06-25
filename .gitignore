@@ -71,6 +71,8 @@ records/
 
 # Local planning scratchpad (mattpocock skill convention)
 .scratch/
+docs/prd/
+docs/superpowers/
 
 # Private project instructions (never checked in)
 CLAUDE.local.md

@@ -3,7 +3,7 @@
 Default experiment shape matches the current plan:
 
 * source manifest: SkillOpt's train split
-* episodes: 10
+* episodes: 10, or all available items with ``--episodes 0``
 * procedural consolidation: every 5 episodes, for 2 total consolidations
 * action format: SkillOpt-compatible ``<think>`` + ``<action>``
 """
@@ -109,6 +109,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "run_id": run_id,
         "output_dir": str(output_dir),
         "selected_items": [asdict(item) for item in items],
+        "selected_count": len(items),
     }
     write_json(output_dir / "config.json", run_config)
 
@@ -176,7 +177,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 flush=True,
             )
 
-            if mirix is not None and episode_index % args.consolidate_every == 0:
+            if should_consolidate(args, mirix, episode_index):
                 event = consolidate(
                     mirix=mirix,
                     run_id=run_id,
@@ -192,6 +193,26 @@ def main(argv: Sequence[str] | None = None) -> int:
                     f"{episode_index}: skills_changed={event.get('skills_changed')}",
                     flush=True,
                 )
+
+        if should_consolidate_final_remainder(args, mirix, len(episodes)):
+            remainder = len(episodes) % args.consolidate_every
+            event = consolidate(
+                mirix=mirix,
+                run_id=run_id,
+                after_episode=len(episodes),
+                last_n_sessions=remainder,
+                seal_before=args.seal_before_consolidation,
+                model=args.consolidation_model,
+            )
+            event["final_remainder"] = True
+            consolidations.append(event)
+            append_jsonl(output_dir / "consolidations.jsonl", event)
+            print(
+                f"[ALFWorld] final procedural consolidation after episode "
+                f"{len(episodes)} for remainder={remainder}: "
+                f"skills_changed={event.get('skills_changed')}",
+                flush=True,
+            )
     finally:
         if mirix is not None:
             mirix.close()
@@ -332,7 +353,8 @@ def run_episode(
         prediction_dir.mkdir(parents=True, exist_ok=True)
         write_json(prediction_dir / "conversation.json", steps)
 
-        if mirix is not None:
+        episode["memory_mode"] = args.memory_mode
+        if should_ingest(args, mirix):
             user_content, assistant_content = render_episode_for_memory(episode)
             ingest_result = mirix.ingest_session(
                 session_id=episode["session_id"],
@@ -383,6 +405,37 @@ def consolidate(
     return event
 
 
+def should_ingest(args: argparse.Namespace, mirix: MirixALFWorldAdapter | None) -> bool:
+    """Return whether this episode should be written into MIRIX memory."""
+
+    return mirix is not None and args.memory_mode == "online"
+
+
+def should_consolidate(
+    args: argparse.Namespace,
+    mirix: MirixALFWorldAdapter | None,
+    episode_index: int,
+) -> bool:
+    """Return whether procedural consolidation should run after an episode."""
+
+    return should_ingest(args, mirix) and episode_index % args.consolidate_every == 0
+
+
+def should_consolidate_final_remainder(
+    args: argparse.Namespace,
+    mirix: MirixALFWorldAdapter | None,
+    episode_count: int,
+) -> bool:
+    """Return whether a final partial batch should be consolidated."""
+
+    return (
+        should_ingest(args, mirix)
+        and bool(getattr(args, "consolidate_final_remainder", False))
+        and episode_count > 0
+        and episode_count % args.consolidate_every != 0
+    )
+
+
 def build_retrieval_query(
     item: AlfWorldItem,
     task_description: str,
@@ -410,11 +463,17 @@ def select_items(
         rng = random.Random(seed)
         items = list(items)
         rng.shuffle(items)
-    selected = items[offset : offset + episodes]
-    if len(selected) < episodes:
+    available = items[offset:]
+    selected = available if episodes == 0 else available[:episodes]
+    if episodes > 0 and len(selected) < episodes:
         raise SystemExit(
             f"Requested {episodes} episodes from {manifest_root} split={split}, "
             f"but only {len(selected)} items are available after offset={offset}."
+        )
+    if not selected:
+        raise SystemExit(
+            f"No ALFWorld episodes selected from {manifest_root} split={split} "
+            f"after offset={offset}."
         )
     return selected
 
@@ -445,6 +504,7 @@ def build_summary(
         "episodes": len(episodes),
         "success_count": success_count,
         "success_rate": success_count / len(episodes) if episodes else 0.0,
+        "memory_mode": args.memory_mode,
         "consolidations": len(consolidations),
         "consolidate_every": args.consolidate_every,
         "by_task_type": by_task,
@@ -455,8 +515,21 @@ def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     load_dotenv_if_available()
     parser = argparse.ArgumentParser(description="Run MIRIX on ALFWorld.")
     parser.add_argument("--arm", choices=("mirix", "baseline"), default="mirix")
-    parser.add_argument("--episodes", type=int, default=10)
+    parser.add_argument(
+        "--episodes",
+        type=int,
+        default=10,
+        help="Number of episodes to run; 0 means all available items in the selected split.",
+    )
     parser.add_argument("--consolidate-every", type=int, default=5)
+    parser.add_argument(
+        "--consolidate-final-remainder",
+        action="store_true",
+        help=(
+            "After a completed online run, consolidate a trailing partial batch. "
+            "Useful for the 39-item SkillOpt train split when --consolidate-every 5."
+        ),
+    )
     parser.add_argument("--split", choices=("train", "val", "test", "all"), default="train")
     parser.add_argument("--manifest-root", default=str(DEFAULT_MANIFEST_ROOT))
     parser.add_argument("--offset", type=int, default=0)
@@ -500,6 +573,22 @@ def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument("--meta-agent-id")
     parser.add_argument("--top-k", type=int, default=6)
     parser.add_argument("--retrieve-every-step", action="store_true")
+    parser.add_argument(
+        "--memory-mode",
+        choices=("online", "frozen"),
+        default=os.environ.get("ALFWORLD_MEMORY_MODE", "online"),
+        help=(
+            "online writes each episode to MIRIX and consolidates periodically; "
+            "frozen retrieves existing procedural memory but never writes or consolidates."
+        ),
+    )
+    parser.add_argument(
+        "--frozen-memory",
+        dest="memory_mode",
+        action="store_const",
+        const="frozen",
+        help="Alias for --memory-mode frozen.",
+    )
     parser.add_argument("--skip-mirix-prepare", action="store_true")
     parser.add_argument("--init-meta-agent", action="store_true")
     parser.add_argument("--consolidation-model")
@@ -511,8 +600,8 @@ def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser.set_defaults(seal_before_consolidation=True)
 
     args = parser.parse_args(argv)
-    if args.episodes <= 0:
-        parser.error("--episodes must be positive")
+    if args.episodes < 0:
+        parser.error("--episodes must be non-negative; use 0 for the full split")
     if args.consolidate_every <= 0:
         parser.error("--consolidate-every must be positive")
     return args
