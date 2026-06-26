@@ -14,7 +14,9 @@ import argparse
 import json
 import os
 import random
+import signal
 import sys
+from contextlib import contextmanager
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -39,10 +41,15 @@ from .prompts import SYSTEM_PROMPT, render_rollout_prompt
 
 DEFAULT_MANIFEST_ROOT = Path(__file__).resolve().parent / "data" / "alfworld_path_split"
 DEFAULT_RUNS_DIR = Path(__file__).resolve().parent / "runs"
+DEFAULT_MODEL_TIMEOUT_S = 120.0
 
 
 class ChatModelError(RuntimeError):
     """Raised when the target model client cannot be initialized or called."""
+
+
+class _ModelDeadlineExceeded(BaseException):
+    """Internal sentinel used to interrupt blocking model I/O."""
 
 
 class OpenAICompatibleChatModel:
@@ -56,6 +63,10 @@ class OpenAICompatibleChatModel:
         api_key: str,
         temperature: float,
         max_completion_tokens: int,
+        timeout_s: float,
+        max_retries: int,
+        stream_response: bool,
+        session_id: str | None = None,
     ) -> None:
         try:
             from openai import OpenAI
@@ -65,10 +76,16 @@ class OpenAICompatibleChatModel:
                 'with `pip install -e ".[eval]"`.'
             ) from exc
 
+        self._openai_cls = OpenAI
         self.model = model
+        self.base_url = base_url
+        self.api_key = api_key
         self.temperature = temperature
         self.max_completion_tokens = max_completion_tokens
-        self._client = OpenAI(api_key=api_key, base_url=base_url)
+        self.timeout_s = timeout_s
+        self.max_retries = max_retries
+        self.stream_response = stream_response
+        self.session_id = session_id
 
     def complete(self, *, system: str, user: str) -> str:
         kwargs = {
@@ -80,14 +97,83 @@ class OpenAICompatibleChatModel:
             "temperature": self.temperature,
             "max_completion_tokens": self.max_completion_tokens,
         }
+        if self.session_id:
+            kwargs["extra_body"] = {"session_id": self.session_id}
+        client = self._new_client()
         try:
-            response = self._client.chat.completions.create(**kwargs)
-        except TypeError:
-            kwargs["max_tokens"] = kwargs.pop("max_completion_tokens")
-            response = self._client.chat.completions.create(**kwargs)
+            with self._deadline():
+                if self.stream_response:
+                    return self._complete_stream(client, kwargs)
 
-        content = response.choices[0].message.content
-        return (content or "").strip()
+                try:
+                    response = client.chat.completions.create(**kwargs)
+                except TypeError:
+                    kwargs["max_tokens"] = kwargs.pop("max_completion_tokens")
+                    response = client.chat.completions.create(**kwargs)
+
+                content = response.choices[0].message.content
+                return (content or "").strip()
+        except _ModelDeadlineExceeded as exc:
+            raise TimeoutError(f"model call exceeded {self.timeout_s:g}s") from exc
+        finally:
+            client.close()
+
+    def _new_client(self):
+        return self._openai_cls(
+            api_key=self.api_key,
+            base_url=self.base_url,
+            timeout=self.timeout_s,
+            max_retries=self.max_retries,
+        )
+
+    @contextmanager
+    def _deadline(self):
+        if self.timeout_s <= 0 or not hasattr(signal, "SIGALRM"):
+            yield
+            return
+
+        def raise_timeout(_signum: int, _frame: Any) -> None:
+            raise _ModelDeadlineExceeded()
+
+        old_handler = signal.getsignal(signal.SIGALRM)
+        signal.signal(signal.SIGALRM, raise_timeout)
+        old_timer = signal.setitimer(signal.ITIMER_REAL, self.timeout_s)
+        try:
+            yield
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, old_handler)
+            if old_timer[0] > 0:
+                signal.setitimer(signal.ITIMER_REAL, old_timer[0], old_timer[1])
+
+    def _complete_stream(self, client: Any, kwargs: dict[str, Any]) -> str:
+        kwargs = dict(kwargs)
+        kwargs["stream"] = True
+        stream = None
+        try:
+            try:
+                stream = client.chat.completions.create(**kwargs)
+            except TypeError:
+                kwargs["max_tokens"] = kwargs.pop("max_completion_tokens")
+                stream = client.chat.completions.create(**kwargs)
+
+            chunks: list[str] = []
+            for chunk in stream:
+                if not chunk.choices:
+                    continue
+                delta = chunk.choices[0].delta
+                piece = getattr(delta, "content", None) or ""
+                if not piece:
+                    continue
+                chunks.append(piece)
+                content = "".join(chunks)
+                if "</action>" in content:
+                    return content.strip()
+            return "".join(chunks).strip()
+        finally:
+            close = getattr(stream, "close", None)
+            if close is not None:
+                close()
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -136,6 +222,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         api_key=model_api_key,
         temperature=args.temperature,
         max_completion_tokens=args.max_completion_tokens,
+        timeout_s=args.model_timeout_s,
+        max_retries=args.model_max_retries,
+        stream_response=args.stream_model_response,
+        session_id=args.model_session_id,
     )
 
     mirix: MirixALFWorldAdapter | None = None
@@ -552,6 +642,31 @@ def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument("--model-api-key-env", default="OPENROUTER_API_KEY")
     parser.add_argument("--temperature", type=float, default=0.4)
     parser.add_argument("--max-completion-tokens", type=int, default=16384)
+    parser.add_argument(
+        "--model-timeout-s",
+        type=float,
+        default=float(os.environ.get("ALFWORLD_MODEL_TIMEOUT_S", DEFAULT_MODEL_TIMEOUT_S)),
+        help="Per-request timeout for target model action generation.",
+    )
+    parser.add_argument(
+        "--model-max-retries",
+        type=int,
+        default=int(os.environ.get("ALFWORLD_MODEL_MAX_RETRIES", "1")),
+        help="OpenAI-compatible client retries for target model calls.",
+    )
+    parser.add_argument(
+        "--stream-model-response",
+        action="store_true",
+        help="Stream target model output and return as soon as </action> appears.",
+    )
+    parser.add_argument(
+        "--model-session-id",
+        default=os.environ.get("OPENROUTER_SESSION_ID"),
+        help=(
+            "Optional OpenRouter session_id for provider sticky routing and prompt-cache "
+            "reuse across repeated agent calls."
+        ),
+    )
     parser.add_argument(
         "--allow-json-actions",
         action="store_true",
