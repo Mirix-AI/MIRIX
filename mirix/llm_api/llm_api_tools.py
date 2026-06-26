@@ -25,6 +25,7 @@ from mirix.llm_api.openai import (
 from mirix.log import get_logger
 from mirix.observability.context import get_trace_context, mark_observation_as_child
 from mirix.observability.langfuse_client import get_langfuse_client
+from mirix.pii import mask_structure
 from mirix.schemas.llm_config import LLMConfig
 from mirix.schemas.message import Message
 from mirix.schemas.openai.chat_completion_request import (
@@ -186,6 +187,13 @@ async def create(
             if parent_span_id:
                 trace_context_dict["parent_span_id"] = parent_span_id
 
+            # Pre-mask PII: redact user content BEFORE it becomes a span
+            # attribute, so the tracing SDK's mask= callback is a cheap
+            # synchronous no-op instead of a blocking PII-service POST on the
+            # event-loop thread. Mask ONLY messages — tools/functions are static
+            # JSON schemas with no PII, so masking them would be wasted work.
+            trace_input["messages"] = await mask_structure(messages_for_trace)
+
             observation_cm = langfuse.start_as_current_observation(
                 name="llm_completion",
                 as_type="generation",
@@ -290,6 +298,8 @@ async def create(
                                 "total": getattr(response.usage, "total_tokens", 0),
                             }
 
+                        # Pre-mask PII before it becomes a span attribute.
+                        output_message = await mask_structure(output_message)
                         generation.update(output=output_message, usage=usage_dict)
                     except Exception as e:
                         logger.warning(f"Failed to update LangFuse generation: {e}")

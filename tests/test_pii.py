@@ -10,7 +10,7 @@ import logging
 import httpx
 import pytest
 
-from mirix.pii import REDACTED_PLACEHOLDER, log_error_strip_pii
+from mirix.pii import REDACTED_PLACEHOLDER, log_error_strip_pii, mask_structure
 
 # Project pytest.ini does not enable asyncio_mode=auto; mark the whole
 # module so every async test in this file runs under pytest-asyncio.
@@ -460,3 +460,116 @@ async def test_async_client_sends_auth_header(monkeypatch):
     assert "intuit_appid=Intuit.test" in captured["authorization"]
     assert "intuit_app_secret=shh" in captured["authorization"]
     assert captured["intuit_offeringid"] == "Intuit.test"
+
+
+# mask_structure — recursive cooperative async masker
+
+
+async def test_mask_structure_masks_leaf_string():
+    """A bare leaf string is forwarded to ispy-pii and the redacted
+    value is returned."""
+
+    def handler(request):
+        return httpx.Response(200, json={"redactedText": "ssn ***-**-6789"})
+
+    _install_mock_async_client(handler)
+    assert await mask_structure("ssn 123-45-6789") == "ssn ***-**-6789"
+
+
+async def test_mask_structure_walks_nested_dict_list_tuple():
+    """Every leaf string inside a nested dict/list/tuple is masked while
+    the container shapes (dict keys, list, tuple) are preserved."""
+    seen: list = []
+
+    def handler(request):
+        body = request.read().decode()
+        seen.append(body)
+        return httpx.Response(200, json={"redactedText": "X"})
+
+    _install_mock_async_client(handler)
+    result = await mask_structure(
+        {
+            "messages": [
+                {"role": "user", "content": "hello"},
+                {"role": "assistant", "content": "world"},
+            ],
+            "pair": ("a", "b"),
+        }
+    )
+    assert result == {
+        "messages": [
+            {"role": "X", "content": "X"},
+            {"role": "X", "content": "X"},
+        ],
+        "pair": ("X", "X"),
+    }
+    # Tuple stays a tuple (not coerced to a list).
+    assert isinstance(result["pair"], tuple)
+    # Six leaf strings → six ispy-pii calls.
+    assert len(seen) == 6
+
+
+async def test_mask_structure_passes_through_non_string_scalars():
+    """int / float / bool / None pass through unchanged and never hit
+    the network."""
+
+    def handler(request):
+        return httpx.Response(200, json={"redactedText": "should-not-be-called"})
+
+    _install_mock_async_client(handler)
+    result = await mask_structure({"n": 42, "f": 3.14, "b": True, "z": None})
+    assert result == {"n": 42, "f": 3.14, "b": True, "z": None}
+
+
+async def test_mask_structure_fails_closed_per_leaf_to_placeholder():
+    """A leaf whose ispy-pii call errors (5xx) degrades to the
+    placeholder; mask_structure never raises."""
+
+    def handler(request):
+        return httpx.Response(500, text="boom")
+
+    _install_mock_async_client(handler)
+    result = await mask_structure({"messages": ["leaks here"]})
+    assert result == {"messages": [REDACTED_PLACEHOLDER]}
+
+
+async def test_mask_structure_passthrough_when_disabled(monkeypatch):
+    """Kill switch off → full passthrough, no network call."""
+    monkeypatch.setenv("MIRIX_ISPY_PII_ENABLED", "false")
+
+    def handler(request):
+        return httpx.Response(200, json={"redactedText": "should-not-be-called"})
+
+    _install_mock_async_client(handler)
+    payload = {"messages": [{"role": "user", "content": "francis@example.com"}]}
+    assert await mask_structure(payload) == payload
+
+
+async def test_mask_structure_masks_sibling_leaves_concurrently():
+    """K sibling leaves issue ~K concurrent calls. The handler blocks
+    until all K requests have arrived, so a serial implementation would
+    deadlock/timeout; only a concurrent gather lets all K arrive at once."""
+    import asyncio
+
+    n_leaves = 5
+    arrived = asyncio.Event()
+    in_flight = 0
+    max_in_flight = 0
+
+    async def handler(request):
+        nonlocal in_flight, max_in_flight
+        in_flight += 1
+        max_in_flight = max(max_in_flight, in_flight)
+        if in_flight >= n_leaves:
+            arrived.set()
+        # Wait until every sibling leaf is concurrently in flight.
+        await asyncio.wait_for(arrived.wait(), timeout=2.0)
+        in_flight -= 1
+        return httpx.Response(200, json={"redactedText": "X"})
+
+    _install_mock_async_client(handler)
+    leaves = [f"leaf-{i}" for i in range(n_leaves)]
+    result = await mask_structure(leaves)
+    assert result == ["X"] * n_leaves
+    # All leaves were in flight simultaneously → truly concurrent.
+    assert max_in_flight == n_leaves

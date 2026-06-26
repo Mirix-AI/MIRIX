@@ -236,5 +236,6 @@ pytest-asyncio = "^1.3.0"
 
 [dependency-groups]
 dev = [
-    "grpcio-tools (>=1.66.0,<1.67.0)"
+    "grpcio-tools (>=1.66.0,<1.67.0)",
+    "pytest-asyncio (>=1.3.0)",
 ]

@@ -29,7 +29,6 @@ from mirix.errors import (
     LLMUnprocessableEntityError,
 )
 
-
 # ---------- signature contract ----------
 
 
@@ -95,9 +94,7 @@ async def test_get_ai_reply_422_propagates_on_first_attempt(monkeypatch):
     sleep_mock = AsyncMock()
     monkeypatch.setattr("mirix.agent.agent.asyncio.sleep", sleep_mock)
 
-    stub, llm_client = _build_stub_agent(
-        send_side_effect=LLMUnprocessableEntityError("content rejected")
-    )
+    stub, llm_client = _build_stub_agent(send_side_effect=LLMUnprocessableEntityError("content rejected"))
 
     with pytest.raises(LLMUnprocessableEntityError):
         await Agent._get_ai_reply(
@@ -106,9 +103,9 @@ async def test_get_ai_reply_422_propagates_on_first_attempt(monkeypatch):
             llm_client=llm_client,
         )
 
-    assert llm_client.send_llm_request.await_count == 1, (
-        "_get_ai_reply must call the LLM exactly once on a Permanent error"
-    )
+    assert (
+        llm_client.send_llm_request.await_count == 1
+    ), "_get_ai_reply must call the LLM exactly once on a Permanent error"
     sleep_mock.assert_not_called()
 
 
@@ -117,17 +114,20 @@ async def test_get_ai_reply_422_propagates_on_first_attempt(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_get_ai_reply_transient_retries_to_budget_then_propagates(monkeypatch):
-    """LLMRateLimitError should retry max_attempts times then re-raise."""
+    """LLMRateLimitError should retry max_attempts times then re-raise.
+
+    After VEPAGE-1251 S3 the propagated exception is tagged
+    `__mirix_inner_exhausted__` so process_with_policy does NOT add another
+    whole-step cycle on top (kills the 3 x 3 = 9 multiplication)."""
     monkeypatch.setattr("mirix.agent.agent.asyncio.sleep", AsyncMock())
+    from mirix.queue.error_policy import is_inner_exhausted
     from mirix.settings import settings
 
     expected_total = settings.llm_inline_retry_max_attempts + 1  # initial + retries
 
-    stub, llm_client = _build_stub_agent(
-        send_side_effect=LLMRateLimitError("429 still")
-    )
+    stub, llm_client = _build_stub_agent(send_side_effect=LLMRateLimitError("429 still"))
 
-    with pytest.raises(LLMRateLimitError):
+    with pytest.raises(LLMRateLimitError) as excinfo:
         await Agent._get_ai_reply(
             stub,
             message_sequence=[],
@@ -135,6 +135,10 @@ async def test_get_ai_reply_transient_retries_to_budget_then_propagates(monkeypa
         )
 
     assert llm_client.send_llm_request.await_count == expected_total
+    assert is_inner_exhausted(excinfo.value) is True, (
+        "exhausted LLM transient must be tagged so the whole-step policy "
+        "doesn't trigger another retry cycle (kills the 3x3 multiplication)"
+    )
 
 
 @pytest.mark.asyncio
@@ -176,11 +180,10 @@ async def test_get_ai_reply_transient_then_success(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_get_ai_reply_empty_response_retries(monkeypatch):
-    """An empty-choices response is a ValueError → Transient → retry.
+    """An empty-choices response raises LLMBadResponseShapeError → Transient → retry.
 
     Guards the Gemini-quirk path: providers occasionally return empty content,
-    and the old code retried via the ValueError branch. New code must still
-    retry these via the unified classifier.
+    and this is treated as a transient provider quirk that retrying may fix.
     """
     monkeypatch.setattr("mirix.agent.agent.asyncio.sleep", AsyncMock())
 
@@ -212,7 +215,10 @@ async def test_get_ai_reply_empty_response_retries(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_get_ai_reply_bad_finish_reason_retries(monkeypatch):
-    """A finish_reason that isn't stop/function_call/tool_calls raises ValueError."""
+    """A finish_reason that isn't stop/function_call/tool_calls raises
+    LLMBadResponseShapeError, which classifies TRANSIENT and gets retried."""
+    from mirix.errors import LLMBadResponseShapeError
+
     monkeypatch.setattr("mirix.agent.agent.asyncio.sleep", AsyncMock())
 
     bad = SimpleNamespace(
@@ -228,13 +234,13 @@ async def test_get_ai_reply_bad_finish_reason_retries(monkeypatch):
     # Convert the lambda to a coroutine return path: use AsyncMock side_effect
     llm_client.send_llm_request = AsyncMock(return_value=bad)
 
-    with pytest.raises(ValueError):
+    with pytest.raises(LLMBadResponseShapeError):
         await Agent._get_ai_reply(
             stub,
             message_sequence=[],
             llm_client=llm_client,
         )
-    # Initial + retries — bad finish_reason persists, budget exhausts, ValueError raised
+    # Initial + retries — bad finish_reason persists, budget exhausts.
     from mirix.settings import settings
 
     expected_total = settings.llm_inline_retry_max_attempts + 1

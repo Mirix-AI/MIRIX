@@ -24,7 +24,7 @@ from mirix.queue.message_pb2 import MessageCreate as ProtoMessageCreate
 from mirix.queue.message_pb2 import QueueMessage
 from mirix.queue.message_pb2 import User as ProtoUser
 from mirix.queue.queue_util import put_messages
-from mirix.queue.worker import QueueWorker
+from mirix.queue.worker import BatchQueueWorker, QueueWorker
 from mirix.schemas.client import Client
 from mirix.schemas.enums import MessageRole
 from mirix.schemas.message import MessageCreate
@@ -358,7 +358,7 @@ class TestQueueWorker:
     @pytest.mark.asyncio
     async def test_worker_start_stop(self):
         queue = MemoryQueue()
-        worker = QueueWorker(queue)
+        worker = BatchQueueWorker(queue)
 
         await worker.start()
         assert worker._running is True
@@ -378,7 +378,7 @@ class TestQueueWorker:
     @pytest.mark.asyncio
     async def test_worker_message_processing_integration(self, mock_server, sample_queue_message):
         queue = MemoryQueue()
-        worker = QueueWorker(queue, server=mock_server)
+        worker = BatchQueueWorker(queue, server=mock_server)
 
         await queue.put(sample_queue_message)
         await worker.start()
@@ -588,7 +588,7 @@ class TestWorkerPartitionAssignment:
     async def test_worker_consumes_from_assigned_partition(self, mock_server, sample_client):
         queue = PartitionedMemoryQueue(num_partitions=3)
 
-        worker = QueueWorker(queue, server=mock_server, partition_id=1)
+        worker = BatchQueueWorker(queue, server=mock_server, partition_id=1)
 
         msg = QueueMessage()
         msg.client_id = sample_client.id
@@ -633,8 +633,8 @@ class TestWorkerPartitionAssignment:
         mock_server_0 = make_server("worker-0")
         mock_server_1 = make_server("worker-1")
 
-        worker_0 = QueueWorker(queue, server=mock_server_0, partition_id=0)
-        worker_1 = QueueWorker(queue, server=mock_server_1, partition_id=1)
+        worker_0 = BatchQueueWorker(queue, server=mock_server_0, partition_id=0)
+        worker_1 = BatchQueueWorker(queue, server=mock_server_1, partition_id=1)
 
         with patch("mirix.queue.worker.UserManager") as MockUM:
             MockUM.return_value.get_admin_user = AsyncMock(return_value=mock_user)

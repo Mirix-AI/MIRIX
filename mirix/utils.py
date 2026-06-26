@@ -19,7 +19,7 @@ import uuid
 import warnings
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
-from functools import wraps
+from functools import lru_cache, wraps
 from logging import Logger
 from pathlib import Path
 from typing import TYPE_CHECKING, List, Optional, Union, _GenericAlias, get_args, get_origin, get_type_hints
@@ -37,7 +37,6 @@ from mirix.constants import (
     CLI_WARNING_PREFIX,
     CORE_MEMORY_HUMAN_CHAR_LIMIT,
     CORE_MEMORY_PERSONA_CHAR_LIMIT,
-    ERROR_MESSAGE_PREFIX,
     MAX_FILENAME_LENGTH,
     MIRIX_DIR,
     TOOL_CALL_ID_MAX_LEN,
@@ -857,9 +856,33 @@ class OpenAIBackcompatUnpickler(pickle.Unpickler):
         return super().find_class(module, name)
 
 
+@lru_cache(maxsize=None)
+def get_encoding(model: str = "gpt-4") -> "tiktoken.Encoding":
+    """Return the tiktoken encoding for ``model``, loaded once per model.
+
+    ``tiktoken.encoding_for_model`` resolves (and on first use COLD-LOADS) the
+    BPE vocab — a ~1.5s, CPU-bound, potentially network-fetching call. Doing it
+    on every ``count_tokens`` invocation put that cold load on whatever event
+    loop ran the first summary, starving the loop (the save-path stall behind
+    the timing-FST loop-lag gate). Cache per model so the load happens once;
+    ``warm_token_encodings`` warms it off the request path at startup. Falls back
+    to ``cl100k_base`` for unknown models (same behavior the call sites had)."""
+    try:
+        return tiktoken.encoding_for_model(model)
+    except KeyError:
+        return tiktoken.get_encoding("cl100k_base")
+
+
+def warm_token_encodings(models: tuple = ("gpt-4",)) -> None:
+    """Pre-load token encodings so the first ``count_tokens`` doesn't pay the
+    ~1.5s cold load on a live event loop. Call at startup (ideally off-loop, via
+    ``asyncio.to_thread`` or before the loop starts). Idempotent (lru_cached)."""
+    for model in models:
+        get_encoding(model)
+
+
 def count_tokens(s: str, model: str = "gpt-4") -> int:
-    encoding = tiktoken.encoding_for_model(model)
-    return len(encoding.encode(s))
+    return len(get_encoding(model).encode(s))
 
 
 def printd(*args, **kwargs):
@@ -1189,9 +1212,12 @@ def sanitize_filename(filename: str) -> str:
 
 
 def get_friendly_error_msg(function_name: str, exception_name: str, exception_message: str):
+    """Render a tool-execution error as a human-readable string the LLM can
+    read in the next round-trip tool message. No magic prefix — callers
+    detect failures via exception type, not by parsing this string."""
     from mirix.constants import MAX_ERROR_MESSAGE_CHAR_LIMIT
 
-    error_msg = f"{ERROR_MESSAGE_PREFIX} executing function {function_name}: {exception_name}: {exception_message}"
+    error_msg = f"Error executing function {function_name}: {exception_name}: {exception_message}"
     if len(error_msg) > MAX_ERROR_MESSAGE_CHAR_LIMIT:
         error_msg = error_msg[:MAX_ERROR_MESSAGE_CHAR_LIMIT]
     return error_msg
@@ -1249,13 +1275,7 @@ def num_tokens_from_functions(functions: List[dict], model: str = "gpt-4"):
 
     Copied from https://community.openai.com/t/how-to-calculate-the-tokens-when-using-function-call/266573/11
     """
-    try:
-        encoding = tiktoken.encoding_for_model(model)
-    except KeyError:
-        from mirix.utils import printd
-
-        printd("Warning: model not found. Using cl100k_base encoding.")
-        encoding = tiktoken.get_encoding("cl100k_base")
+    encoding = get_encoding(model)
 
     num_tokens = 0
     for function in functions:
@@ -1315,11 +1335,7 @@ def num_tokens_from_tool_calls(tool_calls: Union[List[dict], List[ToolCall]], mo
         }
     }]
     """
-    try:
-        encoding = tiktoken.encoding_for_model(model)
-    except KeyError:
-        # logger.debug("Warning: model not found. Using cl100k_base encoding.")
-        encoding = tiktoken.get_encoding("cl100k_base")
+    encoding = get_encoding(model)
 
     num_tokens = 0
     for tool_call in tool_calls:
@@ -1361,12 +1377,7 @@ def num_tokens_from_messages(messages: List[dict], model: str = "gpt-4") -> int:
     For counting tokens in function calling REQUESTS, see:
         https://community.openai.com/t/how-to-calculate-the-tokens-when-using-function-call/266573/11
     """
-    try:
-        # Attempt to search for the encoding based on the model string
-        encoding = tiktoken.encoding_for_model(model)
-    except KeyError:
-        # logger.error("Warning: model not found. Using cl100k_base encoding.")
-        encoding = tiktoken.get_encoding("cl100k_base")
+    encoding = get_encoding(model)
     if model in {
         "gpt-3.5-turbo-0613",
         "gpt-3.5-turbo-16k-0613",
@@ -1467,61 +1478,6 @@ def log_telemetry(logger: Logger, event: str, **kwargs):
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S,%f UTC")  # More readable timestamp
         extra_data = " | ".join(f"{key}={value}" for key, value in kwargs.items() if value is not None)
         logger.info("[%s] EVENT: %s | %s", timestamp, event, extra_data)
-
-
-def generate_short_id(prefix="id", length=4):
-    """
-    Generate a short, LLM-friendly ID.
-
-    Args:
-        prefix: The prefix for the ID (e.g., "mem", "task", "user")
-        length: The length of the random part (default 4)
-
-    Returns:
-        A short ID like "mem_A7K9", "task_B3X2", etc.
-
-    Examples:
-        >>> generate_short_id("mem", 4)
-        "mem_A7K9"
-        >>> generate_short_id("task", 3)
-        "task_X2A"
-    """
-    chars = string.ascii_uppercase + string.digits
-    random_part = random.choice(string.ascii_uppercase) + "".join(random.choices(chars, k=length - 1))
-    return f"{prefix}_{random_part}"
-
-
-def generate_unique_short_id(session_maker, model_class, prefix="id", length=4, max_attempts=10):
-    """
-    Generate a unique short, LLM-friendly ID with collision detection (sync).
-    Prefer generate_unique_short_id_async when in async context.
-    """
-    from sqlalchemy import select
-
-    for _ in range(max_attempts):
-        candidate_id = generate_short_id(prefix, length)
-        with session_maker() as temp_session:
-            existing = temp_session.execute(select(model_class).where(model_class.id == candidate_id)).first()
-            if not existing:
-                return candidate_id
-    return generate_short_id(prefix, length + 2)
-
-
-async def generate_unique_short_id_async(session_maker, model_class, prefix="id", length=4, max_attempts=10):
-    """
-    Generate a unique short, LLM-friendly ID with collision detection (async).
-    session_maker must be an async context manager (e.g. db_context from server).
-    """
-    from sqlalchemy import select
-
-    for _ in range(max_attempts):
-        candidate_id = generate_short_id(prefix, length)
-        async with session_maker() as temp_session:
-            result = await temp_session.execute(select(model_class).where(model_class.id == candidate_id))
-            existing = result.scalar_one_or_none()
-            if not existing:
-                return candidate_id
-    return generate_short_id(prefix, length + 2)
 
 
 def _get_file_manager_instance() -> "FileManager":

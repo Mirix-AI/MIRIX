@@ -13,6 +13,7 @@ from mirix.llm_api.llm_api_tools import retry_with_exponential_backoff
 from mirix.log import get_logger
 from mirix.observability.context import get_trace_context, mark_observation_as_child
 from mirix.observability.langfuse_client import get_langfuse_client
+from mirix.pii import mask_structure
 from mirix.schemas.embedding_config import EmbeddingConfig
 from mirix.utils import is_valid_url, printd
 
@@ -63,7 +64,16 @@ async def traced_embedding_with_retry(
     trace_id = trace_context.get("trace_id")
     parent_span_id = trace_context.get("observation_id")
 
+    # Pre-mask PII: redact the embedded text BEFORE it becomes a
+    # span attribute, so the SDK's mask= callback is a cheap synchronous no-op
+    # instead of a blocking ispy-pii POST on the event-loop thread. Masked once
+    # here (not per retry attempt). Degrade to the unmasked text on failure
+    # rather than break embedding — the mask= backstop still scrubs downstream.
     text_preview = text
+    try:
+        text_preview = await mask_structure(text)
+    except Exception as e:
+        logger.error(f"Failed to pre-mask embedding text for trace. Continuing: {e}")
 
     trace_context_dict: dict = {"trace_id": trace_id}
     if parent_span_id:
@@ -220,7 +230,9 @@ class OpenAIEmbeddingWithCustomAuth:
                 )
 
             try:
-                auth_headers = auth_provider.get_auth_headers()
+                # Async auth fetch so a blocking token round-trip never stalls
+                # the event loop.
+                auth_headers = await auth_provider.get_auth_headers_async()
                 logger.info(
                     f"OpenAI Embedding - Using auth provider '{self.config.auth_provider}' "
                     f"to inject {len(auth_headers)} header(s)"

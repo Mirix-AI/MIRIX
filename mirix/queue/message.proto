@@ -91,6 +91,15 @@ message QueueMessage {
   // Each entry tells the meta-agent to call a registered handler for
   // memory_type and pass payload_json-decoded fields as kwargs.
   repeated DirectMemoryWrite direct_writes = 25;
+
+  // ========== REQUEST CORRELATION (TID) ==========
+  // Transaction id, propagated independently of the LangFuse trace fields
+  // above. Unlike trace context, the TID is caller/gateway-provided request
+  // identity and must reach the worker even when LangFuse is disabled, so it
+  // is carried in its own field and copied unconditionally (not gated on an
+  // active trace). The worker re-enters the logging context with this value
+  // so all worker/agent log lines carry it, and stamps it as a span attribute.
+  optional string tid = 26;
 }
 
 // User representation

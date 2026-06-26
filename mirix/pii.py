@@ -26,13 +26,15 @@ runs inside an async event loop — ``inner_step()``, the LLM clients'
 ispy-pii timeout. The mask call runs through ``httpx.AsyncClient`` and
 yields cooperatively while waiting.
 
-The Langfuse trace path uses a separate seam (the
-``mirix.observability.pii_mask`` masker registered as the Langfuse
-``mask=`` callback). That callback fires on the SDK's flush thread, not
-on a request handler's event loop, so synchronous ``httpx.Client`` is
-still correct there. The two paths are intentionally separate: error
-logs go to Splunk via stdlib logging; trace attributes go to Langfuse
-via the SDK.
+The Langfuse trace path pre-masks PII at the generation sites via
+:func:`mask_structure` (this module) *before* the value becomes a span
+attribute, because the SDK applies its ``mask=`` callback synchronously
+on whatever thread opens the span — which on the save/search path is the
+event-loop thread, not a background flush thread. The
+``mirix.observability.pii_mask`` callback is therefore reduced to a cheap
+synchronous, pure-CPU backstop (no network). The two paths are
+intentionally separate: error logs go to Splunk via stdlib logging; trace
+attributes are pre-masked here and shipped to Langfuse via the SDK.
 
 ``MIRIX_ISPY_PII_ENABLED=false`` disables the network call
 (passthrough). Failures substitute :data:`REDACTED_PLACEHOLDER` so the
@@ -238,6 +240,41 @@ async def _mask_async(text: str) -> str:
         return REDACTED_PLACEHOLDER
 
 
+async def mask_structure(data: Any) -> Any:
+    """Recursively redact PII in a JSON-ish structure via the async
+    ispy-pii client.
+
+    Strings are masked through :func:`_mask_async`; ``dict``/``list``/
+    ``tuple`` are walked recursively (shapes preserved — a tuple stays a
+    tuple); every other scalar (``int``/``float``/``bool``/``None``)
+    passes through unchanged.
+
+    Sibling leaves are masked **concurrently** via :func:`asyncio.gather`,
+    so a message list of K strings costs ~1 ispy-pii round-trip of
+    wall-clock instead of K serial round-trips. Because the work is
+    ``await``-ed, the event loop stays free to run other coroutines while
+    the masks are in flight — this is what keeps the LangFuse span path
+    off the blocking hot path.
+
+    Never raises: each leaf already fails closed to
+    :data:`REDACTED_PLACEHOLDER` inside :func:`_mask_async`. Honors the
+    ``MIRIX_ISPY_PII_ENABLED=false`` kill switch (full passthrough — the
+    check lives in :func:`_mask_async`, so a disabled masker walks the
+    structure but returns every leaf verbatim).
+    """
+    if isinstance(data, str):
+        return await _mask_async(data)
+    if isinstance(data, dict):
+        # Mask the values concurrently; keys are structural, not PII.
+        keys = list(data.keys())
+        masked_values = await asyncio.gather(*(mask_structure(data[k]) for k in keys))
+        return dict(zip(keys, masked_values))
+    if isinstance(data, (list, tuple)):
+        masked_items = await asyncio.gather(*(mask_structure(item) for item in data))
+        return type(data)(masked_items)
+    return data
+
+
 async def log_error_strip_pii(
     log: logging.Logger,
     fmt: str,
@@ -275,9 +312,8 @@ async def log_error_strip_pii(
     The helper injects two structured fields automatically alongside
     the caller's ``extra``: ``error_type`` (the exception class name)
     and ``error`` (the masked exception message). This gives Splunk
-    dashboards a structured field to key on — symmetric with the
-    ECMS helper in ``common.pii.log_error_strip_pii``. Caller-supplied
-    fields take precedence on name collision.
+    dashboards a structured field to key on. Caller-supplied fields take
+    precedence on name collision.
 
     Yields the event loop for up to ``MIRIX_ISPY_PII_TIMEOUT_MS``
     waiting on ispy-pii. Do not call from a hot path.

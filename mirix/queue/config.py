@@ -50,6 +50,24 @@ ROUND_ROBIN = os.environ.get("MIRIX_MEMORY_QUEUE_ROUND_ROBIN", "false").lower() 
     "yes",
 )
 
+# Batch-consumer knobs. The in-memory consumer is ALWAYS the BatchQueueWorker;
+# there is no separate serial mode. READ_BATCH_SIZE=1 is the degenerate
+# serial-equivalent (one message per pull, one user-group, through the same
+# dispatch_save -> finalize chokepoint). These env-var names are deliberately
+# shared with any external batch consumer's config so one set of values can
+# tune both the in-memory consumer and the external one identically.
+#
+# - READ_BATCH_SIZE: max messages a worker accumulates per pull before running
+#   the batch through process_batch. 1 == serial-equivalent.
+# - MAX_IN_FLIGHT_USERS: cap on concurrently-processed user groups within a
+#   batch (asyncio.Semaphore in process_batch). Per-user work stays serial.
+# - FLUSH_INTERVAL_MS: how long to wait for the batch to fill before flushing a
+#   partial batch. Kept small so a lone message (READ_BATCH_SIZE=1, or a
+#   "save then observe" flow) dispatches promptly instead of stalling.
+READ_BATCH_SIZE = int(os.environ.get("MIRIX_MEMORY_QUEUE_READ_BATCH_SIZE", 1))
+MAX_IN_FLIGHT_USERS = int(os.environ.get("MIRIX_MEMORY_QUEUE_MAX_IN_FLIGHT_USERS", 15))
+FLUSH_INTERVAL_MS = int(os.environ.get("MIRIX_MEMORY_QUEUE_FLUSH_INTERVAL_MS", 50))
+
 
 # Worker auto-start configuration
 # Set to 'false' or '0' to disable automatic worker startup when using external consumers

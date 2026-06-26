@@ -18,6 +18,7 @@ from mirix.errors import (
     LLMRateLimitError,
     LLMServerError,
     LLMUnprocessableEntityError,
+    ProviderTransientError,
 )
 from mirix.llm_api.helpers import convert_to_structured_output
 from mirix.llm_api.llm_client_base import LLMClientBase
@@ -89,15 +90,27 @@ class OpenAIClient(LLMClientBase):
             auth_provider = get_auth_provider(self.llm_config.auth_provider)
             if auth_provider:
                 try:
-                    auth_headers = auth_provider.get_auth_headers()  # Sync call
+                    # Async auth fetch so a blocking token round-trip never
+                    # stalls the event loop. The ABC default offloads a sync
+                    # provider's get_auth_headers to a worker thread.
+                    auth_headers = await auth_provider.get_auth_headers_async()
                     logger.debug(
                         f"OpenAI Client - Using auth provider '{self.llm_config.auth_provider}' "
                         f"to inject {len(auth_headers)} header(s)"
                     )
                     headers.update(auth_headers)
                 except Exception as e:
+                    # Provider mode: an auth provider is explicitly configured, so
+                    # the request CANNOT go out without its credentials. Swallowing
+                    # here would send the request with a dummy/no key, which the
+                    # gateway rejects as a misleading PERMANENT 401 (and the save is
+                    # then dropped without retry). Re-raise as a TRANSIENT
+                    # token-generation failure so a flaky sign-in (e.g. an AuthN
+                    # GraphQL ConnectTimeout) is retried rather than dropped.
                     logger.error(f"Failed to get auth headers from provider '{self.llm_config.auth_provider}': {e}")
-                    # Continue without auth headers rather than failing the request
+                    raise ProviderTransientError(
+                        f"Failed to obtain auth headers from provider '{self.llm_config.auth_provider}': {e}"
+                    ) from e
             else:
                 logger.warning(
                     f"Auth provider '{self.llm_config.auth_provider}' not found in registry. "

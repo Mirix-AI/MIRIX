@@ -116,7 +116,6 @@ def _build_loaded_agent(actor, user, ep_memory_id: str):
     agent.summarize = False
     agent.source_messages = None
     agent._block_scopes = [actor.write_scope or "test"]
-    agent._source_deduped = False
 
     # Real source + citation managers — hit the DB
     agent.memory_source_manager = MemorySourceManager()
@@ -227,11 +226,20 @@ async def test_worker_direct_writes_writes_source_and_citation_to_db(monkeypatch
     )
 
     try:
-        await worker._process_message_async(queue_msg)
+        # Route through dispatch_save (Option B): step() no longer finalizes
+        # internally — the dispatcher calls finalize_source after the save
+        # returns. This matches what both the numaflow path
+        # (process_external_message) and the in-process _consume_loop do.
+        from mirix.queue.error_policy import dispatch_save
+
+        async def _run():
+            await worker._process_message_async(queue_msg)
+
+        await dispatch_save(_run, memory_source_id=memory_source_id)
 
         # 1 memory_source row for this external_id
         source_mgr = MemorySourceManager()
-        page = await source_mgr.list_sources(client_id=TEST_CLIENT_ID, limit=100)
+        page = await source_mgr.list_sources(organization_id=TEST_ORG_ID, client_id=TEST_CLIENT_ID, limit=100)
         matching = [s for s in page.items if s.external_id == external_id]
         assert len(matching) == 1, (
             f"Expected exactly 1 memory_source for external_id={external_id}, " f"got {len(matching)}: {matching}"
@@ -240,7 +248,7 @@ async def test_worker_direct_writes_writes_source_and_citation_to_db(monkeypatch
         assert created_source.id == memory_source_id
         assert (
             created_source.processing_complete is True
-        ), "mark_processing_complete should have run after direct-write branch"
+        ), "dispatch_save should have finalized SUCCESS after direct-write branch"
 
         # 1 citation row for the stubbed episodic memory id
         citations = await MemoryCitationManager().get_citations_for_memory(
@@ -349,7 +357,7 @@ async def test_worker_direct_writes_is_idempotent_on_duplicate_external_id(monke
 
         # Exactly 1 memory_source row for the external_id (ON CONFLICT DO NOTHING)
         source_mgr = MemorySourceManager()
-        page = await source_mgr.list_sources(client_id=TEST_CLIENT_ID, limit=100)
+        page = await source_mgr.list_sources(organization_id=TEST_ORG_ID, client_id=TEST_CLIENT_ID, limit=100)
         matching = [s for s in page.items if s.external_id == external_id]
         assert len(matching) == 1, f"Expected exactly 1 memory_source after duplicate submission, got {len(matching)}"
 

@@ -7,7 +7,12 @@ Works with both in-memory queues and Kafka using Protocol Buffer fields.
 from typing import Any
 
 from mirix.log import get_logger
-from mirix.observability.context import get_trace_context, set_trace_context
+from mirix.observability.context import (
+    get_tid,
+    get_trace_context,
+    set_tid,
+    set_trace_context,
+)
 
 logger = get_logger(__name__)
 
@@ -28,9 +33,17 @@ def add_trace_to_queue_message(message: Any) -> Any:
     Returns:
         The same message with trace fields populated
     """
+    # Propagate the transaction id (TID) UNCONDITIONALLY — independent of
+    # whether there is an active LangFuse trace. The TID is request-correlation
+    # identity that must reach the worker even when tracing is disabled, so it is
+    # copied before the trace early-return below.
+    tid = get_tid()
+    if tid and hasattr(message, "tid"):
+        message.tid = tid
+
     context = get_trace_context()
 
-    # Only add if we have an active trace
+    # Only add the LangFuse trace fields if we have an active trace.
     if not context.get("trace_id"):
         logger.debug("No active trace context when queueing message - LangFuse tracing will not propagate to worker")
         return message
@@ -63,8 +76,15 @@ def restore_trace_from_queue_message(message: Any) -> bool:
         message: QueueMessage protobuf instance
 
     Returns:
-        True if trace context was restored, False otherwise
+        True if LangFuse trace context was restored, False otherwise. (The TID,
+        if present, is always restored regardless of this return value.)
     """
+    # Restore the transaction id (TID) FIRST and unconditionally — it is
+    # independent of LangFuse trace context and must be re-established even when
+    # there is no trace (so worker/agent log lines carry it when tracing is off).
+    if hasattr(message, "tid") and message.HasField("tid") and message.tid:
+        set_tid(message.tid)
+
     # Check if message has trace fields
     if not hasattr(message, "langfuse_trace_id"):
         logger.debug("Message does not have trace fields (old schema version?)")

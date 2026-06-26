@@ -128,6 +128,123 @@ class LLMUnprocessableEntityError(LLMError):
     pass
 
 
+class LLMBadResponseShapeError(LLMError):
+    """LLM returned a response with the wrong shape — empty choices, empty
+    content + no tool calls, or an unexpected finish_reason like ``length``.
+
+    These look like transient provider quirks: the LLM should produce a
+    well-shaped response on retry. Classified TRANSIENT; ``_get_ai_reply``'s
+    inner retry loop handles it like any other transient.
+    """
+
+    pass
+
+
+class LLMChainingExhaustedError(MirixError):
+    """The meta-agent LLM loop ran out of chaining budget with the last
+    iteration still flagging a CorrectableToolError-shape failure.
+
+    Concretely: the LLM emitted a malformed tool call (unknown tool name /
+    bad JSON args / failed validation), the loop injected a "please finish"
+    re-prompt, and the LLM either emitted another malformed call OR
+    `max_chaining_steps` was reached without recovery.
+
+    Classified as Bucket.PERMANENT — retrying the whole step would just
+    re-run the same prompt against the same LLM and get the same broken
+    output. Surfaces as a save-path PERMANENT_FAILURE so the source can be
+    dead-lettered with a distinct outcome value when a future status-column
+    migration distinguishes outcomes at the DB level.
+    """
+
+    pass
+
+
+class CorrectableToolError(MirixError):
+    """Tool execution failed for a reason the LLM can self-correct on a re-prompt.
+
+    Examples: missing required tool argument, malformed JSON in tool args,
+    argument type mismatch caught by preprocessing.
+
+    Distinguishes "LLM produced something wrong" — which the bounded re-prompt
+    in `Agent.step()` is designed to fix — from "something downstream broke"
+    (DB/provider/code-bug) which must propagate so `process_with_policy` can
+    classify and decide retry/finalize.
+
+    Raising this from tool argument preprocessing keeps the existing
+    feed-back-to-LLM behavior; everything else (`AttributeError`,
+    `OperationalError`, `ProviderTransientError`, …) propagates out of
+    `step()` instead of being string-erased at the tool-execution swallow site.
+    """
+
+    pass
+
+
+class ProviderTransientError(MirixError):
+    """Provider call failed with a retryable condition (5xx, 429, timeout).
+
+    The ECMS provider boundary translates SDK-specific transient exceptions
+    into this type. `error_policy.classify()` maps it to `Bucket.TRANSIENT`
+    by isinstance — no string-matching in the MIRIX core.
+    """
+
+    pass
+
+
+class ProviderPermanentError(MirixError):
+    """Provider call failed with a non-retryable condition (4xx auth, bad request).
+
+    The ECMS provider boundary translates SDK-specific permanent exceptions
+    into this type. `error_policy.classify()` maps it to `Bucket.PERMANENT`
+    by isinstance.
+    """
+
+    pass
+
+
+class ProviderNotFoundError(ProviderPermanentError):
+    """Provider call returned 404 / "entity does not exist".
+
+    Subclass of ProviderPermanentError so it classifies the same way at the
+    policy layer, but distinct enough that read paths can convert it to
+    `None` rather than crashing. Translated from IPS-R's
+    ``UnknownEntityError`` at the provider boundary.
+    """
+
+    pass
+
+
+class RelationalProviderRequiredError(ProviderTransientError):
+    """A relational provider was required but none is currently registered.
+
+    Raised by ``get_relational_provider()`` once provider mode has latched (a
+    relational provider was registered at least once this process) but the
+    active provider is now missing — e.g. it was unregistered during shutdown
+    teardown while a save was still in flight. Subclasses
+    ``ProviderTransientError`` so the queue classifies it TRANSIENT and
+    redelivers the save: on the next startup the provider is registered again
+    and the save succeeds, rather than silently reading/writing the wrong store
+    (PostgreSQL) under provider mode.
+    """
+
+    pass
+
+
+class ProviderConflictError(MirixError):
+    """Provider call hit a unique-constraint / duplicate-key conflict.
+
+    Callers (`source_message_manager`, `user_manager`, `client_manager`,
+    `memory_citation_manager`) treat this as an idempotent no-op — the
+    intended row already exists.
+
+    Kept distinct from `ProviderPermanentError`: collapsing the two would
+    break the dedup control flow (L1 source-message uniqueness, L3 citation
+    dedup). Never classified into a transient/permanent bucket; the
+    `is_conflict(exc)` predicate is the only consumer.
+    """
+
+    pass
+
+
 class BedrockPermissionError(MirixError):
     """Exception raised for errors in the Bedrock permission process."""
 

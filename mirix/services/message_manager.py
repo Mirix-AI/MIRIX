@@ -26,7 +26,7 @@ class MessageManager:
     async def get_message_by_id(
         self, message_id: str, actor: PydanticClient, use_cache: bool = True
     ) -> Optional[PydanticMessage]:
-        """Fetch a message by ID (with cache - Redis or IPS Cache)."""
+        """Fetch a message by ID (with cache - Redis or Cache provider)."""
         from mirix.log import get_logger
 
         logger = get_logger(__name__)
@@ -42,7 +42,31 @@ class MessageManager:
                 if cached_data:
                     return PydanticMessage(**cached_data)
         except Exception as e:
-            logger.warning("Cache read failed for message %s: %s", message_id, e)
+            logger.debug("Cache read failed for message %s: %s", message_id, e)
+
+        from mirix.database.relational_provider import get_relational_provider
+
+        rprovider = get_relational_provider()
+        if rprovider:
+            rows = await rprovider.find_using_named_query(
+                "messages",
+                "message_manager.get_message_by_id",
+                params={"id": message_id, "organizationId": actor.organization_id},
+                page_size=1,
+            )
+            if not rows:
+                return None
+            pydantic_message = PydanticMessage(**rows[0])
+            try:
+                if cache_provider:
+                    from mirix.settings import settings
+
+                    cache_key = f"{cache_provider.MESSAGE_PREFIX}{message_id}"
+                    data = pydantic_message.model_dump(mode="json")
+                    await cache_provider.set_hash(cache_key, data, ttl=settings.redis_ttl_messages)
+            except Exception as e:
+                logger.warning("Failed to populate cache for message %s: %s", message_id, e)
+            return pydantic_message
 
         # Cache MISS or no cache - fetch from PostgreSQL
         async with self.session_maker() as session:
@@ -71,6 +95,27 @@ class MessageManager:
     ) -> List[PydanticMessage]:
         """Fetch messages by ID and return them in the requested order."""
         # TODO: Add Redis pipeline support for batch retrieval when use_cache=True
+        from mirix.database.relational_provider import get_relational_provider
+
+        rprovider = get_relational_provider()
+        if rprovider is not None and message_ids:
+            # The server's parameter binding layer treats every named parameter
+            # as a single scalar varchar — list-valued bindings for `IN (:ids)`
+            # are rejected with a generic 400. The YAML therefore expects a
+            # comma-separated string and expands it server-side via
+            # `string_to_array(CAST(:ids AS varchar), ',')` + `= ANY(...)`.
+            rows = await rprovider.find_using_named_query(
+                "messages",
+                "message_manager.get_messages_by_ids",
+                params={
+                    "ids": ",".join(message_ids),
+                    "organizationId": actor.organization_id,
+                },
+                page_size=len(message_ids),
+            )
+            result_dict = {r["id"]: PydanticMessage(**r) for r in rows if r.get("id")}
+            return [result_dict[mid] for mid in message_ids if mid in result_dict]
+
         async with self.session_maker() as session:
             results = await MessageModel.list(
                 db_session=session,
@@ -102,6 +147,24 @@ class MessageManager:
             client_id: Optional client_id for data scoping (defaults to actor.id)
             user_id: Optional user_id for data scoping (defaults to None)
         """
+        from mirix.database.relational_provider import get_relational_provider
+
+        rprovider = get_relational_provider()
+        if rprovider:
+            pydantic_msg.organization_id = actor.organization_id
+            if client_id:
+                pydantic_msg.client_id = client_id
+            elif not pydantic_msg.client_id:
+                pydantic_msg.client_id = actor.id
+            if user_id is not None:
+                pydantic_msg.user_id = user_id
+            elif not pydantic_msg.user_id:
+                from mirix.services.user_manager import UserManager
+
+                pydantic_msg.user_id = UserManager.ADMIN_USER_ID
+            msg_data = pydantic_msg.model_dump()
+            result = await rprovider.create("messages", msg_data)
+            return PydanticMessage(**result)
         async with self.session_maker() as session:
             # Set the organization id of the Pydantic message
             pydantic_msg.organization_id = actor.organization_id
@@ -144,6 +207,13 @@ class MessageManager:
         """
         Updates an existing record in the database with values from the provided record object.
         """
+        from mirix.database.relational_provider import get_relational_provider
+
+        rprovider = get_relational_provider()
+        if rprovider:
+            update_data = message_update.model_dump(exclude_unset=True, exclude_none=True)
+            result = await rprovider.update("messages", message_id, update_data)
+            return PydanticMessage(**result)
         async with self.session_maker() as session:
             # Fetch existing message from database
             message = await MessageModel.read(
@@ -176,6 +246,18 @@ class MessageManager:
     @enforce_types
     async def delete_message_by_id(self, message_id: str, actor: PydanticClient) -> bool:
         """Delete a message (removes from cache)."""
+        from mirix.database.relational_provider import get_relational_provider
+
+        rprovider = get_relational_provider()
+        if rprovider:
+            await rprovider.hard_delete("messages", message_id)
+            from mirix.database.cache_provider import get_cache_provider
+
+            cache_provider = get_cache_provider()
+            if cache_provider:
+                cache_key = f"{cache_provider.MESSAGE_PREFIX}{message_id}"
+                await cache_provider.delete(cache_key)
+            return
         async with self.session_maker() as session:
             try:
                 msg = await MessageModel.read(
@@ -208,7 +290,20 @@ class MessageManager:
             Number of records deleted
         """
         from mirix.database.redis_client import get_redis_client
+        from mirix.database.relational_provider import get_relational_provider
         from mirix.schemas.message import MessageRole
+
+        rel_provider = get_relational_provider()
+        if rel_provider:
+            # Provider branch: use the soft-delete mutation NQ (mirrors PG soft-delete path)
+            await rel_provider.mutate_using_named_query(
+                "messages",
+                "message_manager.update_by_client_id",
+                params={"clientId": actor.id},
+            )
+            # Count is not reliable from provider mutation NQs; return 0 as a sentinel.
+            # Callers that need an exact count should use the PG path.
+            return 0
 
         async with self.session_maker() as session:
             # Get IDs for non-system messages only (preserve system messages)
@@ -258,6 +353,33 @@ class MessageManager:
             Number of records soft deleted
         """
         from mirix.database.redis_client import get_redis_client
+        from mirix.database.relational_provider import get_relational_provider
+
+        rprovider = get_relational_provider()
+        if rprovider is not None:
+            rows = await rprovider.find_using_named_query(
+                "messages",
+                "message_manager.list_by_client_id",
+                params={"clientId": actor.id},
+                page_size=5000,
+            )
+            message_ids = [r["id"] for r in rows if r.get("id")]
+            if not message_ids:
+                return 0
+            await rprovider.mutate_using_named_query(
+                "messages",
+                "message_manager.update_by_client_id",
+                params={"clientId": actor.id},
+            )
+            redis_client = get_redis_client()
+            if redis_client:
+                for msg_id in message_ids:
+                    redis_key = f"{redis_client.MESSAGE_PREFIX}{msg_id}"
+                    try:
+                        await redis_client.client.hset(redis_key, "is_deleted", "true")
+                    except Exception:
+                        await redis_client.delete(redis_key)
+            return len(message_ids)
 
         async with self.session_maker() as session:
             # Query all non-deleted records for this client (use actor.id)
@@ -306,6 +428,33 @@ class MessageManager:
             Number of records soft deleted
         """
         from mirix.database.redis_client import get_redis_client
+        from mirix.database.relational_provider import get_relational_provider
+
+        rprovider = get_relational_provider()
+        if rprovider is not None:
+            rows = await rprovider.find_using_named_query(
+                "messages",
+                "message_manager.list_by_user_id",
+                params={"userId": user_id},
+                page_size=5000,
+            )
+            message_ids = [r["id"] for r in rows if r.get("id")]
+            if not message_ids:
+                return 0
+            await rprovider.mutate_using_named_query(
+                "messages",
+                "message_manager.update_by_user_id",
+                params={"userId": user_id},
+            )
+            redis_client = get_redis_client()
+            if redis_client:
+                for msg_id in message_ids:
+                    redis_key = f"{redis_client.MESSAGE_PREFIX}{msg_id}"
+                    try:
+                        await redis_client.client.hset(redis_key, "is_deleted", "true")
+                    except Exception:
+                        await redis_client.delete(redis_key)
+            return len(message_ids)
 
         async with self.session_maker() as session:
             # Query all non-deleted records for this user
@@ -409,6 +558,29 @@ class MessageManager:
             actor: The client requesting the count
             role: The role of the message
         """
+        from mirix.database.relational_provider import get_relational_provider
+
+        rprovider = get_relational_provider()
+        if rprovider is not None:
+            from mirix.database.named_query_results import CountResult
+
+            role_value = role.value if role is not None else None
+            rows = await rprovider.find_using_named_query(
+                "messages",
+                "message_manager.size",
+                params={
+                    "organizationId": actor.organization_id,
+                    "role": role_value,
+                    "userId": user_id,
+                    "agentId": agent_id,
+                },
+                result_set_entity_class=CountResult,
+                page_size=1,
+            )
+            if not rows:
+                return 0
+            return int(rows[0].get("count") or 0)
+
         async with self.session_maker() as session:
             return await MessageModel.size(
                 db_session=session,
@@ -492,6 +664,49 @@ class MessageManager:
         Returns:
             List[PydanticMessage] - List of messages matching the criteria
         """
+        from mirix.database.relational_provider import get_relational_provider
+
+        rprovider = get_relational_provider()
+        provider_eligible = (
+            rprovider is not None
+            and start_date is None
+            and end_date is None
+            and cursor is None
+            and (filters is None or set(filters.keys()).issubset({"role"}))
+        )
+        if provider_eligible:
+            if query_text:
+                rows = await rprovider.find_using_named_query(
+                    "messages",
+                    "message_manager.list_messages_for_agent_by_text",
+                    params={
+                        "agentId": agent_id,
+                        "queryText": f"%{query_text}%",
+                        "organizationId": actor.organization_id if actor else None,
+                    },
+                    page_size=limit or 50,
+                )
+                return [PydanticMessage(**r) for r in rows]
+
+            query_name = (
+                "message_manager.list_messages_for_agent_asc"
+                if ascending
+                else "message_manager.list_messages_for_agent_desc"
+            )
+            role_value = (filters or {}).get("role")
+            rows = await rprovider.find_using_named_query(
+                "messages",
+                query_name,
+                params={
+                    "agentId": agent_id,
+                    "organizationId": actor.organization_id if actor else None,
+                    "role": role_value,
+                    "userId": (filters or {}).get("user_id"),
+                },
+                page_size=limit or 50,
+            )
+            return [PydanticMessage(**r) for r in rows]
+
         async with self.session_maker() as session:
             # Start with base filters
             message_filters = {"agent_id": agent_id}
@@ -536,6 +751,23 @@ class MessageManager:
             List of messages in chronological order
         """
         from sqlalchemy import desc
+
+        from mirix.database.relational_provider import get_relational_provider
+
+        rprovider = get_relational_provider()
+        if rprovider is not None:
+            rows = await rprovider.find_using_named_query(
+                "messages",
+                "message_manager.get_messages_for_agent_user",
+                params={
+                    "agentId": agent_id,
+                    "userId": user_id,
+                    "organizationId": actor.organization_id,
+                },
+                page_size=limit or 10,
+            )
+            # YAML orders DESC by created_at, id — reverse to chronological.
+            return [PydanticMessage(**r) for r in reversed(rows)]
 
         async with self.session_maker() as session:
             stmt = (

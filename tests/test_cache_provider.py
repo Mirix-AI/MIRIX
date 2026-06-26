@@ -2,7 +2,7 @@
 Cache provider registry tests for Mirix.
 
 Tests the cache provider registration and retrieval used by service managers.
-Cache strategy (Redis vs IPS Cache) is selected by the host (e.g. ECMS);
+Cache strategy (Redis vs Cache provider) is selected by the host (e.g. ECMS);
 Mirix only provides the registry and Redis provider.
 
 Usage:

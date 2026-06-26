@@ -16,9 +16,8 @@ import openai
 import pytest
 
 from mirix.errors import LLMUnprocessableEntityError
-from mirix.queue.error_policy import Bucket, OutcomeKind, classify, process_with_policy
+from mirix.queue.error_policy import Bucket, SaveOutcome, classify, process_with_policy
 from mirix.schemas.llm_config import LLMConfig
-
 
 # Real prod LXS 422 body, captured by Lucas from Langfuse traces.
 LXS_422_BODY = {
@@ -64,9 +63,9 @@ async def test_openai_client_maps_422_to_llm_unprocessable_entity_error():
     sdk_exc = _make_openai_422_exception()
     mapped = await client.handle_llm_error(sdk_exc)
 
-    assert isinstance(mapped, LLMUnprocessableEntityError), (
-        f"Expected LLMUnprocessableEntityError, got {type(mapped).__name__}"
-    )
+    assert isinstance(
+        mapped, LLMUnprocessableEntityError
+    ), f"Expected LLMUnprocessableEntityError, got {type(mapped).__name__}"
 
 
 @pytest.mark.asyncio
@@ -95,7 +94,7 @@ async def test_full_chain_openai_422_classifies_as_permanent_and_acks():
 
     outcome = await process_with_policy(run_step, memory_source_id="src-test")
 
-    assert outcome.kind is OutcomeKind.PERMANENT_FAILURE
+    assert outcome.kind is SaveOutcome.PERMANENT_FAILURE
     assert outcome.bucket is Bucket.PERMANENT
     assert isinstance(outcome.cause, LLMUnprocessableEntityError)
     # The mapped error message should reference the upstream LXS reason.
@@ -108,7 +107,5 @@ def test_classify_directly_on_mapped_exception():
     Smaller-scope twin of the end-to-end test above; useful for debugging
     when the chain breaks.
     """
-    mapped = LLMUnprocessableEntityError(
-        message="Invalid request content for OpenAI: Risk Screening failed for input"
-    )
+    mapped = LLMUnprocessableEntityError(message="Invalid request content for OpenAI: Risk Screening failed for input")
     assert classify(mapped) is Bucket.PERMANENT

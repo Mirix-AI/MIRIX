@@ -364,7 +364,19 @@ class ResourceMemoryManager:
     async def get_item_by_id(
         self, item_id: str, user: PydanticUser, timezone_str: str
     ) -> Optional[PydanticResourceMemoryItem]:
-        """Fetch a resource memory item by ID (with cache - Redis or IPS Cache)."""
+        """Fetch a resource memory item by ID (with cache - Redis or Cache provider)."""
+        from mirix.database.relational_provider import get_relational_provider
+
+        provider = get_relational_provider()
+        if provider:
+            from mirix.services.memory_manager_helpers import actor_from_user
+
+            actor = actor_from_user(user)
+            result = await provider.read("resource_memory", item_id, actor=actor)
+            if result is None:
+                raise NoResultFound(f"Resource memory item with id {item_id} not found.")
+            return PydanticResourceMemoryItem(**result)
+
         cache_provider = None
         try:
             from mirix.database.cache_provider import get_cache_provider
@@ -381,7 +393,7 @@ class ResourceMemoryManager:
                     cached_data = RedisMemoryClient.clean_redis_fields([cached_data])[0]
                     return PydanticResourceMemoryItem(**cached_data)
         except Exception as e:
-            logger.warning("Cache read failed for resource memory %s: %s", item_id, e)
+            logger.debug("Cache read failed for resource memory %s: %s", item_id, e)
 
         async with self.session_maker() as session:
             try:
@@ -412,6 +424,22 @@ class ResourceMemoryManager:
         Filter by user_id from actor.
         Returns None if no items exist.
         """
+        from mirix.database.relational_provider import get_relational_provider
+
+        provider = get_relational_provider()
+        if provider:
+            from mirix.services.memory_manager_helpers import (
+                find_most_recently_updated,
+            )
+
+            row = await find_most_recently_updated(
+                provider,
+                "resource_memory",
+                user_id=user.id,
+                organization_id=user.organization_id,
+            )
+            return PydanticResourceMemoryItem(**row) if row else None
+
         async with self.session_maker() as session:
             # Use proper PostgreSQL JSON text extraction and casting for ordering
             from sqlalchemy import DateTime, cast, text
@@ -425,7 +453,7 @@ class ResourceMemoryManager:
             result = await session.execute(query.limit(1))
             item = result.scalar_one_or_none()
 
-            return [item.to_pydantic()] if item else None
+            return item.to_pydantic() if item else None
 
     @enforce_types
     async def create_item(
@@ -448,9 +476,7 @@ class ResourceMemoryManager:
 
         # Ensure ID is set before model_dump
         if not item_data.id:
-            from mirix.utils import generate_unique_short_id_async
-
-            item_data.id = await generate_unique_short_id_async(self.session_maker, ResourceMemoryItem, "res")
+            item_data.id = PydanticResourceMemoryItem._generate_id()
 
         data_dict = item_data.model_dump()
 
@@ -466,6 +492,14 @@ class ResourceMemoryManager:
 
         logger.debug("create_item: client_id=%s, user_id=%s", client_id, user_id)
 
+        from mirix.database.relational_provider import get_relational_provider
+
+        provider = get_relational_provider()
+        if provider:
+            data_dict.setdefault("organization_id", actor.organization_id)
+            result = await provider.create("resource_memory", data_dict, actor=actor)
+            return PydanticResourceMemoryItem(**result)
+
         async with self.session_maker() as session:
             item = ResourceMemoryItem(**data_dict)
             await item.create_with_redis(session, actor=actor, use_cache=use_cache)
@@ -479,6 +513,26 @@ class ResourceMemoryManager:
         actor: PydanticClient,
     ) -> PydanticResourceMemoryItem:
         """Update an existing resource memory item."""
+        from mirix.database.relational_provider import get_relational_provider
+
+        provider = get_relational_provider()
+        if provider:
+            update_data = item_update.model_dump(exclude_unset=True)
+            update_data.pop("id", None)
+            update_data.pop("updated_at", None)
+            result = await provider.update("resource_memory", item_update.id, update_data, actor=actor)
+            try:
+                from mirix.services.memory_manager_helpers import invalidate_memory_cache
+
+                await invalidate_memory_cache("resource_memory", [item_update.id])
+            except Exception as exc:
+                logger.warning(
+                    "Cache invalidation skipped for resource_memory %s: %s",
+                    item_update.id,
+                    exc,
+                )
+            return PydanticResourceMemoryItem(**result)
+
         async with self.session_maker() as session:
             item = await ResourceMemoryItem.read(db_session=session, identifier=item_update.id, user=user)
             update_data = item_update.model_dump(exclude_unset=True)
@@ -493,16 +547,37 @@ class ResourceMemoryManager:
     async def create_many_items(
         self,
         items: List[PydanticResourceMemoryItem],
-        user: PydanticUser,
+        actor: PydanticClient,
+        client_id: Optional[str] = None,
+        user_id: Optional[str] = None,
         limit: Optional[int] = 50,
     ) -> List[PydanticResourceMemoryItem]:
-        """Create multiple resource memory items."""
-        return [await self.create_item(i, user) for i in items]
+        """Create multiple resource memory items.
+
+        Signature mirrors :meth:`create_item`. Previously this passed a user
+        object as the second positional arg to ``create_item(i, user)`` which
+        broke at runtime (``create_item`` expected an actor).
+        """
+        return [await self.create_item(i, actor, client_id=client_id, user_id=user_id) for i in items]
 
     async def get_total_number_of_items(self, user: PydanticUser) -> int:
         """Get the total number of items in the resource memory for the user."""
+        from mirix.database.search_provider import get_search_provider
+
+        search_provider = get_search_provider()
+        if search_provider:
+            return await search_provider.count(
+                "resource_memory",
+                user_id=user.id,
+                organization_id=user.organization_id,
+            )
+
         async with self.session_maker() as session:
-            query = select(func.count(ResourceMemoryItem.id)).where(ResourceMemoryItem.user_id == user.id)
+            query = select(func.count(ResourceMemoryItem.id)).where(
+                ResourceMemoryItem.user_id == user.id,
+                ResourceMemoryItem.organization_id == user.organization_id,
+                ResourceMemoryItem.is_deleted == False,
+            )
             result = await session.execute(query)
             return result.scalar_one()
 
@@ -558,6 +633,25 @@ class ResourceMemoryManager:
 
         # Extract organization_id from user for multi-tenant isolation
         organization_id = user.organization_id
+
+        from mirix.database.search_provider import get_search_provider
+
+        search_provider = get_search_provider()
+        if search_provider:
+            results, _cursor = await search_provider.search(
+                "resource_memory",
+                query_text=query,
+                query_embedding=embedded_text,
+                search_method=search_method,
+                search_field=search_field,
+                user_id=user.id,
+                organization_id=organization_id,
+                filter_tags=filter_tags,
+                scopes=scopes,
+                limit=limit,
+                similarity_threshold=similarity_threshold,
+            )
+            return [PydanticResourceMemoryItem(**r) for r in results]
 
         # Try Redis Search first (if cache enabled and Redis is available)
         from mirix.database.redis_client import get_redis_client
@@ -865,6 +959,23 @@ class ResourceMemoryManager:
     @enforce_types
     async def delete_resource_by_id(self, resource_id: str, actor: PydanticClient) -> None:
         """Delete a resource memory item by ID (removes from cache)."""
+        from mirix.database.relational_provider import get_relational_provider
+
+        provider = get_relational_provider()
+        if provider:
+            await provider.delete("resource_memory", resource_id, actor=actor)
+            try:
+                from mirix.services.memory_manager_helpers import invalidate_memory_cache
+
+                await invalidate_memory_cache("resource_memory", [resource_id])
+            except Exception as exc:
+                logger.warning(
+                    "Cache invalidation skipped for resource_memory %s: %s",
+                    resource_id,
+                    exc,
+                )
+            return
+
         async with self.session_maker() as session:
             try:
                 item = await ResourceMemoryItem.read(db_session=session, identifier=resource_id, actor=actor)
@@ -892,6 +1003,17 @@ class ResourceMemoryManager:
             Number of records deleted
         """
         from mirix.database.redis_client import get_redis_client
+        from mirix.database.relational_provider import get_relational_provider
+
+        provider = get_relational_provider()
+        if provider:
+            result = await provider.bulk_delete_with_events(
+                "resource_memory",
+                filters={"_created_by_id": actor.id},
+                soft=False,
+                actor=actor,
+            )
+            return int(result.get("success", 0) or 0)
 
         async with self.session_maker() as session:
             # Get IDs for Redis cleanup (only fetch IDs, not full objects)
@@ -933,6 +1055,17 @@ class ResourceMemoryManager:
             Number of records soft deleted
         """
         from mirix.database.redis_client import get_redis_client
+        from mirix.database.relational_provider import get_relational_provider
+
+        provider = get_relational_provider()
+        if provider:
+            result = await provider.bulk_delete_with_events(
+                "resource_memory",
+                filters={"_created_by_id": actor.id},
+                soft=True,
+                actor=actor,
+            )
+            return int(result.get("success", 0) or 0)
 
         async with self.session_maker() as session:
             # Query all non-deleted records for this client (use actor.id)
@@ -980,6 +1113,16 @@ class ResourceMemoryManager:
             Number of records soft deleted
         """
         from mirix.database.redis_client import get_redis_client
+        from mirix.database.relational_provider import get_relational_provider
+
+        provider = get_relational_provider()
+        if provider:
+            result = await provider.bulk_delete_with_events(
+                "resource_memory",
+                filters={"user_id": user_id},
+                soft=True,
+            )
+            return int(result.get("success", 0) or 0)
 
         async with self.session_maker() as session:
             # Query all non-deleted records for this user
@@ -1028,6 +1171,16 @@ class ResourceMemoryManager:
             Number of records deleted
         """
         from mirix.database.redis_client import get_redis_client
+        from mirix.database.relational_provider import get_relational_provider
+
+        provider = get_relational_provider()
+        if provider:
+            result = await provider.bulk_delete_with_events(
+                "resource_memory",
+                filters={"user_id": user_id},
+                soft=False,
+            )
+            return int(result.get("success", 0) or 0)
 
         async with self.session_maker() as session:
             # Get IDs for Redis cleanup (only fetch IDs, not full objects)
@@ -1091,6 +1244,25 @@ class ResourceMemoryManager:
         Returns:
             List of resource memories matching org_id and filter_tags["scope"]
         """
+
+        from mirix.database.search_provider import get_search_provider
+
+        search_provider = get_search_provider()
+        if search_provider:
+            results, _cursor = await search_provider.search(
+                "resource_memory",
+                query_text=query,
+                query_embedding=embedded_text,
+                search_method=search_method,
+                search_field=search_field,
+                user_id=None,
+                organization_id=organization_id,
+                filter_tags=filter_tags,
+                scopes=scopes,
+                limit=limit,
+                similarity_threshold=similarity_threshold,
+            )
+            return [PydanticResourceMemoryItem(**r) for r in results]
 
         # Try Redis Search first
         from mirix.database.redis_client import get_redis_client

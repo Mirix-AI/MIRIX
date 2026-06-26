@@ -107,6 +107,12 @@ async def search_in_memory(
     if not self.user:
         raise ValueError("Can not search in memory. User is not set")
 
+    # This tool reads through the manager surface, which is Search-provider-only
+    # after the labeled-bucket refactor. Rows written within the Search
+    # provider's indexing window (typically a few seconds) may not be visible
+    # to the model here. The dedup-deciding sub-agents see those rows via the
+    # save-flow "recent" bucket; this tool intentionally does not, since it is
+    # invoked for retrieval rather than dedup.
     if memory_type == "resource" and search_field == "content" and search_method == "embedding":
         raise ValueError("embedding is not supported for resource memory's 'content' field.")
     if memory_type == "knowledge_vault" and search_field == "secret_value" and search_method == "embedding":

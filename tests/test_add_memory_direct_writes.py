@@ -74,18 +74,18 @@ async def test_add_memory_threads_direct_writes_to_put_messages():
         ],
     )
 
-    fake_client = MagicMock()
-    fake_client.id = "client-1"
-    fake_client.write_scope = "test-scope"
-
-    fake_meta_agent = MagicMock()
-    fake_meta_agent.id = "agent-1"
-
+    # The save path performs no client or meta-agent lookup before queuing. The
+    # server mock's lookup methods raise if called, proving the path stays
+    # lookup-free.
     fake_server = MagicMock()
     fake_server.client_manager = MagicMock()
-    fake_server.client_manager.get_client_by_id = AsyncMock(return_value=fake_client)
+    fake_server.client_manager.get_client_by_id = AsyncMock(
+        side_effect=AssertionError("get_client_by_id must not be called on the save path")
+    )
     fake_server.agent_manager = MagicMock()
-    fake_server.agent_manager.get_agent_by_id = AsyncMock(return_value=fake_meta_agent)
+    fake_server.agent_manager.get_agent_by_id = AsyncMock(
+        side_effect=AssertionError("get_agent_by_id must not be called on the save path")
+    )
 
     with (
         patch("mirix.server.rest_api.get_server", return_value=fake_server),
@@ -100,7 +100,15 @@ async def test_add_memory_threads_direct_writes_to_put_messages():
 
     assert result["success"] is True
     mock_put.assert_awaited_once()
+    fake_server.client_manager.get_client_by_id.assert_not_called()
+    fake_server.agent_manager.get_agent_by_id.assert_not_called()
     kwargs = mock_put.call_args.kwargs
+
+    # agent_id comes straight from the request; actor carries only the client id.
+    assert kwargs["agent_id"] == "agent-1"
+    assert kwargs["actor"].id == "client-1"
+    # Scope is owned by the worker now — the API must not bake one in.
+    assert "scope" not in (kwargs.get("filter_tags") or {})
 
     assert "direct_writes" in kwargs
     direct_writes = kwargs["direct_writes"]
@@ -136,18 +144,9 @@ async def test_add_memory_with_empty_messages_and_direct_writes_does_not_crash()
         ],
     )
 
-    fake_client = MagicMock()
-    fake_client.id = "client-1"
-    fake_client.write_scope = "test-scope"
-
-    fake_meta_agent = MagicMock()
-    fake_meta_agent.id = "agent-1"
-
     fake_server = MagicMock()
     fake_server.client_manager = MagicMock()
-    fake_server.client_manager.get_client_by_id = AsyncMock(return_value=fake_client)
     fake_server.agent_manager = MagicMock()
-    fake_server.agent_manager.get_agent_by_id = AsyncMock(return_value=fake_meta_agent)
 
     with (
         patch("mirix.server.rest_api.get_server", return_value=fake_server),

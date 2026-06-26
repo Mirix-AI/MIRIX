@@ -20,15 +20,33 @@ from mirix.services.client_manager import ClientManager
 from mirix.services.organization_manager import OrganizationManager
 from mirix.settings import settings
 
+# Pure unit modules that do not touch the DB or server; skip engine setup so
+# pytest does not import mirix.server.server (heavy stack) for these files.
+_NO_DB_ENGINE_RESET_MODULES = frozenset(
+    {
+        "test_provider_registration",
+        "test_hybrid_search",
+        "test_provider_validation",
+        "test_embedding_skip",
+        "test_bulk_delete",
+        "test_manager_delegation",
+    }
+)
+
 
 @pytest_asyncio.fixture(scope="module", autouse=True)
-async def _reset_engine_per_module():
+async def _reset_engine_per_module(request):
     """Dispose and recreate the async engine with NullPool at the start of
     each test module so every module's event loop gets fresh DB connections.
 
     NullPool creates a new connection per session and closes it immediately,
     preventing stale connections from a previous module's (now-closed) loop.
     """
+    mod_name = getattr(request.module, "__name__", "")
+    if mod_name.split(".")[-1] in _NO_DB_ENGINE_RESET_MODULES:
+        yield
+        return
+
     import mirix.server.server as server_module
 
     if (

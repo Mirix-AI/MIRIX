@@ -2,7 +2,7 @@
 Redis cache provider for Mirix.
 
 Wraps the existing RedisMemoryClient to implement the cache provider interface.
-Used when Mirix runs standalone with Redis; ECMS can register IPS Cache instead.
+Used when Mirix runs standalone with Redis; ECMS can register Cache provider instead.
 """
 
 from typing import TYPE_CHECKING, Any, Dict, Optional

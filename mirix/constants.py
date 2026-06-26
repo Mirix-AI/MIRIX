@@ -5,8 +5,12 @@ from logging import CRITICAL, DEBUG, ERROR, INFO, NOTSET, WARN, WARNING
 # Client Constants - Used by both client and server
 # ============================================================================
 
-# Default organization and admin user IDs (needed by schemas)
-DEFAULT_ORG_ID = "org-00000000-0000-4000-8000-000000000000"
+# Default organization and admin user IDs (needed by schemas).
+# DEFAULT_ORG_ID is read from MIRIX_DEFAULT_ORG_ID at module-load time so an
+# embedding host (e.g. ECMS) can override the org per-deployment by setting
+# the env var BEFORE importing any mirix.* module.  Unset = today's hardcoded
+# default, so existing deployments are unaffected.
+DEFAULT_ORG_ID = os.environ.get("MIRIX_DEFAULT_ORG_ID", "org-00000000-0000-4000-8000-000000000000")
 ADMIN_USER_ID = "user-00000000-0000-4000-8000-000000000000"
 
 # Embedding constants
@@ -85,6 +89,11 @@ IN_CONTEXT_MEMORY_KEYWORD = "CORE_MEMORY"
 
 MAX_CHAINING_STEPS = int(os.getenv("MAX_CHAINING_STEPS", "10"))
 MAX_RETRIEVAL_LIMIT_IN_SYSTEM = 10
+
+# Seconds-wide window for the Relational recent-record lookup in the save-flow
+# prompt builder (indexing-lag mitigation). Search indexes are expected to fall
+# no more than a few seconds behind.
+HYBRID_READ_WINDOW_SECONDS = int(os.getenv("MIRIX_HYBRID_READ_WINDOW_SECONDS", "5"))
 
 # tokenizers
 EMBEDDING_TO_TOKENIZER_MAP = {
@@ -178,8 +187,6 @@ STARTUP_QUOTES = [
 INITIAL_BOOT_MESSAGE_SEND_MESSAGE_FIRST_MSG = STARTUP_QUOTES[2]
 
 CLI_WARNING_PREFIX = "Warning: "
-
-ERROR_MESSAGE_PREFIX = "Error"
 
 NON_USER_MSG_PREFIX = "[This is an automated system message hidden from the user] "
 

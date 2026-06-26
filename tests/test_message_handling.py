@@ -286,6 +286,7 @@ def build_step_test_agent(agent_state: AgentState, user: User) -> Agent:
         create=AsyncMock(),
         get_by_id=AsyncMock(return_value=None),
         mark_processing_complete=AsyncMock(),
+        finalize_source=AsyncMock(),
     )
     agent.source_message_manager = SimpleNamespace(
         bulk_insert=AsyncMock(),

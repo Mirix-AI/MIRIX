@@ -14,7 +14,7 @@ from mirix.queue import config
 from mirix.queue.memory_queue import MemoryQueue, PartitionedMemoryQueue
 from mirix.queue.message_pb2 import QueueMessage
 from mirix.queue.queue_interface import QueueInterface
-from mirix.queue.worker import QueueWorker
+from mirix.queue.worker import BatchQueueWorker, QueueWorker
 
 logger = get_logger(__name__)
 
@@ -84,17 +84,23 @@ class QueueManager:
 
         self._workers = []
 
+        # In-memory / internal-kafka-manual consumer is the BatchQueueWorker.
+        # It pulls READ_BATCH_SIZE messages per iteration and
+        # runs them through the shared process_batch core; READ_BATCH_SIZE=1 is
+        # the serial-equivalent. Partition fan-out (one worker per partition) is
+        # orthogonal — it's WHICH partition each worker drains; batch is WHAT
+        # each worker does per pull.
         if self._num_workers > 1 and isinstance(self._queue, PartitionedMemoryQueue):
-            logger.info("Creating %d background workers (partitioned)...", self._num_workers)
+            logger.info("Creating %d background workers (partitioned, batch)...", self._num_workers)
             for partition_id in range(self._num_workers):
-                worker = QueueWorker(self._queue, server=self._server, partition_id=partition_id)
+                worker = BatchQueueWorker(self._queue, server=self._server, partition_id=partition_id)
                 self._workers.append(worker)
-                logger.debug("Worker %d created", partition_id)
+                logger.debug("Batch worker %d created", partition_id)
         else:
-            logger.info("Creating single background worker...")
-            worker = QueueWorker(self._queue, server=self._server)
+            logger.info("Creating single background worker (batch)...")
+            worker = BatchQueueWorker(self._queue, server=self._server)
             self._workers.append(worker)
-            logger.debug("Worker created")
+            logger.debug("Batch worker created")
 
         if config.AUTO_START_WORKERS:
             logger.info("Starting %d background worker task(s)...", len(self._workers))

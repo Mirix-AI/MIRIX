@@ -748,25 +748,30 @@ async def api_client(server_check, test_actor):
         )
 
     class APIClient:
+        # Default per-request read timeout. The raw-memory PATCH/POST endpoints
+        # re-embed the new context via Gemini, which can spike past 10s under
+        # provider load — bump to 60s so the test fails on real hangs only.
+        DEFAULT_TIMEOUT = 60
+
         def __init__(self, base_url, api_key):
             self.base_url = base_url
             # Use X-API-Key header for programmatic access (middleware validates and injects x-client-id)
             self.headers = {"X-API-Key": api_key}
 
         def get(self, path, **kwargs):
-            kwargs.setdefault("timeout", 10)
+            kwargs.setdefault("timeout", self.DEFAULT_TIMEOUT)
             return requests.get(f"{self.base_url}{path}", headers=self.headers, **kwargs)
 
         def post(self, path, **kwargs):
-            kwargs.setdefault("timeout", 10)
+            kwargs.setdefault("timeout", self.DEFAULT_TIMEOUT)
             return requests.post(f"{self.base_url}{path}", headers=self.headers, **kwargs)
 
         def patch(self, path, **kwargs):
-            kwargs.setdefault("timeout", 10)
+            kwargs.setdefault("timeout", self.DEFAULT_TIMEOUT)
             return requests.patch(f"{self.base_url}{path}", headers=self.headers, **kwargs)
 
         def delete(self, path, **kwargs):
-            kwargs.setdefault("timeout", 10)
+            kwargs.setdefault("timeout", self.DEFAULT_TIMEOUT)
             return requests.delete(f"{self.base_url}{path}", headers=self.headers, **kwargs)
 
     return APIClient("http://localhost:8000", api_key)

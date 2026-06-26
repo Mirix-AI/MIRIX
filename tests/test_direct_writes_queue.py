@@ -87,6 +87,7 @@ async def test_worker_extracts_direct_writes_from_queue_message():
     fake_actor = MagicMock()
     fake_actor.id = "client-1"
     fake_actor.organization_id = "org-1"
+    fake_actor.write_scope = "test-scope"  # worker derives filter_tags["scope"] from this
     fake_user = MagicMock()
 
     server = MagicMock()

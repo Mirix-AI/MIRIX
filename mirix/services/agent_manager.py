@@ -1,4 +1,5 @@
 import os
+import uuid
 from datetime import datetime
 from typing import Dict, List, Optional
 
@@ -140,13 +141,16 @@ class AgentManager:
         # Remove duplicates
         tool_names = list(set(tool_names))
 
-        tool_ids = agent_create.tool_ids or []
-        for tool_name in tool_names:
-            tool = await self.tool_manager.get_tool_by_name(tool_name=tool_name, actor=actor)
-            if tool:
-                tool_ids.append(tool.id)
-            else:
-                logger.debug("Tool %s not found", tool_name)
+        tool_ids = list(agent_create.tool_ids or [])
+        if tool_names:
+            resolved = await self.tool_manager.list_tools_by_names(tool_names=tool_names, actor=actor)
+            by_name = {t.name: t for t in resolved}
+            for tool_name in tool_names:
+                tool = by_name.get(tool_name)
+                if tool:
+                    tool_ids.append(tool.id)
+                else:
+                    logger.debug("Tool %s not found", tool_name)
 
         # Remove duplicates
         tool_ids = list(set(tool_ids))
@@ -200,8 +204,11 @@ class AgentManager:
             actor.organization_id,
         )
 
-        # Ensure base tools are available in the database for this organization
-        await self.tool_manager.upsert_base_tools(actor=actor)
+        # Ensure base tools are available in the database for this organization.
+        # Uses the lightweight existence-check path: one batched read + creates
+        # only for missing tools (zero on the common case where the startup
+        # ``upsert_base_tools`` has already seeded the org's tool rows).
+        await self.tool_manager.ensure_base_tools_exist(actor=actor)
 
         # Map agent names to their corresponding AgentType
         agent_name_to_type = {
@@ -393,23 +400,23 @@ class AgentManager:
         if meta_agent_update.embedding_config is not None:
             meta_agent_update_fields["embedding_config"] = meta_agent_update.embedding_config
 
-        # Update meta agent with all fields at once
+        # Update meta agent with all fields at once. update_agent already returns
+        # the hydrated state, so reuse it instead of a follow-up get_agent_by_id
+        # (which is a guaranteed cache miss — the update just invalidated it).
         if meta_agent_update_fields:
-            await self.update_agent(
+            meta_agent_state = await self.update_agent(
                 agent_id=meta_agent_id,
                 agent_update=UpdateAgent(**meta_agent_update_fields),
                 actor=actor,
             )
-            meta_agent_state = await self.get_agent_by_id(agent_id=meta_agent_id, actor=actor)
 
-        # Update meta agent's system prompt if provided
+        # Update meta agent's system prompt if provided (reuse the return).
         if meta_agent_update.system_prompts and "meta_memory_agent" in meta_agent_update.system_prompts:
-            await self.update_system_prompt(
+            meta_agent_state = await self.update_system_prompt(
                 agent_id=meta_agent_id,
                 system_prompt=meta_agent_update.system_prompts["meta_memory_agent"],
                 actor=actor,
             )
-            meta_agent_state = await self.get_agent_by_id(agent_id=meta_agent_id, actor=actor)
 
         # Get existing sub-agents
         existing_children = await self.list_agents(actor=actor, parent_id=meta_agent_id)
@@ -514,7 +521,9 @@ class AgentManager:
                             actor=actor,
                         )
 
-        # Update llm_config and embedding_config for all sub-agents if provided
+        # Update llm_config and embedding_config for all sub-agents if provided.
+        # Pass the already-loaded child as current_state so update_agent applies
+        # the changed scalars locally and skips the post-write hydrate read.
         if meta_agent_update.llm_config or meta_agent_update.embedding_config:
             for agent_name, child_agent in existing_agents_by_name.items():
                 update_fields = {}
@@ -529,6 +538,7 @@ class AgentManager:
                         agent_id=child_agent.id,
                         agent_update=UpdateAgent(**update_fields),
                         actor=actor,
+                        current_state=child_agent,
                     )
 
         # Refresh the meta agent state with updated children
@@ -599,18 +609,26 @@ class AgentManager:
             if mcp_tool_id not in tool_ids:
                 tool_ids.append(mcp_tool_id)
 
+        # Resolve adds and removes in a single batched lookup to avoid N+1
+        # IPSR roundtrips on the force_update=true path.
+        names_to_resolve = list(set(new_tool_names) | set(tool_names_to_remove))
+        resolved_by_name: dict = {}
+        if names_to_resolve:
+            resolved = await self.tool_manager.list_tools_by_names(tool_names=names_to_resolve, actor=actor)
+            resolved_by_name = {t.name: t for t in resolved}
+
         # Add new tools
-        if len(new_tool_names) > 0:
+        if new_tool_names:
             for tool_name in new_tool_names:
-                tool = await self.tool_manager.get_tool_by_name(tool_name=tool_name, actor=actor)
+                tool = resolved_by_name.get(tool_name)
                 if tool:
                     tool_ids.append(tool.id)
 
         # Remove tools that should no longer be attached
-        if len(tool_names_to_remove) > 0:
+        if tool_names_to_remove:
             tools_to_remove_ids = []
             for tool_name in tool_names_to_remove:
-                tool = await self.tool_manager.get_tool_by_name(tool_name=tool_name, actor=actor)
+                tool = resolved_by_name.get(tool_name)
                 if tool:
                     tools_to_remove_ids.append(tool.id)
 
@@ -639,6 +657,44 @@ class AgentManager:
         parent_id: Optional[str] = None,
     ) -> PydanticAgentState:
         """Create a new agent."""
+        from mirix.database.relational_provider import get_relational_provider
+
+        provider = get_relational_provider()
+        if provider:
+            if name is None:
+                name = create_random_username()
+
+            data_dict = {
+                # Pre-generate a UUID so Relational DB provider uses it as the system entity.id.
+                # Relational DB provider requires a valid UUID for engine table entity.id.
+                # Using str(uuid.uuid4()) (no prefix) ensures the provider accepts it directly.
+                # The matching entity_key stores this UUID for natural-key lookups.
+                "id": str(uuid.uuid4()),
+                "name": name,
+                "system": system,
+                "agent_type": agent_type,
+                "llm_config": llm_config.model_dump() if hasattr(llm_config, "model_dump") else llm_config,
+                "embedding_config": (
+                    embedding_config.model_dump() if hasattr(embedding_config, "model_dump") else embedding_config
+                ),
+                "organization_id": actor.organization_id,
+                "tools": tool_ids,
+                "tool_rules": (
+                    [tr.model_dump() if hasattr(tr, "model_dump") else tr for tr in tool_rules] if tool_rules else None
+                ),
+                "parent_id": parent_id,
+                # Pass the client UUID so the Relational DB provider can store it
+                # in ipsr_entity_owner, enabling correct created_by_id round-trip.
+                "_created_by_id": actor.id,
+            }
+            result = await provider.create("agents", data_dict)
+            agent_state = PydanticAgentState(**result)
+
+            if parent_id:
+                await self._invalidate_parent_cache_for_child(agent_state.id, parent_id)
+
+            return agent_state
+
         async with self.session_maker() as session:
             # Generate a random name if none provided
             if name is None:
@@ -669,14 +725,33 @@ class AgentManager:
             return new_agent.to_pydantic()
 
     @enforce_types
-    async def update_agent(self, agent_id: str, agent_update: UpdateAgent, actor: PydanticClient) -> PydanticAgentState:
-        # Update agent (system prompt and all other fields are persisted directly)
-        return await self._update_agent(agent_id=agent_id, agent_update=agent_update, actor=actor)
+    async def update_agent(
+        self,
+        agent_id: str,
+        agent_update: UpdateAgent,
+        actor: PydanticClient,
+        current_state: Optional[PydanticAgentState] = None,
+    ) -> PydanticAgentState:
+        # Update agent (system prompt and all other fields are persisted directly).
+        # ``current_state`` (the caller's already-loaded agent) lets _update_agent
+        # skip the post-write hydrate read on non-tool updates — see _update_agent.
+        return await self._update_agent(
+            agent_id=agent_id,
+            agent_update=agent_update,
+            actor=actor,
+            current_state=current_state,
+        )
 
     @enforce_types
     async def update_llm_config(
         self, agent_id: str, llm_config: LLMConfig, actor: PydanticClient
     ) -> PydanticAgentState:
+        # Skip the write when the persisted config already matches.
+        # Callers on the registration / initialize-meta-agent path invoke this
+        # per agent; an unchanged config otherwise produces a needless write.
+        current = await self.get_agent_by_id(agent_id=agent_id, actor=actor)
+        if current.llm_config == llm_config:
+            return current
         return await self.update_agent(
             agent_id=agent_id,
             agent_update=UpdateAgent(llm_config=llm_config),
@@ -735,7 +810,11 @@ class AgentManager:
 
     @enforce_types
     async def _update_agent(
-        self, agent_id: str, agent_update: UpdateAgent, actor: PydanticClient
+        self,
+        agent_id: str,
+        agent_update: UpdateAgent,
+        actor: PydanticClient,
+        current_state: Optional[PydanticAgentState] = None,
     ) -> PydanticAgentState:
         """
         Update an existing agent.
@@ -744,10 +823,84 @@ class AgentManager:
             agent_id: The ID of the agent to update.
             agent_update: UpdateAgent object containing the updated fields.
             actor: User performing the action.
+            current_state: The agent's already-loaded state, if the caller has
+                it. When supplied AND the update does not touch ``tool_ids``, the
+                returned state is built by applying the changed scalar fields onto
+                this state instead of re-reading the row with its tools — saving
+                the post-write hydrate read (the dominant per-write cost under the
+                IPS Relational provider). Omit it (the default) to keep the
+                read-after-write behaviour for callers that need a freshly
+                hydrated row.
 
         Returns:
             PydanticAgentState: The updated agent as a Pydantic model.
         """
+        from mirix.database.relational_provider import get_relational_provider
+
+        provider = get_relational_provider()
+        if provider:
+            changing_parent = agent_update.parent_id is not None
+            # Only pre-read to capture the OLD parent for parent-cache
+            # invalidation when the parent is actually changing. For the common
+            # case (config / system-prompt updates that never touch parent_id)
+            # this read is pure waste — skip it.
+            old_parent_id = None
+            if changing_parent:
+                existing = await provider.read("agents", agent_id)
+                old_parent_id = existing.get("parent_id") if existing else None
+
+            scalar_fields = ["name", "system", "llm_config", "embedding_config", "tool_rules", "mcp_tools", "parent_id"]
+            update_data: dict = {}
+            for field in scalar_fields:
+                value = getattr(agent_update, field, None)
+                if value is not None:
+                    update_data[field] = value.model_dump() if hasattr(value, "model_dump") else value
+
+            tools_changed = agent_update.tool_ids is not None
+            if tools_changed:
+                update_data["tools"] = agent_update.tool_ids
+
+            await provider.update("agents", agent_id, update_data)
+
+            # Build the returned state. provider.update returns only scalar
+            # columns (no hydrated ``tools``), and AgentState.tools is required,
+            # so normally we re-read with include_relationships=["tools"]. When
+            # the caller passed its already-loaded ``current_state`` AND this
+            # update didn't change tools, apply the changed scalar fields onto a
+            # copy of that state instead — avoiding the hydrate read (1 read +
+            # per-tool join) entirely. Otherwise fall back to the re-read.
+            if current_state is not None and not tools_changed:
+                agent_state = current_state.model_copy(
+                    update={
+                        k: getattr(agent_update, k) for k in scalar_fields if getattr(agent_update, k, None) is not None
+                    }
+                )
+            else:
+                result = await provider.read("agents", agent_id, include_relationships=["tools"])
+                if result is None:
+                    raise ValueError(f"Agent {agent_id} disappeared between update and read-back")
+                agent_state = PydanticAgentState(**result)
+
+            # Invalidate cache if available
+            try:
+                from mirix.database.cache_provider import get_cache_provider
+
+                cache_provider = get_cache_provider()
+                if cache_provider:
+                    await cache_provider.delete(f"{cache_provider.AGENT_PREFIX}{agent_id}")
+            except Exception as e:
+                logger.warning("Cache invalidation failed for agent %s: %s", agent_id, e)
+
+            # Invalidate parent caches only when the parent actually changed
+            # (old_parent_id is only populated in that case).
+            new_parent_id = agent_state.parent_id
+            if old_parent_id:
+                await self._invalidate_parent_cache_for_child(agent_id, old_parent_id)
+            if changing_parent and new_parent_id and new_parent_id != old_parent_id:
+                await self._invalidate_parent_cache_for_child(agent_id, new_parent_id)
+
+            return agent_state
+
         async with self.session_maker() as session:
             # Retrieve the existing agent
             agent = await AgentModel.read(db_session=session, identifier=agent_id, actor=actor)
@@ -1143,6 +1296,8 @@ class AgentManager:
         query_text: Optional[str] = None,
         parent_id: Optional[str] = None,
         user: Optional[PydanticUser] = None,
+        sort_desc: bool = False,
+        include_tools: bool = True,
         **kwargs,
     ) -> List[PydanticAgentState]:
         """
@@ -1152,7 +1307,86 @@ class AgentManager:
 
         When parent_id is provided, tries to use Redis cache via parent's children_ids first,
         then falls back to PostgreSQL if cache miss.
+
+        ``sort_desc`` selects descending vs ascending creation-time ordering for the
+        Relational DB provider path (``agent_manager.list_agents_desc`` vs ``agent_manager.list_agents_asc``).
+
+        ``include_tools`` controls whether each returned agent's ``tools``
+        relationship is hydrated. Under the IPS Relational provider that
+        hydration costs one ``tool_manager.list_tools_by_ids`` round-trip PER
+        agent (an N+1). Callers that only need an agent's config (e.g. the
+        search / topic-extraction read paths, which use a single agent's
+        ``llm_config`` / ``embedding_config`` and never its tools) should pass
+        ``include_tools=False`` — typically with ``limit=1`` — to avoid that
+        per-agent tool fan-out. Defaults to True so existing callers that rely
+        on populated ``tools`` are unchanged.
         """
+        from mirix.database.relational_provider import get_relational_provider
+
+        # Tools are an M2M relationship hydrated per-agent by the relational
+        # provider; only request it when the caller actually needs tools.
+        rel_include = ["tools"] if include_tools else None
+
+        def _to_agent_state(row: dict) -> PydanticAgentState:
+            # When tools are not hydrated (include_tools=False) the provider row
+            # has no ``tools`` key, but AgentState.tools is a required field.
+            # Default it to an empty list so the model still validates — callers
+            # that pass include_tools=False (search / embedding-config reads) do
+            # not consume ``tools``.
+            if "tools" not in row:
+                row = {**row, "tools": []}
+            return PydanticAgentState(**row)
+
+        rel_provider = get_relational_provider()
+        # A-4: query_text path (new provider branch — replaces SQLAlchemy fallback)
+        if rel_provider and query_text and parent_id is None and not kwargs:
+            results = await rel_provider.find_using_named_query(
+                "agents",
+                "agent_manager.list_agents_by_query_text",
+                params={
+                    "organizationId": actor.organization_id,
+                    "createdById": actor.id,
+                    "queryText": f"%{query_text}%",
+                },
+                page_size=limit or 50,
+                include_relationships=rel_include,
+            )
+            return [_to_agent_state(r) for r in results]
+
+        # A-3: default provider list path — choose ascending vs descending NQ based on sort_desc
+        if rel_provider and parent_id is None and not query_text and not kwargs:
+            query_name = "agent_manager.list_agents_desc" if sort_desc else "agent_manager.list_agents_asc"
+            results = await rel_provider.find_using_named_query(
+                "agents",
+                query_name,
+                params={
+                    "organizationId": actor.organization_id,
+                    "createdById": actor.id,
+                    "name": None,
+                    "parentId": None,
+                },
+                page_size=limit or 50,
+                include_relationships=rel_include,
+            )
+            return [_to_agent_state(r) for r in results]
+
+        # A-11: parent_id wide list (named query lists up to 1000 by org+client, parent_id
+        # filtered in Python). PostgreSQL doesn't hold the data when
+        # ENGINE_DB_STRATEGY=ips_relational.
+        if rel_provider and parent_id is not None and not query_text and not kwargs:
+            all_agents = await rel_provider.find_using_named_query(
+                "agents",
+                "agent_manager.list_agents_rel_provider",
+                params={
+                    "organizationId": actor.organization_id,
+                    "createdById": actor.id,
+                },
+                page_size=1000,
+                include_relationships=rel_include,
+            )
+            results = [r for r in all_agents if r.get("parent_id") == parent_id]
+            return [_to_agent_state(r) for r in results]
+
         # Optimization: Use Redis cache for list_agents(parent_id=X)
         if parent_id is not None:
             cached_children = await self._get_children_from_redis(parent_id, actor)
@@ -1216,6 +1450,106 @@ class AgentManager:
                 await self._cache_children_ids_for_parents(agent_states)
 
             return agent_states
+
+    async def list_agents_with_tools(self, parent_id: str, actor: PydanticClient) -> List[PydanticAgentState]:
+        """Fetch all child agents of ``parent_id`` WITH their tools in a single
+        relational-provider roundtrip.
+
+        Replaces the N+1 where ``list_agents(parent_id=...)`` returns the agents
+        and the provider then resolves each agent's ``tools`` relationship with a
+        separate ``list_tools_by_ids`` call. The joined named query
+        ``agent_manager.list_agents_with_tools_by_parent`` returns one flat
+        ``(agent, tool)`` row per pair (tool columns NULL for an agent with no
+        tools, via LEFT JOIN); we group them agent-side into
+        ``PydanticAgentState`` objects with ``tools`` populated.
+
+        Rows are projected by the NQ (``skip_entity_mapping=True``) and do NOT go
+        through ``FieldMapper`` camel/snake mapping. The deployed NQ via the
+        IPS-R SDK returns each row as a *positional* list (the column-order
+        contract of a multi-column projection), not a named dict — so we pass a
+        ``result_set_entity_class`` (``AgentToolRow``) whose field order matches
+        the NQ SELECT order. The relational provider zips each positional row
+        against those field names and hands back uniform dicts keyed by the
+        aliases, which we then JSON-parse and group below. This is the same
+        ``result_set_entity_class`` mechanism the other manager NQs use for
+        non-entity projections (see ``mirix/database/named_query_results.py``).
+
+        Falls back to ``list_agents`` (legacy per-agent tool hydration) when no
+        relational provider is active (e.g. PostgreSQL-backed tests).
+        """
+        import json
+
+        from mirix.database.named_query_results import AgentToolRow
+        from mirix.database.relational_provider import get_relational_provider
+        from mirix.schemas.tool import Tool as PydanticTool
+
+        rel_provider = get_relational_provider()
+        if rel_provider is None:
+            return await self.list_agents(actor=actor, parent_id=parent_id)
+
+        rows = await rel_provider.find_using_named_query(
+            "agents",
+            "agent_manager.list_agents_with_tools_by_parent",
+            params={
+                "organizationId": actor.organization_id,
+                "createdById": actor.id,
+                "parentId": parent_id,
+            },
+            page_size=1000,
+            skip_entity_mapping=True,
+            result_set_entity_class=AgentToolRow,
+        )
+
+        def _parse_json(value):
+            if value is None or isinstance(value, (dict, list)):
+                return value
+            if isinstance(value, str):
+                try:
+                    return json.loads(value)
+                except (json.JSONDecodeError, ValueError):
+                    logger.warning("list_agents_with_tools: failed to parse JSON column")
+                    return None
+            return value
+
+        agents_by_id: Dict[str, PydanticAgentState] = {}
+        tool_ids_seen: Dict[str, set] = {}
+
+        for row in rows:
+            aid = row.get("agent_id")
+            if not aid:
+                continue
+            if aid not in agents_by_id:
+                agents_by_id[aid] = PydanticAgentState(
+                    id=aid,
+                    name=row.get("agent_name") or "",
+                    agent_type=AgentType(row.get("agent_type")),
+                    system=row.get("agent_system") or "",
+                    description=row.get("agent_description"),
+                    parent_id=row.get("agent_parent_id"),
+                    organization_id=row.get("agent_organization_id"),
+                    llm_config=LLMConfig(**_parse_json(row.get("agent_llm_config"))),
+                    embedding_config=EmbeddingConfig(**_parse_json(row.get("agent_embedding_config"))),
+                    tool_rules=_parse_json(row.get("agent_tool_rules")),
+                    mcp_tools=_parse_json(row.get("agent_mcp_tools")),
+                    tools=[],
+                )
+                tool_ids_seen[aid] = set()
+
+            tid = row.get("tool_id")
+            if tid and tid not in tool_ids_seen[aid]:
+                tool_ids_seen[aid].add(tid)
+                agents_by_id[aid].tools.append(
+                    PydanticTool(
+                        id=tid,
+                        name=row.get("tool_name"),
+                        description=row.get("tool_description"),
+                        json_schema=_parse_json(row.get("tool_json_schema")),
+                        tool_type=ToolType(row.get("tool_type")) if row.get("tool_type") else ToolType.CUSTOM,
+                        organization_id=row.get("tool_organization_id"),
+                    )
+                )
+
+        return list(agents_by_id.values())
 
     @enforce_types
     async def get_agent_by_id(self, agent_id: str, actor: PydanticClient) -> PydanticAgentState:
@@ -1302,13 +1636,70 @@ class AgentManager:
                     # SECURITY CHECK: Verify agent belongs to this client
                     # Prevents cross-client access via Redis cache
                     if agent_state.created_by_id != actor.id:
-                        from sqlalchemy.exc import NoResultFound
-
                         raise NoResultFound(f"Agent {agent_id} not found or not accessible to client {actor.id}")
 
                     return agent_state  # Cache HIT (agent + tools + memory)
         except Exception as e:
-            logger.warning("Cache read failed for agent %s: %s", agent_id, e)
+            logger.debug("Cache read failed for agent %s: %s", agent_id, e)
+
+        # Relational DB provider delegation (named query with include_relationships for tools)
+        from mirix.database.relational_provider import get_relational_provider
+
+        rel_provider = get_relational_provider()
+        if rel_provider:
+            # Use the named query (which filters by organizationId + ipsrentityowner) rather
+            # than provider.read(actor=actor) so we get include_relationships=["tools"] in
+            # a single round trip.  The actor param on provider.read would handle org/client
+            # isolation identically but does not support relationship expansion.
+            rows = await rel_provider.find_using_named_query(
+                "agents",
+                "agent_manager.get_agent_by_id",
+                params={
+                    "id": agent_id,
+                    "organizationId": actor.organization_id,
+                    "createdById": actor.id,
+                },
+                page_size=1,
+                include_relationships=["tools"],
+            )
+            if not rows:
+                raise NoResultFound(f"Agent {agent_id} not found")
+            agent_state = PydanticAgentState(**rows[0])
+            # created_by_id security check is enforced at the query level (ipsrentityowner
+            # == :createdById in the YAML NQ), so no additional Python check is needed.
+
+            try:
+                if cache_provider:
+                    from mirix.settings import settings
+
+                    data = agent_state.model_dump(mode="json")
+                    if "llm_config" in data and data["llm_config"]:
+                        data["llm_config"] = json.dumps(data["llm_config"])
+                    if "embedding_config" in data and data["embedding_config"]:
+                        data["embedding_config"] = json.dumps(data["embedding_config"])
+                    if "tool_rules" in data and data["tool_rules"]:
+                        data["tool_rules"] = json.dumps(data["tool_rules"])
+                    if "mcp_tools" in data and data["mcp_tools"]:
+                        data["mcp_tools"] = json.dumps(data["mcp_tools"])
+                    if "tools" in data and data["tools"]:
+                        tool_ids = [t["id"] for t in data["tools"]]
+                        data["tool_ids"] = json.dumps(tool_ids)
+                        for tool in data["tools"]:
+                            tool_key = f"{cache_provider.TOOL_PREFIX}{tool['id']}"
+                            tool_data = dict(tool)
+                            if "json_schema" in tool_data and tool_data["json_schema"]:
+                                tool_data["json_schema"] = json.dumps(tool_data["json_schema"])
+                            if "tags" in tool_data and tool_data["tags"]:
+                                tool_data["tags"] = json.dumps(tool_data["tags"])
+                            await cache_provider.set_hash(tool_key, tool_data, ttl=settings.redis_ttl_tools)
+                    data.pop("tools", None)
+                    data.pop("children", None)
+                    agent_cache_key = f"{cache_provider.AGENT_PREFIX}{agent_id}"
+                    await cache_provider.set_hash(agent_cache_key, data, ttl=settings.redis_ttl_agents)
+            except Exception as e:
+                logger.warning("Failed to populate cache after provider read for agent %s: %s", agent_id, e)
+
+            return agent_state
 
         # Cache MISS or no cache - fetch from PostgreSQL with client filtering
         async with self.session_maker() as session:
@@ -1391,10 +1782,61 @@ class AgentManager:
 
     @enforce_types
     async def get_agent_by_name(self, agent_name: str, actor: PydanticClient) -> PydanticAgentState:
-        """Fetch an agent by its ID."""
+        """Fetch an agent by its name."""
+        from mirix.database.relational_provider import get_relational_provider
+
+        rel_provider = get_relational_provider()
+        if rel_provider:
+            results = await rel_provider.find_using_named_query(
+                "agents",
+                "agent_manager.get_agent_by_name",
+                params={
+                    "organizationId": actor.organization_id,
+                    "name": agent_name,
+                    "createdById": actor.id,
+                },
+                page_size=1,
+                include_relationships=["tools"],
+            )
+            if not results:
+                raise NoResultFound(f"Agent with name {agent_name} not found")
+            return PydanticAgentState(**results[0])
+
         async with self.session_maker() as session:
             agent = await AgentModel.read(db_session=session, name=agent_name, actor=actor)
             return agent.to_pydantic()
+
+    @enforce_types
+    async def size_agents(self, actor: PydanticClient) -> int:
+        """Return the count of non-deleted agents for the actor's organization.
+
+        Routes through the ``sqlalchemy_base.size_agents`` named query when the
+        Relational DB provider is registered; falls back to ``AgentModel.size`` otherwise.
+        ``SqlalchemyBase.size()`` is deliberately not modified to keep the ORM base
+        class decoupled from the provider.
+        """
+        from mirix.database.relational_provider import get_relational_provider
+
+        rel_provider = get_relational_provider()
+        if rel_provider is not None:
+            from mirix.database.named_query_results import CountResult
+
+            rows = await rel_provider.find_using_named_query(
+                "agents",
+                "sqlalchemy_base.size_agents",
+                params={
+                    "organizationId": actor.organization_id,
+                    "createdById": actor.id,
+                },
+                result_set_entity_class=CountResult,
+                page_size=1,
+            )
+            if not rows:
+                return 0
+            return int(rows[0].get("count") or 0)
+
+        async with self.session_maker() as session:
+            return await AgentModel.size(db_session=session, actor=actor)
 
     @enforce_types
     async def delete_agent(self, agent_id: str, actor: PydanticClient) -> None:
@@ -1409,6 +1851,27 @@ class AgentManager:
         Raises:
             NoResultFound: If agent doesn't exist
         """
+        from mirix.database.relational_provider import get_relational_provider
+
+        rel_provider = get_relational_provider()
+        if rel_provider:
+            existing = await rel_provider.read("agents", agent_id)
+            if existing is None:
+                raise NoResultFound(f"Agent {agent_id} not found")
+            parent_id = existing.get("parent_id")
+            await rel_provider.hard_delete("agents", agent_id)
+            try:
+                from mirix.database.cache_provider import get_cache_provider
+
+                cache_provider = get_cache_provider()
+                if cache_provider:
+                    await cache_provider.delete(f"{cache_provider.AGENT_PREFIX}{agent_id}")
+            except Exception:
+                pass
+            if parent_id:
+                await self._invalidate_parent_cache_for_child(agent_id, parent_id)
+            return
+
         async with self.session_maker() as session:
             # Retrieve the agent
             agent = await AgentModel.read(db_session=session, identifier=agent_id, actor=actor)

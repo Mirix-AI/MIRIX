@@ -4,7 +4,7 @@ import json
 import logging
 import traceback
 from abc import ABC, abstractmethod
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import numpy as np
@@ -14,9 +14,9 @@ from mirix.agent.tool_validators import validate_tool_args
 from mirix.constants import (
     CHAINING_FOR_MEMORY_UPDATE,
     CLI_WARNING_PREFIX,
-    ERROR_MESSAGE_PREFIX,
     FIRST_MESSAGE_ATTEMPTS,
     FUNC_FAILED_HEARTBEAT_MESSAGE,
+    HYBRID_READ_WINDOW_SECONDS,
     LLM_MAX_TOKENS,
     MAX_CHAINING_STEPS,
     MAX_EMBEDDING_DIM,
@@ -27,7 +27,12 @@ from mirix.constants import (
     REQ_HEARTBEAT_MESSAGE,
 )
 from mirix.embeddings import embedding_model
-from mirix.errors import ContextWindowExceededError
+from mirix.errors import (
+    ContextWindowExceededError,
+    CorrectableToolError,
+    LLMBadResponseShapeError,
+    LLMChainingExhaustedError,
+)
 from mirix.functions.functions import get_function_from_module
 from mirix.helpers import ToolRulesSolver
 from mirix.helpers.message_helpers import prepare_input_message_create
@@ -46,12 +51,16 @@ from mirix.schemas.block import BlockUpdate
 from mirix.schemas.client import Client
 from mirix.schemas.embedding_config import EmbeddingConfig
 from mirix.schemas.enums import MessageRole, ToolType
+from mirix.schemas.knowledge_vault import KnowledgeVaultItem as PydanticKnowledgeVaultItem
 from mirix.schemas.memory import Memory
 from mirix.schemas.message import Message, MessageCreate
 from mirix.schemas.mirix_message_content import CloudFileContent, FileContent, ImageContent, TextContent
 from mirix.schemas.openai.chat_completion_response import ChatCompletionResponse
 from mirix.schemas.openai.chat_completion_response import Message as ChatCompletionMessage
 from mirix.schemas.openai.chat_completion_response import UsageStatistics
+from mirix.schemas.procedural_memory import ProceduralMemoryItem as PydanticProceduralMemoryItem
+from mirix.schemas.resource_memory import ResourceMemoryItem as PydanticResourceMemoryItem
+from mirix.schemas.semantic_memory import SemanticMemoryItem as PydanticSemanticMemoryItem
 from mirix.schemas.tool import Tool
 from mirix.schemas.tool_rule import TerminalToolRule
 from mirix.schemas.usage import MirixUsageStatistics
@@ -72,6 +81,7 @@ from mirix.services.tool_execution_sandbox import ToolExecutionSandbox
 from mirix.services.user_manager import UserManager
 from mirix.settings import settings
 from mirix.system import get_contine_chaining, get_token_limit_warning, package_function_response, package_user_message
+from mirix.testing import fault_injection
 from mirix.tracing import trace_method
 from mirix.utils import (
     convert_timezone_to_utc,
@@ -354,9 +364,12 @@ class Agent(BaseAgent):
                         f"[Mirix.Agent.{self.agent_state.name}] INFO: Updated block {label} with value {updated_value} and user {self.user.id}"
                     )
 
-            # refresh memory from DB (using block ids)
+            # refresh memory from DB (using block ids), scoped to this save's
+            # scope so the reloaded set never pulls in another scope's blocks
+            # (mirrors step()/_retrieve_core; see VEPAGE-1474).
             blocks_result = await self.block_manager.get_blocks(
                 user=self.user,
+                any_scopes=self._block_scopes,
                 auto_create_from_default=False,  # Don't auto-create here, only in step()
             )
             self.blocks_in_memory = Memory(
@@ -486,98 +499,107 @@ class Agent(BaseAgent):
                 continue  # Don't include 'self' in trace
             args_for_trace[key] = str(value)
 
-        async def _execute_tool_inner() -> Tuple[str, bool]:
-            """Inner function to execute tool. Returns (response, is_error)."""
+        async def _execute_tool_inner() -> str:
+            """Inner function to execute tool. Returns the tool's response string.
+
+            Exceptions are NOT caught here. The outer `_handle_ai_response`
+            catches `CorrectableToolError` exclusively for the bounded
+            re-prompt path (LLM produced bad args / malformed JSON / failed
+            validation). Everything else (DB / provider / code bug)
+            propagates out so `process_with_policy` can classify it.
+            """
             nonlocal function_args  # Allow modification of outer function_args
-            function_response = ""
-            is_error = False
 
-            try:
-                _preprocess_episodic_tool_args(
-                    function_name,
-                    function_args,
-                    timezone_str=self.user.timezone,
-                    occurred_at_override=getattr(self, "occurred_at", None),
-                )
+            _preprocess_episodic_tool_args(
+                function_name,
+                function_args,
+                timezone_str=self.user.timezone,
+                occurred_at_override=getattr(self, "occurred_at", None),
+            )
 
+            # Test-only fault injection (inert in prod): inject a fault in the
+            # tool body for sources whose directive targets "tool_body"
+            # (optionally scoped to this tool name). Raising here — inside the
+            # tool body, in pure agent code with no provider frame — is what
+            # makes an `attribute_error` shape classify PERMANENT via the
+            # error_policy origin-split, and a `correctable` shape feed the
+            # bounded LLM re-prompt. Sub-agents inherit memory_source_id from the
+            # meta-agent, so the per-source directive matches across the fan-out.
+            fault_injection.maybe_raise(
+                "tool_body",
+                source_key=getattr(self, "memory_source_id", None),
+                tool=function_name,
+            )
+
+            if function_name in [
+                "search_in_memory",
+                "list_memory_within_timerange",
+            ]:
+                function_args["timezone_str"] = self.user.timezone
+
+            if target_mirix_tool.tool_type == ToolType.MIRIX_CORE:
+                # base tools are allowed to access the `Agent` object and run on the database
+                callable_func = get_function_from_module(MIRIX_CORE_TOOL_MODULE_NAME, function_name)
+                function_args["self"] = self  # need to attach self to arg since it's dynamically linked
+                if function_name in ["send_message", "send_intermediate_message"]:
+                    agent_state_copy = self.agent_state.__deepcopy__()
+                    function_args["agent_state"] = (
+                        agent_state_copy  # need to attach self to arg since it's dynamically linked
+                    )
+                function_response = await callable_func(**function_args)
+                if function_name == "send_intermediate_message":
+                    # send intermediate message to the user
+                    if display_intermediate_message:
+                        display_intermediate_message("response", function_args["message"])
+
+            elif target_mirix_tool.tool_type == ToolType.MIRIX_MEMORY_CORE:
+                callable_func = get_function_from_module(MIRIX_MEMORY_TOOL_MODULE_NAME, function_name)
+                if function_name in ["core_memory_append", "core_memory_rewrite"]:
+                    from copy import deepcopy
+
+                    memory_copy = deepcopy(self.blocks_in_memory)
+                    function_args["blocks_in_memory"] = memory_copy
                 if function_name in [
-                    "search_in_memory",
-                    "list_memory_within_timerange",
+                    "check_episodic_memory",
+                    "check_semantic_memory",
                 ]:
                     function_args["timezone_str"] = self.user.timezone
+                function_args["self"] = self
 
-                if target_mirix_tool.tool_type == ToolType.MIRIX_CORE:
-                    # base tools are allowed to access the `Agent` object and run on the database
-                    callable_func = get_function_from_module(MIRIX_CORE_TOOL_MODULE_NAME, function_name)
-                    function_args["self"] = self  # need to attach self to arg since it's dynamically linked
-                    if function_name in ["send_message", "send_intermediate_message"]:
-                        agent_state_copy = self.agent_state.__deepcopy__()
-                        function_args["agent_state"] = (
-                            agent_state_copy  # need to attach self to arg since it's dynamically linked
-                        )
-                    function_response = await callable_func(**function_args)
-                    if function_name == "send_intermediate_message":
-                        # send intermediate message to the user
-                        if display_intermediate_message:
-                            display_intermediate_message("response", function_args["message"])
+                function_response = await callable_func(**function_args)
+                if function_name in ["core_memory_append", "core_memory_rewrite"]:
+                    await self.update_memory_if_changed(memory_copy)
 
-                elif target_mirix_tool.tool_type == ToolType.MIRIX_MEMORY_CORE:
-                    callable_func = get_function_from_module(MIRIX_MEMORY_TOOL_MODULE_NAME, function_name)
-                    if function_name in ["core_memory_append", "core_memory_rewrite"]:
-                        from copy import deepcopy
+            elif target_mirix_tool.tool_type == ToolType.MIRIX_EXTRA:
+                callable_func = get_function_from_module(MIRIX_EXTRA_TOOL_MODULE_NAME, function_name)
+                function_args["self"] = self  # need to attach self to arg since it's dynamically linked
+                function_response = await callable_func(**function_args)
 
-                        memory_copy = deepcopy(self.blocks_in_memory)
-                        function_args["blocks_in_memory"] = memory_copy
-                    if function_name in [
-                        "check_episodic_memory",
-                        "check_semantic_memory",
-                    ]:
-                        function_args["timezone_str"] = self.user.timezone
-                    function_args["self"] = self
+            elif target_mirix_tool.tool_type == ToolType.USER_DEFINED:
+                agent_state_copy = self.agent_state.__deepcopy__()
 
-                    function_response = await callable_func(**function_args)
-                    if function_name in ["core_memory_append", "core_memory_rewrite"]:
-                        await self.update_memory_if_changed(memory_copy)
+                # Execute user-defined tool in sandbox for security
+                sandbox = ToolExecutionSandbox(
+                    tool_name=function_name,
+                    args=function_args,
+                    actor=self.actor,
+                    tool_object=target_mirix_tool,
+                )
+                sandbox_result = await sandbox.run(agent_state=agent_state_copy)
+                function_response = sandbox_result.func_return
 
-                elif target_mirix_tool.tool_type == ToolType.MIRIX_EXTRA:
-                    callable_func = get_function_from_module(MIRIX_EXTRA_TOOL_MODULE_NAME, function_name)
-                    function_args["self"] = self  # need to attach self to arg since it's dynamically linked
-                    function_response = await callable_func(**function_args)
-
-                elif target_mirix_tool.tool_type == ToolType.USER_DEFINED:
-                    agent_state_copy = self.agent_state.__deepcopy__()
-
-                    # Execute user-defined tool in sandbox for security
-                    sandbox = ToolExecutionSandbox(
-                        tool_name=function_name,
-                        args=function_args,
-                        actor=self.actor,
-                        tool_object=target_mirix_tool,
-                    )
-                    sandbox_result = await sandbox.run(agent_state=agent_state_copy)
-                    function_response = sandbox_result.func_return
-
-                elif target_mirix_tool.tool_type == ToolType.MIRIX_MCP:
-                    function_response = await self._execute_mcp_tool(
-                        function_name,
-                        function_args,
-                        target_mirix_tool,
-                        request_user_confirmation,
-                    )
-
-                else:
-                    raise ValueError(f"Tool type {target_mirix_tool.tool_type} not supported")
-
-            except Exception as e:
-                # Need to catch error here, or else truncation wont happen
-                is_error = True
-                function_response = get_friendly_error_msg(
-                    function_name=function_name,
-                    exception_name=type(e).__name__,
-                    exception_message=str(e),
+            elif target_mirix_tool.tool_type == ToolType.MIRIX_MCP:
+                function_response = await self._execute_mcp_tool(
+                    function_name,
+                    function_args,
+                    target_mirix_tool,
+                    request_user_confirmation,
                 )
 
-            return function_response, is_error
+            else:
+                raise ValueError(f"Tool type {target_mirix_tool.tool_type} not supported")
+
+            return function_response
 
         # Execute with Langfuse tracing if available
         if langfuse and trace_id:
@@ -590,6 +612,17 @@ class Agent(BaseAgent):
             if parent_span_id:
                 trace_context_dict["parent_span_id"] = parent_span_id
 
+            from mirix.observability.context import current_observation_id, set_trace_context
+
+            # The fallback below is for the case where the langfuse SDK
+            # itself fails *before* the tool body executes (so the tool
+            # never ran). Once we are about to invoke the body, set
+            # `inner_attempted=True` so any exception from the body — or
+            # from the langfuse machinery after the body — does NOT trigger
+            # a silent re-run of the tool. Non-correctable exceptions
+            # raised by the body propagate out so `process_with_policy`
+            # can classify them rather than being silently swallowed.
+            inner_attempted = False
             try:
                 with langfuse.start_as_current_observation(
                     name=f"tool: {function_name}",
@@ -603,25 +636,60 @@ class Agent(BaseAgent):
                     },
                 ) as span:
                     mark_observation_as_child(span)
-                    function_response, is_error = await _execute_tool_inner()
 
-                    span.update(
-                        output={
-                            "response": str(function_response),
-                            "is_error": is_error,
-                        },
-                        metadata={
-                            "tool_type": str(target_mirix_tool.tool_type),
-                            "tool_name": function_name,
-                            "is_error": is_error,
-                        },
-                        level="ERROR" if is_error else "DEFAULT",
-                    )
+                    # Publish this tool span as the current observation while the
+                    # tool body runs so any child observation opened during
+                    # execution (e.g. "Resolve Child Agents" or the memory
+                    # sub-agent spans spawned by trigger_memory_update) nests under
+                    # the tool span rather than the agent-level span above it.
+                    # Restore the prior observation id afterward so the next
+                    # sibling tool span parents back to the agent span.
+                    span_observation_id = getattr(span, "id", None)
+                    if span_observation_id:
+                        set_trace_context(
+                            trace_id=trace_id,
+                            observation_id=span_observation_id,
+                            user_id=trace_context.get("user_id"),
+                            session_id=trace_context.get("session_id"),
+                        )
+                    inner_attempted = True
+                    try:
+                        function_response = await _execute_tool_inner()
+                    finally:
+                        # Restore the prior observation id (set_trace_context ignores
+                        # a falsy observation_id, so set the ContextVar directly to
+                        # also handle the None / no-parent case correctly).
+                        current_observation_id.set(parent_span_id)
+
+                    try:
+                        # We only reach here on a clean run — _execute_tool_inner
+                        # either returns the response string or raises (which
+                        # propagates past the span.update call).
+                        span.update(
+                            output={"response": str(function_response)},
+                            metadata={
+                                "tool_type": str(target_mirix_tool.tool_type),
+                                "tool_name": function_name,
+                            },
+                        )
+                    except Exception as span_exc:
+                        # span.update failure is observability-only — log at
+                        # WARNING so a sustained tracing problem is visible
+                        # without taking the save path down.
+                        self.logger.warning("Langfuse span.update failed: %s", span_exc)
             except Exception as e:
-                self.logger.debug(f"Langfuse tool execution trace failed: {e}")
-                function_response, _ = await _execute_tool_inner()
+                if inner_attempted:
+                    # Tool body already ran (and may have raised). Do NOT
+                    # re-execute; propagate the original exception unchanged.
+                    raise
+                # Langfuse SDK failed before the tool body ran — fall back
+                # to running without tracing. Sustained breakage here means
+                # we're losing observability across many saves; log at
+                # WARNING so it's not silent.
+                self.logger.warning("Langfuse tool execution trace failed before body ran: %s", e)
+                function_response = await _execute_tool_inner()
         else:
-            function_response, _ = await _execute_tool_inner()
+            function_response = await _execute_tool_inner()
 
         return function_response
 
@@ -728,24 +796,24 @@ class Agent(BaseAgent):
                     )
                 log_telemetry(self.logger, "_get_ai_reply create finish")
 
-                # Validate the response shape. These ValueErrors are caught
-                # below and classified as Transient (provider quirks worth
-                # retrying), not Permanent.
+                # Validate the response shape. LLMBadResponseShapeError is in
+                # _TRANSIENT_TYPES, so the catch below + classify() treat
+                # these as provider quirks worth retrying (not as code bugs).
                 if len(response.choices) == 0 or response.choices[0] is None:
-                    raise ValueError(f"API call returned an empty message: {response}")
+                    raise LLMBadResponseShapeError(f"API call returned an empty message: {response}")
 
                 for choice in response.choices:
                     if choice.message.content == "" and len(choice.message.tool_calls) == 0:
-                        raise ValueError(f"API call returned an empty message: {response}")
+                        raise LLMBadResponseShapeError(f"API call returned an empty message: {response}")
 
                 if response.choices[0].finish_reason not in [
                     "stop",
                     "function_call",
                     "tool_calls",
                 ]:
-                    # "length" historically retried; treat the same way via ValueError
-                    # so the unified classifier handles it.
-                    raise ValueError(f"Bad finish reason from API: {response.choices[0].finish_reason}")
+                    # "length" finish_reason historically retried — same
+                    # classification path as the other shape failures.
+                    raise LLMBadResponseShapeError(f"Bad finish reason from API: {response.choices[0].finish_reason}")
 
                 log_telemetry(self.logger, "_handle_ai_response finish")
                 return response
@@ -764,7 +832,12 @@ class Agent(BaseAgent):
                     )
                     raise
                 if attempt >= max_attempts:
-                    # Budget exhausted on a Transient. Let the outer layer decide.
+                    # Budget exhausted on a Transient. Tag with the inner-
+                    # exhausted marker so process_with_policy doesn't add
+                    # another whole-step retry cycle on top — that would
+                    # multiply inner × whole-step attempts (an exhausted
+                    # 3-tier inner × 3-tier whole-step = 9 LLM calls per
+                    # save under a sustained 429).
                     log_telemetry(self.logger, "_get_ai_reply transient exhausted")
                     self.logger.warning(
                         "[Mirix.Agent.%s] _get_ai_reply: transient retries exhausted after %d attempts: %s",
@@ -772,7 +845,9 @@ class Agent(BaseAgent):
                         max_attempts + 1,
                         f"{type(exc).__name__}: {exc!r}",
                     )
-                    raise
+                    from mirix.queue.error_policy import mark_inner_exhausted
+
+                    raise mark_inner_exhausted(exc)
                 delay = min(base * (2**attempt), cap)
                 printv(
                     f"[Mirix.Agent.{self.agent_state.name}] WARNING: Attempt {attempt + 1} failed: "
@@ -905,117 +980,98 @@ class Agent(BaseAgent):
                 tool_call_id = tool_call.id
                 function_call = tool_call.function
                 function_name = function_call.name
+                function_args = {}  # Populated below; ensured set for the except cleanup.
 
                 printv(
                     f"[Mirix.Agent.{self.agent_state.name}] INFO: Processing tool call {tool_call_idx + 1}/{len(response_message.tool_calls)}: {function_name} with tool_call_id: {tool_call_id}"
                 )
 
-                # Failure case 1: function name is wrong (not in agent_state.tools)
-                target_mirix_tool = None
-                for t in self.agent_state.tools:
-                    if t.name == function_name:
-                        target_mirix_tool = t
-
-                if not target_mirix_tool:
-                    error_msg = f"No function named {function_name}"
-                    function_response = package_function_response(False, error_msg)
-                    messages.append(
-                        Message.dict_to_message(
-                            agent_id=self.agent_state.id,
-                            model=self.model,
-                            openai_message_dict={
-                                "role": "tool",
-                                "name": function_name,
-                                "content": function_response,
-                                "tool_call_id": tool_call_id,
-                            },
-                        )
-                    )  # extend conversation with function response
-                    self.interface.function_message(f"Error: {error_msg}", msg_obj=messages[-1])
-                    overall_function_failed = True
-                    continue  # Continue with next tool call
-
-                # Failure case 2: function name is OK, but function args are bad JSON
+                # Every per-tool-call failure mode that the LLM can self-correct
+                # on a re-prompt is funneled through `CorrectableToolError`:
+                # unknown tool name, malformed JSON args, validation failure,
+                # and anything raised by the tool body that subclasses this
+                # type. The single `except` below converts the exception to
+                # the tool-role message the LLM reads next iteration and flags
+                # function_failed so the meta-loop re-prompts.
+                #
+                # Anything else (DB blip, provider 503, AttributeError, code
+                # bug) is intentionally NOT caught here — it propagates out of
+                # `_handle_ai_response` -> `step()` so `process_with_policy`
+                # sees the typed exception and classifies it. Without this
+                # rule, real bugs get turned into friendly strings that make
+                # the source appear "complete" (silent data loss).
                 try:
-                    raw_function_args = function_call.arguments
-                    function_args = parse_json(raw_function_args)
-                except Exception:
-                    error_msg = (
-                        f"Error parsing JSON for function '{function_name}' arguments: {function_call.arguments}"
-                    )
-                    function_response = package_function_response(False, error_msg)
-                    messages.append(
-                        Message.dict_to_message(
-                            agent_id=self.agent_state.id,
-                            model=self.model,
-                            openai_message_dict={
-                                "role": "tool",
-                                "name": function_name,
-                                "content": function_response,
-                                "tool_call_id": tool_call_id,
-                            },
+                    # Failure case 1: function name is wrong (not in agent_state.tools)
+                    target_mirix_tool = None
+                    for t in self.agent_state.tools:
+                        if t.name == function_name:
+                            target_mirix_tool = t
+
+                    if not target_mirix_tool:
+                        raise CorrectableToolError(f"No function named {function_name}")
+
+                    # Failure case 2: function name is OK, but function args are bad JSON
+                    try:
+                        raw_function_args = function_call.arguments
+                        function_args = parse_json(raw_function_args)
+                    except Exception as parse_exc:
+                        raise CorrectableToolError(
+                            f"Error parsing JSON for function '{function_name}' "
+                            f"arguments: {function_call.arguments}"
+                        ) from parse_exc
+                    # parse_json may coerce malformed input (e.g. "{invalid")
+                    # into the wrong shape (a list) without raising. Treat
+                    # anything not-a-dict as LLM-correctable so the LLM can
+                    # re-emit the call rather than crashing downstream.
+                    if not isinstance(function_args, dict):
+                        raise CorrectableToolError(
+                            f"Function '{function_name}' arguments did not "
+                            f"parse to a JSON object: {function_call.arguments}"
                         )
-                    )  # extend conversation with function response
-                    self.interface.function_message(f"Error: {error_msg}", msg_obj=messages[-1])
-                    overall_function_failed = True
-                    continue  # Continue with next tool call
 
-                # Filter out unexpected arguments that LLMs sometimes hallucinate
-                # (e.g., 'internal_monologue'). This must run BEFORE validators.
-                function_args = _filter_function_args(function_name, function_args, target_mirix_tool)
+                    # Filter out unexpected arguments that LLMs sometimes hallucinate
+                    # (e.g., 'internal_monologue'). This must run BEFORE validators.
+                    function_args = _filter_function_args(function_name, function_args, target_mirix_tool)
 
-                if function_name == "trigger_memory_update":
-                    function_args["user_message"] = {
-                        "message": input_message,
-                        "existing_file_uris": existing_file_uris,
-                        "retrieved_memories": retrieved_memories,
-                        "chaining": CHAINING_FOR_MEMORY_UPDATE,
-                    }
-                    if message_queue is not None:
-                        function_args["user_message"]["message_queue"] = message_queue
+                    if function_name == "trigger_memory_update":
+                        function_args["user_message"] = {
+                            "message": input_message,
+                            "existing_file_uris": existing_file_uris,
+                            "retrieved_memories": retrieved_memories,
+                            "chaining": CHAINING_FOR_MEMORY_UPDATE,
+                        }
+                        if message_queue is not None:
+                            function_args["user_message"]["message_queue"] = message_queue
 
-                elif function_name == "trigger_memory_update_with_instruction":
-                    function_args["user_message"] = {
-                        "existing_file_uris": existing_file_uris,
-                        "retrieved_memories": retrieved_memories,
-                    }
+                    elif function_name == "trigger_memory_update_with_instruction":
+                        function_args["user_message"] = {
+                            "existing_file_uris": existing_file_uris,
+                            "retrieved_memories": retrieved_memories,
+                        }
 
-                # The content if then internal monologue, not chat
-                if response_message.content and not nonnull_content:
-                    self.interface.internal_monologue(response_message.content, msg_obj=messages[-1])
-                    printv(
-                        f"[Mirix.Agent.{self.agent_state.name}] INFO: Inner thoughts (from function call) emitted: "
-                        f"len={len(response_message.content or '')}"
-                    )
-
-                continue_chaining = True
-
-                # Failure case 3: function arguments fail validation
-                validation_error = validate_tool_args(function_name, function_args)
-                if validation_error:
-                    function_response = package_function_response(False, validation_error)
-                    messages.append(
-                        Message.dict_to_message(
-                            agent_id=self.agent_state.id,
-                            model=self.model,
-                            openai_message_dict={
-                                "role": "tool",
-                                "name": function_name,
-                                "content": function_response,
-                                "tool_call_id": tool_call_id,
-                            },
+                    # The content if then internal monologue, not chat
+                    if response_message.content and not nonnull_content:
+                        self.interface.internal_monologue(response_message.content, msg_obj=messages[-1])
+                        printv(
+                            f"[Mirix.Agent.{self.agent_state.name}] INFO: Inner thoughts (from function call) emitted: "
+                            f"len={len(response_message.content or '')}"
                         )
-                    )
-                    self.interface.function_message(f"Validation Error: {validation_error}", msg_obj=messages[-1])
-                    overall_function_failed = True
-                    continue  # Skip execution, let LLM retry
 
-                # Failure case 5: function failed during execution
-                # NOTE: the msg_obj associated with the "Running " message is the prior assistant message, not the function/tool role message
-                #       this is because the function/tool role message is only created once the function/tool has executed/returned
-                self.interface.function_message(f"Running {function_name}()", msg_obj=messages[-1])
+                    continue_chaining = True
 
-                try:
+                    # Failure case 3: function arguments fail validation
+                    validation_error = validate_tool_args(function_name, function_args)
+                    if validation_error:
+                        raise CorrectableToolError(f"Validation Error: {validation_error}")
+
+                    # Failure case 4: function body raises CorrectableToolError
+                    # (or any non-correctable exception, which propagates).
+                    # NOTE: the msg_obj associated with the "Running " message
+                    # is the prior assistant message, not the function/tool
+                    # role message — the function/tool role message is only
+                    # created once the function/tool has executed/returned.
+                    self.interface.function_message(f"Running {function_name}()", msg_obj=messages[-1])
+
                     if display_intermediate_message:
                         # send intermediate message to the user
                         display_intermediate_message("internal_monologue", response_message.content)
@@ -1066,20 +1122,19 @@ class Agent(BaseAgent):
                     function_response = package_function_response(True, function_response_string)
                     function_failed = False
 
-                except Exception as e:
-                    function_args.pop("self", None)
-                    # error_msg = f"Error calling function {function_name} with args {function_args}: {str(e)}"
-                    # Less detailed - don't provide full args, idea is that it should be in recent context so no need (just adds noise)
+                except CorrectableToolError as e:
+                    # function_args might not be a dict (parse_json can coerce
+                    # malformed input to a list before we shape-check it).
+                    if isinstance(function_args, dict):
+                        function_args.pop("self", None)
                     error_msg = get_friendly_error_msg(
                         function_name=function_name,
                         exception_name=type(e).__name__,
                         exception_message=str(e),
                     )
-                    error_msg_user = f"{error_msg}\n{traceback.format_exc()}"
-                    printv(f"[Mirix.Agent.{self.agent_state.name}] ERROR: {error_msg_user}")
+                    printv(f"[Mirix.Agent.{self.agent_state.name}] ERROR: {error_msg}\n{traceback.format_exc()}")
                     function_response = package_function_response(False, error_msg)
                     self.last_function_response = function_response
-                    # TODO: truncate error message somehow
                     messages.append(
                         Message.dict_to_message(
                             agent_id=self.agent_state.id,
@@ -1092,29 +1147,7 @@ class Agent(BaseAgent):
                             },
                         )
                     )  # extend conversation with function response
-                    self.interface.function_message(f"Ran {function_name}()", msg_obj=messages[-1])
                     self.interface.function_message(f"Error: {error_msg}", msg_obj=messages[-1])
-                    overall_function_failed = True
-                    continue  # Continue with next tool call
-
-                # Step 4: check if function response is an error
-                if function_response_string.startswith(ERROR_MESSAGE_PREFIX):
-                    function_response = package_function_response(False, function_response_string)
-                    # TODO: truncate error message somehow
-                    messages.append(
-                        Message.dict_to_message(
-                            agent_id=self.agent_state.id,
-                            model=self.model,
-                            openai_message_dict={
-                                "role": "tool",
-                                "name": function_name,
-                                "content": function_response,
-                                "tool_call_id": tool_call_id,
-                            },
-                        )
-                    )  # extend conversation with function response
-                    self.interface.function_message(f"Ran {function_name}()", msg_obj=messages[-1])
-                    self.interface.function_message(f"Error: {function_response_string}", msg_obj=messages[-1])
                     overall_function_failed = True
                     continue  # Continue with next tool call
 
@@ -1261,266 +1294,334 @@ class Agent(BaseAgent):
             else:
                 raise ValueError(f"input_messages items must be Message or MessageCreate, got {type(m)}")
 
-        # Read retained history from the parent scope (for sub-agents) or from this
-        # agent's scope (for top-level agents/meta). This keeps sub-agent inputs as a
-        # single packed message while still providing parent retained context.
-        retention = (self.actor.message_set_retention_count or 0) if self.actor else 0
-        retention_agent_id = (
-            self.agent_state.parent_id or self.agent_state.id
-        )  # Retained messages in the DB are associated with the meta agent
-        should_read_retention = retention > 0 and self.actor and self.user_id
-        is_meta_agent = self.agent_state.is_type(AgentType.meta_memory_agent)
-        should_write_retention = retention > 0 and is_meta_agent and self.actor and self.user_id
-        retained_input_sets: List[Message] = []
-        if should_read_retention:
-            retained_input_sets = await self.message_manager.get_messages_for_agent_user(
-                agent_id=retention_agent_id,
-                user_id=self.user_id,
-                actor=self.actor,
-                limit=retention,
+        from mirix.observability.timed import timedspan
+
+        async with timedspan(
+            "Agent Step",
+            metadata={"agent_type": str(self.agent_state.agent_type)},
+        ):
+            # Read retained history from the parent scope (for sub-agents) or from this
+            # agent's scope (for top-level agents/meta). This keeps sub-agent inputs as a
+            # single packed message while still providing parent retained context.
+            retention = (self.actor.message_set_retention_count or 0) if self.actor else 0
+            retention_agent_id = (
+                self.agent_state.parent_id or self.agent_state.id
+            )  # Retained messages in the DB are associated with the meta agent
+            should_read_retention = retention > 0 and self.actor and self.user_id
+            is_meta_agent = self.agent_state.is_type(AgentType.meta_memory_agent)
+            should_write_retention = retention > 0 and is_meta_agent and self.actor and self.user_id
+            retained_input_sets: List[Message] = []
+            if should_read_retention:
+                async with timedspan(
+                    "Load Retained History",
+                    metadata={"agent_id": retention_agent_id, "limit": retention},
+                ):
+                    retained_input_sets = await self.message_manager.get_messages_for_agent_user(
+                        agent_id=retention_agent_id,
+                        user_id=self.user_id,
+                        actor=self.actor,
+                        limit=retention,
+                    )
+
+            logger.info(
+                "[RETENTION] agent=%s retention=%d should_read=%s loaded=%d",
+                self.agent_state.id,
+                retention,
+                should_read_retention,
+                len(retained_input_sets),
             )
 
-        # Chaining accumulator for the active agent loop only.
-        accumulated: List[Message] = list(retained_input_sets)
-        # Persist only the original input payload, never synthetic helper messages
-        # appended to iteration messages during meta-agent processing.
-        input_messages_for_persistence: List[Message] = list(normalized_input_messages)
+            # Chaining accumulator for the active agent loop only.
+            accumulated: List[Message] = list(retained_input_sets)
+            # Persist only the original input payload, never synthetic helper messages
+            # appended to iteration messages during meta-agent processing.
+            input_messages_for_persistence: List[Message] = list(normalized_input_messages)
 
-        # Initialize the LLM client once per step to reuse across retries.
-        llm_client = LLMClient.create(
-            llm_config=self.agent_state.llm_config,
-        )
-
-        # Persist memory source and messages before sub-agent dispatch
-        # If memory_source_id is set on this agent instance, persist the source
-        # and its messages before running any memory extraction. This is gated on
-        # the meta_memory_agent type so sub-agents don't re-persist.
-        summary_task: Optional[asyncio.Task] = None
-        if self.agent_state.is_type(AgentType.meta_memory_agent) and self.memory_source_id:
-            self._source_deduped = False
-            await self._persist_memory_source(
-                memory_source_id=self.memory_source_id,
-                input_messages=raw_input_messages,
+            # Initialize the LLM client once per step to reuse across retries.
+            llm_client = LLMClient.create(
+                llm_config=self.agent_state.llm_config,
             )
 
-            # Source was deduped at DB level (external_id or batch_hash conflict).
-            # A prior submission already created the source and was processed.
-            # Skip all agent processing to avoid duplicate memories.
-            if self._source_deduped:
-                logger.info("Source %s deduped, skipping agent processing", self.memory_source_id)
-                emit_idempotency_skip_span(
-                    name="Idempotency Skip: source deduped",
-                    reason="source-deduped",
+            # Persist memory source and messages before sub-agent dispatch
+            # If memory_source_id is set on this agent instance, persist the source
+            # and its messages before running any memory extraction. This is gated on
+            # the meta_memory_agent type so sub-agents don't re-persist.
+            summary_task: Optional[asyncio.Task] = None
+            if self.agent_state.is_type(AgentType.meta_memory_agent) and self.memory_source_id:
+                # Skip already-processed sources (redelivery)
+                # Note: this catches scenarios where the same source (same id) is being retried.
+                # It does not catch scenarios where the same source with a different id was queued as a separate message/
+                # It also ONLY short circuits if the matched result has been marked as complete.
+                async with timedspan(
+                    "Check Source Processing State",
                     metadata={"memory_source_id": self.memory_source_id},
-                )
+                ):
+                    source = await self.memory_source_manager.get_by_id(self.memory_source_id)
+                if source and source.processing_complete:
+                    logger.info("Source %s already processed, skipping", self.memory_source_id)
+                    emit_idempotency_skip_span(
+                        name="Idempotency Skip: processing complete",
+                        reason="processing-complete",
+                        metadata={"memory_source_id": self.memory_source_id},
+                    )
+                    return MirixUsageStatistics(step_count=0)
+
+                # Test-only fault injection (inert in prod). Resolved BEFORE
+                # persist so a directive scoped to the source_messages write (in
+                # persist, incl. the conflict path) can fire. Only registers;
+                # idempotent; no-op when disabled.
+                # Placed after the check above so a persist-memory-source
+                # fault directive is not resolved before the persist actually
+                # runs.
+                fault_injection.resolve_directives(self.memory_source_id, getattr(self, "source_metadata", None))
+
+                # Persist the memory source and its messages before we process it.
+                async with timedspan(
+                    "Persist Memory Source",
+                    metadata={"memory_source_id": self.memory_source_id},
+                ):
+                    # In a race condition scenario (kafka redelivery while still processing),
+                    # this relies on DB unique constraints to avoid writing duplicate rows.
+                    # Note: should_continue will be False in a scenario where a source with the
+                    # same externalId or batchHash, but a different primary Id, was found in the
+                    # database. In this scenario, we short circuit (even if the row has not been
+                    # marked as complete, because it indicates that the source is handled by a different
+                    # worker process (different kafka message)
+                    should_continue = await self._persist_memory_source(
+                        memory_source_id=self.memory_source_id,
+                        input_messages=raw_input_messages,
+                    )
+                if not should_continue:
+                    logger.info("Source %s deduped, skipping agent processing", self.memory_source_id)
+                    emit_idempotency_skip_span(
+                        name="Idempotency Skip: source deduped",
+                        reason="source-deduped",
+                        metadata={"memory_source_id": self.memory_source_id},
+                    )
+                    return MirixUsageStatistics(step_count=0)
+
+                # Dispatch summary generation in parallel with the memory sub-agents.
+                # Awaited before mark_processing_complete; on failure the exception
+                # propagates out of step() so the Kafka worker redelivers the message.
+                # Source-level idempotency (external_id / batch_hash + processing_complete)
+                # makes redelivery a safe full retry.
+                # Skipped on direct-write requests because the caller provides the
+                # per-item summary directly, so there's nothing to generate.
+                if self.summarize and not self.source_summary and not self.direct_writes:
+                    summary_task = asyncio.create_task(self._generate_source_summary_traced())
+
+            # Direct-write branch: bypass LLM dispatch and call registered handlers.
+            # Placed AFTER _persist_memory_source + dedup/processing_complete checks so
+            # deduped or already-processed sources short-circuit before this runs.
+            if self.agent_state.is_type(AgentType.meta_memory_agent) and self.direct_writes:
+                await self._apply_direct_writes_traced()
+                # step() does not finalize. On clean return, dispatch_save
+                # calls finalize_source(SUCCESS) in the post-policy handler.
+                # If _apply_direct_writes_traced raises, the exception
+                # propagates and dispatch_save records the appropriate
+                # failure outcome.
                 return MirixUsageStatistics(step_count=0)
 
-            # Skip processing if this source was already fully processed (redelivery case).
-            source = await self.memory_source_manager.get_by_id(self.memory_source_id)
-            if source and source.processing_complete:
-                logger.info("Source %s already processed, skipping", self.memory_source_id)
-                emit_idempotency_skip_span(
-                    name="Idempotency Skip: processing complete",
-                    reason="processing-complete",
-                    metadata={"memory_source_id": self.memory_source_id},
-                )
-                return MirixUsageStatistics(step_count=0)
-
-            # Dispatch summary generation in parallel with the memory sub-agents.
-            # Awaited before mark_processing_complete; on failure the exception
-            # propagates out of step() so the Kafka worker redelivers the message.
-            # Source-level idempotency (external_id / batch_hash + processing_complete)
-            # makes redelivery a safe full retry.
-            # Skipped on direct-write requests because the caller provides the
-            # per-item summary directly, so there's nothing to generate.
-            if self.summarize and not self.source_summary and not self.direct_writes:
-                summary_task = asyncio.create_task(self._generate_source_summary_traced())
-
-        # Direct-write branch: bypass LLM dispatch and call registered handlers.
-        # Placed AFTER _persist_memory_source + dedup/processing_complete checks so
-        # deduped or already-processed sources short-circuit before this runs.
-        if self.agent_state.is_type(AgentType.meta_memory_agent) and self.direct_writes:
-            await self._apply_direct_writes_traced()
-            if self.memory_source_id:
-                await self.memory_source_manager.mark_processing_complete(self.memory_source_id)
-            return MirixUsageStatistics(step_count=0)
-
-        if self.agent_state.is_type(AgentType.meta_memory_agent):
-            # Extract topics from retained context + current input messages.
-            try:
-                # make sure to include both retained context and current input messages in the search topic extraction
-                topics = await self._extract_topics_from_messages(retained_input_sets + normalized_input_messages)
-
-                if topics is not None:
-                    kwargs["topics"] = topics
-                else:
-                    printv(f"[Mirix.Agent.{self.agent_state.name}] WARNING: No topics extracted from input")
-
-            except Exception as e:
-                # Don't interpolate `e` — its __str__ may carry user
-                # content from the LLM/parsing error. Type alone is
-                # enough at info level.
-                printv(
-                    f"[Mirix.Agent.{self.agent_state.name}] INFO: Error in extracting the topic "
-                    f"from the input: error_type={type(e).__name__}"
-                )
-                pass
-
-        # Main loop:ing
-        # Each iteration calls inner_step and then makes a decision about whether to continue chaining
-        # or to terminate the step. When chaining, the curren_input_messages are updated to reference
-        # a heartbeat message (e.g. "function failed", "continue chaining", etc.) and the previous input messages
-        # are added to the in-memory accumulator.
-        counter = 0
-        total_usage = UsageStatistics()
-        step_count = 0
-        loop_input_messages: List[Message] = list(normalized_input_messages)
-        while True:
-            kwargs["first_message"] = False
-            kwargs["step_count"] = step_count
-
-            loop_iteration_messages = list(loop_input_messages)
-            if self.agent_state.is_type(AgentType.meta_memory_agent) and step_count == 0:
-                meta_message = prepare_input_message_create(
-                    MessageCreate(
-                        role="user",
-                        content="[System Message] As the meta memory manager, analyze the provided content and perform your function.",
-                        filter_tags=self.filter_tags,
-                    ),
-                    self.agent_state.id,
-                    wrap_user_message=False,
-                    wrap_system_message=True,
-                )
-                loop_iteration_messages.append(meta_message)
-
-            step_response = await self.inner_step(
-                messages=loop_iteration_messages,
-                accumulated=accumulated,
-                chaining=chaining,
-                llm_client=llm_client,
-                retained_count=len(retained_input_sets),
-                **kwargs,
-            )
-
-            continue_chaining = step_response.continue_chaining
-            function_failed = step_response.function_failed
-            usage = step_response.usage
-
-            # Accumulate step messages for next chaining iteration
-            accumulated = accumulated + step_response.messages
-
-            step_count += 1
-            total_usage += usage
-            counter += 1
-            self.interface.step_complete()
-
-            # Chain stops
-            if not chaining and (not function_failed):
-                printv(f"[Mirix.Agent.{self.agent_state.name}] INFO: No chaining, stopping after one step")
-                break
-            elif max_chaining_steps is not None and counter == max_chaining_steps:
-                # Add warning message based on agent type
-                if self.agent_state.is_type(AgentType.chat_agent):
-                    warning_content = "[System Message] You have reached the maximum chaining steps. Please call 'send_message' to send your response to the user."
-                else:
-                    warning_content = "[System Message] You have reached the maximum chaining steps. Please call 'finish_memory_update' to end the chaining."
-                loop_input_messages = [
-                    Message.dict_to_message(
-                        agent_id=self.agent_state.id,
-                        model=self.model,
-                        openai_message_dict={
-                            "role": "user",
-                            "content": warning_content,
-                        },
-                    )
-                ]
-                continue  # give agent one more chance to respond
-            elif max_chaining_steps is not None and counter > max_chaining_steps:
-                printv(
-                    f"[Mirix.Agent.{self.agent_state.name}] INFO: Hit max chaining steps, stopping after {counter} steps"
-                )
-                break
-            elif function_failed:
-                assert self.agent_state.created_by_id is not None
-                loop_input_messages = [
-                    Message.dict_to_message(
-                        agent_id=self.agent_state.id,
-                        model=self.model,
-                        openai_message_dict={
-                            "role": "user",  # TODO: change to system?
-                            "content": get_contine_chaining(FUNC_FAILED_HEARTBEAT_MESSAGE),
-                        },
-                    )
-                ]
-                continue  # always chain
-            elif continue_chaining:
-                assert self.agent_state.created_by_id is not None
-                loop_input_messages = [
-                    Message.dict_to_message(
-                        agent_id=self.agent_state.id,
-                        model=self.model,
-                        openai_message_dict={
-                            "role": "user",  # TODO: change to system?
-                            "content": get_contine_chaining(REQ_HEARTBEAT_MESSAGE),
-                        },
-                    )
-                ]
-                continue  # always chain
-            # Mirix no-op / yield
-            else:
-                break
-
-        # Retention write-back: persist input messages and prune old ones if configured
-        if should_write_retention and input_messages_for_persistence:
-            await self.message_manager.create_many_messages(
-                input_messages_for_persistence,
-                actor=self.actor,
-                client_id=self.client_id,
-                user_id=self.user_id,
-            )
-            await self.message_manager.hard_delete_user_messages_for_agent(
-                agent_id=self.agent_state.id,
-                user_id=self.user_id,
-                actor=self.actor,
-                keep_newest_n=retention,
-            )
-
-        # Await the parallel summary task (dispatched before sub-agents ran).
-        # Raises on failure so the worker redelivers the message — processing_complete
-        # stays False and the retry gets a clean full reprocess.
-        if summary_task is not None:
-            try:
-                await summary_task
-            except Exception as e:
-                # VEPAGE-1157: this task runs CONCURRENTLY with the sub-agent
-                # gather via asyncio.create_task. Its exceptions surface here
-                # only at await time. Log the full cause chain — the original
-                # warning swallowed the stack and made the asyncpg / MissingGreenlet
-                # signature invisible.
+            if self.agent_state.is_type(AgentType.meta_memory_agent):
+                # Extract topics from retained context + current input messages.
                 try:
-                    from mirix.queue.error_policy import format_exc_chain
+                    # make sure to include both retained context and current input messages in the search topic extraction
+                    topics = await self._extract_topics_from_messages(retained_input_sets + normalized_input_messages)
 
-                    chain = format_exc_chain(e)
-                except Exception:
-                    chain = "<chain-format-failed>"
-                logger.error(
-                    "VEPAGE-1157 summary_task EXC: source=%s exc_type=%s — chain: %s",
-                    self.memory_source_id,
-                    type(e).__name__,
-                    chain,
-                    exc_info=True,
+                    if topics is not None:
+                        kwargs["topics"] = topics
+                    else:
+                        printv(f"[Mirix.Agent.{self.agent_state.name}] WARNING: No topics extracted from input")
+
+                except Exception as e:
+                    # Don't interpolate `e` — its __str__ may carry user
+                    # content from the LLM/parsing error. Type alone is
+                    # enough at info level.
+                    printv(
+                        f"[Mirix.Agent.{self.agent_state.name}] INFO: Error in extracting the topic "
+                        f"from the input: error_type={type(e).__name__}"
+                    )
+
+            # Main loop:ing
+            # Each iteration calls inner_step and then makes a decision about whether to continue chaining
+            # or to terminate the step. When chaining, the curren_input_messages are updated to reference
+            # a heartbeat message (e.g. "function failed", "continue chaining", etc.) and the previous input messages
+            # are added to the in-memory accumulator.
+            counter = 0
+            total_usage = UsageStatistics()
+            step_count = 0
+            loop_input_messages: List[Message] = list(normalized_input_messages)
+            while True:
+                kwargs["first_message"] = False
+                kwargs["step_count"] = step_count
+
+                loop_iteration_messages = list(loop_input_messages)
+                if self.agent_state.is_type(AgentType.meta_memory_agent) and step_count == 0:
+                    meta_message = prepare_input_message_create(
+                        MessageCreate(
+                            role="user",
+                            content="[System Message] As the meta memory manager, analyze the provided content and perform your function.",
+                            filter_tags=self.filter_tags,
+                        ),
+                        self.agent_state.id,
+                        wrap_user_message=False,
+                        wrap_system_message=True,
+                    )
+                    loop_iteration_messages.append(meta_message)
+
+                async with timedspan("Inner Step", metadata={"step_count": step_count}):
+                    step_response = await self.inner_step(
+                        messages=loop_iteration_messages,
+                        accumulated=accumulated,
+                        chaining=chaining,
+                        llm_client=llm_client,
+                        retained_count=len(retained_input_sets),
+                        **kwargs,
+                    )
+
+                continue_chaining = step_response.continue_chaining
+                function_failed = step_response.function_failed
+                usage = step_response.usage
+
+                # Accumulate step messages for next chaining iteration
+                accumulated = accumulated + step_response.messages
+
+                step_count += 1
+                total_usage += usage
+                counter += 1
+                self.interface.step_complete()
+
+                # Chain stops
+                if not chaining and (not function_failed):
+                    printv(f"[Mirix.Agent.{self.agent_state.name}] INFO: No chaining, stopping after one step")
+                    break
+                elif max_chaining_steps is not None and counter == max_chaining_steps:
+                    # Add warning message based on agent type
+                    if self.agent_state.is_type(AgentType.chat_agent):
+                        warning_content = "[System Message] You have reached the maximum chaining steps. Please call 'send_message' to send your response to the user."
+                    else:
+                        warning_content = "[System Message] You have reached the maximum chaining steps. Please call 'finish_memory_update' to end the chaining."
+                    loop_input_messages = [
+                        Message.dict_to_message(
+                            agent_id=self.agent_state.id,
+                            model=self.model,
+                            openai_message_dict={
+                                "role": "user",
+                                "content": warning_content,
+                            },
+                        )
+                    ]
+                    continue  # give agent one more chance to respond
+                elif max_chaining_steps is not None and counter > max_chaining_steps:
+                    printv(
+                        f"[Mirix.Agent.{self.agent_state.name}] INFO: Hit max chaining steps, stopping after {counter} steps"
+                    )
+                    break
+                elif function_failed:
+                    assert self.agent_state.created_by_id is not None
+                    loop_input_messages = [
+                        Message.dict_to_message(
+                            agent_id=self.agent_state.id,
+                            model=self.model,
+                            openai_message_dict={
+                                "role": "user",  # TODO: change to system?
+                                "content": get_contine_chaining(FUNC_FAILED_HEARTBEAT_MESSAGE),
+                            },
+                        )
+                    ]
+                    continue  # always chain
+                elif continue_chaining:
+                    assert self.agent_state.created_by_id is not None
+                    loop_input_messages = [
+                        Message.dict_to_message(
+                            agent_id=self.agent_state.id,
+                            model=self.model,
+                            openai_message_dict={
+                                "role": "user",  # TODO: change to system?
+                                "content": get_contine_chaining(REQ_HEARTBEAT_MESSAGE),
+                            },
+                        )
+                    ]
+                    continue  # always chain
+                # Mirix no-op / yield
+                else:
+                    break
+
+            # Retention write-back: persist input messages and prune old ones if configured
+            if should_write_retention and input_messages_for_persistence:
+                await self.message_manager.create_many_messages(
+                    input_messages_for_persistence,
+                    actor=self.actor,
+                    client_id=self.client_id,
+                    user_id=self.user_id,
                 )
-                raise
+                await self.message_manager.hard_delete_user_messages_for_agent(
+                    agent_id=self.agent_state.id,
+                    user_id=self.user_id,
+                    actor=self.actor,
+                    keep_newest_n=retention,
+                )
+                logger.info(
+                    "[RETENTION] agent=%s wrote=%d kept_newest=%d",
+                    self.agent_state.id,
+                    len(input_messages_for_persistence),
+                    retention,
+                )
 
-        # Mark memory source as fully processed after all agents complete
-        if self.agent_state.is_type(AgentType.meta_memory_agent) and self.memory_source_id:
-            try:
-                await self.memory_source_manager.mark_processing_complete(self.memory_source_id)
-            except Exception as e:
-                logger.warning("Failed to mark source %s complete: %s", self.memory_source_id, e)
-                raise
+            # Await the parallel summary task (dispatched before sub-agents ran).
+            # Raises on failure so the worker redelivers the message — processing_complete
+            # stays False and the retry gets a clean full reprocess.
+            if summary_task is not None:
+                try:
+                    await summary_task
+                except Exception as e:
+                    # The summary task runs CONCURRENTLY with the sub-agent
+                    # gather via asyncio.create_task. Its exceptions surface
+                    # here only at await time. Log the full cause chain so
+                    # wrapped exceptions (e.g. asyncpg / MissingGreenlet
+                    # signatures) stay visible.
+                    try:
+                        from mirix.queue.error_policy import format_exc_chain
 
-        return MirixUsageStatistics(**total_usage.model_dump(), step_count=step_count)
+                        chain = format_exc_chain(e)
+                    except Exception:
+                        chain = "<chain-format-failed>"
+                    logger.error(
+                        "summary_task failed: source=%s exc_type=%s — chain: %s",
+                        self.memory_source_id,
+                        type(e).__name__,
+                        chain,
+                        exc_info=True,
+                    )
+                    raise
+
+            # Test-only fault injection (inert in prod): a `llm` directive forces
+            # the malformed-tool-calls-past-budget path deterministically,
+            # without having to make a real LLM emit broken output. The shape
+            # llm_chaining_exhausted raises LLMChainingExhaustedError, taking the
+            # exact same propagation path as the natural raise below.
+            if self.agent_state.is_type(AgentType.meta_memory_agent):
+                fault_injection.maybe_raise("llm", source_key=getattr(self, "memory_source_id", None))
+
+            # If the LLM loop exited with `function_failed=True`, the meta-agent
+            # LLM emitted a malformed tool call (CorrectableToolError-shape) on
+            # the last iteration AND the bounded re-prompt didn't recover.
+            # Raise a typed exception so process_with_policy classifies this as
+            # PERMANENT (no value in retrying — the LLM already had its
+            # budget) and the post-policy handler records the right outcome.
+            #
+            # Non-correctable failures (DB / provider / code bug) never reach
+            # this point: they raised out of `inner_step` earlier.
+            #
+            # step() does NOT finalize on the success path either — that's
+            # `dispatch_save`'s job after process_with_policy returns SUCCESS.
+            if self.agent_state.is_type(AgentType.meta_memory_agent) and function_failed:
+                raise LLMChainingExhaustedError(
+                    f"meta-agent LLM produced malformed tool calls past chaining budget "
+                    f"(counter={counter}, max_chaining_steps={max_chaining_steps})"
+                )
+
+            return MirixUsageStatistics(**total_usage.model_dump(), step_count=step_count)
 
     async def _apply_direct_write(self, memory_type: str, payload: Dict[str, Any]) -> None:
         """Dispatch a direct write to the registered handler for memory_type.
@@ -1666,15 +1767,18 @@ class Agent(BaseAgent):
         self,
         memory_source_id: str,
         input_messages: list,
-    ) -> None:
+    ) -> bool:
         """Persist a MemorySource and its SourceMessages at the start of meta-agent processing.
 
-        Uses INSERT ON CONFLICT DO NOTHING for idempotent redelivery.
-        Called only by meta_memory_agent before sub-agent dispatch.
+        Returns True if processing should continue, False if this submission
+        should be skipped (the content is owned by a different submission — a
+        true duplicate, or one another worker is finishing). A same-id conflict
+        (retry / redelivery of this submission) returns True and resumes.
 
-        Before persisting, computes batch_hash and auto-derives external_id
-        so that duplicate submissions are caught by the partial unique indexes
-        on memory_sources.
+        Uses INSERT ON CONFLICT DO NOTHING for idempotent redelivery. Called only
+        by meta_memory_agent before sub-agent dispatch. Computes batch_hash and
+        auto-derives external_id so duplicate submissions hit the partial unique
+        indexes on memory_sources.
         """
         from mirix.services.source_message_manager import (
             compute_batch_hash,
@@ -1739,10 +1843,9 @@ class Agent(BaseAgent):
             )
 
             if source is None:
-                # Deduped — source already exists from a prior submission.
-                # Skip message persistence and signal caller to skip agent processing.
-                self._source_deduped = True
-                return
+                # Content owned by a different submission/ kafaka message (true duplicate, or one
+                # another worker is finishing) — skip without persisting messages.
+                return False
 
             if msg_dicts:
                 await self.source_message_manager.bulk_insert(
@@ -1758,6 +1861,7 @@ class Agent(BaseAgent):
                 memory_source_id,
                 len(msg_dicts),
             )
+            return True
         except Exception as e:
             logger.error("Failed to persist memory source %s: %s", memory_source_id, e)
             raise
@@ -1845,9 +1949,12 @@ class Agent(BaseAgent):
         transcript = "\n\n".join(transcript_lines)
 
         # Truncate to fit within ~90% of the context window
+        from mirix.observability.cpu_timing import time_cpu
+
         context_window = self.agent_state.llm_config.context_window
         max_input_tokens = int(context_window * 0.9)
-        transcript_tokens = count_tokens(transcript)
+        with time_cpu("count_tokens.transcript"):
+            transcript_tokens = count_tokens(transcript)
         if transcript_tokens > max_input_tokens:
             ratio = max_input_tokens / transcript_tokens * 0.8
             keep = max(1, int(len(result.items) * ratio))
@@ -1895,6 +2002,54 @@ class Agent(BaseAgent):
         else:
             logger.warning("LLM returned empty summary for source %s", self.memory_source_id)
 
+    async def _fetch_recent_indexing_lag_window(
+        self,
+        table: str,
+        pydantic_cls: Any,
+    ) -> List[Any]:
+        """Fetch rows written in the recent indexing-lag window for an owning sub-agent's dedup decision.
+
+        Queries the Relational DB provider for rows whose ``created_at`` or
+        ``updated_at`` falls within ``HYBRID_READ_WINDOW_SECONDS``. These are
+        the just-written candidates the Search provider may not have indexed
+        yet. The ranked ("relevant") bucket is obtained separately by the
+        prompt builder via the manager ``list_*`` call (which preserves
+        ``@update_timezone`` and the manager's post-processing); the caller
+        unions these recent rows into that list. Returns the recent rows as
+        Pydantic instances, capped at ``MAX_RETRIEVAL_LIMIT_IN_SYSTEM``.
+
+        Returns ``[]`` when either provider is unregistered (PG-only path):
+        in that mode reads come from the canonical SQL store, so the
+        indexing-lag distinction does not exist. Fail-closed: a raising
+        Relational call propagates.
+        """
+        from mirix.database.relational_provider import get_relational_provider
+        from mirix.database.search_provider import get_search_provider
+
+        sp = get_search_provider()
+        rp = get_relational_provider()
+        if not (sp and rp):
+            return []
+
+        from mirix.observability.timed import timedspan
+
+        cutoff = datetime.now(timezone.utc) - timedelta(seconds=HYBRID_READ_WINDOW_SECONDS)
+        # Child span so the IPS-R recent-window leg shows up distinctly under the
+        # parent "Retrieve <type>" span, separate from the IPS-S "IPS Search" leg.
+        async with timedspan("Recent window fetch", metadata={"backend": "ipsr", "table": table}):
+            recent_records = await rp.list(
+                table,
+                user_id=self.user.id,
+                organization_id=self.user.organization_id,
+                time_range={
+                    "updated_at__gte": cutoff.isoformat(),
+                    "created_at__gte": cutoff.isoformat(),
+                },
+                time_range_or_null_updated=True,
+                limit=MAX_RETRIEVAL_LIMIT_IN_SYSTEM,
+            )
+        return [pydantic_cls(**r) for r in recent_records]
+
     async def build_system_prompt_with_memories(
         self,
         raw_system: str,
@@ -1912,6 +2067,7 @@ class Agent(BaseAgent):
         Returns:
             Tuple[str, dict]: The complete system prompt and the retrieved memories dict
         """
+        from mirix.observability.timed import timedspan
         from mirix.schemas.agent import AgentType
 
         timezone_str = self.user.timezone
@@ -1941,196 +2097,275 @@ class Agent(BaseAgent):
         else:
             embedded_text = None
 
-        # Retrieve core memory
-        if self.agent_state.is_type(AgentType.core_memory_agent) or "core" not in retrieved_memories:
-            blocks_result = await self.block_manager.get_blocks(
-                user=self.user,
-                auto_create_from_default=False,  # Don't auto-create here, only in step()
+        # Each memory type is retrieved by its own coroutine below; the six are
+        # then run concurrently via asyncio.gather. The blocks
+        # write disjoint keys in ``retrieved_memories`` and read only the
+        # inputs computed once above (key_words, embedded_text, timezone_str,
+        # search_method), so there is no inter-block data dependency. Each
+        # coroutine keeps its own per-type gate, timedspan, and recent+relevant
+        # merge, and computes its own owning-agent flag locally (no shared
+        # mutable owning-flag variable across the concurrent blocks).
+
+        async def _retrieve_core():
+            if self.agent_state.is_type(AgentType.core_memory_agent) or "core" not in retrieved_memories:
+                async with timedspan("Retrieve core", metadata={"backend": "ipsr", "memory_type": "core"}):
+                    # Scope the core memory fed into the prompt to the current
+                    # save's scope. Without any_scopes this returns the user's
+                    # blocks across ALL scopes, leaking another scope's core
+                    # memory into this scope's LLM context (and thus into the
+                    # block written here). See VEPAGE-1474.
+                    blocks_result = await self.block_manager.get_blocks(
+                        user=self.user,
+                        any_scopes=self._block_scopes,
+                        auto_create_from_default=False,  # Don't auto-create here, only in step()
+                    )
+                    current_persisted_memory = Memory(
+                        blocks=[
+                            b
+                            for block in blocks_result
+                            if (b := await self.block_manager.get_block_by_id(block.id, user=self.user)) is not None
+                        ]
+                    )
+                    core_memory = current_persisted_memory.compile()
+                    retrieved_memories["core"] = core_memory
+
+        async def _retrieve_knowledge_vault():
+            is_owning_kv_agent = self.agent_state.is_type(
+                AgentType.knowledge_vault_memory_agent, AgentType.reflexion_agent
             )
-            current_persisted_memory = Memory(
-                blocks=[
-                    b
-                    for block in blocks_result
-                    if (b := await self.block_manager.get_block_by_id(block.id, user=self.user)) is not None
-                ]
-            )
-            core_memory = current_persisted_memory.compile()
-            retrieved_memories["core"] = core_memory
+            if (
+                self.agent_state.is_type(AgentType.knowledge_vault_memory_agent)
+                or "knowledge_vault" not in retrieved_memories
+            ):
+                async with timedspan(
+                    "Retrieve knowledge_vault",
+                    metadata={"backend": "ipss+ipsr", "memory_type": "knowledge_vault"},
+                ):
+                    current_knowledge_vault = await self.knowledge_vault_manager.list_knowledge(
+                        agent_state=self.agent_state,
+                        user=self.user,
+                        embedded_text=embedded_text,
+                        query=key_words,
+                        search_field="caption",
+                        search_method=search_method,
+                        limit=MAX_RETRIEVAL_LIMIT_IN_SYSTEM,
+                        timezone_str=timezone_str,
+                        sensitivity=None if is_owning_kv_agent else ["low", "medium"],
+                    )
+                    recent_knowledge_vault = await self._fetch_recent_indexing_lag_window(
+                        table="knowledge_vault",
+                        pydantic_cls=PydanticKnowledgeVaultItem,
+                    )
+                    merged_knowledge_vault = self._merge_recent_into_relevant(
+                        current_knowledge_vault, recent_knowledge_vault
+                    )
 
-        if (
-            self.agent_state.is_type(AgentType.knowledge_vault_memory_agent)
-            or "knowledge_vault" not in retrieved_memories
-        ):
-            if self.agent_state.is_type(AgentType.knowledge_vault_memory_agent, AgentType.reflexion_agent):
-                current_knowledge_vault = await self.knowledge_vault_manager.list_knowledge(
-                    agent_state=self.agent_state,
-                    user=self.user,
-                    embedded_text=embedded_text,
-                    query=key_words,
-                    search_field="caption",
-                    search_method=search_method,
-                    limit=MAX_RETRIEVAL_LIMIT_IN_SYSTEM,
-                    timezone_str=timezone_str,
-                )
-            else:
-                current_knowledge_vault = await self.knowledge_vault_manager.list_knowledge(
-                    agent_state=self.agent_state,
-                    user=self.user,
-                    embedded_text=embedded_text,
-                    query=key_words,
-                    search_field="caption",
-                    search_method=search_method,
-                    limit=MAX_RETRIEVAL_LIMIT_IN_SYSTEM,
-                    timezone_str=timezone_str,
-                    sensitivity=["low", "medium"],
-                )
+                    knowledge_vault_memory = ""
+                    if len(merged_knowledge_vault) > 0:
+                        for idx, knowledge_vault_item in enumerate(merged_knowledge_vault):
+                            knowledge_vault_memory += f"[{idx}] Knowledge Vault Item ID: {knowledge_vault_item.id}; Caption: {knowledge_vault_item.caption}\n"
+                    retrieved_memories["knowledge_vault"] = {
+                        "total_number_of_items": await self.knowledge_vault_manager.get_total_number_of_items(
+                            user=self.user
+                        ),
+                        "current_count": len(merged_knowledge_vault),
+                        "text": knowledge_vault_memory.strip(),
+                    }
 
-            knowledge_vault_memory = ""
-            if len(current_knowledge_vault) > 0:
-                for idx, knowledge_vault_item in enumerate(current_knowledge_vault):
-                    knowledge_vault_memory += f"[{idx}] Knowledge Vault Item ID: {knowledge_vault_item.id}; Caption: {knowledge_vault_item.caption}\n"
-            retrieved_memories["knowledge_vault"] = {
-                "total_number_of_items": await self.knowledge_vault_manager.get_total_number_of_items(user=self.user),
-                "current_count": len(current_knowledge_vault),
-                "text": knowledge_vault_memory,
-            }
+        async def _retrieve_episodic():
+            is_owning_agent = self.agent_state.is_type(AgentType.episodic_memory_agent, AgentType.reflexion_agent)
+            if is_owning_agent or "episodic" not in retrieved_memories:
+                async with timedspan(
+                    "Retrieve episodic",
+                    metadata={"backend": "ipss+ipsr", "memory_type": "episodic"},
+                ):
+                    current_episodic_memory = await self.episodic_memory_manager.list_episodic_memory(
+                        agent_state=self.agent_state,
+                        user=self.user,
+                        limit=MAX_RETRIEVAL_LIMIT_IN_SYSTEM,
+                        timezone_str=timezone_str,
+                    )
+                    episodic_memory = ""
+                    if len(current_episodic_memory) > 0:
+                        for idx, event in enumerate(current_episodic_memory):
+                            if is_owning_agent:
+                                episodic_memory += f"[Event ID: {event.id}] Timestamp: {event.occurred_at.strftime('%Y-%m-%d %H:%M:%S')} - {event.summary} (Details: {len(event.details)} Characters)\n"
+                            else:
+                                episodic_memory += f"[{idx}] Timestamp: {event.occurred_at.strftime('%Y-%m-%d %H:%M:%S')} - {event.summary} (Details: {len(event.details)} Characters)\n"
 
-        # Retrieve episodic memory
-        is_owning_agent = self.agent_state.is_type(AgentType.episodic_memory_agent, AgentType.reflexion_agent)
-        if is_owning_agent or "episodic" not in retrieved_memories:
-            current_episodic_memory = await self.episodic_memory_manager.list_episodic_memory(
-                agent_state=self.agent_state,
-                user=self.user,
-                limit=MAX_RETRIEVAL_LIMIT_IN_SYSTEM,
-                timezone_str=timezone_str,
-            )
-            episodic_memory = ""
-            if len(current_episodic_memory) > 0:
-                for idx, event in enumerate(current_episodic_memory):
-                    if is_owning_agent:
-                        episodic_memory += f"[Event ID: {event.id}] Timestamp: {event.occurred_at.strftime('%Y-%m-%d %H:%M:%S')} - {event.summary} (Details: {len(event.details)} Characters)\n"
-                    else:
-                        episodic_memory += f"[{idx}] Timestamp: {event.occurred_at.strftime('%Y-%m-%d %H:%M:%S')} - {event.summary} (Details: {len(event.details)} Characters)\n"
+                    recent_episodic_memory = episodic_memory.strip()
 
-            recent_episodic_memory = episodic_memory.strip()
+                    most_relevant_episodic_memory = await self.episodic_memory_manager.list_episodic_memory(
+                        agent_state=self.agent_state,
+                        user=self.user,
+                        embedded_text=embedded_text,
+                        query=key_words,
+                        search_field="details",
+                        search_method=search_method,
+                        limit=MAX_RETRIEVAL_LIMIT_IN_SYSTEM,
+                        timezone_str=timezone_str,
+                    )
+                    most_relevant_episodic_memory_str = ""
+                    if len(most_relevant_episodic_memory) > 0:
+                        for idx, event in enumerate(most_relevant_episodic_memory):
+                            if is_owning_agent:
+                                most_relevant_episodic_memory_str += f"[Event ID: {event.id}] Timestamp: {event.occurred_at.strftime('%Y-%m-%d %H:%M:%S')} - {event.summary}  (Details: {len(event.details)} Characters)\n"
+                            else:
+                                most_relevant_episodic_memory_str += f"[{idx}] Timestamp: {event.occurred_at.strftime('%Y-%m-%d %H:%M:%S')} - {event.summary}  (Details: {len(event.details)} Characters)\n"
+                    relevant_episodic_memory = most_relevant_episodic_memory_str.strip()
+                    retrieved_memories["episodic"] = {
+                        "total_number_of_items": await self.episodic_memory_manager.get_total_number_of_items(
+                            user=self.user
+                        ),
+                        "recent_count": len(current_episodic_memory),
+                        "relevant_count": len(most_relevant_episodic_memory),
+                        "recent_episodic_memory": recent_episodic_memory,
+                        "relevant_episodic_memory": relevant_episodic_memory,
+                    }
 
-            most_relevant_episodic_memory = await self.episodic_memory_manager.list_episodic_memory(
-                agent_state=self.agent_state,
-                user=self.user,
-                embedded_text=embedded_text,
-                query=key_words,
-                search_field="details",
-                search_method=search_method,
-                limit=MAX_RETRIEVAL_LIMIT_IN_SYSTEM,
-                timezone_str=timezone_str,
-            )
-            most_relevant_episodic_memory_str = ""
-            if len(most_relevant_episodic_memory) > 0:
-                for idx, event in enumerate(most_relevant_episodic_memory):
-                    if is_owning_agent:
-                        most_relevant_episodic_memory_str += f"[Event ID: {event.id}] Timestamp: {event.occurred_at.strftime('%Y-%m-%d %H:%M:%S')} - {event.summary}  (Details: {len(event.details)} Characters)\n"
-                    else:
-                        most_relevant_episodic_memory_str += f"[{idx}] Timestamp: {event.occurred_at.strftime('%Y-%m-%d %H:%M:%S')} - {event.summary}  (Details: {len(event.details)} Characters)\n"
-            relevant_episodic_memory = most_relevant_episodic_memory_str.strip()
-            retrieved_memories["episodic"] = {
-                "total_number_of_items": await self.episodic_memory_manager.get_total_number_of_items(user=self.user),
-                "recent_count": len(current_episodic_memory),
-                "relevant_count": len(most_relevant_episodic_memory),
-                "recent_episodic_memory": recent_episodic_memory,
-                "relevant_episodic_memory": relevant_episodic_memory,
-            }
+        async def _retrieve_resource():
+            # Owning agents need IDs for merge/update operations, so always retrieve fresh
+            is_owning_agent = self.agent_state.is_type(AgentType.resource_memory_agent, AgentType.reflexion_agent)
+            if is_owning_agent or "resource" not in retrieved_memories:
+                async with timedspan(
+                    "Retrieve resource",
+                    metadata={"backend": "ipss+ipsr", "memory_type": "resource"},
+                ):
+                    current_resource_memory = await self.resource_memory_manager.list_resources(
+                        agent_state=self.agent_state,
+                        user=self.user,
+                        query=key_words,
+                        embedded_text=embedded_text,
+                        search_field="summary",
+                        search_method=search_method,
+                        limit=MAX_RETRIEVAL_LIMIT_IN_SYSTEM,
+                        timezone_str=timezone_str,
+                    )
+                    recent_resource_memory_items = await self._fetch_recent_indexing_lag_window(
+                        table="resource_memory",
+                        pydantic_cls=PydanticResourceMemoryItem,
+                    )
+                    merged_resource_memory = self._merge_recent_into_relevant(
+                        current_resource_memory, recent_resource_memory_items
+                    )
+                    resource_memory = ""
+                    if len(merged_resource_memory) > 0:
+                        for idx, resource in enumerate(merged_resource_memory):
+                            if is_owning_agent:
+                                resource_memory += f"[Resource ID: {resource.id}] Resource Title: {resource.title}; Resource Summary: {resource.summary} Resource Type: {resource.resource_type}\n"
+                            else:
+                                resource_memory += f"[{idx}] Resource Title: {resource.title}; Resource Summary: {resource.summary} Resource Type: {resource.resource_type}\n"
+                    resource_memory = resource_memory.strip()
+                    retrieved_memories["resource"] = {
+                        "total_number_of_items": await self.resource_memory_manager.get_total_number_of_items(
+                            user=self.user
+                        ),
+                        "current_count": len(merged_resource_memory),
+                        "text": resource_memory,
+                    }
 
-        # Retrieve resource memory
-        # Owning agents need IDs for merge/update operations, so always retrieve fresh
-        is_owning_agent = self.agent_state.is_type(AgentType.resource_memory_agent, AgentType.reflexion_agent)
-        if is_owning_agent or "resource" not in retrieved_memories:
-            current_resource_memory = await self.resource_memory_manager.list_resources(
-                agent_state=self.agent_state,
-                user=self.user,
-                query=key_words,
-                embedded_text=embedded_text,
-                search_field="summary",
-                search_method=search_method,
-                limit=MAX_RETRIEVAL_LIMIT_IN_SYSTEM,
-                timezone_str=timezone_str,
-            )
-            resource_memory = ""
-            if len(current_resource_memory) > 0:
-                for idx, resource in enumerate(current_resource_memory):
-                    if is_owning_agent:
-                        resource_memory += f"[Resource ID: {resource.id}] Resource Title: {resource.title}; Resource Summary: {resource.summary} Resource Type: {resource.resource_type}\n"
-                    else:
-                        resource_memory += f"[{idx}] Resource Title: {resource.title}; Resource Summary: {resource.summary} Resource Type: {resource.resource_type}\n"
-            resource_memory = resource_memory.strip()
-            retrieved_memories["resource"] = {
-                "total_number_of_items": await self.resource_memory_manager.get_total_number_of_items(user=self.user),
-                "current_count": len(current_resource_memory),
-                "text": resource_memory,
-            }
+        async def _retrieve_procedural():
+            # Owning agents need IDs for merge/update operations, so always retrieve fresh
+            is_owning_agent = self.agent_state.is_type(AgentType.procedural_memory_agent, AgentType.reflexion_agent)
+            if is_owning_agent or "procedural" not in retrieved_memories:
+                async with timedspan(
+                    "Retrieve procedural",
+                    metadata={"backend": "ipss+ipsr", "memory_type": "procedural"},
+                ):
+                    current_procedural_memory = await self.procedural_memory_manager.list_procedures(
+                        agent_state=self.agent_state,
+                        user=self.user,
+                        query=key_words,
+                        embedded_text=embedded_text,
+                        search_field="summary",
+                        search_method=search_method,
+                        limit=MAX_RETRIEVAL_LIMIT_IN_SYSTEM,
+                        timezone_str=timezone_str,
+                    )
+                    recent_procedural_memory_items = await self._fetch_recent_indexing_lag_window(
+                        table="procedural_memory",
+                        pydantic_cls=PydanticProceduralMemoryItem,
+                    )
+                    merged_procedural_memory = self._merge_recent_into_relevant(
+                        current_procedural_memory, recent_procedural_memory_items
+                    )
+                    procedural_memory = ""
+                    if len(merged_procedural_memory) > 0:
+                        for idx, procedure in enumerate(merged_procedural_memory):
+                            if is_owning_agent:
+                                procedural_memory += f"[Procedure ID: {procedure.id}] Entry Type: {procedure.entry_type}; Summary: {procedure.summary}\n"
+                            else:
+                                procedural_memory += (
+                                    f"[{idx}] Entry Type: {procedure.entry_type}; Summary: {procedure.summary}\n"
+                                )
+                    procedural_memory = procedural_memory.strip()
+                    retrieved_memories["procedural"] = {
+                        "total_number_of_items": await self.procedural_memory_manager.get_total_number_of_items(
+                            user=self.user
+                        ),
+                        "current_count": len(merged_procedural_memory),
+                        "text": procedural_memory,
+                    }
 
-        # Retrieve procedural memory
-        # Owning agents need IDs for merge/update operations, so always retrieve fresh
-        is_owning_agent = self.agent_state.is_type(AgentType.procedural_memory_agent, AgentType.reflexion_agent)
-        if is_owning_agent or "procedural" not in retrieved_memories:
-            current_procedural_memory = await self.procedural_memory_manager.list_procedures(
-                agent_state=self.agent_state,
-                user=self.user,
-                query=key_words,
-                embedded_text=embedded_text,
-                search_field="summary",
-                search_method=search_method,
-                limit=MAX_RETRIEVAL_LIMIT_IN_SYSTEM,
-                timezone_str=timezone_str,
-            )
-            procedural_memory = ""
-            if len(current_procedural_memory) > 0:
-                for idx, procedure in enumerate(current_procedural_memory):
-                    if is_owning_agent:
-                        procedural_memory += f"[Procedure ID: {procedure.id}] Entry Type: {procedure.entry_type}; Summary: {procedure.summary}\n"
-                    else:
-                        procedural_memory += (
-                            f"[{idx}] Entry Type: {procedure.entry_type}; Summary: {procedure.summary}\n"
-                        )
-            procedural_memory = procedural_memory.strip()
-            retrieved_memories["procedural"] = {
-                "total_number_of_items": await self.procedural_memory_manager.get_total_number_of_items(user=self.user),
-                "current_count": len(current_procedural_memory),
-                "text": procedural_memory,
-            }
+        async def _retrieve_semantic():
+            # Owning agents need IDs for merge/update operations, so always retrieve fresh
+            is_owning_agent = self.agent_state.is_type(AgentType.semantic_memory_agent, AgentType.reflexion_agent)
+            if is_owning_agent or "semantic" not in retrieved_memories:
+                async with timedspan(
+                    "Retrieve semantic",
+                    metadata={"backend": "ipss+ipsr", "memory_type": "semantic"},
+                ):
+                    current_semantic_memory = await self.semantic_memory_manager.list_semantic_items(
+                        agent_state=self.agent_state,
+                        user=self.user,
+                        query=key_words,
+                        embedded_text=embedded_text,
+                        search_field="details",
+                        search_method=search_method,
+                        limit=MAX_RETRIEVAL_LIMIT_IN_SYSTEM,
+                        timezone_str=timezone_str,
+                    )
+                    recent_semantic_memory_items = await self._fetch_recent_indexing_lag_window(
+                        table="semantic_memory",
+                        pydantic_cls=PydanticSemanticMemoryItem,
+                    )
+                    merged_semantic_memory = self._merge_recent_into_relevant(
+                        current_semantic_memory, recent_semantic_memory_items
+                    )
+                    semantic_memory = ""
+                    if len(merged_semantic_memory) > 0:
+                        for idx, semantic_memory_item in enumerate(merged_semantic_memory):
+                            if is_owning_agent:
+                                semantic_memory += f"[Semantic Memory ID: {semantic_memory_item.id}] Name: {semantic_memory_item.name}; Summary: {semantic_memory_item.summary}\n"
+                            else:
+                                semantic_memory += f"[{idx}] Name: {semantic_memory_item.name}; Summary: {semantic_memory_item.summary}\n"
 
-        # Retrieve semantic memory
-        # Owning agents need IDs for merge/update operations, so always retrieve fresh
-        is_owning_agent = self.agent_state.is_type(AgentType.semantic_memory_agent, AgentType.reflexion_agent)
-        if is_owning_agent or "semantic" not in retrieved_memories:
-            current_semantic_memory = await self.semantic_memory_manager.list_semantic_items(
-                agent_state=self.agent_state,
-                user=self.user,
-                query=key_words,
-                embedded_text=embedded_text,
-                search_field="details",
-                search_method=search_method,
-                limit=MAX_RETRIEVAL_LIMIT_IN_SYSTEM,
-                timezone_str=timezone_str,
-            )
-            semantic_memory = ""
-            if len(current_semantic_memory) > 0:
-                for idx, semantic_memory_item in enumerate(current_semantic_memory):
-                    if is_owning_agent:
-                        semantic_memory += f"[Semantic Memory ID: {semantic_memory_item.id}] Name: {semantic_memory_item.name}; Summary: {semantic_memory_item.summary}\n"
-                    else:
-                        semantic_memory += (
-                            f"[{idx}] Name: {semantic_memory_item.name}; Summary: {semantic_memory_item.summary}\n"
-                        )
+                    semantic_memory = semantic_memory.strip()
+                    retrieved_memories["semantic"] = {
+                        "total_number_of_items": await self.semantic_memory_manager.get_total_number_of_items(
+                            user=self.user
+                        ),
+                        "current_count": len(merged_semantic_memory),
+                        "text": semantic_memory,
+                    }
 
-            semantic_memory = semantic_memory.strip()
-            retrieved_memories["semantic"] = {
-                "total_number_of_items": await self.semantic_memory_manager.get_total_number_of_items(user=self.user),
-                "current_count": len(current_semantic_memory),
-                "text": semantic_memory,
-            }
+        # Run the six retrievals concurrently. gather (return_exceptions=False)
+        # propagates the first failure rather than silently swallowing it.
+        await asyncio.gather(
+            _retrieve_core(),
+            _retrieve_knowledge_vault(),
+            _retrieve_episodic(),
+            _retrieve_resource(),
+            _retrieve_procedural(),
+            _retrieve_semantic(),
+        )
 
-        # Build the complete system prompt
-        memory_system_prompt = self.build_system_prompt(retrieved_memories)
+        # Build the complete system prompt (synchronous string assembly of all
+        # retrieved memories into the prompt template -- a CPU block on the loop).
+        from mirix.observability.cpu_timing import time_cpu
+
+        with time_cpu("build_system_prompt.assembly"):
+            memory_system_prompt = self.build_system_prompt(retrieved_memories)
 
         complete_system_prompt = raw_system + "\n\n" + memory_system_prompt
 
@@ -2187,7 +2422,6 @@ These keywords have been used to retrieve relevant memories from the database.
                 + "\n</episodic_memory>\n"
             )
 
-        # Add knowledge vault with counts
         knowledge_vault_total = knowledge_vault["total_number_of_items"] if knowledge_vault else 0
         knowledge_vault_text = knowledge_vault["text"] if knowledge_vault else ""
         knowledge_vault_count = knowledge_vault["current_count"] if knowledge_vault else 0
@@ -2197,7 +2431,6 @@ These keywords have been used to retrieve relevant memories from the database.
             + "\n</knowledge_vault>\n"
         )
 
-        # Add semantic memory with counts
         semantic_total = semantic_memory["total_number_of_items"] if semantic_memory else 0
         semantic_text = semantic_memory["text"] if semantic_memory else ""
         semantic_count = semantic_memory["current_count"] if semantic_memory else 0
@@ -2207,7 +2440,6 @@ These keywords have been used to retrieve relevant memories from the database.
             + "\n</semantic_memory>\n"
         )
 
-        # Add resource memory with counts
         resource_total = resource_memory["total_number_of_items"] if resource_memory else 0
         resource_text = resource_memory["text"] if resource_memory else ""
         resource_count = resource_memory["current_count"] if resource_memory else 0
@@ -2217,7 +2449,6 @@ These keywords have been used to retrieve relevant memories from the database.
             + "\n</resource_memory>\n"
         )
 
-        # Add procedural memory with counts
         procedural_total = procedural_memory["total_number_of_items"] if procedural_memory else 0
         procedural_text = procedural_memory["text"] if procedural_memory else ""
         procedural_count = procedural_memory["current_count"] if procedural_memory else 0
@@ -2228,6 +2459,20 @@ These keywords have been used to retrieve relevant memories from the database.
         )
 
         return system_prompt
+
+    @staticmethod
+    def _merge_recent_into_relevant(relevant: List[Any], recent: List[Any]) -> List[Any]:
+        """Union just-written ``recent`` rows into the ranked ``relevant`` list.
+
+        Preserves the Search-provider ranking of ``relevant`` and appends only
+        the ``recent`` rows whose ``id`` is not already present (de-dup by id).
+        The appended rows are the just-written candidates the Search provider
+        may not have indexed yet, so the dedup-deciding owning sub-agent sees
+        them alongside the ranked results in a single list.
+        """
+        relevant_ids = {item.id for item in relevant}
+        appended = [item for item in recent if item.id not in relevant_ids]
+        return relevant + appended
 
     async def extract_memory_for_system_prompt(self, message: str) -> str:
         """
@@ -2280,6 +2525,15 @@ These keywords have been used to retrieve relevant memories from the database.
 
         Returns:
             Optional[str]: Extracted topics or None if extraction fails
+
+        The returned string is consumed downstream as a ``;``-joined
+        list of search topics — each segment becomes its own clause in
+        the OpenSearch query. The IPS Search backend caps text-field
+        values at 200 characters, so individual topics must stay under
+        that limit; the prompt and ``update_topic`` tool description
+        below set that expectation with the LLM, and
+        ``_enforce_topic_length`` truncates anything that slips
+        through with a logged warning so the prompt can be tuned.
         """
         try:
             # Add instruction message for topic extraction
@@ -2288,7 +2542,20 @@ These keywords have been used to retrieve relevant memories from the database.
                 prepare_input_message_create(
                     MessageCreate(
                         role=MessageRole.user,
-                        content="The above are the inputs from the user, please look at these content and extract the topic (brief description of what the user is focusing on) from these content. If there are multiple focuses in these content, then extract them all and put them into one string separated by ';'. Call the function `update_topic` to update the topic with the extracted topics.",
+                        content=(
+                            "The above are the inputs from the user, please "
+                            "look at these content and extract the topic "
+                            "(brief description of what the user is focusing "
+                            "on) from these content. If there are multiple "
+                            "focuses in these content, then extract them all "
+                            "and put them into one string separated by ';'. "
+                            "Each individual topic must be a short noun "
+                            "phrase (NOT a full sentence) and STRICTLY UNDER "
+                            "200 characters — preferably much shorter. "
+                            "Topics longer than 200 characters will be "
+                            "rejected. Call the function `update_topic` to "
+                            "update the topic with the extracted topics."
+                        ),
                     ),
                     self.agent_state.id,
                     wrap_user_message=False,
@@ -2318,7 +2585,16 @@ These keywords have been used to retrieve relevant memories from the database.
                         "properties": {
                             "topic": {
                                 "type": "string",
-                                "description": 'The topic of the current conversation/content. If there are multiple topics then separate them with ";".',
+                                "description": (
+                                    "The topic of the current conversation/"
+                                    "content. If there are multiple topics "
+                                    'then separate them with ";". Each '
+                                    "individual topic (each ;-delimited "
+                                    "segment) MUST be a short noun phrase "
+                                    "strictly under 200 characters. "
+                                    "Downstream search will reject longer "
+                                    "values."
+                                ),
                             }
                         },
                         "required": ["topic"],
@@ -2356,6 +2632,14 @@ These keywords have been used to retrieve relevant memories from the database.
                     try:
                         function_args = json.loads(choice.message.tool_calls[0].function.arguments)
                         topics = function_args.get("topic")
+                        # Guard against the LLM ignoring the per-topic
+                        # length constraint in the prompt — truncate
+                        # any individual ;-delimited segment that
+                        # would exceed the downstream IPS Search
+                        # field limit. Failing closed here would abort
+                        # the entire memory-extraction pipeline, so we
+                        # truncate and warn instead.
+                        topics = self._enforce_topic_length(topics)
                         # Topics derive from user messages; log shape only.
                         printv(
                             f"[Mirix.Agent.{self.agent_state.name}] INFO: Extracted topics: "
@@ -2377,6 +2661,45 @@ These keywords have been used to retrieve relevant memories from the database.
             )
 
         return None
+
+    # Maximum length, in characters, of a single ``;``-delimited topic
+    # forwarded to memory search. Set to the IPS Search backend's
+    # 200-character text-field cap (values over this yield a 400 from
+    # IPS Search that would otherwise abort the whole inner_step).
+    # Topics flow into ``query=`` on the four memory-list calls in
+    # ``build_system_prompt_with_memories``.
+    _TOPIC_MAX_LEN = 200
+
+    def _enforce_topic_length(self, topics: Optional[str]) -> Optional[str]:
+        """Truncate individual ``;``-delimited topics that exceed
+        ``_TOPIC_MAX_LEN``. Returns the (possibly modified) joined
+        string. None / empty inputs pass through unchanged.
+
+        The downstream search backend rejects text-field values over
+        the limit. We truncate rather than reject the whole string:
+        the memory-extraction pipeline depends on this value being
+        present, and failing closed reproduces the exact crash this
+        guard is here to prevent. A warning is logged per truncation
+        so the upstream extraction prompt can be tuned over time.
+        """
+        if not topics:
+            return topics
+        parts = [p.strip() for p in topics.split(";")]
+        out: List[str] = []
+        for p in parts:
+            if not p:
+                continue
+            if len(p) > self._TOPIC_MAX_LEN:
+                printv(
+                    f"[Mirix.Agent.{self.agent_state.name}] WARNING: "
+                    f"truncating oversized topic "
+                    f"({len(p)} chars > {self._TOPIC_MAX_LEN}); "
+                    f"the topic-extraction prompt should keep this "
+                    f"under the limit: {p[:80]!r}..."
+                )
+                p = p[: self._TOPIC_MAX_LEN]
+            out.append(p)
+        return ";".join(out) if out else None
 
     async def _retrieve_memories_for_topics(self, topics: Optional[str]) -> dict:
         """
@@ -2512,11 +2835,20 @@ These keywords have been used to retrieve relevant memories from the database.
             raw_system = self.agent_state.system or ""
 
             # Build the complete system prompt with memories
-            complete_system_prompt, retrieved_memories = await self.build_system_prompt_with_memories(
-                raw_system=raw_system,
-                topics=topics,
-                retrieved_memories=retrieved_memories,
-            )
+            from mirix.observability.timed import timedspan
+
+            async with timedspan(
+                "Build System Prompt With Memories",
+                metadata={
+                    "agent_type": str(self.agent_state.agent_type),
+                    "step_count": step_count,
+                },
+            ):
+                complete_system_prompt, retrieved_memories = await self.build_system_prompt_with_memories(
+                    raw_system=raw_system,
+                    topics=topics,
+                    retrieved_memories=retrieved_memories,
+                )
 
             system_msg = Message.dict_to_message(
                 agent_id=self.agent_state.id,
@@ -2542,6 +2874,18 @@ These keywords have been used to retrieve relevant memories from the database.
                 printv(
                     f"[Mirix.Agent.{self.agent_state.name}] WARNING: {CLI_WARNING_PREFIX}Attempting to run ChatCompletion without user as the last message in the queue"
                 )
+
+            # Test-only fault injection (inert in prod): a `llm_request` directive
+            # raises a synthetic "maximum context length" error here — inside the
+            # try whose except runs summarize-and-retry recovery — so the
+            # context-overflow recovery path can be exercised deterministically
+            # without a real >context-window payload. AgentType is imported
+            # locally (matching this module's pattern; inner_step has no scope-
+            # level import) — omitting it raised NameError on every save.
+            from mirix.schemas.agent import AgentType
+
+            if self.agent_state.is_type(AgentType.meta_memory_agent):
+                fault_injection.maybe_raise("llm_request", source_key=getattr(self, "memory_source_id", None))
 
             # Step 2: send the conversation and available functions to the LLM
             response = await self._get_ai_reply(
@@ -2607,15 +2951,13 @@ These keywords have been used to retrieve relevant memories from the database.
                             pass
 
                 if failed_messages:
-                    printv(
-                        f"[Mirix.Agent.{self.agent_state.name}] ERROR: One or more functions failed:\n"
-                        + "\n".join(failed_messages)
-                    )
+                    # A memory function genuinely failed — log at ERROR (not the
+                    # prior printv->INFO, which hid real failures from error-level
+                    # alerting/grep and only *said* "ERROR" in the message text).
+                    self.logger.error("One or more functions failed:\n" + "\n".join(failed_messages))
                 else:
                     # Fallback if we can't parse the messages
-                    printv(
-                        f"[Mirix.Agent.{self.agent_state.name}] ERROR: Function execution encountered errors (see logs above for details)"
-                    )
+                    self.logger.error("Function execution encountered errors (see logs above for details)")
 
             # Step 6: extend the message history
             if len(messages) > 0:

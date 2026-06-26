@@ -28,6 +28,34 @@ def get_log_level() -> int:
 selected_log_level = get_log_level()
 
 
+class _TidLogFilter(logging.Filter):
+    """Inject the current request's transaction id (TID) onto each record.
+
+    Reads the ``current_tid`` contextvar (set on the request path and
+    re-established in the queue worker via trace propagation) so that every log
+    line can be correlated by TID — including worker/agent logs that run outside
+    any HTTP request context. When no TID is set, a stable ``-`` placeholder is
+    used so the format string never errors.
+
+    Imported lazily to avoid an import cycle at module load
+    (``observability`` imports ``mirix.log``).
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        tid = None
+        try:
+            from mirix.observability.context import current_tid
+
+            tid = current_tid.get()
+        except Exception:
+            tid = None
+        record.tid = tid or "-"
+        return True
+
+
+_tid_log_filter = _TidLogFilter()
+
+
 def validate_log_file_path(log_file_path: Path) -> Path:
     """
     Validate that the log file path is writable.
@@ -63,13 +91,12 @@ def validate_log_file_path(log_file_path: Path) -> Path:
     try:
         parent_dir.mkdir(parents=True, exist_ok=True)
     except (OSError, PermissionError) as e:
-        raise ValueError(f"Invalid log file path: Cannot create directory '{parent_dir}'. " f"Error: {e}") from e
+        raise ValueError(f"Invalid log file path: Cannot create directory '{parent_dir}'. Error: {e}") from e
 
     # Check if parent directory is writable
     if not os.access(parent_dir, os.W_OK):
         raise ValueError(
-            f"Invalid log file path: Directory '{parent_dir}' is not writable. "
-            f"Check permissions for MIRIX_LOG_FILE."
+            f"Invalid log file path: Directory '{parent_dir}' is not writable. Check permissions for MIRIX_LOG_FILE."
         )
 
     # If file exists, check if it's writable
@@ -111,9 +138,12 @@ def get_logger(name: Optional[str] = None) -> "logging.Logger":
     # Add handlers if not already configured
     # Handlers control WHERE logs go (console/file), not WHAT level they use
     if not logger.handlers:
-        # Create a single formatter for consistency across all handlers
+        # Create a single formatter for consistency across all handlers.
+        # ``tid=`` carries the transaction id for cross-signal correlation
+        # (populated by _TidLogFilter; "-" when no request context).
         formatter = logging.Formatter(
-            "%(asctime)s - %(name)s - %(levelname)s - %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
+            "%(asctime)s - %(name)s - %(levelname)s [tid=%(tid)s] - %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
         )
 
         handlers_added = []
@@ -123,6 +153,7 @@ def get_logger(name: Optional[str] = None) -> "logging.Logger":
         if settings.log_to_console:
             console_handler = logging.StreamHandler(sys.stdout)
             console_handler.setFormatter(formatter)
+            console_handler.addFilter(_tid_log_filter)
             logger.addHandler(console_handler)
             handlers_added.append("console")
 
@@ -140,6 +171,7 @@ def get_logger(name: Optional[str] = None) -> "logging.Logger":
                 backupCount=settings.log_backup_count,
             )
             file_handler.setFormatter(formatter)
+            file_handler.addFilter(_tid_log_filter)
             logger.addHandler(file_handler)
             handlers_added.append(f"file ({log_file})")
 

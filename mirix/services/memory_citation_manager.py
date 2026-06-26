@@ -74,6 +74,78 @@ class MemoryCitationManager:
             is_deleted=False,
         )
 
+        # Relational provider delegation — relies on uq_memory_citations_src_type_id
+        # unique constraint for L3 dedup. Conflict → None (matches "already existed").
+        # Transient errors are retried; final failure logs WARNING + skip-span and
+        # returns None so the caller's memory write stands. Permanent errors propagate.
+        from mirix.database.provider_write_retry import (
+            is_conflict,
+            is_transient,
+        )
+        from mirix.database.relational_provider import get_relational_provider
+        from mirix.observability.skip_spans import emit_idempotency_skip_span
+
+        provider = get_relational_provider()
+        if provider:
+            payload = {
+                **values,
+                "occurred_at": occurred_at.isoformat() if occurred_at else None,
+                "created_at": now.isoformat(),
+                "updated_at": now.isoformat(),
+            }
+            try:
+                # The relational provider has its own inner-retry tier
+                # (event_retry.retry_with_backoff) — no extra wrapper here.
+                await provider.create("memory_citations", payload)
+                logger.info(
+                    "Created citation %s: %s/%s -> source %s",
+                    citation_id,
+                    memory_type,
+                    memory_id,
+                    memory_source_id,
+                )
+                pydantic_values = {k: v for k, v in values.items() if k != "is_deleted" and not k.startswith("_")}
+                return PydanticMemoryCitation(**pydantic_values)
+            except Exception as e:
+                if is_conflict(e):
+                    logger.debug(
+                        "memory_citations conflict for %s/%s/%s — treating as no-op",
+                        memory_source_id,
+                        memory_type,
+                        memory_id,
+                    )
+                    return None
+                if is_transient(e):
+                    # Exhausted retries on a transient error — log + skip-span,
+                    # don't raise (memory write must stand).
+                    logger.warning(
+                        "memory_citations write failed after retries for %s/%s/%s: %s",
+                        memory_source_id,
+                        memory_type,
+                        memory_id,
+                        e,
+                    )
+                    emit_idempotency_skip_span(
+                        name="Citation Write: failed",
+                        reason="citation-write-failed",
+                        metadata={
+                            "memory_source_id": memory_source_id,
+                            "memory_type": memory_type,
+                            "memory_id": memory_id,
+                            "error": str(e),
+                        },
+                    )
+                    return None
+                # Permanent error (auth, malformed request, unknown entity) — fail loudly.
+                logger.error(
+                    "memory_citations write failed permanently for %s/%s/%s: %s",
+                    memory_source_id,
+                    memory_type,
+                    memory_id,
+                    e,
+                )
+                raise
+
         async with self.session_maker() as session:
             inserted = await MemoryCitationModel.create_or_ignore_with_redis(
                 db_session=session,
@@ -109,6 +181,25 @@ class MemoryCitationManager:
 
         Uses cache-aside pattern since this is the hot-path check for citation-level dedup.
         """
+        # Relational provider delegation — provider is source of truth, skip cache
+        from mirix.database.relational_provider import get_relational_provider
+
+        provider = get_relational_provider()
+        if provider:
+            # route through named query so the response shape
+            # matches the Pydantic model (memory_source_id flat column).
+            records = await provider.find_using_named_query(
+                "memory_citations",
+                "memory_citation_manager.find_existing_citation",
+                params={
+                    "memorySourceId": memory_source_id,
+                    "memoryType": memory_type,
+                    "memoryId": memory_id,
+                },
+                page_size=1,
+            )
+            return bool(records)
+
         # Try cache first
         if use_cache:
             try:
@@ -120,11 +211,14 @@ class MemoryCitationManager:
                     cached_data = await cache_provider.get_json(key)
                     if cached_data:
                         logger.debug(
-                            "Cache HIT for citation exists: %s/%s/%s", memory_source_id, memory_type, memory_id
+                            "Cache HIT for citation exists: %s/%s/%s",
+                            memory_source_id,
+                            memory_type,
+                            memory_id,
                         )
                         return True
             except Exception as e:
-                logger.warning("Cache read failed for citation exists check: %s", e)
+                logger.debug("Cache read failed for citation exists check: %s", e)
 
         # Fall back to DB
         async with self.session_maker() as session:
@@ -155,6 +249,40 @@ class MemoryCitationManager:
         Used by the temporal guard to prevent backdated overwrites.
         Not cached — called infrequently and the max changes as new citations arrive.
         """
+        # Relational provider delegation — fetch matching rows and compute max in memory.
+        # The set is small (citations for one memory record) so client-side aggregation is fine.
+        from mirix.database.relational_provider import get_relational_provider
+
+        provider = get_relational_provider()
+        if provider:
+            # use a dedicated MAX(occurredAt) named query to
+            # avoid pulling the full citation set client-side. Returns a
+            # single scalar row keyed ``max_occurred_at``.
+            #
+            # The NQ projects only ``MAX(occurredAt) AS max_occurred_at`` — no
+            # ``id`` column — so we pass ``skip_entity_mapping=True`` and a
+            # ``MaxOccurredAtResult`` shape. Without that the provider would
+            # try to bind the row to the memoryCitations entity schema and
+            # reject with "column name id was not found in this ResultSet".
+            from mirix.database.named_query_results import MaxOccurredAtResult
+
+            records = await provider.find_using_named_query(
+                "memory_citations",
+                "memory_citation_manager.max_occurred_at_for_memory",
+                params={
+                    "memoryType": memory_type,
+                    "memoryId": memory_id,
+                },
+                result_set_entity_class=MaxOccurredAtResult,
+                skip_entity_mapping=True,
+                page_size=1,
+            )
+            occurreds = [r.get("max_occurred_at") for r in records if r.get("max_occurred_at")]
+            if not occurreds:
+                return None
+            max_iso = max(occurreds)
+            return datetime.fromisoformat(max_iso.replace("Z", "+00:00")) if isinstance(max_iso, str) else max_iso
+
         async with self.session_maker() as session:
             result = await session.execute(
                 select(func.max(MemoryCitationModel.occurred_at)).where(
@@ -171,6 +299,36 @@ class MemoryCitationManager:
         memory_id: str,
     ) -> List[PydanticMemoryCitation]:
         """Fetch all citations for a single memory."""
+        # Relational provider delegation
+        from mirix.database.relational_provider import get_relational_provider
+
+        provider = get_relational_provider()
+        if provider:
+            # NQ projects memorysource_id so Pydantic
+            # construction works.
+            records = await provider.find_using_named_query(
+                "memory_citations",
+                "memory_citation_manager.get_citations_for_memory",
+                params={
+                    "memoryType": memory_type,
+                    "memoryId": memory_id,
+                },
+                page_size=1500,
+            )
+            # Order by occurred_at desc, nulls last
+            records.sort(
+                key=lambda r: (
+                    r.get("occurred_at") is None,
+                    r.get("occurred_at") or "",
+                ),
+                reverse=False,
+            )
+            records.sort(
+                key=lambda r: r.get("occurred_at") or "",
+                reverse=True,
+            )
+            return [PydanticMemoryCitation(**r) for r in records]
+
         async with self.session_maker() as session:
             stmt = (
                 select(MemoryCitationModel)
@@ -210,6 +368,37 @@ class MemoryCitationManager:
         """
         if not memory_keys:
             return {}
+
+        # Relational provider delegation — provider.list doesn't support tuple-IN filters,
+        # so loop per (memory_type, memory_id) and group. Search hits are typically
+        # 10-50 per query, so per-memory call volume is acceptable.
+        #
+        # route through ``memory_citation_manager.get_citations_for_memory``
+        # named query instead of the generic ``provider.list``. The adhoc
+        # filter-query endpoint does NOT populate the ``memorySource`` MANY_TO_ONE
+        # relationship on returned entities, which causes
+        # ``PydanticMemoryCitation(**r)`` to fail with ``memory_source_id Field
+        # required`` and ultimately empties the entire search result. The named
+        # query's ``SELECT *`` projects ``memorysource_id`` as a flat column, which
+        # the SDK ``loads_entity`` helper auto-wraps as ``EntityRef(id=...)`` and
+        # the provider's ``from_entity`` flattens back to ``memory_source_id``.
+        from mirix.database.relational_provider import get_relational_provider
+
+        provider = get_relational_provider()
+        if provider:
+            grouped: Dict[Tuple[str, str], List[PydanticMemoryCitation]] = defaultdict(list)
+            for memory_type, memory_id in memory_keys:
+                records = await provider.find_using_named_query(
+                    "memory_citations",
+                    "memory_citation_manager.get_citations_for_memory",
+                    params={
+                        "memoryType": memory_type,
+                        "memoryId": memory_id,
+                    },
+                    page_size=1000,
+                )
+                grouped[(memory_type, memory_id)].extend(PydanticMemoryCitation(**r) for r in records)
+            return dict(grouped)
 
         async with self.session_maker() as session:
             stmt = select(MemoryCitationModel).where(

@@ -1,6 +1,11 @@
 """Observability and tracing utilities for Mirix."""
 
-from mirix.observability.context import mark_observation_as_child
+from mirix.observability.context import (
+    clear_tid,
+    get_tid,
+    mark_observation_as_child,
+    set_tid,
+)
 from mirix.observability.langfuse_client import (
     flush_langfuse,
     get_langfuse_client,
@@ -15,7 +20,10 @@ from mirix.observability.pii_mask import (
     ispy_pii_mask,
     set_langfuse_mask,
 )
-from mirix.observability.skip_spans import emit_idempotency_skip_span
+from mirix.observability.skip_spans import (
+    emit_idempotency_skip_span,
+    emit_refused_to_process_span,
+)
 from mirix.observability.trace_propagation import (
     add_trace_to_queue_message,
     restore_trace_from_queue_message,
@@ -30,7 +38,11 @@ __all__ = [
     "add_trace_to_queue_message",
     "restore_trace_from_queue_message",
     "mark_observation_as_child",
+    "set_tid",
+    "get_tid",
+    "clear_tid",
     "emit_idempotency_skip_span",
+    "emit_refused_to_process_span",
     # PII masking for Langfuse exports.
     "REDACTED_PLACEHOLDER",
     "build_langfuse_mask",

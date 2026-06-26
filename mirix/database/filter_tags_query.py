@@ -194,7 +194,7 @@ def _resolve_operator_raw_sql(key: str, value: dict) -> Tuple[str, Dict[str, Any
 
     if op == "$contains":
         param_name = f"filter_contains_{key}"
-        clause = f"filter_tags::jsonb @> :{param_name}::jsonb"
+        clause = f"filter_tags::jsonb @> CAST(:{param_name} AS jsonb)"
         params[param_name] = json.dumps({key: [value["$contains"]]})
         return clause, params
     elif op == "$exists":

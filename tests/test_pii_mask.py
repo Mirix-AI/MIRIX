@@ -1,21 +1,23 @@
 """Tests for mirix.observability.pii_mask.
 
-The mask is the callback Langfuse fires per observation field; it must:
-- Forward strings to ispy-pii.
-- Walk dicts/lists/tuples recursively, masking leaf strings.
-- Pass through non-string scalars unchanged.
-- Never raise: ispy-pii failures degrade to REDACTED_PLACEHOLDER.
-- Honor the MIRIX_LANGFUSE_MASK_ENABLED kill switch.
-- Allow downstream consumers to swap the masker via set_langfuse_mask.
+real PII masking now happens UPSTREAM (mirix.pii.mask_structure
+at the LLM/embedding generation sites). The Langfuse ``mask=`` callback is
+reduced to a cheap **synchronous backstop**. It must:
+- Do NO network I/O (no httpx.Client, no ispy-pii POST) — the SDK invokes it
+  synchronously on the event-loop thread, so a blocking call there starves
+  the loop (the exact bug this story fixes).
+- Still walk dicts/lists/tuples/str so any attribute NOT pre-masked has a
+  safety net.
+- Locally regex-scrub the obvious high-risk tokens (email / SSN / phone) with
+  zero network.
+- Honor the MIRIX_LANGFUSE_MASK_ENABLED kill switch (passthrough).
+- Preserve the set_langfuse_mask / get_langfuse_mask / ispy_pii_mask seam so
+  downstream consumers can register their own synchronous callable.
 """
 
-from unittest.mock import patch
-
-import httpx
 import pytest
 
 from mirix.observability.pii_mask import (
-    REDACTED_PLACEHOLDER,
     build_langfuse_mask,
     get_langfuse_mask,
     ispy_pii_mask,
@@ -36,152 +38,120 @@ def _reset_active_mask():
     set_langfuse_mask(None)
 
 
-def _build_mask_with_transport(transport: httpx.MockTransport):
-    """Construct a mask whose httpx.Client uses the given transport."""
-    real_client = httpx.Client
-
-    def _mock_client_factory(*args, **kwargs):
-        return real_client(transport=transport, **kwargs)
-
-    with patch("mirix.observability.pii_mask.httpx.Client", _mock_client_factory):
-        return build_langfuse_mask(endpoint="http://ispy.test/v2/analyze")
+# --- No network: the backstop holds no client and issues no requests ---
 
 
-def test_mask_redacts_string():
-    def handler(request):
-        return httpx.Response(200, json={"redactedText": "ssn ***-**-6789"})
+def test_module_holds_no_httpx_client():
+    """The module must not even import/construct httpx for the mask path."""
+    import mirix.observability.pii_mask as pm
 
-    mask = _build_mask_with_transport(httpx.MockTransport(handler))
-    assert mask(data="ssn 123-45-6789") == "ssn ***-**-6789"
+    assert not hasattr(pm, "httpx")
+
+
+def test_mask_does_no_network_for_any_input():
+    """Patching httpx.Client to explode proves the backstop never touches
+    the network for strings, dicts, lists, or tuples."""
+    import httpx
+
+    def _boom(*a, **k):
+        raise AssertionError("mask must not open an httpx.Client")
+
+    mask = build_langfuse_mask()
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(httpx, "Client", _boom)
+        assert mask(data="plain text") == "plain text"
+        assert mask(data={"k": "v"}) == {"k": "v"}
+        assert mask(data=["a", "b"]) == ["a", "b"]
+        assert mask(data=("a", "b")) == ("a", "b")
+
+
+# --- Structure walking ---
+
+
+def test_mask_walks_nested_dict_list_tuple():
+    mask = build_langfuse_mask()
+    result = mask(
+        data={
+            "messages": [{"role": "user", "content": "hello"}],
+            "pair": ("x", "y"),
+        }
+    )
+    assert result == {
+        "messages": [{"role": "user", "content": "hello"}],
+        "pair": ("x", "y"),
+    }
+    assert isinstance(result["pair"], tuple)
 
 
 def test_mask_passes_through_non_string_scalars():
-    def handler(request):
-        return httpx.Response(200, json={"redactedText": "should-not-be-called"})
-
-    mask = _build_mask_with_transport(httpx.MockTransport(handler))
+    mask = build_langfuse_mask()
     assert mask(data=42) == 42
     assert mask(data=3.14) == 3.14
     assert mask(data=True) is True
     assert mask(data=None) is None
 
 
-def test_mask_walks_nested_dict():
-    """Every leaf string in a nested dict is forwarded through ispy-pii."""
-    inputs_seen: list = []
-
-    def handler(request):
-        body = request.read().decode()
-        inputs_seen.append(body)
-        return httpx.Response(200, json={"redactedText": f"masked({len(body)})"})
-
-    mask = _build_mask_with_transport(httpx.MockTransport(handler))
-    result = mask(
-        data={
-            "messages": [
-                {"role": "user", "content": "hello"},
-                {"role": "assistant", "content": "world"},
-            ],
-        }
-    )
-    assert result["messages"][0]["role"].startswith("masked(")
-    assert result["messages"][0]["content"].startswith("masked(")
-    assert result["messages"][1]["role"].startswith("masked(")
-    assert result["messages"][1]["content"].startswith("masked(")
-    # Four distinct leaf strings → four ispy-pii calls.
-    assert len(inputs_seen) == 4
+def test_mask_handles_empty_string():
+    mask = build_langfuse_mask()
+    assert mask(data="") == ""
 
 
-def test_mask_walks_lists_and_tuples():
-    def handler(request):
-        return httpx.Response(200, json={"redactedText": "X"})
-
-    mask = _build_mask_with_transport(httpx.MockTransport(handler))
-    assert mask(data=["a", "b", "c"]) == ["X", "X", "X"]
-    assert mask(data=("a", "b")) == ("X", "X")
-    assert mask(data=[{"k": "v"}]) == [{"k": "X"}]
+# --- Local regex backstop scrubs email / SSN / phone (zero network) ---
 
 
-def test_mask_caches_repeated_strings():
-    call_count = 0
-
-    def handler(request):
-        nonlocal call_count
-        call_count += 1
-        return httpx.Response(200, json={"redactedText": "redacted"})
-
-    mask = _build_mask_with_transport(httpx.MockTransport(handler))
-    mask(data="repeated string")
-    mask(data="repeated string")
-    mask(data="repeated string")
-    assert call_count == 1
+def test_backstop_scrubs_email():
+    mask = build_langfuse_mask()
+    out = mask(data="contact me at francis@example.com please")
+    assert "francis@example.com" not in out
+    assert "contact me at" in out
 
 
-def test_mask_returns_placeholder_on_http_error():
-    def handler(request):
-        return httpx.Response(500, text="boom")
-
-    mask = _build_mask_with_transport(httpx.MockTransport(handler))
-    assert mask(data="ssn 123-45-6789") == REDACTED_PLACEHOLDER
+def test_backstop_scrubs_ssn():
+    mask = build_langfuse_mask()
+    out = mask(data="my ssn is 123-45-6789 ok")
+    assert "123-45-6789" not in out
 
 
-def test_mask_returns_placeholder_on_timeout():
-    def handler(request):
-        raise httpx.TimeoutException("slow")
-
-    mask = _build_mask_with_transport(httpx.MockTransport(handler))
-    assert mask(data="ssn 123-45-6789") == REDACTED_PLACEHOLDER
+def test_backstop_scrubs_phone():
+    mask = build_langfuse_mask()
+    out = mask(data="call 415-555-0182 now")
+    assert "415-555-0182" not in out
 
 
-def test_mask_returns_placeholder_on_non_dict_response():
-    def handler(request):
-        return httpx.Response(200, json=[{"redactedText": "ignored"}])
+def test_backstop_scrubs_pii_nested_in_structure():
+    mask = build_langfuse_mask()
+    out = mask(data={"messages": ["email bob@acme.com", {"phone": "415-555-0182"}]})
+    flat = repr(out)
+    assert "bob@acme.com" not in flat
+    assert "415-555-0182" not in flat
 
-    mask = _build_mask_with_transport(httpx.MockTransport(handler))
-    assert mask(data="anything") == REDACTED_PLACEHOLDER
+
+def test_backstop_leaves_non_pii_text_untouched():
+    mask = build_langfuse_mask()
+    assert mask(data="the quick brown fox") == "the quick brown fox"
 
 
-def test_mask_returns_placeholder_on_arbitrary_exception():
-    def handler(request):
-        raise OSError("connection reset by peer")
-
-    mask = _build_mask_with_transport(httpx.MockTransport(handler))
-    assert mask(data="anything") == REDACTED_PLACEHOLDER
+# --- Kill switch ---
 
 
 def test_mask_passthrough_when_disabled(monkeypatch):
     monkeypatch.setenv("MIRIX_LANGFUSE_MASK_ENABLED", "false")
-
-    def handler(request):
-        return httpx.Response(200, json={"redactedText": "should-not-be-called"})
-
-    mask = _build_mask_with_transport(httpx.MockTransport(handler))
+    mask = build_langfuse_mask()
+    # Even raw PII passes through verbatim when disabled.
     assert mask(data="user francis@example.com") == "user francis@example.com"
     assert mask(data={"k": "v"}) == {"k": "v"}
     assert mask(data=["a", "b"]) == ["a", "b"]
 
 
-def test_mask_handles_empty_string():
-    def handler(request):
-        return httpx.Response(200, json={"redactedText": "should-not-be-called"})
-
-    mask = _build_mask_with_transport(httpx.MockTransport(handler))
-    assert mask(data="") == ""
+# --- Seam: set/get_langfuse_mask + ispy_pii_mask default ---
 
 
 def test_get_langfuse_mask_falls_back_to_default_when_unset():
-    """With nothing registered, get_langfuse_mask returns the env-configured
-    default (ispy_pii_mask). The default callable's identity may differ
-    each call (it builds lazily) but it must be callable and accept the
-    Langfuse mask signature."""
     set_langfuse_mask(None)
-    mask = get_langfuse_mask()
-    assert mask is ispy_pii_mask
+    assert get_langfuse_mask() is ispy_pii_mask
 
 
 def test_set_langfuse_mask_overrides_default():
-    """Registering a callable via set_langfuse_mask makes get_langfuse_mask
-    return that callable, even if it's not ispy_pii_mask."""
     sentinel_calls: list = []
 
     def sentinel(data, **kwargs):
@@ -189,52 +159,19 @@ def test_set_langfuse_mask_overrides_default():
         return data
 
     set_langfuse_mask(sentinel)
-    mask = get_langfuse_mask()
-    assert mask is sentinel
-
-    # Confirm the registered callable is what gets invoked.
-    mask(data="hello")
+    assert get_langfuse_mask() is sentinel
+    get_langfuse_mask()(data="hello")
     assert sentinel_calls == ["hello"]
 
 
 def test_set_langfuse_mask_none_clears_registration():
-    """Passing None to set_langfuse_mask reverts to the default."""
     set_langfuse_mask(lambda data, **kwargs: data)
     set_langfuse_mask(None)
     assert get_langfuse_mask() is ispy_pii_mask
 
 
-def test_mask_sends_intuit_iam_auth_header_when_creds_present(monkeypatch):
-    """Boundary: PrivateAuth header reaches the wire when env vars set."""
-    monkeypatch.setenv("MIRIX_ISPY_PII_APPID", "Intuit.test")
-    monkeypatch.setenv("MIRIX_ISPY_PII_APP_SECRET", "shh")
-
-    captured: dict = {}
-
-    def handler(request):
-        captured["authorization"] = request.headers.get("authorization", "")
-        captured["intuit_offeringid"] = request.headers.get("intuit_offeringid", "")
-        return httpx.Response(200, json={"redactedText": "ok"})
-
-    mask = _build_mask_with_transport(httpx.MockTransport(handler))
-    assert mask(data="user query") == "ok"
-    assert captured["authorization"].startswith("Intuit_IAM_Authentication ")
-    assert "intuit_appid=Intuit.test" in captured["authorization"]
-    assert "intuit_app_secret=shh" in captured["authorization"]
-    assert captured["intuit_offeringid"] == "Intuit.test"
-
-
-def test_mask_omits_auth_header_when_creds_absent(monkeypatch):
-    """No env vars => no Authorization header is sent."""
-    monkeypatch.delenv("MIRIX_ISPY_PII_APPID", raising=False)
-    monkeypatch.delenv("MIRIX_ISPY_PII_APP_SECRET", raising=False)
-
-    captured: dict = {}
-
-    def handler(request):
-        captured["authorization"] = request.headers.get("authorization")
-        return httpx.Response(200, json={"redactedText": "ok"})
-
-    mask = _build_mask_with_transport(httpx.MockTransport(handler))
-    assert mask(data="user query") == "ok"
-    assert captured["authorization"] is None
+def test_ispy_pii_mask_default_scrubs_email_without_network():
+    """The default callable consulted by get_langfuse_mask is the cheap
+    synchronous backstop and scrubs email locally."""
+    out = ispy_pii_mask(data="reach me at francis@example.com")
+    assert "francis@example.com" not in out

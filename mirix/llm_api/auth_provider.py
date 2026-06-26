@@ -16,6 +16,7 @@ Example:
     >>> register_auth_provider("my_provider", MyAuthProvider())
 """
 
+import asyncio
 from abc import ABC, abstractmethod
 from typing import Dict, Optional
 
@@ -62,6 +63,19 @@ class AuthProvider(ABC):
             ...     }
         """
         raise NotImplementedError
+
+    async def get_auth_headers_async(self) -> Dict[str, str]:
+        """
+        Async variant of :meth:`get_auth_headers`, called from MIRIX's async
+        LLM/embedding request paths.
+
+        The default offloads the synchronous :meth:`get_auth_headers` to a
+        worker thread so a blocking auth round-trip never stalls the event loop.
+        Providers that can refresh tokens natively async — and especially those
+        that cache/coalesce token refreshes — should override this to avoid the
+        thread hop entirely.
+        """
+        return await asyncio.to_thread(self.get_auth_headers)
 
 
 def register_auth_provider(name: str, provider: AuthProvider) -> None:

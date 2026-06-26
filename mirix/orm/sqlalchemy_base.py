@@ -93,7 +93,13 @@ def retry_db_operation(
                                 max_retries,
                                 e,
                             )
-                            raise
+                            # Inner-retry budget exhausted on a DB transient.
+                            # Tag so process_with_policy doesn't add another
+                            # whole-step retry cycle on top (the inner ×
+                            # whole-step multiplication).
+                            from mirix.queue.error_policy import mark_inner_exhausted
+
+                            raise mark_inner_exhausted(e)
                         delay = min(base_delay * (backoff_factor**attempt), max_delay)
                         jitter = random.uniform(0, delay * 0.1)
                         total_delay = delay + jitter
@@ -161,7 +167,11 @@ def transaction_retry(max_retries: int = 3, base_delay: float = 0.1, max_delay: 
                                 max_retries,
                                 e,
                             )
-                            raise
+                            # Inner-retry budget exhausted; see retry_db_operation
+                            # above for the rationale.
+                            from mirix.queue.error_policy import mark_inner_exhausted
+
+                            raise mark_inner_exhausted(e)
                         delay = min(base_delay * (2.0**attempt), max_delay)
                         jitter = random.uniform(0, delay * 0.1)
                         total_delay = delay + jitter
@@ -729,7 +739,7 @@ class SqlalchemyBase(CommonSqlalchemyMetaMixins, Base):
         return self.to_pydantic()
 
     # ========================================================================
-    # REDIS INTEGRATION METHODS (Hybrid: Hash for blocks/messages, JSON for memory)
+    # REDIS INTEGRATION METHODS (Hybrid: Hash for no-embedding tables, JSON+Vector for memory tables with embeddings)
     # ========================================================================
 
     @handle_db_timeout
@@ -802,10 +812,11 @@ class SqlalchemyBase(CommonSqlalchemyMetaMixins, Base):
             return self
         except Exception as e:
             if _TRACE_MISSING_GREENLET:
-                # VEPAGE-1157: log pre-rollback exception detail BEFORE further
-                # DB ops. self.id is touched best-effort — if it lazy-loads and
-                # raises (the suspected root cause), report <id-load-raised:..>
-                # rather than letting the log line itself raise.
+                # Log pre-rollback exception detail BEFORE further DB ops.
+                # self.id is touched best-effort — if it lazy-loads and
+                # raises (a suspected cause of MissingGreenlet cascades),
+                # report <id-load-raised:..> rather than letting the log
+                # line itself raise.
                 try:
                     _id = self.id
                 except Exception as id_exc:
@@ -817,8 +828,7 @@ class SqlalchemyBase(CommonSqlalchemyMetaMixins, Base):
                 except Exception:
                     _chain = "<chain-format-failed>"
                 logger.error(
-                    "VEPAGE-1157 update_with_redis EXC: cls=%s id=%s exc_type=%s "
-                    "session_in_tx=%s session_active=%s — chain: %s",
+                    "update_with_redis EXC: cls=%s id=%s exc_type=%s " "session_in_tx=%s session_active=%s — chain: %s",
                     self.__class__.__name__,
                     _id,
                     type(e).__name__,
@@ -873,16 +883,6 @@ class SqlalchemyBase(CommonSqlalchemyMetaMixins, Base):
 
             table_name = getattr(self, "__tablename__", None)
             if not table_name:
-                return
-
-            # HASH-BASED CACHING (blocks and messages - NO embeddings)
-            if table_name == "block":
-                cache_key = f"{cache_provider.BLOCK_PREFIX}{self.id}"
-                if operation == "delete":
-                    await cache_provider.delete(cache_key)
-                else:
-                    data = self.to_pydantic().model_dump(mode="json")
-                    await cache_provider.set_hash(cache_key, data, ttl=settings.redis_ttl_blocks)
                 return
 
             if table_name == "messages":
@@ -996,7 +996,18 @@ class SqlalchemyBase(CommonSqlalchemyMetaMixins, Base):
                     await cache_provider.set_hash(cache_key, data, ttl=settings.redis_ttl_tools)
                 return
 
-            # JSON-BASED CACHING (memory tables and source tracking tables)
+            # MEMORY TABLE CACHING
+            # block uses Hash (no embedding fields); other memory tables use JSON+Vector.
+            if table_name == "block":
+                cache_key = f"{cache_provider.BLOCK_PREFIX}{self.id}"
+                if operation == "delete":
+                    await cache_provider.delete(cache_key)
+                else:
+                    data = self.to_pydantic().model_dump(mode="json")
+                    await cache_provider.set_hash(cache_key, data, ttl=settings.redis_ttl_blocks)
+                return
+
+            # JSON-BASED CACHING for memory tables with embeddings + source tracking tables.
             memory_tables = {
                 "episodic_memory": cache_provider.EPISODIC_PREFIX,
                 "semantic_memory": cache_provider.SEMANTIC_PREFIX,

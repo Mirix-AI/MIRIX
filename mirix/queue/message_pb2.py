@@ -4,6 +4,7 @@
 # source: message.proto
 # Protobuf Python Version: 5.27.2
 """Generated protocol buffer code."""
+
 from google.protobuf import descriptor as _descriptor
 from google.protobuf import descriptor_pool as _descriptor_pool
 from google.protobuf import runtime_version as _runtime_version
@@ -20,7 +21,7 @@ from google.protobuf import struct_pb2 as google_dot_protobuf_dot_struct__pb2
 from google.protobuf import timestamp_pb2 as google_dot_protobuf_dot_timestamp__pb2
 
 DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(
-    b'\n\rmessage.proto\x12\x05mirix\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1cgoogle/protobuf/struct.proto"\xf7\x08\n\x0cQueueMessage\x12\x11\n\tclient_id\x18\x01 \x01(\t\x12\x10\n\x08\x61gent_id\x18\x02 \x01(\t\x12,\n\x0einput_messages\x18\x03 \x03(\x0b\x32\x14.mirix.MessageCreate\x12\x15\n\x08\x63haining\x18\x04 \x01(\x08H\x00\x88\x01\x01\x12\x14\n\x07user_id\x18\x05 \x01(\tH\x01\x88\x01\x01\x12\x14\n\x07verbose\x18\x06 \x01(\x08H\x02\x88\x01\x01\x12,\n\x0b\x66ilter_tags\x18\x07 \x01(\x0b\x32\x17.google.protobuf.Struct\x12\x16\n\tuse_cache\x18\x08 \x01(\x08H\x03\x88\x01\x01\x12\x18\n\x0boccurred_at\x18\t \x01(\tH\x04\x88\x01\x01\x12\x1e\n\x11langfuse_trace_id\x18\n \x01(\tH\x05\x88\x01\x01\x12$\n\x17langfuse_observation_id\x18\x0b \x01(\tH\x06\x88\x01\x01\x12 \n\x13langfuse_session_id\x18\x0c \x01(\tH\x07\x88\x01\x01\x12\x1d\n\x10langfuse_user_id\x18\r \x01(\tH\x08\x88\x01\x01\x12\x32\n\x11\x62lock_filter_tags\x18\x0e \x01(\x0b\x32\x17.google.protobuf.Struct\x12*\n\x1d\x62lock_filter_tags_update_mode\x18\x0f \x01(\tH\t\x88\x01\x01\x12\x1d\n\x10memory_source_id\x18\x10 \x01(\tH\n\x88\x01\x01\x12\x18\n\x0b\x65xternal_id\x18\x11 \x01(\tH\x0b\x88\x01\x01\x12\x1f\n\x12\x65xternal_thread_id\x18\x12 \x01(\tH\x0c\x88\x01\x01\x12\x18\n\x0bsource_type\x18\x13 \x01(\tH\r\x88\x01\x01\x12\x1a\n\rsource_system\x18\x14 \x01(\tH\x0e\x88\x01\x01\x12\x30\n\x0fsource_metadata\x18\x15 \x01(\x0b\x32\x17.google.protobuf.Struct\x12\x14\n\x07summary\x18\x16 \x01(\tH\x0f\x88\x01\x01\x12\x16\n\tsummarize\x18\x17 \x01(\x08H\x10\x88\x01\x01\x12-\n\x0fsource_messages\x18\x18 \x03(\x0b\x32\x14.mirix.MessageCreate\x12/\n\rdirect_writes\x18\x19 \x03(\x0b\x32\x18.mirix.DirectMemoryWriteB\x0b\n\t_chainingB\n\n\x08_user_idB\n\n\x08_verboseB\x0c\n\n_use_cacheB\x0e\n\x0c_occurred_atB\x14\n\x12_langfuse_trace_idB\x1a\n\x18_langfuse_observation_idB\x16\n\x14_langfuse_session_idB\x13\n\x11_langfuse_user_idB \n\x1e_block_filter_tags_update_modeB\x13\n\x11_memory_source_idB\x0e\n\x0c_external_idB\x15\n\x13_external_thread_idB\x0e\n\x0c_source_typeB\x10\n\x0e_source_systemB\n\n\x08_summaryB\x0c\n\n_summarize"\xcf\x01\n\x04User\x12\n\n\x02id\x18\x01 \x01(\t\x12\x17\n\x0forganization_id\x18\x02 \x01(\t\x12\x0c\n\x04name\x18\x03 \x01(\t\x12\x0e\n\x06status\x18\x04 \x01(\t\x12\x10\n\x08timezone\x18\x05 \x01(\t\x12.\n\ncreated_at\x18\x06 \x01(\x0b\x32\x1a.google.protobuf.Timestamp\x12.\n\nupdated_at\x18\x07 \x01(\x0b\x32\x1a.google.protobuf.Timestamp\x12\x12\n\nis_deleted\x18\x08 \x01(\x08"\x94\x04\n\rMessageCreate\x12\'\n\x04role\x18\x01 \x01(\x0e\x32\x19.mirix.MessageCreate.Role\x12\x16\n\x0ctext_content\x18\x02 \x01(\tH\x00\x12\x37\n\x12structured_content\x18\x03 \x01(\x0b\x32\x19.mirix.MessageContentListH\x00\x12\x11\n\x04name\x18\x04 \x01(\tH\x01\x88\x01\x01\x12\x11\n\x04otid\x18\x05 \x01(\tH\x02\x88\x01\x01\x12\x16\n\tsender_id\x18\x06 \x01(\tH\x03\x88\x01\x01\x12\x15\n\x08group_id\x18\x07 \x01(\tH\x04\x88\x01\x01\x12 \n\x13\x65xternal_message_id\x18\x08 \x01(\tH\x05\x88\x01\x01\x12 \n\x13message_occurred_at\x18\t \x01(\tH\x06\x88\x01\x01\x12\x31\n\x10message_metadata\x18\n \x01(\x0b\x32\x17.google.protobuf.Struct"P\n\x04Role\x12\x14\n\x10ROLE_UNSPECIFIED\x10\x00\x12\r\n\tROLE_USER\x10\x01\x12\x0f\n\x0bROLE_SYSTEM\x10\x02\x12\x12\n\x0eROLE_ASSISTANT\x10\x03\x42\x0e\n\x0c\x63ontent_typeB\x07\n\x05_nameB\x07\n\x05_otidB\x0c\n\n_sender_idB\x0b\n\t_group_idB\x16\n\x14_external_message_idB\x16\n\x14_message_occurred_at">\n\x12MessageContentList\x12(\n\x05parts\x18\x01 \x03(\x0b\x32\x19.mirix.MessageContentPart"\xbc\x01\n\x12MessageContentPart\x12"\n\x04text\x18\x01 \x01(\x0b\x32\x12.mirix.TextContentH\x00\x12$\n\x05image\x18\x02 \x01(\x0b\x32\x13.mirix.ImageContentH\x00\x12"\n\x04\x66ile\x18\x03 \x01(\x0b\x32\x12.mirix.FileContentH\x00\x12-\n\ncloud_file\x18\x04 \x01(\x0b\x32\x17.mirix.CloudFileContentH\x00\x42\t\n\x07\x63ontent"\x1b\n\x0bTextContent\x12\x0c\n\x04text\x18\x01 \x01(\t"@\n\x0cImageContent\x12\x10\n\x08image_id\x18\x01 \x01(\t\x12\x13\n\x06\x64\x65tail\x18\x02 \x01(\tH\x00\x88\x01\x01\x42\t\n\x07_detail"\x1e\n\x0b\x46ileContent\x12\x0f\n\x07\x66ile_id\x18\x01 \x01(\t"*\n\x10\x43loudFileContent\x12\x16\n\x0e\x63loud_file_uri\x18\x01 \x01(\t">\n\x11\x44irectMemoryWrite\x12\x13\n\x0bmemory_type\x18\x01 \x01(\t\x12\x14\n\x0cpayload_json\x18\x02 \x01(\tb\x06proto3'
+    b'\n\rmessage.proto\x12\x05mirix\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1cgoogle/protobuf/struct.proto"\x91\t\n\x0cQueueMessage\x12\x11\n\tclient_id\x18\x01 \x01(\t\x12\x10\n\x08\x61gent_id\x18\x02 \x01(\t\x12,\n\x0einput_messages\x18\x03 \x03(\x0b\x32\x14.mirix.MessageCreate\x12\x15\n\x08\x63haining\x18\x04 \x01(\x08H\x00\x88\x01\x01\x12\x14\n\x07user_id\x18\x05 \x01(\tH\x01\x88\x01\x01\x12\x14\n\x07verbose\x18\x06 \x01(\x08H\x02\x88\x01\x01\x12,\n\x0b\x66ilter_tags\x18\x07 \x01(\x0b\x32\x17.google.protobuf.Struct\x12\x16\n\tuse_cache\x18\x08 \x01(\x08H\x03\x88\x01\x01\x12\x18\n\x0boccurred_at\x18\t \x01(\tH\x04\x88\x01\x01\x12\x1e\n\x11langfuse_trace_id\x18\n \x01(\tH\x05\x88\x01\x01\x12$\n\x17langfuse_observation_id\x18\x0b \x01(\tH\x06\x88\x01\x01\x12 \n\x13langfuse_session_id\x18\x0c \x01(\tH\x07\x88\x01\x01\x12\x1d\n\x10langfuse_user_id\x18\r \x01(\tH\x08\x88\x01\x01\x12\x32\n\x11\x62lock_filter_tags\x18\x0e \x01(\x0b\x32\x17.google.protobuf.Struct\x12*\n\x1d\x62lock_filter_tags_update_mode\x18\x0f \x01(\tH\t\x88\x01\x01\x12\x1d\n\x10memory_source_id\x18\x10 \x01(\tH\n\x88\x01\x01\x12\x18\n\x0b\x65xternal_id\x18\x11 \x01(\tH\x0b\x88\x01\x01\x12\x1f\n\x12\x65xternal_thread_id\x18\x12 \x01(\tH\x0c\x88\x01\x01\x12\x18\n\x0bsource_type\x18\x13 \x01(\tH\r\x88\x01\x01\x12\x1a\n\rsource_system\x18\x14 \x01(\tH\x0e\x88\x01\x01\x12\x30\n\x0fsource_metadata\x18\x15 \x01(\x0b\x32\x17.google.protobuf.Struct\x12\x14\n\x07summary\x18\x16 \x01(\tH\x0f\x88\x01\x01\x12\x16\n\tsummarize\x18\x17 \x01(\x08H\x10\x88\x01\x01\x12-\n\x0fsource_messages\x18\x18 \x03(\x0b\x32\x14.mirix.MessageCreate\x12/\n\rdirect_writes\x18\x19 \x03(\x0b\x32\x18.mirix.DirectMemoryWrite\x12\x10\n\x03tid\x18\x1a \x01(\tH\x11\x88\x01\x01\x42\x0b\n\t_chainingB\n\n\x08_user_idB\n\n\x08_verboseB\x0c\n\n_use_cacheB\x0e\n\x0c_occurred_atB\x14\n\x12_langfuse_trace_idB\x1a\n\x18_langfuse_observation_idB\x16\n\x14_langfuse_session_idB\x13\n\x11_langfuse_user_idB \n\x1e_block_filter_tags_update_modeB\x13\n\x11_memory_source_idB\x0e\n\x0c_external_idB\x15\n\x13_external_thread_idB\x0e\n\x0c_source_typeB\x10\n\x0e_source_systemB\n\n\x08_summaryB\x0c\n\n_summarizeB\x06\n\x04_tid"\xcf\x01\n\x04User\x12\n\n\x02id\x18\x01 \x01(\t\x12\x17\n\x0forganization_id\x18\x02 \x01(\t\x12\x0c\n\x04name\x18\x03 \x01(\t\x12\x0e\n\x06status\x18\x04 \x01(\t\x12\x10\n\x08timezone\x18\x05 \x01(\t\x12.\n\ncreated_at\x18\x06 \x01(\x0b\x32\x1a.google.protobuf.Timestamp\x12.\n\nupdated_at\x18\x07 \x01(\x0b\x32\x1a.google.protobuf.Timestamp\x12\x12\n\nis_deleted\x18\x08 \x01(\x08"\x94\x04\n\rMessageCreate\x12\'\n\x04role\x18\x01 \x01(\x0e\x32\x19.mirix.MessageCreate.Role\x12\x16\n\x0ctext_content\x18\x02 \x01(\tH\x00\x12\x37\n\x12structured_content\x18\x03 \x01(\x0b\x32\x19.mirix.MessageContentListH\x00\x12\x11\n\x04name\x18\x04 \x01(\tH\x01\x88\x01\x01\x12\x11\n\x04otid\x18\x05 \x01(\tH\x02\x88\x01\x01\x12\x16\n\tsender_id\x18\x06 \x01(\tH\x03\x88\x01\x01\x12\x15\n\x08group_id\x18\x07 \x01(\tH\x04\x88\x01\x01\x12 \n\x13\x65xternal_message_id\x18\x08 \x01(\tH\x05\x88\x01\x01\x12 \n\x13message_occurred_at\x18\t \x01(\tH\x06\x88\x01\x01\x12\x31\n\x10message_metadata\x18\n \x01(\x0b\x32\x17.google.protobuf.Struct"P\n\x04Role\x12\x14\n\x10ROLE_UNSPECIFIED\x10\x00\x12\r\n\tROLE_USER\x10\x01\x12\x0f\n\x0bROLE_SYSTEM\x10\x02\x12\x12\n\x0eROLE_ASSISTANT\x10\x03\x42\x0e\n\x0c\x63ontent_typeB\x07\n\x05_nameB\x07\n\x05_otidB\x0c\n\n_sender_idB\x0b\n\t_group_idB\x16\n\x14_external_message_idB\x16\n\x14_message_occurred_at">\n\x12MessageContentList\x12(\n\x05parts\x18\x01 \x03(\x0b\x32\x19.mirix.MessageContentPart"\xbc\x01\n\x12MessageContentPart\x12"\n\x04text\x18\x01 \x01(\x0b\x32\x12.mirix.TextContentH\x00\x12$\n\x05image\x18\x02 \x01(\x0b\x32\x13.mirix.ImageContentH\x00\x12"\n\x04\x66ile\x18\x03 \x01(\x0b\x32\x12.mirix.FileContentH\x00\x12-\n\ncloud_file\x18\x04 \x01(\x0b\x32\x17.mirix.CloudFileContentH\x00\x42\t\n\x07\x63ontent"\x1b\n\x0bTextContent\x12\x0c\n\x04text\x18\x01 \x01(\t"@\n\x0cImageContent\x12\x10\n\x08image_id\x18\x01 \x01(\t\x12\x13\n\x06\x64\x65tail\x18\x02 \x01(\tH\x00\x88\x01\x01\x42\t\n\x07_detail"\x1e\n\x0b\x46ileContent\x12\x0f\n\x07\x66ile_id\x18\x01 \x01(\t"*\n\x10\x43loudFileContent\x12\x16\n\x0e\x63loud_file_uri\x18\x01 \x01(\t">\n\x11\x44irectMemoryWrite\x12\x13\n\x0bmemory_type\x18\x01 \x01(\t\x12\x14\n\x0cpayload_json\x18\x02 \x01(\tb\x06proto3'
 )
 
 _globals = globals()
@@ -29,25 +30,25 @@ _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, "message_pb2", _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
     DESCRIPTOR._loaded_options = None
     _globals["_QUEUEMESSAGE"]._serialized_start = 88
-    _globals["_QUEUEMESSAGE"]._serialized_end = 1231
-    _globals["_USER"]._serialized_start = 1234
-    _globals["_USER"]._serialized_end = 1441
-    _globals["_MESSAGECREATE"]._serialized_start = 1444
-    _globals["_MESSAGECREATE"]._serialized_end = 1976
-    _globals["_MESSAGECREATE_ROLE"]._serialized_start = 1787
-    _globals["_MESSAGECREATE_ROLE"]._serialized_end = 1867
-    _globals["_MESSAGECONTENTLIST"]._serialized_start = 1978
-    _globals["_MESSAGECONTENTLIST"]._serialized_end = 2040
-    _globals["_MESSAGECONTENTPART"]._serialized_start = 2043
-    _globals["_MESSAGECONTENTPART"]._serialized_end = 2231
-    _globals["_TEXTCONTENT"]._serialized_start = 2233
-    _globals["_TEXTCONTENT"]._serialized_end = 2260
-    _globals["_IMAGECONTENT"]._serialized_start = 2262
-    _globals["_IMAGECONTENT"]._serialized_end = 2326
-    _globals["_FILECONTENT"]._serialized_start = 2328
-    _globals["_FILECONTENT"]._serialized_end = 2358
-    _globals["_CLOUDFILECONTENT"]._serialized_start = 2360
-    _globals["_CLOUDFILECONTENT"]._serialized_end = 2402
-    _globals["_DIRECTMEMORYWRITE"]._serialized_start = 2404
-    _globals["_DIRECTMEMORYWRITE"]._serialized_end = 2466
+    _globals["_QUEUEMESSAGE"]._serialized_end = 1257
+    _globals["_USER"]._serialized_start = 1260
+    _globals["_USER"]._serialized_end = 1467
+    _globals["_MESSAGECREATE"]._serialized_start = 1470
+    _globals["_MESSAGECREATE"]._serialized_end = 2002
+    _globals["_MESSAGECREATE_ROLE"]._serialized_start = 1813
+    _globals["_MESSAGECREATE_ROLE"]._serialized_end = 1893
+    _globals["_MESSAGECONTENTLIST"]._serialized_start = 2004
+    _globals["_MESSAGECONTENTLIST"]._serialized_end = 2066
+    _globals["_MESSAGECONTENTPART"]._serialized_start = 2069
+    _globals["_MESSAGECONTENTPART"]._serialized_end = 2257
+    _globals["_TEXTCONTENT"]._serialized_start = 2259
+    _globals["_TEXTCONTENT"]._serialized_end = 2286
+    _globals["_IMAGECONTENT"]._serialized_start = 2288
+    _globals["_IMAGECONTENT"]._serialized_end = 2352
+    _globals["_FILECONTENT"]._serialized_start = 2354
+    _globals["_FILECONTENT"]._serialized_end = 2384
+    _globals["_CLOUDFILECONTENT"]._serialized_start = 2386
+    _globals["_CLOUDFILECONTENT"]._serialized_end = 2428
+    _globals["_DIRECTMEMORYWRITE"]._serialized_start = 2430
+    _globals["_DIRECTMEMORYWRITE"]._serialized_end = 2492
 # @@protoc_insertion_point(module_scope)

@@ -410,7 +410,8 @@ class TestMemorySourceIdPropagation:
         child_state = MagicMock()
         child_state.name = "episodic_memory_agent"
         child_state.agent_type = "episodic_memory_agent"
-        agent.agent_manager.list_agents = AsyncMock(return_value=[child_state])
+        # VEPAGE-1228: trigger_memory_update resolves children via the joined NQ.
+        agent.agent_manager.list_agents_with_tools = AsyncMock(return_value=[child_state])
 
         captured_agent = {}
 

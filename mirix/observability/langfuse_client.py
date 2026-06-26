@@ -68,10 +68,13 @@ async def initialize_langfuse(force: bool = False) -> Optional["Langfuse"]:
             logger.info(f"Initializing LangFuse client (host: {settings.langfuse_host}, environment: {environment})")
 
             from langfuse import Langfuse
-            from opentelemetry.sdk.trace import TracerProvider
 
             from mirix.observability.pii_mask import get_langfuse_mask
+            from mirix.observability.tracer_provider import get_shared_tracer_provider
 
+            # Use the process-wide shared provider so Langfuse's processor and any
+            # other sink (e.g. the test-mode JSONL file exporter) both receive
+            # every span. Langfuse ADDS its processor to this provider.
             _langfuse_client = await asyncio.to_thread(
                 Langfuse,
                 public_key=settings.langfuse_public_key,
@@ -80,7 +83,7 @@ async def initialize_langfuse(force: bool = False) -> Optional["Langfuse"]:
                 debug=settings.langfuse_debug,
                 flush_interval=settings.langfuse_flush_interval,
                 flush_at=settings.langfuse_flush_at,
-                tracer_provider=TracerProvider(),
+                tracer_provider=get_shared_tracer_provider(),
                 environment=environment,
                 # PII masking: Langfuse invokes this callable per
                 # observation field, so PII tokens (emails, SSNs,

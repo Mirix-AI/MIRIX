@@ -2,12 +2,12 @@
 Hybrid Redis client for Mirix memory system.
 
 Uses:
-- Redis Hash for blocks (fast, flat structure, no embeddings)
-- Redis Hash for messages (fast, mostly flat, no embeddings)
-- Redis JSON with Vector fields for memory tables (embeddings support)
+- Redis Hash for block (memory table, no embedding fields)
+- Redis Hash for messages (engine table, no embeddings)
+- Redis JSON with Vector fields for other memory tables (embeddings support)
 
 Provides:
-- 40-60% faster operations for blocks and messages via Hash
+- Fast operations for block and messages via Hash (no embedding overhead)
 - 10-40x faster vector similarity search vs PostgreSQL pgvector
 - Hybrid text+vector search capabilities
 """
@@ -28,8 +28,8 @@ class RedisMemoryClient:
     Hybrid Redis client for Mirix memory caching and search.
 
     Architecture:
-    - Hash: blocks, messages (no embeddings, flat structure)
-    - JSON + Vector: episodic, semantic, procedural, resource, knowledge (has embeddings)
+    - Hash: block (memory table, no embeddings), messages (engine table, no embeddings)
+    - JSON + Vector: episodic, semantic, procedural, resource, knowledge, raw_memory (memory tables with embeddings)
     """
 
     # Index names
@@ -216,7 +216,7 @@ class RedisMemoryClient:
     async def create_indexes(self) -> None:
         """Create RediSearch indexes for all memory types (hybrid approach)."""
         logger.info(
-            "Creating Redis indexes (hybrid: Hash for blocks/messages/orgs/users/agents/tools, JSON+Vectors for memory)..."
+            "Creating Redis indexes (Hash for block/messages/orgs/users/agents/tools, JSON+Vectors for episodic/semantic/procedural/resource/knowledge/raw_memory)..."
         )
 
         try:
@@ -241,7 +241,7 @@ class RedisMemoryClient:
             # Don't raise - allow system to continue without indexes
 
     # ========================================================================
-    # HASH-BASED METHODS (for blocks and messages - NO embeddings)
+    # HASH-BASED METHODS (block memory table + engine tables without embeddings)
     # ========================================================================
 
     async def _create_block_index(self) -> None:
@@ -439,7 +439,7 @@ class RedisMemoryClient:
 
     async def set_hash(self, key: str, data: Dict[str, Any], ttl: Optional[int] = None) -> bool:
         """
-        Store data as Redis Hash (for flat structures like blocks and messages).
+        Store data as Redis Hash (for flat structures without embedding fields).
 
         Args:
             key: Redis key

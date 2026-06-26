@@ -78,7 +78,6 @@ from mirix.services.episodic_memory_manager import EpisodicMemoryManager
 from mirix.services.knowledge_vault_manager import KnowledgeVaultManager
 from mirix.services.message_manager import MessageManager
 from mirix.services.organization_manager import OrganizationManager
-from mirix.services.per_agent_lock_manager import PerAgentLockManager
 from mirix.services.procedural_memory_manager import ProceduralMemoryManager
 from mirix.services.provider_manager import ProviderManager
 from mirix.services.raw_memory_manager import RawMemoryManager
@@ -413,7 +412,7 @@ if not USE_PGLITE:
 # ========================================================================
 # Initialize Redis client for caching and vector search after database setup
 # This provides:
-# - 40-60% faster operations for blocks/messages via Hash
+# - Fast Hash-based caching for block (memory) and messages (engine)
 # - 10-40x faster vector similarity search vs pgvector
 # - Hybrid text+vector search capabilities
 
@@ -571,9 +570,6 @@ class AsyncServer(Server):
         # CloudFileManager
         self.cloud_file_mapping_manager = CloudFileMappingManager()
 
-        # Managers that interface with parallelism
-        self.per_agent_lock_manager = PerAgentLockManager()
-
         # Default org/user/client are created async in ensure_defaults() (called from lifespan)
         if init_with_default_org_and_user:
             self._pending_defaults = True
@@ -702,50 +698,54 @@ class AsyncServer(Server):
         user: Optional[User] = None,
     ) -> Agent:
         """Updated method to load agents from persisted storage."""
-        agent_lock = self.per_agent_lock_manager.get_lock(agent_id)
-        async with agent_lock:
+        from mirix.observability.timed import timedspan
+
+        async with timedspan(
+            "Load Agent State",
+            metadata={"agent_id": agent_id},
+        ):
             agent_state = await self.agent_manager.get_agent_by_id(agent_id=agent_id, actor=actor)
 
-            common_kwargs = dict(
-                interface=interface or self.default_interface_factory(),
-                actor=actor,
-                filter_tags=filter_tags,
-                block_filter_tags=block_filter_tags,
-                block_filter_tags_update_mode=block_filter_tags_update_mode,
-                use_cache=use_cache,
-                user=user,
+        common_kwargs = dict(
+            interface=interface or self.default_interface_factory(),
+            actor=actor,
+            filter_tags=filter_tags,
+            block_filter_tags=block_filter_tags,
+            block_filter_tags_update_mode=block_filter_tags_update_mode,
+            use_cache=use_cache,
+            user=user,
+        )
+
+        if agent_state.agent_type == AgentType.chat_agent:
+            agent = Agent(agent_state=agent_state, **common_kwargs)
+        elif agent_state.agent_type == AgentType.episodic_memory_agent:
+            agent = EpisodicMemoryAgent(agent_state=agent_state, **common_kwargs)
+        elif agent_state.agent_type == AgentType.knowledge_vault_memory_agent:
+            agent = KnowledgeVaultAgent(agent_state=agent_state, **common_kwargs)
+        elif agent_state.agent_type == AgentType.procedural_memory_agent:
+            agent = ProceduralMemoryAgent(agent_state=agent_state, **common_kwargs)
+        elif agent_state.agent_type == AgentType.resource_memory_agent:
+            agent = ResourceMemoryAgent(agent_state=agent_state, **common_kwargs)
+        elif agent_state.agent_type == AgentType.meta_memory_agent:
+            logger.info(
+                "Loading MetaMemoryAgent with filter_tags=%s, client_id=%s, user_id=%s",
+                filter_tags,
+                actor.id,
+                user.id if user else None,
             )
+            agent = MetaMemoryAgent(agent_state=agent_state, **common_kwargs)
+        elif agent_state.agent_type == AgentType.semantic_memory_agent:
+            agent = SemanticMemoryAgent(agent_state=agent_state, **common_kwargs)
+        elif agent_state.agent_type == AgentType.core_memory_agent:
+            agent = CoreMemoryAgent(agent_state=agent_state, **common_kwargs)
+        elif agent_state.agent_type == AgentType.reflexion_agent:
+            agent = ReflexionAgent(agent_state=agent_state, **common_kwargs)
+        elif agent_state.agent_type == AgentType.background_agent:
+            agent = BackgroundAgent(agent_state=agent_state, **common_kwargs)
+        else:
+            raise ValueError(f"Invalid agent type {agent_state.agent_type}")
 
-            if agent_state.agent_type == AgentType.chat_agent:
-                agent = Agent(agent_state=agent_state, **common_kwargs)
-            elif agent_state.agent_type == AgentType.episodic_memory_agent:
-                agent = EpisodicMemoryAgent(agent_state=agent_state, **common_kwargs)
-            elif agent_state.agent_type == AgentType.knowledge_vault_memory_agent:
-                agent = KnowledgeVaultAgent(agent_state=agent_state, **common_kwargs)
-            elif agent_state.agent_type == AgentType.procedural_memory_agent:
-                agent = ProceduralMemoryAgent(agent_state=agent_state, **common_kwargs)
-            elif agent_state.agent_type == AgentType.resource_memory_agent:
-                agent = ResourceMemoryAgent(agent_state=agent_state, **common_kwargs)
-            elif agent_state.agent_type == AgentType.meta_memory_agent:
-                logger.info(
-                    "Loading MetaMemoryAgent with filter_tags=%s, client_id=%s, user_id=%s",
-                    filter_tags,
-                    actor.id,
-                    user.id if user else None,
-                )
-                agent = MetaMemoryAgent(agent_state=agent_state, **common_kwargs)
-            elif agent_state.agent_type == AgentType.semantic_memory_agent:
-                agent = SemanticMemoryAgent(agent_state=agent_state, **common_kwargs)
-            elif agent_state.agent_type == AgentType.core_memory_agent:
-                agent = CoreMemoryAgent(agent_state=agent_state, **common_kwargs)
-            elif agent_state.agent_type == AgentType.reflexion_agent:
-                agent = ReflexionAgent(agent_state=agent_state, **common_kwargs)
-            elif agent_state.agent_type == AgentType.background_agent:
-                agent = BackgroundAgent(agent_state=agent_state, **common_kwargs)
-            else:
-                raise ValueError(f"Invalid agent type {agent_state.agent_type}")
-
-            return agent
+        return agent
 
     async def _step(
         self,
@@ -781,16 +781,22 @@ class AsyncServer(Server):
             raise ValueError("AsyncServer._step requires a non-null user.")
         mirix_agent = None
         try:
-            mirix_agent = await self.load_agent(
-                agent_id=agent_id,
-                interface=None,
-                actor=actor,
-                filter_tags=filter_tags,
-                block_filter_tags=block_filter_tags,
-                block_filter_tags_update_mode=block_filter_tags_update_mode,
-                use_cache=use_cache,
-                user=user,
-            )
+            from mirix.observability.timed import timedspan
+
+            async with timedspan(
+                "Load Agent",
+                metadata={"agent_id": agent_id},
+            ):
+                mirix_agent = await self.load_agent(
+                    agent_id=agent_id,
+                    interface=None,
+                    actor=actor,
+                    filter_tags=filter_tags,
+                    block_filter_tags=block_filter_tags,
+                    block_filter_tags_update_mode=block_filter_tags_update_mode,
+                    use_cache=use_cache,
+                    user=user,
+                )
 
             if mirix_agent is None:
                 raise KeyError(f"Agent (user={actor.id}, agent={agent_id}) is not loaded")
@@ -854,9 +860,11 @@ class AsyncServer(Server):
                 user=user,  # User for read operations (data filtering)
             )
 
-        except Exception as e:
-            logger.error("Error in server._step: %s", e)
-            logger.error(traceback.print_exc())
+        except Exception:
+            # `logger.exception` attaches the traceback automatically; the
+            # previous `logger.error(traceback.print_exc())` was logging
+            # `None` because `print_exc` returns nothing.
+            logger.exception("Error in server._step")
             raise
         finally:
             logger.debug("Calling step_yield()")
@@ -1193,7 +1201,6 @@ class AsyncServer(Server):
             # No cleanup needed - context automatically isolated per request
             pass
 
-    # @LockingServer.agent_lock_decorator
     async def run_command(self, user_id: str, agent_id: str, command: str) -> MirixUsageStatistics:
         """Run a command on the agent"""
         # If the input begins with a command prefix, attempt to process it as a command

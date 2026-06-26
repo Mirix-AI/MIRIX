@@ -44,7 +44,7 @@ from mirix.schemas.tool import Tool
 from mirix.schemas.tool_rule import BaseToolRule
 from mirix.schemas.user import User
 from mirix.server.server import AsyncServer, ensure_tables_created
-from mirix.settings import model_settings
+from mirix.settings import model_settings, settings
 from mirix.utils import convert_message_to_mirix_message
 
 logger = get_logger(__name__)
@@ -240,7 +240,7 @@ def with_langfuse_tracing(func):
     from langfuse.types import TraceContext
 
     from mirix.observability import get_langfuse_client, is_langfuse_enabled
-    from mirix.observability.context import clear_trace_context, set_trace_context
+    from mirix.observability.context import clear_trace_context, get_tid, set_trace_context
 
     @functools.wraps(func)
     async def wrapper(*args, **kwargs):
@@ -280,16 +280,23 @@ def with_langfuse_tracing(func):
                     f"LangFuse trace created: trace_id={trace_id}, observation_id={observation_id}, path={path}"
                 )
 
+                # Transaction id (TID): caller/gateway-provided request id. Put it
+                # in trace metadata (visible) AND tags (filterable in the Langfuse
+                # dashboard) so a broken trace surfaces its TID for a log pivot.
+                tid = get_tid()
+                trace_tags = [f"tid:{tid}"] if tid else None
                 langfuse.update_current_trace(
                     name=f"{method} {path}",
                     user_id=user_id or client_id,
                     session_id=session_id,
+                    tags=trace_tags,
                     metadata={
                         "method": method,
                         "path": path,
                         "client_id": client_id,
                         "org_id": org_id,
                         "user_agent": request.headers.get("user-agent"),
+                        "tid": tid,
                     },
                 )
 
@@ -368,6 +375,20 @@ async def get_client_and_org(
     Returns:
         tuple[str, str]: (client_id, org_id)
     """
+    # ECMS imports these route handlers and calls them as plain async
+    # functions (not through FastAPI's HTTP layer), so FastAPI never resolves
+    # ``Header(None)`` defaults — direct callers that omit a Header arg pass
+    # the ``Header(None)`` FieldInfo sentinel instead of ``None``. That object
+    # is truthy, so ``x_org_id or DEFAULT_ORG_ID`` would yield the sentinel
+    # and later fail @enforce_types deep in the call. Normalize any non-str
+    # value back to None so the default-org fallback fires.
+    if not isinstance(x_org_id, str):
+        x_org_id = None
+    if not isinstance(x_client_id, str):
+        x_client_id = None
+    if not isinstance(x_api_key, str):
+        x_api_key = None
+
     server = get_server()
 
     if x_api_key:
@@ -602,9 +623,7 @@ async def extract_topics_with_local_model(messages: List[Dict[str, Any]], model_
             {
                 "role": "user",
                 "content": (
-                    "Conversation transcript:\n"
-                    f"{conversation}\n\n"
-                    "Respond ONLY with the topic(s) separated by ';'."
+                    f"Conversation transcript:\n{conversation}\n\nRespond ONLY with the topic(s) separated by ';'."
                 ),
             },
         ],
@@ -2088,36 +2107,21 @@ async def add_memory(
     """
     server = get_server()
     client_id, org_id = await get_client_and_org(x_client_id, x_org_id)
-    client = await server.client_manager.get_client_by_id(client_id)
 
-    # If client doesn't exist, create the default client
-    if client is None:
-        logger.warning("Client %s not found, creating default client", client_id)
-        from mirix.services.client_manager import ClientManager
-
-        if client_id == ClientManager.DEFAULT_CLIENT_ID:
-            # Create the default client
-            client = await server.client_manager.create_default_client(org_id)
-        else:
-            # Client ID was provided but doesn't exist - error
-            raise HTTPException(
-                status_code=404,
-                detail=f"Client {client_id} not found. Please create the client first.",
-            )
-
-    # Get the meta agent by ID
-    # TODO: need to check if we really need to check if the meta_agent exists here
-    meta_agent = await server.agent_manager.get_agent_by_id(
-        request.meta_agent_id,
-        client,
-    )
+    # The pre-queue path is lookup-free: enqueuing needs neither the full client
+    # nor the meta-agent. The worker resolves the client by client_id on dequeue
+    # (and derives write_scope from it), and loads the agent when it processes the
+    # message; the meta-agent id is taken straight from the request. The queue
+    # carries only client_id (actor.id), so hand put_messages a minimal actor with
+    # the id and org and skip the datastore reads.
+    actor = Client(id=client_id, name=client_id, organization_id=org_id)
 
     # If user_id is not provided, use the admin user for this client
     user_id = request.user_id
     if not user_id:
         from mirix.services.admin_user_manager import ClientAuthManager
 
-        user_id = ClientAuthManager.get_admin_user_id_for_client(client.id)
+        user_id = ClientAuthManager.get_admin_user_id_for_client(client_id)
         logger.debug("No user_id provided, using admin user: %s", user_id)
 
     message = request.messages
@@ -2165,7 +2169,7 @@ async def add_memory(
     # so, there will be only one MessageCreate object in the list
     input_messages = convert_message_to_mirix_message(message)
 
-    # Add client scope to filter_tags (create if not provided)
+    # Copy filter_tags (create if not provided)
     if request.filter_tags is not None:
         # Create a copy to avoid modifying the original request
         filter_tags = dict(request.filter_tags)
@@ -2173,18 +2177,17 @@ async def add_memory(
         # Create new filter_tags if not provided
         filter_tags = {}
 
+    # Scope is owned by the worker (derived from the client), not the caller.
+    # Strip any inbound "scope" so a forged value can never reach the queue; the
+    # worker sets it from the client and overwrites whatever is present.
+    filter_tags.pop("scope", None)
+
     if request.block_filter_tags is not None and not isinstance(request.block_filter_tags, dict):
         raise HTTPException(status_code=400, detail="block_filter_tags must be a dict when provided")
     if request.block_filter_tags is not None:
         request.block_filter_tags.pop("scope", None)
     if request.block_filter_tags_update_mode not in ("merge", "replace"):
         raise HTTPException(status_code=400, detail="block_filter_tags_update_mode must be 'merge' or 'replace'")
-
-    # Add or update the "scope" key with the client's write_scope for memory creation
-    # Memories are written with the client's write_scope
-    if client.write_scope is None:
-        raise HTTPException(status_code=403, detail="Client has no write_scope - cannot create memories")
-    filter_tags["scope"] = client.write_scope
 
     # Pre-generate memory_source_id for citation tracking
     import uuid
@@ -2195,8 +2198,8 @@ async def add_memory(
     # Note: actor is Client for org-level access control
     #       user_id represents the actual end-user (or admin user if not provided)
     await put_messages(
-        actor=client,
-        agent_id=meta_agent.id,
+        actor=actor,
+        agent_id=request.meta_agent_id,
         input_messages=input_messages,
         chaining=request.chaining,
         user_id=user_id,  # End-user for data filtering (or admin user)
@@ -2222,13 +2225,13 @@ async def add_memory(
         ),
     )
 
-    logger.debug("Memory queued for processing: %s", meta_agent.id)
+    logger.debug("Memory queued for processing: %s", request.meta_agent_id)
 
     return {
         "success": True,
         "message": "Memory queued for processing",
         "status": "queued",
-        "agent_id": meta_agent.id,
+        "agent_id": request.meta_agent_id,
         "message_count": len(input_messages),
         "memory_source_id": memory_source_id,
     }
@@ -2290,23 +2293,81 @@ async def retrieve_memories_by_keywords(
             end_date.isoformat() if end_date else None,
         )
 
-    # Get timezone from user record (if exists)
+    # Get timezone from user record. If the user does not exist, return empty
+    # memory containers — downstream managers require a non-None PydanticUser
+    # (enforced via @enforce_types).
+    from mirix.orm.errors import NoResultFound
+
     try:
         user = await server.user_manager.get_user_by_id(user_id)
+        # Users are GLOBAL (not org-scoped). The org to filter this read by is
+        # the CALLING CLIENT's org, not whatever org the global user row carries
+        # — read back through IPS-R the user's org relationship is not hydrated
+        # onto the scalar field, so it falls to the all-zeros default org and
+        # filters out every document. Scope the read to the client's org so it
+        # matches what the write path stamped (client.organization_id).
+        if client is not None and client.organization_id:
+            user.organization_id = client.organization_id
         timezone_str = user.timezone
-    except:
-        timezone_str = "UTC"
-    memories = {}
+    except NoResultFound:
+        logger.info(
+            "User %s not found during retrieve_memories_by_keywords; returning empty memories",
+            user_id,
+        )
+        return {
+            "episodic": {"total_count": 0, "recent": [], "relevant": []},
+            "semantic": {"total_count": 0, "items": []},
+            "resource": {"total_count": 0, "items": []},
+            "procedural": {"total_count": 0, "items": []},
+            "knowledge_vault": {"total_count": 0, "items": []},
+            "core": {"total_count": 0, "scopes": {}},
+        }
+    except Exception as e:
+        logger.warning(
+            "Unexpected error fetching user %s; returning empty memories: %s",
+            user_id,
+            e,
+        )
+        return {
+            "episodic": {"total_count": 0, "recent": [], "relevant": []},
+            "semantic": {"total_count": 0, "items": []},
+            "resource": {"total_count": 0, "items": []},
+            "procedural": {"total_count": 0, "items": []},
+            "knowledge_vault": {"total_count": 0, "items": []},
+            "core": {"total_count": 0, "scopes": {}},
+        }
+    import asyncio
 
-    # Get episodic memories (recent + relevant) with optional temporal filtering
-    try:
-        episodic_manager = server.episodic_memory_manager
+    memories: Dict[str, Any] = {}
 
-        # Get recent episodic memories with temporal filter
-        recent_episodic = await episodic_manager.list_episodic_memory(
+    # Fan out all per-memory-type backend reads concurrently. Each call is
+    # independent (different manager, different table) — running them serially
+    # adds the sum of latencies; running them in parallel adds the max. Any
+    # failure propagates out of the gather and bubbles to the route layer.
+    episodic_manager = server.episodic_memory_manager
+    semantic_manager = server.semantic_memory_manager
+    resource_manager = server.resource_memory_manager
+    procedural_manager = server.procedural_memory_manager
+    knowledge_vault_manager = server.knowledge_vault_manager
+    block_manager = server.block_manager
+
+    # Build the task list and a parallel index of (memory_type, slot) keys so
+    # we can route results back to the right per-type assembly.
+    tasks: list = []
+    keys: list = []
+
+    # Episodic: recent (always) + relevant (only when key_words present) + count
+    # The "recent" bucket is a pure-recency window (no query) and is therefore
+    # NOT relevance-filtered — every call returns the latest N episodic events
+    # regardless of topic. Cap it at conversation_recent_window (default 5, vs.
+    # the relevant bucket's full limit) so off-topic recent turns don't flood
+    # the agent's context. Never exceed the caller's own limit.
+    recent_limit = min(settings.conversation_recent_window, limit)
+    tasks.append(
+        episodic_manager.list_episodic_memory(
             agent_state=agent_state,  # Not accessed during BM25 search
             user=user,
-            limit=limit,
+            limit=recent_limit,
             timezone_str=timezone_str,
             filter_tags=filter_tags,
             scopes=scopes,
@@ -2314,11 +2375,12 @@ async def retrieve_memories_by_keywords(
             start_date=start_date,
             end_date=end_date,
         )
+    )
+    keys.append(("episodic", "recent"))
 
-        # Get relevant episodic memories based on keywords with temporal filter
-        relevant_episodic = []
-        if key_words:
-            relevant_episodic = await episodic_manager.list_episodic_memory(
+    if key_words:
+        tasks.append(
+            episodic_manager.list_episodic_memory(
                 agent_state=agent_state,  # Not accessed during BM25 search
                 user=user,
                 query=key_words,
@@ -2331,37 +2393,15 @@ async def retrieve_memories_by_keywords(
                 start_date=start_date,
                 end_date=end_date,
             )
+        )
+        keys.append(("episodic", "relevant"))
 
-        memories["episodic"] = {
-            "total_count": await episodic_manager.get_total_number_of_items(user=user),
-            "recent": [
-                {
-                    "id": event.id,
-                    "timestamp": (event.occurred_at.isoformat() if event.occurred_at else None),
-                    "summary": event.summary,
-                    "details": event.details,
-                }
-                for event in recent_episodic
-            ],
-            "relevant": [
-                {
-                    "id": event.id,
-                    "timestamp": (event.occurred_at.isoformat() if event.occurred_at else None),
-                    "summary": event.summary,
-                    "details": event.details,
-                }
-                for event in relevant_episodic
-            ],
-        }
-    except Exception as e:
-        logger.error("Error retrieving episodic memories: %s", e)
-        memories["episodic"] = {"total_count": 0, "recent": [], "relevant": []}
+    tasks.append(episodic_manager.get_total_number_of_items(user=user))
+    keys.append(("episodic", "count"))
 
-    # Get semantic memories
-    try:
-        semantic_manager = server.semantic_memory_manager
-
-        semantic_items = await semantic_manager.list_semantic_items(
+    # Semantic
+    tasks.append(
+        semantic_manager.list_semantic_items(
             agent_state=agent_state,  # Not accessed during BM25 search
             user=user,
             query=key_words,
@@ -2373,28 +2413,14 @@ async def retrieve_memories_by_keywords(
             scopes=scopes,
             use_cache=use_cache,
         )
+    )
+    keys.append(("semantic", "items"))
+    tasks.append(semantic_manager.get_total_number_of_items(user=user))
+    keys.append(("semantic", "count"))
 
-        memories["semantic"] = {
-            "total_count": await semantic_manager.get_total_number_of_items(user=user),
-            "items": [
-                {
-                    "id": item.id,
-                    "name": item.name,
-                    "summary": item.summary,
-                    "details": item.details,
-                }
-                for item in semantic_items
-            ],
-        }
-    except Exception as e:
-        logger.error("Error retrieving semantic memories: %s", e)
-        memories["semantic"] = {"total_count": 0, "items": []}
-
-    # Get resource memories
-    try:
-        resource_manager = server.resource_memory_manager
-
-        resources = await resource_manager.list_resources(
+    # Resource
+    tasks.append(
+        resource_manager.list_resources(
             agent_state=agent_state,  # Not accessed during BM25 search
             user=user,
             query=key_words,
@@ -2406,28 +2432,14 @@ async def retrieve_memories_by_keywords(
             scopes=scopes,
             use_cache=use_cache,
         )
+    )
+    keys.append(("resource", "items"))
+    tasks.append(resource_manager.get_total_number_of_items(user=user))
+    keys.append(("resource", "count"))
 
-        memories["resource"] = {
-            "total_count": await resource_manager.get_total_number_of_items(user=user),
-            "items": [
-                {
-                    "id": resource.id,
-                    "title": resource.title,
-                    "summary": resource.summary,
-                    "resource_type": resource.resource_type,
-                }
-                for resource in resources
-            ],
-        }
-    except Exception as e:
-        logger.error("Error retrieving resource memories: %s", e)
-        memories["resource"] = {"total_count": 0, "items": []}
-
-    # Get procedural memories
-    try:
-        procedural_manager = server.procedural_memory_manager
-
-        procedures = await procedural_manager.list_procedures(
+    # Procedural
+    tasks.append(
+        procedural_manager.list_procedures(
             agent_state=agent_state,  # Not accessed during BM25 search
             user=user,
             query=key_words,
@@ -2439,27 +2451,14 @@ async def retrieve_memories_by_keywords(
             scopes=scopes,
             use_cache=use_cache,
         )
+    )
+    keys.append(("procedural", "items"))
+    tasks.append(procedural_manager.get_total_number_of_items(user=user))
+    keys.append(("procedural", "count"))
 
-        memories["procedural"] = {
-            "total_count": await procedural_manager.get_total_number_of_items(user=user),
-            "items": [
-                {
-                    "id": procedure.id,
-                    "entry_type": procedure.entry_type,
-                    "summary": procedure.summary,
-                }
-                for procedure in procedures
-            ],
-        }
-    except Exception as e:
-        logger.error("Error retrieving procedural memories: %s", e)
-        memories["procedural"] = {"total_count": 0, "items": []}
-
-    # Get knowledge vault items
-    try:
-        knowledge_vault_manager = server.knowledge_vault_manager
-
-        knowledge_items = await knowledge_vault_manager.list_knowledge(
+    # Knowledge vault
+    tasks.append(
+        knowledge_vault_manager.list_knowledge(
             agent_state=agent_state,  # Not accessed during BM25 search
             user=user,
             query=key_words,
@@ -2468,52 +2467,126 @@ async def retrieve_memories_by_keywords(
             limit=limit,
             timezone_str=timezone_str,
         )
+    )
+    keys.append(("knowledge_vault", "items"))
+    tasks.append(knowledge_vault_manager.get_total_number_of_items(user=user))
+    keys.append(("knowledge_vault", "count"))
 
-        memories["knowledge_vault"] = {
-            "total_count": await knowledge_vault_manager.get_total_number_of_items(user=user),
-            "items": [
-                {
-                    "id": item.id,
-                    "caption": item.caption,
-                }
-                for item in knowledge_items
-            ],
-        }
-    except Exception as e:
-        logger.error("Error retrieving knowledge vault items: %s", e)
-        memories["knowledge_vault"] = {"total_count": 0, "items": []}
-
-    # Get core memory blocks (filtered by client's read_scopes, grouped by scope)
-    try:
-        block_manager = server.block_manager
-
-        blocks = await block_manager.get_blocks(
+    # Core memory blocks (filtered by client's read_scopes, grouped by scope below)
+    tasks.append(
+        block_manager.get_blocks(
             user=user,
             any_scopes=client.read_scopes,
             auto_create_from_default=False,
         )
+    )
+    keys.append(("core", "blocks"))
 
-        # Group blocks by scope
-        scopes_dict: Dict[str, list] = {}
-        for block in blocks:
-            scope = (block.filter_tags or {}).get("scope", "default")
-            if scope not in scopes_dict:
-                scopes_dict[scope] = []
-            scopes_dict[scope].append(
-                {
-                    "id": block.id,
-                    "label": block.label,
-                    "value": block.value,
-                }
-            )
+    # Let any failure propagate — callers (search_service / route layer) already
+    # translate exceptions into the appropriate HTTP error response.
+    results = await asyncio.gather(*tasks)
 
-        memories["core"] = {
-            "total_count": len(blocks),
-            "scopes": {scope: {"items": items} for scope, items in scopes_dict.items()},
-        }
-    except Exception as e:
-        logger.error("Error retrieving core memory blocks: %s", e)
-        memories["core"] = {"total_count": 0, "scopes": {}}
+    # Bucket results by (memory_type, slot) so per-type assembly is straightforward.
+    bucket: Dict[str, Dict[str, Any]] = {}
+    for (memory_type, slot), result in zip(keys, results):
+        bucket.setdefault(memory_type, {})[slot] = result
+
+    # Episodic assembly
+    recent_episodic = bucket["episodic"]["recent"]
+    relevant_episodic = bucket["episodic"].get("relevant", []) or []
+    memories["episodic"] = {
+        "total_count": bucket["episodic"]["count"],
+        "recent": [
+            {
+                "id": event.id,
+                "timestamp": (event.occurred_at.isoformat() if event.occurred_at else None),
+                "summary": event.summary,
+                "details": event.details,
+            }
+            for event in recent_episodic
+        ],
+        "relevant": [
+            {
+                "id": event.id,
+                "timestamp": (event.occurred_at.isoformat() if event.occurred_at else None),
+                "summary": event.summary,
+                "details": event.details,
+            }
+            for event in relevant_episodic
+        ],
+    }
+
+    # Semantic assembly
+    memories["semantic"] = {
+        "total_count": bucket["semantic"]["count"],
+        "items": [
+            {
+                "id": item.id,
+                "name": item.name,
+                "summary": item.summary,
+                "details": item.details,
+            }
+            for item in bucket["semantic"]["items"]
+        ],
+    }
+
+    # Resource assembly
+    memories["resource"] = {
+        "total_count": bucket["resource"]["count"],
+        "items": [
+            {
+                "id": resource.id,
+                "title": resource.title,
+                "summary": resource.summary,
+                "resource_type": resource.resource_type,
+            }
+            for resource in bucket["resource"]["items"]
+        ],
+    }
+
+    # Procedural assembly
+    memories["procedural"] = {
+        "total_count": bucket["procedural"]["count"],
+        "items": [
+            {
+                "id": procedure.id,
+                "entry_type": procedure.entry_type,
+                "summary": procedure.summary,
+            }
+            for procedure in bucket["procedural"]["items"]
+        ],
+    }
+
+    # Knowledge vault assembly
+    memories["knowledge_vault"] = {
+        "total_count": bucket["knowledge_vault"]["count"],
+        "items": [
+            {
+                "id": item.id,
+                "caption": item.caption,
+            }
+            for item in bucket["knowledge_vault"]["items"]
+        ],
+    }
+
+    # Core memory blocks (group by scope after the fetch)
+    blocks = bucket["core"]["blocks"]
+    scopes_dict: Dict[str, list] = {}
+    for block in blocks:
+        scope = (block.filter_tags or {}).get("scope", "default")
+        if scope not in scopes_dict:
+            scopes_dict[scope] = []
+        scopes_dict[scope].append(
+            {
+                "id": block.id,
+                "label": block.label,
+                "value": block.value,
+            }
+        )
+    memories["core"] = {
+        "total_count": len(blocks),
+        "scopes": {scope: {"items": items} for scope, items in scopes_dict.items()},
+    }
 
     return memories
 
@@ -2544,8 +2617,10 @@ async def retrieve_memory_with_conversation(
 
     filter_tags = dict(request.filter_tags) if request.filter_tags is not None else {}
 
-    # Get all agents for this client (automatically filtered by client via apply_access_predicate)
-    all_agents = await server.agent_manager.list_agents(actor=client, limit=1000)
+    # Fetch one agent for this client (filtered by client via apply_access_predicate)
+    # for its llm/embedding config only — no tools needed here, so skip the
+    # per-agent tool hydration (include_tools=False) and the full-roster list.
+    all_agents = await server.agent_manager.list_agents(actor=client, limit=1, include_tools=False)
 
     if not all_agents:
         return {
@@ -2727,8 +2802,10 @@ async def retrieve_memory_with_topic(
     if parsed_filter_tags is None:
         parsed_filter_tags = {}
 
-    # Get all agents for this client (automatically filtered by client via apply_access_predicate)
-    all_agents = await server.agent_manager.list_agents(actor=client, limit=1000)
+    # Fetch one agent for this client (filtered by client via apply_access_predicate)
+    # for its llm/embedding config only — no tools needed here, so skip the
+    # per-agent tool hydration (include_tools=False) and the full-roster list.
+    all_agents = await server.agent_manager.list_agents(actor=client, limit=1, include_tools=False)
 
     if not all_agents:
         return {
@@ -2778,6 +2855,16 @@ async def _precompute_embedding_for_search(
         Both are None if search_method is not 'embedding' or query is empty.
     """
     if search_method != "embedding" or not query:
+        return None, None
+
+    # Provider mode: embeddings are owned by the search index, not Mirix. The
+    # registered search provider (e.g. IPS Search) auto-embeds the query at read
+    # time via its ML connector and ignores any vector we pass, so computing one
+    # here is a wasted embedding-model call per search. This mirrors the write
+    # path, where every memory manager's provider branch likewise never embeds.
+    from mirix.database.search_provider import get_search_provider
+
+    if get_search_provider() is not None:
         return None, None
 
     import numpy as np
@@ -2899,6 +2986,104 @@ async def _attach_citations_to_memories_dict(memories: dict) -> dict:
     return memories
 
 
+# Search-result projection helpers.
+#
+# Each derived memory type and the core block are projected to the API result
+# shape in exactly one place so every search path (single-user / all-users,
+# concurrent / sequential) returns the same fields — including filter_tags,
+# which the schema object carries and consumers filter on. Pass
+# include_user_id=True for the all-users/cross-user responses, which additionally
+# expose the owning user_id.
+
+
+def _project_episodic(x, include_user_id: bool = False) -> Dict[str, Any]:
+    out = {
+        "memory_type": "episodic",
+        "id": x.id,
+        "timestamp": (x.occurred_at.isoformat() if x.occurred_at else None),
+        "event_type": x.event_type,
+        "actor": x.actor,
+        "summary": x.summary,
+        "details": x.details,
+        "filter_tags": x.filter_tags,
+    }
+    if include_user_id:
+        out["user_id"] = str(x.user_id)
+    return out
+
+
+def _project_resource(x, include_user_id: bool = False) -> Dict[str, Any]:
+    out = {
+        "memory_type": "resource",
+        "id": x.id,
+        "resource_type": x.resource_type,
+        "title": x.title,
+        "summary": x.summary,
+        "content": x.content[:200] if x.content else None,
+        "filter_tags": x.filter_tags,
+    }
+    if include_user_id:
+        out["user_id"] = str(x.user_id)
+    return out
+
+
+def _project_procedural(x, include_user_id: bool = False) -> Dict[str, Any]:
+    out = {
+        "memory_type": "procedural",
+        "id": x.id,
+        "entry_type": x.entry_type,
+        "summary": x.summary,
+        "steps": x.steps,
+        "filter_tags": x.filter_tags,
+    }
+    if include_user_id:
+        out["user_id"] = str(x.user_id)
+    return out
+
+
+def _project_knowledge(x, include_user_id: bool = False) -> Dict[str, Any]:
+    out = {
+        "memory_type": "knowledge_vault",
+        "id": x.id,
+        "entry_type": x.entry_type,
+        "source": x.source,
+        "sensitivity": x.sensitivity,
+        "secret_value": x.secret_value,
+        "caption": x.caption,
+        "filter_tags": x.filter_tags,
+    }
+    if include_user_id:
+        out["user_id"] = str(x.user_id)
+    return out
+
+
+def _project_semantic(x, include_user_id: bool = False) -> Dict[str, Any]:
+    out = {
+        "memory_type": "semantic",
+        "id": x.id,
+        "name": x.name,
+        "summary": x.summary,
+        "details": x.details,
+        "source": x.source,
+        "filter_tags": x.filter_tags,
+    }
+    if include_user_id:
+        out["user_id"] = str(x.user_id)
+    return out
+
+
+def _project_core_block(block) -> Dict[str, Any]:
+    return {
+        "memory_type": "core",
+        "id": block.id,
+        "user_id": block.user_id,
+        "label": block.label,
+        "value": block.value,
+        "filter_tags": block.filter_tags,
+        "scope": (block.filter_tags or {}).get("scope", "default"),
+    }
+
+
 @router.get("/memory/search")
 @with_langfuse_tracing
 async def search_memory(
@@ -2973,8 +3158,10 @@ async def search_memory(
         user_id = ClientAuthManager.get_admin_user_id_for_client(client.id)
         logger.debug("No user_id provided, using admin user: %s", user_id)
 
-    # Get all agents for this client (automatically filtered by client via apply_access_predicate)
-    all_agents = await server.agent_manager.list_agents(actor=client, limit=1000)
+    # Fetch one agent for this client (filtered by client via apply_access_predicate)
+    # for its llm/embedding config only — no tools needed here, so skip the
+    # per-agent tool hydration (include_tools=False) and the full-roster list.
+    all_agents = await server.agent_manager.list_agents(actor=client, limit=1, include_tools=False)
 
     if not all_agents:
         return {
@@ -2987,12 +3174,44 @@ async def search_memory(
 
     agent_state = all_agents[0]
 
-    # Get timezone from user record (if exists)
+    # Get timezone from user record. If the user does not exist, return empty
+    # results gracefully — searching memories for a non-existent user yields
+    # no matches, and downstream managers require a non-None PydanticUser
+    # (enforced via @enforce_types).
+    from mirix.orm.errors import NoResultFound
+
     try:
         user = await server.user_manager.get_user_by_id(user_id)
+        # Users are GLOBAL (not org-scoped). Scope this read by the CALLING
+        # CLIENT's org rather than the global user row's org (which, read back
+        # through IPS-R, defaults to the all-zeros org and filters out every
+        # document). Matches the org the write path stamped.
+        if client is not None and client.organization_id:
+            user.organization_id = client.organization_id
         timezone_str = user.timezone
-    except:
-        timezone_str = "UTC"
+    except NoResultFound:
+        logger.info(
+            "User %s not found during search_memory; returning empty results",
+            user_id,
+        )
+        return {
+            "success": True,
+            "query": query,
+            "results": [],
+            "count": 0,
+        }
+    except Exception as e:
+        logger.warning(
+            "Unexpected error fetching user %s; returning empty results: %s",
+            user_id,
+            e,
+        )
+        return {
+            "success": True,
+            "query": query,
+            "results": [],
+            "count": 0,
+        }
 
     # Parse filter_tags from JSON string to dict
     parsed_filter_tags = None
@@ -3084,18 +3303,7 @@ async def search_memory(
                     end_date=parsed_end_date,
                     similarity_threshold=similarity_threshold,
                 )
-                return [
-                    {
-                        "memory_type": "episodic",
-                        "id": x.id,
-                        "timestamp": (x.occurred_at.isoformat() if x.occurred_at else None),
-                        "event_type": x.event_type,
-                        "actor": x.actor,
-                        "summary": x.summary,
-                        "details": x.details,
-                    }
-                    for x in memories
-                ]
+                return [_project_episodic(x) for x in memories]
             except Exception as e:
                 logger.error("Error searching episodic memories: %s", e)
                 return []
@@ -3119,17 +3327,7 @@ async def search_memory(
                     scopes=scopes,
                     similarity_threshold=similarity_threshold,
                 )
-                return [
-                    {
-                        "memory_type": "resource",
-                        "id": x.id,
-                        "resource_type": x.resource_type,
-                        "title": x.title,
-                        "summary": x.summary,
-                        "content": x.content[:200] if x.content else None,
-                    }
-                    for x in memories
-                ]
+                return [_project_resource(x) for x in memories]
             except Exception as e:
                 logger.error("Error searching resource memories: %s", e)
                 return []
@@ -3149,16 +3347,7 @@ async def search_memory(
                     scopes=scopes,
                     similarity_threshold=similarity_threshold,
                 )
-                return [
-                    {
-                        "memory_type": "procedural",
-                        "id": x.id,
-                        "entry_type": x.entry_type,
-                        "summary": x.summary,
-                        "steps": x.steps,
-                    }
-                    for x in memories
-                ]
+                return [_project_procedural(x) for x in memories]
             except Exception as e:
                 logger.error("Error searching procedural memories: %s", e)
                 return []
@@ -3178,18 +3367,7 @@ async def search_memory(
                     scopes=scopes,
                     similarity_threshold=similarity_threshold,
                 )
-                return [
-                    {
-                        "memory_type": "knowledge_vault",
-                        "id": x.id,
-                        "entry_type": x.entry_type,
-                        "source": x.source,
-                        "sensitivity": x.sensitivity,
-                        "secret_value": x.secret_value,
-                        "caption": x.caption,
-                    }
-                    for x in memories
-                ]
+                return [_project_knowledge(x) for x in memories]
             except Exception as e:
                 logger.error("Error searching knowledge vault: %s", e)
                 return []
@@ -3209,38 +3387,27 @@ async def search_memory(
                     scopes=scopes,
                     similarity_threshold=similarity_threshold,
                 )
-                return [
-                    {
-                        "memory_type": "semantic",
-                        "id": x.id,
-                        "summary": x.summary,
-                        "details": x.details,
-                    }
-                    for x in memories
-                ]
+                return [_project_semantic(x) for x in memories]
             except Exception as e:
                 logger.error("Error searching semantic memories: %s", e)
                 return []
 
         async def search_core():
             try:
-                blocks = await server.block_manager.get_blocks(
-                    user=user,
-                    any_scopes=client.read_scopes,
-                    auto_create_from_default=False,
+                # Core blocks are read from the search index (IPS Search) on the
+                # query path so filter_tags are honoured (the relational list()
+                # cannot filter on block filterTags). The save/agent pipeline
+                # still reads blocks from the relational store via get_blocks().
+                blocks = await server.block_manager.search_blocks(
+                    user_id=user.id,
+                    organization_id=user.organization_id,
+                    query=query,
+                    search_method=search_method,
+                    scopes=scopes,
+                    filter_tags=parsed_filter_tags,
                     limit=limit or 50,
                 )
-                return [
-                    {
-                        "memory_type": "core",
-                        "id": block.id,
-                        "user_id": block.user_id,
-                        "label": block.label,
-                        "value": block.value,
-                        "scope": (block.filter_tags or {}).get("scope", "default"),
-                    }
-                    for block in blocks
-                ]
+                return [_project_core_block(block) for block in blocks]
             except Exception as e:
                 logger.error("Error retrieving core memory blocks: %s", e, exc_info=True)
                 return []
@@ -3273,20 +3440,7 @@ async def search_memory(
                 end_date=parsed_end_date,
                 similarity_threshold=similarity_threshold,
             )
-            all_results.extend(
-                [
-                    {
-                        "memory_type": "episodic",
-                        "id": x.id,
-                        "timestamp": (x.occurred_at.isoformat() if x.occurred_at else None),
-                        "event_type": x.event_type,
-                        "actor": x.actor,
-                        "summary": x.summary,
-                        "details": x.details,
-                    }
-                    for x in episodic_memories
-                ]
-            )
+            all_results.extend([_project_episodic(x) for x in episodic_memories])
         except Exception as e:
             logger.error("Error searching episodic memories: %s", e)
 
@@ -3310,19 +3464,7 @@ async def search_memory(
                 scopes=scopes,
                 similarity_threshold=similarity_threshold,
             )
-            all_results.extend(
-                [
-                    {
-                        "memory_type": "resource",
-                        "id": x.id,
-                        "resource_type": x.resource_type,
-                        "title": x.title,
-                        "summary": x.summary,
-                        "content": (x.content[:200] if x.content else None),  # Truncate content for response
-                    }
-                    for x in resource_memories
-                ]
-            )
+            all_results.extend([_project_resource(x) for x in resource_memories])
         except Exception as e:
             logger.error("Error searching resource memories: %s", e)
 
@@ -3342,18 +3484,7 @@ async def search_memory(
                 scopes=scopes,
                 similarity_threshold=similarity_threshold,
             )
-            all_results.extend(
-                [
-                    {
-                        "memory_type": "procedural",
-                        "id": x.id,
-                        "entry_type": x.entry_type,
-                        "summary": x.summary,
-                        "steps": x.steps,
-                    }
-                    for x in procedural_memories
-                ]
-            )
+            all_results.extend([_project_procedural(x) for x in procedural_memories])
         except Exception as e:
             logger.error("Error searching procedural memories: %s", e)
 
@@ -3373,20 +3504,7 @@ async def search_memory(
                 scopes=scopes,
                 similarity_threshold=similarity_threshold,
             )
-            all_results.extend(
-                [
-                    {
-                        "memory_type": "knowledge_vault",
-                        "id": x.id,
-                        "entry_type": x.entry_type,
-                        "source": x.source,
-                        "sensitivity": x.sensitivity,
-                        "secret_value": x.secret_value,
-                        "caption": x.caption,
-                    }
-                    for x in knowledge_vault_memories
-                ]
-            )
+            all_results.extend([_project_knowledge(x) for x in knowledge_vault_memories])
         except Exception as e:
             logger.error("Error searching knowledge vault: %s", e)
 
@@ -3406,42 +3524,27 @@ async def search_memory(
                 scopes=scopes,
                 similarity_threshold=similarity_threshold,
             )
-            all_results.extend(
-                [
-                    {
-                        "memory_type": "semantic",
-                        "id": x.id,
-                        "name": x.name,
-                        "summary": x.summary,
-                        "details": x.details,
-                        "source": x.source,
-                    }
-                    for x in semantic_memories
-                ]
-            )
+            all_results.extend([_project_semantic(x) for x in semantic_memories])
         except Exception as e:
             logger.error("Error searching semantic memories: %s", e)
 
     # For single memory type searches, fetch core memory sequentially if requested
     if include_core_memory and memory_type != "all":
         try:
-            blocks = await server.block_manager.get_blocks(
-                user=user,
-                any_scopes=client.read_scopes,
-                auto_create_from_default=False,
+            # Read core blocks from the search index so filter_tags apply (see
+            # the search_core() note above); the relational get_blocks() path is
+            # reserved for the save/agent pipeline.
+            blocks = await server.block_manager.search_blocks(
+                user_id=user.id,
+                organization_id=user.organization_id,
+                query=query,
+                search_method=search_method,
+                scopes=scopes,
+                filter_tags=parsed_filter_tags,
                 limit=limit or 50,
             )
             for block in blocks:
-                all_results.append(
-                    {
-                        "memory_type": "core",
-                        "id": block.id,
-                        "user_id": block.user_id,
-                        "label": block.label,
-                        "value": block.value,
-                        "scope": (block.filter_tags or {}).get("scope", "default"),
-                    }
-                )
+                all_results.append(_project_core_block(block))
         except Exception as e:
             logger.error("Error retrieving core memory blocks for single-user search: %s", e, exc_info=True)
 
@@ -3588,8 +3691,9 @@ async def search_memory_all_users(
         except ValueError as e:
             logger.warning("Invalid end_date format: %s", e)
 
-    # Get agents for this client
-    all_agents = await server.agent_manager.list_agents(actor=client, limit=1000)
+    # Fetch one agent for this client for its embedding config only — no tools
+    # needed here, so skip per-agent tool hydration and the full-roster list.
+    all_agents = await server.agent_manager.list_agents(actor=client, limit=1, include_tools=False)
     if not all_agents:
         return {
             "success": False,
@@ -3651,19 +3755,7 @@ async def search_memory_all_users(
                     end_date=parsed_end_date,
                     similarity_threshold=similarity_threshold,
                 )
-                return [
-                    {
-                        "memory_type": "episodic",
-                        "id": x.id,
-                        "timestamp": (x.occurred_at.isoformat() if x.occurred_at else None),
-                        "event_type": x.event_type,
-                        "actor": x.actor,
-                        "summary": x.summary,
-                        "details": x.details,
-                        "user_id": str(x.user_id),
-                    }
-                    for x in memories
-                ]
+                return [_project_episodic(x, include_user_id=True) for x in memories]
             except Exception as e:
                 logger.error("Error searching episodic memories across org: %s", e)
                 return []
@@ -3687,18 +3779,7 @@ async def search_memory_all_users(
                     scopes=scopes,
                     similarity_threshold=similarity_threshold,
                 )
-                return [
-                    {
-                        "memory_type": "resource",
-                        "id": x.id,
-                        "resource_type": x.resource_type,
-                        "title": x.title,
-                        "summary": x.summary,
-                        "content": x.content[:200] if x.content else None,
-                        "user_id": str(x.user_id),
-                    }
-                    for x in memories
-                ]
+                return [_project_resource(x, include_user_id=True) for x in memories]
             except Exception as e:
                 logger.error("Error searching resource memories across org: %s", e)
                 return []
@@ -3718,17 +3799,7 @@ async def search_memory_all_users(
                     scopes=scopes,
                     similarity_threshold=similarity_threshold,
                 )
-                return [
-                    {
-                        "memory_type": "procedural",
-                        "id": x.id,
-                        "entry_type": x.entry_type,
-                        "summary": x.summary,
-                        "steps": x.steps,
-                        "user_id": str(x.user_id),
-                    }
-                    for x in memories
-                ]
+                return [_project_procedural(x, include_user_id=True) for x in memories]
             except Exception as e:
                 logger.error("Error searching procedural memories across org: %s", e)
                 return []
@@ -3748,19 +3819,7 @@ async def search_memory_all_users(
                     scopes=scopes,
                     similarity_threshold=similarity_threshold,
                 )
-                return [
-                    {
-                        "memory_type": "knowledge_vault",
-                        "id": x.id,
-                        "entry_type": x.entry_type,
-                        "source": x.source,
-                        "sensitivity": x.sensitivity,
-                        "secret_value": x.secret_value,
-                        "caption": x.caption,
-                        "user_id": str(x.user_id),
-                    }
-                    for x in memories
-                ]
+                return [_project_knowledge(x, include_user_id=True) for x in memories]
             except Exception as e:
                 logger.error("Error searching knowledge vault across org: %s", e)
                 return []
@@ -3780,16 +3839,7 @@ async def search_memory_all_users(
                     scopes=scopes,
                     similarity_threshold=similarity_threshold,
                 )
-                return [
-                    {
-                        "memory_type": "semantic",
-                        "id": x.id,
-                        "summary": x.summary,
-                        "details": x.details,
-                        "user_id": str(x.user_id),
-                    }
-                    for x in memories
-                ]
+                return [_project_semantic(x, include_user_id=True) for x in memories]
             except Exception as e:
                 logger.error("Error searching semantic memories across org: %s", e)
                 return []
@@ -3825,21 +3875,7 @@ async def search_memory_all_users(
                 end_date=parsed_end_date,
                 similarity_threshold=similarity_threshold,
             )
-            all_results.extend(
-                [
-                    {
-                        "memory_type": "episodic",
-                        "user_id": x.user_id,
-                        "id": x.id,
-                        "timestamp": (x.occurred_at.isoformat() if x.occurred_at else None),
-                        "event_type": x.event_type,
-                        "actor": x.actor,
-                        "summary": x.summary,
-                        "details": x.details,
-                    }
-                    for x in episodic_memories
-                ]
-            )
+            all_results.extend([_project_episodic(x, include_user_id=True) for x in episodic_memories])
         except Exception as e:
             logger.error("Error searching episodic memories across organization: %s", e)
 
@@ -3863,20 +3899,7 @@ async def search_memory_all_users(
                 scopes=scopes,
                 similarity_threshold=similarity_threshold,
             )
-            all_results.extend(
-                [
-                    {
-                        "memory_type": "resource",
-                        "user_id": x.user_id,
-                        "id": x.id,
-                        "resource_type": x.resource_type,
-                        "title": x.title,
-                        "summary": x.summary,
-                        "content": x.content[:200] if x.content else None,
-                    }
-                    for x in resource_memories
-                ]
-            )
+            all_results.extend([_project_resource(x, include_user_id=True) for x in resource_memories])
         except Exception as e:
             logger.error("Error searching resource memories across organization: %s", e)
 
@@ -3896,19 +3919,7 @@ async def search_memory_all_users(
                 scopes=scopes,
                 similarity_threshold=similarity_threshold,
             )
-            all_results.extend(
-                [
-                    {
-                        "memory_type": "procedural",
-                        "user_id": x.user_id,
-                        "id": x.id,
-                        "entry_type": x.entry_type,
-                        "summary": x.summary,
-                        "steps": x.steps,
-                    }
-                    for x in procedural_memories
-                ]
-            )
+            all_results.extend([_project_procedural(x, include_user_id=True) for x in procedural_memories])
         except Exception as e:
             logger.error("Error searching procedural memories across organization: %s", e)
 
@@ -3928,21 +3939,7 @@ async def search_memory_all_users(
                 scopes=scopes,
                 similarity_threshold=similarity_threshold,
             )
-            all_results.extend(
-                [
-                    {
-                        "memory_type": "knowledge_vault",
-                        "user_id": x.user_id,
-                        "id": x.id,
-                        "entry_type": x.entry_type,
-                        "source": x.source,
-                        "sensitivity": x.sensitivity,
-                        "secret_value": x.secret_value,
-                        "caption": x.caption,
-                    }
-                    for x in knowledge_vault_memories
-                ]
-            )
+            all_results.extend([_project_knowledge(x, include_user_id=True) for x in knowledge_vault_memories])
         except Exception as e:
             logger.error("Error searching knowledge vault across organization: %s", e)
 
@@ -3962,20 +3959,7 @@ async def search_memory_all_users(
                 scopes=scopes,
                 similarity_threshold=similarity_threshold,
             )
-            all_results.extend(
-                [
-                    {
-                        "memory_type": "semantic",
-                        "user_id": x.user_id,
-                        "id": x.id,
-                        "name": x.name,
-                        "summary": x.summary,
-                        "details": x.details,
-                        "source": x.source,
-                    }
-                    for x in semantic_memories
-                ]
-            )
+            all_results.extend([_project_semantic(x, include_user_id=True) for x in semantic_memories])
         except Exception as e:
             logger.error("Error searching semantic memories across organization: %s", e)
 
@@ -3988,12 +3972,17 @@ async def search_memory_all_users(
                     block_filter_tags_parsed = json.loads(block_filter_tags)
                 except json.JSONDecodeError:
                     raise HTTPException(status_code=400, detail="Invalid block_filter_tags JSON format")
-            blocks = await server.block_manager.get_blocks(
-                user=None,
+            # Org-wide core read goes through the search index (IPS Search) so
+            # block_filter_tags are applied server-side. The relational list()
+            # path silently drops block filter_tags (no hashing key configured
+            # for the block namespace) and is reserved for the save pipeline.
+            blocks = await server.block_manager.search_blocks(
+                user_id=None,
                 organization_id=effective_org_id,
-                any_scopes=client.read_scopes,
+                query=query,
+                search_method=search_method,
+                scopes=client.read_scopes,
                 filter_tags=block_filter_tags_parsed,
-                auto_create_from_default=False,
                 limit=limit or 50,
             )
             logger.info(
@@ -4004,16 +3993,7 @@ async def search_memory_all_users(
                 block_filter_tags_parsed,
             )
             for block in blocks:
-                all_results.append(
-                    {
-                        "memory_type": "core",
-                        "id": block.id,
-                        "user_id": block.user_id,
-                        "label": block.label,
-                        "value": block.value,
-                        "scope": (block.filter_tags or {}).get("scope", "default"),
-                    }
-                )
+                all_results.append(_project_core_block(block))
         except HTTPException:
             raise
         except Exception as e:
@@ -5152,9 +5132,7 @@ async def cleanup_raw_memories(
         result = delete_stale_raw_memories(days_threshold=days_threshold)
 
         # Add success message to result
-        result["message"] = (
-            f"Deleted {result['deleted_count']} stale raw memories " f"(older than {days_threshold} days)"
-        )
+        result["message"] = f"Deleted {result['deleted_count']} stale raw memories (older than {days_threshold} days)"
 
         logger.info(
             "Cleanup job completed: deleted %d, errors %d",

@@ -10,5 +10,6 @@ Messages the user sends are in the 'user' role.
 The 'user' role is also used for important system events, such as login events and contine_chaining events (contine_chainings run the AI's program without user action, allowing the AI to act without prompting from the user sending them a message).
 Summarize what happened in the conversation from the perspective of the AI (use the first person).
 Keep your summary less than {WORD_LIMIT} words, do NOT exceed this word limit.
+Remove any profanity from the summary: omit offensive language or replace it with a neutral paraphrase. Do not reproduce profane terms even if they appear in the conversation.
 Only output the summary, do NOT include anything else in your output.
 """

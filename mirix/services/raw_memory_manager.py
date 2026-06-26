@@ -24,7 +24,7 @@ from mirix.schemas.raw_memory import RawMemoryItemCreate as PydanticRawMemoryIte
 from mirix.schemas.user import User as PydanticUser
 from mirix.services.user_manager import UserManager
 from mirix.settings import settings
-from mirix.utils import enforce_types, generate_unique_short_id_async
+from mirix.utils import enforce_types
 
 logger = get_logger(__name__)
 
@@ -116,7 +116,7 @@ class RawMemoryManager:
 
         # Ensure ID is set before model_dump
         if not raw_memory.id:
-            raw_memory.id = await generate_unique_short_id_async(self.session_maker, RawMemory, "raw_mem")
+            raw_memory.id = PydanticRawMemoryItem._generate_id()
 
         # Auto-inject scope from actor's write_scope
         if actor.write_scope is None:
@@ -133,8 +133,16 @@ class RawMemoryManager:
             raw_memory.filter_tags,
         )
 
+        from mirix.database.relational_provider import get_relational_provider
+
+        provider = get_relational_provider()
+
         # Conditionally calculate embeddings based on BUILD_EMBEDDINGS_FOR_MEMORY flag
-        if BUILD_EMBEDDINGS_FOR_MEMORY and agent_state is not None:
+        # When providers are active, skip compute and persist only config metadata.
+        if provider:
+            raw_memory.context_embedding = None
+            raw_memory.embedding_config = agent_state.embedding_config if agent_state is not None else None
+        elif BUILD_EMBEDDINGS_FOR_MEMORY and agent_state is not None:
             try:
                 from mirix.embeddings import embedding_model
 
@@ -180,6 +188,11 @@ class RawMemoryManager:
         if not raw_memory_dict.get("context"):
             raise ValueError("Required field 'context' is missing or empty")
 
+        # Provider delegation (create)
+        if provider:
+            result = await provider.create("raw_memory", raw_memory_dict, actor=actor)
+            return PydanticRawMemoryItem(**result)
+
         # Create the raw memory item (with conditional Redis caching)
         async with self.session_maker() as session:
             raw_memory_item = RawMemory(**raw_memory_dict)
@@ -209,7 +222,26 @@ class RawMemoryManager:
         Raises:
             NoResultFound: If the record doesn't exist, scope doesn't match, or user doesn't match
         """
-        # Try cache first (cache provider: Redis or IPS Cache)
+        # Provider delegation (read by ID)
+        from mirix.database.relational_provider import get_relational_provider
+
+        provider = get_relational_provider()
+        if provider:
+            result = await provider.read("raw_memory", memory_id, actor=actor)
+            if result is None:
+                raise NoResultFound(f"Raw memory record with id {memory_id} not found.")
+            pydantic_memory = PydanticRawMemoryItem(**result)
+
+            memory_scope = (pydantic_memory.filter_tags or {}).get("scope")
+            if memory_scope not in actor.read_scopes:
+                raise NoResultFound(f"Raw memory record with id {memory_id} not found.")
+
+            if user_id and pydantic_memory.user_id != user_id:
+                raise NoResultFound(f"Raw memory record with id {memory_id} not found.")
+
+            return pydantic_memory
+
+        # Try cache first (cache provider: Redis or Cache provider)
         cache_provider = None
         try:
             from mirix.database.cache_provider import get_cache_provider
@@ -241,7 +273,7 @@ class RawMemoryManager:
             raise
         except Exception as e:
             # Log but continue to PostgreSQL on cache error
-            logger.warning(
+            logger.debug(
                 "Cache read failed for raw memory %s: %s",
                 memory_id,
                 e,
@@ -320,6 +352,85 @@ class RawMemoryManager:
             context_update_mode,
             tags_merge_mode,
         )
+
+        # Provider delegation (update)
+        from mirix.database.relational_provider import get_relational_provider
+
+        provider = get_relational_provider()
+        if provider:
+            # Provider branch: last-write-wins semantics. Unlike the PG branch (which
+            # uses SELECT FOR UPDATE to serialize concurrent append/merge updates
+            # on the same row), Relational DB provider has no row-level lock primitive
+            # exposed here. Concurrent updates from two callers may race; the
+            # one that lands last in the provider overwrites the other. This is an
+            # intentional trade-off: most clients update distinct rows, and the
+            # provider path optimises for throughput over write-serialisation.
+            existing = await provider.read("raw_memory", memory_id, actor=actor)
+            if existing is None:
+                raise ValueError(f"Raw memory {memory_id} not found")
+
+            if existing.get("organization_id") != actor.organization_id:
+                raise ValueError(
+                    f"Access denied: memory {memory_id} belongs to "
+                    f"organization {existing.get('organization_id')}, "
+                    f"actor belongs to {actor.organization_id}"
+                )
+
+            memory_scope = (existing.get("filter_tags") or {}).get("scope")
+            if memory_scope != actor.write_scope:
+                raise ValueError(
+                    f"Access denied: memory {memory_id} has scope '{memory_scope}', "
+                    f"actor has write_scope '{actor.write_scope}'"
+                )
+
+            if user_id and existing.get("user_id") != user_id:
+                raise ValueError(f"Raw memory {memory_id} not found")
+
+            if new_filter_tags is not None and "scope" in new_filter_tags:
+                if new_filter_tags["scope"] != actor.write_scope:
+                    raise ValueError("Cannot change memory scope - scope must match actor.write_scope")
+
+            context_val = existing.get("context") or ""
+            if new_context is not None:
+                if context_update_mode == "append":
+                    context_val = f"{context_val}\n\n{new_context}"
+                else:
+                    context_val = new_context
+            existing["context"] = context_val
+
+            if new_filter_tags is not None:
+                if tags_merge_mode == "merge":
+                    merged_tags = {**(existing.get("filter_tags") or {}), **new_filter_tags}
+                    existing["filter_tags"] = merged_tags
+                else:
+                    preserved_scope = (existing.get("filter_tags") or {}).get("scope")
+                    existing["filter_tags"] = dict(new_filter_tags)
+                    if preserved_scope:
+                        existing["filter_tags"]["scope"] = preserved_scope
+
+            # When providers are active, skip embedding compute and keep only config metadata.
+            if agent_state is not None:
+                existing["embedding_config"] = agent_state.embedding_config
+            existing.pop("context_embedding", None)
+
+            now_utc = datetime.now(timezone.utc)
+            naive_now = now_utc.replace(tzinfo=None) if now_utc.tzinfo else now_utc
+            existing["updated_at"] = naive_now
+            existing["last_modify"] = {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "operation": "updated",
+            }
+            if actor:
+                existing["_last_updated_by_id"] = actor.id
+
+            updated = await provider.update("raw_memory", memory_id, existing, actor=actor)
+            try:
+                from mirix.services.memory_manager_helpers import invalidate_memory_cache
+
+                await invalidate_memory_cache("raw_memory", [memory_id])
+            except Exception as exc:
+                logger.warning("Cache invalidation skipped for raw_memory %s: %s", memory_id, exc)
+            return PydanticRawMemoryItem(**updated)
 
         async with self.session_maker() as session:
             # Fetch the existing memory with row-level lock (SELECT FOR UPDATE)
@@ -452,6 +563,37 @@ class RawMemoryManager:
         """
         logger.info("Deleting raw memory: id=%s", memory_id)
 
+        # Provider delegation (delete)
+        from mirix.database.relational_provider import get_relational_provider
+
+        provider = get_relational_provider()
+        if provider:
+            existing = await provider.read("raw_memory", memory_id, actor=actor)
+            if existing is None:
+                logger.warning("Raw memory not found for deletion: id=%s", memory_id)
+                return False
+
+            memory_scope = (existing.get("filter_tags") or {}).get("scope")
+            if memory_scope != actor.write_scope:
+                raise ValueError(
+                    f"Access denied: memory {memory_id} has scope '{memory_scope}', "
+                    f"actor has write_scope '{actor.write_scope}'"
+                )
+
+            if user_id and existing.get("user_id") != user_id:
+                logger.warning("Raw memory %s not found for deletion (user mismatch)", memory_id)
+                return False
+
+            await provider.delete("raw_memory", memory_id, actor=actor)
+            try:
+                from mirix.services.memory_manager_helpers import invalidate_memory_cache
+
+                await invalidate_memory_cache("raw_memory", [memory_id])
+            except Exception as exc:
+                logger.warning("Cache invalidation skipped for raw_memory %s: %s", memory_id, exc)
+            logger.info("Raw memory deleted: id=%s", memory_id)
+            return True
+
         async with self.session_maker() as session:
             try:
                 raw_memory = await RawMemory.read(db_session=session, identifier=memory_id, actor=actor)
@@ -555,6 +697,25 @@ class RawMemoryManager:
                 cursor_id = decoded_cursor["id"]
             except (ValueError, KeyError, json.JSONDecodeError, UnicodeDecodeError) as e:
                 raise ValueError(f"Invalid cursor format: {e}")
+
+        # Provider delegation (search / list)
+        from mirix.database.search_provider import get_search_provider
+
+        search_provider = get_search_provider()
+        if search_provider:
+            results, next_c = await search_provider.search(
+                "raw_memory",
+                organization_id=organization_id,
+                user_id=user_id,
+                filter_tags=filter_tags,
+                scopes=scopes,
+                limit=limit,
+                sort=sort,
+                cursor=cursor,
+                time_range=time_range,
+                search_method="string_match",
+            )
+            return [PydanticRawMemoryItem(**r) for r in results], next_c
 
         async with self.session_maker() as session:
             # Base query filtering by organization_id

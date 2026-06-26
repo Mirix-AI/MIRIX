@@ -754,6 +754,12 @@ class TestMetaMemoryParallelism:
                 assert parent_id == meta_agent.id
                 return relevant_agents
 
+            async def list_agents_with_tools(self, *, parent_id, actor, **kwargs):
+                # VEPAGE-1228: trigger_memory_update now resolves children (with
+                # tools) via the joined NQ. The stub returns the same agent states.
+                assert parent_id == meta_agent.id
+                return relevant_agents
+
         stub_meta_agent = SimpleNamespace(
             agent_state=SimpleNamespace(id=meta_agent.id, name=meta_agent.name),
             agent_manager=StubAgentManager(),

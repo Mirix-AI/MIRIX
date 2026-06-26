@@ -7,6 +7,7 @@ from mirix.agent import Agent
 
 if TYPE_CHECKING:
     from mirix.schemas.memory import Memory
+
 from mirix.log import get_logger
 from mirix.observability.context import (
     clear_trace_context,
@@ -22,6 +23,7 @@ from mirix.schemas.mirix_message_content import TextContent
 from mirix.schemas.procedural_memory import ProceduralMemoryItemBase
 from mirix.schemas.resource_memory import ResourceMemoryItemBase
 from mirix.schemas.semantic_memory import SemanticMemoryItemBase
+from mirix.testing import fault_injection
 
 logger = get_logger(__name__)
 
@@ -53,16 +55,26 @@ async def _write_citation(agent: "Agent", memory_type: str, memory_id: str, cita
     actor = getattr(agent, "actor", None)
     created_by_id = getattr(actor, "id", None) if actor else None
 
-    await citation_mgr.create(
-        memory_source_id=memory_source_id,
-        memory_type=memory_type,
-        memory_id=memory_id,
-        citation_type=citation_type,
-        external_thread_id=external_thread_id,
-        occurred_at=occurred_at,
-        created_by_id=created_by_id,
-        use_cache=use_cache,
-    )
+    from mirix.observability.timed import timedspan
+
+    async with timedspan(
+        "Write Citation",
+        metadata={
+            "memory_type": memory_type,
+            "memory_id": memory_id,
+            "citation_type": citation_type,
+        },
+    ):
+        await citation_mgr.create(
+            memory_source_id=memory_source_id,
+            memory_type=memory_type,
+            memory_id=memory_id,
+            citation_type=citation_type,
+            external_thread_id=external_thread_id,
+            occurred_at=occurred_at,
+            created_by_id=created_by_id,
+            use_cache=use_cache,
+        )
 
 
 async def _should_update_memory(agent: "Agent", memory_type: str, memory_id: str) -> bool:
@@ -928,8 +940,24 @@ async def trigger_memory_update(self: "Agent", user_message: object, memory_type
                 f"Memory type '{memory_type}' is not supported. Please choose from 'core', 'episodic', 'resource', 'procedural', 'knowledge_vault', 'semantic'."
             )
 
-    # Get child agents
-    child_agent_states = await self.agent_manager.list_agents(parent_id=self.agent_state.id, actor=self.actor)
+    # Get child agents WITH their tools in a single relational-provider
+    # roundtrip. list_agents_with_tools joins agents -> tools so each
+    # returned state already carries .tools; constructing the sub-agent
+    # from this state means its step does not re-resolve tools from the
+    # provider (no per-agent list_tools_by_ids).
+    #
+    # Spanned so the trace attributes how much of the
+    # trigger_memory_update -> first sub-agent gap is this child resolution
+    # vs. elsewhere in the dispatch.
+    from mirix.observability.timed import timedspan
+
+    async with timedspan(
+        "Resolve Child Agents",
+        metadata={"meta_agent_id": self.agent_state.id},
+    ):
+        child_agent_states = await self.agent_manager.list_agents_with_tools(
+            parent_id=self.agent_state.id, actor=self.actor
+        )
 
     # Map agent types to agent states (key by string so lookup works for enum or deserialized string)
     def _agent_type_key(at):
@@ -957,6 +985,19 @@ async def trigger_memory_update(self: "Agent", user_message: object, memory_type
                     user_id=parent_trace_context.get("user_id"),
                     session_id=parent_trace_context.get("session_id"),
                 )
+
+            # Test-only fault injection (inert in prod): a `subagent` directive
+            # scoped to a memory_type fails exactly one sub-agent in the fan-out
+            # (shape subagent_permanent -> ProviderPermanentError). The other
+            # sub-agents still run and write their memories; the reducer
+            # (_decide_step_outcome_from_sub_agent_results) then re-raises the
+            # permanent one, so the step is PERMANENT with partial writes —
+            # idempotent on whole-step retry.
+            fault_injection.maybe_raise(
+                "subagent",
+                source_key=getattr(self, "memory_source_id", None),
+                tool=memory_type,
+            )
 
             agent_class = memory_type_to_agent_class[memory_type]
             agent_type_str = f"{memory_type}_memory_agent"
