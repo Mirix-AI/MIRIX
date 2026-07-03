@@ -3195,7 +3195,7 @@ async def search_memory(
     if (
         os.getenv("MIRIX_GRAPH_ROUTED_SEARCH") == "1"
         and settings.enable_graph_memory
-        and settings.graph_version in ("v7", "v7.1", "v7.2", "v8")
+        and settings.graph_version in ("v7", "v7.1", "v7.2", "v7.3", "v8")
         and search_method == "embedding"
         and query
         and memory_type in ("all", "episodic", "semantic")

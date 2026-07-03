@@ -69,7 +69,7 @@ class GraphRetrieverDispatcher:
                 query=query, user_id=user_id, agent_state=agent_state,
                 top_k=item_top_k,
             )
-        if settings.graph_version in ("v7", "v7.1", "v7.2", "v8"):
+        if settings.graph_version in ("v7", "v7.1", "v7.2", "v7.3", "v8"):
             from mirix.services.graph_retriever_v7 import V7Retriever
 
             return await V7Retriever().retrieve(
