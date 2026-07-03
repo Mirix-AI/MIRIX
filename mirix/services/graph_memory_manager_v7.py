@@ -121,7 +121,7 @@ class V7GraphManager:
         occurred_at: Optional[object] = None,
         source_meta: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
-        if not settings.enable_graph_memory or settings.graph_version not in ("v7", "v8"):
+        if not settings.enable_graph_memory or settings.graph_version not in ("v7", "v7.1", "v7.2", "v8"):
             return {"skipped": "disabled"}
 
         from mirix.database.neo4j_client import get_neo4j_driver

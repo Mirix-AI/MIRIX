@@ -121,14 +121,22 @@ def parse_sessions(context: str, max_chunk_tokens: int = DEFAULT_CHUNK_TOKENS) -
     import re
     from datetime import datetime
 
+    def _token_chunk_raw(raw: str) -> List[Dict]:
+        # Raw-string context (e.g. RULER / EventQA "Document N:" passages — not a
+        # LongMemEval session list). Token-chunk into max_chunk_tokens pieces, the
+        # way MAB segments a long context to simulate incremental multi-turn input.
+        pieces = chunk_text_into_sentences(raw, chunk_size=max_chunk_tokens)
+        return [{"occurred_at": None, "text": p} for p in pieces] or [
+            {"occurred_at": None, "text": raw}
+        ]
+
     try:
         parsed = ast.literal_eval(context)
     except (ValueError, SyntaxError):
-        # Fallback: treat the whole context as one undated chunk.
-        return [{"occurred_at": None, "text": context}]
+        return _token_chunk_raw(context)
 
     if not isinstance(parsed, list):
-        return [{"occurred_at": None, "text": str(context)}]
+        return _token_chunk_raw(str(context))
 
     def _parse_chat_time(s: str) -> Optional[str]:
         # "Chat Time: 2022/11/17 (Thu) 12:04" -> "2022-11-17T12:04:00"

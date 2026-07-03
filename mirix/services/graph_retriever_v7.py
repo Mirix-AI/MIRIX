@@ -12,6 +12,7 @@ Retrieval path:
 from __future__ import annotations
 
 import asyncio
+import os
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -54,7 +55,7 @@ class V7Retriever:
         top_k: int = 18,
         max_items_per_kind: int = DEFAULT_MAX_ITEMS_PER_KIND,
     ) -> str:
-        if not settings.enable_graph_memory or settings.graph_version not in ("v7", "v8"):
+        if not settings.enable_graph_memory or settings.graph_version not in ("v7", "v7.1", "v7.2", "v8"):
             return ""
 
         from mirix.database.neo4j_client import get_neo4j_driver
@@ -72,30 +73,93 @@ class V7Retriever:
         if not anchors:
             return ""
 
-        episodic_ids, semantic_ids = await self._collect_memory_refs(
-            driver,
-            user_id=user_id,
-            anchor_ids=[a.id for a in anchors],
-        )
-        if not episodic_ids and not semantic_ids:
-            return self._format_context(anchors, [], [])
-
-        ep_task = asyncio.create_task(self._fetch_episodic(user_id, episodic_ids[:max_items_per_kind]))
-        sem_task = asyncio.create_task(self._fetch_semantic(user_id, semantic_ids[:max_items_per_kind]))
-        ep_rows, sem_rows = await asyncio.gather(ep_task, sem_task, return_exceptions=True)
-        if isinstance(ep_rows, Exception):
-            logger.warning("v7 episodic PG fetch failed: %s", ep_rows)
-            ep_rows = []
-        if isinstance(sem_rows, Exception):
-            logger.warning("v7 semantic PG fetch failed: %s", sem_rows)
-            sem_rows = []
+        if settings.graph_version == "v7.2":
+            # v7.2: per-anchor coverage rerank. Rerank each matched anchor's own
+            # memories by query text-cosine, then round-robin across anchors so a
+            # multi-hop query spanning several entities keeps a memory for EACH.
+            # (v7.1's single pooled rerank collapses onto one entity — good for
+            # single-hop, useless for multi-hop.)
+            ep_rows, sem_rows = await self._retrieve_coverage(
+                driver, user_id, anchors, q_emb, max_items_per_kind)
+        else:
+            episodic_ids, semantic_ids = await self._collect_memory_refs(
+                driver, user_id=user_id, anchor_ids=[a.id for a in anchors],
+            )
+            if not episodic_ids and not semantic_ids:
+                return self._format_context(anchors, [], [])
+            # v7.1: rerank the anchor-collected candidates by query full-text
+            # similarity (anchor match = recall, text-cosine = precision) so a
+            # salient-but-wrong same-name entity from another document sinks below
+            # the true answer. v7 keeps the original anchor-traversal/date order.
+            rerank = q_emb if settings.graph_version == "v7.1" else None
+            ep_arg = episodic_ids if rerank else episodic_ids[:max_items_per_kind]
+            sem_arg = semantic_ids if rerank else semantic_ids[:max_items_per_kind]
+            ep_task = asyncio.create_task(
+                self._fetch_episodic(user_id, ep_arg, q_emb=rerank, limit=max_items_per_kind))
+            sem_task = asyncio.create_task(
+                self._fetch_semantic(user_id, sem_arg, q_emb=rerank, limit=max_items_per_kind))
+            ep_rows, sem_rows = await asyncio.gather(ep_task, sem_task, return_exceptions=True)
+            if isinstance(ep_rows, Exception):
+                logger.warning("v7 episodic PG fetch failed: %s", ep_rows)
+                ep_rows = []
+            if isinstance(sem_rows, Exception):
+                logger.warning("v7 semantic PG fetch failed: %s", sem_rows)
+                sem_rows = []
 
         ctx = self._format_context(anchors, ep_rows, sem_rows)
+
+        # Hybrid wrap: append flat query-similarity memories alongside the graph
+        # context. The graph anchors on entity NAMES (precise where flat hits a
+        # same-name collision, but mis-fires where the query term matches a
+        # salient-but-wrong entity in another document); flat anchors on full
+        # memory TEXT (the complementary disambiguation). Giving the answerer both
+        # recovers the union of their correct answers. Gated for clean A/B.
+        if os.getenv("MIRIX_GRAPH_HYBRID_WRAP") == "1":
+            flat = await self._flat_section(user_id, q_emb)
+            if flat:
+                ctx = ctx + "\n\n" + flat
+
         logger.info(
             "v7 retrieve: %d anchors, %d ep, %d sem -> %d chars",
             len(anchors), len(ep_rows), len(sem_rows), len(ctx),
         )
         return ctx
+
+    async def _flat_section(self, user_id: str, q_emb: list[float], limit: int = 8) -> str:
+        """Top-k episodic + semantic by raw query-embedding similarity (flat
+        pgvector) — the disambiguation signal the graph alone lacks."""
+        from sqlalchemy import text as sa_text
+        from mirix.constants import MAX_EMBEDDING_DIM
+        from mirix.server.server import db_context
+
+        qp = str(list(q_emb) + [0.0] * (MAX_EMBEDDING_DIM - len(q_emb)))
+        try:
+            async with db_context() as session:
+                ep = (await session.execute(sa_text(
+                    "SELECT summary, details FROM episodic_memory "
+                    "WHERE user_id = :u AND summary_embedding IS NOT NULL "
+                    "ORDER BY summary_embedding <=> CAST(:q AS vector) LIMIT :k"
+                ), {"u": user_id, "q": qp, "k": limit})).fetchall()
+                sem = (await session.execute(sa_text(
+                    "SELECT name, summary, details FROM semantic_memory "
+                    "WHERE user_id = :u AND summary_embedding IS NOT NULL "
+                    "ORDER BY summary_embedding <=> CAST(:q AS vector) LIMIT :k"
+                ), {"u": user_id, "q": qp, "k": limit})).fetchall()
+        except Exception as e:
+            logger.warning("v7 hybrid flat section failed: %s", e)
+            return ""
+
+        lines: list[str] = ["## Most similar memories (flat text match)"]
+        for name, summary, details in sem:
+            head = f"- {name}: {summary}" if name else f"- {summary}"
+            lines.append(head.rstrip())
+            if details and details != summary:
+                lines.append(f"  {details[:400]}")
+        for summary, details in ep:
+            lines.append(f"- {summary}".rstrip())
+            if details and details != summary:
+                lines.append(f"  {details[:400]}")
+        return "\n".join(lines)
 
     async def _search_anchors(
         self, driver, user_id: str, emb: list[float], top_k: int
@@ -162,22 +226,94 @@ class V7Retriever:
                 add_unique(sem_ids, rec["support_sem"])
         return ep_ids, sem_ids
 
-    async def _fetch_episodic(self, user_id: str, ids: list[str]) -> list[V7MemoryRow]:
+    async def _collect_per_anchor(
+        self, driver, *, user_id: str, anchor_ids: list[str]
+    ) -> dict:
+        """Per-anchor direct memory refs (APPEARS_IN episodic / DESCRIBED_BY
+        semantic), keyed by anchor id — for v7.2 coverage round-robin."""
+        if not anchor_ids:
+            return {}
+        cypher = """
+        UNWIND $anchor_ids AS aid
+        MATCH (a:V7Anchor {id: aid, user_id: $user_id})
+        OPTIONAL MATCH (a)-[:V7_APPEARS_IN]->(ep:V7EpisodeRef)
+        OPTIONAL MATCH (a)-[:V7_DESCRIBED_BY]->(sem:V7ConceptRef)
+        RETURN aid AS aid,
+               collect(DISTINCT ep.memory_id) AS ep_ids,
+               collect(DISTINCT sem.memory_id) AS sem_ids
+        """
+        out: dict = {}
+        async with driver.session(database=settings.neo4j_database) as session:
+            result = await session.run(cypher, anchor_ids=anchor_ids, user_id=user_id)
+            async for rec in result:
+                ep = [str(x) for x in (rec["ep_ids"] or []) if x is not None]
+                sem = [str(x) for x in (rec["sem_ids"] or []) if x is not None]
+                out[rec["aid"]] = (ep, sem)
+        return out
+
+    async def _retrieve_coverage(
+        self, driver, user_id: str, anchors: list, q_emb: list[float], max_items: int,
+        n_anchors: int = 8, per_anchor: int = 6,
+    ) -> tuple[list[V7MemoryRow], list[V7MemoryRow]]:
+        """v7.2: rerank each top anchor's own memories by query text-cosine
+        (top `per_anchor`), then round-robin across anchors so every entity the
+        query touches stays represented (multi-hop coverage)."""
+        groups = await self._collect_per_anchor(
+            driver, user_id=user_id, anchor_ids=[a.id for a in anchors])
+        ordered = [(a.id, *groups.get(a.id, ([], []))) for a in anchors]
+        ordered = [g for g in ordered if g[1] or g[2]][:n_anchors]
+        if not ordered:
+            return [], []
+        ep_lists = await asyncio.gather(*[
+            self._fetch_episodic(user_id, g[1], q_emb=q_emb, limit=per_anchor) for g in ordered])
+        sem_lists = await asyncio.gather(*[
+            self._fetch_semantic(user_id, g[2], q_emb=q_emb, limit=per_anchor) for g in ordered])
+        return (self._round_robin(ep_lists, max_items),
+                self._round_robin(sem_lists, max_items))
+
+    @staticmethod
+    def _round_robin(lists: list, max_items: int) -> list:
+        """Interleave per-anchor reranked lists (each anchor's #1, then #2 …) so
+        coverage spans anchors instead of collapsing onto one."""
+        merged: list = []
+        seen: set = set()
+        depth = max((len(l) for l in lists), default=0)
+        for i in range(depth):
+            for l in lists:
+                if i < len(l) and l[i].id not in seen:
+                    merged.append(l[i])
+                    seen.add(l[i].id)
+                    if len(merged) >= max_items:
+                        return merged
+        return merged
+
+    async def _fetch_episodic(
+        self, user_id: str, ids: list[str],
+        q_emb: Optional[list[float]] = None, limit: Optional[int] = None,
+    ) -> list[V7MemoryRow]:
         if not ids:
             return []
         from sqlalchemy import text as sa_text
         from mirix.server.server import db_context
 
-        async with db_context() as session:
-            result = await session.execute(
-                sa_text(
-                    "SELECT id, summary, details, occurred_at "
-                    "FROM episodic_memory "
-                    "WHERE user_id = :u AND id = ANY(:ids) "
-                    "ORDER BY occurred_at DESC NULLS LAST"
-                ),
-                {"u": user_id, "ids": ids},
+        if q_emb is not None:  # v7.1: rank candidates by query full-text similarity
+            from mirix.constants import MAX_EMBEDDING_DIM
+            qp = str(list(q_emb) + [0.0] * (MAX_EMBEDDING_DIM - len(q_emb)))
+            sql = (
+                "SELECT id, summary, details, occurred_at FROM episodic_memory "
+                "WHERE user_id = :u AND id = ANY(:ids) AND summary_embedding IS NOT NULL "
+                "ORDER BY summary_embedding <=> CAST(:q AS vector) LIMIT :k"
             )
+            params = {"u": user_id, "ids": ids, "q": qp, "k": limit or DEFAULT_MAX_ITEMS_PER_KIND}
+        else:
+            sql = (
+                "SELECT id, summary, details, occurred_at FROM episodic_memory "
+                "WHERE user_id = :u AND id = ANY(:ids) ORDER BY occurred_at DESC NULLS LAST"
+            )
+            params = {"u": user_id, "ids": ids}
+
+        async with db_context() as session:
+            result = await session.execute(sa_text(sql), params)
             return [
                 V7MemoryRow(
                     id=row[0],
@@ -189,22 +325,33 @@ class V7Retriever:
                 for row in result.fetchall()
             ]
 
-    async def _fetch_semantic(self, user_id: str, ids: list[str]) -> list[V7MemoryRow]:
+    async def _fetch_semantic(
+        self, user_id: str, ids: list[str],
+        q_emb: Optional[list[float]] = None, limit: Optional[int] = None,
+    ) -> list[V7MemoryRow]:
         if not ids:
             return []
         from sqlalchemy import text as sa_text
         from mirix.server.server import db_context
 
-        async with db_context() as session:
-            result = await session.execute(
-                sa_text(
-                    "SELECT id, name, summary, details, source, created_at "
-                    "FROM semantic_memory "
-                    "WHERE user_id = :u AND id = ANY(:ids) "
-                    "ORDER BY created_at DESC NULLS LAST"
-                ),
-                {"u": user_id, "ids": ids},
+        if q_emb is not None:  # v7.1: rank candidates by query full-text similarity
+            from mirix.constants import MAX_EMBEDDING_DIM
+            qp = str(list(q_emb) + [0.0] * (MAX_EMBEDDING_DIM - len(q_emb)))
+            sql = (
+                "SELECT id, name, summary, details, source, created_at FROM semantic_memory "
+                "WHERE user_id = :u AND id = ANY(:ids) AND summary_embedding IS NOT NULL "
+                "ORDER BY summary_embedding <=> CAST(:q AS vector) LIMIT :k"
             )
+            params = {"u": user_id, "ids": ids, "q": qp, "k": limit or DEFAULT_MAX_ITEMS_PER_KIND}
+        else:
+            sql = (
+                "SELECT id, name, summary, details, source, created_at FROM semantic_memory "
+                "WHERE user_id = :u AND id = ANY(:ids) ORDER BY created_at DESC NULLS LAST"
+            )
+            params = {"u": user_id, "ids": ids}
+
+        async with db_context() as session:
+            result = await session.execute(sa_text(sql), params)
             return [
                 V7MemoryRow(
                     id=row[0],

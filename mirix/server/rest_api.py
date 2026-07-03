@@ -8,6 +8,7 @@ import asyncio
 import copy
 import functools
 import json
+import os
 import traceback
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -2981,6 +2982,47 @@ async def _precompute_embedding_for_search(
     return embedded_text, embedded_text_padded
 
 
+async def _graph_routed_search_results(query, user_id, agent_state, memory_type, limit):
+    """Graph-gated retrieval for search_memory.
+
+    When graph memory is enabled, route the agent's episodic/semantic search
+    THROUGH the graph (anchor vector search -> memory refs) and fetch only those
+    PG rows, so the agent cannot bypass the graph straight to the DB. Returns
+    formatted result dicts (episodic + semantic). Empty list falls back to flat.
+    """
+    from mirix.database.neo4j_client import get_neo4j_driver
+    from mirix.services.graph_retriever_v7 import V7Retriever
+    from mirix.services._graph_common import embed_batch
+
+    driver = get_neo4j_driver()
+    if driver is None:
+        return []
+    embs = await embed_batch([query], agent_state)
+    if not embs or embs[0] is None:
+        return []
+    r = V7Retriever()
+    anchors = await r._search_anchors(driver, user_id, embs[0], 18)
+    if not anchors:
+        return []
+    ep_ids, sem_ids = await r._collect_memory_refs(
+        driver, user_id=user_id, anchor_ids=[a.id for a in anchors]
+    )
+    results = []
+    if memory_type in ("all", "episodic"):
+        for x in await r._fetch_episodic(user_id, ep_ids[:limit]):
+            results.append({
+                "memory_type": "episodic", "id": x.id,
+                "occurred_at": x.timestamp, "summary": x.summary, "details": x.details,
+            })
+    if memory_type in ("all", "semantic"):
+        for x in await r._fetch_semantic(user_id, sem_ids[:limit]):
+            results.append({
+                "memory_type": "semantic", "id": x.id,
+                "name": x.extra.get("name", ""), "summary": x.summary, "details": x.details,
+            })
+    return results
+
+
 @router.get("/memory/search")
 @with_langfuse_tracing
 async def search_memory(
@@ -3145,6 +3187,26 @@ async def search_memory(
 
     # Pre-compute embedding once if using embedding search (to avoid redundant embeddings)
     embedded_text, embedded_text_padded = await _precompute_embedding_for_search(search_method, query, agent_state)
+
+    # Graph-routed retrieval: when graph memory is enabled, the agent's search_memory
+    # must go THROUGH the graph (anchor -> refs -> PG-by-id), not bypass straight to a
+    # flat pgvector scan. Gated by MIRIX_GRAPH_ROUTED_SEARCH so the bypass behaviour
+    # can be A/B'd. Only episodic/semantic have a graph; other types stay flat.
+    if (
+        os.getenv("MIRIX_GRAPH_ROUTED_SEARCH") == "1"
+        and settings.enable_graph_memory
+        and settings.graph_version in ("v7", "v7.1", "v7.2", "v8")
+        and search_method == "embedding"
+        and query
+        and memory_type in ("all", "episodic", "semantic")
+    ):
+        g_results = await _graph_routed_search_results(query, user_id, agent_state, memory_type, limit)
+        return {
+            "success": True,
+            "query": query,
+            "results": g_results,
+            "count": len(g_results),
+        }
 
     # Collect results from requested memory types
     all_results = []
