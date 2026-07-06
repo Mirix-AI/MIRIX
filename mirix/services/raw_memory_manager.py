@@ -5,6 +5,7 @@ Raw memories are unprocessed task context stored for task sharing use cases,
 with a 14-day TTL enforced by nightly cleanup jobs.
 """
 
+import asyncio
 import base64
 import datetime as dt
 import json
@@ -27,6 +28,16 @@ from mirix.settings import settings
 from mirix.utils import enforce_types, generate_unique_short_id_async
 
 logger = get_logger(__name__)
+
+_raw_memory_update_locks: Dict[str, asyncio.Lock] = {}
+
+
+def _lock_for_raw_memory(memory_id: str) -> asyncio.Lock:
+    lock = _raw_memory_update_locks.get(memory_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _raw_memory_update_locks[memory_id] = lock
+    return lock
 
 
 class RawMemoryManager:
@@ -326,116 +337,118 @@ class RawMemoryManager:
             tags_merge_mode,
         )
 
-        async with self.session_maker() as session:
-            # Fetch the existing memory with row-level lock (SELECT FOR UPDATE)
-            # This prevents race conditions when multiple agents append/merge concurrently
-            stmt = select(RawMemory).where(RawMemory.id == memory_id).with_for_update()
+        async with _lock_for_raw_memory(memory_id):
+            async with self.session_maker() as session:
+                # Fetch the existing memory with row-level lock (SELECT FOR UPDATE).
+                # The in-process lock above covers SQLite and same-process async
+                # concurrency, where SELECT FOR UPDATE is ineffective/no-op.
+                stmt = select(RawMemory).where(RawMemory.id == memory_id).with_for_update()
 
-            result = await session.execute(stmt)
-            try:
-                raw_memory = result.scalar_one()
-            except NoResultFound:
-                raise ValueError(f"Raw memory {memory_id} not found")
-
-            # Perform access control check (replaces RawMemory.read's built-in check)
-            if raw_memory.organization_id != actor.organization_id:
-                raise ValueError(
-                    f"Access denied: memory {memory_id} belongs to "
-                    f"organization {raw_memory.organization_id}, "
-                    f"actor belongs to {actor.organization_id}"
-                )
-
-            # Perform scope access control check - must match actor's write_scope to update
-            memory_scope = (raw_memory.filter_tags or {}).get("scope")
-            if memory_scope != actor.write_scope:
-                raise ValueError(
-                    f"Access denied: memory {memory_id} has scope '{memory_scope}', "
-                    f"actor has write_scope '{actor.write_scope}'"
-                )
-
-            # Perform user_id access control check if provided
-            if user_id and raw_memory.user_id != user_id:
-                raise ValueError(f"Raw memory {memory_id} not found")
-
-            # Prevent scope tampering in filter_tags updates
-            if new_filter_tags is not None and "scope" in new_filter_tags:
-                if new_filter_tags["scope"] != actor.write_scope:
-                    raise ValueError("Cannot change memory scope - scope must match actor.write_scope")
-
-            # Update context
-            if new_context is not None:
-                if context_update_mode == "append":
-                    raw_memory.context = f"{raw_memory.context}\n\n{new_context}"
-                    logger.debug("Appended to context for memory %s", memory_id)
-                else:  # replace
-                    raw_memory.context = new_context
-                    logger.debug("Replaced context for memory %s", memory_id)
-
-            # Update filter_tags
-            if new_filter_tags is not None:
-                if tags_merge_mode == "merge":
-                    # Merge new tags with existing
-                    existing_tags = raw_memory.filter_tags or {}
-                    raw_memory.filter_tags = {
-                        **existing_tags,
-                        **new_filter_tags,
-                    }
-                    logger.debug("Merged filter_tags for memory %s", memory_id)
-                else:  # replace
-                    # Preserve scope when replacing tags - scope is immutable
-                    preserved_scope = (raw_memory.filter_tags or {}).get("scope")
-                    raw_memory.filter_tags = new_filter_tags
-                    if preserved_scope:
-                        raw_memory.filter_tags["scope"] = preserved_scope
-                    logger.debug("Replaced filter_tags for memory %s", memory_id)
-
-            # Regenerate embeddings if context changed and agent_state provided
-            if BUILD_EMBEDDINGS_FOR_MEMORY and agent_state is not None and new_context is not None:
+                result = await session.execute(stmt)
                 try:
-                    from mirix.embeddings import embedding_model
+                    raw_memory = result.scalar_one()
+                except NoResultFound:
+                    raise ValueError(f"Raw memory {memory_id} not found")
 
-                    embed_model = await embedding_model(agent_state.embedding_config)
-                    context_embedding = await embed_model.get_text_embedding(raw_memory.context)
+                # Perform access control check (replaces RawMemory.read's built-in check)
+                if raw_memory.organization_id != actor.organization_id:
+                    raise ValueError(
+                        f"Access denied: memory {memory_id} belongs to "
+                        f"organization {raw_memory.organization_id}, "
+                        f"actor belongs to {actor.organization_id}"
+                    )
 
-                    raw_memory.context_embedding = PydanticRawMemoryItem.pad_embeddings(context_embedding)
-                    raw_memory.embedding_config = agent_state.embedding_config
+                # Perform scope access control check - must match actor's write_scope to update
+                memory_scope = (raw_memory.filter_tags or {}).get("scope")
+                if memory_scope != actor.write_scope:
+                    raise ValueError(
+                        f"Access denied: memory {memory_id} has scope '{memory_scope}', "
+                        f"actor has write_scope '{actor.write_scope}'"
+                    )
+
+                # Perform user_id access control check if provided
+                if user_id and raw_memory.user_id != user_id:
+                    raise ValueError(f"Raw memory {memory_id} not found")
+
+                # Prevent scope tampering in filter_tags updates
+                if new_filter_tags is not None and "scope" in new_filter_tags:
+                    if new_filter_tags["scope"] != actor.write_scope:
+                        raise ValueError("Cannot change memory scope - scope must match actor.write_scope")
+
+                # Update context
+                if new_context is not None:
+                    if context_update_mode == "append":
+                        raw_memory.context = f"{raw_memory.context}\n\n{new_context}"
+                        logger.debug("Appended to context for memory %s", memory_id)
+                    else:  # replace
+                        raw_memory.context = new_context
+                        logger.debug("Replaced context for memory %s", memory_id)
+
+                # Update filter_tags
+                if new_filter_tags is not None:
+                    if tags_merge_mode == "merge":
+                        # Merge new tags with existing
+                        existing_tags = raw_memory.filter_tags or {}
+                        raw_memory.filter_tags = {
+                            **existing_tags,
+                            **new_filter_tags,
+                        }
+                        logger.debug("Merged filter_tags for memory %s", memory_id)
+                    else:  # replace
+                        # Preserve scope when replacing tags - scope is immutable
+                        preserved_scope = (raw_memory.filter_tags or {}).get("scope")
+                        raw_memory.filter_tags = new_filter_tags
+                        if preserved_scope:
+                            raw_memory.filter_tags["scope"] = preserved_scope
+                        logger.debug("Replaced filter_tags for memory %s", memory_id)
+
+                # Regenerate embeddings if context changed and agent_state provided
+                if BUILD_EMBEDDINGS_FOR_MEMORY and agent_state is not None and new_context is not None:
+                    try:
+                        from mirix.embeddings import embedding_model
+
+                        embed_model = await embedding_model(agent_state.embedding_config)
+                        context_embedding = await embed_model.get_text_embedding(raw_memory.context)
+
+                        raw_memory.context_embedding = PydanticRawMemoryItem.pad_embeddings(context_embedding)
+                        raw_memory.embedding_config = agent_state.embedding_config
+                    except Exception as e:
+                        logger.warning("Failed to regenerate embeddings for raw memory update: %s", e)
+
+                # Update last_modify and timestamp (use naive UTC for TIMESTAMP WITHOUT TIME ZONE)
+                now_utc = datetime.now(timezone.utc)
+                raw_memory.updated_at = now_utc.replace(tzinfo=None) if now_utc.tzinfo else now_utc
+                raw_memory.last_modify = {
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "operation": "updated",
+                }
+                # Audit field (_last_updated_by_id) is handled by base class via
+                # property accessor when using update_with_redis(), or can be set
+                # manually: raw_memory.last_updated_by_id = actor.id
+                if actor:
+                    raw_memory.last_updated_by_id = actor.id
+
+                # Commit changes
+                await session.commit()
+
+                # Invalidate cache
+                try:
+                    from mirix.database.cache_provider import get_cache_provider
+
+                    cache_provider = get_cache_provider()
+                    if cache_provider:
+                        cache_key = f"{cache_provider.RAW_MEMORY_PREFIX}{memory_id}"
+                        await cache_provider.delete(cache_key)
+                        logger.debug("Invalidated cache for memory %s", memory_id)
                 except Exception as e:
-                    logger.warning("Failed to regenerate embeddings for raw memory update: %s", e)
+                    logger.warning(
+                        "Failed to invalidate cache for memory %s: %s",
+                        memory_id,
+                        e,
+                    )
 
-            # Update last_modify and timestamp (use naive UTC for TIMESTAMP WITHOUT TIME ZONE)
-            now_utc = datetime.now(timezone.utc)
-            raw_memory.updated_at = now_utc.replace(tzinfo=None) if now_utc.tzinfo else now_utc
-            raw_memory.last_modify = {
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "operation": "updated",
-            }
-            # Audit field (_last_updated_by_id) is handled by base class via
-            # property accessor when using update_with_redis(), or can be set
-            # manually: raw_memory.last_updated_by_id = actor.id
-            if actor:
-                raw_memory.last_updated_by_id = actor.id
-
-            # Commit changes
-            await session.commit()
-
-            # Invalidate cache
-            try:
-                from mirix.database.cache_provider import get_cache_provider
-
-                cache_provider = get_cache_provider()
-                if cache_provider:
-                    cache_key = f"{cache_provider.RAW_MEMORY_PREFIX}{memory_id}"
-                    await cache_provider.delete(cache_key)
-                    logger.debug("Invalidated cache for memory %s", memory_id)
-            except Exception as e:
-                logger.warning(
-                    "Failed to invalidate cache for memory %s: %s",
-                    memory_id,
-                    e,
-                )
-
-            logger.info("Raw memory updated: id=%s", memory_id)
-            return raw_memory.to_pydantic()
+                logger.info("Raw memory updated: id=%s", memory_id)
+                return raw_memory.to_pydantic()
 
     @enforce_types
     async def delete_raw_memory(

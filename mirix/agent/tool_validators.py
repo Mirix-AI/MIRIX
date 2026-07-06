@@ -188,45 +188,93 @@ def validate_resource_memory_update(function_name: str, args: dict) -> Optional[
 
 
 # ============================================================
-# Procedural Memory Validators
+# Skill Validators
 # ============================================================
 
 
-@register_validator("procedural_memory_insert")
-def validate_procedural_memory_insert(function_name: str, args: dict) -> Optional[str]:
-    """Validate procedural_memory_insert arguments."""
-    items = args.get("items", [])
-    for i, item in enumerate(items):
-        if not item.get("summary", "").strip():
+@register_validator("skill_create")
+def validate_skill_create(function_name: str, args: dict) -> Optional[str]:
+    """Validate skill_create arguments."""
+    from mirix.schemas.procedural_memory import (
+        SKILL_ENTRY_TYPES,
+        SKILL_MAX_DESCRIPTION_LEN,
+        SKILL_MAX_INSTRUCTIONS_LEN,
+        SKILL_MAX_NAME_LEN,
+    )
+
+    name = args.get("name", "")
+    if not name.strip():
+        return "Validation error: 'name' cannot be empty."
+    if len(name) > SKILL_MAX_NAME_LEN:
+        return f"Validation error: 'name' exceeds max length {SKILL_MAX_NAME_LEN}."
+    description = args.get("description", "")
+    if not description.strip():
+        return "Validation error: 'description' cannot be empty."
+    if len(description) > SKILL_MAX_DESCRIPTION_LEN:
+        return f"Validation error: 'description' exceeds max length {SKILL_MAX_DESCRIPTION_LEN}."
+    instructions = args.get("instructions", "")
+    if not instructions.strip():
+        return "Validation error: 'instructions' cannot be empty."
+    if len(instructions) > SKILL_MAX_INSTRUCTIONS_LEN:
+        return f"Validation error: 'instructions' exceeds max length {SKILL_MAX_INSTRUCTIONS_LEN}."
+    entry_type = args.get("entry_type", "")
+    if not entry_type:
+        return "Validation error: 'entry_type' cannot be empty."
+    if entry_type not in SKILL_ENTRY_TYPES:
+        return (
+            f"Validation error: 'entry_type' must be one of: {sorted(SKILL_ENTRY_TYPES)}."
+        )
+    return None
+
+
+@register_validator("skill_edit")
+def validate_skill_edit(function_name: str, args: dict) -> Optional[str]:
+    """Validate skill_edit arguments."""
+    from mirix.schemas.procedural_memory import (
+        SKILL_ENTRY_TYPES,
+        SKILL_MAX_DESCRIPTION_LEN,
+        SKILL_MAX_INSTRUCTIONS_LEN,
+        SKILL_MAX_NAME_LEN,
+    )
+
+    if not args.get("skill_id", "").strip():
+        return "Validation error: 'skill_id' cannot be empty."
+    field = args.get("field", "")
+    if not field:
+        return "Validation error: 'field' cannot be empty."
+    valid_fields = {"name", "description", "instructions", "entry_type", "triggers", "examples"}
+    if field not in valid_fields:
+        return f"Validation error: 'field' must be one of: {', '.join(sorted(valid_fields))}."
+    text_fields = {"name", "description", "instructions"}
+    if field in text_fields:
+        if not args.get("old_text"):
+            return f"Validation error: 'old_text' is required for text field '{field}'."
+        if args.get("new_text") is None:
+            return f"Validation error: 'new_text' is required for text field '{field}'."
+        new_text = args.get("new_text") or ""
+        caps = {
+            "name": SKILL_MAX_NAME_LEN,
+            "description": SKILL_MAX_DESCRIPTION_LEN,
+            "instructions": SKILL_MAX_INSTRUCTIONS_LEN,
+        }
+        if len(new_text) > caps[field]:
+            return f"Validation error: 'new_text' for field '{field}' exceeds max length {caps[field]}."
+    else:
+        value = args.get("value")
+        if value is None:
+            return f"Validation error: 'value' is required for field '{field}'."
+        if field == "entry_type" and value not in SKILL_ENTRY_TYPES:
             return (
-                f"Validation error: 'summary' field in item {i} cannot be empty. "
-                "Please provide a descriptive summary of this procedure."
-            )
-        steps = item.get("steps", [])
-        if not steps or all(not s.strip() for s in steps):
-            return (
-                f"Validation error: 'steps' field in item {i} cannot be empty. "
-                "Please provide at least one non-empty step."
+                f"Validation error: 'entry_type' must be one of: {sorted(SKILL_ENTRY_TYPES)}."
             )
     return None
 
 
-@register_validator("procedural_memory_update")
-def validate_procedural_memory_update(function_name: str, args: dict) -> Optional[str]:
-    """Validate procedural_memory_update arguments."""
-    items = args.get("new_items", [])
-    for i, item in enumerate(items):
-        if not item.get("summary", "").strip():
-            return (
-                f"Validation error: 'summary' field in new_items[{i}] cannot be empty. "
-                "Please provide a descriptive summary of this procedure."
-            )
-        steps = item.get("steps", [])
-        if not steps or all(not s.strip() for s in steps):
-            return (
-                f"Validation error: 'steps' field in new_items[{i}] cannot be empty. "
-                "Please provide at least one non-empty step."
-            )
+@register_validator("skill_delete")
+def validate_skill_delete(function_name: str, args: dict) -> Optional[str]:
+    """Validate skill_delete arguments."""
+    if not args.get("skill_id", "").strip():
+        return "Validation error: 'skill_id' cannot be empty."
     return None
 
 

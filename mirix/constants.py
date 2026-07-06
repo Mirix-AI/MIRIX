@@ -84,6 +84,21 @@ OPENAI_CONTEXT_WINDOW_ERROR_SUBSTRING = "maximum context length"
 IN_CONTEXT_MEMORY_KEYWORD = "CORE_MEMORY"
 
 MAX_CHAINING_STEPS = int(os.getenv("MAX_CHAINING_STEPS", "10"))
+# Automatic procedural-memory evolution drives one persistent procedural agent
+# statelessly per evolution step. A curator pass can survey existing skills and
+# create/edit a few, so it needs a larger chaining (tool-use) budget than the
+# default chat path. With the skill tools correctly bound the curator converges
+# in ~2-5 steps. The cap counts LLM turns; an edit-heavy run is serial
+# (skill_list -> per edit skill_read + skill_edit -> finish_memory_update), so the
+# worst case is ~2N+2 turns for N edits. With the default edit budget capped at
+# SKILL_EDIT_BUDGET_MAX (6) that is ~14, so 15 leaves one turn of headroom while
+# still BOUNDING a pathological spin to ~15*~12s (~3 min) instead of running the
+# loop out to a 600s timeout. Overridable via env; only the procedural evolution
+# path passes this into step(max_chaining_steps=...), so normal meta-agent flow
+# remains governed by MAX_CHAINING_STEPS.
+SKILL_EVOLVE_MAX_CHAINING_STEPS = int(
+    os.getenv("SKILL_EVOLVE_MAX_CHAINING_STEPS", "15")
+)
 MAX_RETRIEVAL_LIMIT_IN_SYSTEM = 10
 
 # tokenizers
@@ -114,7 +129,7 @@ EPISODIC_MEMORY_TOOLS = [
     "episodic_memory_replace",
     "check_episodic_memory",
 ]
-PROCEDURAL_MEMORY_TOOLS = ["procedural_memory_insert", "procedural_memory_update"]
+SKILL_TOOLS = ["skill_list", "skill_read", "skill_create", "skill_edit", "skill_delete"]
 RESOURCE_MEMORY_TOOLS = ["resource_memory_insert", "resource_memory_update"]
 KNOWLEDGE_VAULT_TOOLS = ["knowledge_vault_insert", "knowledge_vault_update"]
 SEMANTIC_MEMORY_TOOLS = [
@@ -136,7 +151,9 @@ AUTO_DREAM_TOOLS = list(
     set(
         CORE_MEMORY_TOOLS
         + EPISODIC_MEMORY_TOOLS
-        + PROCEDURAL_MEMORY_TOOLS
+        # auto-dream consolidates procedural memory via our skill paradigm
+        # (skill_* tools), not the removed procedural_memory_insert/update.
+        + SKILL_TOOLS
         + RESOURCE_MEMORY_TOOLS
         + KNOWLEDGE_VAULT_TOOLS
         + SEMANTIC_MEMORY_TOOLS
@@ -148,7 +165,7 @@ ALL_TOOLS = list(
         BASE_TOOLS
         + CORE_MEMORY_TOOLS
         + EPISODIC_MEMORY_TOOLS
-        + PROCEDURAL_MEMORY_TOOLS
+        + SKILL_TOOLS
         + RESOURCE_MEMORY_TOOLS
         + KNOWLEDGE_VAULT_TOOLS
         + SEMANTIC_MEMORY_TOOLS
@@ -218,14 +235,18 @@ CORE_MEMORY_HUMAN_CHAR_LIMIT: int = 5000
 MAX_PAUSE_HEARTBEATS = 360  # in min
 
 MESSAGE_CHATGPT_FUNCTION_MODEL = "gpt-3.5-turbo"
-MESSAGE_CHATGPT_FUNCTION_SYSTEM_MESSAGE = "You are a helpful assistant. Keep your responses short and concise."
+MESSAGE_CHATGPT_FUNCTION_SYSTEM_MESSAGE = (
+    "You are a helpful assistant. Keep your responses short and concise."
+)
 
 #### Functions related
 
 # REQ_HEARTBEAT_MESSAGE = f"{NON_USER_MSG_PREFIX}continue_chaining == true"
 REQ_HEARTBEAT_MESSAGE = f"{NON_USER_MSG_PREFIX}Function called using continue_chaining=true, returning control"
 # FUNC_FAILED_HEARTBEAT_MESSAGE = f"{NON_USER_MSG_PREFIX}Function call failed"
-FUNC_FAILED_HEARTBEAT_MESSAGE = f"{NON_USER_MSG_PREFIX}Function call failed, returning control"
+FUNC_FAILED_HEARTBEAT_MESSAGE = (
+    f"{NON_USER_MSG_PREFIX}Function call failed, returning control"
+)
 
 
 RETRIEVAL_QUERY_DEFAULT_PAGE_SIZE = 5
@@ -240,22 +261,130 @@ INNER_THOUGHTS_KWARG_DESCRIPTION = "Deep inner monologue private to you only."
 INNER_THOUGHTS_CLI_SYMBOL = "💭"
 ASSISTANT_MESSAGE_CLI_SYMBOL = "🤖"
 
-CLEAR_HISTORY_AFTER_MEMORY_UPDATE = os.getenv("CLEAR_HISTORY_AFTER_MEMORY_UPDATE", "true").lower() in (
+CLEAR_HISTORY_AFTER_MEMORY_UPDATE = os.getenv(
+    "CLEAR_HISTORY_AFTER_MEMORY_UPDATE", "true"
+).lower() in (
     "true",
     "1",
     "yes",
 )
-CALL_MEMORY_AGENT_IN_PARALLEL = os.getenv("CALL_MEMORY_AGENT_IN_PARALLEL", "false").lower() in ("true", "1", "yes")
-CHAINING_FOR_MEMORY_UPDATE = os.getenv("CHAINING_FOR_MEMORY_UPDATE", "false").lower() in ("true", "1", "yes")
+# When clearing history after a memory update, retain the raw conversation
+# messages of the most-recent N sessions (per agent+user) instead of hard-deleting
+# them. These retained rows stay DETACHED from the agent's message_ids (NOT re-added
+# to any in-context list — token economy preserved); they exist only so a later
+# distiller / auto-dream pass can read the raw transcript. The window is a bounded
+# rolling window: when a new session arrives the oldest retained session ages out
+# and becomes eligible for deletion on the next clear. Default 5; 0 disables
+# retention entirely (legacy hard-delete-everything behavior).
+MESSAGE_RETAIN_LAST_N_SESSIONS = int(os.getenv("MESSAGE_RETAIN_LAST_N_SESSIONS", "5"))
+CALL_MEMORY_AGENT_IN_PARALLEL = os.getenv(
+    "CALL_MEMORY_AGENT_IN_PARALLEL", "false"
+).lower() in ("true", "1", "yes")
+CHAINING_FOR_MEMORY_UPDATE = os.getenv(
+    "CHAINING_FOR_MEMORY_UPDATE", "false"
+).lower() in ("true", "1", "yes")
 CHAINING_FOR_META_AGENT = os.getenv("CHAINING_FOR_META_AGENT", "true").lower() in (
     "true",
     "1",
     "yes",
 )
 
-LOAD_IMAGE_CONTENT_FOR_LAST_MESSAGE_ONLY = os.getenv("LOAD_IMAGE_CONTENT_FOR_LAST_MESSAGE_ONLY", "false").lower() in (
+LOAD_IMAGE_CONTENT_FOR_LAST_MESSAGE_ONLY = os.getenv(
+    "LOAD_IMAGE_CONTENT_FOR_LAST_MESSAGE_ONLY", "false"
+).lower() in (
     "true",
     "1",
     "yes",
 )
-BUILD_EMBEDDINGS_FOR_MEMORY = os.getenv("BUILD_EMBEDDINGS_FOR_MEMORY", "true").lower() in ("true", "1", "yes")
+BUILD_EMBEDDINGS_FOR_MEMORY = os.getenv(
+    "BUILD_EMBEDDINGS_FOR_MEMORY", "true"
+).lower() in ("true", "1", "yes")
+SKILL_TRIGGER_MESSAGE_THRESHOLD = int(
+    os.getenv("SKILL_TRIGGER_MESSAGE_THRESHOLD", "10")
+)
+# Number of *sessions* (distinct message.session_id values) that must accumulate
+# on an agent for a given user before procedural-memory extraction auto-fires.
+# Counted against a persisted cursor (agent_trigger_state), so restarts and
+# multiple workers all see the same value.
+SKILL_TRIGGER_SESSION_THRESHOLD = int(os.getenv("SKILL_TRIGGER_SESSION_THRESHOLD", "5"))
+
+# ---------------------------------------------------------------------------
+# C4 — bounded, count-driven, quality-aware edit budget (skill evolution).
+#
+# The budget is the MAX number of skill mutations (create+edit) a single
+# records-based evolution run may perform. It is driven by STRUCTURE-GATED
+# COUNTS from the C2 aggregate (n_high_fail / n_high_succ), never by a sum of
+# self-reported quality scores (quality_score is ranking-only):
+#
+#     raw    = B0 + alpha_f * n_high_fail + alpha_s * n_high_succ
+#     budget = clamp(round_half_up(raw), B_min, B_max)
+#
+# With ~5 records/window: all-failure -> ~6, mixed -> ~2-4, all-noise -> 0
+# (n_high_* == 0 => budget 0 => the curator is skipped entirely).
+# ---------------------------------------------------------------------------
+SKILL_EDIT_BUDGET_B0 = int(os.getenv("SKILL_EDIT_BUDGET_B0", "1"))
+SKILL_EDIT_BUDGET_ALPHA_FAIL = float(os.getenv("SKILL_EDIT_BUDGET_ALPHA_FAIL", "1.0"))
+SKILL_EDIT_BUDGET_ALPHA_SUCC = float(os.getenv("SKILL_EDIT_BUDGET_ALPHA_SUCC", "0.5"))
+SKILL_EDIT_BUDGET_MIN = int(os.getenv("SKILL_EDIT_BUDGET_MIN", "0"))
+SKILL_EDIT_BUDGET_MAX = int(os.getenv("SKILL_EDIT_BUDGET_MAX", "6"))
+
+# Hybrid budget (formula ceiling + a cheap LLM may only REDUCE). Held out of the
+# validity run: formula-only is deterministic; autonomous is an ablation arm.
+SKILL_USE_AUTONOMOUS_BUDGET = os.getenv(
+    "SKILL_USE_AUTONOMOUS_BUDGET", "false"
+).lower() in (
+    "true",
+    "1",
+    "yes",
+)
+
+# Per-mutation HARD size gate on skill_edit. Reject (without consuming budget)
+# when an edit changes too much at once; the curator must split it or extract a
+# new skill instead. Two independent dimensions, either one trips the gate:
+#   * absolute char delta  > SKILL_MAX_EDIT_CHAR_DELTA
+#   * change-ratio (1 - difflib.SequenceMatcher.ratio()) >= SKILL_EDIT_MAJOR_RATIO
+SKILL_MAX_EDIT_CHAR_DELTA = int(os.getenv("SKILL_MAX_EDIT_CHAR_DELTA", "800"))
+SKILL_EDIT_MAJOR_RATIO = float(os.getenv("SKILL_EDIT_MAJOR_RATIO", "0.4"))
+
+# Hard ceiling on a skill's `instructions` length. An edit whose RESULT exceeds
+# this must route to skill_create (extract a new skill) rather than grow an
+# existing one unbounded.
+SKILL_MAX_INSTRUCTIONS_CHARS = int(os.getenv("SKILL_MAX_INSTRUCTIONS_CHARS", "12000"))
+
+# Deletes are gated SEPARATELY from the create/edit budget (P1-4): at most
+# D_max per evolution, and only when a failure record names the skill actively
+# harmful. Soft-delete (exclude-from-retrieval) is preferred over a hard delete.
+SKILL_DELETE_BUDGET_MAX = int(os.getenv("SKILL_DELETE_BUDGET_MAX", "1"))
+
+# Records-based evolution window: evolve every N completed graded rounds.
+SKILL_EVOLVE_RECORDS_WINDOW = int(os.getenv("SKILL_EVOLVE_RECORDS_WINDOW", "5"))
+
+# ---------------------------------------------------------------------------
+# Procedural (skill) RETRIEVAL defaults.
+#
+# The single authoritative default for SEARCH-SURFACE procedural retrieval
+# (the REST /memory/search endpoint, the eval client, and the documented
+# recommendation for the search_in_memory agent tool). When a search surface
+# does NOT explicitly choose a method, procedural memory is retrieved with the
+# EverOS-aligned "hybrid" lane: BM25 (lexical) + embedding (dense) recall fused
+# with Reciprocal Rank Fusion.
+#
+# Override to "bm25" or "embedding" via env for latency-sensitive deployments
+# or A/B experiments. Internal pipelines that PIN a method explicitly (evolve
+# before/after snapshots, the per-step system-context prefetch) keep their
+# explicit choice and are not governed by this default.
+PROCEDURAL_DEFAULT_SEARCH_METHOD = os.getenv("MIRIX_SKILL_SEARCH_METHOD", "hybrid")
+
+# Reciprocal Rank Fusion constant for the procedural hybrid lane. k=60 is the
+# canonical RRF constant (everalgo.rank.fusion.rrf / RankConfig.rrf_k=60); the
+# fusion is rank-based, 1-based, and unweighted — raw BM25/cosine scores are
+# discarded, only rank positions feed the sum 1/(k+rank).
+SKILL_HYBRID_RRF_K = int(os.getenv("MIRIX_SKILL_HYBRID_RRF_K", "60"))
+
+# Over-fetch multiplier for each hybrid lane before fusion (EverOS
+# DEFAULT_RECALL_MULTIPLIER=2): each lane recalls limit*multiplier candidates so
+# fusion picks from a larger, higher-recall pool, then the result is sliced to
+# the requested limit.
+SKILL_HYBRID_RECALL_MULTIPLIER = int(
+    os.getenv("MIRIX_SKILL_HYBRID_RECALL_MULTIPLIER", "2")
+)

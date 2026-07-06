@@ -1854,7 +1854,7 @@ class LocalClient(AbstractClient):
             memory_type (str): The type of memory to search in. Options: "episodic", "resource", "procedural",
                               "knowledge_vault", "semantic", "all". Defaults to "all".
             search_field (str): The field to search in the memory. For "episodic": 'summary', 'details';
-                               for "resource": 'summary', 'content'; for "procedural": 'summary', 'steps';
+                               for "resource": 'summary', 'content'; for "procedural": 'description', 'instructions';
                                for "knowledge_vault": 'secret_value', 'caption'; for "semantic": 'name', 'summary', 'details'.
                                Use "null" for default fields. Defaults to "null".
             search_method (str): The method to search. Options: 'bm25' (keyword-based), 'embedding' (semantic).
@@ -1973,7 +1973,7 @@ class LocalClient(AbstractClient):
                 agent_state=agent_state,
                 query=query,
                 embedded_text=embedded_text if search_method == "embedding" and query else None,
-                search_field=search_field if search_field != "null" else "summary",
+                search_field=search_field if search_field != "null" else "description",
                 search_method=search_method,
                 limit=limit,
                 timezone_str=timezone_str,
@@ -1983,8 +1983,12 @@ class LocalClient(AbstractClient):
                     "memory_type": "procedural",
                     "id": x.id,
                     "entry_type": x.entry_type,
-                    "summary": x.summary,
-                    "steps": x.steps,
+                    "name": x.name,
+                    "description": x.description,
+                    "instructions": x.instructions,
+                    "triggers": getattr(x, "triggers", None) or [],
+                    "examples": getattr(x, "examples", None) or [],
+                    "version": getattr(x, "version", None),
                 }
                 for x in procedural_memories
             ]

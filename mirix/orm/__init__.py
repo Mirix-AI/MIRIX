@@ -1,9 +1,11 @@
 from mirix.orm.agent import Agent
+from mirix.orm.agent_trigger_state import AgentTriggerState
 from mirix.orm.base import Base
 from mirix.orm.block import Block
 from mirix.orm.client import Client
 from mirix.orm.client_api_key import ClientApiKey
 from mirix.orm.cloud_file_mapping import CloudFileMapping
+from mirix.orm.conversation_message import ConversationMessage
 from mirix.orm.episodic_memory import EpisodicEvent
 from mirix.orm.file import FileMetadata
 from mirix.orm.knowledge_vault import KnowledgeVaultItem
@@ -13,6 +15,7 @@ from mirix.orm.procedural_memory import ProceduralMemoryItem
 from mirix.orm.provider import Provider
 from mirix.orm.resource_memory import ResourceMemoryItem
 from mirix.orm.semantic_memory import SemanticMemoryItem
+from mirix.orm.skill_experience import SkillExperience
 from mirix.orm.step import Step
 from mirix.orm.tool import Tool
 from mirix.orm.tools_agents import ToolsAgents
@@ -20,11 +23,13 @@ from mirix.orm.user import User
 
 __all__ = [
     "Agent",
+    "AgentTriggerState",
     "Base",
     "Block",
     "Client",
     "ClientApiKey",
     "CloudFileMapping",
+    "ConversationMessage",
     "EpisodicEvent",
     "FileMetadata",
     "KnowledgeVaultItem",
@@ -34,6 +39,7 @@ __all__ = [
     "Provider",
     "ResourceMemoryItem",
     "SemanticMemoryItem",
+    "SkillExperience",
     "Step",
     "Tool",
     "ToolsAgents",

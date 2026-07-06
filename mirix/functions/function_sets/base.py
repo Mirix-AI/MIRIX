@@ -95,10 +95,11 @@ async def search_in_memory(
     Args:
         memory_type: The type of memory to search in. It should be chosen from the following: "episodic", "resource", "procedural", "knowledge_vault", "semantic", "all". Here "all" means searching in all the memories.
         query: The keywords/query used to search in the memory.
-        search_field: The field to search in the memory. It should be chosen from the attributes of the corresponding memory. For "episodic" memory, it can be 'summary', 'details'; for "resource" memory, it can be 'summary', 'content'; for "procedural" memory, it can be 'summary', 'steps'; for "knowledge_vault", it can be 'secret_value', 'caption'; for semantic memory, it can be 'name', 'summary', 'details'. For "all", it should also be "null" as the system will search all memories with default fields.
+        search_field: The field to search in the memory. It should be chosen from the attributes of the corresponding memory. For "episodic" memory, it can be 'summary', 'details'; for "resource" memory, it can be 'summary', 'content'; for "procedural" memory, it can be 'description', 'instructions', 'entry_type', 'name' (default 'description'; note: 'embedding' search supports only 'description'/'instructions'); for "knowledge_vault", it can be 'secret_value', 'caption'; for semantic memory, it can be 'name', 'summary', 'details'. For "all", it should also be "null" as the system will search all memories with default fields.
         search_method: The method to search in the memory. Choose from:
             - 'bm25': BM25 ranking-based full-text search (fast and effective for keyword-based searches)
             - 'embedding': Vector similarity search using embeddings (most powerful, good for conceptual matches)
+            - 'hybrid': **RECOMMENDED for "procedural" memory** - fuses 'bm25' and 'embedding' via Reciprocal Rank Fusion (EverOS-style). Best recall/precision for skill lookup. Only valid for memory_type='procedural'; for any other memory_type (including 'all') it is treated as 'embedding'.
 
     Returns:
         str: Query result string
@@ -106,6 +107,16 @@ async def search_in_memory(
 
     if not self.user:
         raise ValueError("Can not search in memory. User is not set")
+
+    # "hybrid" is procedural-only — the other memory managers have no hybrid
+    # branch. Clamp to embedding for any non-procedural memory_type (including
+    # "all") BEFORE the field-validation checks below, so an unsupported combo
+    # like resource/content/hybrid resolves to embedding and then trips the same
+    # deterministic validation as resource/content/embedding — rather than
+    # slipping past the guard and later hitting a missing embedding column.
+    # (Procedural hybrid self-embeds the query in the manager; no precompute.)
+    if search_method == "hybrid" and memory_type != "procedural":
+        search_method = "embedding"
 
     if memory_type == "resource" and search_field == "content" and search_method == "embedding":
         raise ValueError("embedding is not supported for resource memory's 'content' field.")
@@ -193,7 +204,7 @@ async def search_in_memory(
             agent_state=self.agent_state,
             query=query,
             embedded_text=embedded_text if search_method == "embedding" and query else None,
-            search_field=search_field if search_field != "null" else "summary",
+            search_field=search_field if search_field != "null" else "description",
             search_method=search_method,
             limit=10,
             timezone_str=timezone_str,
@@ -203,8 +214,9 @@ async def search_in_memory(
                 "memory_type": "procedural",
                 "id": x.id,
                 "entry_type": x.entry_type,
-                "summary": x.summary,
-                "steps": x.steps,
+                "name": x.name,
+                "description": x.description,
+                "instructions": x.instructions,
             }
             for x in procedural_memories
         ]
