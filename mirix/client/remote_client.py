@@ -1275,6 +1275,13 @@ class MirixClient(AbstractClient):
                          {"role": "user", "content": [{"type": "text", "text": "..."}]},
                          {"role": "assistant", "content": [{"type": "text", "text": "..."}]}
                      ]
+                     Tool activity may be included and is used by skill
+                     distillation (tool errors/retries are strong learning
+                     signals): pass tool results as {"role": "tool",
+                     "name": "...", "content": "..."} turns, and/or a
+                     "tool_calls" list on an assistant message (OpenAI shape) —
+                     both are preserved in the session conversation store when
+                     session_id is set.
             chaining: Enable/disable chaining (default: True)
             verbose: If True, enable verbose output during memory processing
             filter_tags: Optional dict of tags for filtering and categorization.

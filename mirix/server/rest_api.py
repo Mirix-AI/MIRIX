@@ -439,7 +439,12 @@ async def extract_topics_and_temporal_info(
             # Convert from OpenAI format to internal format
             new_messages = []
             for msg in messages:
-                prefix = "[USER]" if msg["role"] == "user" else "[ASSISTANT]"
+                role = msg["role"]
+                prefix = (
+                    "[USER]"
+                    if role == "user"
+                    else "[TOOL]" if role in ("tool", "function") else "[ASSISTANT]"
+                )
                 new_messages.extend([{"type": "text", "text": prefix + " " + part} for part in msg["content"]])
             messages = new_messages
 
@@ -2157,21 +2162,60 @@ class AddMemoryRequest(BaseModel):
         return self
 
 
+def _serialize_tool_calls(tool_calls: Any) -> str:
+    """Render an assistant message's tool_calls into a compact text form.
+
+    Accepts the OpenAI shape (`[{"function": {"name", "arguments"}, ...}]`) as
+    well as simpler `[{"name", "arguments"}]` dicts; anything unrecognized falls
+    back to `str()`. The distiller only needs to SEE which tool was called with
+    what arguments — a readable line beats a lossless JSON blob.
+    """
+    if not isinstance(tool_calls, list):
+        return str(tool_calls)
+    lines = []
+    for call in tool_calls:
+        if isinstance(call, dict):
+            function = call.get("function") if isinstance(call.get("function"), dict) else call
+            name = function.get("name") or call.get("name") or "unknown_tool"
+            arguments = function.get("arguments", call.get("arguments", ""))
+            if not isinstance(arguments, str):
+                import json as _json
+
+                try:
+                    arguments = _json.dumps(arguments, ensure_ascii=False)
+                except (TypeError, ValueError):
+                    arguments = str(arguments)
+            lines.append(f"[tool_call] {name}({arguments})")
+        else:
+            lines.append(f"[tool_call] {call}")
+    return "\n".join(lines)
+
+
 def _extract_conversation_turns(messages: List[Dict[str, Any]]) -> List[Dict[str, str]]:
     """Extract clean per-role turns for the Conversation Message Store.
 
     Reads the REAL roles from the raw add-memory payload (the same shape the
-    role-collapse branch consumes) and preserves them as 'user'/'assistant' —
-    NOT the [USER]/[ASSISTANT] role-collapsed blob the meta agent receives. The
-    store is the single source of truth for skill distillation, so it keeps the
-    true turn structure.
+    role-collapse branch consumes) and preserves them as
+    'user'/'assistant'/'tool' — NOT the [USER]/[ASSISTANT] role-collapsed blob
+    the meta agent receives. The store is the single source of truth for skill
+    distillation, so it keeps the true turn structure. Tool activity is kept
+    deliberately: work-process lessons (a tool error, a retry, the fix that
+    worked) live in tool calls and tool results, and dropping them would blind
+    the distiller to exactly that signal.
 
     Only role-bearing payloads (`[{"role": ..., "content": ...}, ...]`) yield
     turns; anything else (e.g. screenshot/content-only payloads) yields [] and
     nothing is written. `content` may be a string or a list of string parts; a
     list is joined with newlines to match how the collapse branch treats parts.
-    Roles other than 'user'/'assistant' are dropped — the store's schema only
-    knows those two, and a foreign role is not a learnable conversation turn.
+
+    Mapping:
+    - role 'user'/'assistant' → kept as-is; an assistant message that ALSO
+      carries `tool_calls` gets them serialized and appended to its content
+      (an assistant turn that is pure tool_calls with empty content still
+      yields a turn).
+    - role 'tool'/'function' → stored as a 'tool' turn (tool results). A
+      `name`/`tool_name` field, when present, is prefixed for readability.
+    - any other role is dropped — not a learnable conversation turn.
     """
     if not (
         isinstance(messages, list)
@@ -2181,17 +2225,34 @@ def _extract_conversation_turns(messages: List[Dict[str, Any]]) -> List[Dict[str
     ):
         return []
 
+    def _part_text(part: Any) -> str:
+        # Standard SDK shape: {"type": "text", "text": "..."} — store the text,
+        # not the dict repr. Anything else falls back to str().
+        if isinstance(part, dict) and isinstance(part.get("text"), str):
+            return part["text"]
+        return str(part)
+
     turns: List[Dict[str, str]] = []
     for msg in messages:
         role = msg.get("role")
-        if role not in ("user", "assistant"):
-            continue
         content = msg.get("content", "")
         if isinstance(content, list):
-            content = "\n".join(str(part) for part in content)
+            content = "\n".join(_part_text(part) for part in content)
+        elif content is None:
+            content = ""
         elif not isinstance(content, str):
             content = str(content)
-        turns.append({"role": role, "content": content})
+
+        if role in ("user", "assistant"):
+            if role == "assistant" and msg.get("tool_calls"):
+                serialized = _serialize_tool_calls(msg["tool_calls"])
+                content = f"{content}\n{serialized}".strip() if content else serialized
+            turns.append({"role": role, "content": content})
+        elif role in ("tool", "function"):
+            tool_name = msg.get("name") or msg.get("tool_name")
+            if tool_name:
+                content = f"[{tool_name}] {content}"
+            turns.append({"role": "tool", "content": content})
     return turns
 
 
@@ -2298,7 +2359,12 @@ async def add_memory(
         # We need to convert the message to the format in "content"
         new_message = []
         for msg in message:
-            prefix = "[USER]" if msg["role"] == "user" else "[ASSISTANT]"
+            role = msg["role"]
+            prefix = (
+                "[USER]"
+                if role == "user"
+                else "[TOOL]" if role in ("tool", "function") else "[ASSISTANT]"
+            )
 
             # Handle both string and list content
             content = msg["content"]
@@ -2420,7 +2486,12 @@ async def add_memory_sync(
     if isinstance(message, list) and "role" in message[0].keys():
         new_message = []
         for msg in message:
-            prefix = "[USER]" if msg["role"] == "user" else "[ASSISTANT]"
+            role = msg["role"]
+            prefix = (
+                "[USER]"
+                if role == "user"
+                else "[TOOL]" if role in ("tool", "function") else "[ASSISTANT]"
+            )
             content = msg["content"]
             if isinstance(content, str):
                 new_message.append({"type": "text", "text": prefix + " " + content})

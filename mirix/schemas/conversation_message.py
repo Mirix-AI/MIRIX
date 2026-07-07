@@ -1,9 +1,12 @@
 """Pydantic schemas for the Conversation Message Store.
 
-A `ConversationMessage` is one external conversation turn — a real `user` or
-`assistant` message that arrived through the memory-add API carrying a
-`session_id`. It is the canonical, learnable record of a conversation and the
-single source the procedural-memory (skill) distiller reads.
+A `ConversationMessage` is one external conversation turn — a real `user`,
+`assistant`, or `tool` message that arrived through the memory-add API carrying
+a `session_id`. It is the canonical, learnable record of a conversation and the
+single source the procedural-memory (skill) distiller reads. Tool turns matter:
+the work-process lessons (a tool error, a retry, a fix that finally worked) live
+in tool calls and tool results, so dropping them would blind the distiller to
+exactly the worth_avoiding/worth_learning signal it exists to extract.
 
 Mirrors `schemas/skill_experience.py`: a Base with the user-facing fields, a
 `Create` schema that carries the owner ids needed to persist, a full schema with
@@ -24,8 +27,9 @@ from mirix.schemas.message import _validate_session_id
 from mirix.schemas.mirix_base import MirixBase
 
 # role value space. Kept as a Literal so the schema is the single source of
-# truth; the ORM stores it as a plain string.
-ConversationRole = Literal["user", "assistant"]
+# truth; the ORM stores it as a plain string. 'tool' covers both tool results
+# (role: "tool" messages) and serialized assistant tool calls.
+ConversationRole = Literal["user", "assistant", "tool"]
 
 # Length cap on a single turn. Generous — conversation turns can be long — but
 # bounded so a pathological caller can't bloat the DB.
@@ -43,7 +47,7 @@ class ConversationMessageBase(MirixBase):
     )
     role: ConversationRole = Field(
         ...,
-        description="The real turn role: 'user' or 'assistant'.",
+        description="The real turn role: 'user', 'assistant', or 'tool'.",
     )
     content: str = Field(
         default="",

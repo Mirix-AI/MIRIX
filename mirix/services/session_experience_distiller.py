@@ -40,6 +40,10 @@ import asyncio
 import json
 from typing import Dict, List, Optional, Tuple
 
+from mirix.constants import (
+    DISTILLER_MAX_MESSAGE_CHARS,
+    DISTILLER_MAX_TRANSCRIPT_CHARS,
+)
 from mirix.log import get_logger
 from mirix.services.conversation_message_manager import owner_org as _owner_org
 from mirix.schemas.agent import AgentState
@@ -63,10 +67,12 @@ logger = get_logger(__name__)
 
 # Per-transcript char budget. We keep the HEAD and TAIL (where the task framing
 # and the final user verdict / confirmation usually live) and elide the middle.
-_MAX_TRANSCRIPT_CHARS = 16000
+# Env-configurable (MIRIX_DISTILLER_MAX_TRANSCRIPT_CHARS) — see constants.py.
+_MAX_TRANSCRIPT_CHARS = DISTILLER_MAX_TRANSCRIPT_CHARS
 
-# Per-turn content cap so one giant turn can't dominate the transcript.
-_MAX_MESSAGE_CHARS = 2000
+# Per-turn content cap so one giant turn (often a large tool result) can't
+# dominate the transcript. Env-configurable (MIRIX_DISTILLER_MAX_MESSAGE_CHARS).
+_MAX_MESSAGE_CHARS = DISTILLER_MAX_MESSAGE_CHARS
 
 
 class _LLMCallError(Exception):
@@ -546,10 +552,12 @@ class SessionExperienceDistiller:
         """Render conversation turns compactly as ``role: content`` lines.
 
         The source is the Conversation Message Store, so each turn already has a
-        REAL ``role`` ('user' | 'assistant') and a plain-text ``content`` — no
-        scaffolding, no tool-call flattening, no embeddings. We simply cap each
-        turn and bound the whole transcript by keeping the HEAD and TAIL (task
-        framing + final verdict) and eliding the middle.
+        REAL ``role`` ('user' | 'assistant' | 'tool') and a plain-text
+        ``content`` — no scaffolding, no embeddings. Tool turns (tool results
+        and serialized tool calls) are rendered like any other turn: the
+        distiller prompt treats tool errors/retries as strong signals. We cap
+        each turn and bound the whole transcript by keeping the HEAD and TAIL
+        (task framing + final verdict) and eliding the middle.
         """
         lines: List[str] = []
         for t in turns:
@@ -569,7 +577,7 @@ class SessionExperienceDistiller:
 
     @staticmethod
     def _role_of(t) -> str:
-        """The real turn role of a ConversationMessage ('user' | 'assistant')."""
+        """The real turn role of a ConversationMessage ('user'|'assistant'|'tool')."""
         role = getattr(t, "role", None)
         return getattr(role, "value", None) or str(role) or "unknown"
 

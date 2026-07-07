@@ -177,10 +177,12 @@ class TestConversationMessageSchema:
             == set(ConversationMessage.model_fields)
         )
 
-    def test_role_accepts_user_and_assistant(self):
+    def test_role_accepts_user_assistant_and_tool(self):
         from mirix.schemas.conversation_message import ConversationMessageCreate
 
-        for role in ("user", "assistant"):
+        # 'tool' turns carry the work-process signal (tool errors/retries) the
+        # distiller's tool_error signal_type exists for.
+        for role in ("user", "assistant", "tool"):
             c = ConversationMessageCreate(
                 session_id="sess-1",
                 role=role,
@@ -193,8 +195,9 @@ class TestConversationMessageSchema:
     def test_role_rejects_other_values(self):
         from mirix.schemas.conversation_message import ConversationMessageCreate
 
-        # 'tool'/'system' are role-collapsed away; only real turn roles persist.
-        for bad in ("tool", "system", "", "User"):
+        # 'system' is meta-agent scaffolding, never a learnable turn; roles are
+        # also case-sensitive and non-empty.
+        for bad in ("system", "", "User", "TOOL"):
             with pytest.raises(ValueError):
                 ConversationMessageCreate(
                     session_id="sess-1",

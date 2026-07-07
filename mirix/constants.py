@@ -375,6 +375,20 @@ SKILL_EVOLVE_RECORDS_WINDOW = int(os.getenv("SKILL_EVOLVE_RECORDS_WINDOW", "5"))
 # explicit choice and are not governed by this default.
 PROCEDURAL_DEFAULT_SEARCH_METHOD = os.getenv("MIRIX_SKILL_SEARCH_METHOD", "hybrid")
 
+# Distiller transcript budgets (characters). The transcript fed to the
+# experience-distiller LLM is bounded twice: per turn, and for the whole
+# session (HEAD + TAIL kept, middle elided past the cap). Tool turns are part
+# of the transcript — work-process lessons live in tool errors/retries — so
+# the defaults are sized for tool-heavy sessions: 80K chars ≈ 20-25K tokens,
+# comfortably inside modern model windows while still bounding a pathological
+# session. Raise/lower via env per deployment model.
+DISTILLER_MAX_TRANSCRIPT_CHARS = int(
+    os.getenv("MIRIX_DISTILLER_MAX_TRANSCRIPT_CHARS", "80000")
+)
+DISTILLER_MAX_MESSAGE_CHARS = int(
+    os.getenv("MIRIX_DISTILLER_MAX_MESSAGE_CHARS", "8000")
+)
+
 # Retention window (days) for VERBATIM conversation turns in the
 # conversation_message store AFTER they have been distilled. Once distilled,
 # a turn's learning value lives in skill_experience rows; keeping the raw

@@ -88,7 +88,7 @@ class ConversationMessageManager:
     ) -> List[PydanticConversationMessage]:
         """Append `turns` to `session_id`, preserving their given order.
 
-        `turns` is a list of `{"role": "user"|"assistant", "content": str}`.
+        `turns` is a list of `{"role": "user"|"assistant"|"tool", "content": str}`.
         Each turn is validated through `ConversationMessageCreate` first so an
         invalid `role` (or over-length content / malformed session_id) is
         rejected up front — the DB columns are plain String/Text, so without

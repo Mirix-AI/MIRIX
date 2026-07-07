@@ -86,6 +86,24 @@ client.add(
     session_id="sess-demo-001",
 )
 
+# Include tool activity when you want skills learned from the WORK PROCESS:
+# tool errors, retries, and the fix that finally worked are the distiller's
+# strongest signals. Pass tool results as role="tool" turns and/or a
+# "tool_calls" list on assistant messages (OpenAI shape) — both are preserved
+# in the session conversation store.
+client.add(
+    user_id="demo-user",
+    messages=[
+        {"role": "user", "content": [{"type": "text", "text": "Deploy the service."}]},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"function": {"name": "kubectl_apply", "arguments": "{\"file\": \"deploy.yaml\"}"}}
+        ]},
+        {"role": "tool", "name": "kubectl_apply", "content": "error: forbidden (missing RBAC)"},
+        {"role": "assistant", "content": [{"type": "text", "text": "Fixed the RBAC role and redeployed successfully."}]},
+    ],
+    session_id="sess-demo-001",
+)
+
 memories = client.retrieve_with_conversation(
     user_id="demo-user",
     messages=[

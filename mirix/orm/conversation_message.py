@@ -76,8 +76,9 @@ class ConversationMessage(SqlalchemyBase, OrganizationMixin, UserMixin):
     role: Mapped[str] = mapped_column(
         String,
         nullable=False,
-        doc="The real turn role: 'user' or 'assistant' (validated in Pydantic, "
-        "not a pg ENUM). NOT the role-collapsed form the meta agent receives.",
+        doc="The real turn role: 'user', 'assistant', or 'tool' (validated in "
+        "Pydantic, not a pg ENUM). NOT the role-collapsed form the meta agent "
+        "receives.",
     )
     content: Mapped[str] = mapped_column(
         Text,
