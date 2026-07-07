@@ -29,13 +29,12 @@ from types import SimpleNamespace
 
 import pytest
 
+from mirix.helpers.json_parsing import parse_distiller_json_array
 from mirix.schemas.skill_experience import (
     SKILL_EXPERIENCE_MAX_CONTENT_LEN,
     SKILL_EXPERIENCE_MAX_TITLE_LEN,
 )
-from mirix.helpers.json_parsing import parse_distiller_json_array
 from mirix.services.session_experience_distiller import SessionExperienceDistiller
-
 
 # ============================ JSON-array parse robustness ===================
 
@@ -51,13 +50,13 @@ class TestParseDistillerJsonArray:
         assert parse_distiller_json_array("[]") == []
 
     def test_fenced_json_block(self):
-        raw = "```json\n[{\"experience_type\":\"worth_avoiding\",\"title\":\"x\"}]\n```"
+        raw = '```json\n[{"experience_type":"worth_avoiding","title":"x"}]\n```'
         out = parse_distiller_json_array(raw)
         assert len(out) == 1
         assert out[0]["experience_type"] == "worth_avoiding"
 
     def test_plain_fence(self):
-        raw = "```\n[{\"title\":\"a\"},{\"title\":\"b\"}]\n```"
+        raw = '```\n[{"title":"a"},{"title":"b"}]\n```'
         out = parse_distiller_json_array(raw)
         assert [o["title"] for o in out] == ["a", "b"]
 
@@ -135,12 +134,18 @@ class TestPersistMapping:
                 "content": "When repeatedly resolving X, cache it.",
                 "importance": 0.8,
                 "credibility": 0.9,
-                "evidence": {"quote": "great, that worked", "signal_type": "user_confirmation"},
+                "evidence": {
+                    "quote": "great, that worked",
+                    "signal_type": "user_confirmation",
+                },
             }
         ]
         out = await d._persist_experiences(
-            meta_agent_state=meta, user=user, actor=actor,
-            session_id="sess-1", parsed=parsed,
+            meta_agent_state=meta,
+            user=user,
+            actor=actor,
+            session_id="sess-1",
+            parsed=parsed,
         )
         assert len(out) == 1
         rec = mgr.created[0]
@@ -159,14 +164,25 @@ class TestPersistMapping:
         d = _distiller_with(mgr)
         meta, user, actor = _meta_user_actor()
         parsed = [
-            {"experience_type": "worth_avoiding", "title": "t1",
-             "importance": 5.0, "credibility": -3.0},
-            {"experience_type": "worth_learning", "title": "t2",
-             "importance": "garbage", "credibility": None},
+            {
+                "experience_type": "worth_avoiding",
+                "title": "t1",
+                "importance": 5.0,
+                "credibility": -3.0,
+            },
+            {
+                "experience_type": "worth_learning",
+                "title": "t2",
+                "importance": "garbage",
+                "credibility": None,
+            },
         ]
         await d._persist_experiences(
-            meta_agent_state=meta, user=user, actor=actor,
-            session_id="s", parsed=parsed,
+            meta_agent_state=meta,
+            user=user,
+            actor=actor,
+            session_id="s",
+            parsed=parsed,
         )
         assert mgr.created[0].importance == 1.0
         assert mgr.created[0].credibility == 0.0
@@ -178,13 +194,16 @@ class TestPersistMapping:
         d = _distiller_with(mgr)
         meta, user, actor = _meta_user_actor()
         parsed = [
-            {"experience_type": "partial", "title": "bad"},          # bad enum
+            {"experience_type": "partial", "title": "bad"},  # bad enum
             {"experience_type": "worth_learning", "title": "good"},  # kept
-            {"experience_type": None, "title": "alsobad"},           # missing
+            {"experience_type": None, "title": "alsobad"},  # missing
         ]
         out = await d._persist_experiences(
-            meta_agent_state=meta, user=user, actor=actor,
-            session_id="s", parsed=parsed,
+            meta_agent_state=meta,
+            user=user,
+            actor=actor,
+            session_id="s",
+            parsed=parsed,
         )
         assert len(out) == 1
         assert mgr.created[0].title == "good"
@@ -198,8 +217,11 @@ class TestPersistMapping:
             {"experience_type": "worth_learning", "title": ""},
         ]
         out = await d._persist_experiences(
-            meta_agent_state=meta, user=user, actor=actor,
-            session_id="s", parsed=parsed,
+            meta_agent_state=meta,
+            user=user,
+            actor=actor,
+            session_id="s",
+            parsed=parsed,
         )
         assert out == []
         assert mgr.created == []
@@ -216,8 +238,11 @@ class TestPersistMapping:
             }
         ]
         out = await d._persist_experiences(
-            meta_agent_state=meta, user=user, actor=actor,
-            session_id="s", parsed=parsed,
+            meta_agent_state=meta,
+            user=user,
+            actor=actor,
+            session_id="s",
+            parsed=parsed,
         )
         assert len(out) == 1
         assert len(mgr.created[0].title) <= SKILL_EXPERIENCE_MAX_TITLE_LEN
@@ -229,14 +254,23 @@ class TestPersistMapping:
         meta, user, actor = _meta_user_actor()
         parsed = [
             {"experience_type": "worth_learning", "title": "a"},  # no evidence
-            {"experience_type": "worth_learning", "title": "b",
-             "evidence": {"quote": "q", "signal_type": "bogus_signal"}},
-            {"experience_type": "worth_learning", "title": "c",
-             "evidence": "a raw string"},
+            {
+                "experience_type": "worth_learning",
+                "title": "b",
+                "evidence": {"quote": "q", "signal_type": "bogus_signal"},
+            },
+            {
+                "experience_type": "worth_learning",
+                "title": "c",
+                "evidence": "a raw string",
+            },
         ]
         await d._persist_experiences(
-            meta_agent_state=meta, user=user, actor=actor,
-            session_id="s", parsed=parsed,
+            meta_agent_state=meta,
+            user=user,
+            actor=actor,
+            session_id="s",
+            parsed=parsed,
         )
         for rec in mgr.created:
             ev = json.loads(rec.evidence)
@@ -266,8 +300,11 @@ class TestPersistMapping:
             {"experience_type": "worth_learning", "title": "survivor"},
         ]
         out = await d._persist_experiences(
-            meta_agent_state=meta, user=user, actor=actor,
-            session_id="s", parsed=parsed,
+            meta_agent_state=meta,
+            user=user,
+            actor=actor,
+            session_id="s",
+            parsed=parsed,
         )
         assert [r.title for r in out] == ["survivor"]
 
@@ -302,32 +339,40 @@ class _FakeLLMClient:
         return _FakeResponse(self._reply)
 
 
-MIXED_REPLY = json.dumps([
-    {
-        "experience_type": "worth_learning",
-        "title": "Batch independent tool calls",
-        "content": "When calls are independent, issue them together.",
-        "importance": 0.7,
-        "credibility": 0.85,
-        "evidence": {"quote": "perfect, much faster", "signal_type": "user_confirmation"},
-    },
-    {
-        "experience_type": "worth_avoiding",
-        "title": "Do not assume the column exists",
-        "content": "A query failed on a missing column; check schema first.",
-        "importance": 0.9,
-        "credibility": 0.95,
-        "evidence": {"quote": "no such column: foo", "signal_type": "tool_error"},
-    },
-    {
-        "experience_type": "worth_avoiding",
-        "title": "Avoid wholesale rewrites",
-        "content": "User said the rewrite lost context; prefer deltas.",
-        "importance": 0.6,
-        "credibility": 0.8,
-        "evidence": {"quote": "this part isn't good enough", "signal_type": "user_critique"},
-    },
-])
+MIXED_REPLY = json.dumps(
+    [
+        {
+            "experience_type": "worth_learning",
+            "title": "Batch independent tool calls",
+            "content": "When calls are independent, issue them together.",
+            "importance": 0.7,
+            "credibility": 0.85,
+            "evidence": {
+                "quote": "perfect, much faster",
+                "signal_type": "user_confirmation",
+            },
+        },
+        {
+            "experience_type": "worth_avoiding",
+            "title": "Do not assume the column exists",
+            "content": "A query failed on a missing column; check schema first.",
+            "importance": 0.9,
+            "credibility": 0.95,
+            "evidence": {"quote": "no such column: foo", "signal_type": "tool_error"},
+        },
+        {
+            "experience_type": "worth_avoiding",
+            "title": "Avoid wholesale rewrites",
+            "content": "User said the rewrite lost context; prefer deltas.",
+            "importance": 0.6,
+            "credibility": 0.8,
+            "evidence": {
+                "quote": "this part isn't good enough",
+                "signal_type": "user_critique",
+            },
+        },
+    ]
+)
 
 
 @pytest.mark.asyncio
@@ -339,12 +384,17 @@ class TestSingleSessionMultipleMixed:
         meta, user, actor = _meta_user_actor()
 
         parsed = await d._call_llm(
-            agent_id=meta.id, session_id="sess-x",
-            transcript="user: ...\nassistant: ...", skills_block="(none)",
+            agent_id=meta.id,
+            session_id="sess-x",
+            transcript="user: ...\nassistant: ...",
+            skills_block="(none)",
         )
         out = await d._persist_experiences(
-            meta_agent_state=meta, user=user, actor=actor,
-            session_id="sess-x", parsed=parsed,
+            meta_agent_state=meta,
+            user=user,
+            actor=actor,
+            session_id="sess-x",
+            parsed=parsed,
         )
         assert fake.calls == 1
         types = sorted(r.experience_type for r in out)
@@ -381,18 +431,27 @@ class TestPriorityOrdering:
         # builder that accidentally sorted by title would FLIP them and fail.
         ordered = [
             SimpleNamespace(
-                experience_type="worth_avoiding", title="Zeta",  # highest priority
-                content="c", importance=0.8, credibility=0.9,
+                experience_type="worth_avoiding",
+                title="Zeta",  # highest priority
+                content="c",
+                importance=0.8,
+                credibility=0.9,
                 evidence=_json.dumps({"quote": "", "signal_type": "inferred"}),
             ),
             SimpleNamespace(
-                experience_type="worth_learning", title="Mu",  # middle priority
-                content="c", importance=0.5, credibility=0.6,
+                experience_type="worth_learning",
+                title="Mu",  # middle priority
+                content="c",
+                importance=0.5,
+                credibility=0.6,
                 evidence=_json.dumps({"quote": "", "signal_type": "inferred"}),
             ),
             SimpleNamespace(
-                experience_type="worth_avoiding", title="Alpha",  # lowest priority
-                content="c", importance=0.9, credibility=0.1,
+                experience_type="worth_avoiding",
+                title="Alpha",  # lowest priority
+                content="c",
+                importance=0.9,
+                credibility=0.1,
                 evidence=_json.dumps({"quote": "", "signal_type": "inferred"}),
             ),
         ]
@@ -404,9 +463,7 @@ class TestPriorityOrdering:
 
 
 class TestNoBenchmarkVocabulary:
-    PROMPT = Path(
-        "mirix/prompts/system/base/auto_dream_agent/procedural.txt"
-    )
+    PROMPT = Path("mirix/prompts/system/base/auto_dream_agent/procedural.txt")
 
     def _prompt_text(self) -> str:
         return self.PROMPT.read_text(encoding="utf-8")
@@ -444,7 +501,9 @@ class TestNoBenchmarkVocabulary:
         src = inspect.getsource(SessionExperienceDistiller)
         low = src.lower()
         for banned in ["metaclaw", "round_index", "quality_score", "oracle"]:
-            assert banned not in low, f"benchmark term leaked into distiller: {banned!r}"
+            assert banned not in low, (
+                f"benchmark term leaked into distiller: {banned!r}"
+            )
 
 
 # ===== Source isolation — the distiller reads ONLY the Conversation Message Store =
@@ -505,7 +564,10 @@ class TestRenderTranscriptFromConversationStore:
         out = SessionExperienceDistiller._render_transcript(turns)
         lines = [ln for ln in out.splitlines() if ln.strip()]
         # Exactly the two real turns, with their real roles — not [USER]/[ASSISTANT].
-        assert lines == ["user: Q: which HTTP status means 'Not Found'?", "assistant: 404"]
+        assert lines == [
+            "user: Q: which HTTP status means 'Not Found'?",
+            "assistant: 404",
+        ]
 
     def test_no_scaffolding_filtering_remains(self):
         # The store never holds scaffolding, so the distiller does NOT strip it.
@@ -525,14 +587,56 @@ class TestRenderTranscriptFromConversationStore:
         out = SessionExperienceDistiller._render_transcript(turns)
         assert out == "assistant: real answer"
 
+    def test_oversized_turn_is_capped_with_marker(self):
+        from mirix.services import session_experience_distiller as sed
+
+        huge = "x" * (sed._MAX_MESSAGE_CHARS + 500)
+        out = SessionExperienceDistiller._render_transcript([_conv_turn("tool", huge)])
+        line = out.splitlines()[0]
+        assert line.endswith("…[truncated]")
+        assert len(line) <= len("tool: ") + sed._MAX_MESSAGE_CHARS + len(
+            " …[truncated]"
+        )
+
+    def test_overlong_transcript_keeps_head_and_tail_elides_middle(self):
+        # Head (task framing) and tail (final verdict) must survive; only the
+        # middle is elided, and the result stays within the transcript budget.
+        from mirix.services import session_experience_distiller as sed
+
+        per_turn = sed._MAX_MESSAGE_CHARS - 100  # below the per-turn cap
+        n = (sed._MAX_TRANSCRIPT_CHARS // per_turn) + 3
+        turns = [
+            _conv_turn("user", f"turn-{i:04d} " + "y" * per_turn) for i in range(n)
+        ]
+        out = SessionExperienceDistiller._render_transcript(turns)
+        assert "…[elided middle of session]…" in out
+        assert "turn-0000" in out
+        assert f"turn-{n - 1:04d}" in out
+        assert len(out) <= sed._MAX_TRANSCRIPT_CHARS + len(
+            "\n…[elided middle of session]…\n"
+        )
+
+    def test_transcript_within_budget_is_untouched(self):
+        out = SessionExperienceDistiller._render_transcript(
+            [_conv_turn("user", "short"), _conv_turn("assistant", "also short")]
+        )
+        assert "…[elided middle of session]…" not in out
+        assert "…[truncated]" not in out
+
     def test_scaffolding_heuristic_is_deleted(self):
         # The fragile string heuristic must be GONE — correctness is structural.
         assert not hasattr(SessionExperienceDistiller, "_is_mirix_scaffolding")
 
     def test_distiller_module_does_not_reference_scaffolding_terms(self):
         src = inspect.getsource(SessionExperienceDistiller)
-        for banned in ("_is_mirix_scaffolding", "trigger_memory_update", "META_MEMORY_TOOLS"):
-            assert banned not in src, f"dead scaffolding reference left behind: {banned!r}"
+        for banned in (
+            "_is_mirix_scaffolding",
+            "trigger_memory_update",
+            "META_MEMORY_TOOLS",
+        ):
+            assert banned not in src, (
+                f"dead scaffolding reference left behind: {banned!r}"
+            )
 
 
 @pytest.mark.asyncio
@@ -568,8 +672,11 @@ class TestDistillerReadsConversationStoreNotMetaMessages:
         meta, user, actor = _meta_user_actor()
 
         out = await d._distill_one(
-            meta_agent_state=meta, user=user, actor=actor,
-            session_id="sess-x", skills_block="(none)",
+            meta_agent_state=meta,
+            user=user,
+            actor=actor,
+            session_id="sess-x",
+            skills_block="(none)",
         )
         # The transcript was fetched from the Conversation Message Store…
         assert conv.list_turns_calls == ["sess-x"]
@@ -587,8 +694,11 @@ class TestDistillerReadsConversationStoreNotMetaMessages:
         )
         meta, user, actor = _meta_user_actor()
         out = await d._distill_one(
-            meta_agent_state=meta, user=user, actor=actor,
-            session_id="empty", skills_block="(none)",
+            meta_agent_state=meta,
+            user=user,
+            actor=actor,
+            session_id="empty",
+            skills_block="(none)",
         )
         assert out == []
         # No turns → no LLM call (the source store is the only thing consulted).

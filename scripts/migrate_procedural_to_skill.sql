@@ -12,48 +12,64 @@ ALTER TABLE procedural_memory ADD COLUMN IF NOT EXISTS version VARCHAR NOT NULL 
 
 -- Step 2: Generate name from summary (slugify: lowercase, strip punctuation, spaces to hyphens, truncate).
 -- Guard against NULL/empty summary by falling back to "skill-<id-suffix>" so the
--- NOT NULL column constraint is never violated. Rows whose slug would otherwise
--- be empty (e.g. summary='   ' or summary='!!!') also get the fallback.
+-- NOT NULL column constraint is never violated. The slug and the fallback MUST
+-- be one COALESCE in a single statement: a two-statement "set NULL, then patch
+-- NULLs" approach aborts the transaction on rows whose slug is empty (e.g.
+-- summary='   ' or summary='!!!'), because NOT NULL is checked per row at
+-- assignment time — the patch statement never gets to run.
 UPDATE procedural_memory
-SET name = NULLIF(
-    LOWER(
-        REGEXP_REPLACE(
+SET name = COALESCE(
+    NULLIF(
+        LOWER(
             REGEXP_REPLACE(
-                LEFT(TRIM(COALESCE(summary, '')), 60),
-                '[^a-zA-Z0-9\s-]', '', 'g'
-            ),
-            '\s+', '-', 'g'
-        )
+                REGEXP_REPLACE(
+                    LEFT(TRIM(COALESCE(summary, '')), 60),
+                    '[^a-zA-Z0-9\s-]', '', 'g'
+                ),
+                '\s+', '-', 'g'
+            )
+        ),
+        ''
     ),
-    ''
+    'skill-' || RIGHT(id, 8)
 )
 WHERE name = '';
-
-UPDATE procedural_memory
-SET name = 'skill-' || RIGHT(id, 8)
-WHERE name IS NULL OR name = '';
 
 -- Step 2b: Resolve slug collisions deterministically by suffixing -N, using
 -- created_at (then id) as the tie-breaker. The first occurrence keeps the
 -- bare slug; subsequent occurrences get -2, -3, etc. This runs before the
 -- unique index so the unique constraint creation cannot fail on legacy data.
-WITH ranked AS (
-    SELECT
-        id,
-        name,
-        organization_id,
-        user_id,
-        ROW_NUMBER() OVER (
-            PARTITION BY organization_id, user_id, name
-            ORDER BY created_at, id
-        ) AS occurrence
-    FROM procedural_memory
-)
-UPDATE procedural_memory pm
-SET name = pm.name || '-' || ranked.occurrence
-FROM ranked
-WHERE pm.id = ranked.id
-  AND ranked.occurrence > 1;
+--
+-- A suffixed name can itself collide with a PRE-EXISTING slug (two 'task'
+-- rows produce 'task-2' while a 'task 2' summary already slugged to
+-- 'task-2'), so a single pass is not enough: loop until no row needs a
+-- rename. Terminates because renamed names strictly lengthen each pass
+-- (two renamed rows can never collide with each other — same partition +
+-- same occurrence is impossible — only with fixed-length pre-existing
+-- names, which they eventually outgrow).
+DO $$
+DECLARE
+    renamed INTEGER;
+BEGIN
+    LOOP
+        WITH ranked AS (
+            SELECT
+                id,
+                ROW_NUMBER() OVER (
+                    PARTITION BY organization_id, user_id, name
+                    ORDER BY created_at, id
+                ) AS occurrence
+            FROM procedural_memory
+        )
+        UPDATE procedural_memory pm
+        SET name = pm.name || '-' || ranked.occurrence
+        FROM ranked
+        WHERE pm.id = ranked.id
+          AND ranked.occurrence > 1;
+        GET DIAGNOSTICS renamed = ROW_COUNT;
+        EXIT WHEN renamed = 0;
+    END LOOP;
+END $$;
 
 -- Step 3: Change steps column type from JSON to TEXT first. This MUST happen
 -- before the textification UPDATE below: assigning a text expression to a
