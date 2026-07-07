@@ -113,6 +113,44 @@ class TestExtractConversationTurns:
         assert _extract_conversation_turns([{"type": "text", "text": "screenshot"}]) == []
         assert _extract_conversation_turns([]) == []
 
+    def test_oversized_turn_is_truncated_to_store_cap(self):
+        """One huge tool result must fail softly (truncate), not blow the whole
+        batch's Pydantic validation in record_turns."""
+        from mirix.schemas.conversation_message import (
+            CONVERSATION_MESSAGE_MAX_CONTENT_LEN,
+            ConversationMessageCreate,
+        )
+
+        huge = "x" * (CONVERSATION_MESSAGE_MAX_CONTENT_LEN + 1000)
+        turns = _extract_conversation_turns(
+            [
+                {"role": "user", "content": "q"},
+                {"role": "tool", "name": "dump", "content": huge},
+            ]
+        )
+        assert len(turns[1]["content"]) <= CONVERSATION_MESSAGE_MAX_CONTENT_LEN
+        assert turns[1]["content"].endswith("…[truncated]")
+        # And the truncated turn passes the store schema it will be validated by.
+        ConversationMessageCreate(
+            session_id="sess-1",
+            user_id="u",
+            organization_id="o",
+            role=turns[1]["role"],
+            content=turns[1]["content"],
+        )
+
+    def test_malformed_tool_calls_do_not_raise(self):
+        """Extraction must never abort the add path on odd shapes."""
+        turns = _extract_conversation_turns(
+            [
+                {"role": "user", "content": "q"},
+                {"role": "assistant", "content": None, "tool_calls": "not-a-list"},
+                {"role": "assistant", "content": "", "tool_calls": [42, {"function": "not-a-dict"}]},
+                {"role": "tool", "content": {"weird": "dict"}},
+            ]
+        )
+        assert [t["role"] for t in turns] == ["user", "assistant", "assistant", "tool"]
+
 
 class TestSerializeToolCalls:
     def test_openai_shape(self):

@@ -2225,6 +2225,22 @@ def _extract_conversation_turns(messages: List[Dict[str, Any]]) -> List[Dict[str
     ):
         return []
 
+    from mirix.schemas.conversation_message import (
+        CONVERSATION_MESSAGE_MAX_CONTENT_LEN,
+    )
+
+    # Truncate at the STORE's per-row cap so one oversized turn (typically a
+    # huge tool result) fails softly instead of failing the whole batch's
+    # Pydantic validation in record_turns — which would drop every turn of
+    # the request. Leave room for the truncation marker.
+    _marker = " …[truncated]"
+    _content_cap = CONVERSATION_MESSAGE_MAX_CONTENT_LEN - len(_marker)
+
+    def _cap(text: str) -> str:
+        if len(text) > CONVERSATION_MESSAGE_MAX_CONTENT_LEN:
+            return text[:_content_cap] + _marker
+        return text
+
     def _part_text(part: Any) -> str:
         # Standard SDK shape: {"type": "text", "text": "..."} — store the text,
         # not the dict repr. Anything else falls back to str().
@@ -2247,12 +2263,12 @@ def _extract_conversation_turns(messages: List[Dict[str, Any]]) -> List[Dict[str
             if role == "assistant" and msg.get("tool_calls"):
                 serialized = _serialize_tool_calls(msg["tool_calls"])
                 content = f"{content}\n{serialized}".strip() if content else serialized
-            turns.append({"role": role, "content": content})
+            turns.append({"role": role, "content": _cap(content)})
         elif role in ("tool", "function"):
             tool_name = msg.get("name") or msg.get("tool_name")
             if tool_name:
                 content = f"[{tool_name}] {content}"
-            turns.append({"role": "tool", "content": content})
+            turns.append({"role": "tool", "content": _cap(content)})
     return turns
 
 
@@ -2278,16 +2294,18 @@ async def _ingest_session_turns(request, input_messages, client, user_id: str) -
         if msg_create.session_id is None:
             msg_create.session_id = request.session_id
 
-    conversation_turns = _extract_conversation_turns(request.messages)
-    if not conversation_turns:
-        return
-
     from mirix.services.conversation_message_manager import (
         ConversationMessageManager,
         owner_org,
     )
 
+    # Extraction runs INSIDE the guard too: a malformed message shape (odd
+    # tool_calls, exotic content) must degrade to a missed session, never
+    # abort the primary memory ingestion.
     try:
+        conversation_turns = _extract_conversation_turns(request.messages)
+        if not conversation_turns:
+            return
         await ConversationMessageManager().record_turns(
             session_id=request.session_id,
             user_id=user_id,
