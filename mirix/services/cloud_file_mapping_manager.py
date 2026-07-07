@@ -279,10 +279,13 @@ class CloudFileMappingManager:
 
         provider = get_relational_provider()
         if provider is not None:
-            rows = await provider.find_using_named_query(
+            # Paginated fetch — the IPSR NQ runner rejects page_size > 1000.
+            from mirix.services.memory_manager_helpers import find_all_using_named_query
+
+            rows = await find_all_using_named_query(
+                provider,
                 "cloud_file_mapping",
                 "cloud_file_mapping_manager.list_all_cloud_file_ids",
-                page_size=5000,
             )
             return [r.get("cloud_file_id") for r in rows if r.get("cloud_file_id")]
 
@@ -297,10 +300,13 @@ class CloudFileMappingManager:
 
         provider = get_relational_provider()
         if provider is not None:
-            rows = await provider.find_using_named_query(
+            # Paginated fetch — the IPSR NQ runner rejects page_size > 1000.
+            from mirix.services.memory_manager_helpers import find_all_using_named_query
+
+            rows = await find_all_using_named_query(
+                provider,
                 "cloud_file_mapping",
                 "cloud_file_mapping_manager.list_all_local_file_ids",
-                page_size=5000,
             )
             return [r.get("local_file_id") for r in rows if r.get("local_file_id")]
 

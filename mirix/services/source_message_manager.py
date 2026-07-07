@@ -302,11 +302,16 @@ class SourceMessageManager:
             # name resolution) and the response also dropped the FK
             # column needed for PydanticSourceMessage construction. The
             # NQ projects ``memorysource_id`` explicitly via SELECT *.
-            records = await provider.find_using_named_query(
+            # Paginated fetch — the IPSR NQ runner rejects page_size > 1000,
+            # and a long conversation can exceed one page. The NQ orders by
+            # sequenceNum (unique per source) so offset pagination is stable.
+            from mirix.services.memory_manager_helpers import find_all_using_named_query
+
+            records = await find_all_using_named_query(
+                provider,
                 "source_messages",
                 "source_message_manager.get_messages_by_source_id",
                 params={"memorySourceId": memory_source_id},
-                page_size=1500,
             )
             records.sort(key=lambda r: r.get("sequence_num") or 0)
             if cursor:

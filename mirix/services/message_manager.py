@@ -104,15 +104,24 @@ class MessageManager:
             # are rejected with a generic 400. The YAML therefore expects a
             # comma-separated string and expands it server-side via
             # `string_to_array(CAST(:ids AS varchar), ',')` + `= ANY(...)`.
-            rows = await rprovider.find_using_named_query(
-                "messages",
-                "message_manager.get_messages_by_ids",
-                params={
-                    "ids": ",".join(message_ids),
-                    "organizationId": actor.organization_id,
-                },
-                page_size=len(message_ids),
-            )
+            # Chunked: the IPSR NQ runner rejects page_size > 1000, so an
+            # id list longer than that must go over in batches.
+            from mirix.services.memory_manager_helpers import IPSR_NQ_MAX_PAGE_SIZE
+
+            rows = []
+            for start in range(0, len(message_ids), IPSR_NQ_MAX_PAGE_SIZE):
+                chunk = message_ids[start : start + IPSR_NQ_MAX_PAGE_SIZE]
+                rows.extend(
+                    await rprovider.find_using_named_query(
+                        "messages",
+                        "message_manager.get_messages_by_ids",
+                        params={
+                            "ids": ",".join(chunk),
+                            "organizationId": actor.organization_id,
+                        },
+                        page_size=len(chunk),
+                    )
+                )
             result_dict = {r["id"]: PydanticMessage(**r) for r in rows if r.get("id")}
             return [result_dict[mid] for mid in message_ids if mid in result_dict]
 
@@ -357,11 +366,15 @@ class MessageManager:
 
         rprovider = get_relational_provider()
         if rprovider is not None:
-            rows = await rprovider.find_using_named_query(
+            # Paginated fetch (IPSR NQ page cap is 1000). The ids feed cache
+            # invalidation only — the delete itself is one bulk mutate below.
+            from mirix.services.memory_manager_helpers import find_all_using_named_query
+
+            rows = await find_all_using_named_query(
+                rprovider,
                 "messages",
                 "message_manager.list_by_client_id",
                 params={"clientId": actor.id},
-                page_size=5000,
             )
             message_ids = [r["id"] for r in rows if r.get("id")]
             if not message_ids:
@@ -432,11 +445,15 @@ class MessageManager:
 
         rprovider = get_relational_provider()
         if rprovider is not None:
-            rows = await rprovider.find_using_named_query(
+            # Paginated fetch (IPSR NQ page cap is 1000). The ids feed cache
+            # invalidation only — the delete itself is one bulk mutate below.
+            from mirix.services.memory_manager_helpers import find_all_using_named_query
+
+            rows = await find_all_using_named_query(
+                rprovider,
                 "messages",
                 "message_manager.list_by_user_id",
                 params={"userId": user_id},
-                page_size=5000,
             )
             message_ids = [r["id"] for r in rows if r.get("id")]
             if not message_ids:

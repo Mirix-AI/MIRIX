@@ -306,14 +306,19 @@ class MemoryCitationManager:
         if provider:
             # NQ projects memorysource_id so Pydantic
             # construction works.
-            records = await provider.find_using_named_query(
+            # Paginated fetch — the IPSR NQ runner rejects page_size > 1000.
+            # The NQ orders by ipsrcreatedon (ties possible), so the helper's
+            # cross-page dedup by id guards against boundary repeats.
+            from mirix.services.memory_manager_helpers import find_all_using_named_query
+
+            records = await find_all_using_named_query(
+                provider,
                 "memory_citations",
                 "memory_citation_manager.get_citations_for_memory",
                 params={
                     "memoryType": memory_type,
                     "memoryId": memory_id,
                 },
-                page_size=1500,
             )
             # Order by occurred_at desc, nulls last
             records.sort(

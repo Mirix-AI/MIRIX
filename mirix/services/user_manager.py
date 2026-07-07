@@ -239,19 +239,22 @@ class UserManager:
                 "raw_memory",
                 "block",
             ]
+            # Fetch-delete-repeat in <=1000-id batches: the IPSR NQ runner
+            # rejects page_size > 1000, and each deleted batch leaves the
+            # NOT-isDeleted filter so draining page 0 covers any row count.
+            from mirix.services.memory_manager_helpers import (
+                bulk_delete_all_from_named_query,
+            )
+
             soft_deleted = 0
             for table in memory_tables:
-                rows = await provider.find_using_named_query(
+                soft_deleted += await bulk_delete_all_from_named_query(
+                    provider,
                     table,
                     f"user_manager.list_ids_{table}_by_user",
                     params={"userId": user_id},
-                    page_size=5000,
+                    soft=True,
                 )
-                ids = [r.get("id") for r in rows if r.get("id")]
-                if not ids:
-                    continue
-                result = await provider.bulk_delete(table, ids, soft=True)
-                soft_deleted += int(result.get("success", 0) or 0)
 
             # Soft delete messages for this user (engine table — no domain events needed).
             await provider.mutate_using_named_query(
@@ -440,21 +443,25 @@ class UserManager:
                 "raw_memory",
                 "block",
             ]
+            # Fetch-delete-repeat in <=1000-id batches (IPSR NQ page cap);
+            # hard deletes remove rows from the result set so draining page 0
+            # covers any row count.
+            from mirix.services.memory_manager_helpers import (
+                bulk_delete_all_from_named_query,
+            )
+
             total_deleted = 0
             for table in memory_tables:
-                rows = await provider.find_using_named_query(
+                deleted = await bulk_delete_all_from_named_query(
+                    provider,
                     table,
                     f"user_manager.list_ids_{table}_by_user",
                     params={"userId": user_id},
-                    page_size=5000,
+                    soft=False,
                 )
-                ids = [r.get("id") for r in rows if r.get("id")]
-                if not ids:
-                    continue
-                result = await provider.bulk_delete(table, ids, soft=False)
-                deleted = int(result.get("success", 0) or 0)
                 total_deleted += deleted
-                logger.debug("Bulk deleted %d %s records via provider", deleted, table)
+                if deleted:
+                    logger.debug("Bulk deleted %d %s records via provider", deleted, table)
 
             # Hard delete messages for this user (engine table — no domain events needed).
             await provider.mutate_using_named_query(

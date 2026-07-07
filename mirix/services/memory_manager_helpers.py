@@ -176,6 +176,125 @@ async def find_most_recently_updated(
     return rows[0] if rows else None
 
 
+# The IPSR named-query runner rejects pageSize outside [1, 1000] with
+# InvalidPageSizeException (400). Callers that need a complete result set
+# must paginate; a single oversized request fails outright rather than
+# truncating.
+IPSR_NQ_MAX_PAGE_SIZE = 1000
+
+# Safety valve for the pagination loops below: 100 pages x 1000 rows. Hitting
+# it means a filter matched >100k rows (or a query stopped making progress) —
+# both worth a WARNING rather than an unbounded loop.
+_NQ_MAX_PAGES = 100
+
+
+async def find_all_using_named_query(
+    provider: Any,
+    table: str,
+    query_name: str,
+    *,
+    params: Optional[Dict[str, Any]] = None,
+    page_size: int = IPSR_NQ_MAX_PAGE_SIZE,
+    **kwargs: Any,
+) -> List[Any]:
+    """Fetch EVERY row of a named query by looping SLICE pages.
+
+    ``page_size`` is clamped to :data:`IPSR_NQ_MAX_PAGE_SIZE`. Rows are
+    deduplicated by ``id`` across pages: offset pagination over a named query
+    whose ORDER BY is absent or non-unique can repeat a row on a page
+    boundary. (It can also *skip* rows in that situation — callers for whom
+    a miss is unacceptable should ensure the NQ orders by a unique column.)
+
+    Stops when a page comes back short of ``page_size``. If ``_NQ_MAX_PAGES``
+    pages come back full, logs a WARNING and returns what was collected.
+    """
+    page_size = min(page_size, IPSR_NQ_MAX_PAGE_SIZE)
+    collected: List[Any] = []
+    seen_ids: set = set()
+    for page_num in range(_NQ_MAX_PAGES):
+        rows = await provider.find_using_named_query(
+            table,
+            query_name,
+            params=params,
+            page_size=page_size,
+            page_num=page_num,
+            **kwargs,
+        )
+        for row in rows:
+            row_id = row.get("id") if isinstance(row, dict) else None
+            if row_id is not None:
+                if row_id in seen_ids:
+                    continue
+                seen_ids.add(row_id)
+            collected.append(row)
+        if len(rows) < page_size:
+            return collected
+    logger.warning(
+        "find_all_using_named_query hit max_pages=%s for %s.%s; result may be truncated",
+        _NQ_MAX_PAGES,
+        table,
+        query_name,
+    )
+    return collected
+
+
+async def bulk_delete_all_from_named_query(
+    provider: Any,
+    table: str,
+    query_name: str,
+    *,
+    params: Optional[Dict[str, Any]] = None,
+    soft: bool = True,
+) -> int:
+    """Delete every row matched by an id-listing named query, in batches.
+
+    Fetch-delete-repeat: reads the FIRST page (<= 1000 ids), bulk-deletes
+    those rows, then re-reads the first page. Because the id-listing NQs
+    filter ``NOT isDeleted`` (and hard deletes remove the rows outright),
+    each deleted batch leaves the result set, so repeatedly draining page 0
+    is stable regardless of the query's ORDER BY — unlike offset pagination,
+    it can neither skip nor repeat rows while deleting.
+
+    Guards: stops with a WARNING if a batch makes no progress (identical ids
+    twice in a row — e.g. bulk_delete silently failing) or after
+    ``_NQ_MAX_PAGES`` batches. Returns the total ``success`` count reported
+    by ``provider.bulk_delete``.
+    """
+    total_deleted = 0
+    previous_ids: Optional[List[str]] = None
+    for _ in range(_NQ_MAX_PAGES):
+        rows = await provider.find_using_named_query(
+            table,
+            query_name,
+            params=params,
+            page_size=IPSR_NQ_MAX_PAGE_SIZE,
+        )
+        ids = [r.get("id") for r in rows if isinstance(r, dict) and r.get("id")]
+        if not ids:
+            return total_deleted
+        if ids == previous_ids:
+            logger.warning(
+                "bulk_delete_all_from_named_query made no progress on %s.%s "
+                "(%d ids unchanged after delete); stopping",
+                table,
+                query_name,
+                len(ids),
+            )
+            return total_deleted
+        previous_ids = ids
+        result = await provider.bulk_delete(table, ids, soft=soft)
+        total_deleted += int(result.get("success", 0) or 0)
+        if len(ids) < IPSR_NQ_MAX_PAGE_SIZE:
+            return total_deleted
+    logger.warning(
+        "bulk_delete_all_from_named_query hit max_pages=%s for %s.%s; rows may remain",
+        _NQ_MAX_PAGES,
+        table,
+        query_name,
+    )
+    return total_deleted
+
+
 @dataclass(frozen=True)
 class _ActorView:
     """Lightweight, immutable view used to feed actor-aware provider methods.
@@ -221,7 +340,10 @@ def actor_from_user(
 
 
 __all__ = [
+    "IPSR_NQ_MAX_PAGE_SIZE",
     "TABLE_TO_CACHE_PREFIX",
+    "bulk_delete_all_from_named_query",
+    "find_all_using_named_query",
     "invalidate_memory_cache",
     "find_most_recently_updated",
     "actor_from_user",

@@ -28,9 +28,9 @@ logger = get_logger(__name__)
 # already produce the right value.
 
 # Hard ceiling on the per-request page size we'll forward to IPSR. The IPSR
-# named-query runner caps page_size at 1500 server-side; we cap a little
-# lower so we never get truncated silently. Callers asking for more than this
-# get clamped.
+# named-query runner rejects pageSize > 1000 with InvalidPageSizeException
+# (verified in prd 2026-07-07 — an earlier claim of a 1500 cap was wrong).
+# Callers asking for more than this get clamped.
 _LIST_SOURCES_MAX_PAGE_SIZE = 1000
 
 

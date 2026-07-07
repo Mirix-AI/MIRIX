@@ -497,16 +497,21 @@ class ClientManager:
                 "raw_memory",
                 "block",
             ]
+            # Fetch-delete-repeat in <=1000-id batches: the IPSR NQ runner
+            # rejects page_size > 1000, and each deleted batch leaves the
+            # NOT-isDeleted filter so draining page 0 covers any row count.
+            from mirix.services.memory_manager_helpers import (
+                bulk_delete_all_from_named_query,
+            )
+
             for table in memory_tables:
-                rows = await provider.find_using_named_query(
+                await bulk_delete_all_from_named_query(
+                    provider,
                     table,
                     f"client_manager.list_ids_{table}_by_client",
                     params={"createdById": client_id},
-                    page_size=5000,
+                    soft=True,
                 )
-                ids = [r.get("id") for r in rows if r.get("id")]
-                if ids:
-                    await provider.bulk_delete(table, ids, soft=True)
 
             # Soft delete messages owned by this client (engine table — no domain events needed).
             await provider.mutate_using_named_query(
@@ -520,14 +525,16 @@ class ClientManager:
                 ("agents", "client_manager.list_agent_by_client_id", "client_manager.update_agent_by_client_id"),
                 ("tools", "client_manager.list_tools_by_client_id", "client_manager.update_tool_by_client_id"),
             ):
+                # Existence probe only — the ids are discarded and the mutate
+                # NQ updates every row by createdById in one statement, so a
+                # single row is all we need (IPSR caps page_size at 1000).
                 records = await provider.find_using_named_query(
                     table,
                     list_nq,
                     params={"createdById": client_id},
-                    page_size=5000,
+                    page_size=1,
                 )
-                ids = [r.get("id") for r in records if r.get("id")]
-                if ids:
+                if records:
                     await provider.mutate_using_named_query(
                         table,
                         mutate_nq,
@@ -713,21 +720,25 @@ class ClientManager:
                 "raw_memory",
                 "block",
             ]
+            # Fetch-delete-repeat in <=1000-id batches (IPSR NQ page cap);
+            # hard deletes remove rows from the result set so draining page 0
+            # covers any row count.
+            from mirix.services.memory_manager_helpers import (
+                bulk_delete_all_from_named_query,
+            )
+
             total = 0
             for table in memory_tables:
-                rows = await provider.find_using_named_query(
+                deleted = await bulk_delete_all_from_named_query(
+                    provider,
                     table,
                     f"client_manager.list_ids_{table}_by_client",
                     params={"createdById": client_id},
-                    page_size=5000,
+                    soft=False,
                 )
-                if rows:
-                    ids = [r.get("id", "") for r in rows if r.get("id")]
-                    if ids:
-                        result = await provider.bulk_delete(table, ids, soft=False)
-                        deleted = int(result.get("success", 0) or 0)
-                        total += deleted
-                        logger.debug("Bulk deleted %d %s records", deleted, table)
+                total += deleted
+                if deleted:
+                    logger.debug("Bulk deleted %d %s records", deleted, table)
 
             # Hard delete messages owned by this client (engine table — no domain events needed).
             await provider.mutate_using_named_query(
