@@ -1533,9 +1533,16 @@ async def delete_user(user_id: str):
 
 
 @router.delete("/users/{user_id}/memories")
-async def delete_user_memories(user_id: str):
+async def delete_user_memories(
+    user_id: str,
+    authorization: Optional[str] = Header(None),
+    http_request: Request = None,
+):
     """
     Hard delete all memories, messages, and blocks for a user.
+
+    **Accepts both JWT (dashboard) and Client API Key (programmatic).**
+    The target user must belong to the caller's organization.
 
     This permanently removes data records while preserving the user record.
     Use this for data cleanup/purging without affecting the user account itself.
@@ -1548,13 +1555,31 @@ async def delete_user_memories(user_id: str):
     - Knowledge vault items for this user
     - Messages for this user
     - Blocks for this user
+    - Conversation transcripts recorded for this user
+    - Skill experiences distilled from this user's sessions
 
     Records that are PRESERVED:
     - User record
 
     Warning: This operation is irreversible. Deleted data cannot be recovered.
     """
+    client, auth_type = await get_client_from_jwt_or_api_key(
+        authorization, http_request
+    )
     server = get_server()
+
+    # Tenant guard: an irreversible cross-org erasure must be impossible. A
+    # foreign-org target returns the same 404 as a missing user so the endpoint
+    # can't be used as a user-id existence oracle.
+    default_org = server.organization_manager.DEFAULT_ORG_ID
+    try:
+        target_user = await server.user_manager.get_user_by_id(user_id)
+    except Exception:
+        raise HTTPException(status_code=404, detail=f"User {user_id} not found")
+    caller_org = client.organization_id or default_org
+    target_org = target_user.organization_id or default_org
+    if caller_org != target_org:
+        raise HTTPException(status_code=404, detail=f"User {user_id} not found")
 
     try:
         await server.user_manager.delete_memories_by_user_id(user_id)
@@ -1772,9 +1797,16 @@ async def delete_client(client_id: str):
 
 
 @router.delete("/clients/{client_id}/memories")
-async def delete_client_memories(client_id: str):
+async def delete_client_memories(
+    client_id: str,
+    authorization: Optional[str] = Header(None),
+    http_request: Request = None,
+):
     """
     Hard delete all memories, messages, and blocks for a client.
+
+    **Accepts both JWT (dashboard) and Client API Key (programmatic).**
+    The target client must belong to the caller's organization.
 
     This permanently removes data records while preserving the client configuration.
     Use this for data cleanup/purging without affecting the client, agents, or tools.
@@ -1787,6 +1819,8 @@ async def delete_client_memories(client_id: str):
     - Knowledge vault items for this client
     - Messages for this client
     - Blocks created by this client
+    - Conversation transcripts recorded by this client
+    - Skill experiences created by this client
 
     Records that are PRESERVED:
     - Client record
@@ -1795,7 +1829,20 @@ async def delete_client_memories(client_id: str):
 
     Warning: This operation is irreversible. Deleted data cannot be recovered.
     """
+    client, auth_type = await get_client_from_jwt_or_api_key(
+        authorization, http_request
+    )
     server = get_server()
+
+    # Tenant guard: same-org only; foreign-org targets get the same 404 as a
+    # missing client so the endpoint can't probe client-id existence.
+    default_org = server.organization_manager.DEFAULT_ORG_ID
+    target_client = await server.client_manager.get_client_by_id(client_id)
+    if target_client is None or (
+        (target_client.organization_id or default_org)
+        != (client.organization_id or default_org)
+    ):
+        raise HTTPException(status_code=404, detail=f"Client {client_id} not found")
 
     try:
         await server.client_manager.delete_memories_by_client_id(client_id)

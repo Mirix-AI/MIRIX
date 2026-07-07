@@ -80,7 +80,7 @@ UPDATE procedural_memory
 SET entry_type = CASE
     WHEN LOWER(TRIM(entry_type)) IN ('workflow', 'guide', 'script') THEN LOWER(TRIM(entry_type))
     WHEN entry_type ILIKE '%script%' THEN 'script'
-    WHEN entry_type ILIKE '%guide%' OR entry_type ILIKE '%how%to%' THEN 'guide'
+    WHEN entry_type ILIKE '%guide%' OR entry_type ILIKE '%how%' THEN 'guide'
     ELSE 'workflow'
 END
 WHERE entry_type IS NULL OR entry_type NOT IN ('workflow', 'guide', 'script');

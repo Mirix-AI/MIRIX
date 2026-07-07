@@ -50,6 +50,21 @@ def test_procedural_delete_route_is_uniform_with_other_memory_types():
         assert f"/memory/{memory_type}/{{memory_id}}" in paths
 
 
+def test_bulk_erasure_endpoints_require_authentication():
+    """DELETE /users/{id}/memories and /clients/{id}/memories are irreversible
+    cross-table purges (including verbatim conversation transcripts); they must
+    resolve the caller. Pin that both endpoint signatures take the
+    authorization header + request the auth helper needs."""
+    import inspect
+
+    from mirix.server.rest_api import delete_client_memories, delete_user_memories
+
+    for endpoint in (delete_user_memories, delete_client_memories):
+        params = inspect.signature(endpoint).parameters
+        assert "authorization" in params, f"{endpoint.__name__} missing auth header"
+        assert "http_request" in params, f"{endpoint.__name__} missing request param"
+
+
 def test_procedural_read_shape_is_full_skill_schema():
     from datetime import datetime
     from types import SimpleNamespace
