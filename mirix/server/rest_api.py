@@ -71,16 +71,9 @@ from mirix.queue.manager import get_manager as get_queue_manager
 from mirix.queue.queue_util import put_messages
 from mirix.server.constants import MAX_MEMORY_LIMIT
 # Initialize server (single instance shared across all requests)
-_server: Optional[AsyncServer] = None
-
-
-def get_server() -> AsyncServer:
-    """Get or create the singleton AsyncServer instance."""
-    global _server
-    if _server is None:
-        logger.info("Creating AsyncServer instance")
-        _server = AsyncServer()
-    return _server
+# The singleton accessor lives in mirix.server.server so service-layer modules
+# never need to import this REST module; re-exported here for existing callers.
+from mirix.server.server import get_server  # noqa: E402
 
 
 def _isoformat_or_none(value) -> Optional[str]:
@@ -2151,6 +2144,53 @@ def _extract_conversation_turns(messages: List[Dict[str, Any]]) -> List[Dict[str
     return turns
 
 
+async def _ingest_session_turns(request, input_messages, client, user_id: str) -> None:
+    """Shared /memory/add + /memory/add_sync session ingestion seam.
+
+    Stamps the batch-level session_id onto every message that didn't carry its
+    own, then persists the external turns (REAL user/assistant roles) into the
+    Conversation Message Store — the single source of truth for procedural
+    (skill) distillation. Without a session_id nothing is written, so no
+    procedural memory is produced; the other five components still extract via
+    the unchanged meta dispatch.
+
+    The store write is ADDITIVE: isolated in its own try/except so a store
+    failure (DB error, validation, etc.) is logged but never aborts the primary
+    memory ingestion. Worst case is a missed session for skill distillation,
+    not a dropped memory-add.
+    """
+    if request.session_id is None:
+        return
+
+    for msg_create in input_messages:
+        if msg_create.session_id is None:
+            msg_create.session_id = request.session_id
+
+    conversation_turns = _extract_conversation_turns(request.messages)
+    if not conversation_turns:
+        return
+
+    from mirix.services.conversation_message_manager import (
+        ConversationMessageManager,
+        owner_org,
+    )
+
+    try:
+        await ConversationMessageManager().record_turns(
+            session_id=request.session_id,
+            user_id=user_id,
+            organization_id=owner_org(client),
+            turns=conversation_turns,
+            actor=client,
+        )
+    except Exception:
+        logger.exception(
+            "Failed to record conversation turns to the store for "
+            "session_id=%s; memory ingestion will still proceed",
+            request.session_id,
+        )
+
+
 @router.post("/memory/add")
 @with_langfuse_tracing
 async def add_memory(
@@ -2223,48 +2263,9 @@ async def add_memory(
 
     input_messages = convert_message_to_mirix_message(message)
 
-    # Batch-level session_id: stamp every message that didn't carry its own.
-    if request.session_id is not None:
-        for msg_create in input_messages:
-            if msg_create.session_id is None:
-                msg_create.session_id = request.session_id
-
-    # Conversation Message Store write (independent of the meta dispatch below).
-    # When the caller supplies a session_id, persist the external turns with
-    # their REAL user/assistant roles into the dedicated store that is the single
-    # source of truth for procedural-memory (skill) distillation. Without a
-    # session_id we write nothing here, so no procedural memory is produced — the
-    # other five components still extract via the unchanged meta dispatch.
-    #
-    # This write must be ADDITIVE: it is isolated in its own try/except so a store
-    # failure (DB error, validation, etc.) is logged but never aborts the primary
-    # memory ingestion (the put_messages dispatch below). Worst case is a missed
-    # session for skill distillation, not a dropped memory-add.
-    if request.session_id is not None:
-        conversation_turns = _extract_conversation_turns(request.messages)
-        if conversation_turns:
-            from mirix.services.conversation_message_manager import (
-                ConversationMessageManager,
-            )
-
-            store_org_id = (
-                client.organization_id
-                or server.organization_manager.DEFAULT_ORG_ID
-            )
-            try:
-                await ConversationMessageManager().record_turns(
-                    session_id=request.session_id,
-                    user_id=user_id,
-                    organization_id=store_org_id,
-                    turns=conversation_turns,
-                    actor=client,
-                )
-            except Exception:
-                logger.exception(
-                    "Failed to record conversation turns to the store for "
-                    "session_id=%s; memory ingestion will still proceed",
-                    request.session_id,
-                )
+    # Session ingestion (session_id stamping + Conversation Message Store write,
+    # independent of the meta dispatch below) — see _ingest_session_turns.
+    await _ingest_session_turns(request, input_messages, client, user_id)
 
     # Add client scope to filter_tags (create if not provided)
     if request.filter_tags is not None:
@@ -2380,45 +2381,9 @@ async def add_memory_sync(
 
     input_messages = convert_message_to_mirix_message(message)
 
-    # Batch-level session_id: stamp every message that didn't carry its own.
-    if request.session_id is not None:
-        for msg_create in input_messages:
-            if msg_create.session_id is None:
-                msg_create.session_id = request.session_id
-
-    # Conversation Message Store write (independent of the meta dispatch below).
-    # Mirrors /memory/add: a session_id'd add persists the external turns with
-    # their REAL user/assistant roles into the dedicated store the procedural
-    # distiller reads. No session_id -> no store write -> no procedural memory,
-    # while the other five components still extract via the unchanged dispatch.
-    #
-    # Isolated in its own try/except so a store failure is logged but never
-    # aborts the primary memory ingestion (the send_messages dispatch below).
-    if request.session_id is not None:
-        conversation_turns = _extract_conversation_turns(request.messages)
-        if conversation_turns:
-            from mirix.services.conversation_message_manager import (
-                ConversationMessageManager,
-            )
-
-            store_org_id = (
-                client.organization_id
-                or server.organization_manager.DEFAULT_ORG_ID
-            )
-            try:
-                await ConversationMessageManager().record_turns(
-                    session_id=request.session_id,
-                    user_id=user_id,
-                    organization_id=store_org_id,
-                    turns=conversation_turns,
-                    actor=client,
-                )
-            except Exception:
-                logger.exception(
-                    "Failed to record conversation turns to the store for "
-                    "session_id=%s; memory ingestion will still proceed",
-                    request.session_id,
-                )
+    # Session ingestion (session_id stamping + Conversation Message Store write) —
+    # shared with /memory/add; see _ingest_session_turns.
+    await _ingest_session_turns(request, input_messages, client, user_id)
 
     if request.filter_tags is not None:
         filter_tags = dict(request.filter_tags)
@@ -4921,6 +4886,37 @@ async def delete_semantic_memory(
             memory_id, actor=client
         )
         return {"success": True, "message": f"Semantic memory {memory_id} deleted"}
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.delete("/memory/procedural/{memory_id}")
+async def delete_procedural_memory(
+    memory_id: str,
+    authorization: Optional[str] = Header(None),
+    http_request: Request = None,
+):
+    """
+    Delete a procedural memory (skill) by ID.
+
+    **Accepts both JWT (dashboard) and Client API Key (programmatic).**
+
+    Deletion stays on the public surface like every other memory type — a user
+    must be able to remove a skill that is wrong or unwanted. Skill WRITES, by
+    contrast, have no public endpoint: skills are created/edited only through
+    the session-distillation evolution flow (auto_dream mode='procedural').
+    """
+    client, auth_type = await get_client_from_jwt_or_api_key(
+        authorization, http_request
+    )
+
+    server = get_server()
+
+    try:
+        await server.procedural_memory_manager.delete_procedure_by_id(
+            memory_id, actor=client
+        )
+        return {"success": True, "message": f"Procedural memory {memory_id} deleted"}
     except Exception as e:
         raise HTTPException(status_code=404, detail=str(e))
 

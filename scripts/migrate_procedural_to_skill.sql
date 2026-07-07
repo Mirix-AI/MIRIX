@@ -55,13 +55,35 @@ FROM ranked
 WHERE pm.id = ranked.id
   AND ranked.occurrence > 1;
 
--- Step 3: Convert steps from JSON array to plain text (newline-joined)
+-- Step 3: Change steps column type from JSON to TEXT first. This MUST happen
+-- before the textification UPDATE below: assigning a text expression to a
+-- json column has no assignment cast in Postgres and fails at plan time
+-- with SQLSTATE 42804, which would abort the whole transaction.
+ALTER TABLE procedural_memory ALTER COLUMN steps TYPE TEXT USING steps::TEXT;
+
+-- Step 3b: Convert steps from a JSON-array text form to plain text
+-- (newline-joined). The column is TEXT now, so ::jsonb re-parses the
+-- preserved JSON text and the assignment is text-to-text.
 UPDATE procedural_memory
 SET steps = ARRAY_TO_STRING(
     ARRAY(SELECT jsonb_array_elements_text(steps::jsonb)),
     E'\n'
 )
-WHERE steps IS NOT NULL AND steps::text LIKE '[%';
+WHERE steps IS NOT NULL AND steps LIKE '[%';
+
+-- Step 3c: Normalize legacy entry_type values into the closed skill set
+-- {workflow, guide, script}. Historically entry_type was free-form LLM
+-- output ("process", "how-to", ...); the application now validates against
+-- the closed set, so unmigrated variants would be rejected. Mirrors
+-- normalize_entry_type() in mirix/schemas/procedural_memory.py.
+UPDATE procedural_memory
+SET entry_type = CASE
+    WHEN LOWER(TRIM(entry_type)) IN ('workflow', 'guide', 'script') THEN LOWER(TRIM(entry_type))
+    WHEN entry_type ILIKE '%script%' THEN 'script'
+    WHEN entry_type ILIKE '%guide%' OR entry_type ILIKE '%how%to%' THEN 'guide'
+    ELSE 'workflow'
+END
+WHERE entry_type IS NULL OR entry_type NOT IN ('workflow', 'guide', 'script');
 
 -- Step 4: Rename columns
 ALTER TABLE procedural_memory RENAME COLUMN summary TO description;
@@ -69,13 +91,10 @@ ALTER TABLE procedural_memory RENAME COLUMN steps TO instructions;
 ALTER TABLE procedural_memory RENAME COLUMN summary_embedding TO description_embedding;
 ALTER TABLE procedural_memory RENAME COLUMN steps_embedding TO instructions_embedding;
 
--- Step 5: Change instructions column type from JSON to TEXT
-ALTER TABLE procedural_memory ALTER COLUMN instructions TYPE TEXT USING instructions::TEXT;
-
--- Step 6: Drop legacy non-unique lookup index (replaced by unique constraint below).
+-- Step 5: Drop legacy non-unique lookup index (replaced by unique constraint below).
 DROP INDEX IF EXISTS ix_procedural_memory_org_user_name;
 
--- Step 7: Enforce per-user skill-name uniqueness at the DB level. Matches the
+-- Step 6: Enforce per-user skill-name uniqueness at the DB level. Matches the
 -- UniqueConstraint on the ORM model; without it, concurrent skill_create
 -- calls race past the application-level pre-check.
 ALTER TABLE procedural_memory

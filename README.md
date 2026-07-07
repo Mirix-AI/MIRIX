@@ -138,6 +138,24 @@ result = client.auto_dream(
 print(result)
 ```
 
+### Upgrading an Existing Database
+
+Fresh databases get their full schema automatically at startup. **Existing databases require manual migrations** when upgrading to a version that alters tables — startup creates missing tables but never adds columns to existing ones. If migrations are pending, the server refuses to start and names the exact scripts to run.
+
+For the skill-based procedural memory release, run against your database (in this order):
+
+```bash
+psql "$MIRIX_PG_URI" -f scripts/migrate_procedural_to_skill.sql
+psql "$MIRIX_PG_URI" -f scripts/migrate_add_message_session_id.sql
+psql "$MIRIX_PG_URI" -f scripts/migrate_add_message_session_id_phase2.sql   # outside a transaction (CREATE INDEX CONCURRENTLY)
+psql "$MIRIX_PG_URI" -f scripts/migrate_add_conversation_message.sql
+psql "$MIRIX_PG_URI" -f scripts/migrate_add_conversation_message_phase2.sql # outside a transaction
+psql "$MIRIX_PG_URI" -f scripts/migrate_add_skill_experience.sql
+psql "$MIRIX_PG_URI" -f scripts/migrate_add_agent_trigger_state.sql
+```
+
+Each script is idempotent where possible and documents its own preconditions in its header. Run them once, then restart the server.
+
 ## License
 
 Mirix is released under the Apache License 2.0. See the [LICENSE](LICENSE) file for more details.

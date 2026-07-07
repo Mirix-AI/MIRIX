@@ -1,4 +1,4 @@
-"""Goal 2 — General per-session experience distillation.
+"""General per-session experience distillation.
 
 Given the sealed, not-yet-distilled sessions in the Conversation Message Store,
 this distills each session's transcript, IN PARALLEL, into zero or more
@@ -41,6 +41,7 @@ import json
 from typing import Dict, List, Optional, Tuple
 
 from mirix.log import get_logger
+from mirix.services.conversation_message_manager import owner_org as _owner_org
 from mirix.schemas.agent import AgentState
 from mirix.schemas.client import Client as PydanticClient
 from mirix.schemas.enums import MessageRole
@@ -68,20 +69,6 @@ _MAX_TRANSCRIPT_CHARS = 16000
 _MAX_MESSAGE_CHARS = 2000
 
 
-def _owner_org(actor: PydanticClient) -> str:
-    """Resolve the organization the Conversation Message Store was written under.
-
-    Ingestion records turns under ``client.organization_id or DEFAULT_ORG_ID``
-    (the column is nullable, but the write always resolves the fallback). Every
-    read/mark of that store MUST mirror it, otherwise a NULL-org client would
-    read/persist under ``None`` and its sessions would never distill (and, having
-    never been marked, would retry forever).
-    """
-    from mirix.constants import DEFAULT_ORG_ID
-
-    return actor.organization_id or DEFAULT_ORG_ID
-
-
 class _LLMCallError(Exception):
     """Raised on an OPERATIONAL LLM failure (no client, failed request, or
     malformed response) — as opposed to a legitimately empty distillation. Lets
@@ -102,7 +89,7 @@ class _DistillFailed(Exception):
 
 
 def _load_distiller_prompt() -> str:
-    """Load the general Experience-Distiller system prompt (rewritten for Goal 2).
+    """Load the general Experience-Distiller system prompt.
 
     Uses the codebase-standard cached system-prompt loader (the same one the other
     distillers use) instead of a raw ``open()`` in the async path — it resolves to
@@ -366,6 +353,7 @@ class SessionExperienceDistiller:
                     credibility=credibility,
                     evidence=evidence[: _EVIDENCE_CAP],
                     status="pending",
+                    created_by_id=getattr(actor, "id", None),
                 )
                 created.append(exp)
             except Exception as e:  # noqa: BLE001 — one bad row mustn't drop the rest

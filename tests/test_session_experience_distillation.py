@@ -100,8 +100,11 @@ class _RecordingManager:
     async def create_experience(self, **kwargs):
         from mirix.schemas.skill_experience import SkillExperienceCreate
 
+        # Mirror the real manager: created_by_id feeds the _created_by_id audit
+        # column (client attribution for erasure), not SkillExperienceCreate.
+        created_by_id = kwargs.pop("created_by_id", None)
         validated = SkillExperienceCreate(**kwargs)
-        rec = SimpleNamespace(**validated.model_dump())
+        rec = SimpleNamespace(**validated.model_dump(), created_by_id=created_by_id)
         self.created.append(rec)
         return rec
 

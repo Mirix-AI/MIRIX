@@ -133,3 +133,59 @@ async def test_auto_dream_sends_meta_agent_and_last_n_sessions(monkeypatch):
             "params": {"user_id": "user-1"},
         }
     ]
+
+
+def _search_client(monkeypatch):
+    """A MirixClient whose _request records params instead of hitting HTTP."""
+    client = MirixClient(api_key="test-key", base_url="http://test")
+    client._meta_agent = SimpleNamespace(id="agent-meta-1")
+    calls = []
+
+    async def fake_ensure_user_exists(user_id=None, headers=None):
+        return None
+
+    async def fake_request(method, endpoint, json=None, params=None, headers=None):
+        calls.append({"endpoint": endpoint, "params": params})
+        return {"success": True, "results": [], "count": 0}
+
+    monkeypatch.setattr(client, "_ensure_user_exists", fake_ensure_user_exists)
+    monkeypatch.setattr(client, "_request", fake_request)
+    return client, calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method_name", ["search", "search_all_users"])
+async def test_search_omits_search_method_by_default(monkeypatch, method_name):
+    """Omitting search_method must leave it OUT of the query params entirely,
+    so the server resolves its per-type default (procedural -> hybrid,
+    everything else -> embedding). Sending a value would override that."""
+    client, calls = _search_client(monkeypatch)
+    kwargs = {"query": "q", "memory_type": "procedural"}
+    if method_name == "search":
+        kwargs["user_id"] = "user-1"
+
+    try:
+        await getattr(client, method_name)(**kwargs)
+    finally:
+        await client.close()
+
+    assert len(calls) == 1
+    assert "search_method" not in calls[0]["params"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method_name", ["search", "search_all_users"])
+@pytest.mark.parametrize("explicit", ["embedding", "bm25", "hybrid"])
+async def test_search_sends_explicit_search_method(monkeypatch, method_name, explicit):
+    client, calls = _search_client(monkeypatch)
+    kwargs = {"query": "q", "memory_type": "procedural", "search_method": explicit}
+    if method_name == "search":
+        kwargs["user_id"] = "user-1"
+
+    try:
+        await getattr(client, method_name)(**kwargs)
+    finally:
+        await client.close()
+
+    assert len(calls) == 1
+    assert calls[0]["params"]["search_method"] == explicit

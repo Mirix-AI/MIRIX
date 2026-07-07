@@ -62,7 +62,7 @@ class AgentTriggerStateManager:
     The fire is intentionally a SOFT, eventually-consistent trigger. It does not
     try to make each fire claim a unique batch; instead the DOWNSTREAM procedural
     auto-dream is serialized per `(user, organization)` (see
-    `auto_dream_manager._procedural_dream_lock`) and is idempotent via
+    `auto_dream_manager._procedural_dream_guard`) and is idempotent via
     `distilled_at` marking. So a redundant fire (two `trigger_memory_update`
     calls before the first auto-dream has marked its batch) is harmless: the
     second auto-dream run waits on the lock, then re-enumerates the OLDEST
@@ -96,20 +96,6 @@ class AgentTriggerStateManager:
         from mirix.server.server import db_context
 
         self.session_maker = db_context
-
-    @enforce_types
-    async def get_state(
-        self,
-        *,
-        agent_id: str,
-        user_id: str,
-        trigger_type: str,
-    ) -> Optional[PydanticAgentTriggerState]:
-        """Return the trigger-state row for (agent, user, trigger_type), or None."""
-        _validate_trigger_type(trigger_type)
-        async with self.session_maker() as session:
-            row = await self._fetch(session, agent_id, user_id, trigger_type)
-            return row.to_pydantic() if row else None
 
     @enforce_types
     async def check_and_claim_fire(

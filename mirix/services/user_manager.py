@@ -229,6 +229,8 @@ class UserManager:
            - KnowledgeVaultManager.delete_by_user_id()
            - MessageManager.delete_by_user_id()
            - BlockManager.delete_by_user_id()
+           - ConversationMessageManager.delete_by_user_id()  (verbatim session transcripts)
+           - SkillExperienceManager.delete_by_user_id()      (experiences distilled from them)
         2. Each manager handles:
            - Bulk database deletion
            - Redis cache cleanup
@@ -245,12 +247,14 @@ class UserManager:
 
         # Import managers
         from mirix.services.block_manager import BlockManager
+        from mirix.services.conversation_message_manager import ConversationMessageManager
         from mirix.services.episodic_memory_manager import EpisodicMemoryManager
         from mirix.services.knowledge_vault_manager import KnowledgeVaultManager
         from mirix.services.message_manager import MessageManager
         from mirix.services.procedural_memory_manager import ProceduralMemoryManager
         from mirix.services.resource_memory_manager import ResourceMemoryManager
         from mirix.services.semantic_memory_manager import SemanticMemoryManager
+        from mirix.services.skill_experience_manager import SkillExperienceManager
 
         # Initialize managers
         episodic_manager = EpisodicMemoryManager()
@@ -260,6 +264,8 @@ class UserManager:
         knowledge_manager = KnowledgeVaultManager()
         message_manager = MessageManager()
         block_manager = BlockManager()
+        conversation_manager = ConversationMessageManager()
+        skill_experience_manager = SkillExperienceManager()
 
         # Use managers' bulk delete methods
         try:
@@ -284,6 +290,15 @@ class UserManager:
 
             block_count = await block_manager.delete_by_user_id(user_id=user_id)
             logger.debug("Bulk deleted %d blocks", block_count)
+
+            # Verbatim session transcripts and the experiences distilled from
+            # them contain the user's raw conversation content — erasure must
+            # cover them like every other memory table.
+            conversation_count = await conversation_manager.delete_by_user_id(user_id=user_id)
+            logger.debug("Bulk deleted %d conversation turns", conversation_count)
+
+            experience_count = await skill_experience_manager.delete_by_user_id(user_id=user_id)
+            logger.debug("Bulk deleted %d skill experiences", experience_count)
 
             # Clear message_ids from ALL agents in PostgreSQL (messages are user-scoped, agents are client-scoped)
             # IMPORTANT: Keep the first message (system message) as agents need it to function
@@ -328,7 +343,8 @@ class UserManager:
 
             logger.info(
                 "Bulk deleted all memories for user %s: "
-                "%d episodic, %d semantic, %d procedural, %d resource, %d knowledge_vault, %d messages, %d blocks "
+                "%d episodic, %d semantic, %d procedural, %d resource, %d knowledge_vault, %d messages, %d blocks, "
+                "%d conversation turns, %d skill experiences "
                 "(user record preserved)",
                 user_id,
                 episodic_count,
@@ -338,6 +354,8 @@ class UserManager:
                 knowledge_count,
                 message_count,
                 block_count,
+                conversation_count,
+                experience_count,
             )
         except Exception as e:
             logger.error("Failed to bulk delete memories for user %s: %s", user_id, e)

@@ -227,6 +227,7 @@ class TestManagerSurface:
         for name in (
             "create_experience", "list_experiences",
             "mark_consumed", "mark_superseded", "aggregate",
+            "delete_by_user_id", "delete_by_client_id",
         ):
             assert hasattr(SkillExperienceManager, name)
             unwrapped = inspect.unwrap(getattr(SkillExperienceManager, name))
@@ -634,3 +635,84 @@ class TestDistillThenConsume:
         )
         assert len(consumed) == _MAX_EXPERIENCES_PER_RUN
         assert len(superseded) == 1
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="module")
+class TestErasure:
+    """User/client erasure: experiences are distilled from verbatim user
+    conversations, so the irreversible purge paths must cover them."""
+
+    async def test_delete_by_user_id_removes_all_statuses_for_that_user_only(
+        self, session_maker, org, user_a
+    ):
+        from mirix.orm.user import User as UserORM
+
+        mgr = _manager(session_maker)
+        agent_id = await _insert_agent(session_maker, org.id)
+        other_uid = f"sexp-user-{uuid.uuid4().hex[:8]}"
+        async with session_maker() as session:
+            session.add(
+                UserORM(id=other_uid, name=other_uid, organization_id=org.id,
+                        status="active", timezone="UTC")
+            )
+            await session.commit()
+
+        kept = await mgr.create_experience(
+            agent_id=agent_id, user_id=other_uid,
+            organization_id=org.id, **_exp_kwargs("erase-keep"),
+        )
+        target = await mgr.create_experience(
+            agent_id=agent_id, user_id=user_a.id,
+            organization_id=org.id, **_exp_kwargs("erase-pending"),
+        )
+        consumed = await mgr.create_experience(
+            agent_id=agent_id, user_id=user_a.id,
+            organization_id=org.id, **_exp_kwargs("erase-consumed"),
+        )
+        await mgr.mark_consumed(ids=[consumed.id], run_id="run-x")
+
+        deleted = await mgr.delete_by_user_id(user_id=user_a.id)
+
+        assert deleted >= 2  # pending AND consumed rows both erased
+        for status in ("pending", "consumed", "superseded"):
+            assert await mgr.list_experiences(
+                agent_id=agent_id, user_id=user_a.id, status=status, limit=50
+            ) == []
+        # The other user's experience is untouched.
+        assert [e.id for e in await mgr.list_experiences(
+            agent_id=agent_id, user_id=other_uid, status="pending", limit=50
+        )] == [kept.id]
+
+    async def test_delete_by_client_id_uses_creation_attribution(
+        self, session_maker, org, user_a
+    ):
+        from mirix.schemas.client import Client as PydanticClient
+
+        mgr = _manager(session_maker)
+        agent_id = await _insert_agent(session_maker, org.id)
+        client_a = PydanticClient(
+            id=f"sexp-client-{uuid.uuid4().hex[:8]}", organization_id=org.id,
+            name="A", write_scope="t", read_scopes=["t"],
+        )
+        client_b = PydanticClient(
+            id=f"sexp-client-{uuid.uuid4().hex[:8]}", organization_id=org.id,
+            name="B", write_scope="t", read_scopes=["t"],
+        )
+        mine = await mgr.create_experience(
+            agent_id=agent_id, user_id=user_a.id, organization_id=org.id,
+            created_by_id=client_a.id, **_exp_kwargs("client-a"),
+        )
+        theirs = await mgr.create_experience(
+            agent_id=agent_id, user_id=user_a.id, organization_id=org.id,
+            created_by_id=client_b.id, **_exp_kwargs("client-b"),
+        )
+
+        deleted = await mgr.delete_by_client_id(actor=client_a)
+
+        assert deleted == 1
+        remaining = {e.id for e in await mgr.list_experiences(
+            agent_id=agent_id, user_id=user_a.id, status="pending", limit=50
+        )}
+        assert mine.id not in remaining
+        assert theirs.id in remaining

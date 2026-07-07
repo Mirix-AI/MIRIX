@@ -1542,7 +1542,7 @@ class MirixClient(AbstractClient):
         query: str,
         memory_type: str = "all",
         search_field: str = "null",
-        search_method: str = "embedding",
+        search_method: Optional[str] = None,
         limit: int = 10,
         filter_tags: Optional[Dict[str, Any]] = None,
         similarity_threshold: Optional[float] = None,
@@ -1573,7 +1573,11 @@ class MirixClient(AbstractClient):
                          - knowledge_vault: "caption", "secret_value"
                          - semantic: "name", "summary", "details"
                          - For "all": use "null" (default)
-            search_method: Search method. Options: "bm25" (default), "embedding"
+            search_method: Search method. Options: "embedding", "bm25", and
+                          "hybrid" (procedural memory only; BM25 + embedding
+                          fused with Reciprocal Rank Fusion). Omit (None, the
+                          default) to use the server's per-type default:
+                          "hybrid" for procedural, "embedding" otherwise.
             limit: Maximum number of results per memory type (default: 10)
             filter_tags: Optional filter tags for additional filtering (scope added automatically)
             similarity_threshold: Optional similarity threshold for embedding search (0.0-2.0).
@@ -1662,9 +1666,14 @@ class MirixClient(AbstractClient):
             "query": query,
             "memory_type": memory_type,
             "search_field": search_field,
-            "search_method": search_method,
             "limit": limit,
         }
+
+        # Omit search_method when unset so the server applies its per-type
+        # default (procedural -> hybrid, everything else -> embedding).
+        # Sending a value here would override that resolution.
+        if search_method is not None:
+            params["search_method"] = search_method
 
         # Add filter_tags if provided
         if filter_tags:
@@ -1692,7 +1701,7 @@ class MirixClient(AbstractClient):
         query: str,
         memory_type: str = "all",
         search_field: str = "null",
-        search_method: str = "embedding",
+        search_method: Optional[str] = None,
         limit: int = 10,
         client_id: Optional[str] = None,
         filter_tags: Optional[Dict[str, Any]] = None,
@@ -1721,7 +1730,11 @@ class MirixClient(AbstractClient):
                          - knowledge_vault: "caption", "secret_value"
                          - semantic: "name", "summary", "details"
                          - For "all": use "null" (default)
-            search_method: Search method. Options: "bm25" (default), "embedding"
+            search_method: Search method. Options: "embedding", "bm25", and
+                          "hybrid" (procedural memory only; BM25 + embedding
+                          fused with Reciprocal Rank Fusion). Omit (None, the
+                          default) to use the server's per-type default:
+                          "hybrid" for procedural, "embedding" otherwise.
             limit: Maximum results per memory type (total across all users)
             client_id: Optional client ID (uses its org_id and scope for filtering)
             filter_tags: Optional additional filter tags (scope added automatically)
@@ -1799,9 +1812,13 @@ class MirixClient(AbstractClient):
             "query": query,
             "memory_type": memory_type,
             "search_field": search_field,
-            "search_method": search_method,
             "limit": limit,
         }
+
+        # Omit search_method when unset so the server applies its per-type
+        # default (procedural -> hybrid, everything else -> embedding).
+        if search_method is not None:
+            params["search_method"] = search_method
 
         # Add client_id if provided (server will use this client's org_id)
         if client_id:

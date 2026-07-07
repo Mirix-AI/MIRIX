@@ -985,29 +985,11 @@ class Agent(BaseAgent):
                 response_message.tool_calls is not None
                 and len(response_message.tool_calls) > 1
             ):
-                memory_agent_types = (
-                    AgentType.meta_memory_agent,
-                    AgentType.core_memory_agent,
-                    AgentType.episodic_memory_agent,
-                    AgentType.semantic_memory_agent,
-                    AgentType.procedural_memory_agent,
-                    AgentType.resource_memory_agent,
-                    AgentType.knowledge_vault_memory_agent,
-                    AgentType.auto_dream_agent,
+                self.logger.info(
+                    "Agent %s returned %d tool call(s); executing each sequentially",
+                    self.agent_state.agent_type,
+                    len(response_message.tool_calls),
                 )
-                if self.agent_state.is_type(*memory_agent_types):
-                    self.logger.info(
-                        "Memory agent %s returned %d tool call(s); executing only the first",
-                        self.agent_state.agent_type,
-                        len(response_message.tool_calls),
-                    )
-                    response_message.tool_calls = response_message.tool_calls[:1]
-                else:
-                    self.logger.info(
-                        "Agent %s returned %d tool call(s); executing each sequentially",
-                        self.agent_state.agent_type,
-                        len(response_message.tool_calls),
-                    )
 
             # role: assistant (requesting tool call, set tool call ID)
             messages.append(

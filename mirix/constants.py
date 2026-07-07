@@ -309,7 +309,7 @@ SKILL_TRIGGER_MESSAGE_THRESHOLD = int(
 SKILL_TRIGGER_SESSION_THRESHOLD = int(os.getenv("SKILL_TRIGGER_SESSION_THRESHOLD", "5"))
 
 # ---------------------------------------------------------------------------
-# C4 — bounded, count-driven, quality-aware edit budget (skill evolution).
+# Bounded, count-driven, quality-aware edit budget (skill evolution).
 #
 # The budget is the MAX number of skill mutations (create+edit) a single
 # records-based evolution run may perform. It is driven by STRUCTURE-GATED
@@ -374,6 +374,13 @@ SKILL_EVOLVE_RECORDS_WINDOW = int(os.getenv("SKILL_EVOLVE_RECORDS_WINDOW", "5"))
 # before/after snapshots, the per-step system-context prefetch) keep their
 # explicit choice and are not governed by this default.
 PROCEDURAL_DEFAULT_SEARCH_METHOD = os.getenv("MIRIX_SKILL_SEARCH_METHOD", "hybrid")
+
+# Retention window (days) for VERBATIM conversation turns in the
+# conversation_message store AFTER they have been distilled. Once distilled,
+# a turn's learning value lives in skill_experience rows; keeping the raw
+# transcript indefinitely is a pure PII liability. Pruning runs at the end of
+# each procedural distillation pass. Set to 0 (or negative) to keep forever.
+CONVERSATION_RETENTION_DAYS = int(os.getenv("MIRIX_CONVERSATION_RETENTION_DAYS", "30"))
 
 # Reciprocal Rank Fusion constant for the procedural hybrid lane. k=60 is the
 # canonical RRF constant (everalgo.rank.fusion.rrf / RankConfig.rrf_k=60); the

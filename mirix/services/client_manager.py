@@ -404,6 +404,8 @@ class ClientManager:
            - ResourceMemoryManager.delete_by_client_id()
            - KnowledgeVaultManager.delete_by_client_id()
            - MessageManager.delete_by_client_id()
+           - ConversationMessageManager.delete_by_client_id()  (verbatim session transcripts)
+           - SkillExperienceManager.delete_by_client_id()      (experiences distilled from them)
         2. Delete blocks (via _created_by_id)
         3. Each manager handles:
            - Bulk database deletion
@@ -423,12 +425,14 @@ class ClientManager:
         )
 
         # Import managers
+        from mirix.services.conversation_message_manager import ConversationMessageManager
         from mirix.services.episodic_memory_manager import EpisodicMemoryManager
         from mirix.services.knowledge_vault_manager import KnowledgeVaultManager
         from mirix.services.message_manager import MessageManager
         from mirix.services.procedural_memory_manager import ProceduralMemoryManager
         from mirix.services.resource_memory_manager import ResourceMemoryManager
         from mirix.services.semantic_memory_manager import SemanticMemoryManager
+        from mirix.services.skill_experience_manager import SkillExperienceManager
 
         # Initialize managers
         episodic_manager = EpisodicMemoryManager()
@@ -437,6 +441,8 @@ class ClientManager:
         resource_manager = ResourceMemoryManager()
         knowledge_manager = KnowledgeVaultManager()
         message_manager = MessageManager()
+        conversation_manager = ConversationMessageManager()
+        skill_experience_manager = SkillExperienceManager()
 
         # Get client as actor for manager methods
         client = await self.get_client_by_id(client_id)
@@ -464,6 +470,14 @@ class ClientManager:
 
             message_count = await message_manager.delete_by_client_id(actor=client)
             logger.debug("Bulk deleted %d messages", message_count)
+
+            # Verbatim session transcripts and the experiences distilled from
+            # them were ingested by this client — the purge must cover them.
+            conversation_count = await conversation_manager.delete_by_client_id(actor=client)
+            logger.debug("Bulk deleted %d conversation turns", conversation_count)
+
+            experience_count = await skill_experience_manager.delete_by_client_id(actor=client)
+            logger.debug("Bulk deleted %d skill experiences", experience_count)
 
             # Delete blocks created by this client (using bulk operations)
             block_count = 0
@@ -545,7 +559,8 @@ class ClientManager:
 
             logger.info(
                 "Bulk deleted all memories for client %s: "
-                "%d episodic, %d semantic, %d procedural, %d resource, %d knowledge_vault, %d messages, %d blocks "
+                "%d episodic, %d semantic, %d procedural, %d resource, %d knowledge_vault, %d messages, %d blocks, "
+                "%d conversation turns, %d skill experiences "
                 "(client, agents, tools preserved)",
                 client_id,
                 episodic_count,
@@ -555,6 +570,8 @@ class ClientManager:
                 knowledge_count,
                 message_count,
                 block_count,
+                conversation_count,
+                experience_count,
             )
         except Exception as e:
             logger.error("Failed to bulk delete memories for client %s: %s", client_id, e)

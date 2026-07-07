@@ -1841,7 +1841,7 @@ class LocalClient(AbstractClient):
         query: str,
         memory_type: str = "all",
         search_field: str = "null",
-        search_method: str = "embedding",
+        search_method: Optional[str] = None,
         timezone_str: str = "UTC",
         limit: int = 10,
     ) -> dict:
@@ -1857,8 +1857,11 @@ class LocalClient(AbstractClient):
                                for "resource": 'summary', 'content'; for "procedural": 'description', 'instructions';
                                for "knowledge_vault": 'secret_value', 'caption'; for "semantic": 'name', 'summary', 'details'.
                                Use "null" for default fields. Defaults to "null".
-            search_method (str): The method to search. Options: 'bm25' (keyword-based), 'embedding' (semantic).
-                                Defaults to "embedding".
+            search_method (Optional[str]): The method to search. Options: 'bm25' (keyword-based),
+                                'embedding' (semantic), and 'hybrid' (procedural only; BM25 +
+                                embedding fused with Reciprocal Rank Fusion). Omit (None) to use
+                                the per-type default: 'hybrid' for procedural, 'embedding' otherwise
+                                — the same resolution the REST /memory/search endpoint applies.
             timezone_str (str): Timezone string for time-based operations. Defaults to "UTC".
             limit (int): Maximum number of results to return per memory type. Defaults to 10.
 
@@ -1866,6 +1869,21 @@ class LocalClient(AbstractClient):
             dict: Dictionary containing 'results' (list of memories) and 'count' (total number of results)
         """
         # Import here to avoid circular imports
+
+        # Resolve the per-type default, mirroring the REST endpoint: only a
+        # single-type procedural search defaults to hybrid; "all" keeps the
+        # cross-type embedding default.
+        if not search_method:
+            if memory_type == "procedural":
+                from mirix.constants import PROCEDURAL_DEFAULT_SEARCH_METHOD
+
+                search_method = PROCEDURAL_DEFAULT_SEARCH_METHOD
+            else:
+                search_method = "embedding"
+        elif search_method == "hybrid" and memory_type != "procedural":
+            # Hybrid is a procedural-only lane; other managers don't implement
+            # it. Same downgrade the REST endpoint applies.
+            search_method = "embedding"
 
         # Validate inputs
         if memory_type == "resource" and search_field == "content" and search_method == "embedding":

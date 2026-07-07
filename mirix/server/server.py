@@ -17,6 +17,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.text import Text
 from sqlalchemy import create_engine
+from sqlalchemy import inspect as sqlalchemy_inspect
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -453,12 +454,72 @@ else:
                 await session.close()
 
 
+# Tables that manual migration scripts ALTER on upgrades. create_all only
+# creates missing tables — it never adds columns to existing ones — so a
+# skipped migration surfaces as missing columns and would otherwise break
+# every SELECT on that entity at request time.
+_MIGRATION_HINTS: Dict[str, str] = {
+    "messages": "scripts/migrate_add_message_session_id.sql (then *_phase2.sql outside a transaction)",
+    "procedural_memory": "scripts/migrate_procedural_to_skill.sql",
+    "conversation_message": "scripts/migrate_add_conversation_message.sql (then *_phase2.sql)",
+    "skill_experience": "scripts/migrate_add_skill_experience.sql",
+    "agent_trigger_state": "scripts/migrate_add_agent_trigger_state.sql",
+}
+
+
+def _find_missing_columns(sync_conn) -> Dict[str, List[str]]:
+    """Compare ORM-declared columns against the live DB for existing tables."""
+    inspector = sqlalchemy_inspect(sync_conn)
+    existing_tables = set(inspector.get_table_names())
+    missing: Dict[str, List[str]] = {}
+    for table in Base.metadata.sorted_tables:
+        if table.name not in existing_tables:
+            continue  # create_all just created it with the full schema
+        db_columns = {column["name"] for column in inspector.get_columns(table.name)}
+        absent = [column.name for column in table.columns if column.name not in db_columns]
+        if absent:
+            missing[table.name] = absent
+    return missing
+
+
 async def ensure_tables_created():
-    """Create all tables on the async engine. Call from FastAPI lifespan startup."""
+    """Create all tables on the async engine and fail fast on schema drift.
+
+    Call from FastAPI lifespan startup. Raises RuntimeError with the exact
+    migration scripts to run when an existing database is missing columns the
+    ORM requires (i.e. the operator upgraded without running migrations).
+    """
     if USE_PGLITE:
         return
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        missing = await conn.run_sync(_find_missing_columns)
+    if missing:
+        lines = []
+        for table_name, columns in sorted(missing.items()):
+            hint = _MIGRATION_HINTS.get(table_name, "see scripts/migrate_*.sql")
+            lines.append(f"  - table '{table_name}' is missing columns {columns}; run {hint}")
+        raise RuntimeError(
+            "Database schema is out of date for this MIRIX version. "
+            "Startup aborted so requests don't fail mid-flight with UndefinedColumn errors.\n"
+            "Run the pending migration scripts against this database, then restart:\n"
+            + "\n".join(lines)
+        )
+
+
+# Singleton AsyncServer accessor. Lives here (not in rest_api) so service-layer
+# modules that need the assembled server never import the REST module — the
+# dependency arrow stays services -> server core, REST -> both.
+_server_singleton: Optional["AsyncServer"] = None
+
+
+def get_server() -> "AsyncServer":
+    """Get or create the singleton AsyncServer instance."""
+    global _server_singleton
+    if _server_singleton is None:
+        logger.info("Creating AsyncServer instance")
+        _server_singleton = AsyncServer()
+    return _server_singleton
 
 
 async def sse_async_generator(generator, usage_task=None, finish_message=True):

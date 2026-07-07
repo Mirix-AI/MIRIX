@@ -2,22 +2,15 @@
 
 from __future__ import annotations
 
-import asyncio
 from typing import Dict, List
 
+from mirix.helpers.keyed_locks import KeyedLocks
 
 # Procedural evolution resets a persistent agent's in-context messages before
 # and after a step. Serializing per procedural agent prevents concurrent runs
-# from deleting each other's transient chain messages.
-_evolve_locks: Dict[str, asyncio.Lock] = {}
-
-
-def _lock_for_agent(agent_id: str) -> asyncio.Lock:
-    lock = _evolve_locks.get(agent_id)
-    if lock is None:
-        lock = asyncio.Lock()
-        _evolve_locks[agent_id] = lock
-    return lock
+# from deleting each other's transient chain messages. Self-evicting registry;
+# use `async with _evolve_locks.acquire(agent_id):`.
+_evolve_locks = KeyedLocks()
 
 
 def _diff_skills(before: List, after: List) -> Dict[str, List[str]]:

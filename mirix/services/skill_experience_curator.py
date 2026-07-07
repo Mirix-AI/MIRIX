@@ -41,8 +41,9 @@ from mirix.schemas.skill_experience import (
 )
 from mirix.schemas.user import User as PydanticUser
 from mirix.services.procedural_evolution_runtime import (
+    _attr,
     _diff_skills,
-    _lock_for_agent,
+    _evolve_locks,
     reset_agent_in_context_to_system,
 )
 
@@ -105,17 +106,11 @@ def _evidence_quote(evidence) -> str:
         return str(evidence)[:240]
 
 
-def _attr(obj, key):
-    if isinstance(obj, dict):
-        return obj.get(key)
-    return getattr(obj, key, None)
-
-
 async def _resolve_procedural_agent_state(server, actor, meta_agent_state):
     """Resolve the procedural memory agent child of the meta agent.
 
-    Mirrors ``rest_api._find_procedural_agent_state`` but scoped to THIS meta
-    agent's children, so each user/meta-agent drives its own procedural agent.
+    Deliberately scoped to THIS meta agent's children (no org-wide fallback),
+    so each user/meta-agent drives its own procedural agent.
     """
     children = await server.agent_manager.list_agents(
         actor=actor, parent_id=meta_agent_state.id
@@ -138,7 +133,7 @@ async def run_experience_evolution(
     experience_ids: Optional[List[str]] = None,
     experience_manager=None,
 ) -> Dict:
-    """Evolve skills from this (agent, user)'s PENDING experiences (Goal 3).
+    """Evolve skills from this (agent, user)'s PENDING experiences.
 
     This is the production wiring: it resolves the real procedural agent, builds
     the snapshot / step / lineage collaborators, and delegates the load-bearing
@@ -161,7 +156,7 @@ async def run_experience_evolution(
     from mirix.constants import SKILL_EVOLVE_MAX_CHAINING_STEPS
     from mirix.schemas.message import Message as PydanticMessage
     from mirix.schemas.mirix_message_content import TextContent
-    from mirix.server.rest_api import get_server
+    from mirix.server.server import get_server
     from mirix.services.skill_experience_manager import SkillExperienceManager
 
     server = get_server()
@@ -300,8 +295,7 @@ async def _run_experience_evolution_core(
     :func:`run_experience_evolution`); ``None`` evolves the whole pending pool.
     """
     run_id = run_id or f"xprun-{uuid.uuid4().hex[:12]}"
-    lock = _lock_for_agent(agent_id)
-    async with lock:
+    async with _evolve_locks.acquire(agent_id):
         return await _evolve_locked(
             experience_manager=experience_manager,
             agent=agent,
@@ -343,7 +337,7 @@ async def _evolve_locked(
     exp_ids = [_attr(e, "id") for e in experiences]
 
     # 2) Aggregate -> count-driven budget. Map worth_avoiding -> n_high_fail and
-    #    worth_learning -> n_high_succ so the existing C4 formula (avoid weighted
+    #    worth_learning -> n_high_succ so the edit-budget formula (avoid weighted
     #    heavier than learn) applies unchanged.
     agg = await experience_manager.aggregate(ids=exp_ids)
     n_avoid = int(agg.get("n_worth_avoiding", 0) or 0)

@@ -14,11 +14,12 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from mirix.client.utils import get_utc_time
 from mirix.log import get_logger
 from mirix.orm.skill_experience import SkillExperience as SkillExperienceModel
+from mirix.schemas.client import Client as PydanticClient
 from mirix.schemas.skill_experience import (
     SkillExperience as PydanticSkillExperience,
     SkillExperienceCreate,
@@ -51,6 +52,7 @@ class SkillExperienceManager:
         credibility: float = 0.0,
         evidence: str = "",
         status: str = "pending",
+        created_by_id: Optional[str] = None,
     ) -> PydanticSkillExperience:
         """Insert one distilled experience in status 'pending' (default).
 
@@ -86,6 +88,10 @@ class SkillExperienceManager:
             evidence=validated.evidence,
             status=validated.status,
         )
+        if created_by_id is not None:
+            # Client attribution via the _created_by_id audit column — this is
+            # what delete_by_client_id (the client erasure path) filters on.
+            row._set_created_and_updated_by_fields(created_by_id)
         async with self.session_maker() as session:
             await row.create(session)
             return row.to_pydantic()
@@ -100,20 +106,20 @@ class SkillExperienceManager:
         limit: int = 100,
         ids: Optional[List[str]] = None,
     ) -> List[PydanticSkillExperience]:
-        """Return this agent's experiences, prioritized for Goal-3 consumption.
+        """Return this agent's experiences, prioritized for evolution consumption.
 
         Filters by agent (always), optionally by user and status (default
         'pending'); `status=None` returns all statuses. Excludes soft-deleted
         rows.
 
-        `ids` scopes the result to an explicit id set (the Goal-3 curator passes
+        `ids` scopes the result to an explicit id set (the experience curator passes
         THIS evolution round's freshly-distilled experiences so a run only ever
         sees its own batch, never the accumulated cross-round pending pool).
         `ids=None` (default) applies no id filter; `ids=[]` is an explicit
         "scope to nothing" and short-circuits to `[]` (so a round that distilled
         zero experiences evolves over nothing rather than the whole pool).
 
-        Ordering: `(importance * credibility) DESC` computed in SQL (the Goal-3
+        Ordering: `(importance * credibility) DESC` computed in SQL (the
         priority), then `created_at DESC` as a stable tiebreak.
         """
         # Explicit empty scope -> nothing (distinct from ids=None == "no filter").
@@ -249,7 +255,7 @@ class SkillExperienceManager:
 
     @enforce_types
     async def aggregate(self, *, ids: List[str]) -> Dict[str, float]:
-        """Summarize a set of experiences for the Goal-3 budget driver.
+        """Summarize a set of experiences for the skill-evolution budget driver.
 
         Returns:
             n                 -- total experiences in the set
@@ -294,3 +300,36 @@ class SkillExperienceManager:
             "n_worth_avoiding": n_worth_avoiding,
             "sum_priority": sum_priority,
         }
+
+    @enforce_types
+    async def delete_by_user_id(self, user_id: str) -> int:
+        """Hard delete ALL experiences distilled from a user's sessions (erasure path).
+
+        Experiences carry titles/content/evidence quotes distilled from the
+        user's verbatim conversations, so the irreversible
+        DELETE /users/{user_id}/memories purge must cover them like every other
+        memory table. Deletes regardless of status (pending/consumed/superseded).
+        """
+        async with self.session_maker() as session:
+            stmt = delete(SkillExperienceModel).where(
+                SkillExperienceModel.user_id == user_id
+            )
+            result = await session.execute(stmt)
+            await session.commit()
+            return int(result.rowcount or 0)
+
+    @enforce_types
+    async def delete_by_client_id(self, actor: PydanticClient) -> int:
+        """Hard delete all experiences created by a client (erasure path).
+
+        Attribution is via the `_created_by_id` audit column — the table has no
+        dedicated client_id column. Called from
+        `ClientManager.delete_memories_by_client_id`.
+        """
+        async with self.session_maker() as session:
+            stmt = delete(SkillExperienceModel).where(
+                SkillExperienceModel._created_by_id == actor.id
+            )
+            result = await session.execute(stmt)
+            await session.commit()
+            return int(result.rowcount or 0)

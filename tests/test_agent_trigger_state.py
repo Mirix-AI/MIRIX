@@ -188,7 +188,6 @@ class TestAgentTriggerStateManagerSurface:
         # is sync; unwrap to inspect the underlying async def.
         mgr = AgentTriggerStateManager
         for name in (
-            "get_state",
             "count_sealed_undistilled_sessions",
             "check_and_claim_fire",
         ):

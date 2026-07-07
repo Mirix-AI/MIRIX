@@ -491,12 +491,12 @@ def _bump_patch_version(version: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# C4 — edit-budget formula + per-mutation size/delete gates.
+# Edit-budget formula + per-mutation size/delete gates.
 #
 # These are pure, side-effect-free helpers so they are unit-testable without a
-# DB, a server, or an LLM. The skill tools below consult them; the records-based
-# evolve path (C3, mirix.services.skill_curator) sets the per-instance budget
-# counters BEFORE running the procedural agent.
+# DB, a server, or an LLM. The skill tools below consult them; the experience-
+# curator evolve path (mirix.services.skill_experience_curator) sets the
+# per-instance budget counters BEFORE running the procedural agent.
 # ---------------------------------------------------------------------------
 
 # Sentinel returned by skill_create/skill_edit when the per-run mutation budget
@@ -511,7 +511,7 @@ _BUDGET_EXHAUSTED_MSG = (
 def _round_half_up(value: float) -> int:
     """Deterministic round-half-up (Python's built-in round() is banker's).
 
-    DESIGN §C4 specifies clamp(round(raw)); we use round-half-up so e.g. a
+    The design formula is clamp(round(raw)); we use round-half-up so e.g. a
     successes-only window (raw=2.5) lands at 3 instead of 2, matching the
     documented "mixed => 2-4" budget distribution.
     """
@@ -810,7 +810,7 @@ async def skill_create(
     Returns:
         str: Confirmation with the created skill's ID.
     """
-    # C4 budget gate (counts create+edit). At the TOP, before any mutation.
+    # Edit-budget gate (counts create+edit). At the TOP, before any mutation.
     exhausted = _consume_edit_budget(self)
     if exhausted is not None:
         return exhausted
@@ -943,7 +943,7 @@ async def skill_edit(
         pattern = re.sub(r"\\\s+", r"\\s+", pattern)
         new_value = re.sub(pattern, new_text, current_value, count=1)
 
-        # C4 per-mutation HARD size gate (P1-3). Runs BEFORE the budget is
+        # Per-mutation HARD size gate. Runs BEFORE the budget is
         # consumed so a rejected (too-large) edit is FREE — the agent is told to
         # split it or extract a new skill instead. Only text fields are gated.
         size_reason = _edit_exceeds_size_gate(current_value, new_value)
@@ -997,7 +997,7 @@ async def skill_edit(
     new_version = _bump_patch_version(getattr(skill, "version", "0.1.0"))
     update_data["version"] = new_version
 
-    # C4 budget gate (counts create+edit). Consumed only AFTER every validation
+    # Edit-budget gate (counts create+edit). Consumed only AFTER every validation
     # and size gate has passed, so a rejected edit never costs a budget unit.
     exhausted = _consume_edit_budget(self)
     if exhausted is not None:
@@ -1021,7 +1021,7 @@ async def skill_delete(self: "Agent", skill_id: str) -> str:
     """
     Delete a skill by ID.
 
-    Under a records-based curator run (C3/C4) deletes are gated SEPARATELY from
+    Under an experience-curator run deletes are gated SEPARATELY from
     the create/edit budget: at most ``D_max`` per evolution, and only when a
     failure record named this skill actively harmful. Soft-delete (exclude from
     retrieval, reversible) is preferred over a hard delete. The gate engages only
@@ -1465,7 +1465,8 @@ async def _resolve_meta_agent_state(self: "Agent"):
 
 
 async def _schedule_experience_auto_dream(self: "Agent", *, threshold: int) -> bool:
-    """Fire-and-forget the GENERAL session-experience auto-dream (Goal 2/3).
+    """Fire-and-forget the GENERAL session-experience auto-dream
+    (session distillation + skill evolution).
 
     Resolves the meta agent (owner of the retained transcripts) and schedules
     ``AutoDreamManager().run(mode='procedural', last_n_sessions=threshold)`` as a
@@ -1475,7 +1476,7 @@ async def _schedule_experience_auto_dream(self: "Agent", *, threshold: int) -> b
     Returns ``True`` iff the background dream task was actually scheduled. The
     caller uses this to decide whether to ALSO enqueue the legacy "procedural"
     memory update: when the dream is scheduled it owns the procedural agent
-    (Goal-3 evolves skills under the per-agent lock), so the legacy update must
+    (skill evolution runs under the per-agent lock), so the legacy update must
     NOT run concurrently on the same agent. When scheduling did not take (no
     user/actor, unresolved meta agent, or an error), the caller falls back to
     the legacy update so a fire is never silently dropped.

@@ -5,16 +5,16 @@ Raw memories are unprocessed task context stored for task sharing use cases,
 with a 14-day TTL enforced by nightly cleanup jobs.
 """
 
-import asyncio
 import base64
 import datetime as dt
 import json
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
-from sqlalchemy import and_, desc, func, or_, select
+from sqlalchemy import and_, desc, or_, select
 
 from mirix.constants import BUILD_EMBEDDINGS_FOR_MEMORY
+from mirix.helpers.keyed_locks import KeyedLocks
 from mirix.log import get_logger
 from mirix.orm.errors import NoResultFound
 from mirix.orm.raw_memory import RawMemory
@@ -29,15 +29,10 @@ from mirix.utils import enforce_types, generate_unique_short_id_async
 
 logger = get_logger(__name__)
 
-_raw_memory_update_locks: Dict[str, asyncio.Lock] = {}
-
-
-def _lock_for_raw_memory(memory_id: str) -> asyncio.Lock:
-    lock = _raw_memory_update_locks.get(memory_id)
-    if lock is None:
-        lock = asyncio.Lock()
-        _raw_memory_update_locks[memory_id] = lock
-    return lock
+# Serializes same-process updates to one raw memory so concurrent
+# read-modify-write cycles don't drop each other's changes. Self-evicting, so
+# it doesn't grow with every memory_id ever updated.
+_raw_memory_update_locks = KeyedLocks()
 
 
 class RawMemoryManager:
@@ -337,7 +332,7 @@ class RawMemoryManager:
             tags_merge_mode,
         )
 
-        async with _lock_for_raw_memory(memory_id):
+        async with _raw_memory_update_locks.acquire(memory_id):
             async with self.session_maker() as session:
                 # Fetch the existing memory with row-level lock (SELECT FOR UPDATE).
                 # The in-process lock above covers SQLite and same-process async
