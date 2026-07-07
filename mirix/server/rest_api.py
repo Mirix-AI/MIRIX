@@ -1834,13 +1834,17 @@ async def delete_client_memories(
     )
     server = get_server()
 
-    # Tenant guard: same-org only; foreign-org targets get the same 404 as a
-    # missing client so the endpoint can't probe client-id existence.
+    # Tenant guard: same-org only; a missing OR foreign-org target returns the
+    # same 404 so the endpoint can't be used to probe client-id existence.
+    # get_client_by_id RAISES (NoResultFound) on a miss rather than returning
+    # None, so the miss must be caught here, not compared to None.
     default_org = server.organization_manager.DEFAULT_ORG_ID
-    target_client = await server.client_manager.get_client_by_id(client_id)
-    if target_client is None or (
-        (target_client.organization_id or default_org)
-        != (client.organization_id or default_org)
+    try:
+        target_client = await server.client_manager.get_client_by_id(client_id)
+    except Exception:
+        raise HTTPException(status_code=404, detail=f"Client {client_id} not found")
+    if (target_client.organization_id or default_org) != (
+        client.organization_id or default_org
     ):
         raise HTTPException(status_code=404, detail=f"Client {client_id} not found")
 
