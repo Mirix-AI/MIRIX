@@ -12,6 +12,10 @@ it; v5/v6 labels and previous results remain comparable.
 - `docs/graph_memory_v6/README.md` - v6 design, LongMem-S run, judge result,
   and v6 graph visualization links.
 - `docs/graph_memory_v6/visualizations/index.html` - sampled v6 graph views.
+- [`10chunk_ingest_analysis.md`](10chunk_ingest_analysis.md) - controlled
+  10-chunk LongMem-S ingest: size scaling vs the full build, a broken-ingest
+  pitfall (synchronous `add_chunk`, not an async queue), and the real graph shape
+  (degree distribution, hubs, clusters).
 
 ## Principle
 
