@@ -1006,3 +1006,31 @@ class ClientManager:
         async with self.session_maker() as session:
             results = await ClientModel.list(db_session=session, cursor=cursor, limit=limit)
             return [client.to_pydantic() for client in results]
+
+    @enforce_types
+    async def get_client_by_name(self, name: str, organization_id: str) -> Optional[PydanticClient]:
+        """Exact-match lookup of a client by name within an organization.
+
+        Pushes both filters down to the store rather than scanning a page of
+        list_clients client-side, so the result is correct regardless of how
+        many clients exist. Returns None when no client matches.
+        """
+        from mirix.database.relational_provider import get_relational_provider
+
+        provider = get_relational_provider()
+        if provider:
+            rows = await provider.list(
+                "clients",
+                organization_id=organization_id,
+                name=name,
+                limit=1,
+            )
+            return PydanticClient(**rows[0]) if rows else None
+        async with self.session_maker() as session:
+            results = await ClientModel.list(
+                db_session=session,
+                organization_id=organization_id,
+                name=name,
+                limit=1,
+            )
+            return results[0].to_pydantic() if results else None
