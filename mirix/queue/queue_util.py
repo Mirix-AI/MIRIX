@@ -106,7 +106,15 @@ def deserialize_queue_message(serialized_msg: bytes, format: str = "protobuf") -
     try:
         if format == "json":
             message_dict = json.loads(serialized_msg.decode("utf-8"))
-            return ParseDict(message_dict, queue_message)
+            # ignore_unknown_fields makes JSON deserialization match protobuf
+            # binary semantics: a consumer running an older schema than the
+            # producer skips fields it doesn't know instead of raising. Without
+            # this, ADDING a proto field is a breaking change under JSON — a
+            # rolling deploy where producers emit the new field before every
+            # consumer has the new schema wedges the old consumers in a
+            # ParseError redelivery loop (the ECMS-73 `messages` field rollout
+            # failed exactly this way).
+            return ParseDict(message_dict, queue_message, ignore_unknown_fields=True)
         elif format == "protobuf":
             queue_message.ParseFromString(serialized_msg)
             return queue_message

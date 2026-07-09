@@ -101,7 +101,23 @@ async def process_external_message(raw_message: bytes) -> None:
     from mirix.queue.queue_util import deserialize_queue_message
     from mirix.queue.worker import dispatch_incoming_message
 
-    queue_message = deserialize_queue_message(raw_message, format=KAFKA_SERIALIZATION_FORMAT)
+    try:
+        queue_message = deserialize_queue_message(raw_message, format=KAFKA_SERIALIZATION_FORMAT)
+    except ValueError:
+        # A message that can't even be deserialized is a poison pill: raising
+        # here (before dispatch_save) would make the broker redeliver it
+        # forever, wedging the partition — this is exactly how the ECMS-73
+        # schema-skew incident presented. Deterministically-bad bytes can never
+        # succeed on retry, so log loudly and ack. There is no memory_source_id
+        # to finalize (the message never parsed), so the drop is visible only
+        # here — keep this log ERROR and structured enough to alert on.
+        logger.error(
+            "Dropping undeserializable queue message (%s format, %d bytes) — acking to avoid a redelivery loop",
+            KAFKA_SERIALIZATION_FORMAT,
+            len(raw_message),
+            exc_info=True,
+        )
+        return
 
     logger.debug(
         "Processing external message (%s format): agent_id=%s, user_id=%s, memory_source_id=%s",

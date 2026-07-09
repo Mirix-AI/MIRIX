@@ -365,3 +365,49 @@ async def test_worker_legacy_dual_array_fallback_still_works():
     assert kwargs["source_messages"] == [
         {"role": "user", "content": "hi there", "external_message_id": "m1"},
     ]
+
+
+class TestJsonForwardCompatibility:
+    """JSON wire-format skew safety (the ECMS-73 rollout incident).
+
+    Under KAFKA_SERIALIZATION_FORMAT=json, ParseDict was strict about unknown
+    fields, so a producer emitting a newer schema than the consumer wedged the
+    consumer in a ParseError redelivery loop. JSON deserialization must match
+    protobuf binary semantics: unknown fields are skipped, not fatal.
+    """
+
+    def test_unknown_fields_in_json_are_ignored(self):
+        import json
+
+        from mirix.queue.queue_util import deserialize_queue_message
+
+        blob = json.dumps(
+            {
+                "client_id": "client-1",
+                "agent_id": "agent-1",
+                "a_field_from_the_future": [{"x": 1}],
+            }
+        ).encode("utf-8")
+
+        msg = deserialize_queue_message(blob, format="json")
+        assert msg.client_id == "client-1"
+        assert msg.agent_id == "agent-1"
+
+    @pytest.mark.asyncio
+    async def test_undeserializable_message_is_dropped_not_redelivered(self, monkeypatch):
+        """Poison bytes ack (with an ERROR log) instead of raising out of
+        process_external_message, which would redeliver forever."""
+        from mirix.queue import process_external_message
+
+        worker = Mock()
+        worker.process_external_message = AsyncMock()
+
+        fake_manager = Mock()
+        fake_manager.is_initialized = True
+        fake_manager._workers = [worker]
+        monkeypatch.setattr("mirix.queue._manager", fake_manager)
+
+        # Returns normally (ack) — no exception escapes to the broker layer.
+        await process_external_message(b"\x00not-valid-json-or-protobuf\xff")
+
+        worker.process_external_message.assert_not_awaited()
