@@ -32,8 +32,6 @@ sys.path.insert(0, str(project_root))
 
 from mirix.queue.queue_util import put_messages
 from mirix.schemas.client import Client
-from mirix.schemas.enums import MessageRole
-from mirix.schemas.message import MessageCreate
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -81,7 +79,7 @@ async def queue_sample_client(ensure_queue_org):
 
 @pytest.fixture
 def queue_sample_messages():
-    return [MessageCreate(role=MessageRole.user, content="Hello")]
+    return [{"role": "user", "content": "Hello"}]
 
 
 @pytest.fixture
@@ -357,7 +355,7 @@ class TestQueueUpdateMode:
         await put_messages(
             actor=queue_sample_client,
             agent_id="agent-update-mode",
-            input_messages=queue_sample_messages,
+            messages=queue_sample_messages,
             block_filter_tags={"env": "staging"},
             block_filter_tags_update_mode="replace",
         )
@@ -376,7 +374,7 @@ class TestQueueUpdateMode:
         await put_messages(
             actor=queue_sample_client,
             agent_id="agent-default-mode",
-            input_messages=queue_sample_messages,
+            messages=queue_sample_messages,
             block_filter_tags={"env": "prod"},
         )
 
@@ -401,7 +399,7 @@ class TestQueueUpdateMode:
         await put_messages(
             actor=queue_sample_client,
             agent_id="agent-e2e-mode",
-            input_messages=queue_sample_messages,
+            messages=queue_sample_messages,
             block_filter_tags={"env": "staging"},
             block_filter_tags_update_mode="replace",
         )

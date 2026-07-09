@@ -7,6 +7,7 @@ allowing MirixClient instances to communicate with a cloud-hosted server.
 import functools
 import json
 import traceback
+import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -2124,50 +2125,19 @@ async def add_memory(
         user_id = ClientAuthManager.get_admin_user_id_for_client(client_id)
         logger.debug("No user_id provided, using admin user: %s", user_id)
 
-    message = request.messages
+    # Per-turn messages are sent to the queue exactly once (QueueMessage.messages)
+    # instead of being flattened here and duplicated into a second array. The
+    # worker now derives both the packed agent-input and the source_messages
+    # provenance records from this single list — see queue_util.put_messages()
+    # and mirix.utils.flatten_messages_for_agent().
+    messages = request.messages
 
-    # WHY original_messages?
-    #
-    # The flattening below destroys per-message identity: it merges all turns into
-    # a flat content list with [USER]/[ASSISTANT] text markers, then packs them into
-    # a single MessageCreate. Per-message metadata (role, external_message_id,
-    # occurred_at) is lost.
-    #
-    # original_messages preserves the raw per-turn dicts so they can travel through
-    # protobuf (as QueueMessage.source_messages, field 24) to the MetaAgent's
-    # _persist_memory_source(), which stores them individually in the source_messages
-    # DB table. See the parallel comment in queue_util.py put_messages().
-    original_messages = request.messages
-
-    if isinstance(message, list) and len(message) > 0 and "role" in message[0].keys():
-        # This means the input is in the format of [{"role": "user", "content": [{"type": "text", "text": "..."}]}, {"role": "assistant", "content": [{"type": "text", "text": "..."}]}]
-        # OR the simpler format: [{"role": "user", "content": "Hello world"}]
-
-        # We need to convert the message to the format in "content"
-        new_message = []
-        for msg in message:
-            new_message.append(
-                {
-                    "type": "text",
-                    "text": "[USER]" if msg["role"] == "user" else "[ASSISTANT]",
-                }
-            )
-
-            # Handle both string and list content
-            content = msg["content"]
-            if isinstance(content, str):
-                # Content is a string - convert to proper format
-                new_message.append({"type": "text", "text": content})
-            elif isinstance(content, list):
-                # Content is already a list - extend as before
-                new_message.extend(content)
-            else:
-                raise ValueError(f"Invalid content type: {type(content)}")
-        message = new_message
-
-    # N.b. This function converts to Mirix format and also packs all messages into a single MessageCreate object
-    # so, there will be only one MessageCreate object in the list
-    input_messages = convert_message_to_mirix_message(message)
+    # Legacy input shape: a bare content list ([{"type": "text", ...}]) with no
+    # per-turn "role" keys. The old flattening step passed this through as-is
+    # (one packed user message). Wrap it as a single user turn so it survives
+    # the per-turn wire format instead of silently serializing to empty text.
+    if messages and isinstance(messages[0], dict) and "role" not in messages[0]:
+        messages = [{"role": "user", "content": messages}]
 
     # Copy filter_tags (create if not provided)
     if request.filter_tags is not None:
@@ -2189,9 +2159,10 @@ async def add_memory(
     if request.block_filter_tags_update_mode not in ("merge", "replace"):
         raise HTTPException(status_code=400, detail="block_filter_tags_update_mode must be 'merge' or 'replace'")
 
-    # Pre-generate memory_source_id for citation tracking
-    import uuid
-
+    # Pre-generate memory_source_id for citation tracking. put_messages() does
+    # NOT generate one itself (many lower-level callers intentionally omit it
+    # to skip provenance tracking) — this HTTP path always wants it, both to
+    # return to the caller and to drive the worker's idempotency chokepoint.
     memory_source_id = f"src-{uuid.uuid4()}"
 
     # Queue for async processing instead of synchronous execution
@@ -2200,7 +2171,7 @@ async def add_memory(
     await put_messages(
         actor=actor,
         agent_id=request.meta_agent_id,
-        input_messages=input_messages,
+        messages=messages,
         chaining=request.chaining,
         user_id=user_id,  # End-user for data filtering (or admin user)
         verbose=request.verbose,
@@ -2217,7 +2188,6 @@ async def add_memory(
         source_metadata=request.source_metadata,
         summary=request.summary,
         summarize=request.summarize,
-        source_messages=original_messages,
         direct_writes=(
             [{"memory_type": w.memory_type, "payload": w.payload} for w in request.direct_writes]
             if request.direct_writes
@@ -2232,7 +2202,12 @@ async def add_memory(
         "message": "Memory queued for processing",
         "status": "queued",
         "agent_id": request.meta_agent_id,
-        "message_count": len(input_messages),
+        # Count of packed agent-input messages, NOT conversation turns. The
+        # worker flattens all turns into one MessageCreate, so this is 1 — the
+        # same constant the old pre-queue flattening produced. ECMS maps this
+        # to the public `messages_created` response field and SDK callers
+        # assert on it, so it must not change to a turn count.
+        "message_count": 1,
         "memory_source_id": memory_source_id,
     }
 

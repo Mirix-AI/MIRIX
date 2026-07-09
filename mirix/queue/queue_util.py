@@ -1,5 +1,6 @@
 import json
 import logging
+import uuid
 from typing import Any, Dict, List, Optional
 
 from google.protobuf.json_format import MessageToDict, ParseDict
@@ -10,11 +11,54 @@ from mirix.queue.message_pb2 import DirectMemoryWrite as ProtoDirectMemoryWrite
 from mirix.queue.message_pb2 import MessageCreate as ProtoMessageCreate
 from mirix.queue.message_pb2 import QueueMessage
 from mirix.schemas.client import Client
-from mirix.schemas.enums import MessageRole
-from mirix.schemas.message import MessageCreate
-from mirix.schemas.mirix_message_content import TextContent
 
 logger = logging.getLogger(__name__)
+
+_ROLE_TO_PROTO = {
+    "user": ProtoMessageCreate.ROLE_USER,
+    "system": ProtoMessageCreate.ROLE_SYSTEM,
+    "assistant": ProtoMessageCreate.ROLE_ASSISTANT,
+}
+
+
+def _dict_message_to_proto(msg_dict: dict) -> ProtoMessageCreate:
+    """Convert one raw per-turn message dict to a protobuf MessageCreate.
+
+    The producer-side counterpart of the worker's
+    _convert_proto_source_message_to_dict — the single place that knows the
+    wire shape of a per-turn message dict: {"role", "content",
+    "external_message_id"?, "occurred_at"?, "metadata"?}. `role` may be
+    "user", "system", or "assistant" (unlike the old packed input_messages
+    role, which collapsed to one value). List content is reduced to its text
+    parts, matching the old queue boundary's behavior (structured/image
+    content never survived serialization to the queue).
+    """
+    proto_msg = ProtoMessageCreate()
+    proto_msg.role = _ROLE_TO_PROTO.get(msg_dict.get("role", "user"), ProtoMessageCreate.ROLE_UNSPECIFIED)
+
+    content = msg_dict.get("content", "")
+    if isinstance(content, str):
+        proto_msg.text_content = content
+    elif isinstance(content, list):
+        text_parts = [p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text"]
+        proto_msg.text_content = "\n".join(text_parts)
+
+    if msg_dict.get("name"):
+        proto_msg.name = msg_dict["name"]
+    if msg_dict.get("otid"):
+        proto_msg.otid = msg_dict["otid"]
+    if msg_dict.get("sender_id"):
+        proto_msg.sender_id = msg_dict["sender_id"]
+    if msg_dict.get("group_id"):
+        proto_msg.group_id = msg_dict["group_id"]
+    if msg_dict.get("external_message_id"):
+        proto_msg.external_message_id = msg_dict["external_message_id"]
+    if msg_dict.get("occurred_at"):
+        proto_msg.message_occurred_at = msg_dict["occurred_at"]
+    if msg_dict.get("metadata"):
+        proto_msg.message_metadata.update(msg_dict["metadata"])
+
+    return proto_msg
 
 
 # Queue message serialization utilities
@@ -72,10 +116,103 @@ def deserialize_queue_message(serialized_msg: bytes, format: str = "protobuf") -
         raise ValueError(f"Failed to deserialize message ({format} format): {e}") from e
 
 
+def normalize_filter_tags_struct(filter_tags: dict) -> Dict[str, List[str]]:
+    """Coerce a raw filter_tags dict to the canonical Dict[str, List[str]] shape.
+
+    A scalar becomes a single-element list, list elements are stringified, and
+    an already list-of-strings value is left as-is. Historically this
+    normalization only existed in ECMS's Pydantic request validator
+    (app/service/utils/filter_tags.py) — a message arriving straight off the
+    queue (bypassing that HTTP layer entirely) never got it. Centralized here
+    so every consumption path (REST-API-produced or Kafka-direct-produced)
+    normalizes identically.
+
+    Raises ValueError if a key isn't a string, or a list element isn't a
+    primitive that can be stringified sensibly (dict/list nested inside a
+    filter_tags value) — this is a shape a caller must fix, not silently
+    coerce, since a malformed shape breaks IPS-R queries silently downstream.
+    """
+    normalized: Dict[str, List[str]] = {}
+    for key, raw in filter_tags.items():
+        if not isinstance(key, str):
+            raise ValueError(f"filter_tags key must be a string, got {type(key).__name__}: {key!r}")
+        if isinstance(raw, dict):
+            raise ValueError(f"filter_tags[{key!r}] must be a scalar or list of scalars, got a nested dict")
+        if isinstance(raw, list):
+            if any(isinstance(el, (dict, list)) for el in raw):
+                raise ValueError(f"filter_tags[{key!r}] list elements must be scalars, got a nested dict/list")
+            normalized[key] = [str(element) for element in raw]
+        else:
+            normalized[key] = [str(raw)]
+    return normalized
+
+
+def normalize_and_validate_incoming_message(queue_message: QueueMessage) -> QueueMessage:
+    """Consumer-entry normalization/validation, run once per message right after
+    deserialization — before the message enters the retry/dispatch pipeline.
+
+    Covers the pieces of save-path work that used to exist ONLY at the ECMS
+    HTTP layer (never reachable by a message produced straight onto the Kafka
+    topic):
+
+    * filter_tags / block_filter_tags: normalize to Dict[str, List[str]] and
+      validate the shape (same canonicalization ECMS's request validator
+      applies to both fields). Raises (wrapped as a permanent, non-retryable
+      failure by the caller) on a malformed shape rather than silently
+      miscoercing it.
+    * memory_source_id: backfilled if the producer omitted it. This has to
+      happen here (not deeper in worker.py) because `process_external_message`
+      reads `queue_message.memory_source_id` immediately after deserializing,
+      before the worker ever runs, to drive the idempotency finalize
+      chokepoint — a message that reaches that point without one would never
+      get its `processing_complete` flag written.
+    * tid: backfilled with a fresh id (and a warning log) if the producer
+      omitted it, since there is no HTTP middleware on this path to have
+      generated one already.
+
+    Mutates and returns the same QueueMessage instance for convenience. ID/tid
+    backfill runs FIRST and unconditionally — even when filter_tags validation
+    below fails — so a rejected message still carries a memory_source_id and
+    tid into dispatch_save's classify/finalize/log path (see the caller in
+    mirix/queue/__init__.py for why the raise there must happen inside the
+    dispatch_save-wrapped step, not before it).
+    """
+    if not queue_message.HasField("memory_source_id") or not queue_message.memory_source_id:
+        queue_message.memory_source_id = f"src-{uuid.uuid4()}"
+        logger.debug(
+            "Backfilled memory_source_id=%s for incoming message (agent_id=%s) — producer omitted it",
+            queue_message.memory_source_id,
+            queue_message.agent_id,
+        )
+
+    if not queue_message.HasField("tid") or not queue_message.tid:
+        queue_message.tid = uuid.uuid4().hex
+        logger.warning(
+            "Incoming queue message (agent_id=%s, memory_source_id=%s) had no tid — "
+            "generated a fallback. Direct-to-Kafka producers should supply their own "
+            "tid for end-to-end log/trace correlation.",
+            queue_message.agent_id,
+            queue_message.memory_source_id,
+        )
+
+    for field_name in ("filter_tags", "block_filter_tags"):
+        struct_field = getattr(queue_message, field_name)
+        if queue_message.HasField(field_name) and struct_field:
+            raw_tags = MessageToDict(struct_field)
+            try:
+                normalized = normalize_filter_tags_struct(raw_tags)
+            except ValueError as e:
+                raise ValueError(f"Invalid {field_name} on incoming queue message: {e}") from e
+            struct_field.Clear()
+            struct_field.update(normalized)
+
+    return queue_message
+
+
 async def put_messages(
     actor: Client,
     agent_id: str,
-    input_messages: List[MessageCreate],
+    messages: List[dict],
     chaining: Optional[bool] = True,
     user_id: Optional[str] = None,
     verbose: Optional[bool] = None,
@@ -92,7 +229,6 @@ async def put_messages(
     source_metadata: Optional[dict] = None,
     summary: Optional[str] = None,
     summarize: bool = False,
-    source_messages: Optional[List[dict]] = None,
     direct_writes: Optional[List[Dict[str, Any]]] = None,
 ):
     """
@@ -102,7 +238,12 @@ async def put_messages(
         actor: The Client performing the action (for auth/write operations)
                Client ID is derived from actor.id
         agent_id: ID of the agent to send message to
-        input_messages: List of messages to send
+        messages: Per-turn conversation messages, sent exactly once on the wire.
+            Each entry is a dict {"role": "user"|"system"|"assistant", "content":
+            str | list, "external_message_id"?, "occurred_at"?, "metadata"?}. The
+            worker derives BOTH the packed agent-input and the source_messages
+            provenance records from this single list — callers no longer flatten
+            or duplicate messages before enqueueing.
         chaining: Enable/disable chaining
         user_id: Optional user ID (end-user ID)
         verbose: Enable verbose logging
@@ -111,9 +252,14 @@ async def put_messages(
         block_filter_tags_update_mode: "merge" (default) or "replace" for existing block filter_tags
         use_cache: Control Redis cache behavior
         occurred_at: Optional ISO 8601 timestamp string for episodic memory
+        memory_source_id: Optional pre-generated "src-{uuid4}" for citation
+            tracking. NOT generated here — callers that want provenance (e.g.
+            rest_api.add_memory) supply their own; messages that reach the
+            consumer without one are backfilled there.
         direct_writes: Optional list of direct memory writes. Each entry is a dict
             {"memory_type": str, "payload": dict}. When set, the meta-agent skips
             LLM dispatch and calls the registered handler per entry instead.
+
     """
     logger.debug("Creating queue message for agent_id=%s, client_id=%s", agent_id, actor.id)
 
@@ -123,54 +269,13 @@ async def put_messages(
             f"actor={actor}, actor.id={actor.id if actor else 'N/A'}"
         )
 
-    # Convert Pydantic MessageCreate list to protobuf MessageCreate list
-    proto_input_messages = []
-    for msg in input_messages:
-        proto_msg = ProtoMessageCreate()
-        # Map role
-        if msg.role == MessageRole.user:
-            proto_msg.role = ProtoMessageCreate.ROLE_USER
-        elif msg.role == MessageRole.system:
-            proto_msg.role = ProtoMessageCreate.ROLE_SYSTEM
-        else:
-            proto_msg.role = ProtoMessageCreate.ROLE_UNSPECIFIED
-
-        # Handle content (can be string or list)
-        if isinstance(msg.content, str):
-            proto_msg.text_content = msg.content
-        # For list content, we'd need to convert to structured_content
-        # but for now, just convert to string representation
-        elif isinstance(msg.content, list):
-            # Convert list of content to string for now
-            text_parts = []
-            for content_part in msg.content:
-                if isinstance(content_part, TextContent):
-                    text_parts.append(content_part.text)
-            proto_msg.text_content = "\n".join(text_parts)
-
-        # Optional fields
-        if msg.name:
-            proto_msg.name = msg.name
-        if msg.otid:
-            proto_msg.otid = msg.otid
-        if msg.sender_id:
-            proto_msg.sender_id = msg.sender_id
-        if msg.group_id:
-            proto_msg.group_id = msg.group_id
-        if msg.external_message_id:
-            proto_msg.external_message_id = msg.external_message_id
-        if msg.message_occurred_at:
-            proto_msg.message_occurred_at = msg.message_occurred_at
-
-        proto_input_messages.append(proto_msg)
-
     # Build the QueueMessage
     queue_msg = QueueMessage()
 
     queue_msg.client_id = actor.id
 
     queue_msg.agent_id = agent_id
-    queue_msg.input_messages.extend(proto_input_messages)
+    queue_msg.messages.extend(_dict_message_to_proto(m) for m in (messages or []))
 
     # Optional fields
     if chaining is not None:
@@ -216,52 +321,6 @@ async def put_messages(
     if summarize:
         queue_msg.summarize = summarize
 
-    # WHY TWO MESSAGE ARRAYS (source_messages vs input_messages)?
-    #
-    # input_messages (field 3) carries the PACKED message for agent processing.
-    # The add_memory handler flattens all conversation turns into a single
-    # MessageCreate with [USER]/[ASSISTANT] text markers — this is what the
-    # MetaAgent and sub-agents consume. Per-message identity (role, external_message_id,
-    # occurred_at) is lost during that flattening.
-    #
-    # source_messages (field 24) carries the ORIGINAL per-turn messages so that
-    # _persist_memory_source() can store them individually in the source_messages
-    # DB table with their per-message metadata intact. These are never used for
-    # agent processing.
-    #
-    # This duplication exists because the flattening happens before enqueue and
-    # we can't change that without reworking how agents consume messages. A future
-    # refactor could move the flattening into the MetaAgent itself, eliminating
-    # the need for two copies.
-    if source_messages:
-        for msg_dict in source_messages:
-            proto_src_msg = ProtoMessageCreate()
-            role = msg_dict.get("role", "user")
-            if role == "user":
-                proto_src_msg.role = ProtoMessageCreate.ROLE_USER
-            elif role == "system":
-                proto_src_msg.role = ProtoMessageCreate.ROLE_SYSTEM
-            elif role == "assistant":
-                proto_src_msg.role = ProtoMessageCreate.ROLE_ASSISTANT
-            else:
-                proto_src_msg.role = ProtoMessageCreate.ROLE_UNSPECIFIED
-
-            content = msg_dict.get("content", "")
-            if isinstance(content, str):
-                proto_src_msg.text_content = content
-            elif isinstance(content, list):
-                text_parts = [p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text"]
-                proto_src_msg.text_content = "\n".join(text_parts)
-
-            if msg_dict.get("external_message_id"):
-                proto_src_msg.external_message_id = msg_dict["external_message_id"]
-            if msg_dict.get("occurred_at"):
-                proto_src_msg.message_occurred_at = msg_dict["occurred_at"]
-            if msg_dict.get("metadata"):
-                proto_src_msg.message_metadata.update(msg_dict["metadata"])
-
-            queue_msg.source_messages.append(proto_src_msg)
-
     # Serialize direct_writes — each entry is {memory_type: str, payload: dict}.
     # The worker deserializes these back into dicts and passes them to the
     # meta-agent, which short-circuits LLM dispatch when set.
@@ -277,9 +336,9 @@ async def put_messages(
 
     # Send to queue
     logger.debug(
-        "Sending message to queue: agent_id=%s, input_messages_count=%s, occurred_at=%s",
+        "Sending message to queue: agent_id=%s, messages_count=%s, occurred_at=%s",
         agent_id,
-        len(input_messages),
+        len(messages or []),
         occurred_at,
     )
     await queue.save(queue_msg)

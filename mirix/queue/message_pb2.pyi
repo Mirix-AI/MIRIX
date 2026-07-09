@@ -41,6 +41,7 @@ class QueueMessage(_message.Message):
         "source_messages",
         "direct_writes",
         "tid",
+        "messages",
     )
     CLIENT_ID_FIELD_NUMBER: _ClassVar[int]
     AGENT_ID_FIELD_NUMBER: _ClassVar[int]
@@ -68,6 +69,7 @@ class QueueMessage(_message.Message):
     SOURCE_MESSAGES_FIELD_NUMBER: _ClassVar[int]
     DIRECT_WRITES_FIELD_NUMBER: _ClassVar[int]
     TID_FIELD_NUMBER: _ClassVar[int]
+    MESSAGES_FIELD_NUMBER: _ClassVar[int]
     client_id: str
     agent_id: str
     input_messages: _containers.RepeatedCompositeFieldContainer[MessageCreate]
@@ -94,6 +96,7 @@ class QueueMessage(_message.Message):
     source_messages: _containers.RepeatedCompositeFieldContainer[MessageCreate]
     direct_writes: _containers.RepeatedCompositeFieldContainer[DirectMemoryWrite]
     tid: str
+    messages: _containers.RepeatedCompositeFieldContainer[MessageCreate]
     def __init__(
         self,
         client_id: _Optional[str] = ...,
@@ -122,6 +125,7 @@ class QueueMessage(_message.Message):
         source_messages: _Optional[_Iterable[_Union[MessageCreate, _Mapping]]] = ...,
         direct_writes: _Optional[_Iterable[_Union[DirectMemoryWrite, _Mapping]]] = ...,
         tid: _Optional[str] = ...,
+        messages: _Optional[_Iterable[_Union[MessageCreate, _Mapping]]] = ...,
     ) -> None: ...
 
 class User(_message.Message):

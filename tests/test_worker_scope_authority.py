@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from google.protobuf.struct_pb2 import Struct
 
-from mirix.errors import ProviderPermanentError
+from mirix.errors import QueueMessageRejectedError
 from mirix.queue.message_pb2 import QueueMessage
 from mirix.queue.worker import QueueWorker
 
@@ -83,11 +83,11 @@ async def test_worker_overwrites_forged_inbound_scope():
 @pytest.mark.asyncio
 async def test_worker_rejects_client_without_write_scope():
     """A client with no write_scope is a deterministic misconfiguration — the
-    worker raises a permanent error (so it dead-letters, not retries) and never
-    calls send_messages."""
+    worker refuses the message (QueueMessageRejectedError classifies PERMANENT,
+    so it dead-letters, not retries) and never calls send_messages."""
     worker, send_spy, user = _make_worker(write_scope=None)
 
-    with pytest.raises(ProviderPermanentError, match="no write_scope"):
+    with pytest.raises(QueueMessageRejectedError, match="no write_scope"):
         await _run(worker, user, _build_message())
 
     send_spy.assert_not_called()

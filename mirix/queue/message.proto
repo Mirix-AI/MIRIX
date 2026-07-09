@@ -16,7 +16,13 @@ message QueueMessage {
   // Required agent identifier
   string agent_id = 2;
 
-  // List of input messages to send
+  // LEGACY: packed/flattened message for agent processing, produced by the
+  // old pre-queue flattening step. New producers should use `messages`
+  // (field 27) instead — the worker now performs flattening itself. Kept
+  // for backward compatibility with producers that haven't migrated and
+  // messages already in flight during rollout; the worker falls back to
+  // this field (paired with `source_messages`, field 24) when `messages`
+  // is empty.
   repeated MessageCreate input_messages = 3;
 
   // Optional chaining flag
@@ -82,9 +88,11 @@ message QueueMessage {
   // Opt-in async summary generation
   optional bool summarize = 23;
 
-  // Original per-turn messages with per-message metadata (external_message_id, occurred_at).
-  // These are used for source_message persistence only, not for agent processing.
-  // The input_messages field (field 3) carries the packed/flattened messages for the agent.
+  // LEGACY: original per-turn messages, paired with `input_messages` (field 3)
+  // under the old producer-side-flattening scheme. New producers should use
+  // `messages` (field 27) instead, which carries the per-turn messages once;
+  // the worker derives both the packed agent-input and the source-message
+  // records from it. Kept for backward compatibility — see field 3.
   repeated MessageCreate source_messages = 24;
 
   // Direct memory writes — bypasses LLM dispatch at the meta-agent.
@@ -100,6 +108,20 @@ message QueueMessage {
   // active trace). The worker re-enters the logging context with this value
   // so all worker/agent log lines carry it, and stamps it as a span attribute.
   optional string tid = 26;
+
+  // ========== UNIFIED PER-TURN MESSAGES (single wire copy) ==========
+  // The canonical list of conversation turns, sent exactly once. Replaces
+  // the legacy input_messages (field 3) + source_messages (field 24) pair:
+  // the worker flattens this into a single packed message for agent
+  // processing AND persists these per-turn entries to the source_messages
+  // table, instead of requiring the producer to send both shapes. Each
+  // entry's `role` may be "user", "system", or "assistant" (unlike
+  // input_messages' packed role, which collapses to one value).
+  //
+  // Producers should populate this field. When empty, the worker falls
+  // back to the legacy input_messages/source_messages pair for backward
+  // compatibility with not-yet-migrated producers.
+  repeated MessageCreate messages = 27;
 }
 
 // User representation

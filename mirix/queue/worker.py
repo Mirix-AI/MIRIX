@@ -3,9 +3,12 @@ Background worker that consumes messages from the queue.
 Runs as an asyncio.Task in the main event loop (async-native).
 
 Save dispatch is unified across all 3 run modes (numaflow / kafka /
-in-memory) via `error_policy.dispatch_save`. Each mode does the same
-thing: receive a message, run the save under process_with_policy, route
-the verdict through the single finalize chokepoint.
+in-memory) via `dispatch_incoming_message` (this file) →
+`error_policy.dispatch_save`. Each mode does the same thing: receive a
+message, normalize/validate it (filter_tags shape, memory_source_id/tid
+backfill, malformed → permanent refusal), run the save under
+process_with_policy, route the verdict through the single finalize
+chokepoint.
 
 * numaflow (external) — process_external_message in queue/__init__.py.
 * internal kafka manual / in-memory sim — this file's BatchQueueWorker.
@@ -61,6 +64,7 @@ from mirix.queue.batch import process_batch
 from mirix.queue.error_policy import dispatch_save
 from mirix.queue.message_pb2 import QueueMessage
 from mirix.services.user_manager import UserManager
+from mirix.utils import flatten_messages_for_agent
 
 if TYPE_CHECKING:
     from mirix.schemas.client import Client
@@ -94,6 +98,68 @@ def reconcile_user_org_to_actor(user, actor):
     if not actor_org or user.organization_id == actor_org:
         return user
     return user.model_copy(update={"organization_id": actor_org})
+
+
+async def dispatch_incoming_message(worker: "QueueWorker", message: QueueMessage) -> None:
+    """Shared consume-side entry for ALL THREE run modes (numaflow-external,
+    internal kafka manual, in-memory sim).
+
+    Normalizes/validates the incoming message (filter_tags/block_filter_tags
+    canonicalization, memory_source_id + tid backfill — the work that used to
+    exist only at the ECMS HTTP layer) and then runs it under the
+    `dispatch_save` chokepoint. A message that fails validation is refused:
+    a refused-to-process Langfuse span is emitted and a
+    `QueueMessageRejectedError` (classified PERMANENT) dead-letters it via the
+    same finalize path as any other permanent failure.
+
+    Living here (not in the external consumer) is the point: the internal
+    kafka-manual worker consumes the SAME topic a direct producer writes to,
+    so the normalization contract must hold regardless of which consumer
+    topology is deployed.
+    """
+    from mirix.queue.queue_util import normalize_and_validate_incoming_message
+
+    normalization_error: Optional[ValueError] = None
+    try:
+        normalize_and_validate_incoming_message(message)
+    except ValueError as e:
+        normalization_error = e
+        logger.error(
+            "Rejecting malformed queue message: agent_id=%s, memory_source_id=%s: %s",
+            message.agent_id,
+            message.memory_source_id if message.HasField("memory_source_id") else None,
+            e,
+        )
+
+    memory_source_id = message.memory_source_id if message.HasField("memory_source_id") else None
+
+    async def _run_step() -> None:
+        if normalization_error is not None:
+            # Raised HERE (inside the dispatch_save-wrapped step) rather than
+            # before it, so a deterministically-malformed message still goes
+            # through classify() -> PERMANENT -> finalize_source, and the
+            # consumer acks it instead of redelivering it forever.
+            from mirix.errors import QueueMessageRejectedError
+            from mirix.observability import restore_trace_from_queue_message
+            from mirix.observability.skip_spans import emit_refused_to_process_span
+
+            # The per-message processing (which normally restores trace
+            # context) never runs on this path, so restore it here first —
+            # otherwise the refusal span can't attach to the message's trace.
+            # dispatch_save clears the context after finalize, as usual.
+            restore_trace_from_queue_message(message)
+            emit_refused_to_process_span(
+                reason="malformed-message",
+                metadata={
+                    "agent_id": message.agent_id,
+                    "memory_source_id": (message.memory_source_id if message.HasField("memory_source_id") else None),
+                    "error": str(normalization_error),
+                },
+            )
+            raise QueueMessageRejectedError(f"Malformed queue message: {normalization_error}") from normalization_error
+        await worker.process_external_message(message)
+
+    await dispatch_save(_run_step, memory_source_id=memory_source_id)
 
 
 class QueueWorker:
@@ -217,13 +283,18 @@ class QueueWorker:
 
     async def process_external_message(self, message: QueueMessage) -> None:
         """
-        Process a message that was consumed by an external Kafka consumer.
+        Process one already-deserialized QueueMessage.
+
+        Named for its original (Numaflow/external-consumer) call site, but it
+        is the per-message processing entry for every run mode — the shared
+        `dispatch_incoming_message` funnel calls it for external, internal
+        kafka manual, and in-memory messages alike.
 
         Args:
-            message: QueueMessage protobuf already consumed from Kafka
+            message: QueueMessage protobuf already consumed from the transport
         """
         logger.debug(
-            "Processing externally consumed message: agent_id=%s, user_id=%s",
+            "Processing consumed message: agent_id=%s, user_id=%s",
             message.agent_id,
             message.user_id if message.HasField("user_id") else "None",
         )
@@ -240,9 +311,9 @@ class QueueWorker:
 
             if server is None:
                 logger.warning(
-                    "No server available - skipping message: agent_id=%s, input_messages_count=%s",
+                    "No server available - skipping message: agent_id=%s, message_count=%s",
                     message.agent_id,
-                    len(message.input_messages),
+                    len(message.messages) or len(message.input_messages),
                 )
                 return
 
@@ -254,16 +325,67 @@ class QueueWorker:
 
             client_id = message.client_id if message.client_id else None
             if not client_id:
-                raise ValueError(f"Queue message for agent {message.agent_id} missing required client_id")
+                from mirix.errors import QueueMessageRejectedError
+                from mirix.observability.skip_spans import emit_refused_to_process_span
 
-            input_messages = [self._convert_proto_message_to_pydantic(msg) for msg in message.input_messages]
+                # Missing client_id is a deterministic producer bug (never
+                # resolvable by retrying) — refuse and dead-letter, same
+                # pattern as the no-write-scope refusal below, rather than a
+                # bare ValueError which error_policy.classify() would default
+                # to Transient and burn a full retry cycle first.
+                emit_refused_to_process_span(
+                    reason="missing-client-id",
+                    metadata={
+                        "agent_id": message.agent_id,
+                        "memory_source_id": (
+                            message.memory_source_id if message.HasField("memory_source_id") else None
+                        ),
+                    },
+                )
+                raise QueueMessageRejectedError(
+                    f"Queue message for agent {message.agent_id} missing required client_id"
+                )
+
+            # Prefer the unified `messages` field (single per-turn wire copy,
+            # see message.proto). The worker derives BOTH the packed
+            # agent-input and the source_messages provenance records from it.
+            # Falls back to the legacy input_messages (already packed) +
+            # source_messages (original per-turn) pair for producers that
+            # haven't migrated / messages already in flight during rollout.
+            if message.messages:
+                source_message_dicts = [self._convert_proto_source_message_to_dict(msg) for msg in message.messages]
+                input_messages = flatten_messages_for_agent(source_message_dicts)
+            else:
+                input_messages = [self._convert_proto_message_to_pydantic(msg) for msg in message.input_messages]
+                source_message_dicts = (
+                    [self._convert_proto_source_message_to_dict(msg) for msg in message.source_messages]
+                    if message.source_messages
+                    else None
+                )
+
             chaining = message.chaining if message.HasField("chaining") else True
             user_id = message.user_id if message.HasField("user_id") else None
 
             async def _resolve_actor_and_user():
                 actor = await server.client_manager.get_client_by_id(client_id)
                 if not actor:
-                    raise ValueError(f"Client with id={client_id} not found in database")
+                    from mirix.errors import QueueMessageRejectedError
+                    from mirix.observability.skip_spans import emit_refused_to_process_span
+
+                    # A client_id that doesn't resolve is deterministic
+                    # (retrying the same lookup won't make the row appear) —
+                    # refuse and dead-letter immediately instead of defaulting
+                    # to Transient and burning a retry cycle.
+                    emit_refused_to_process_span(
+                        reason="client-not-found",
+                        metadata={
+                            "client_id": client_id,
+                            "memory_source_id": (
+                                message.memory_source_id if message.HasField("memory_source_id") else None
+                            ),
+                        },
+                    )
+                    raise QueueMessageRejectedError(f"Client with id={client_id} not found in database")
 
                 user_manager = UserManager()
                 if user_id:
@@ -319,7 +441,7 @@ class QueueWorker:
             # raise a permanent error to dead-letter the message rather than burning
             # transient retries.
             if actor.write_scope is None:
-                from mirix.errors import ProviderPermanentError
+                from mirix.errors import QueueMessageRejectedError
                 from mirix.observability.skip_spans import (
                     emit_refused_to_process_span,
                 )
@@ -342,7 +464,7 @@ class QueueWorker:
                     actor.id,
                     message.memory_source_id if message.HasField("memory_source_id") else None,
                 )
-                raise ProviderPermanentError(f"Client {actor.id} has no write_scope - cannot create memories")
+                raise QueueMessageRejectedError(f"Client {actor.id} has no write_scope - cannot create memories")
             if filter_tags is None:
                 filter_tags = {}
             filter_tags["scope"] = actor.write_scope
@@ -393,15 +515,12 @@ class QueueWorker:
             summary = message.summary if hasattr(message, "summary") and message.HasField("summary") else None
             summarize = message.summarize if hasattr(message, "summarize") and message.HasField("summarize") else False
 
-            # Extract original per-turn messages for source_message persistence.
-            #
-            # These are converted to plain dicts (not Pydantic MessageCreate) because
-            # MessageCreate.role is Literal["user", "system"] and can't hold "assistant".
-            # The dicts go straight to _persist_memory_source() → normalize_message()
-            # which accepts dicts with string roles.
-            source_messages = None
-            if hasattr(message, "source_messages") and message.source_messages:
-                source_messages = [self._convert_proto_source_message_to_dict(msg) for msg in message.source_messages]
+            # source_message_dicts was already derived up front (from the unified
+            # `messages` field, or the legacy source_messages field as a fallback)
+            # alongside input_messages — see the comment there. These dicts go
+            # straight to _persist_memory_source() → normalize_message(), which
+            # accepts dicts with any string role (including "assistant", which
+            # Pydantic MessageCreate.role can't hold).
 
             # Extract direct_writes — each entry tells the meta-agent to call
             # the registered handler for memory_type instead of dispatching
@@ -451,7 +570,7 @@ class QueueWorker:
                     source_metadata=source_metadata,
                     summary=summary,
                     summarize=summarize,
-                    source_messages=source_messages,
+                    source_messages=source_message_dicts,
                     direct_writes=direct_writes,
                 )
 
@@ -665,16 +784,11 @@ class BatchQueueWorker(QueueWorker):
         )
 
         async def _process(message: QueueMessage) -> None:
-            # SAME per-message chokepoint the serial loop used: run the agent
-            # step under dispatch_save (classify + bounded retry + single
-            # finalize). memory_source_id is extracted per message exactly as
-            # before.
-            source_id = message.memory_source_id if message.HasField("memory_source_id") else None
-
-            async def _run() -> None:
-                await self._process_message_async(message)
-
-            await dispatch_save(_run, memory_source_id=source_id)
+            # SAME funnel as the external consumer: normalize/validate, then
+            # run the agent step under dispatch_save (classify + bounded retry
+            # + single finalize). See dispatch_incoming_message for why the
+            # internal paths must normalize too.
+            await dispatch_incoming_message(self, message)
 
         await process_batch(
             batch,

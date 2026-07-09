@@ -26,8 +26,6 @@ from mirix.queue.message_pb2 import User as ProtoUser
 from mirix.queue.queue_util import put_messages
 from mirix.queue.worker import BatchQueueWorker, QueueWorker
 from mirix.schemas.client import Client
-from mirix.schemas.enums import MessageRole
-from mirix.schemas.message import MessageCreate
 from mirix.schemas.organization import Organization as PydanticOrganization
 from mirix.services.organization_manager import OrganizationManager
 
@@ -99,10 +97,10 @@ def sample_client(ensure_organization):
 
 @pytest.fixture
 def sample_messages():
-    """Create sample MessageCreate list"""
+    """Create sample per-turn message dicts (the put_messages(messages=...) wire shape)."""
     return [
-        MessageCreate(role=MessageRole.user, content="Hello, how are you?"),
-        MessageCreate(role=MessageRole.user, content="What's the weather like?"),
+        {"role": "user", "content": "Hello, how are you?"},
+        {"role": "user", "content": "What's the weather like?"},
     ]
 
 
@@ -698,7 +696,7 @@ class TestWorkerPartitionAssignment:
                 await put_messages(
                     actor=sample_client,
                     agent_id=f"agent-{user_id}-{i}",
-                    input_messages=sample_messages,
+                    messages=sample_messages,
                     user_id=user_id,
                 )
 
@@ -723,12 +721,12 @@ class TestQueueUtil:
         manager = clean_manager
         await manager.initialize()
 
-        await put_messages(actor=sample_client, agent_id="agent-789", input_messages=sample_messages)
+        await put_messages(actor=sample_client, agent_id="agent-789", messages=sample_messages)
 
         msg = await manager._queue.get(timeout=1.0)
         assert msg.agent_id == "agent-789"
         assert msg.client_id == sample_client.id
-        assert len(msg.input_messages) == len(sample_messages)
+        assert len(msg.messages) == len(sample_messages)
 
         await manager.cleanup()
 
@@ -740,7 +738,7 @@ class TestQueueUtil:
         await put_messages(
             actor=sample_client,
             agent_id="agent-789",
-            input_messages=sample_messages,
+            messages=sample_messages,
             chaining=False,
             user_id="user-custom",
             verbose=True,
@@ -764,7 +762,7 @@ class TestQueueUtil:
         await put_messages(
             actor=sample_client,
             agent_id="agent-789",
-            input_messages=sample_messages,
+            messages=sample_messages,
             block_filter_tags=block_filter_tags,
         )
 
@@ -781,15 +779,15 @@ class TestQueueUtil:
         await manager.initialize()
 
         messages = [
-            MessageCreate(role=MessageRole.user, content="User message"),
-            MessageCreate(role=MessageRole.system, content="System message"),
+            {"role": "user", "content": "User message"},
+            {"role": "system", "content": "System message"},
         ]
 
-        await put_messages(actor=sample_client, agent_id="agent-789", input_messages=messages)
+        await put_messages(actor=sample_client, agent_id="agent-789", messages=messages)
 
         msg = await manager._queue.get(timeout=1.0)
-        assert msg.input_messages[0].role == ProtoMessageCreate.ROLE_USER
-        assert msg.input_messages[1].role == ProtoMessageCreate.ROLE_SYSTEM
+        assert msg.messages[0].role == ProtoMessageCreate.ROLE_USER
+        assert msg.messages[1].role == ProtoMessageCreate.ROLE_SYSTEM
 
         await manager.cleanup()
 
@@ -853,7 +851,7 @@ class TestQueueIntegration:
         await put_messages(
             actor=sample_client,
             agent_id="agent-integration",
-            input_messages=sample_messages,
+            messages=sample_messages,
         )
 
         await asyncio.sleep(1.0)
@@ -876,7 +874,7 @@ class TestQueueIntegration:
         await put_messages(
             actor=sample_client,
             agent_id="agent-block-tags",
-            input_messages=sample_messages,
+            messages=sample_messages,
             block_filter_tags=block_filter_tags,
         )
 
@@ -884,7 +882,10 @@ class TestQueueIntegration:
 
         assert mock_server.send_messages.call_count >= 1
         call_args = mock_server.send_messages.call_args
-        assert call_args.kwargs.get("block_filter_tags") == block_filter_tags
+        # The consume-side funnel canonicalizes tag values to lists (same
+        # shape ECMS's request validator produces), so scalars arrive at the
+        # agent as single-element lists.
+        assert call_args.kwargs.get("block_filter_tags") == {"env": ["staging"], "team": ["platform"]}
 
         await manager.cleanup()
 
@@ -897,7 +898,7 @@ class TestQueueIntegration:
             await put_messages(
                 actor=sample_client,
                 agent_id=f"agent-{i}",
-                input_messages=sample_messages,
+                messages=sample_messages,
             )
 
         await asyncio.sleep(2.0)
@@ -914,7 +915,7 @@ class TestQueueIntegration:
 
         await initialize_queue(mock_server)
 
-        await put_messages(actor=sample_client, agent_id="agent-error", input_messages=sample_messages)
+        await put_messages(actor=sample_client, agent_id="agent-error", messages=sample_messages)
 
         await asyncio.sleep(1.0)
 
@@ -944,7 +945,7 @@ class TestQueuePerformance:
             await put_messages(
                 actor=sample_client,
                 agent_id=f"agent-{i}",
-                input_messages=sample_messages,
+                messages=sample_messages,
             )
 
         elapsed = time.time() - start
@@ -972,7 +973,7 @@ class TestQueuePerformance:
                 await put_messages(
                     actor=sample_client,
                     agent_id=f"agent-{task_id}-{i}",
-                    input_messages=sample_messages,
+                    messages=sample_messages,
                 )
 
         tasks = [asyncio.create_task(enqueue_messages(i, 20)) for i in range(5)]

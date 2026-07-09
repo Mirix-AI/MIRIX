@@ -1904,3 +1904,39 @@ def convert_message_to_mirix_message(
         raise ValueError(f"Invalid message type: {type(message)}")
 
     return input_messages
+
+
+def flatten_messages_for_agent(messages: List[dict]) -> List[MessageCreate]:
+    """Pack multi-turn conversation messages into a single agent-input MessageCreate.
+
+    Moved here (consumer side) from the old pre-queue API handler: producers now
+    send per-turn messages once (QueueMessage.messages), and the worker calls this
+    right before the agent step to derive the flattened form the MetaAgent and
+    sub-agents consume. Per-message identity (role, external_message_id,
+    occurred_at) is intentionally lost here — that identity is preserved
+    separately via the same `messages` list converted to source_message dicts
+    for provenance (see worker._convert_proto_source_message_to_dict).
+
+    Each turn becomes a `[USER]`/`[ASSISTANT]` text marker followed by its
+    content — matching the exact behavior of the old pre-queue flattening in
+    rest_api.py, including its "role == user ? [USER] : [ASSISTANT]" ternary
+    (any non-"user" role, e.g. "system", is marked [ASSISTANT]). Preserved
+    as-is here rather than "fixed" so this refactor doesn't also change
+    save-path semantics for existing traffic.
+    """
+    if not messages:
+        return []
+
+    new_message: List[dict] = []
+    for msg in messages:
+        new_message.append({"type": "text", "text": "[USER]" if msg.get("role") == "user" else "[ASSISTANT]"})
+
+        content = msg.get("content", "")
+        if isinstance(content, str):
+            new_message.append({"type": "text", "text": content})
+        elif isinstance(content, list):
+            new_message.extend(content)
+        else:
+            raise ValueError(f"Invalid content type: {type(content)}")
+
+    return convert_message_to_mirix_message(new_message)

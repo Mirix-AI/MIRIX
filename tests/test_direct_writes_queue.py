@@ -24,7 +24,7 @@ async def test_put_messages_serializes_direct_writes(monkeypatch):
     await put_messages(
         actor=_Actor(),
         agent_id="agent-1",
-        input_messages=[],
+        messages=[],
         chaining=None,
         user_id="user-1",
         verbose=False,
@@ -41,7 +41,6 @@ async def test_put_messages_serializes_direct_writes(monkeypatch):
         source_metadata={"display_id": "D1"},
         summary=None,
         summarize=False,
-        source_messages=None,
         direct_writes=[
             {
                 "memory_type": "episodic",

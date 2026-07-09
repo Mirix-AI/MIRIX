@@ -98,25 +98,24 @@ async def process_external_message(raw_message: bytes) -> None:
     worker = workers[0]
 
     from mirix.queue.config import KAFKA_SERIALIZATION_FORMAT
-    from mirix.queue.error_policy import dispatch_save
     from mirix.queue.queue_util import deserialize_queue_message
+    from mirix.queue.worker import dispatch_incoming_message
 
     queue_message = deserialize_queue_message(raw_message, format=KAFKA_SERIALIZATION_FORMAT)
-
-    memory_source_id = queue_message.memory_source_id if queue_message.HasField("memory_source_id") else None
 
     logger.debug(
         "Processing external message (%s format): agent_id=%s, user_id=%s, memory_source_id=%s",
         KAFKA_SERIALIZATION_FORMAT,
         queue_message.agent_id,
         queue_message.user_id if queue_message.HasField("user_id") else "None",
-        memory_source_id,
+        queue_message.memory_source_id if queue_message.HasField("memory_source_id") else None,
     )
 
-    async def _run_step() -> None:
-        await worker.process_external_message(queue_message)
-
-    await dispatch_save(_run_step, memory_source_id=memory_source_id)
+    # Normalize/validate + dispatch through the shared funnel — the same one
+    # the internal kafka-manual and in-memory consumers use, so the
+    # producer-facing contract (filter_tags shape, id/tid backfill,
+    # malformed-message dead-letter) holds identically in every run mode.
+    await dispatch_incoming_message(worker, queue_message)
 
 
 __all__ = ["initialize_queue", "save", "process_external_message", "QueueMessage"]

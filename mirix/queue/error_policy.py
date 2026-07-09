@@ -57,6 +57,7 @@ from mirix.errors import (
     LLMUnprocessableEntityError,
     ProviderPermanentError,
     ProviderTransientError,
+    QueueMessageRejectedError,
 )
 from mirix.observability.context import clear_tid, clear_trace_context
 from mirix.settings import settings
@@ -110,6 +111,7 @@ _PERMANENT_TYPES: tuple[type[BaseException], ...] = (
     LLMPermissionDeniedError,  # 403
     LLMChainingExhaustedError,  # meta-agent LLM emitted malformed calls past budget
     ProviderPermanentError,  # provider boundary: auth, bad request, etc.
+    QueueMessageRejectedError,  # MIRIX core: deterministic producer-caused message defect
     IntegrityError,  # SQLAlchemy: constraint/unique/foreign-key violations
     DataError,  # SQLAlchemy: bad input shape (invalid syntax, range)
 )

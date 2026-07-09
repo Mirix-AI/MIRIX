@@ -213,6 +213,21 @@ class ProviderNotFoundError(ProviderPermanentError):
     pass
 
 
+class QueueMessageRejectedError(MirixError):
+    """An inbound queue message was deterministically rejected before processing.
+
+    MIRIX-core vocabulary (NOT part of the provider-boundary Provider*Error
+    translation contract) for producer-caused message defects the consumer can
+    prove will never succeed on retry: missing/unresolvable client_id,
+    malformed filter_tags shape, etc. `error_policy.classify()` maps it to
+    `Bucket.PERMANENT` so the message dead-letters immediately instead of
+    burning a transient retry cycle. Raise sites should pair it with
+    `emit_refused_to_process_span()` so the refusal is visible in Langfuse.
+    """
+
+    pass
+
+
 class RelationalProviderRequiredError(ProviderTransientError):
     """A relational provider was required but none is currently registered.
 
