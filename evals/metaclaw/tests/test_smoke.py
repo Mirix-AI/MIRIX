@@ -12,9 +12,8 @@ These tests exercise the *runner* end-to-end against:
     the runner's parsing path is exercised end-to-end.
 
 What they assert: the plumbing (env-var composition, dataset slicing, output
-tree shape, ``run.meta.json`` shape, ``reports.md`` rendering for ``--arm
-both``).  Accuracy numbers are deterministic constants from the stub bench —
-the tests do NOT assert on benchmark correctness.
+tree shape, ``run.meta.json`` shape). Accuracy numbers are deterministic
+constants from the stub bench — the tests do NOT assert on benchmark correctness.
 
 Quarantined behind ``@pytest.mark.integration``; the project's ``pytest.ini``
 default-skips this marker.  Run explicitly:
@@ -38,7 +37,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from evals.metaclaw.runner import RunResult, run_arm, run_both
+from evals.metaclaw.runner import RunResult, run_arm
 
 
 # ---------------------------------------------------------------------------
@@ -86,6 +85,8 @@ def _make_stub_bench_runner(rc: int = 0):
         retry: int = 1,
         workers: int = 1,
         max_rounds: Optional[int] = None,
+        memory_rounds: bool = False,
+        proxy_port: Optional[int] = None,
     ) -> int:
         captured["tests_used"] = tests_used
         captured["out_dir"] = out_dir
@@ -93,6 +94,8 @@ def _make_stub_bench_runner(rc: int = 0):
         captured["retry"] = retry
         captured["workers"] = workers
         captured["max_rounds"] = max_rounds
+        captured["memory_rounds"] = memory_rounds
+        captured["proxy_port"] = proxy_port
         # Mirror the real bench's per-day shape: one nested dir, one report.json.
         report_dir = out_dir / "infer_stub"
         report_dir.mkdir(parents=True, exist_ok=True)
@@ -170,17 +173,17 @@ def test_metaclaw_arm_smoke(stub_llm: str, tmp_path: Path) -> None:
 
 
 @pytest.mark.integration
-def test_mirix_arm_smoke(stub_llm: str, stub_mirix: str, tmp_path: Path) -> None:
-    """``--arm mirix --days 1`` runs against stub LLM + stub MIRIX, produces
+def test_mirix_generic_arm_smoke(stub_llm: str, stub_mirix: str, tmp_path: Path) -> None:
+    """``--arm mirix-generic --days 1`` runs against stub LLM + stub MIRIX, produces
     ``report.json`` and routes the runner through the MIRIX prelude (health
-    probe, user creation, skills reset) against the stub server."""
+    probe, user creation, client/meta-agent setup) against the stub server."""
     starter, captured_proxy = _make_stub_proxy_starter()
     stopper, stopped = _make_stub_proxy_stopper()
     bench, captured_bench = _make_stub_bench_runner(rc=0)
 
     out_dir = tmp_path / "mirix-run"
     result = run_arm(
-        arm="mirix",
+        arm="mirix-generic",
         days=1,
         out_dir=out_dir,
         max_rounds=2,
@@ -198,7 +201,7 @@ def test_mirix_arm_smoke(stub_llm: str, stub_mirix: str, tmp_path: Path) -> None
 
     assert isinstance(result, RunResult)
     assert result.exit_code == 0
-    assert result.arm == "mirix"
+    assert result.arm == "mirix-generic"
     assert result.accuracy == pytest.approx(0.5)
 
     report = next((out_dir / "bench_output").rglob("report.json"), None)
@@ -207,13 +210,14 @@ def test_mirix_arm_smoke(stub_llm: str, stub_mirix: str, tmp_path: Path) -> None
     # MIRIX prelude propagated correct env vars to the proxy / bench.
     bench_env = captured_bench["env"]
     assert bench_env["METACLAW_SKILLS_PROVIDER"] == "mirix"
-    assert bench_env["METACLAW_EVOLVER_PROVIDER"] == "mirix"
+    assert bench_env["METACLAW_EVOLVER_PROVIDER"] == "mirix-generic"
     assert bench_env["METACLAW_MIRIX_BASE_URL"] == stub_mirix
     assert bench_env["METACLAW_MIRIX_USER_ID"].startswith("eval-metaclaw-")
+    assert captured_bench["memory_rounds"] is True
 
     # run.meta.json records the mirix-arm fields.
     meta = json.loads((out_dir / "run.meta.json").read_text())
-    assert meta["arm"] == "mirix"
+    assert meta["arm"] == "mirix-generic"
     assert meta["mirix_url"] == stub_mirix
     assert meta["mirix_user_id"] is not None
     assert meta["exit_code"] == 0
@@ -221,62 +225,6 @@ def test_mirix_arm_smoke(stub_llm: str, stub_mirix: str, tmp_path: Path) -> None
     # Proxy + stopper still ran.
     assert len(captured_proxy) == 1
     assert len(stopped) == 1
-
-
-@pytest.mark.integration
-def test_both_arm_smoke(stub_llm: str, stub_mirix: str, tmp_path: Path) -> None:
-    """``--arm both --days 1`` runs metaclaw then mirix against the SAME sliced
-    dataset and produces a combined ``reports.md``."""
-    starter, captured_proxy = _make_stub_proxy_starter()
-    stopper, _stopped = _make_stub_proxy_stopper()
-    bench, _captured_bench = _make_stub_bench_runner(rc=0)
-
-    out_dir = tmp_path / "both-run"
-    metaclaw_result, mirix_result = run_both(
-        days=1,
-        out_dir=out_dir,
-        max_rounds=2,
-        proxy_starter=starter,
-        proxy_stopper=stopper,
-        bench_runner=bench,
-        mirix_url=stub_mirix,
-        extra_env={
-            "OPENROUTER_API_KEY": "sk-stub",
-            "BENCHMARK_API_KEY": "sk-stub",
-            "BENCHMARK_BASE_URL": stub_llm + "/v1",
-            "BENCHMARK_MODEL": "stub/model",
-        },
-    )
-
-    # Both arms succeeded with the stub bench rc=0.
-    assert metaclaw_result.exit_code == 0
-    assert mirix_result.exit_code == 0
-    assert metaclaw_result.arm == "metaclaw"
-    assert mirix_result.arm == "mirix"
-
-    # reports.md exists at the parent run directory.
-    reports_md = out_dir / "reports.md"
-    assert reports_md.exists(), "--arm both must produce reports.md at parent"
-    text = reports_md.read_text()
-    assert "metaclaw" in text.lower()
-    assert "mirix" in text.lower()
-
-    # The shared sliced dataset lives at parent/all_tests_used.json.
-    shared = out_dir / "all_tests_used.json"
-    assert shared.exists()
-    # Both arms each have their own per-arm dir with a copy of the slice.
-    arm_dirs = [d for d in out_dir.iterdir() if d.is_dir()]
-    assert any(d.name.startswith("metaclaw-") for d in arm_dirs)
-    assert any(d.name.startswith("mirix-") for d in arm_dirs)
-
-    # Each arm produced a report.json.
-    for arm_dir in arm_dirs:
-        report = next((arm_dir / "bench_output").rglob("report.json"), None)
-        assert report is not None, f"missing report.json under {arm_dir}"
-
-    # Proxy started twice (once per arm) — confirms run_both invoked run_arm twice.
-    assert len(captured_proxy) == 2
-
 
 # ---------------------------------------------------------------------------
 # Belt-and-suspenders: confirm no clawdbot/openclaw process was spawned by

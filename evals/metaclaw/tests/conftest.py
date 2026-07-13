@@ -137,16 +137,20 @@ def _build_stub_mirix_app() -> FastAPI:
     Must satisfy:
       - runner._mirix_health_diagnose:        GET /health
       - runner._mirix_create_or_get_user:     POST /users/create_or_get
-      - runner._mirix_reset_user_skills:      POST /v1/skills/reset
-      - MirixSkillManagerAdapter:             GET /memory/search (procedural), POST /v1/skills
-      - MirixEvolverAdapter._preflight:       GET /openapi.json
-      - MirixEvolverAdapter.evolve:           POST /v1/skills/evolve
+      - runner._mirix_ensure_client_write_scope: PATCH /clients/{id}
+      - runner._mirix_ensure_meta_agent:      POST /agents/meta/initialize
+      - MirixGenericMemoryAdapter:            GET /agents, POST /memory/add_sync
+      - MirixSkillsAdapter:                   GET /memory/search
     """
     app = FastAPI()
 
     @app.get("/health")
     async def health():
-        return {"status": "ok"}
+        return {
+            "status": "healthy",
+            "skill_trigger_session_threshold": 5,
+            "message_retain_last_n_sessions": 5,
+        }
 
     @app.post("/users/create_or_get")
     async def create_or_get(req: Request):
@@ -156,30 +160,41 @@ def _build_stub_mirix_app() -> FastAPI:
 
     @app.get("/memory/search")
     async def search_memory():
-        # Skill retrieval now goes through the unified search interface
-        # (memory_type=procedural). GET /v1/skills was removed.
         return {"results": []}
 
-    @app.post("/v1/skills")
-    async def create_skill(req: Request):
+    @app.patch("/clients/{client_id}")
+    async def patch_client(client_id: str, req: Request):
         body = await req.json()
-        return {"id": "skill-stub-001", **body}
-
-    @app.post("/v1/skills/evolve")
-    async def evolve(req: Request):  # noqa: ARG001
         return {
-            "success": True,
-            "changes": {"created": [], "edited": [], "deleted": []},
-            "summary": {"created_count": 0, "edited_count": 0, "deleted_count": 0},
+            "id": client_id,
+            "client_id": client_id,
+            "write_scope": body.get("write_scope") or "admin",
         }
 
-    @app.post("/v1/skills/reset")
-    async def reset():
-        return {"success": True}
+    @app.post("/clients/create_or_get")
+    async def create_client(req: Request):
+        body = await req.json()
+        cid = body.get("client_id") or "client-stub"
+        return {
+            "id": cid,
+            "client_id": cid,
+            "write_scope": body.get("write_scope") or "admin",
+        }
 
-    # /openapi.json is provided automatically by FastAPI, but the evolver
-    # adapter's preflight specifically looks for the /v1/skills/evolve path in
-    # the openapi document — FastAPI's auto-generated schema includes it.
+    @app.post("/agents/meta/initialize")
+    async def init_meta_agent(req: Request):  # noqa: ARG001
+        return {"id": "agent-meta-stub", "agent_type": "meta_memory_agent"}
+
+    @app.get("/agents")
+    async def list_agents():
+        return [{"id": "agent-meta-stub", "agent_type": "meta_memory_agent"}]
+
+    @app.post("/memory/add_sync")
+    async def add_sync(req: Request):  # noqa: ARG001
+        return {"success": True, "status": "processed", "message_count": 2}
+
+    # /openapi.json is provided automatically by FastAPI and includes the routes
+    # above, which is enough for the generic adapter preflight.
 
     return app
 

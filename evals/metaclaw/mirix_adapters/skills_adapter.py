@@ -3,15 +3,15 @@
 Used by the D6 dispatch in ``evals/metaclaw/vendor/metaclaw/launcher.py`` when
 ``METACLAW_SKILLS_PROVIDER=mirix``.  The MetaClaw paper proxy calls a
 duck-typed ``SkillManager``; this adapter routes the surface to MIRIX REST so
-retrieval (and, in slice #4, evolution) is backed by MIRIX procedural memory.
+retrieval is backed by MIRIX procedural memory.
 Retrieval uses the unified search interface (``GET /memory/search?memory_type=
-procedural``; GET /v1/skills was removed); writes use ``POST /v1/skills``.
+procedural``). Writes are deliberately disabled: procedural memory is learned by
+MIRIX's automatic memory pipeline, not by the eval harness.
 
 Surface mirrors ``evals/metaclaw/vendor/metaclaw/skill_manager.py``:
 
-    retrieve, retrieve_relevant, format_for_conversation, add_skill,
-    add_skills, .skills (property), .generation (attr), get_skill_count,
-    reload, save, close.
+    retrieve, retrieve_relevant, format_for_conversation, add_skill, add_skills,
+    .skills (property), .generation (attr), get_skill_count, reload, save, close.
 
 Category round-trip
 -------------------
@@ -25,10 +25,9 @@ from that prefix so paper's dedup / bucketing logic stays correct.
 
 Errors degrade
 --------------
-``retrieve`` / ``retrieve_relevant`` swallow HTTP errors and return ``[]``
-— the paper proxy must not raise on retrieve.  ``add_skill`` returns False
-on any non-success response (409 included).  ``.skills`` returns an empty
-paper-shape bank on error.
+``retrieve`` / ``retrieve_relevant`` swallow HTTP errors and return ``[]`` — the
+paper proxy must not raise on retrieve. ``add_skill`` / ``add_skills`` are no-ops
+that return False / 0. ``.skills`` returns an empty paper-shape bank on error.
 """
 
 from __future__ import annotations
@@ -199,9 +198,9 @@ class MirixSkillsAdapter:
     ) -> List[dict]:
         """GET /memory/search?memory_type=procedural&query=&limit=&user_id=.
 
-        Skill retrieval via the unified search interface (GET /v1/skills was
-        removed). search_method="" defers to the server's per-type default
-        (procedural -> hybrid, env-overridable). Errors degrade to [].
+        Skill retrieval via the unified search interface. search_method=""
+        defers to the server's per-type default (procedural -> hybrid,
+        env-overridable). Errors degrade to [].
         """
         k = top_k if top_k is not None else self.top_k
         try:
@@ -271,65 +270,27 @@ class MirixSkillsAdapter:
     # ------------------------------------------------------------------ #
 
     def add_skill(self, skill: dict) -> bool:
-        """POST /v1/skills.  Returns True on 2xx, False on 409 / any error.
+        """No-op write hook.
 
-        Maps paper's free-form ``category`` → MIRIX ``entry_type`` enum
-        (``{guide, script, workflow}``).  For categories that don't round-
-        trip cleanly, prefixes ``description`` with ``[paper-category=<orig>] ``
-        so :attr:`skills` and :meth:`retrieve` can recover the original on read.
+        MetaClaw's native ``SkillManager`` exposes this method, but the MIRIX
+        eval path must not write procedural memory directly. MIRIX learns skills
+        from the production conversation-memory pipeline, so external skill rows
+        from the paper evolver are intentionally ignored.
         """
         name = (skill.get("name") or "").strip()
-        if not name:
-            logger.warning("[MirixSkillsAdapter] add_skill called with missing name")
-            return False
-
-        paper_cat = (skill.get("category") or "general").strip()
-        entry_type = _map_paper_category_to_entry_type(paper_cat)
-
-        desc = skill.get("description", "") or ""
-        if paper_cat and paper_cat.lower() not in MIRIX_ENTRY_TYPES:
-            desc = f"{PAPER_CATEGORY_PREFIX}{paper_cat}] {desc}"
-
-        body = {
-            "name": name,
-            "description": desc,
-            "instructions": skill.get("content", "") or "",
-            "entry_type": entry_type,
-            "user_id": self._ensure_user_id(),
-        }
-        try:
-            resp = self._http.post("/v1/skills", json=body)
-        except httpx.HTTPError as e:
-            logger.warning(
-                "[MirixSkillsAdapter] add_skill HTTP error for %s: %s", name, e
-            )
-            return False
-        if resp.status_code == 409:
-            logger.info("[MirixSkillsAdapter] duplicate skill %s (server 409)", name)
-            return False
-        if resp.status_code >= 400:
-            logger.warning(
-                "[MirixSkillsAdapter] add_skill failed for %s: HTTP %d %s",
-                name,
-                resp.status_code,
-                resp.text[:200],
-            )
-            return False
         logger.info(
-            "[MirixSkillsAdapter] added skill %s (entry_type=%s)", name, entry_type
+            "[MirixSkillsAdapter] ignoring add_skill(%r); MIRIX procedural memory "
+            "is learned through /memory/add_sync + automatic trigger",
+            name or "<unnamed>",
         )
-        return True
+        return False
 
     def add_skills(self, new_skills: List[dict], category: str = "general") -> int:
-        """Batch add.  Increments :attr:`generation` once when ≥1 skill added."""
-        added = 0
+        """Batch no-op. MIRIX is the sole procedural-memory writer."""
         for skill in new_skills:
             payload = skill if "category" in skill else {**skill, "category": category}
-            if self.add_skill(payload):
-                added += 1
-        if added > 0:
-            self.generation += 1
-        return added
+            self.add_skill(payload)
+        return 0
 
     # ------------------------------------------------------------------ #
     # .skills property — live MIRIX-backed paper-shape bank               #

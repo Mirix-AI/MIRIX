@@ -149,23 +149,16 @@ def test_run_arm_cleanup_on_bench_exception(tmp_path: Path) -> None:
 
 
 def test_run_arm_mirix_health_check_fails_returns_rc2(tmp_path: Path) -> None:
-    """Slice #3 wires the mirix arm.  When the server is unreachable, the
+    """When the MIRIX server is unreachable, the
     runner returns rc=2 with an informative error rather than raising."""
     result = run_arm(
-        arm="mirix",
+        arm="mirix-generic",
         days=1,
         out_dir=tmp_path / "mirix-bad",
         mirix_url="http://127.0.0.1:1",  # guaranteed unreachable
     )
     assert result.exit_code == 2
     assert result.report_summary.get("error") == "mirix_unreachable"
-
-
-def test_run_arm_rejects_both_arm_directly() -> None:
-    """``--arm both`` is dispatched via :func:`run_both` (slice #5); calling
-    :func:`run_arm` with ``arm='both'`` is a programmer error."""
-    with pytest.raises(ValueError, match="run_both"):
-        run_arm(arm="both", days=1)
 
 
 def test_run_arm_rejects_unknown_arm() -> None:
@@ -253,15 +246,21 @@ def test_run_arm_writes_proxy_yaml_with_skills_only(tmp_path: Path) -> None:
     assert "top_k: 6" in body
 
 
-def test_mirix_arm_raises_skill_top_k_to_10(tmp_path: Path) -> None:
-    """The mirix arm's flat single-bucket retrieve needs a higher top_k to
+def test_mirix_generic_arm_raises_skill_top_k_to_10(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The MIRIX arm's flat single-bucket retrieve needs a higher top_k to
     inject a count comparable to metaclaw's three-bucket retrieve (~8.5 avg).
     The metaclaw arm must stay at paper's default 6."""
+    monkeypatch.setattr(runner, "_mirix_health_diagnose", lambda *_a, **_kw: (True, 200, "ok"))
+    monkeypatch.setattr(runner, "_mirix_create_or_get_user", lambda *_a, **_kw: "user-ok")
+    monkeypatch.setattr(runner, "_mirix_ensure_client_write_scope", lambda *_a, **_kw: True)
+    monkeypatch.setattr(runner, "_mirix_ensure_meta_agent", lambda *_a, **_kw: True)
     starter, captured = _fake_proxy_starter()
     stopper, _ = _fake_proxy_stopper()
     bench, _ = _fake_bench(rc=0)
     run_arm(
-        arm="mirix",
+        arm="mirix-generic",
         days=1,
         out_dir=tmp_path / "mirix_topk",
         proxy_starter=starter,
@@ -275,7 +274,7 @@ def test_mirix_arm_raises_skill_top_k_to_10(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Slice #6: MIRIX health-check fail-fast formatting + reset endpoint
+# MIRIX health-check fail-fast formatting
 # ---------------------------------------------------------------------------
 
 
@@ -322,7 +321,7 @@ def test_run_arm_mirix_bad_url_returns_rc2_under_6s(tmp_path: Path) -> None:
 
     t0 = _time.monotonic()
     result = run_arm(
-        arm="mirix",
+        arm="mirix-generic",
         days=1,
         out_dir=tmp_path / "fast_fail",
         mirix_url="http://127.0.0.1:1",  # guaranteed unreachable
@@ -335,67 +334,6 @@ def test_run_arm_mirix_bad_url_returns_rc2_under_6s(tmp_path: Path) -> None:
     assert "status" in result.report_summary
     assert "detail" in result.report_summary
     assert elapsed < 6.0, f"mirix health-check fail took {elapsed:.2f}s; must be <6s"
-
-
-def test_mirix_reset_user_skills_handles_404(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """404 from /v1/skills/reset must be logged + swallowed (issue-06 §3)."""
-    import urllib.error
-    import urllib.request
-
-    def _fake_urlopen(*a: Any, **kw: Any):  # noqa: ARG001
-        raise urllib.error.HTTPError(
-            url="http://x/v1/skills/reset",
-            code=404,
-            msg="Not Found",
-            hdrs=None,
-            fp=None,
-        )
-
-    monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen)
-    runner._mirix_reset_user_skills("http://127.0.0.1:8531", "user-xyz")
-    out = capsys.readouterr().out
-    assert "MIRIX /v1/skills/reset endpoint not available" in out
-    assert "minting fresh user_id is sufficient" in out
-
-
-def test_mirix_reset_user_skills_handles_success(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """2xx responses log success and return without raising."""
-    import urllib.request
-
-    class _R:
-        status = 200
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a, **kw):
-            return False
-
-    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **kw: _R())
-    runner._mirix_reset_user_skills("http://127.0.0.1:8531", "user-xyz")
-    out = capsys.readouterr().out
-    assert "MIRIX /v1/skills/reset OK" in out
-
-
-def test_mirix_reset_user_skills_handles_connection_error(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """Connection errors are also swallowed (best-effort contract)."""
-    import urllib.error
-    import urllib.request
-
-    def _boom(*a: Any, **kw: Any):  # noqa: ARG001
-        raise urllib.error.URLError("connection refused")
-
-    monkeypatch.setattr(urllib.request, "urlopen", _boom)
-    runner._mirix_reset_user_skills("http://127.0.0.1:8531", "user-xyz")
-    out = capsys.readouterr().out
-    assert "MIRIX /v1/skills/reset failed" in out
-    assert "continuing" in out
 
 
 # ---------------------------------------------------------------------------

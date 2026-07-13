@@ -1,10 +1,10 @@
 """One-shot helper: initialize the MIRIX meta agent on a fresh DB.
 
 The MetaClaw eval assumes a MIRIX server with a pre-initialized meta agent
-(which owns the procedural-memory sub-agent used by /v1/skills/evolve).  A
-freshly-rebuilt DB has none, so /v1/skills/evolve returns
-"No procedural memory agent found".  This script POSTs /agents/meta/initialize
-with an OpenRouter-backed LLM + embedding config matching the eval.
+(which owns the procedural-memory sub-agent used by memory ingestion/search).
+A freshly-rebuilt DB has none, so the production MIRIX memory path cannot
+retrieve procedural memories. This script POSTs /agents/meta/initialize with an
+OpenRouter-backed LLM + embedding config matching the eval.
 
 Usage:
     python -m evals.metaclaw.init_meta_agent            # uses defaults

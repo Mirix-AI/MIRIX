@@ -44,17 +44,15 @@ from src.utils import get_project_root, resolve_path
 # Distill health tracking (FIX7 — silent-swallow defense)
 # ---------------------------------------------------------------------------
 #
-# The C5 records pipeline POSTs one {query, answer} per graded round to the
-# proxy's ``/v1/skills/distill_round``.  That endpoint returns HTTP 200 EVEN ON
-# FAILURE — its body is ``{"ok": false, "error": ...}`` when the downstream
-# MIRIX distiller errored (api_server.py:1055-1058), and the
-# ``MirixEvolverAdapter`` likewise returns ``{"ok": false}`` on an HTTP error to
-# MIRIX.  An HTTP-status-only success check therefore counts a degenerate run as
-# healthy.  We track failures in a PROCESS-LEVEL counter (the bench is a single
-# process; the records path runs strictly serial, but we still guard the
+# The MIRIX generic memory pipeline POSTs one {query, answer} per graded round to
+# the proxy's ``/v1/memory/ingest_round``. That endpoint returns HTTP 200 EVEN ON
+# FAILURE — its body is ``{"ok": false, "error": ...}`` when downstream MIRIX
+# ingestion fails. An HTTP-status-only success check would count a degenerate run
+# as healthy. We track failures in a PROCESS-LEVEL counter (the bench is a single
+# process; the memory path runs strictly serial, but we still guard the
 # counter with a lock because ``_trigger_distill_round`` is invoked via
 # ``asyncio.to_thread``) and persist it so the post-run sanity gate can refuse
-# to trust the delta when ANY distill round failed.
+# to trust the delta when ANY memory round failed.
 _DISTILL_HEALTH_LOCK = threading.Lock()
 _DISTILL_FAILURES = 0
 _DISTILL_ATTEMPTS = 0
@@ -1002,15 +1000,15 @@ async def _run_group(
     - Inline scoring: scores each round immediately after the agent responds
     - Resume support: skips rounds that already have inline_score in their result
     - Standalone feedback: sends a final no-answer feedback message after the last round
-    - C5 records ingestion: when *skill_records_port* is set, POST exactly one
-      {query, answer} per graded round to /v1/skills/distill_round (one-round lag +
-      evolve-every-N-rounds handled downstream); flush at session end.
+    - MIRIX memory ingestion: when *skill_records_port* is set, POST exactly one
+      {query, answer} per graded round to /v1/memory/ingest_round; send a final
+      session_done marker at session end.
 
     ``round_index_base`` is the count of rounds already consumed by *prior groups
-    of the SAME session* (codex P2-B): the C5 ``round_index`` must be SESSION-GLOBAL
+    of the SAME session*: ``round_index`` must be SESSION-GLOBAL
     (monotonic across every group sharing ``original_session_id``), not group-local.
-    Were it group-local, a multi-group day would reset the watermark to 1 mid-session
-    and mis-count the evolve-every-5 boundary. Returns the new running total so the
+    Were it group-local, a multi-group day would reset the counter to 1 mid-session
+    and duplicate session ids. Returns the new running total so the
     caller can thread it into the next group.
     """
     async with semaphore:
@@ -1025,15 +1023,12 @@ async def _run_group(
         # feedback text for the *next* round (or standalone at the end).
         prev_inline_score: dict | None = None
         prev_round_record: dict | None = None
-        # C5: a SESSION-GLOBAL 1-based round index; the distiller's watermark is
-        # round_index, so it must increase monotonically per round across the whole
-        # session (every group), NOT reset per group. We offset the group-local
-        # enumerate by the rounds already seen in prior groups (round_index_base).
-        # Resume-skipped rounds still ADVANCE this index (they ARE rounds in the
-        # session) so the watermark/cadence stays aligned with the original run
-        # (codex P1-B): the evolve cadence keys off this deterministic index, so a
-        # resumed run fires evolve at the SAME global rounds {5,10,15,…} as a fresh
-        # run — skipped rounds simply don't re-POST (they were distilled originally).
+        # SESSION-GLOBAL 1-based round index. It must increase monotonically per
+        # round across the whole session (every group), NOT reset per group. We
+        # offset the group-local enumerate by the rounds already seen in prior
+        # groups (round_index_base). Resume-skipped rounds still ADVANCE this
+        # index (they ARE rounds in the session), so skipped rounds simply do not
+        # re-POST.
         last_round_index = round_index_base
 
         for local_index, round_record in enumerate(rounds, start=1):
@@ -1130,16 +1125,16 @@ async def _run_group(
                     buffer_turns_port,
                 )
 
-            # --- C5 records ingestion: push exactly ONE {query, answer} per round ---
-            # query carries the round-(t-1) [Previous Feedback] block (one-round
-            # lag) verbatim; the answer is the agent's FINAL graded answer. The
+            # --- MIRIX memory ingestion: push exactly ONE {query, answer} per round ---
+            # query carries the round-(t-1) [Previous Feedback] block verbatim;
+            # the answer is the agent's FINAL graded answer. The
             # round's OWN grade (inline_score) is NEVER sent (§3 G1/G3).
             if skill_records_port is not None:
-                # FIX7: the return is intentionally NOT captured here — failures
+                # The return is intentionally NOT captured here — failures
                 # are recorded inside _trigger_distill_round via
                 # _record_distill_result (it enforces the ok-contract and bumps
-                # the process-level distill_failures counter the sanity gate
-                # reads). Do NOT reintroduce a bare "if not ok: pass" swallow.
+                # the process-level failure counter the sanity gate reads). Do
+                # NOT reintroduce a bare "if not ok: pass" swallow.
                 await asyncio.to_thread(
                     _trigger_distill_round,
                     original_session_id,
@@ -1150,16 +1145,17 @@ async def _run_group(
                     result.get("answer", ""),
                     skill_records_port,
                     False,  # not session_done yet
+                    transcript=result.get("llm_log"),
                 )
 
             prev_inline_score = inline_score
             prev_round_record = round_record
 
-        # NOTE: the C5 session_done flush is NOT sent here. With a SESSION-GLOBAL
+        # NOTE: the session_done marker is NOT sent here. With a SESSION-GLOBAL
         # round_index a session may span multiple groups (the eval_flow.json
         # fallback emits one group per annotation), and flushing per group would
-        # prematurely clear the distiller's one-round-lag buffer mid-session. The
-        # flush is sent exactly once, after the LAST group, by ``_run_one_test``.
+        # prematurely finalize the downstream memory session. The marker is sent
+        # exactly once, after the LAST group, by ``_run_one_test``.
 
         # --- Standalone feedback after last round ---
         if prev_inline_score is None or prev_round_record is None:
@@ -1265,11 +1261,11 @@ async def _run_one_test(
 
         # One semaphore per test: groups are always serial within a test
         group_semaphore = asyncio.Semaphore(1)
-        # C5 (codex P2-B): the per-round index must be SESSION-GLOBAL — every group
+        # The per-round index must be SESSION-GLOBAL — every group
         # in this test shares the same ``session_id`` (``original_session_id``), so
         # we thread a running total across groups instead of letting each group
-        # restart at 1. ``session_round_total`` is also the watermark for the single
-        # end-of-session flush below.
+        # restart at 1. ``session_round_total`` is also passed with the single
+        # end-of-session marker below.
         session_round_total = 0
         try:
             for group in groups:
@@ -1293,13 +1289,12 @@ async def _run_one_test(
                     skill_records_port=skill_records_port,
                     round_index_base=session_round_total,
                 )
-            # --- C5: session_done flush (drop the last buffered round; no successor) ---
+            # --- session_done marker ---
             # Sent exactly ONCE per session, after the last group, with the
-            # SESSION-GLOBAL last round index as the watermark. Clears the
-            # distiller's one-round-lag buffer for this whole session.
+            # SESSION-GLOBAL last round index.
             if skill_records_port is not None and session_round_total > 0:
-                # FIX7: failures recorded inside _trigger_distill_round (ok-contract
-                # + distill_failures counter). Return intentionally not captured.
+                # Failures are recorded inside _trigger_distill_round. Return
+                # intentionally not captured.
                 await asyncio.to_thread(
                     _trigger_distill_round,
                     session_id,
@@ -1411,28 +1406,27 @@ def _trigger_distill_round(
     answer: str,
     proxy_port: int = 30000,
     final: bool = False,
+    transcript: Any = None,
 ) -> bool:
-    """C5 (new MIRIX-records harness) — push ONE graded round to the proxy.
+    """MIRIX generic memory harness — push ONE visible round to the proxy.
 
     POSTs ``{session_id, day, round_id, round_index, query, answer,
-    session_done}`` to ``POST /v1/skills/distill_round``. The proxy forwards to
-    MIRIX's per-round distiller (one-round lag handled server-side) and fires
-    evolve-from-records every N graded rounds.
+    session_done, transcript?}`` to ``POST /v1/memory/ingest_round``. The proxy
+    forwards to MIRIX as production ``/memory/add_sync`` input.
 
     LEAKAGE GUARD (§3 G1/G3): we send ONLY the agent-visible ``query`` (which the
     bench already built via ``with_feedback`` so it carries the round-(t-1)
     feedback) and the agent's FINAL graded ``answer``. We DELIBERATELY do not send
     ``inline_score`` / ``eval.command`` / ``eval.answer`` / ``feedback.options`` —
-    the round's OWN grade is never sent (the distiller derives it one round later).
+    the round's OWN grade is never sent.
 
-    ``final=True`` flags session_done so the proxy flushes the last buffered round
-    (no successor → no graded record).
+    ``final=True`` flags session_done so the proxy can finish the session without
+    creating another MIRIX turn.
 
     SUCCESS CONTRACT (FIX7 — silent-swallow defense). The proxy's
-    ``/v1/skills/distill_round`` returns HTTP 200 EVEN ON FAILURE — its body is
-    ``{"ok": false, "error": ...}`` when the downstream MIRIX distiller errored
-    (api_server.py:1055-1058), and the ``MirixEvolverAdapter`` likewise returns
-    ``{"ok": false}`` on an HTTP error to MIRIX. We therefore treat a round as
+    ``/v1/memory/ingest_round`` returns HTTP 200 EVEN ON FAILURE — its body is
+    ``{"ok": false, "error": ...}`` when downstream MIRIX ingestion errored. We
+    therefore treat a round as
     successful ONLY when the round-tripped body carries ``ok is True``. Anything
     else — connection error, non-2xx, ``ok:false``, or non-JSON body — is a
     FAILURE. Every attempt is recorded via :func:`_record_distill_result` so the
@@ -1442,8 +1436,8 @@ def _trigger_distill_round(
     import urllib.request
     import urllib.error
 
-    url = f"http://localhost:{proxy_port}/v1/skills/distill_round"
-    payload = json.dumps({
+    url = f"http://localhost:{proxy_port}/v1/memory/ingest_round"
+    body = {
         "session_id": session_id,
         "day": day,
         "round_id": round_id,
@@ -1452,7 +1446,10 @@ def _trigger_distill_round(
         "query": query,
         "answer": answer,
         "session_done": bool(final),
-    }).encode("utf-8")
+    }
+    if transcript is not None:
+        body["transcript"] = transcript
+    payload = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(
         url, data=payload, method="POST",
         headers={"Content-Type": "application/json"},
@@ -1765,8 +1762,8 @@ def run_infer(
         print(f"\n[info] Memory ingestion enabled: ingest after each scene (proxy port {memory_proxy_port})")
     if skill_records:
         print(
-            f"\n[info] C5 records harness enabled: POST /v1/skills/distill_round "
-            f"per round + evolve-every-N-rounds (proxy port {memory_proxy_port})"
+            f"\n[info] MIRIX memory harness enabled: POST /v1/memory/ingest_round "
+            f"per round (proxy port {memory_proxy_port})"
         )
 
     async def _main() -> None:

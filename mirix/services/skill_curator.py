@@ -5,7 +5,7 @@ DESIGN §C3/§C4. It is dependency-injected so it can be unit-tested with no
 server, no network, and no real agent step:
 
 * the curator reads the window's PENDING records from the C2 record store
-  (failures first, ranked by quality_score) and formats them compactly as
+    (failures first, ranked by quality_score) and formats them compactly as
   ``title + detail + evidence`` — NOT raw transcripts (the context-bloat fix);
 * it computes the count-driven C4 budget from the C2 ``aggregate`` and, when the
   window has NO structure-gated records (``n_high_fail + n_high_succ == 0``),
@@ -13,14 +13,9 @@ server, no network, and no real agent step:
 * it sets the per-instance edit/delete budgets on the agent BEFORE the step;
 * AFTER the step it diffs the before/after skill snapshots, computes the
   ``influenced_skill_ids`` lineage, and flips the consumed records — all OUTSIDE
-  the agent's tool loop and the evolve endpoint's in-context reset window, so a
-  reset can never wipe the bookkeeping (DESIGN §C3, fixes P1-7);
+  the agent's tool loop and the in-context reset window, so a reset can never
+  wipe the bookkeeping (DESIGN §C3, fixes P1-7);
 * a PER-AGENT asyncio lock serializes concurrent evolves on the same agent.
-
-The REST endpoint (`/v1/skills/evolve-from-records`) is a thin wrapper that wires
-the real collaborators (record manager, procedural agent step, skill snapshots,
-lineage writer) into :func:`run_records_evolution`. The existing
-`/v1/skills/evolve` raw-transcript path is left byte-identical.
 """
 
 from __future__ import annotations
@@ -303,8 +298,7 @@ async def _run_records_evolution_locked(
 def _diff_skills(before: List, after: List) -> Dict[str, List[str]]:
     """Compute created / edited / deleted skill ids between two snapshots.
 
-    Mirrors the diff in the raw-transcript ``evolve_skills`` endpoint: a skill is
-    EDITED when its version, instructions, or description changed.
+    A skill is EDITED when its version, instructions, or description changed.
     """
     before_map = {_attr(s, "id"): s for s in (before or [])}
     after_map = {_attr(s, "id"): s for s in (after or [])}

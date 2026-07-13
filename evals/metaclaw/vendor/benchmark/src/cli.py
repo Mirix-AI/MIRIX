@@ -93,9 +93,9 @@ def cmd_run(args: argparse.Namespace) -> None:
         buffer_turns=args.buffer_turns,
         skill_records=getattr(args, "skill_records", False),
     )
-    # FIX7 — silent-swallow defense. Under --skill-records, a non-zero
-    # distill-failure count means the records pipeline degraded (HTTP 200 +
-    # ok:false rounds the bench used to treat as success). Exit non-zero so the
+    # Silent-swallow defense. Under --skill-records, a non-zero failure count
+    # means the MIRIX memory pipeline degraded (HTTP 200 + ok:false rounds the
+    # bench used to treat as success). Exit non-zero so the
     # runner records a failed arm and the post-run sanity gate refuses to trust
     # the accuracy delta. Exit code 3 is distinct from runner.py's rc=2
     # (missing-proxy-port guard) to keep the two failure modes separable.
@@ -194,9 +194,9 @@ def main() -> None:
         action="store_true",
         default=False,
         help=(
-            "C5 new harness: POST /v1/skills/distill_round after every graded "
-            "round (one-round-lag distill + evolve-every-N-rounds), and "
-            "session_done flush after each scene.  Independent of --buffer-turns."
+            "MIRIX memory harness: POST /v1/memory/ingest_round after every "
+            "graded round and send session_done after each scene. Independent "
+            "of --buffer-turns."
         ),
     )
 
@@ -296,9 +296,9 @@ def main() -> None:
         action="store_true",
         default=False,
         help=(
-            "C5 new harness: POST /v1/skills/distill_round after every graded "
-            "round (one-round-lag distill + evolve-every-N-rounds), and "
-            "session_done flush after each scene.  Independent of --buffer-turns."
+            "MIRIX memory harness: POST /v1/memory/ingest_round after every "
+            "graded round and send session_done after each scene. Independent "
+            "of --buffer-turns."
         ),
     )
 

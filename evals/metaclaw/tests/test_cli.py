@@ -1,8 +1,8 @@
 """Tests for :mod:`evals.metaclaw.cli` — the budget gate, --yes guard, and
 estimate plumbing introduced in slice #6 (issue 06).
 
-These tests stay offline by stubbing :func:`run_arm` / :func:`run_both` and
-:mod:`sys.stdin` so the gate logic is exercised in isolation from the real
+These tests stay offline by stubbing :func:`run_arm` and :mod:`sys.stdin` so
+the gate logic is exercised in isolation from the real
 benchmark subprocesses.
 """
 
@@ -24,12 +24,12 @@ from evals.metaclaw.runner import RunResult
 
 
 def _stub_runners(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, list]:
-    """Patch run_arm and run_both with capturing stubs that return rc=0.
+    """Patch run_arm with a capturing stub that returns rc=0.
 
-    Returns a dict with ``arm_calls`` / ``both_calls`` lists the tests can
+    Returns a dict with ``arm`` calls the tests can
     inspect to assert what kwargs were forwarded (notably ``extra_meta``).
     """
-    captured: dict[str, list] = {"arm": [], "both": []}
+    captured: dict[str, list] = {"arm": []}
 
     def _fake_run_arm(**kwargs: Any) -> RunResult:
         captured["arm"].append(kwargs)
@@ -37,17 +37,7 @@ def _stub_runners(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, 
         out.mkdir(parents=True, exist_ok=True)
         return RunResult(arm=kwargs["arm"], exit_code=0, output_dir=out)
 
-    def _fake_run_both(**kwargs: Any) -> tuple[RunResult, RunResult]:
-        captured["both"].append(kwargs)
-        out = Path(kwargs.get("out_dir") or tmp_path / "default-both")
-        out.mkdir(parents=True, exist_ok=True)
-        return (
-            RunResult(arm="metaclaw", exit_code=0, output_dir=out),
-            RunResult(arm="mirix", exit_code=0, output_dir=out),
-        )
-
     monkeypatch.setattr(cli, "run_arm", _fake_run_arm)
-    monkeypatch.setattr(cli, "run_both", _fake_run_both)
     return captured
 
 
@@ -221,22 +211,6 @@ def test_estimates_flow_to_run_arm_extra_meta(
     assert em["estimated_rounds"] == expected_rounds
     assert em["estimated_wallclock_seconds_min"] == expected_rounds * 3 * 20
     assert em["estimated_wallclock_seconds_max"] == expected_rounds * 3 * 60
-
-
-def test_estimates_flow_to_run_both_extra_meta(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    captured = _stub_runners(monkeypatch, tmp_path)
-    monkeypatch.setattr(cli.sys, "stdin", _make_stdin(is_tty=False))
-    rc = cli.main(
-        ["--arm", "both", "--days", "5", "--yes", "--output-dir", str(tmp_path / "r1")]
-    )
-    assert rc == 0
-    em = captured["both"][0]["extra_meta"]
-    assert em["estimated_wallclock_seconds_min"] > 0
-    assert (
-        em["estimated_wallclock_seconds_max"] >= em["estimated_wallclock_seconds_min"]
-    )
 
 
 # ---------------------------------------------------------------------------

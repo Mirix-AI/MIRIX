@@ -1,4 +1,4 @@
-"""Argparse shim over :func:`evals.metaclaw.runner.run_arm` and :func:`run_both`.
+"""Argparse shim over :func:`evals.metaclaw.runner.run_arm`.
 
 Usage:
 
@@ -22,13 +22,11 @@ from .runner import (
     RunResult,
     estimate_wallclock_seconds,
     run_arm,
-    run_both,
 )
 
 # Exit codes — module-level constants so tests can assert without magic numbers.
 RC_BUDGET_NEEDS_YES = 3  # non-TTY run with --days >= 5 and no --yes
 RC_USER_ABORTED = 130  # 128 + SIGINT, mirrors `^C` convention
-RC_BOTH_FAILED = 1  # --arm both: both arms failed (slice-5 contract)
 
 
 def _format_seconds_human(seconds: int) -> str:
@@ -145,18 +143,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument(
         "--arm",
         required=True,
-        choices=("metaclaw", "mirix", "mirix-records", "mirix-generic", "no-skills", "native", "both"),
+        choices=("metaclaw", "mirix-generic", "no-skills", "native"),
         help=(
             "Skill backend under test. 'metaclaw'/'native' = vendored skills_dir; "
-            "'mirix' = MIRIX old harness (raw-transcript every-10-turn evolve, "
-            "the regression baseline); 'mirix-records' = MIRIX NEW harness (C5: "
-            "per-round distill + records evolution every 5 rounds); "
             "'mirix-generic' = MIRIX generic production memory path "
-            "(/memory/add_sync + /memory/auto_dream every 5 turns); "
-            "'no-skills' = floor (skills disabled); "
-            "'both' = run metaclaw then mirix against a SHARED dataset slice and "
-            "write a combined reports.md at the parent dir. Load-bearing delta = "
-            "mirix-records - mirix."
+            "(/memory/add_sync + automatic procedural trigger + /memory/search); "
+            "'no-skills' = floor (skills disabled)."
         ),
     )
     p.add_argument(
@@ -195,8 +187,8 @@ def main(argv: list[str] | None = None) -> int:
         "--mirix-url",
         default=DEFAULT_MIRIX_BASE_URL,
         help=(
-            "Base URL of the MIRIX REST server (only used when --arm mirix "
-            f"or --arm both). Default: {DEFAULT_MIRIX_BASE_URL}."
+            "Base URL of the MIRIX REST server (only used when --arm "
+            f"mirix-generic). Default: {DEFAULT_MIRIX_BASE_URL}."
         ),
     )
     args = p.parse_args(argv)
@@ -213,21 +205,6 @@ def main(argv: list[str] | None = None) -> int:
         "estimated_wallclock_seconds_min": getattr(args, "_estimate_min_s", 0),
         "estimated_wallclock_seconds_max": getattr(args, "_estimate_max_s", 0),
     }
-
-    if args.arm == "both":
-        metaclaw_res, mirix_res = run_both(
-            days=args.days,
-            out_dir=args.output_dir,
-            max_rounds=args.max_rounds,
-            retry=args.retry,
-            mirix_url=args.mirix_url,
-            extra_meta=extra_meta,
-        )
-        # Reports.md is always written.  Exit non-zero only when BOTH arms
-        # failed — partial success still surfaces the working arm's data.
-        if metaclaw_res.exit_code != 0 and mirix_res.exit_code != 0:
-            return RC_BOTH_FAILED
-        return 0
 
     result: RunResult = run_arm(
         arm=args.arm,

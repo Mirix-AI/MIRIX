@@ -138,28 +138,14 @@ class MetaClawLauncher:
                         max_new_skills=cfg.max_new_skills,  # [D6 mod 2026-05-28]
                         history_path=cfg.skill_evolution_history_path,  # [D6 mod 2026-05-28]
                     )  # [D6 mod 2026-05-28]
-                elif _ep == "mirix":  # [D6 mod 2026-05-28]
-                    from evals.metaclaw.mirix_adapters.evolver_adapter import MirixEvolverAdapter  # [D6 mod 2026-05-28]
-                    skill_evolver = MirixEvolverAdapter(  # [D6 mod 2026-05-28]
-                        base_url=os.environ["METACLAW_MIRIX_BASE_URL"],  # [D6 mod 2026-05-28]
-                        user_id=os.environ["METACLAW_MIRIX_USER_ID"],  # [D6 mod 2026-05-28]
-                        # C5: evolve cadence for the records (new) mode. Ignored by
-                        # the raw-transcript path, so old arms are unaffected.
-                        evolve_every_n_rounds=getattr(cfg, "skill_evolution_every_n_rounds", 5),  # [C5 2026-06-16]
-                    )  # [D6 mod 2026-05-28]
-                    logger.info(  # [D6 mod 2026-05-28]
-                        "[Launcher] MirixEvolverAdapter active (base=%s user=%s)",  # [D6 mod 2026-05-28]
-                        os.environ["METACLAW_MIRIX_BASE_URL"],  # [D6 mod 2026-05-28]
-                        os.environ["METACLAW_MIRIX_USER_ID"],  # [D6 mod 2026-05-28]
-                    )  # [D6 mod 2026-05-28]
                 elif _ep == "mirix-generic":  # [generic-arm 2026-06-23]
                     from evals.metaclaw.mirix_adapters.generic_adapter import MirixGenericMemoryAdapter  # [generic-arm 2026-06-23]
                     skill_evolver = MirixGenericMemoryAdapter(  # [generic-arm 2026-06-23]
                         base_url=os.environ["METACLAW_MIRIX_BASE_URL"],  # [generic-arm 2026-06-23]
                         user_id=os.environ["METACLAW_MIRIX_USER_ID"],  # [generic-arm 2026-06-23]
                         # Generic arm drives MIRIX via the production memory path:
-                        # ingest each turn via /memory/add_sync, fire the blocking
-                        # /memory/auto_dream barrier every N turns.
+                        # ingest each turn via /memory/add_sync; MIRIX's in-band
+                        # trigger owns procedural evolution.
                         evolve_every_n_turns=getattr(cfg, "skill_evolution_every_n_rounds", 5),  # [generic-arm 2026-06-23]
                     )  # [generic-arm 2026-06-23]
                     logger.info(  # [generic-arm 2026-06-23]
@@ -171,7 +157,7 @@ class MetaClawLauncher:
                     from evals.metaclaw.mirix_adapters._stub import StubEvolverAdapter  # [D6 mod 2026-05-28]
                     skill_evolver = StubEvolverAdapter()  # [D6 mod 2026-05-28]
                 else:  # [D6 mod 2026-05-28]
-                    raise ValueError(f"METACLAW_EVOLVER_PROVIDER={_ep!r} not in {{metaclaw, mirix, mirix-generic, stub}}")  # [D6 mod 2026-05-28]
+                    raise ValueError(f"METACLAW_EVOLVER_PROVIDER={_ep!r} not in {{metaclaw, mirix-generic, stub}}")  # [D6 mod 2026-05-28]
                 logger.info("[Launcher] SkillEvolver ready (auto-summarize mode)")
             except Exception as e:
                 logger.warning("[Launcher] SkillEvolver init failed: %s", e)

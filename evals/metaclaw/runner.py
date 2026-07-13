@@ -1,4 +1,4 @@
-"""Single-arm runner for the MetaClaw 30-day benchmark.
+"""Runner for the MetaClaw benchmark.
 
 This is slice #1 — only ``arm="metaclaw"`` is wired end-to-end.  The runner
 
@@ -17,9 +17,9 @@ This is slice #1 — only ``arm="metaclaw"`` is wired end-to-end.  The runner
 All subprocess + tempdir cleanup goes through ``try/finally`` and the proxy
 is killed by process group so no orphaned uvicorns survive a crash.
 
-The MIRIX-as-skill-backend arm (``arm="mirix"``) and the ``both`` arm land in
-later slices.  This runner explicitly raises :class:`NotImplementedError`
-for those values to keep the failure mode obvious.
+MIRIX is exposed only through the production memory path: ``--arm mirix-generic``
+ingests turns via MIRIX's generic memory API and retrieves procedural memory via
+the unified search API.
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from .dataset_slice import slice_tests
-from .mirix_adapters.evolver_adapter import DEFAULT_EVOLVE_EVERY_N_ROUNDS
+from .mirix_adapters.generic_adapter import DEFAULT_EXPECTED_TRIGGER_SESSIONS
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -81,15 +81,8 @@ DEFAULT_BENCHMARK_MODEL = "openai/gpt-5.2"
 
 
 # ---------------------------------------------------------------------------
-# Arm taxonomy (DESIGN §C5 P1-10 control arms)
+# Arm taxonomy
 # ---------------------------------------------------------------------------
-#
-# The load-bearing delta is `mirix-records` − `mirix` (new-harness − old-harness):
-# both feed MIRIX, but mirix-records adds the distiller + records-evolution +
-# count-driven budget at comparable ingestion, while `mirix` stays the
-# raw-transcript every-10-turn regression baseline. The existing arm values
-# (metaclaw / mirix / both) keep their EXACT pre-C5 behaviour so the prior
-# Part-I comparison + the smoke tests remain valid; the new arms are additive.
 
 
 @dataclass(frozen=True)
@@ -103,33 +96,24 @@ class ArmSpec:
     needs_mirix: bool
     skills_enabled: bool
     auto_evolve: bool
-    # "raw_transcript" (old every-N-turns batch) or "mirix_records" (new C5 path).
+    # "raw_transcript" for native MetaClaw, or "generic_memory" for MIRIX.
     evolution_mode: str
-    # Pass --skill-records to the bench (message-by-message distill ingestion).
-    skill_records: bool
+    # Pass the per-round memory-ingest callback to the bench.
+    memory_rounds: bool
     # Human label for run.meta.json / logs.
     label: str
 
 
-# Canonical arm names. The first three are the pre-C5 arms (UNCHANGED behaviour).
+# Canonical arm names.
 ARM_METACLAW = "metaclaw"  # native MetaClaw skill backend (cross-system anchor)
-ARM_MIRIX = "mirix"  # MIRIX old harness: raw-transcript every-10-turn evolve
-ARM_BOTH = "both"  # metaclaw + mirix on a shared slice (legacy comparison)
-# C5 control arms (additive).
-ARM_MIRIX_RECORDS = (
-    "mirix-records"  # MIRIX NEW harness: per-round distill + records evolve
-)
 ARM_NO_SKILLS = "no-skills"  # floor: skills disabled
 ARM_NATIVE = "native"  # alias of metaclaw, for P1-10 naming clarity
-# Generic-arm (additive): MIRIX generic PRODUCTION memory path — ingest each turn
-# via /memory/add_sync + fire the blocking /memory/auto_dream barrier every 5 turns.
+# MIRIX generic production memory path: ingest each turn via /memory/add_sync and
+# let MIRIX's own automatic procedural trigger evolve skills.
 ARM_MIRIX_GENERIC = "mirix-generic"
 
-# All arm values `run_arm` accepts directly (excludes `both`, which uses run_both).
 _SINGLE_ARMS = (
     ARM_METACLAW,
-    ARM_MIRIX,
-    ARM_MIRIX_RECORDS,
     ARM_MIRIX_GENERIC,
     ARM_NO_SKILLS,
     ARM_NATIVE,
@@ -139,9 +123,8 @@ _SINGLE_ARMS = (
 def _resolve_arm(arm: str) -> ArmSpec:
     """Map an arm name to its :class:`ArmSpec`.
 
-    The three pre-C5 arms (`metaclaw`, `mirix`) resolve to specs whose proxy YAML
-    + env reproduce the old behaviour exactly (`evolution_mode="raw_transcript"`,
-    `--skill-records` off), so this refactor is behaviour-preserving for them.
+    ``metaclaw``/``native`` use the vendored MetaClaw skill backend.
+    ``mirix-generic`` uses MIRIX through the production memory interface.
     """
     if arm in (ARM_METACLAW, ARM_NATIVE):
         return ArmSpec(
@@ -150,43 +133,18 @@ def _resolve_arm(arm: str) -> ArmSpec:
             skills_enabled=True,
             auto_evolve=True,
             evolution_mode="raw_transcript",
-            skill_records=False,
+            memory_rounds=False,
             label="native (vendored MetaClaw skill backend)",
-        )
-    if arm == ARM_MIRIX:
-        return ArmSpec(
-            skills_provider="mirix",
-            needs_mirix=True,
-            skills_enabled=True,
-            auto_evolve=True,
-            evolution_mode="raw_transcript",
-            skill_records=False,
-            label="mirix-old-harness (raw-transcript every-10-turn evolve)",
-        )
-    if arm == ARM_MIRIX_RECORDS:
-        return ArmSpec(
-            skills_provider="mirix",
-            needs_mirix=True,
-            skills_enabled=True,
-            auto_evolve=True,
-            evolution_mode="mirix_records",
-            skill_records=True,
-            label="mirix-new-harness (per-round distill + records evolve every 5 rounds)",
         )
     if arm == ARM_MIRIX_GENERIC:
         return ArmSpec(
-            skills_provider="mirix",  # retrieval via MirixSkillsAdapter (identical to records)
+            skills_provider="mirix",
             needs_mirix=True,
             skills_enabled=True,
             auto_evolve=True,
-            # REQUIRED: the proxy gates the distill_round route on this mode
-            # (api_server.py:1164) and the bench threads --memory-proxy-port. The
-            # mode string only controls the bench flag + proxy route + proxy YAML
-            # gate — the adapter is picked by METACLAW_EVOLVER_PROVIDER below, NOT
-            # by this mode. So the generic arm reuses "mirix_records" here.
-            evolution_mode="mirix_records",
-            skill_records=True,
-            label="mirix-generic (production memory path: /memory/add_sync + /memory/auto_dream every 5 turns)",
+            evolution_mode="generic_memory",
+            memory_rounds=True,
+            label="mirix-generic (production memory path: /memory/add_sync + automatic procedural trigger)",
         )
     if arm == ARM_NO_SKILLS:
         return ArmSpec(
@@ -195,7 +153,7 @@ def _resolve_arm(arm: str) -> ArmSpec:
             skills_enabled=False,
             auto_evolve=False,
             evolution_mode="raw_transcript",
-            skill_records=False,
+            memory_rounds=False,
             label="no-skills floor",
         )
     raise ValueError(f"unknown arm {arm!r}")
@@ -373,63 +331,6 @@ def _format_mirix_unreachable(base_url: str, status: Optional[int], detail: str)
     )
 
 
-def _mirix_reset_user_skills(
-    base_url: str, user_id: str, timeout_s: float = 5.0
-) -> None:
-    """Best-effort POST ``/v1/skills/reset?user_id=<user_id>``.
-
-    The endpoint may not exist on every MIRIX build.  Any failure short of an
-    in-process exception is logged at WARNING level and swallowed - minting a
-    fresh user_id (which the runner does just before this call) is sufficient
-    isolation for a clean evaluation run.
-
-    The 404 path is called out explicitly per the issue-06 spec so operators
-    grepping ``proxy.log`` get an unambiguous "this is expected" line.
-    """
-    from urllib.parse import quote
-
-    url = base_url.rstrip("/") + f"/v1/skills/reset?user_id={quote(user_id)}"
-    req = urllib.request.Request(
-        url,
-        data=b"",
-        method="POST",
-        headers={"Content-Type": "application/json", "X-Client-Id": MIRIX_CLIENT_ID},
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout_s) as r:
-            status = int(getattr(r, "status", 0) or 0)
-            if 200 <= status < 300:
-                print(
-                    f"[runner] MIRIX /v1/skills/reset OK for user_id={user_id}",
-                    flush=True,
-                )
-                return
-            print(
-                f"[runner] MIRIX /v1/skills/reset returned HTTP {status} for "
-                f"user_id={user_id}; continuing with freshly-minted user_id",
-                flush=True,
-            )
-    except urllib.error.HTTPError as e:
-        if e.code == 404:
-            print(
-                "[runner] MIRIX /v1/skills/reset endpoint not available; "
-                "minting fresh user_id is sufficient",
-                flush=True,
-            )
-            return
-        print(
-            f"[runner] MIRIX /v1/skills/reset HTTP {e.code} {e.reason} for "
-            f"user_id={user_id}; continuing",
-            flush=True,
-        )
-    except (urllib.error.URLError, ConnectionError, OSError, TimeoutError) as e:
-        print(
-            f"[runner] MIRIX /v1/skills/reset failed for user_id={user_id}: {e}; "
-            f"continuing with freshly-minted user_id",
-            flush=True,
-        )
-
-
 def count_rounds_per_day(n_days: int) -> list[int]:
     """Return the ``rounds[]`` count per day for the first *n_days* of the dataset.
 
@@ -556,12 +457,11 @@ def _mirix_ensure_client_write_scope(
     ``write_scope=None`` (read-only). MIRIX gates meta-agent creation on a
     non-null write_scope: ``POST /agents/meta/initialize`` returns ``200 null``
     for a read-only client (rest_api.py:1972-1974) and creates NO agent. With no
-    meta agent there is no procedural-memory sub-agent, so BOTH skill endpoints
-    the mirix arms drive — ``GET /memory/search?memory_type=procedural``
-    (retrieval) and ``POST /v1/skills/distill-round`` — 404 ("No agents
-    found for this client" / "No procedural memory agent found"). So without this
-    step ``_mirix_ensure_meta_agent``'s FIX5 guard (correctly) refuses to run and
-    the whole records arm is dead.
+    meta agent there is no procedural-memory sub-agent, so production ingestion
+    and retrieval cannot work reliably: ``/memory/add_sync`` has no valid owner
+    and ``GET /memory/search?memory_type=procedural`` cannot resolve the
+    procedural agent. Without this step ``_mirix_ensure_meta_agent`` refuses to
+    run rather than allowing a degenerate no-skills eval.
 
     We use ``PATCH /clients/{client_id}`` rather than ``POST
     /clients/create_or_get`` because create_or_get is a NO-OP for an
@@ -574,12 +474,10 @@ def _mirix_ensure_client_write_scope(
     ``write_scope="admin"`` is chosen deliberately: it is the dashboard/first-user
     convention for unrestricted access (rest_api.py:6897), it is non-null (the
     only property meta-agent creation actually checks, rest_api.py:1973), and it
-    is self-consistent for the skills pipeline — the distiller writes records and
-    retrieval reads them back under the SAME client identity, and neither skill
-    endpoint gates on the write_scope *value* (only on agent existence and the
-    resolved user), so any non-null value works; "admin" matches existing
-    convention. Returns True on success, False on any failure (the caller turns a
-    False into rc=2 so a degenerate run can't masquerade as healthy).
+    is self-consistent for the production memory pipeline: add_sync writes turns
+    and retrieval reads procedural memory under the SAME client identity. Returns
+    True on success, False on any failure (the caller turns False into rc=2 so a
+    degenerate run cannot masquerade as healthy).
     """
     patch_url = base_url.rstrip("/") + f"/clients/{MIRIX_CLIENT_ID}"
     patch_body = json.dumps(
@@ -717,19 +615,15 @@ def _mirix_ensure_meta_agent(
 ) -> bool:
     """Idempotently ensure a meta agent (with a procedural-memory sub-agent) exists.
 
-    Why this is REQUIRED for the records arm (not just a nicety): the server-side
-    skill endpoints the mirix-records arm drives — ``POST /v1/skills/distill-round``
-    and ``GET /memory/search?memory_type=procedural`` — look up the procedural-memory
-    agent by *walking the existing agents for this client and 404 if none is found*
-    (rest_api.py:5586-5603). They NEVER create one. So minting a fresh user is not enough: with no
-    meta agent under ``MIRIX_CLIENT_ID`` every distill POST 404s, the bench swallows
-    it, and the run is degenerate (0 records, 0 evolves, retrieval always 404).
+    Production ``/memory/add_sync`` needs a meta agent to own the write, and
+    procedural retrieval walks the existing agent tree to find the procedural
+    child. Minting a fresh user is not enough: with no meta agent under
+    ``MIRIX_CLIENT_ID`` ingestion/retrieval degenerates into a no-skills run.
 
-    This POSTs ``/agents/meta/initialize`` under the SAME ``X-Client-Id`` the adapters
-    and ``_mirix_reset_user_skills`` use, so the agent it creates is exactly the one
-    those endpoints resolve. The endpoint enforces "one meta agent per client"
-    (rest_api.py:2000), so a SECOND call (e.g. a later arm reusing the same client) is
-    a no-op — making this safe to call unconditionally on every records run.
+    This POSTs ``/agents/meta/initialize`` under the SAME ``X-Client-Id`` the
+    adapters use, so the agent it creates is exactly the one those endpoints
+    resolve. The endpoint enforces "one meta agent per client", so a second call
+    is a no-op.
 
     The LLM + embedding config mirrors ``init_meta_agent.py`` but is sourced from the
     runner's already-resolved bench env (``BENCHMARK_MODEL`` / ``BENCHMARK_BASE_URL`` /
@@ -779,13 +673,13 @@ def _mirix_ensure_meta_agent(
             if not (200 <= status < 300):
                 print(
                     f"[runner] /agents/meta/initialize returned HTTP {status}; "
-                    f"records arm may 404 on distill/retrieve: {raw[:500]}",
+                    f"memory ingest/retrieve may fail: {raw[:500]}",
                     flush=True,
                 )
                 return False
             # A 2xx is NECESSARY but not SUFFICIENT: the endpoint returns
-            # ``200 null`` for a read-only client (no write_scope -> no agents,
-            # rest_api.py:1973-1974), which would still 404 every distill/retrieve.
+            # ``200 null`` for a read-only client (no write_scope -> no agents),
+            # which would still break ingest/retrieve.
             # Require a non-null agent object with an id so a degenerate run can't
             # masquerade as a healthy one (the caller turns a False into rc=2).
             try:
@@ -797,7 +691,7 @@ def _mirix_ensure_meta_agent(
                 print(
                     "[runner] /agents/meta/initialize returned HTTP "
                     f"{status} but NO agent (body={raw[:300]!r}); the client likely "
-                    f"has no write_scope -> distill/retrieve will 404",
+                    f"has no write_scope -> memory ingest/retrieve will fail",
                     flush=True,
                 )
                 return False
@@ -905,19 +799,13 @@ def _write_proxy_yaml(
     task-specific + mistakes on top); the mirix arm raises it so MIRIX's single
     flat bucket injects a comparable count (mirix only returns this many total).
 
-    C5 knobs (default values reproduce the PRE-C5 behaviour byte-for-byte, so the
-    existing metaclaw/mirix/both arms are unaffected):
-
       * ``skills_enabled``: False for the ``no-skills`` floor arm.
       * ``auto_evolve``: False to retrieve-only (no evolution at all).
-      * ``evolution_mode``: ``"raw_transcript"`` (old every-N-turns batch path) or
-        ``"mirix_records"`` (new per-round distill + evolve-every-N-rounds path).
-      * ``evolution_every_n_rounds``: cadence for ``mirix_records`` mode.
+      * ``evolution_mode``: ``"raw_transcript"`` for vendored MetaClaw or
+        ``"generic_memory"`` for MIRIX production memory ingestion.
+      * ``evolution_every_n_rounds``: retained for the vendored config shape;
+        MIRIX production cadence lives on the server.
     """
-    # Byte-identity for the pre-C5 arms (codex MED #2): the new-harness knobs are
-    # emitted ONLY when they diverge from their PRE-C5 defaults (skills enabled,
-    # auto_evolve on, raw_transcript). So the old metaclaw/mirix/both arms write
-    # the EXACT same YAML they wrote before C5; only the new arms add/flip lines.
     skill_lines = [
         "skills:",
         f"  enabled: {str(skills_enabled).lower()}",
@@ -1095,7 +983,7 @@ def _run_bench(
     retry: int = DEFAULT_BENCH_RETRY,
     workers: int = DEFAULT_BENCH_WORKERS,
     max_rounds: Optional[int] = None,  # noqa: ARG001 — slice #1 passes through; vendored bench has no such flag
-    skill_records: bool = False,
+    memory_rounds: bool = False,
     proxy_port: Optional[int] = None,
 ) -> int:
     cmd = [
@@ -1112,33 +1000,21 @@ def _run_bench(
         "-n",
         str(retry),
     ]
-    if skill_records:
-        # FIX7 (P1-3) — fail LOUD instead of silently degrading. Without a live
-        # proxy port the bench's _trigger_distill_round falls back to the dead
-        # default :30000, every distill POST is refused-then-swallowed, and the
-        # records pipeline goes degenerate (0 records -> evolve never fires) with
-        # NO error surfaced. A records arm with no proxy_port is a misconfig, not
-        # a runnable state — refuse with rc=2 so run_arm marks the arm failed.
+    if memory_rounds:
+        # Fail loud instead of silently degrading. Without a live proxy port the
+        # bench's per-round memory callback falls back to the dead default :30000
+        # and every ingest is refused.
         if proxy_port is None:
             print(
-                "[bench] FATAL: skill_records=True but proxy_port is None — "
-                "refusing to run a records arm that would POST distill rounds to "
-                "the dead default :30000 and silently no-op. (rc=2)",
+                "[bench] FATAL: memory_rounds=True but proxy_port is None — "
+                "refusing to run a MIRIX memory arm that would POST rounds to "
+                "the dead default :30000. (rc=2)",
                 flush=True,
             )
             return 2
-        # C5 new harness: per-round distill + evolve-every-N-rounds. The proxy's
-        # skill_evolution_mode (from proxy.yaml) gates the actual records path.
+        # The vendored bench flag name is historical; our proxy route maps it to
+        # MIRIX production memory ingestion.
         cmd.append("--skill-records")
-        # CRITICAL: the bench's _trigger_distill_round POSTs to
-        # http://localhost:{--memory-proxy-port}/v1/skills/distill_round, and that
-        # flag DEFAULTS to 30000 (vendor/.../cli.py:271-275). Our real proxy binds a
-        # DYNAMIC port (run_arm: port=_find_free_port()), so WITHOUT this flag every
-        # distill POST hits a dead :30000, gets swallowed by the bench's
-        # `except Exception: return False`, and the records pipeline goes degenerate
-        # (0 distill calls -> 0 records -> evolve never fires). Threading the live
-        # proxy port here is what makes the mirix-records arm non-degenerate.
-        # proxy_port is guaranteed non-None by the FIX7 guard above.
         cmd += ["--memory-proxy-port", str(proxy_port)]
     print(f"[bench] launching: {' '.join(cmd)}", flush=True)
     return subprocess.call(cmd, env=env, cwd=str(VENDOR_BENCH_DIR))
@@ -1220,13 +1096,8 @@ def run_arm(
         arm: one of:
             * ``"metaclaw"`` / ``"native"`` — vendored MetaClaw skill backend
               (cross-system anchor).
-            * ``"mirix"`` — MIRIX old harness: raw-transcript every-10-turn evolve
-              (the regression baseline).
-            * ``"mirix-records"`` — MIRIX NEW harness (C5): per-round
-              distill + records evolution every 5 graded rounds.
+            * ``"mirix-generic"`` — MIRIX production memory path.
             * ``"no-skills"`` — floor (skills disabled).
-            ``"both"`` is dispatched via :func:`run_both`. The load-bearing
-            delta is ``mirix-records`` − ``mirix`` (new − old harness).
         days: Number of dataset days to include (``0`` = full 30).
         out_dir: Directory for run artifacts.  Defaults to
             ``evals/metaclaw/runs/<arm>-<utc-ts>/``.
@@ -1234,18 +1105,11 @@ def run_arm(
         retry: Per-question retry count (``-n`` flag on metaclaw-bench).
         proxy_starter / proxy_stopper / bench_runner: DI hooks for tests.
         extra_env: Optional env overrides; useful in tests.
-        mirix_url: Base URL of the MIRIX REST server (mirix arm only).
+        mirix_url: Base URL of the MIRIX REST server (mirix-generic only).
 
     Returns:
         RunResult: see :class:`RunResult`.
     """
-    if arm == ARM_BOTH:
-        # `--arm both` is dispatched via :func:`run_both`, which calls
-        # :func:`run_arm` twice (metaclaw then mirix) against the same
-        # pre-sliced dataset and synthesizes a combined ``reports.md``.
-        raise ValueError(
-            "run_arm() does not accept arm='both' directly — call run_both()"
-        )
     if arm not in _SINGLE_ARMS:
         raise ValueError(f"unknown arm {arm!r}")
     spec = _resolve_arm(arm)
@@ -1277,10 +1141,9 @@ def run_arm(
         )
 
     if pre_sliced_tests is not None:
-        # `--arm both` path: the parent run already computed the slice once
-        # and points both arms at the same byte-identical JSON.  We still
-        # copy a copy into the per-arm dir so the per-arm tree shape stays
-        # identical to a single-arm invocation (issue #05 acceptance).
+        # Test/repro hook: callers can provide an already-sliced dataset. We
+        # still copy it into the per-arm dir so the output tree matches a normal
+        # invocation.
         pre_sliced_tests = Path(pre_sliced_tests)
         if not pre_sliced_tests.exists():
             raise FileNotFoundError(
@@ -1303,9 +1166,7 @@ def run_arm(
         kept = slice_tests(src_tests, days, tests_used)
         print(f"[runner] sliced {kept} day(s) into {tests_used}", flush=True)
 
-    # ---- mirix arm prelude: health-check server + mint a fresh user ----
-    # Fires for any arm that talks to MIRIX (mirix old-harness + mirix-records
-    # new-harness). The metaclaw/native/no-skills arms skip it entirely.
+    # ---- MIRIX prelude: health-check server + mint a fresh user ----
     mirix_env: dict = {}
     mirix_user_id: Optional[str] = None
     if spec.needs_mirix:
@@ -1348,64 +1209,27 @@ def run_arm(
                     "user_id": mirix_user_id,
                 },
             )
-        # The generic arm selects MirixGenericMemoryAdapter (production memory
-        # path: /memory/add_sync + /memory/auto_dream); every other mirix arm
-        # selects the records evolver. Only the evolver provider differs — both
-        # arms retrieve identically via MirixSkillsAdapter.
-        _evolver_provider = "mirix-generic" if arm == ARM_MIRIX_GENERIC else "mirix"
         mirix_env = {
             "METACLAW_SKILLS_PROVIDER": "mirix",
-            "METACLAW_EVOLVER_PROVIDER": _evolver_provider,
+            "METACLAW_EVOLVER_PROVIDER": "mirix-generic",
             "METACLAW_MIRIX_BASE_URL": mirix_url,
             "METACLAW_MIRIX_USER_ID": mirix_user_id,
         }
-        if arm == ARM_MIRIX_GENERIC:
-            # Disable MIRIX's in-band fire-and-forget procedural-dream trigger so
-            # ONLY our explicit /memory/auto_dream barrier drives evolution
-            # (otherwise the in-band asyncio.create_task trigger races + double-
-            # consumes the retained sessions). SKILL_TRIGGER_SESSION_THRESHOLD is
-            # read by the MIRIX *server* process (mirix/constants.py); the runner
-            # only health-checks an already-running server, so for it to take
-            # effect the server MUST be launched with this env set, e.g.:
-            #   SKILL_TRIGGER_SESSION_THRESHOLD=1000000000 python scripts/start_server.py --port 8531
-            # We also export it into the proxy/bench subprocess env (harmless if
-            # the server reads its own) and rely on the adapter's degenerate_run
-            # health gate as the safety net if the server trigger is NOT disabled.
-            mirix_env["SKILL_TRIGGER_SESSION_THRESHOLD"] = str(10**9)
-        # Best-effort reset of any prior skill state for this user_id.
-        # Endpoint may not be deployed on every MIRIX build — a 404 is
-        # logged and swallowed because the freshly-minted user_id we just
-        # created already gives us a clean slate.
-        _mirix_reset_user_skills(mirix_url, mirix_user_id)
 
-        # Ensure a meta agent (with a procedural-memory sub-agent) exists under our
-        # client. Without it, GET /memory/search?memory_type=procedural (retrieval,
-        # BOTH mirix arms) and POST /v1/skills/distill-round (records arm) 404
-        # server-side — those endpoints look up the procedural agent and NEVER
-        # create one (rest_api.py:5586-5603). On a fresh DB the old `mirix` arm
-        # would therefore retrieve 0 skills + never evolve, and the records arm
-        # would also distill 0 records — both silently degenerate into a no-skills
-        # run that is not comparable. So we ensure the agent for EVERY mirix-backed
-        # arm, not just the records arm (codex review #1). It is idempotent: the
-        # server enforces one meta agent per client (rest_api.py:2000), so a repeat
-        # call (e.g. a later arm reusing the client) is a no-op.
+        # Ensure a meta agent (with a procedural-memory child) exists under our
+        # client. Production add_sync writes to the meta agent, and procedural
+        # search resolves the same agent tree.
         if spec.skills_provider == "mirix":
-            # STEP 0: the hardcoded eval client (MIRIX_CLIENT_ID) ships read-only
-            # (write_scope=None). meta/initialize gates agent creation on a non-null
-            # write_scope (rest_api.py:1972-1974) and returns 200-null for a
-            # read-only client — so _mirix_ensure_meta_agent below would (correctly)
-            # see "no agent" and refuse. Grant the client write_scope FIRST so the
-            # meta agent (and its procedural sub-agent) can actually be created and
-            # /v1/skills (+ distill-round) stop 404ing. Idempotent: PATCH is a no-op
-            # if the scope is already set.
+            # The hardcoded eval client may exist read-only. Grant write_scope
+            # first so meta initialization and add_sync can write.
             scope_ok = _mirix_ensure_client_write_scope(mirix_url)
             if not scope_ok:
                 msg = (
                     f"ERROR: could not grant write_scope to MIRIX client "
                     f"{MIRIX_CLIENT_ID} at {mirix_url} for the {arm} arm. Without a "
                     f"write_scope the meta agent is never created (meta/initialize "
-                    f"returns 200-null) and /v1/skills (+ distill-round) 404 — the run "
-                    f"would be degenerate (0 skills, 0 records, 0 evolves). Refusing "
+                    f"returns 200-null) and memory ingest/search would be "
+                    f"degenerate. Refusing "
                     f"to proceed.\n"
                 )
                 print(msg, flush=True)
@@ -1416,7 +1240,7 @@ def run_arm(
                     accuracy=None,
                     total_tokens=None,
                     report_summary={
-                        "error": "mirix_client_write_scope_failed",
+                        "error": "mirix_eval_client_write_scope_failed",
                         "url": mirix_url,
                         "client_id": MIRIX_CLIENT_ID,
                     },
@@ -1426,8 +1250,8 @@ def run_arm(
                 msg = (
                     f"ERROR: could not ensure a MIRIX meta agent at {mirix_url} for "
                     f"the {arm} arm. Without a procedural-memory agent the "
-                    f"/v1/skills (+ distill-round) endpoints 404 and the run would be "
-                    f"degenerate (0 skills retrieved, 0 records, 0 evolves). "
+                    f"production memory path would be degenerate "
+                    f"(0 skills retrieved/evolved). "
                     f"Refusing to proceed.\n"
                 )
                 print(msg, flush=True)
@@ -1454,7 +1278,7 @@ def run_arm(
         "mirix_url": mirix_url if spec.needs_mirix else None,
         "mirix_user_id": mirix_user_id,
         "evolution_mode": spec.evolution_mode,
-        "skill_records": spec.skill_records,
+        "memory_rounds": spec.memory_rounds,
         "started_at": _isoformat(started_at_ts),
         "finished_at": None,
         "exit_code": None,
@@ -1506,7 +1330,7 @@ def run_arm(
             skills_enabled=spec.skills_enabled,
             auto_evolve=spec.auto_evolve,
             evolution_mode=spec.evolution_mode,
-            evolution_every_n_rounds=DEFAULT_EVOLVE_EVERY_N_ROUNDS,
+            evolution_every_n_rounds=DEFAULT_EXPECTED_TRIGGER_SESSIONS,
         )
 
         # Compose subprocess env.
@@ -1530,8 +1354,9 @@ def run_arm(
             # DI hook: still call so tests can assert it was called.
             proxy_proc = proxy_starter(proxy_yaml, port, proxy_log, subprocess_env)
 
-        # Run bench. The new-harness arm passes --skill-records so the bench
-        # POSTs one {query, answer} per graded round to /v1/skills/distill_round.
+        # Run bench. The MIRIX memory arm passes the vendored per-round callback
+        # flag so the proxy can submit each visible {query, answer} turn to
+        # MIRIX /memory/add_sync.
         exit_code = bench_runner(
             tests_used,
             bench_out_dir,
@@ -1539,10 +1364,8 @@ def run_arm(
             retry=retry,
             workers=DEFAULT_BENCH_WORKERS,
             max_rounds=max_rounds,
-            skill_records=spec.skill_records,
-            # The dynamic proxy port the bench must POST distill_round to (see
-            # _run_bench: without this the bench falls back to the dead :30000
-            # default and the records pipeline silently no-ops).
+            memory_rounds=spec.memory_rounds,
+            # The dynamic proxy port the bench must POST memory rounds to.
             proxy_port=port,
         )
         run_succeeded = exit_code == 0
@@ -1630,7 +1453,7 @@ def _ensure_python_shim(path_value: str) -> Optional[Path]:
         shim_dir.mkdir(parents=True, exist_ok=True)
         if _points_at_target():
             return shim_dir  # already correct — idempotent fast path
-        # Atomically (re)point the shim so concurrent runs (e.g. --arm both) can't
+        # Atomically (re)point the shim so concurrent runs can't
         # trip over each other: build a pid-unique temp symlink, then os.replace
         # it onto `python` (atomic + overwrites). Avoids the unlink+symlink TOCTOU.
         tmp = shim_dir / f".python.{os.getpid()}.tmp"
@@ -1705,119 +1528,4 @@ def _compose_subprocess_env(
     return base
 
 
-def run_both(
-    days: int,
-    out_dir: Optional[Path] = None,
-    max_rounds: Optional[int] = None,
-    retry: int = DEFAULT_BENCH_RETRY,
-    *,
-    proxy_starter: ProxyStarter = _start_proxy,
-    proxy_stopper: ProxyStopper = _stop_proxy,
-    bench_runner: BenchRunner = _run_bench,
-    extra_env: Optional[dict] = None,
-    mirix_url: str = DEFAULT_MIRIX_BASE_URL,
-    extra_meta: Optional[dict] = None,
-) -> tuple[RunResult, RunResult]:
-    """Run the ``metaclaw`` arm then the ``mirix`` arm against a SHARED dataset slice.
-
-    The parent ``out_dir`` (default ``runs/both-<ts>/``) holds:
-
-    - ``all_tests_used.json``     — computed once, both arms point at this
-    - ``metaclaw-<ts>/``          — per-arm tree, same shape as a solo run
-    - ``mirix-<ts>/``             — per-arm tree, same shape as a solo run
-    - ``reports.md``              — combined comparison table
-
-    Fairness invariant: both arms read the exact same bytes for the test
-    JSON.  We slice once at the top, then ``shutil.copyfile`` it into each
-    arm's dir so the per-arm tree still looks like a single-arm run.
-
-    Failure tolerance: if one arm raises, the other still runs.  The
-    combined ``reports.md`` is always written.  See
-    :func:`evals.metaclaw.comparison.render_reports_md` for the exact
-    markdown shape.
-    """
-    if days < 0:
-        raise ValueError(f"days must be >= 0, got {days}")
-
-    # Lazy import to avoid a circular dep: comparison imports from runner.
-    from .comparison import render_reports_md
-
-    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    if out_dir is None:
-        out_dir = RUNS_DIR / f"both-{ts}"
-    out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    # Slice once — this is the fairness root.
-    shared_tests = out_dir / "all_tests_used.json"
-    src_tests = DATA_DIR / "all_tests_metaclaw.json"
-    if not src_tests.exists():
-        raise FileNotFoundError(
-            f"vendored 30-day dataset not found at {src_tests} — re-run vendoring"
-        )
-    kept = slice_tests(src_tests, days, shared_tests)
-    print(
-        f"[runner] --arm both: sliced {kept} day(s) into shared {shared_tests}",
-        flush=True,
-    )
-
-    metaclaw_out = out_dir / f"metaclaw-{ts}"
-    mirix_out = out_dir / f"mirix-{ts}"
-
-    arm_results: dict[str, RunResult] = {}
-    for arm, arm_out in (("metaclaw", metaclaw_out), ("mirix", mirix_out)):
-        print(f"[runner] --arm both: starting arm={arm} -> {arm_out}", flush=True)
-        try:
-            arm_results[arm] = run_arm(
-                arm=arm,
-                days=days,
-                out_dir=arm_out,
-                max_rounds=max_rounds,
-                retry=retry,
-                proxy_starter=proxy_starter,
-                proxy_stopper=proxy_stopper,
-                bench_runner=bench_runner,
-                extra_env=extra_env,
-                mirix_url=mirix_url,
-                pre_sliced_tests=shared_tests,
-                extra_meta=extra_meta,
-            )
-        except Exception as e:
-            # Failure tolerance: one arm's crash must not block the other
-            # arm or the comparison report.  Synthesize a failed RunResult
-            # so the renderer still has something to print.
-            print(
-                f"[runner] --arm both: arm={arm} raised {type(e).__name__}: {e}",
-                flush=True,
-            )
-            arm_out.mkdir(parents=True, exist_ok=True)
-            arm_results[arm] = RunResult(
-                arm=arm,
-                exit_code=1,
-                output_dir=arm_out,
-                accuracy=None,
-                total_tokens=None,
-                report_summary={"error": "arm_exception", "exception": repr(e)},
-            )
-
-    metaclaw_result = arm_results["metaclaw"]
-    mirix_result = arm_results["mirix"]
-
-    # Always emit reports.md, even when both arms failed.
-    report_md = render_reports_md(
-        metaclaw_result,
-        mirix_result,
-        days=days,
-        kept_tests=kept,
-        vendor_sha=_read_vendor_sha(),
-        generated_at=datetime.now(timezone.utc),
-        metaclaw_subdir=metaclaw_out.name,
-        mirix_subdir=mirix_out.name,
-    )
-    (out_dir / "reports.md").write_text(report_md, encoding="utf-8")
-    print(f"[runner] --arm both: wrote {out_dir / 'reports.md'}", flush=True)
-
-    return metaclaw_result, mirix_result
-
-
-__all__ = ["RunResult", "run_arm", "run_both"]
+__all__ = ["RunResult", "run_arm"]

@@ -1,11 +1,13 @@
 """MetaClaw 30-day evaluation harness for MIRIX.
 
 Vendors MetaClaw's runtime (skill backend + bench harness) and the 30-day
-dataset under ``evals/metaclaw/{vendor,data}/``.  The runtime has no
-dependency on ``third_party/MetaClaw/``.
+dataset under ``evals/metaclaw/{vendor,data}/``. The runtime has no dependency
+on ``third_party/MetaClaw/``.
 
-Slice #1 (this code): only ``--arm metaclaw`` is implemented end-to-end;
-MIRIX-as-skill-backend arms land in subsequent slices.
+Supported arms are MetaClaw baselines plus ``--arm mirix-generic``. MIRIX runs
+through the production memory path: add conversation turns with
+``/memory/add_sync``, let MIRIX's automatic procedural trigger evolve memory,
+and retrieve procedural memory through ``/memory/search``.
 """
 
 from __future__ import annotations

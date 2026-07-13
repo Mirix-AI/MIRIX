@@ -105,13 +105,13 @@ def run_run(
                       and flush_session after each scene.
 
     Returns:
-        The number of distill-round FAILURES recorded during this run (0 means
-        every graded round distilled cleanly under the ``--skill-records``
-        path; non-zero means the records pipeline silently degraded — the caller
-        (``cmd_run``) turns this into a non-zero process exit so the runner /
-        sanity gate refuse to trust the delta). Always 0 for non-records arms.
+        The number of per-round memory-ingest failures recorded during this run
+        (0 means every graded round was accepted under the ``--skill-records``
+        path; non-zero means the MIRIX memory pipeline degraded — the caller
+        turns this into a non-zero process exit so the runner refuses to trust
+        the delta). Always 0 when the per-round callback is disabled.
     """
-    # FIX7 / codex P2: the distill counters are process-global. The CLI
+    # The memory-round counters are process-global. The CLI
     # subprocess path starts clean, but an in-process caller (e.g. a test, or a
     # future harness that invokes run_run twice in one interpreter) would
     # otherwise leak the prior run's failures into this run's health snapshot.
@@ -199,10 +199,10 @@ def run_run(
     if len(per_file_reports) > 1:
         _generate_combined_reports(out_base, per_file_reports)
 
-    # FIX7 — silent-swallow defense. Persist the distill-round health so the
-    # post-run sanity gate (run_v1_eval.sh) and the runner can detect a records
-    # pipeline that degraded mid-run (HTTP 200 + ok:false rounds). Written for
-    # EVERY run; for non-records arms the counters are simply 0.
+    # Silent-swallow defense. Persist per-round memory health so the runner can
+    # detect a MIRIX memory pipeline that degraded mid-run (HTTP 200 + ok:false
+    # rounds). Written for every run; with the callback disabled the counters are
+    # simply 0.
     health = get_distill_health()
     health["skill_records"] = bool(skill_records)
     health_path = out_base / "distill_health.json"
@@ -214,9 +214,9 @@ def run_run(
         print(
             "\n"
             "================================================================\n"
-            f"  DISTILL FAILURES: {distill_failures}/"
-            f"{health.get('distill_attempts')} graded rounds failed to distill.\n"
-            "  The mirix-records pipeline DEGRADED mid-run — the accuracy delta\n"
+            f"  MEMORY INGEST FAILURES: {distill_failures}/"
+            f"{health.get('distill_attempts')} graded rounds failed to ingest.\n"
+            "  The MIRIX memory pipeline DEGRADED mid-run — the accuracy delta\n"
             "  is NOT trustworthy. See distill_health.json + proxy.log.\n"
             "================================================================"
         )

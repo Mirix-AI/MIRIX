@@ -79,6 +79,13 @@ _CONNECT_RETRY_MAX_BACKOFF_S = 4.0
 _CONNECT_FAILFAST_THRESHOLD = 8
 
 
+def _json_safe_value(value: Any) -> Any:
+    try:
+        return json.loads(json.dumps(value, ensure_ascii=False, default=str))
+    except Exception:
+        return str(value)
+
+
 class UpstreamUnreachableError(RuntimeError):
     """Fatal: the upstream LLM endpoint (e.g. OpenRouter) is unreachable.
 
@@ -648,6 +655,10 @@ class MetaClawAPIServer:
         # Buffer turns per session for memory ingestion (only cleared on session_done)
         self._session_memory_turns: dict[str, list] = {}
         self._session_memory_scopes: dict[str, str] = {}
+        # Latest OpenClaw model-call transcript per session. The generic MIRIX
+        # memory path consumes this after each graded round so procedural memory
+        # can learn from tool calls/results without enabling legacy skills APIs.
+        self._session_recent_transcripts: dict[str, dict[str, Any]] = {}
 
         # OPD teacher model client
         self._teacher_client: Optional[OpenAI] = None
@@ -686,6 +697,36 @@ class MetaClawAPIServer:
         # Set via set_trainer() after the trainer is constructed.
         self._trainer = None
         self._main_loop = None
+
+    def _pop_recent_transcript_for_ingest(self, session_id: str) -> Optional[dict[str, Any]]:
+        """Return the transcript that should accompany a generic-memory ingest.
+
+        OpenClaw's TUI/gateway path often does not send ``X-Session-Id`` on
+        OpenAI-compatible chat requests, so the proxy records those turns under
+        ``tui-<model>`` while the benchmark's per-round ingest callback uses the
+        dataset session id. The bench drives generic-memory ingests strictly
+        serially, so when the exact session id is absent the newest TUI transcript
+        is the round that just completed.
+        """
+        if session_id in self._session_recent_transcripts:
+            return self._session_recent_transcripts.pop(session_id)
+        tui_keys = [
+            key
+            for key in self._session_recent_transcripts
+            if isinstance(key, str) and key.startswith("tui-")
+        ]
+        if not tui_keys:
+            return None
+        newest_key = max(
+            tui_keys,
+            key=lambda key: self._session_recent_transcripts[key].get("captured_at", 0),
+        )
+        logger.info(
+            "[Memory] ingest_round session=%s using recent transcript captured under %s",
+            session_id,
+            newest_key,
+        )
+        return self._session_recent_transcripts.pop(newest_key)
 
     # ------------------------------------------------------------------ #
     # Tokenizer                                                            #
@@ -1133,51 +1174,57 @@ class MetaClawAPIServer:
             )
             return JSONResponse(content={"added": added})
 
-        @app.post("/v1/skills/distill_round")
-        async def skills_distill_round(
+        @app.post("/v1/memory/ingest_round")
+        async def memory_ingest_round(
             request: Request,
             authorization: Optional[str] = Header(default=None),
         ):
-            """C5 (new MIRIX-records harness) — push ONE graded round downstream.
+            """MIRIX generic memory harness — push ONE visible round downstream.
 
             Request body (built by the bench's ``_trigger_distill_round``):
               {"session_id","day","round_id","round_index","query","answer",
-               "session_done"}
+               "session_done","transcript"?}
 
-            ``query`` is the agent-visible message for the round (already carrying
-            the round-(t-1) ``[Previous Feedback]`` block); ``answer`` is the
-            agent's FINAL graded answer. NO oracle field (inline_score / eval.* /
-            feedback.options / reward) is accepted or read here — the body shape is
-            literally the agent-visible {question, answer}. The skill evolver
-            (``MirixEvolverAdapter``) forwards this to MIRIX's per-round distiller
-            and fires evolve-from-records every N completed graded rounds.
+            ``query`` is the agent-visible message for the round; ``answer`` is
+            the agent's final answer. ``transcript`` is optional and, when
+            absent, the proxy uses the latest OpenClaw messages it forwarded for
+            the same session. NO oracle field (inline_score / eval.* /
+            feedback.options / reward) is accepted or read here. The MIRIX
+            generic adapter forwards this as production ``/memory/add_sync``
+            input and leaves procedural evolution to MIRIX's automatic trigger.
 
-            Only active when ``skill_evolution_mode == "mirix_records"`` AND a
-            records-capable evolver is wired; otherwise returns 503 so a misrouted
-            call is loud rather than silently dropping the round. The legacy
-            ``raw_transcript`` path (``_session_turns`` + every-N-turns evolve) is
-            never touched by this endpoint.
+            Only active when ``skill_evolution_mode == "generic_memory"`` AND a
+            memory-ingest evolver is wired; otherwise returns 503 so a misrouted
+            call is loud rather than silently dropping the round.
             """
             owner: MetaClawAPIServer = request.app.state.owner
             await owner._check_auth(authorization)
             mode = getattr(owner.config, "skill_evolution_mode", "raw_transcript")
-            if mode != "mirix_records":
+            if mode != "generic_memory":
                 raise HTTPException(
                     status_code=503,
                     detail=(
-                        "skill_evolution_mode != 'mirix_records'; the per-round "
-                        "distill endpoint is inactive (old arms use the "
-                        "raw-transcript every-N-turns path)"
+                        "skill_evolution_mode != 'generic_memory'; the per-round "
+                        "memory ingest endpoint is inactive"
                     ),
                 )
             evolver = owner.skill_evolver
             if evolver is None or not hasattr(evolver, "distill_round"):
                 raise HTTPException(
                     status_code=503,
-                    detail="records evolver not wired (need METACLAW_EVOLVER_PROVIDER=mirix)",
+                    detail="memory evolver not wired (need METACLAW_EVOLVER_PROVIDER=mirix-generic)",
                 )
             body = await request.json()
             session_id = str(body.get("session_id", "")).strip()
+            session_done = bool(body.get("session_done", False))
+            proxy_transcript = (
+                owner._pop_recent_transcript_for_ingest(session_id)
+                if session_id and not session_done
+                else None
+            )
+            transcript = body.get("transcript")
+            if transcript is None:
+                transcript = proxy_transcript
             try:
                 result = await evolver.distill_round(
                     day=str(body.get("day", "")),
@@ -1185,11 +1232,12 @@ class MetaClawAPIServer:
                     round_index=int(body.get("round_index", 0)),
                     query=body.get("query", "") or "",
                     answer=body.get("answer", "") or "",
+                    transcript=transcript,
                     session_id=session_id or None,
-                    session_done=bool(body.get("session_done", False)),
+                    session_done=session_done,
                 )
             except Exception as e:  # noqa: BLE001 — never 500 the bench loop
-                logger.warning("[Skills] distill_round failed: %s", e)
+                logger.warning("[Memory] ingest_round failed: %s", e)
                 return JSONResponse(content={"ok": False, "error": str(e)})
             return JSONResponse(content=result)
 
@@ -1509,6 +1557,12 @@ class MetaClawAPIServer:
             response_msg = dict(assistant_msg)
             if response_msg.get("content") is None:
                 response_msg["content"] = ""
+            if getattr(self.config, "skill_evolution_mode", "raw_transcript") == "generic_memory":
+                self._session_recent_transcripts[session_id] = {
+                    "source": "metaclaw_proxy",
+                    "messages": _json_safe_value(messages),
+                    "assistant": _json_safe_value(response_msg),
+                }
 
             norm_msgs = _normalize_messages_for_template(messages)
             norm_resp = _normalize_messages_for_template([response_msg])[0]
@@ -1534,11 +1588,10 @@ class MetaClawAPIServer:
                     "response_text": response_text_simple,
                 }
                 evolution_every_n = getattr(self.config, "skill_evolution_every_n_turns", 10)
-                # C5: the legacy per-turn raw-transcript buffer+evolve runs ONLY in
-                # the default "raw_transcript" mode (= mirix-old-harness regression
-                # baseline + native). In "mirix_records" mode the bench drives
-                # evolution message-by-message via /v1/skills/distill_round, so this
-                # path is disabled to avoid double-evolving.
+                # The legacy per-turn raw-transcript buffer+evolve runs only in
+                # the default "raw_transcript" mode. In "generic_memory" mode the
+                # bench drives MIRIX memory ingestion message-by-message, so this
+                # path is disabled to avoid double-writing.
                 _evo_mode = getattr(self.config, "skill_evolution_mode", "raw_transcript")
                 _want_evolution = (
                     self.skill_evolver
@@ -1635,12 +1688,11 @@ class MetaClawAPIServer:
             # Skill evolution + memory: buffer turns for all modes (RL and skills_only).
             turn_entry = {"prompt_text": prompt_text, "response_text": response_text}
             evolution_every_n = getattr(self.config, "skill_evolution_every_n_turns", 10)
-            # C5 (codex P2-A): gate the legacy per-turn raw-transcript evolve on
-            # skill_evolution_mode here TOO, symmetric with the tokenizer-None
-            # (skills_only) branch above. In "mirix_records" mode the bench drives
-            # evolution message-by-message via /v1/skills/distill_round, so this
-            # tokenizer-present (RL/teacher) path must NOT also fire the every-N-turns
-            # evolve, or a records run with a real tokenizer loaded would double-evolve.
+            # Gate the legacy per-turn raw-transcript evolve on skill_evolution_mode
+            # here too, symmetric with the tokenizer-None branch above. In
+            # "generic_memory" mode the bench drives MIRIX memory ingestion
+            # message-by-message, so this tokenizer-present path must not also fire
+            # every-N-turns evolution.
             _evo_mode = getattr(self.config, "skill_evolution_mode", "raw_transcript")
             _want_evolution = (
                 self.skill_evolver

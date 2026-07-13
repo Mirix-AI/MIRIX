@@ -1,6 +1,6 @@
 """Unit tests for :mod:`evals.metaclaw.mirix_adapters.skills_adapter`.
 
-Uses :class:`httpx.MockTransport` to assert wire-level GET / POST shape
+Uses :class:`httpx.MockTransport` to assert wire-level GET shape
 against the MIRIX REST contract without touching the live server.
 
 Covered cases (per issue 03 acceptance criteria):
@@ -10,14 +10,12 @@ Covered cases (per issue 03 acceptance criteria):
       ``{general_skills, task_specific_skills, common_mistakes}`` shape
   3.  ``format_for_conversation`` is byte-identical to
       ``metaclaw.skill_manager.SkillManager.format_for_conversation``
-  4.  ``add_skill`` maps paper-category → MIRIX entry_type and posts correctly
-  5.  HTTP 409 on duplicate add → False
-  6.  Round-trip preserves paper category via ``[paper-category=X] `` prefix
+  4.  ``add_skill`` / ``add_skills`` do not perform direct MIRIX writes
+  5.  Category mapping/restoration for rows returned by search
 """
 
 from __future__ import annotations
 
-import json
 from typing import Callable, List
 
 import httpx
@@ -249,9 +247,6 @@ def test_skills_returns_empty_bank_on_backend_failure():
 
 
 def test_format_for_conversation_byte_identical_to_paper():
-    # Import the paper reference and compare against the adapter rendering.
-    from metaclaw.skill_manager import SkillManager  # vendored
-
     skills = [
         {"name": "skill-a", "description": "desc-a", "content": "body-a"},
         {"name": "skill-b", "description": "desc-b", "content": ""},
@@ -265,204 +260,76 @@ def test_format_for_conversation_byte_identical_to_paper():
 
     a = _make_adapter(handler)
 
-    # We don't construct a paper SkillManager (it needs a real dir).  Instead,
-    # invoke the unbound static-shape method by binding it to a dummy ``self``.
-    paper_render = SkillManager.format_for_conversation(SkillManager, skills)
+    paper_render = "\n".join(
+        [
+            "## Active Skills",
+            "\n### skill-a",
+            "_desc-a_",
+            "",
+            "body-a",
+            "\n### skill-b",
+            "_desc-b_",
+            "\n### skill-c",
+            "",
+            "body-c",
+        ]
+    )
     adapter_render = a.format_for_conversation(skills)
     assert adapter_render == paper_render
-    # Sanity: empty list -> empty string in both.
     assert a.format_for_conversation([]) == ""
-    assert SkillManager.format_for_conversation(SkillManager, []) == ""
 
 
 # --------------------------------------------------------------------------- #
-# 4.  add_skill posts correctly and maps category                               #
+# 4.  mutation hooks are no-ops                                                #
 # --------------------------------------------------------------------------- #
 
 
-def test_add_skill_posts_and_maps_known_entry_type():
+def test_add_skill_does_not_write_to_mirix():
     captured: List[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         captured.append(request)
-        if request.url.path == "/users/create_or_get":
-            return _user_resp("u-test")
-        body = json.loads(request.content)
-        return httpx.Response(
-            200,
-            json={
-                "success": True,
-                "skill": {
-                    "id": "proc_NEW",
-                    "name": body["name"],
-                    "entry_type": body["entry_type"],
-                    "description": body["description"],
-                    "instructions": body["instructions"],
-                    "version": "0.1.0",
-                    "created_at": "2026-05-28T00:00:00Z",
-                },
-            },
-        )
+        return httpx.Response(500, text="writes should not happen")
 
     a = _make_adapter(handler)
-    ok = a.add_skill(
-        {
-            "name": "deploy-thing",
-            "description": "deploys it",
-            "content": "step 1; step 2",
-            "category": "workflow",  # already a valid MIRIX entry_type
-        }
-    )
-    assert ok is True
-    post = next(
-        r for r in captured if r.method == "POST" and r.url.path == "/v1/skills"
-    )
-    body = json.loads(post.content)
-    assert body["name"] == "deploy-thing"
-    assert body["entry_type"] == "workflow"
-    # category is a valid MIRIX entry_type, so NO paper-category prefix added.
-    assert body["description"] == "deploys it"
-    assert body["instructions"] == "step 1; step 2"
-    assert body["user_id"] == "u-test"
-
-
-def test_add_skill_prefixes_description_for_unmappable_category():
-    captured: List[httpx.Request] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        captured.append(request)
-        if request.url.path == "/users/create_or_get":
-            return _user_resp("u-test")
-        return httpx.Response(200, json={"success": True, "skill": {}})
-
-    a = _make_adapter(handler)
-    ok = a.add_skill(
-        {
-            "name": "be-careful",
-            "description": "watch out for foo",
-            "content": "don't do x",
-            "category": "common_mistakes",
-        }
-    )
-    assert ok is True
-    post = next(
-        r for r in captured if r.method == "POST" and r.url.path == "/v1/skills"
-    )
-    body = json.loads(post.content)
-    # common_mistakes is not in MIRIX_ENTRY_TYPES -> coerced to "guide" + prefix.
-    assert body["entry_type"] == "guide"
-    assert body["description"] == "[paper-category=common_mistakes] watch out for foo"
-
-
-def test_add_skill_missing_name_returns_false():
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(500, text="should not be called")
-
-    a = _make_adapter(handler)
-    assert a.add_skill({}) is False
-    assert a.add_skill({"name": "   "}) is False
-
-
-def test_add_skills_increments_generation_when_any_added():
-    state = {"posts": 0}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/users/create_or_get":
-            return _user_resp("u-test")
-        state["posts"] += 1
-        return httpx.Response(200, json={"success": True, "skill": {}})
-
-    a = _make_adapter(handler)
-    assert a.generation == 0
-    added = a.add_skills(
+    assert a.add_skill({"name": "ignored", "description": "d", "content": "c"}) is False
+    assert a.add_skills(
         [
             {"name": "s1", "description": "d1", "content": "c1"},
             {"name": "s2", "description": "d2", "content": "c2"},
         ],
         category="general",
-    )
-    assert added == 2
-    assert a.generation == 1
-    # Empty batch: no increment.
-    assert a.add_skills([], category="general") == 0
-    assert a.generation == 1
+    ) == 0
+    assert a.generation == 0
+    assert captured == []
 
 
-# --------------------------------------------------------------------------- #
-# 5.  HTTP 409 → False                                                          #
-# --------------------------------------------------------------------------- #
-
-
-def test_add_skill_409_returns_false():
-    def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/users/create_or_get":
-            return _user_resp("u-test")
-        return httpx.Response(
-            409,
-            json={"detail": "Skill with name 'dup' already exists (ID: proc_X)"},
-        )
-
-    a = _make_adapter(handler)
-    assert a.add_skill({"name": "dup", "description": "d", "content": "c"}) is False
-
-
-def test_add_skill_500_returns_false():
-    def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/users/create_or_get":
-            return _user_resp("u-test")
-        return httpx.Response(500, text="db oops")
-
-    a = _make_adapter(handler)
-    assert a.add_skill({"name": "x", "description": "d", "content": "c"}) is False
-
-
-# --------------------------------------------------------------------------- #
-# 6.  Round-trip preserves paper category via [paper-category=X] prefix         #
-# --------------------------------------------------------------------------- #
-
-
-def test_round_trip_preserves_paper_category():
-    """add_skill(category='coding') -> server stores prefixed desc ->
-    retrieve() restores category='coding' on read."""
-    stored: dict = {}
+def test_search_rows_restore_prefixed_paper_category():
+    row = {
+        "memory_type": "procedural",
+        "id": "proc_RT",
+        "name": "rt-skill",
+        "description": "[paper-category=coding] round-trip me",
+        "instructions": "step",
+        "entry_type": "guide",
+    }
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/users/create_or_get":
             return _user_resp("u-test")
-        if request.method == "POST" and request.url.path == "/v1/skills":
-            body = json.loads(request.content)
-            stored["row"] = {
-                "id": "proc_RT",
-                "name": body["name"],
-                "description": body["description"],
-                "instructions": body["instructions"],
-                "entry_type": body["entry_type"],
-            }
-            return httpx.Response(200, json={"success": True, "skill": stored["row"]})
         if request.method == "GET" and request.url.path == "/memory/search":
-            rows = [stored["row"]] if stored else []
             return httpx.Response(
                 200,
-                json={"success": True, "results": rows, "count": len(rows),
-                      "total_count": len(rows)},
+                json={
+                    "success": True,
+                    "results": [row],
+                    "count": 1,
+                    "total_count": 1,
+                },
             )
         return httpx.Response(404)
 
     a = _make_adapter(handler)
-    ok = a.add_skill(
-        {
-            "name": "rt-skill",
-            "description": "round-trip me",
-            "content": "step",
-            "category": "coding",
-        }
-    )
-    assert ok is True
-    # Server-side, description was prefixed.
-    assert stored["row"]["description"].startswith("[paper-category=coding] ")
-    assert stored["row"]["entry_type"] == "guide"
-
-    # Now read back via retrieve() — category should be restored, description clean.
     out = a.retrieve("rt-skill")
     assert len(out) == 1
     assert out[0]["name"] == "rt-skill"
@@ -470,7 +337,6 @@ def test_round_trip_preserves_paper_category():
     assert out[0]["description"] == "round-trip me"
     assert out[0]["content"] == "step"
 
-    # And via .skills, the row should land in task_specific_skills["coding"].
     snap = a.skills
     assert "coding" in snap["task_specific_skills"]
     assert snap["task_specific_skills"]["coding"][0]["name"] == "rt-skill"

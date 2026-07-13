@@ -14,7 +14,7 @@ cross-paper number.
 - **Agent**: OpenClaw 2026.5.18, `coding` profile — 19 tools available; actually used `exec`/`write`/`read`/`edit`.
 - **Single controlled variable** (the A/B): the skill produce/retrieve module.
   - `metaclaw` arm = native vendored skill provider.
-  - `mirix` arm = MIRIX procedural-memory backend (produce via `/v1/skills/evolve`, retrieve via 4096-dim embedding search, `MIRIX_SKILL_SEARCH_METHOD=embedding`).
+  - `mirix` arm = historical MIRIX procedural-memory backend from this archived run. This arm used a removed direct skill-evolution interface; current MIRIX evals should use `mirix-generic`.
   - Everything else identical (same harness, agent config, feedback chain, endpoint, scoring). Both arms start from an empty skill bank.
 - **Runs**: `metaclaw30-agentfix-20260602T230234Z`, `mirix30-agentfix-20260602T230238Z` (each 346/346 complete).
 

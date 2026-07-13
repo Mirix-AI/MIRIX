@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import urllib.request
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -271,6 +272,59 @@ def test_prepare_output_dir_existing_dir(tmp_path: Path) -> None:
     assert out.parent == existing
     assert out.name.startswith("infer_mytest_")
     assert out.exists()
+
+
+def test_trigger_distill_round_includes_optional_transcript(monkeypatch) -> None:
+    from src.infer.infer_cmd import _trigger_distill_round, reset_distill_health
+
+    captured: dict = {}
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return b'{"ok": true}'
+
+    def fake_urlopen(req, timeout):
+        captured["timeout"] = timeout
+        captured["body"] = json.loads(req.data.decode("utf-8"))
+        return _Response()
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    reset_distill_health()
+
+    transcript = {
+        "messages": [
+            {"role": "user", "content": "Q"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "call_1", "function": {"name": "read_file"}}
+                ],
+            },
+        ]
+    }
+    ok = _trigger_distill_round(
+        "session-1",
+        "day01",
+        "r1",
+        1,
+        "Q",
+        "A",
+        proxy_port=31337,
+        transcript=transcript,
+    )
+
+    assert ok is True
+    assert captured["timeout"] == 600
+    assert captured["body"]["transcript"] == transcript
+    assert captured["body"]["query"] == "Q"
+    assert captured["body"]["answer"] == "A"
+    assert captured["body"]["session_done"] is False
 
 
 # ---------------------------------------------------------------------------

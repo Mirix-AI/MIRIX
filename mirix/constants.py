@@ -84,18 +84,18 @@ OPENAI_CONTEXT_WINDOW_ERROR_SUBSTRING = "maximum context length"
 IN_CONTEXT_MEMORY_KEYWORD = "CORE_MEMORY"
 
 MAX_CHAINING_STEPS = int(os.getenv("MAX_CHAINING_STEPS", "10"))
-# Procedural skill-evolve (eval / POST /v1/skills/evolve) drives ONE persistent
-# procedural agent statelessly per call. A skill round can survey existing skills
-# and create/edit a few, so it needs a larger chaining (tool-use) budget than the
-# default chat path — but with the skill tools correctly bound the curator
-# converges in ~2-5 steps. The cap counts LLM turns; an edit-heavy run is serial
+# Automatic procedural-memory evolution drives one persistent procedural agent
+# statelessly per evolution step. A curator pass can survey existing skills and
+# create/edit a few, so it needs a larger chaining (tool-use) budget than the
+# default chat path. With the skill tools correctly bound the curator converges
+# in ~2-5 steps. The cap counts LLM turns; an edit-heavy run is serial
 # (skill_list -> per edit skill_read + skill_edit -> finish_memory_update), so the
 # worst case is ~2N+2 turns for N edits. With the default edit budget capped at
 # SKILL_EDIT_BUDGET_MAX (6) that is ~14, so 15 leaves one turn of headroom while
 # still BOUNDING a pathological spin to ~15*~12s (~3 min) instead of running the
-# loop out to a 600s timeout. Overridable via env; only the evolve path passes
-# this into step(max_chaining_steps=...), so the global MAX_CHAINING_STEPS for
-# normal meta-agent flow is untouched.
+# loop out to a 600s timeout. Overridable via env; only the procedural evolution
+# path passes this into step(max_chaining_steps=...), so normal meta-agent flow
+# remains governed by MAX_CHAINING_STEPS.
 SKILL_EVOLVE_MAX_CHAINING_STEPS = int(
     os.getenv("SKILL_EVOLVE_MAX_CHAINING_STEPS", "15")
 )

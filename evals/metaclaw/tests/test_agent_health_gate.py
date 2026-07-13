@@ -1,7 +1,7 @@
 """H2 — Sanity gate also asserts AGENT-EXECUTION health.
 
-The FIX7 sanity gate verified the distill/evolve/records pipeline but NEVER
-checked that the *agent itself* produced answers. A network-degenerate run
+The memory-ingest sanity gate verifies the MIRIX callback path, but it does not
+check that the *agent itself* produced answers. A network-degenerate run
 (every day04+ round errored with a GatewayClientRequestError /
 EmbeddedAttemptSessionTakeoverError / connect failure, pass-rate ~0) would
 FALSE-PASS the gate and its 0% delta would be trusted.
