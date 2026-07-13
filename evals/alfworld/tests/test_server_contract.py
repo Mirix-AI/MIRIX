@@ -17,6 +17,7 @@ from evals.alfworld.mirix_adapter import (
     build_episode_session_id,
     build_meta_agent_config,
 )
+from evals.testing import endpoint_source, query_param_names, routes_by_path
 from mirix.schemas.agent import AgentState
 from mirix.schemas.auto_dream import AutoDreamRequest, AutoDreamResponse
 from mirix.schemas.client import Client, ClientUpdate
@@ -28,31 +29,7 @@ from mirix.server.rest_api import (
     CreateOrGetClientRequest,
     InitializeMetaAgentRequest,
     _procedural_memory_response,
-    router,
 )
-
-
-def _routes_by_path() -> dict[str, set[str]]:
-    routes: dict[str, set[str]] = {}
-    for route in router.routes:
-        if hasattr(route, "path"):
-            routes.setdefault(route.path, set()).update(
-                getattr(route, "methods", None) or set()
-            )
-    return routes
-
-
-def _query_param_names(path: str, method: str) -> set[str]:
-    names: set[str] = set()
-    for route in router.routes:
-        if getattr(route, "path", None) != path:
-            continue
-        if method not in (getattr(route, "methods", None) or set()):
-            continue
-        dependant = getattr(route, "dependant", None)
-        if dependant is not None:
-            names.update(param.name for param in dependant.query_params)
-    return names
 
 
 # ---------------------------------------------------------------------------
@@ -61,7 +38,7 @@ def _query_param_names(path: str, method: str) -> set[str]:
 
 
 def test_every_endpoint_the_harness_calls_exists():
-    routes = _routes_by_path()
+    routes = routes_by_path()
 
     assert "POST" in routes.get("/clients/create_or_get", set())
     assert "PATCH" in routes.get("/clients/{client_id}", set())
@@ -82,13 +59,19 @@ def test_endpoints_accept_the_query_params_the_adapter_sends():
         "search_field",
         "search_method",
         "user_id",
-    } <= _query_param_names("/memory/search", "GET")
+    } <= query_param_names("/memory/search", "GET")
 
     # auto_dream targets the eval user via ?user_id=...
-    assert "user_id" in _query_param_names("/memory/auto_dream", "POST")
+    assert "user_id" in query_param_names("/memory/auto_dream", "POST")
 
     # list_agents sends ?limit=1000.
-    assert "limit" in _query_param_names("/agents", "GET")
+    assert "limit" in query_param_names("/agents", "GET")
+
+
+def test_search_envelope_still_exposes_the_results_key():
+    """search_skills reads payload["results"]; the envelope is a handler-built
+    dict with no response model, so pin the key at handler-source level."""
+    assert '"results"' in endpoint_source("search_memory")
 
 
 def test_agents_response_rows_carry_id_and_agent_type():

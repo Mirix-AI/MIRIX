@@ -25,10 +25,12 @@ Data and pipeline are separated:
 
 import argparse
 import asyncio
+import hashlib
 import json
 import re
 import sys
 import time
+import uuid
 from pathlib import Path
 from typing import Dict, List
 
@@ -71,9 +73,10 @@ def count_messages(session: Dict) -> int:
 def build_session_id(*parts: str) -> str:
     """Mint a server-valid session id: [A-Za-z0-9_-]+, max 64 chars.
 
-    The last part is the distinguishing suffix (s01/s02/boundary); when the
-    total overflows, truncate the head and keep the suffix intact so ids for
-    different sessions never collapse into one.
+    The last part is the distinguishing suffix (s01/s02/boundary) and is kept
+    intact. When the head overflows its budget, the overflow is replaced with
+    a stable hash of the FULL head so two long heads sharing a prefix (e.g.
+    two long conversation ids) can never collapse into one session id.
     """
     cleaned = [
         re.sub(r"[^A-Za-z0-9_-]+", "-", str(p)).strip("-") for p in parts if str(p)
@@ -81,14 +84,16 @@ def build_session_id(*parts: str) -> str:
     cleaned = [c for c in cleaned if c]
     if not cleaned:
         return "session"
-    suffix = cleaned[-1][:63]
+    suffix = cleaned[-1][:32]
     head = "-".join(cleaned[:-1])
     if not head:
         return suffix
     head_budget = 64 - len(suffix) - 1
-    if head_budget < 1:
-        return suffix
-    return f"{head[:head_budget].rstrip('-')}-{suffix}"
+    if len(head) > head_budget:
+        digest = hashlib.sha1(head.encode("utf-8")).hexdigest()[:8]
+        keep = head_budget - len(digest) - 1
+        head = f"{head[:keep].rstrip('-')}-{digest}" if keep >= 1 else digest
+    return f"{head}-{suffix}"
 
 
 # ---------------------------------------------------------------------------
@@ -215,7 +220,8 @@ def main():
     demo = ProceduralMemoryDemo(config_path=args.config)
     # Session ids must be run-unique: reruns reusing an id would append turns
     # to an already-distilled session, which the distiller never revisits.
-    run_token = time.strftime("%Y%m%d-%H%M%S")
+    # The random tail keeps two runs started in the same second distinct.
+    run_token = f"{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
 
     print_header("Procedural Memory Demo")
     print(f"  Config: {args.config}")
