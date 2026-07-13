@@ -17,11 +17,12 @@ MIRIX only through the generic memory REST API; the wire contract is pinned by
 `tests/test_server_contract.py` in this package.
 
 1. `pip install -e ".[eval]"` (adds fastapi/uvicorn/httpx/click/pyyaml/etc.).
-2. **Dataset (not in git):** `evals/metaclaw/data/` (~38 MB — `all_tests.json`,
-   `eval/day01..day30/`, `openclaw_cfg/`, `workspaces/`) is gitignored by the
-   broad `data/` rule. Copy it out-of-band from a machine that has it, or
-   re-vendor it from upstream MetaClaw at the exact pin recorded in
-   `evals/metaclaw/METACLAW_VERSION`.
+2. **Dataset (not in git):** `evals/metaclaw/data/` (~38 MB —
+   `all_tests_metaclaw.json` (the file the runner slices), `all_tests.json`,
+   `eval/day01..day30/`, `openclaw_cfg/`, `openclaw_state/`, `workspaces/`)
+   is gitignored by the broad `data/` rule. Copy it out-of-band from a machine
+   that has it, or re-vendor it from upstream MetaClaw at the exact pin
+   recorded in `evals/metaclaw/METACLAW_VERSION`.
 3. Start MIRIX (needs Postgres + Redis, see the repo root README):
    `python scripts/start_server.py --port 8531`.
 4. Put `OPENROUTER_API_KEY=…` in the repo-root `.env` (or export

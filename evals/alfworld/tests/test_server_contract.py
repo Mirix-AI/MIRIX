@@ -70,8 +70,12 @@ def test_endpoints_accept_the_query_params_the_adapter_sends():
 
 def test_search_envelope_still_exposes_the_results_key():
     """search_skills reads payload["results"]; the envelope is a handler-built
-    dict with no response model, so pin the key at handler-source level."""
-    assert '"results"' in endpoint_source("search_memory")
+    dict with no response model, so pin the key at handler-source level.
+
+    Pin the success-path assignment specifically — the bare key '"results"'
+    also appears in the handler's error envelopes, which would keep a loose
+    pin green even after the success envelope dropped the key."""
+    assert '"results": all_results' in endpoint_source("search_memory")
 
 
 def test_agents_response_rows_carry_id_and_agent_type():

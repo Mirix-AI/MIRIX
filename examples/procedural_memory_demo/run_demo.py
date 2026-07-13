@@ -51,6 +51,7 @@ DEFAULT_DATA = DATA_DIR / "conversations.json"
 # Data loading
 # ---------------------------------------------------------------------------
 
+
 def load_conversations(path: Path) -> List[Dict]:
     with path.open("r", encoding="utf-8") as f:
         return json.load(f)
@@ -90,7 +91,9 @@ def build_session_id(*parts: str) -> str:
         return suffix
     head_budget = 64 - len(suffix) - 1
     if len(head) > head_budget:
-        digest = hashlib.sha1(head.encode("utf-8")).hexdigest()[:8]
+        # 16 hex chars (64 bits): birthday-safe for any realistic id count,
+        # unlike an 8-char slice which collides after ~2^16 distinct heads.
+        digest = hashlib.sha256(head.encode("utf-8")).hexdigest()[:16]
         keep = head_budget - len(digest) - 1
         head = f"{head[:keep].rstrip('-')}-{digest}" if keep >= 1 else digest
     return f"{head}-{suffix}"
@@ -100,8 +103,14 @@ def build_session_id(*parts: str) -> str:
 # Pipeline
 # ---------------------------------------------------------------------------
 
+
 class ProceduralMemoryDemo:
-    def __init__(self, config_path: str, client_id: str = "proc-demo", org_id: str = "proc-demo-org"):
+    def __init__(
+        self,
+        config_path: str,
+        client_id: str = "proc-demo",
+        org_id: str = "proc-demo-org",
+    ):
         self.client = MirixClient(
             client_id=client_id,
             org_id=org_id,
@@ -125,13 +134,15 @@ class ProceduralMemoryDemo:
         The top-level session_id is what routes the turns into the Conversation
         Message Store — without it no procedural skill can be distilled.
         """
-        return asyncio.run(self.client.add(
-            user_id=self.user_id,
-            messages=[{"role": "user", "content": chunk}],
-            chaining=True,
-            session_id=session_id,
-            async_add=False,
-        ))
+        return asyncio.run(
+            self.client.add(
+                user_id=self.user_id,
+                messages=[{"role": "user", "content": chunk}],
+                chaining=True,
+                session_id=session_id,
+                async_add=False,
+            )
+        )
 
     def consolidate(self, last_n_sessions: int, boundary_session_id: str) -> Dict:
         """Distill the sealed sessions into procedural skills.
@@ -143,34 +154,47 @@ class ProceduralMemoryDemo:
         session's first appearance), and the previous consolidation's boundary
         occupies one slot in this batch — hence the +1 slack.
         """
-        asyncio.run(self.client.add(
-            user_id=self.user_id,
-            messages=[{"role": "user", "content": "Consolidation boundary."}],
-            chaining=False,
-            session_id=boundary_session_id,
-            async_add=False,
-        ))
-        return asyncio.run(self.client.auto_dream(
-            user_id=self.user_id,
-            mode="procedural",
-            last_n_sessions=last_n_sessions + 1,
-        ))
+        asyncio.run(
+            self.client.add(
+                user_id=self.user_id,
+                messages=[{"role": "user", "content": "Consolidation boundary."}],
+                chaining=False,
+                session_id=boundary_session_id,
+                async_add=False,
+            )
+        )
+        return asyncio.run(
+            self.client.auto_dream(
+                user_id=self.user_id,
+                mode="procedural",
+                last_n_sessions=last_n_sessions + 1,
+            )
+        )
 
-    def search_memories(self, query: str, memory_type: str = "all",
-                        method: str = "bm25", limit: int = 20) -> List[Dict]:
+    def search_memories(
+        self,
+        query: str,
+        memory_type: str = "all",
+        method: str = "bm25",
+        limit: int = 20,
+    ) -> List[Dict]:
         """Search memories."""
-        results = asyncio.run(self.client.search(
-            user_id=self.user_id,
-            query=query,
-            memory_type=memory_type,
-            search_method=method,
-            limit=limit,
-        ))
+        results = asyncio.run(
+            self.client.search(
+                user_id=self.user_id,
+                query=query,
+                memory_type=memory_type,
+                search_method=method,
+                limit=limit,
+            )
+        )
         return results.get("results", []) if results.get("success") else []
 
     def get_procedural_memories(self) -> List[Dict]:
         """Get all procedural memories (skills)."""
-        items = self.search_memories("*", memory_type="procedural", method="bm25", limit=50)
+        items = self.search_memories(
+            "*", memory_type="procedural", method="bm25", limit=50
+        )
         return items
 
 
@@ -178,10 +202,11 @@ class ProceduralMemoryDemo:
 # Display
 # ---------------------------------------------------------------------------
 
+
 def print_header(text: str):
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"  {text}")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
 
 
 def print_skill(skill: Dict, idx: int):
@@ -209,11 +234,18 @@ def print_skill(skill: Dict, idx: int):
 # Main
 # ---------------------------------------------------------------------------
 
+
 def main():
     parser = argparse.ArgumentParser(description="Procedural Memory Demo")
-    parser.add_argument("--config", type=str, required=True, help="Path to MIRIX config YAML.")
-    parser.add_argument("--data", type=Path, default=DEFAULT_DATA, help="Path to conversations JSON.")
-    parser.add_argument("--user-id", type=str, default="proc-demo-user", help="User ID for the demo.")
+    parser.add_argument(
+        "--config", type=str, required=True, help="Path to MIRIX config YAML."
+    )
+    parser.add_argument(
+        "--data", type=Path, default=DEFAULT_DATA, help="Path to conversations JSON."
+    )
+    parser.add_argument(
+        "--user-id", type=str, default="proc-demo-user", help="User ID for the demo."
+    )
     args = parser.parse_args()
 
     conversations = load_conversations(args.data)
@@ -249,9 +281,13 @@ def main():
             if date_time:
                 chunk = f"The conversation is timestamped at {date_time}.\n\n{chunk}"
 
-            session_id = build_session_id("proc-demo", run_token, conv_id, f"s{idx:02d}")
-            print(f"\n  Ingesting session {idx}/{len(sessions)} "
-                  f"({msg_count} messages, session_id={session_id})...")
+            session_id = build_session_id(
+                "proc-demo", run_token, conv_id, f"s{idx:02d}"
+            )
+            print(
+                f"\n  Ingesting session {idx}/{len(sessions)} "
+                f"({msg_count} messages, session_id={session_id})..."
+            )
             start = time.perf_counter()
             response = demo.ingest_session(chunk, session_id)
             elapsed = time.perf_counter() - start
@@ -275,7 +311,9 @@ def main():
         # Check all memory types
         print_header("Memory Summary")
         for mem_type in ["episodic", "semantic", "core", "knowledge", "procedural"]:
-            items = demo.search_memories("*", memory_type=mem_type, method="bm25", limit=50)
+            items = demo.search_memories(
+                "*", memory_type=mem_type, method="bm25", limit=50
+            )
             print(f"  {mem_type}: {len(items)} items")
 
         # Show procedural memories in detail
@@ -287,7 +325,9 @@ def main():
             # Try different search
             skills_embed = demo.search_memories(
                 "routine recipe debugging workflow",
-                memory_type="procedural", method="bm25", limit=10
+                memory_type="procedural",
+                method="bm25",
+                limit=10,
             )
             if skills_embed:
                 print(f"  (Found {len(skills_embed)} via targeted search)")
@@ -302,7 +342,9 @@ def main():
         print_header("Episodic Memories (for reference)")
         episodic = demo.search_memories(
             "morning routine pasta debugging",
-            memory_type="episodic", method="bm25", limit=10
+            memory_type="episodic",
+            method="bm25",
+            limit=10,
         )
         for item in episodic[:5]:
             summary = item.get("summary", "")
