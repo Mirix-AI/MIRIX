@@ -479,15 +479,23 @@ def consolidate(
     seal_before: bool,
     model: str | None,
 ) -> dict[str, Any]:
+    # When sealing, the previous consolidation's sentinel session is itself a
+    # sealed-undistilled session and occupies one slot in this batch; without
+    # the +1 slack each round would distill one real episode short and the
+    # backlog would grow unboundedly.
+    effective_last_n = last_n_sessions + 1 if seal_before else last_n_sessions
     event: dict[str, Any] = {
         "after_episode": after_episode,
-        "last_n_sessions": last_n_sessions,
+        "last_n_sessions": effective_last_n,
+        "requested_last_n_sessions": last_n_sessions,
         "sealed": False,
     }
     if seal_before:
-        event["seal_result"] = mirix.seal_for_consolidation(run_id=run_id)
+        event["seal_result"] = mirix.seal_for_consolidation(
+            run_id=run_id, after_episode=after_episode
+        )
         event["sealed"] = True
-    result = mirix.auto_dream(last_n_sessions=last_n_sessions, model=model)
+    result = mirix.auto_dream(last_n_sessions=effective_last_n, model=model)
     event["auto_dream"] = result
     if isinstance(result, dict):
         event["skills_changed"] = result.get("skills_changed")

@@ -1,0 +1,59 @@
+[
+  {
+    "id": "proc-demo-1",
+    "title": "Morning routine and cooking workflow",
+    "sessions": [
+      {
+        "date_time": "2024-06-01 09:00:00",
+        "turns": [
+          {"speaker": "User", "text": "I've been working on optimizing my morning routine. Here's what I do every day:"},
+          {"speaker": "User", "text": "First, I wake up at 6:30 AM and immediately drink a glass of warm lemon water."},
+          {"speaker": "Assistant", "text": "That's a great way to start the day! Warm lemon water helps with hydration and digestion."},
+          {"speaker": "User", "text": "Then I do 15 minutes of stretching - I follow a specific sequence: neck rolls, shoulder stretches, hip openers, and hamstring stretches."},
+          {"speaker": "User", "text": "After stretching, I meditate for 10 minutes using the 4-7-8 breathing technique. Inhale for 4 seconds, hold for 7, exhale for 8."},
+          {"speaker": "Assistant", "text": "The 4-7-8 technique is well-known for reducing anxiety. Do you do anything else before breakfast?"},
+          {"speaker": "User", "text": "Yes, I journal for 5 minutes. I write three things I'm grateful for and one intention for the day."},
+          {"speaker": "User", "text": "Then I make my special green smoothie. The recipe is: 1 banana, a handful of spinach, 1 tablespoon of chia seeds, half an avocado, and almond milk."},
+          {"speaker": "Assistant", "text": "That's a nutrient-dense smoothie! The chia seeds are great for omega-3s."},
+          {"speaker": "User", "text": "The whole routine takes about 45 minutes. I've been doing it for 3 months and it has really improved my energy levels."},
+          {"speaker": "User", "text": "On weekends I also add a 20-minute yoga session after the stretching."},
+          {"speaker": "Assistant", "text": "Consistency is key! That's a well-structured morning routine."}
+        ]
+      },
+      {
+        "date_time": "2024-06-08 18:30:00",
+        "turns": [
+          {"speaker": "User", "text": "I wanted to share my pasta sauce recipe that my grandmother taught me."},
+          {"speaker": "Assistant", "text": "I'd love to hear it! Family recipes are the best."},
+          {"speaker": "User", "text": "Step 1: Heat olive oil in a large pan over medium heat. Add 4 cloves of minced garlic and cook for 30 seconds until fragrant."},
+          {"speaker": "User", "text": "Step 2: Add one diced onion and cook for 5 minutes until translucent. Then add a pinch of red pepper flakes."},
+          {"speaker": "User", "text": "Step 3: Pour in two cans of San Marzano tomatoes. Crush them by hand - never use a blender, it changes the texture."},
+          {"speaker": "User", "text": "Step 4: Add fresh basil leaves (about 10), a teaspoon of sugar to cut the acidity, salt and pepper to taste."},
+          {"speaker": "User", "text": "Step 5: Simmer on low heat for at least 45 minutes, stirring occasionally. The longer it simmers, the better."},
+          {"speaker": "User", "text": "The secret ingredient is a parmesan rind - drop it in while simmering. Remove it before serving."},
+          {"speaker": "Assistant", "text": "The parmesan rind trick is a classic! It adds incredible umami depth."},
+          {"speaker": "User", "text": "Exactly! This sauce freezes well too. I usually make a big batch on Sundays and freeze portions for the week."},
+          {"speaker": "User", "text": "Oh, and always cook pasta al dente - 1 minute less than the package says. Save a cup of pasta water to adjust the sauce consistency."},
+          {"speaker": "Assistant", "text": "Pasta water is liquid gold for sauces! The starch helps everything come together."}
+        ]
+      },
+      {
+        "date_time": "2024-06-15 14:00:00",
+        "turns": [
+          {"speaker": "User", "text": "I've developed a system for debugging code that works really well for me."},
+          {"speaker": "Assistant", "text": "I'd love to hear your debugging process!"},
+          {"speaker": "User", "text": "Step 1: Reproduce the bug consistently. If you can't reproduce it, you can't fix it. Write down the exact steps."},
+          {"speaker": "User", "text": "Step 2: Check the error logs first. 80% of the time, the answer is right there in the stack trace."},
+          {"speaker": "User", "text": "Step 3: Isolate the problem. Comment out code sections until you find the smallest reproducing case."},
+          {"speaker": "User", "text": "Step 4: Form a hypothesis about what's wrong. Don't just randomly change things - think about what could cause this specific behavior."},
+          {"speaker": "User", "text": "Step 5: Test your hypothesis with a targeted fix. If it doesn't work, go back to step 4."},
+          {"speaker": "User", "text": "Step 6: Once fixed, write a test that would have caught this bug. This prevents regression."},
+          {"speaker": "Assistant", "text": "That's a very systematic approach. The hypothesis-driven debugging is much better than random changes."},
+          {"speaker": "User", "text": "Absolutely. I also keep a debugging journal. Every hard bug I solve, I write down what it was, what caused it, and how I found it."},
+          {"speaker": "User", "text": "The journal has saved me so many times. When I see a similar symptom, I can look back at past bugs."},
+          {"speaker": "User", "text": "One more tip: if you're stuck for more than 30 minutes, take a break. Walk away for 10 minutes. Fresh eyes catch things tired eyes miss."}
+        ]
+      }
+    ]
+  }
+]

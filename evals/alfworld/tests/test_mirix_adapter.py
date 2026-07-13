@@ -35,14 +35,23 @@ def test_build_add_sync_payload_uses_session_id_without_filter_tags() -> None:
 
 def test_mirix_session_ids_match_server_validator() -> None:
     episode_id = build_episode_session_id("run:with/slashes and 汉字", 12)
-    boundary_id = build_consolidation_session_id("run:with/slashes and 汉字")
+    boundary_id = build_consolidation_session_id("run:with/slashes and 汉字", 5)
 
     assert episode_id == "alfworld-run_with_slashes_and-ep-0012"
-    assert boundary_id == "alfworld-run_with_slashes_and-boundary"
+    assert boundary_id == "alfworld-run_with_slashes_and-boundary-0005"
     assert re.fullmatch(r"[A-Za-z0-9_-]+", episode_id)
     assert re.fullmatch(r"[A-Za-z0-9_-]+", boundary_id)
     assert len(episode_id) <= 64
     assert len(boundary_id) <= 64
+
+
+def test_consecutive_consolidation_boundaries_differ() -> None:
+    """Sessions seal by first-appearance order: a reused boundary id would sit
+    at its round-1 position forever and never seal later episodes."""
+    first = build_consolidation_session_id("run-20260712", 5)
+    second = build_consolidation_session_id("run-20260712", 10)
+
+    assert first != second
 
 
 def test_render_episode_for_memory_includes_outcome_after_episode() -> None:

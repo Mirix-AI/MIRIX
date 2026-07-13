@@ -4,6 +4,12 @@ Procedural Memory Demo
 Tests MIRIX's ability to extract procedural knowledge (skills) from
 conversations that contain step-by-step workflows, recipes, and routines.
 
+Procedural memory is learned from session-id'd conversations: each session is
+ingested with a distinct ``session_id`` (no session id → no skill learning),
+and skills are distilled from SEALED sessions — a session only seals once a
+newer session exists, so the demo writes one tiny boundary session at the end
+and then drives consolidation explicitly via auto_dream(mode="procedural").
+
 Usage:
     # 1. Start MIRIX server first:
     #    python scripts/start_server.py --port 8531
@@ -20,10 +26,11 @@ Data and pipeline are separated:
 import argparse
 import asyncio
 import json
+import re
 import sys
 import time
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 # Allow importing mirix from repo root
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
@@ -61,6 +68,29 @@ def count_messages(session: Dict) -> int:
     return len(session.get("turns", []))
 
 
+def build_session_id(*parts: str) -> str:
+    """Mint a server-valid session id: [A-Za-z0-9_-]+, max 64 chars.
+
+    The last part is the distinguishing suffix (s01/s02/boundary); when the
+    total overflows, truncate the head and keep the suffix intact so ids for
+    different sessions never collapse into one.
+    """
+    cleaned = [
+        re.sub(r"[^A-Za-z0-9_-]+", "-", str(p)).strip("-") for p in parts if str(p)
+    ]
+    cleaned = [c for c in cleaned if c]
+    if not cleaned:
+        return "session"
+    suffix = cleaned[-1][:63]
+    head = "-".join(cleaned[:-1])
+    if not head:
+        return suffix
+    head_budget = 64 - len(suffix) - 1
+    if head_budget < 1:
+        return suffix
+    return f"{head[:head_budget].rstrip('-')}-{suffix}"
+
+
 # ---------------------------------------------------------------------------
 # Pipeline
 # ---------------------------------------------------------------------------
@@ -84,14 +114,41 @@ class ProceduralMemoryDemo:
         asyncio.run(self.client.initialize_meta_agent(config=self.config))
         self.user_id = user_id
 
-    def ingest_session(self, chunk: str) -> Dict:
-        """Ingest one conversation session synchronously (waits for processing)."""
+    def ingest_session(self, chunk: str, session_id: str) -> Dict:
+        """Ingest one conversation session synchronously (waits for processing).
+
+        The top-level session_id is what routes the turns into the Conversation
+        Message Store — without it no procedural skill can be distilled.
+        """
         return asyncio.run(self.client.add(
             user_id=self.user_id,
             messages=[{"role": "user", "content": chunk}],
             chaining=True,
-            filter_tags={"scope": "read_write", "kind": "conversation_session"},
+            session_id=session_id,
             async_add=False,
+        ))
+
+    def consolidate(self, last_n_sessions: int, boundary_session_id: str) -> Dict:
+        """Distill the sealed sessions into procedural skills.
+
+        Sessions only seal when a newer session exists, so we first write a
+        tiny boundary session to seal the last real one, then run auto_dream
+        in procedural mode instead of waiting for the in-band trigger. The
+        boundary id must be fresh per consolidation (sealing goes by a
+        session's first appearance), and the previous consolidation's boundary
+        occupies one slot in this batch — hence the +1 slack.
+        """
+        asyncio.run(self.client.add(
+            user_id=self.user_id,
+            messages=[{"role": "user", "content": "Consolidation boundary."}],
+            chaining=False,
+            session_id=boundary_session_id,
+            async_add=False,
+        ))
+        return asyncio.run(self.client.auto_dream(
+            user_id=self.user_id,
+            mode="procedural",
+            last_n_sessions=last_n_sessions + 1,
         ))
 
     def search_memories(self, query: str, memory_type: str = "all",
@@ -156,6 +213,9 @@ def main():
 
     conversations = load_conversations(args.data)
     demo = ProceduralMemoryDemo(config_path=args.config)
+    # Session ids must be run-unique: reruns reusing an id would append turns
+    # to an already-distilled session, which the distiller never revisits.
+    run_token = time.strftime("%Y%m%d-%H%M%S")
 
     print_header("Procedural Memory Demo")
     print(f"  Config: {args.config}")
@@ -175,7 +235,7 @@ def main():
         print("\n  Initializing MIRIX agent...")
         demo.initialize(user_id)
 
-        # Ingest each session
+        # Ingest each session under its own session_id (required for skills)
         for idx, session in enumerate(sessions, start=1):
             msg_count = count_messages(session)
             chunk = format_session(session, idx)
@@ -183,12 +243,28 @@ def main():
             if date_time:
                 chunk = f"The conversation is timestamped at {date_time}.\n\n{chunk}"
 
-            print(f"\n  Ingesting session {idx}/{len(sessions)} ({msg_count} messages)...")
+            session_id = build_session_id("proc-demo", run_token, conv_id, f"s{idx:02d}")
+            print(f"\n  Ingesting session {idx}/{len(sessions)} "
+                  f"({msg_count} messages, session_id={session_id})...")
             start = time.perf_counter()
-            response = demo.ingest_session(chunk)
+            response = demo.ingest_session(chunk, session_id)
             elapsed = time.perf_counter() - start
             status = response.get("status", "unknown")
             print(f"    Status: {status} ({elapsed:.1f}s)")
+
+        # Distill the ingested sessions into procedural skills
+        print_header("Consolidation (auto_dream mode=procedural)")
+        start = time.perf_counter()
+        dream = demo.consolidate(
+            last_n_sessions=len(sessions),
+            boundary_session_id=build_session_id(
+                "proc-demo", run_token, conv_id, "boundary"
+            ),
+        )
+        elapsed = time.perf_counter() - start
+        print(f"  skills_changed: {dream.get('skills_changed', 0)} ({elapsed:.1f}s)")
+        if dream.get("message"):
+            print(f"  message: {dream['message']}")
 
         # Check all memory types
         print_header("Memory Summary")
@@ -201,7 +277,7 @@ def main():
         skills = demo.get_procedural_memories()
         if not skills:
             print("  No procedural memories found.")
-            print("  This may indicate the procedural trigger did not fire.")
+            print("  Check the consolidation step above: skills_changed should be > 0.")
             # Try different search
             skills_embed = demo.search_memories(
                 "routine recipe debugging workflow",

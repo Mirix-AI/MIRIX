@@ -86,10 +86,15 @@ def build_episode_session_id(run_id: str, episode_index: int) -> str:
     return _build_session_id(run_id, f"ep-{episode_index:04d}")
 
 
-def build_consolidation_session_id(run_id: str) -> str:
-    """Return a MIRIX-compatible sentinel session id for consolidation."""
+def build_consolidation_session_id(run_id: str, after_episode: int) -> str:
+    """Return a MIRIX-compatible sentinel session id for one consolidation.
 
-    return _build_session_id(run_id, "boundary")
+    The id must be unique per consolidation: sessions seal by first-appearance
+    order, so reusing one boundary id would leave the latest real episode
+    unsealed from the second consolidation onward.
+    """
+
+    return _build_session_id(run_id, f"boundary-{after_episode:04d}")
 
 
 class MirixALFWorldAdapter:
@@ -304,11 +309,11 @@ class MirixALFWorldAdapter:
         _raise_for_status(resp, f"add_sync session {session_id}")
         return _json(resp)
 
-    def seal_for_consolidation(self, *, run_id: str) -> dict[str, Any]:
-        """Write a constant sentinel session so the latest real episode is sealed."""
+    def seal_for_consolidation(self, *, run_id: str, after_episode: int) -> dict[str, Any]:
+        """Write a fresh sentinel session so the latest real episode is sealed."""
 
         return self.ingest_session(
-            session_id=build_consolidation_session_id(run_id),
+            session_id=build_consolidation_session_id(run_id, after_episode),
             user_content=(
                 "ALFWorld consolidation boundary. This is a sentinel turn used "
                 "only to close the latest real episode session."

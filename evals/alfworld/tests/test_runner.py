@@ -7,11 +7,30 @@ from argparse import Namespace
 from pathlib import Path
 
 from evals.alfworld.runner import (
+    consolidate,
     select_items,
     should_consolidate,
     should_consolidate_final_remainder,
     should_ingest,
 )
+
+
+class _FakeAdapter:
+    """Captures seal/auto_dream calls the way runner.consolidate drives them."""
+
+    def __init__(self) -> None:
+        self.seal_calls: list[dict] = []
+        self.auto_dream_calls: list[dict] = []
+
+    def seal_for_consolidation(self, *, run_id: str, after_episode: int) -> dict:
+        self.seal_calls.append({"run_id": run_id, "after_episode": after_episode})
+        return {"success": True}
+
+    def auto_dream(self, *, last_n_sessions: int, model: str | None) -> dict:
+        self.auto_dream_calls.append(
+            {"last_n_sessions": last_n_sessions, "model": model}
+        )
+        return {"skills_changed": 1, "message": "ok"}
 
 
 def _write_split(root: Path, split: str, count: int) -> None:
@@ -85,3 +104,43 @@ def test_final_remainder_consolidates_only_partial_online_batch() -> None:
         consolidate_final_remainder=True,
     )
     assert should_consolidate_final_remainder(frozen_args, mirix, 14) is False
+
+
+def test_consolidate_seals_per_boundary_and_adds_sentinel_slack() -> None:
+    """The previous round's sentinel session occupies one slot in this round's
+    distillation batch, so sealing must widen last_n_sessions by one."""
+    fake = _FakeAdapter()
+
+    event = consolidate(
+        mirix=fake,
+        run_id="run-x",
+        after_episode=10,
+        last_n_sessions=5,
+        seal_before=True,
+        model=None,
+    )
+
+    assert fake.seal_calls == [{"run_id": "run-x", "after_episode": 10}]
+    assert fake.auto_dream_calls == [{"last_n_sessions": 6, "model": None}]
+    assert event["sealed"] is True
+    assert event["last_n_sessions"] == 6
+    assert event["requested_last_n_sessions"] == 5
+    assert event["skills_changed"] == 1
+
+
+def test_consolidate_without_sealing_keeps_requested_batch_size() -> None:
+    fake = _FakeAdapter()
+
+    event = consolidate(
+        mirix=fake,
+        run_id="run-x",
+        after_episode=5,
+        last_n_sessions=5,
+        seal_before=False,
+        model="openai/gpt-5.2",
+    )
+
+    assert fake.seal_calls == []
+    assert fake.auto_dream_calls == [{"last_n_sessions": 5, "model": "openai/gpt-5.2"}]
+    assert event["sealed"] is False
+    assert event["last_n_sessions"] == 5
