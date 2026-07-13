@@ -57,6 +57,12 @@ behavior is the eval contract.
 
 ## Running
 
+On this branch the MIRIX core (`mirix/`, `tests/`) is byte-identical to the
+`feat/procedural-memory-main-pr` production branch, so benchmark results
+exercise exactly the skill system proposed for `main`. The harness talks to
+MIRIX only over the generic memory REST API; the wire contract is pinned by
+`tests/test_server_contract.py` in this package.
+
 Install optional dependencies and ALFWorld data:
 
 ```bash
@@ -85,12 +91,18 @@ python -m evals.alfworld \
 
 This runs 10 ALFWorld episodes from the SkillOpt train path manifest. Each
 episode is written to MIRIX as one session. After episodes 5 and 10, the runner
-writes a constant sentinel session to seal the latest real episode, then calls:
+writes a fresh sentinel session (`...-boundary-0005`, `...-boundary-0010`) to
+seal the latest real episode — sessions seal by first appearance, so the
+sentinel id must be unique per consolidation — then calls:
 
 ```http
 POST /memory/auto_dream?user_id=<eval user>
-{"mode": "procedural", "last_n_sessions": 5}
+{"mode": "procedural", "last_n_sessions": 6}
 ```
+
+`last_n_sessions` is `--consolidate-every` plus one slot of slack: the previous
+consolidation's sentinel is itself a sealed-undistilled session and would
+otherwise crowd one real episode out of every batch.
 
 Outputs are written to `evals/alfworld/runs/<arm>-<timestamp>/`:
 

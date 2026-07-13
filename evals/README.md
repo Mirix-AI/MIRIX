@@ -1,5 +1,20 @@
 # Evaluation of MIRIX on public benchmarks
 
+This directory hosts several independent benchmarks:
+
+| Benchmark | Where | How to run |
+|---|---|---|
+| **MetaClaw 30-day** (procedural skill learning) | `evals/metaclaw/` | See `evals/metaclaw/README.md` → "Reproducing a run" |
+| **ALFWorld** (SkillOpt-aligned, online + frozen) | `evals/alfworld/` | See `evals/alfworld/README.md` → "Running" |
+| **MAB / LongMemEval / RULER** | `evals/mab/` | `evals/mab/run_mab_longmem_eval.sh` and the per-suite `*_eval.py` scripts |
+| **LoCoMo** (conversation memory) | this directory | Steps below |
+
+The MetaClaw and ALFWorld harnesses exercise the procedural-memory skill
+system; on the `eval/skill-test` branch the MIRIX core is byte-identical to
+`feat/procedural-memory-main-pr`, so their results reflect exactly the code
+proposed for `main`.
+
+The remainder of this file is the LoCoMo evaluation guide.
 
 1. Step 1:
 Install uv with `brew install uv`, then run:
