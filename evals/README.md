@@ -16,7 +16,13 @@ proposed for `main`.
 
 The remainder of this file is the LoCoMo evaluation guide.
 
-1. Step 1:
+0. Step 0 — dataset (not in git):
+`main_eval.py` expects the LoCoMo-10 dataset at `evals/data/locomo10.json`,
+which the broad `data/` gitignore rule keeps out of the repo. Download
+`locomo10.json` from the official LoCoMo release
+(https://github.com/snap-research/locomo) and place it there.
+
+1. Step 1 — install (from the repo root):
 Install uv with `brew install uv`, then run:
 ```
 uv venv
@@ -25,21 +31,20 @@ python -m ensurepip --upgrade
 python -m pip install -r requirements.txt
 ```
 
-2. Step 2:
-Start the backend:
-In the `MIRIX` folder, run:
+2. Step 2 — backend (from the repo root):
 ```
 uv run python scripts/start_server.py
 ```
 
-3. Step 3:
-In another terminal tab, run:
+3. Step 3 — run (in another terminal tab, from the `evals/` directory —
+`main_eval.py`, `./configs/0201c.yaml`, and `data/locomo10.json` are all
+resolved relative to it):
 ```
+cd evals
 uv run python main_eval.py --limit 1 --run-llm --mirix_config_path ./configs/0201c.yaml --output_path results/0201c
 ```
 
-4. Step 4:
-Evaluation. Run:
+4. Step 4 — metrics (still from `evals/`):
 ```
 uv run organize_results.py results/0201c
 ```
