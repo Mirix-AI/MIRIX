@@ -10,7 +10,7 @@ This directory hosts several independent benchmarks:
 | **LoCoMo** (conversation memory) | this directory | Steps below |
 
 The MetaClaw and ALFWorld harnesses exercise the procedural-memory skill
-system; on the `eval/skill-test` branch the MIRIX core is byte-identical to
+system; on the `skill-eval` branch the MIRIX core is byte-identical to
 `feat/procedural-memory-main-pr`, so their results reflect exactly the code
 proposed for `main`.
 
