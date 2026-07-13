@@ -1,11 +1,8 @@
-"""Goal 3 — general experience-driven skill self-evolution.
+"""General experience-driven skill self-evolution.
 
-This is the records-based curator's GENERAL analog. Where
-``skill_curator.run_records_evolution`` is hard-wired to the MetaClaw
-``SkillEvolutionRecordManager`` (day / round_id / quality_score / failure-first
-semantics), this drives the procedural skill agent (OUR paradigm:
-``skill_list`` / ``skill_read`` / ``skill_create`` / ``skill_edit``) from the
-GENERAL :class:`SkillExperience` store produced by Goal-2 distillation.
+This drives the procedural skill agent
+(``skill_list`` / ``skill_read`` / ``skill_create`` / ``skill_edit``) from the
+generic :class:`SkillExperience` store produced by session distillation.
 
 Flow (mirrors the load-bearing ordering of the records path so a context reset
 can never wipe the bookkeeping):
@@ -19,15 +16,15 @@ can never wipe the bookkeeping):
       -> snapshot AFTER -> diff skills -> compute influenced_skill_ids lineage
       -> mark_consumed(ids, run_id) + write lineage  (OUTSIDE the reset window)
 
-Unlike the MetaClaw path we do NOT authorize destructive deletes from
-experiences (a ``worth_avoiding`` lesson names a pitfall, not a harmful skill to
-destroy); v1 is creates/edits only. The edit-budget gate, the per-mutation size
-gate, and ``skill_create`` name-dedup (all already enforced inside the skill
-tools) keep mutations delta/incremental — never a wholesale rewrite.
+The curator does not authorize destructive deletes from experiences (a
+``worth_avoiding`` lesson names a pitfall, not a harmful skill to destroy); v1
+is creates/edits only. The edit-budget gate, the per-mutation size gate, and
+``skill_create`` name-dedup keep mutations delta/incremental — never a wholesale
+rewrite.
 
-A per-agent :class:`asyncio.Lock` (reused from :mod:`skill_curator`) serializes
-concurrent evolves on the same procedural agent, because the step is bracketed
-by in-context resets that would otherwise corrupt a concurrent run.
+A per-agent :class:`asyncio.Lock` serializes concurrent evolves on the same
+procedural agent, because the step is bracketed by in-context resets that would
+otherwise corrupt a concurrent run.
 """
 
 from __future__ import annotations
@@ -43,7 +40,12 @@ from mirix.schemas.skill_experience import (
     SKILL_EXPERIENCE_MAX_CONTENT_LEN as _CONTENT_CAP,
 )
 from mirix.schemas.user import User as PydanticUser
-from mirix.services.skill_curator import _diff_skills, _lock_for_agent
+from mirix.services.procedural_evolution_runtime import (
+    _attr,
+    _diff_skills,
+    _evolve_locks,
+    reset_agent_in_context_to_system,
+)
 
 logger = get_logger(__name__)
 
@@ -104,17 +106,11 @@ def _evidence_quote(evidence) -> str:
         return str(evidence)[:240]
 
 
-def _attr(obj, key):
-    if isinstance(obj, dict):
-        return obj.get(key)
-    return getattr(obj, key, None)
-
-
 async def _resolve_procedural_agent_state(server, actor, meta_agent_state):
     """Resolve the procedural memory agent child of the meta agent.
 
-    Mirrors ``rest_api._find_procedural_agent_state`` but scoped to THIS meta
-    agent's children, so each user/meta-agent drives its own procedural agent.
+    Deliberately scoped to THIS meta agent's children (no org-wide fallback),
+    so each user/meta-agent drives its own procedural agent.
     """
     children = await server.agent_manager.list_agents(
         actor=actor, parent_id=meta_agent_state.id
@@ -137,7 +133,7 @@ async def run_experience_evolution(
     experience_ids: Optional[List[str]] = None,
     experience_manager=None,
 ) -> Dict:
-    """Evolve skills from this (agent, user)'s PENDING experiences (Goal 3).
+    """Evolve skills from this (agent, user)'s PENDING experiences.
 
     This is the production wiring: it resolves the real procedural agent, builds
     the snapshot / step / lineage collaborators, and delegates the load-bearing
@@ -160,10 +156,7 @@ async def run_experience_evolution(
     from mirix.constants import SKILL_EVOLVE_MAX_CHAINING_STEPS
     from mirix.schemas.message import Message as PydanticMessage
     from mirix.schemas.mirix_message_content import TextContent
-    from mirix.server.rest_api import (
-        _reset_agent_in_context_to_system,
-        get_server,
-    )
+    from mirix.server.server import get_server
     from mirix.services.skill_experience_manager import SkillExperienceManager
 
     server = get_server()
@@ -230,7 +223,7 @@ async def run_experience_evolution(
         # hard-reset BEFORE and (in finally) AFTER the step so each evolution is
         # context-isolated. The consume/lineage bookkeeping runs AFTER this
         # returns (in the core), so the post-step reset can never wipe it.
-        await _reset_agent_in_context_to_system(server, proc_agent_state.id, actor)
+        await reset_agent_in_context_to_system(server, proc_agent_state.id, actor)
         try:
             await agent.step(
                 input_messages=[input_message],
@@ -241,9 +234,7 @@ async def run_experience_evolution(
             )
         finally:
             try:
-                await _reset_agent_in_context_to_system(
-                    server, proc_agent_state.id, actor
-                )
+                await reset_agent_in_context_to_system(server, proc_agent_state.id, actor)
             except Exception as cleanup_err:  # noqa: BLE001
                 logger.warning(
                     "Post-experience-evolve procedural context reset failed: %s",
@@ -304,8 +295,7 @@ async def _run_experience_evolution_core(
     :func:`run_experience_evolution`); ``None`` evolves the whole pending pool.
     """
     run_id = run_id or f"xprun-{uuid.uuid4().hex[:12]}"
-    lock = _lock_for_agent(agent_id)
-    async with lock:
+    async with _evolve_locks.acquire(agent_id):
         return await _evolve_locked(
             experience_manager=experience_manager,
             agent=agent,
@@ -347,7 +337,7 @@ async def _evolve_locked(
     exp_ids = [_attr(e, "id") for e in experiences]
 
     # 2) Aggregate -> count-driven budget. Map worth_avoiding -> n_high_fail and
-    #    worth_learning -> n_high_succ so the existing C4 formula (avoid weighted
+    #    worth_learning -> n_high_succ so the edit-budget formula (avoid weighted
     #    heavier than learn) applies unchanged.
     agg = await experience_manager.aggregate(ids=exp_ids)
     n_avoid = int(agg.get("n_worth_avoiding", 0) or 0)

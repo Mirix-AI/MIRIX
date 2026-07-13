@@ -33,6 +33,25 @@ def _validate_entry_type(value: Optional[str]) -> Optional[str]:
     return value
 
 
+def normalize_entry_type(value: Any) -> str:
+    """Coerce a legacy/free-form entry_type into the closed skill set.
+
+    Rows written before the skill schema carried free-form LLM output
+    ("process", "How-To", ...). Reads must never crash on that data, so the
+    schema normalizes instead of rejecting; strict validation of NEW values
+    stays in the write path (mirix/agent/tool_validators.py). Mirrors the
+    CASE mapping in scripts/migrate_procedural_to_skill.sql.
+    """
+    lowered = str(value).strip().lower() if value is not None else ""
+    if lowered in SKILL_ENTRY_TYPES:
+        return lowered
+    if "script" in lowered:
+        return "script"
+    if "guide" in lowered or "how" in lowered:
+        return "guide"
+    return "workflow"
+
+
 def _validate_triggers(triggers: Optional[List[str]]) -> Optional[List[str]]:
     if triggers is None:
         return triggers
@@ -78,10 +97,13 @@ class ProceduralMemoryItemBase(MirixBase):
     triggers: List[str] = Field(default_factory=list, description="Conditions indicating this skill is relevant")
     examples: List[dict] = Field(default_factory=list, description="Input/output examples for this skill")
 
-    @field_validator("entry_type")
+    @field_validator("entry_type", mode="before")
     @classmethod
-    def _check_entry_type(cls, value: str) -> str:
-        return _validate_entry_type(value)
+    def _check_entry_type(cls, value: Any) -> str:
+        # Lenient on purpose: this validator also runs on READS
+        # (to_pydantic -> model_validate with from_attributes), where legacy
+        # rows may hold pre-skill free-form values that must not crash reads.
+        return normalize_entry_type(value)
 
     @field_validator("triggers")
     @classmethod

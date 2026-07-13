@@ -106,7 +106,7 @@ def format_memories_for_prompt(memories: dict) -> str:
                 elif memory_type == "semantic":
                     text = item.get("name", "") + ": " + item.get("summary", "")
                 elif memory_type == "procedural":
-                    text = item.get("summary", "")
+                    text = item.get("name", "") + ": " + item.get("description", "")
                 elif memory_type == "resource":
                     text = item.get("title", "") + ": " + item.get("summary", "")
                 elif memory_type == "knowledge":

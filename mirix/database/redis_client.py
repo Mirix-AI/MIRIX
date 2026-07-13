@@ -701,8 +701,38 @@ class RedisMemoryClient:
         except Exception as e:
             logger.warning("Failed to create semantic index: %s", e)
 
+    @staticmethod
+    def _index_has_attribute(info, attribute: str) -> bool:
+        """True when an FT.INFO payload declares a field named `attribute`.
+
+        The attributes section is a nested list of str/bytes tokens whose exact
+        shape varies across redis-py/RediSearch versions, so walk it generically
+        instead of assuming positions.
+        """
+
+        def _texts(obj):
+            if isinstance(obj, (list, tuple)):
+                for item in obj:
+                    yield from _texts(item)
+            elif isinstance(obj, bytes):
+                yield obj.decode("utf-8", "ignore")
+            elif isinstance(obj, str):
+                yield obj
+
+        if not isinstance(info, dict):
+            return False
+        attributes = info.get("attributes") or info.get(b"attributes") or []
+        return any(text == attribute for text in _texts(attributes))
+
     async def _create_procedural_index(self) -> None:
-        """Create JSON-based index for procedural memory with 2 VECTOR fields."""
+        """Create JSON-based index for procedural memory with 2 VECTOR fields.
+
+        Upgrade-aware: an index created before the skill schema (summary /
+        summary_embedding / steps_embedding fields) persists across deploys and
+        would make every skill-field query miss Redis forever. When the existing
+        index lacks the skill fields, drop the INDEX ONLY (documents are kept)
+        and rebuild; RediSearch then re-indexes the prefix in the background.
+        """
         try:
             from redis.commands.search.field import NumericField, TagField, TextField, VectorField
             from redis.commands.search.index_definition import IndexDefinition, IndexType
@@ -710,18 +740,33 @@ class RedisMemoryClient:
             from mirix.constants import MAX_EMBEDDING_DIM
 
             try:
-                await self.client.ft(self.PROCEDURAL_INDEX).info()
-                logger.debug("Index %s already exists", self.PROCEDURAL_INDEX)
-                return
+                info = await self.client.ft(self.PROCEDURAL_INDEX).info()
             except Exception:
-                pass
+                info = None
+
+            if info is not None:
+                if self._index_has_attribute(info, "description_embedding"):
+                    logger.debug("Index %s already exists", self.PROCEDURAL_INDEX)
+                    return
+                try:
+                    await self.client.ft(self.PROCEDURAL_INDEX).dropindex(delete_documents=False)
+                    logger.info(
+                        "Dropped stale pre-skill procedural index %s; rebuilding with skill schema",
+                        self.PROCEDURAL_INDEX,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Failed to drop stale procedural index %s: %s", self.PROCEDURAL_INDEX, e
+                    )
+                    return
 
             schema = (
                 TextField("$.organization_id", as_name="organization_id"),
                 TextField("$.agent_id", as_name="agent_id"),
                 TextField("$.entry_type", as_name="entry_type"),
-                TextField("$.description", as_name="description"),
                 TextField("$.name", as_name="name"),
+                TextField("$.description", as_name="description"),
+                TextField("$.instructions", as_name="instructions"),
                 TagField("$.user_id", as_name="user_id"),
                 NumericField("$.created_at_ts", as_name="created_at_ts"),
                 TagField("$.filter_tags.scope", as_name="filter_tags_scope"),  # Explicit scope field

@@ -8,7 +8,46 @@ from mirix.schemas.procedural_memory import (
     ProceduralMemoryItemBase,
     ProceduralMemoryItemUpdate,
     ProceduralMemoryItemResponse,
+    normalize_entry_type,
 )
+
+
+class TestEntryTypeNormalization:
+    """Legacy free-form entry_type values must never crash reads.
+
+    The schema validator runs on every to_pydantic() (from_attributes reads),
+    so rows written before the skill schema ("process", "How-To", ...) are
+    normalized into the closed set instead of raising. Strict validation of
+    new values lives in the write path (tool_validators).
+    """
+
+    @pytest.mark.parametrize(
+        "legacy_value,expected",
+        [
+            ("workflow", "workflow"),
+            ("Guide", "guide"),
+            (" SCRIPT ", "script"),
+            ("process", "workflow"),
+            ("how-to", "guide"),
+            ("howto guide", "guide"),
+            ("shell script", "script"),
+            ("procedure", "workflow"),
+            ("", "workflow"),
+            (None, "workflow"),
+        ],
+    )
+    def test_normalize_entry_type(self, legacy_value, expected):
+        assert normalize_entry_type(legacy_value) == expected
+
+    def test_legacy_entry_type_does_not_crash_schema_read(self):
+        """Simulates reading a pre-skill row whose entry_type is free-form."""
+        item = ProceduralMemoryItemBase(
+            name="legacy-skill",
+            entry_type="process",
+            description="Written before the closed entry_type set existed",
+            instructions="Step 1: do the thing",
+        )
+        assert item.entry_type == "workflow"
 
 
 class TestProceduralMemoryItemBase:

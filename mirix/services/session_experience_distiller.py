@@ -1,4 +1,4 @@
-"""Goal 2 — General per-session experience distillation.
+"""General per-session experience distillation.
 
 Given the sealed, not-yet-distilled sessions in the Conversation Message Store,
 this distills each session's transcript, IN PARALLEL, into zero or more
@@ -23,8 +23,8 @@ Design points (CLAUDE.md async rules):
 * Per-session fan-out via ``asyncio.gather`` — each coroutine does ONE transcript
   fetch + ONE LLM call + N inserts, wrapped in try/except so one bad session can
   never crash the whole run.
-* The LLM completion reuses MIRIX's async :class:`LLMClient` exactly like
-  :class:`SkillSessionDistiller` (``send_llm_request`` → ``choices[0].message``).
+* The LLM completion reuses MIRIX's async :class:`LLMClient`
+  (``send_llm_request`` → ``choices[0].message``).
 * The system prompt is the rewritten general Experience-Distiller prompt at
   ``prompts/system/base/auto_dream_agent/procedural.txt``.
 
@@ -40,7 +40,12 @@ import asyncio
 import json
 from typing import Dict, List, Optional, Tuple
 
+from mirix.constants import (
+    DISTILLER_MAX_MESSAGE_CHARS,
+    DISTILLER_MAX_TRANSCRIPT_CHARS,
+)
 from mirix.log import get_logger
+from mirix.services.conversation_message_manager import owner_org as _owner_org
 from mirix.schemas.agent import AgentState
 from mirix.schemas.client import Client as PydanticClient
 from mirix.schemas.enums import MessageRole
@@ -62,24 +67,12 @@ logger = get_logger(__name__)
 
 # Per-transcript char budget. We keep the HEAD and TAIL (where the task framing
 # and the final user verdict / confirmation usually live) and elide the middle.
-_MAX_TRANSCRIPT_CHARS = 16000
+# Env-configurable (MIRIX_DISTILLER_MAX_TRANSCRIPT_CHARS) — see constants.py.
+_MAX_TRANSCRIPT_CHARS = DISTILLER_MAX_TRANSCRIPT_CHARS
 
-# Per-turn content cap so one giant turn can't dominate the transcript.
-_MAX_MESSAGE_CHARS = 2000
-
-
-def _owner_org(actor: PydanticClient) -> str:
-    """Resolve the organization the Conversation Message Store was written under.
-
-    Ingestion records turns under ``client.organization_id or DEFAULT_ORG_ID``
-    (the column is nullable, but the write always resolves the fallback). Every
-    read/mark of that store MUST mirror it, otherwise a NULL-org client would
-    read/persist under ``None`` and its sessions would never distill (and, having
-    never been marked, would retry forever).
-    """
-    from mirix.constants import DEFAULT_ORG_ID
-
-    return actor.organization_id or DEFAULT_ORG_ID
+# Per-turn content cap so one giant turn (often a large tool result) can't
+# dominate the transcript. Env-configurable (MIRIX_DISTILLER_MAX_MESSAGE_CHARS).
+_MAX_MESSAGE_CHARS = DISTILLER_MAX_MESSAGE_CHARS
 
 
 class _LLMCallError(Exception):
@@ -102,7 +95,7 @@ class _DistillFailed(Exception):
 
 
 def _load_distiller_prompt() -> str:
-    """Load the general Experience-Distiller system prompt (rewritten for Goal 2).
+    """Load the general Experience-Distiller system prompt.
 
     Uses the codebase-standard cached system-prompt loader (the same one the other
     distillers use) instead of a raw ``open()`` in the async path — it resolves to
@@ -366,6 +359,7 @@ class SessionExperienceDistiller:
                     credibility=credibility,
                     evidence=evidence[: _EVIDENCE_CAP],
                     status="pending",
+                    created_by_id=getattr(actor, "id", None),
                 )
                 created.append(exp)
             except Exception as e:  # noqa: BLE001 — one bad row mustn't drop the rest
@@ -387,7 +381,7 @@ class SessionExperienceDistiller:
         return created
 
     # ------------------------------------------------------------------ #
-    # LLM plumbing (mirrors SkillSessionDistiller)                        #
+    # LLM plumbing                                                        #
     # ------------------------------------------------------------------ #
 
     async def _call_llm(
@@ -558,10 +552,12 @@ class SessionExperienceDistiller:
         """Render conversation turns compactly as ``role: content`` lines.
 
         The source is the Conversation Message Store, so each turn already has a
-        REAL ``role`` ('user' | 'assistant') and a plain-text ``content`` — no
-        scaffolding, no tool-call flattening, no embeddings. We simply cap each
-        turn and bound the whole transcript by keeping the HEAD and TAIL (task
-        framing + final verdict) and eliding the middle.
+        REAL ``role`` ('user' | 'assistant' | 'tool') and a plain-text
+        ``content`` — no scaffolding, no embeddings. Tool turns (tool results
+        and serialized tool calls) are rendered like any other turn: the
+        distiller prompt treats tool errors/retries as strong signals. We cap
+        each turn and bound the whole transcript by keeping the HEAD and TAIL
+        (task framing + final verdict) and eliding the middle.
         """
         lines: List[str] = []
         for t in turns:
@@ -581,7 +577,7 @@ class SessionExperienceDistiller:
 
     @staticmethod
     def _role_of(t) -> str:
-        """The real turn role of a ConversationMessage ('user' | 'assistant')."""
+        """The real turn role of a ConversationMessage ('user'|'assistant'|'tool')."""
         role = getattr(t, "role", None)
         return getattr(role, "value", None) or str(role) or "unknown"
 

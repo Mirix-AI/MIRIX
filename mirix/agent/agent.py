@@ -986,7 +986,7 @@ class Agent(BaseAgent):
                 and len(response_message.tool_calls) > 1
             ):
                 self.logger.info(
-                    "Memory agent %s returned %d tool call(s); executing each sequentially",
+                    "Agent %s returned %d tool call(s); executing each sequentially",
                     self.agent_state.agent_type,
                     len(response_message.tool_calls),
                 )

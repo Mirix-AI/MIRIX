@@ -124,7 +124,8 @@ async def main():
 
                 elif memory_type == "procedural":
                     print(f"      Name: {item.get('name', 'N/A')}")
-                    print(f"      Procedure: {item.get('procedure_text', 'N/A')[:100]}...")
+                    print(f"      Description: {item.get('description', 'N/A')[:100]}...")
+                    print(f"      Instructions: {item.get('instructions', 'N/A')[:100]}...")
 
                 elif memory_type == "resources":
                     print(f"      Title: {item.get('title', 'N/A')}")

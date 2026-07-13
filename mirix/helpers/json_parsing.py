@@ -2,10 +2,7 @@
 
 These are pure, dependency-free utilities for robustly recovering a JSON object
 or array from a model reply that may wrap it in a ```json fenced block, plain
-fences, or surrounding prose. They carry NO benchmark/MetaClaw vocabulary so the
-general session-experience distiller (Goal 2) can depend on them without coupling
-to the MetaClaw eval distiller module. This is the canonical home for these
-helpers; ``skill_session_distiller`` keeps its own legacy copies for the eval path.
+fences, or surrounding prose.
 """
 
 from __future__ import annotations

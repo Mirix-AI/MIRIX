@@ -1,14 +1,11 @@
-"""ORM model for the general session-experience store (Goal 2).
+"""ORM model for the general session-experience store.
 
 A `SkillExperience` is one transferable lesson distilled from ONE work
-session's transcript (Goal-2 distillation) and later consumed by the procedural
-skill agent to create/edit skills (Goal-3 evolution).
-
-Unlike the MetaClaw-specific `SkillEvolutionRecord` (day/round semantics,
-success/failure ordering), this store is general: every experience is either
-`worth_learning` (an approach worth repeating) or `worth_avoiding` (a pitfall to
-avoid), scored by `importance` and `credibility` in [0,1]. There is NO external
-oracle — both are derived purely from the conversation content.
+session's transcript and later consumed by the procedural skill agent to
+create/edit skills. Every experience is either `worth_learning` (an approach
+worth repeating) or `worth_avoiding` (a pitfall to avoid), scored by
+`importance` and `credibility` in [0,1]. There is no external oracle: both are
+derived purely from the conversation content.
 
 Records start `pending`; an evolution run flips them to `consumed` (recording
 its run id in `consumed_by` + the skills it influenced in `influenced_skill_ids`),

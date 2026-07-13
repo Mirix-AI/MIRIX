@@ -452,10 +452,10 @@ class TestCuratorHygiene:
         assert "asyncio.run(" not in src
 
     def test_does_not_couple_to_metaclaw_record_store(self):
-        # The general curator must NOT drive the MetaClaw SkillEvolutionRecord
-        # store. Its docstring may CONTRAST against the records path (that's
-        # documentation), but no executable line may reference the MetaClaw
-        # manager/record types. Assert on code, stripping comments/docstrings.
+        # The general curator must NOT drive benchmark-specific record stores.
+        # Its docs may contrast against other paths, but no executable line may
+        # reference benchmark manager/record types. Assert on code, stripping
+        # comments/docstrings.
         import mirix.services.skill_experience_curator as mod
 
         src = inspect.getsource(mod)
@@ -467,14 +467,14 @@ class TestCuratorHygiene:
             "round_index",
             "quality_score",
         ]:
-            assert banned not in code_only, f"MetaClaw coupling leaked into code: {banned!r}"
+            assert banned not in code_only, f"benchmark coupling leaked into code: {banned!r}"
 
 
 def _strip_comments_and_docstrings(src: str) -> str:
     """Return ``src`` with comments and string/docstring literals removed.
 
-    Tokenize-based so a MetaClaw term inside a contrastive docstring or comment
-    does not trip the coupling assertion — only executable code is checked.
+    Tokenize-based so contrastive docs/comments do not trip the coupling
+    assertion — only executable code is checked.
     """
     import io
     import tokenize

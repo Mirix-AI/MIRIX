@@ -109,21 +109,19 @@ def print_memories(memories):
                         print()
 
                 elif memory_type == "procedural":
-                    # Procedural memory: procedure with summary (API doesn't return full details)
+                    # Procedural memory: skill-shaped rows.
                     for i, item in enumerate(items, 1):
-                        # API returns 'summary' not 'description'
-                        summary = item.get("summary", item.get("description", "N/A"))
+                        name = item.get("name") or "N/A"
+                        description = item.get("description") or "N/A"
+                        instructions = item.get("instructions") or ""
                         entry_type = item.get("entry_type", "N/A")
-                        # API doesn't return 'steps' in retrieve endpoint (only id, entry_type, summary)
-                        steps = item.get("steps", [])
+                        version = item.get("version")
 
-                        print(f"  [{i}] [{entry_type}] {summary}")
-                        if steps:
-                            print(f"      Steps ({len(steps)}):")
-                            for step_num, step in enumerate(steps, 1):
-                                print(f"        {step_num}. {step}")
-                        else:
-                            print("      Steps: Not included in response (use search API for full details)")
+                        suffix = f" v{version}" if version else ""
+                        print(f"  [{i}] [{entry_type}{suffix}] {name}")
+                        print(f"      Description: {description}")
+                        if instructions:
+                            print(f"      Instructions: {instructions[:200]}...")
                         print()
 
                 elif memory_type == "semantic":

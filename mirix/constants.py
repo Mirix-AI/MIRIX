@@ -309,7 +309,7 @@ SKILL_TRIGGER_MESSAGE_THRESHOLD = int(
 SKILL_TRIGGER_SESSION_THRESHOLD = int(os.getenv("SKILL_TRIGGER_SESSION_THRESHOLD", "5"))
 
 # ---------------------------------------------------------------------------
-# C4 — bounded, count-driven, quality-aware edit budget (skill evolution).
+# Bounded, count-driven, quality-aware edit budget (skill evolution).
 #
 # The budget is the MAX number of skill mutations (create+edit) a single
 # records-based evolution run may perform. It is driven by STRUCTURE-GATED
@@ -374,6 +374,27 @@ SKILL_EVOLVE_RECORDS_WINDOW = int(os.getenv("SKILL_EVOLVE_RECORDS_WINDOW", "5"))
 # before/after snapshots, the per-step system-context prefetch) keep their
 # explicit choice and are not governed by this default.
 PROCEDURAL_DEFAULT_SEARCH_METHOD = os.getenv("MIRIX_SKILL_SEARCH_METHOD", "hybrid")
+
+# Distiller transcript budgets (characters). The transcript fed to the
+# experience-distiller LLM is bounded twice: per turn, and for the whole
+# session (HEAD + TAIL kept, middle elided past the cap). Tool turns are part
+# of the transcript — work-process lessons live in tool errors/retries — so
+# the defaults are sized for tool-heavy sessions: 80K chars ≈ 20-25K tokens,
+# comfortably inside modern model windows while still bounding a pathological
+# session. Raise/lower via env per deployment model.
+DISTILLER_MAX_TRANSCRIPT_CHARS = int(
+    os.getenv("MIRIX_DISTILLER_MAX_TRANSCRIPT_CHARS", "80000")
+)
+DISTILLER_MAX_MESSAGE_CHARS = int(
+    os.getenv("MIRIX_DISTILLER_MAX_MESSAGE_CHARS", "8000")
+)
+
+# Retention window (days) for VERBATIM conversation turns in the
+# conversation_message store AFTER they have been distilled. Once distilled,
+# a turn's learning value lives in skill_experience rows; keeping the raw
+# transcript indefinitely is a pure PII liability. Pruning runs at the end of
+# each procedural distillation pass. Set to 0 (or negative) to keep forever.
+CONVERSATION_RETENTION_DAYS = int(os.getenv("MIRIX_CONVERSATION_RETENTION_DAYS", "30"))
 
 # Reciprocal Rank Fusion constant for the procedural hybrid lane. k=60 is the
 # canonical RRF constant (everalgo.rank.fusion.rrf / RankConfig.rrf_k=60); the

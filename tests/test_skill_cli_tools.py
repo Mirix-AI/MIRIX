@@ -64,12 +64,18 @@ def test_skill_validators_registered():
     spec.loader.exec_module(mod)
 
     # skill_create: missing name
-    result = mod.validate_tool_args("skill_create", {"name": "", "description": "x", "instructions": "x"})
+    result = mod.validate_tool_args(
+        "skill_create",
+        {"name": "", "description": "x", "instructions": "x", "entry_type": "workflow"},
+    )
     assert result is not None
     assert "name" in result
 
     # skill_create: valid
-    result = mod.validate_tool_args("skill_create", {"name": "x", "description": "x", "instructions": "x"})
+    result = mod.validate_tool_args(
+        "skill_create",
+        {"name": "x", "description": "x", "instructions": "x", "entry_type": "workflow"},
+    )
     assert result is None
 
     # skill_edit: missing field

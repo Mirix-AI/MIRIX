@@ -19,6 +19,14 @@ class AutoDreamRequest(BaseModel):
     )
     dry_run: bool = Field(False, description="If true, return plan without applying changes")
     model: Optional[str] = Field(None, description="Override LLM model (e.g. gpt-4.1-mini for testing)")
+    meta_agent_id: Optional[str] = Field(
+        None,
+        description=(
+            "Optional meta memory agent id to run auto-dream against. When omitted, "
+            "the server uses the client's first meta memory agent for backward "
+            "compatibility."
+        ),
+    )
     last_n_sessions: Optional[int] = Field(
         None,
         description=(

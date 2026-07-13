@@ -5,9 +5,9 @@
 -- mirix/orm/__init__.py), so there is no separate "phase 2" here.
 --
 -- Purpose: durable, general store for transferable EXPERIENCES distilled from
--- a single work session's transcript (Goal-2). Each experience is either
+-- a single work session's transcript. Each experience is either
 -- 'worth_learning' or 'worth_avoiding', scored by importance/credibility in
--- [0,1]. Consumed every N sessions by the Goal-3 skill-evolution run, ordered
+-- [0,1]. Consumed every N sessions by the skill-evolution run, ordered
 -- by importance*credibility. Experiences flow pending -> consumed | superseded.
 --
 -- Entire migration is idempotent and safe to re-run.

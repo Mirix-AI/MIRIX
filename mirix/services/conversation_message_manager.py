@@ -6,15 +6,23 @@ sessions via `self.session_maker` (the server's `db_context`) and never calls
 
 This store is the SINGLE source of truth for procedural-memory (skill)
 distillation. It holds only external conversation turns that arrived with a
-`session_id`, with their REAL `user`/`assistant` roles preserved. The five
-methods below are the stable contract the ingestion seam, the trigger/cadence
-logic, and the distiller all depend on:
+`session_id`, with their REAL `user`/`assistant` roles preserved. The methods
+below are the stable contract the ingestion seam, the trigger/cadence logic,
+the distiller, and the data-lifecycle paths all depend on:
 
   - record_turns                      -- append a batch of turns to a session
   - count_distinct_sessions           -- how many distinct sessions exist
   - list_sealed_undistilled_sessions  -- oldest sealed, not-yet-distilled ids
   - list_turns_for_session            -- one session's turns, ascending
   - mark_sessions_distilled           -- advance the rolling barrier
+  - prune_distilled_turns             -- retention: drop old distilled turns
+  - delete_by_user_id                 -- erasure: purge one user's turns
+  - delete_by_client_id               -- erasure: purge one client's turns
+
+Because this table stores VERBATIM user conversation content, it must be
+covered by the same erasure guarantees as the memory tables: the user/client
+"delete memories" purge paths call the two delete_* methods, and the
+distillation flow prunes distilled turns past the retention window.
 
 "Sealed" = a strictly newer distinct `session_id` exists (by MIN(created_at)),
 so the open head of the window is never distilled while it may still grow.
@@ -28,7 +36,7 @@ import datetime as dt
 from datetime import timedelta
 from typing import List
 
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
 
 from mirix.client.utils import get_utc_time
 from mirix.log import get_logger
@@ -43,6 +51,21 @@ from mirix.schemas.conversation_message import (
 from mirix.utils import enforce_types
 
 logger = get_logger(__name__)
+
+
+def owner_org(actor: PydanticClient) -> str:
+    """Resolve the organization the Conversation Message Store is scoped under.
+
+    Ingestion records turns under ``client.organization_id or DEFAULT_ORG_ID``
+    (the store's organization_id column is NOT NULL). Every read/mark/prune of
+    the store MUST mirror the same fallback, otherwise a NULL-org client would
+    write under DEFAULT_ORG_ID but read under ``None`` and its sessions would
+    never distill. Single definition here — the distiller and the auto-dream
+    manager import it rather than re-deriving the fallback.
+    """
+    from mirix.constants import DEFAULT_ORG_ID
+
+    return actor.organization_id or DEFAULT_ORG_ID
 
 
 class ConversationMessageManager:
@@ -65,7 +88,7 @@ class ConversationMessageManager:
     ) -> List[PydanticConversationMessage]:
         """Append `turns` to `session_id`, preserving their given order.
 
-        `turns` is a list of `{"role": "user"|"assistant", "content": str}`.
+        `turns` is a list of `{"role": "user"|"assistant"|"tool", "content": str}`.
         Each turn is validated through `ConversationMessageCreate` first so an
         invalid `role` (or over-length content / malformed session_id) is
         rejected up front — the DB columns are plain String/Text, so without
@@ -312,6 +335,84 @@ class ConversationMessageManager:
                     ConversationMessageModel.is_deleted.is_(False),
                 )
                 .values(distilled_at=now)
+            )
+            result = await session.execute(stmt)
+            await session.commit()
+            return int(result.rowcount or 0)
+
+    @enforce_types
+    async def prune_distilled_turns(
+        self,
+        *,
+        user_id: str,
+        organization_id: str,
+        actor: PydanticClient,
+        retention_days: int,
+    ) -> int:
+        """Hard-delete turns distilled more than `retention_days` ago.
+
+        Retention policy for the verbatim conversation store: once a turn has
+        been distilled its learning value has been extracted into
+        skill_experience rows, so keeping the raw transcript indefinitely is a
+        pure PII liability. Row-level `distilled_at <= cutoff` is deliberately
+        conservative: undistilled turns are NEVER pruned (their learning hasn't
+        been extracted yet), even when they share a session with pruned rows.
+
+        `retention_days <= 0` disables pruning (keep forever). Returns the
+        number of rows deleted.
+        """
+        if retention_days <= 0:
+            return 0
+
+        cutoff = get_utc_time() - timedelta(days=retention_days)
+        async with self.session_maker() as session:
+            stmt = delete(ConversationMessageModel).where(
+                ConversationMessageModel.organization_id == organization_id,
+                ConversationMessageModel.user_id == user_id,
+                ConversationMessageModel.distilled_at.is_not(None),
+                ConversationMessageModel.distilled_at <= cutoff,
+            )
+            result = await session.execute(stmt)
+            await session.commit()
+            deleted = int(result.rowcount or 0)
+            if deleted:
+                logger.info(
+                    "Pruned %d distilled conversation turn(s) older than %d day(s) for user %s",
+                    deleted,
+                    retention_days,
+                    user_id,
+                )
+            return deleted
+
+    @enforce_types
+    async def delete_by_user_id(self, user_id: str) -> int:
+        """Hard delete ALL conversation turns for a user (erasure path).
+
+        Called from `UserManager.delete_memories_by_user_id`, which backs the
+        irreversible DELETE /users/{user_id}/memories purge. Deletes across all
+        organizations and regardless of distillation state — erasure trumps the
+        learning window. Returns the number of rows deleted.
+        """
+        async with self.session_maker() as session:
+            stmt = delete(ConversationMessageModel).where(
+                ConversationMessageModel.user_id == user_id
+            )
+            result = await session.execute(stmt)
+            await session.commit()
+            return int(result.rowcount or 0)
+
+    @enforce_types
+    async def delete_by_client_id(self, actor: PydanticClient) -> int:
+        """Hard delete all conversation turns recorded by a client (erasure path).
+
+        Attribution is via the `_created_by_id` audit column, which
+        `record_turns` stamps with the ingesting client's id — the table has no
+        dedicated client_id column. Called from
+        `ClientManager.delete_memories_by_client_id`.
+        """
+        async with self.session_maker() as session:
+            stmt = delete(ConversationMessageModel).where(
+                ConversationMessageModel._created_by_id == actor.id
             )
             result = await session.execute(stmt)
             await session.commit()

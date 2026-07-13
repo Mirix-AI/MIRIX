@@ -177,10 +177,12 @@ class TestConversationMessageSchema:
             == set(ConversationMessage.model_fields)
         )
 
-    def test_role_accepts_user_and_assistant(self):
+    def test_role_accepts_user_assistant_and_tool(self):
         from mirix.schemas.conversation_message import ConversationMessageCreate
 
-        for role in ("user", "assistant"):
+        # 'tool' turns carry the work-process signal (tool errors/retries) the
+        # distiller's tool_error signal_type exists for.
+        for role in ("user", "assistant", "tool"):
             c = ConversationMessageCreate(
                 session_id="sess-1",
                 role=role,
@@ -193,8 +195,9 @@ class TestConversationMessageSchema:
     def test_role_rejects_other_values(self):
         from mirix.schemas.conversation_message import ConversationMessageCreate
 
-        # 'tool'/'system' are role-collapsed away; only real turn roles persist.
-        for bad in ("tool", "system", "", "User"):
+        # 'system' is meta-agent scaffolding, never a learnable turn; roles are
+        # also case-sensitive and non-empty.
+        for bad in ("system", "", "User", "TOOL"):
             with pytest.raises(ValueError):
                 ConversationMessageCreate(
                     session_id="sess-1",
@@ -283,13 +286,14 @@ class TestConversationMessageSchema:
 
 
 class TestConversationMessageManagerContract:
-    """DB-free: the five-method async contract downstream agents depend on.
+    """DB-free: the async method contract downstream agents depend on.
 
     No DB here — we only assert the methods exist, are coroutines, and expose
-    the keyword-only signature the ingestion seam / trigger / distiller call.
+    the keyword-only signature the ingestion seam / trigger / distiller and
+    the data-lifecycle (retention + erasure) paths call.
     """
 
-    def test_manager_exposes_five_async_methods(self):
+    def test_manager_exposes_contract_async_methods(self):
         import inspect
 
         from mirix.services.conversation_message_manager import (
@@ -302,6 +306,9 @@ class TestConversationMessageManagerContract:
             "list_sealed_undistilled_sessions",
             "list_turns_for_session",
             "mark_sessions_distilled",
+            "prune_distilled_turns",
+            "delete_by_user_id",
+            "delete_by_client_id",
         ):
             fn = getattr(ConversationMessageManager, name, None)
             assert fn is not None, f"manager missing {name}"
@@ -897,6 +904,166 @@ class TestPerUserOrgScoping:
                 organization_id=org_a,
                 actor=cm_actor,
                 only_undistilled=True,
+            )
+            == 1
+        )
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="module")
+class TestDataLifecycle:
+    """Retention pruning and the user/client erasure paths.
+
+    The conversation store holds verbatim transcripts, so these are the
+    GDPR-facing guarantees: distilled turns age out after the retention
+    window, and the purge paths remove everything for a user/client.
+    """
+
+    async def _count_all_rows(self, manager, user_id: str, organization_id: str) -> int:
+        from sqlalchemy import func, select
+
+        from mirix.orm.conversation_message import (
+            ConversationMessage as ConversationMessageModel,
+        )
+
+        async with manager.session_maker() as session:
+            stmt = select(func.count()).where(
+                ConversationMessageModel.user_id == user_id,
+                ConversationMessageModel.organization_id == organization_id,
+            )
+            result = await session.execute(stmt)
+            return int(result.scalar_one() or 0)
+
+    async def _backdate_distilled(self, manager, session_id: str, days: int) -> None:
+        """Force distilled_at into the past so the retention cutoff applies."""
+        from datetime import timedelta
+
+        from sqlalchemy import update
+
+        from mirix.client.utils import get_utc_time
+        from mirix.orm.conversation_message import (
+            ConversationMessage as ConversationMessageModel,
+        )
+
+        async with manager.session_maker() as session:
+            await session.execute(
+                update(ConversationMessageModel)
+                .where(ConversationMessageModel.session_id == session_id)
+                .values(distilled_at=get_utc_time() - timedelta(days=days))
+            )
+            await session.commit()
+
+    async def test_prune_zero_retention_is_noop(self, manager, cm_actor, cm_user):
+        pruned = await manager.prune_distilled_turns(
+            user_id=cm_user.id,
+            organization_id=cm_actor.organization_id,
+            actor=cm_actor,
+            retention_days=0,
+        )
+        assert pruned == 0
+
+    async def test_prune_removes_only_distilled_turns_past_cutoff(
+        self, manager, cm_actor, cm_user
+    ):
+        org = cm_actor.organization_id
+        old_sid = f"prune-old-{uuid.uuid4().hex[:6]}"
+        fresh_sid = f"prune-fresh-{uuid.uuid4().hex[:6]}"
+        open_sid = f"prune-open-{uuid.uuid4().hex[:6]}"
+        for sid in (old_sid, fresh_sid, open_sid):
+            await manager.record_turns(
+                session_id=sid,
+                user_id=cm_user.id,
+                organization_id=org,
+                turns=[{"role": "user", "content": f"turn in {sid}"}],
+                actor=cm_actor,
+            )
+        # old + fresh get distilled; old is then backdated past the window.
+        await manager.mark_sessions_distilled(
+            session_ids=[old_sid, fresh_sid],
+            user_id=cm_user.id,
+            organization_id=org,
+            actor=cm_actor,
+        )
+        await self._backdate_distilled(manager, old_sid, days=60)
+
+        pruned = await manager.prune_distilled_turns(
+            user_id=cm_user.id,
+            organization_id=org,
+            actor=cm_actor,
+            retention_days=30,
+        )
+
+        assert pruned == 1  # only the backdated session's turn
+        remaining = [
+            turn.session_id
+            for sid in (old_sid, fresh_sid, open_sid)
+            for turn in await manager.list_turns_for_session(
+                session_id=sid,
+                user_id=cm_user.id,
+                organization_id=org,
+                actor=cm_actor,
+            )
+        ]
+        assert old_sid not in remaining
+        # Freshly distilled and never-distilled turns both survive.
+        assert fresh_sid in remaining
+        assert open_sid in remaining
+
+    async def test_delete_by_user_id_erases_all_turns_for_that_user_only(
+        self, manager, cm_actor
+    ):
+        org = cm_actor.organization_id
+        user_a = await _make_user(org)
+        user_b = await _make_user(org)
+        for user in (user_a, user_b):
+            await manager.record_turns(
+                session_id=f"erase-{uuid.uuid4().hex[:6]}",
+                user_id=user.id,
+                organization_id=org,
+                turns=[
+                    {"role": "user", "content": "sensitive"},
+                    {"role": "assistant", "content": "reply"},
+                ],
+                actor=cm_actor,
+            )
+
+        deleted = await manager.delete_by_user_id(user_id=user_a.id)
+
+        assert deleted == 2
+        assert await self._count_all_rows(manager, user_a.id, org) == 0
+        assert await self._count_all_rows(manager, user_b.id, org) == 2
+
+    async def test_delete_by_client_id_erases_only_that_clients_turns(
+        self, manager, cm_actor, cm_actor_org_b
+    ):
+        user_a = await _make_user(cm_actor.organization_id)
+        user_b = await _make_user(cm_actor_org_b.organization_id)
+        await manager.record_turns(
+            session_id=f"clienterase-{uuid.uuid4().hex[:6]}",
+            user_id=user_a.id,
+            organization_id=cm_actor.organization_id,
+            turns=[{"role": "user", "content": "ingested by client A"}],
+            actor=cm_actor,
+        )
+        await manager.record_turns(
+            session_id=f"clienterase-{uuid.uuid4().hex[:6]}",
+            user_id=user_b.id,
+            organization_id=cm_actor_org_b.organization_id,
+            turns=[{"role": "user", "content": "ingested by client B"}],
+            actor=cm_actor_org_b,
+        )
+
+        deleted = await manager.delete_by_client_id(actor=cm_actor)
+
+        assert deleted >= 1
+        assert (
+            await self._count_all_rows(manager, user_a.id, cm_actor.organization_id)
+            == 0
+        )
+        # Client B's ingested turns are untouched.
+        assert (
+            await self._count_all_rows(
+                manager, user_b.id, cm_actor_org_b.organization_id
             )
             == 1
         )

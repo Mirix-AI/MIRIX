@@ -10,14 +10,15 @@ Flow:
   6. Return stats
 """
 
-import asyncio
 import contextlib
 import datetime as dt
 import json
 import logging
 import os
-from typing import Dict, List, Optional
+from typing import List, Optional
 
+from mirix.helpers.keyed_locks import KeyedLocks
+from mirix.services.conversation_message_manager import owner_org as _owner_org
 from mirix.schemas.agent import AgentState, AgentType, CreateAgent
 from mirix.schemas.auto_dream import AutoDreamRequest, AutoDreamResponse, MemoryTypeStats
 from mirix.schemas.client import Client as PydanticClient
@@ -44,37 +45,18 @@ _CHECKPOINT_EVENT_TYPE = "auto_dream_checkpoint"
 # On non-Postgres backends (SQLite / PGlite — single-process test setups with no
 # advisory locks) the asyncio.Lock alone is sufficient, so the advisory layer is
 # skipped gracefully.
-_PROCEDURAL_DREAM_LOCKS: Dict[str, asyncio.Lock] = {}
+# Self-evicting per-(user, org) registry; see _procedural_dream_guard.
+_PROCEDURAL_DREAM_LOCKS = KeyedLocks()
 
 # Stable namespace salt so this feature's advisory-lock keys never collide with
 # another feature's pg_advisory_lock keyspace.
 _PROCEDURAL_ADVISORY_NAMESPACE = "mirix.procedural_dream"
 
 
-def _owner_org(actor: PydanticClient) -> str:
-    """Resolve the organization the Conversation Message Store was written under.
-
-    Ingestion (rest_api ``/memory/add(_sync)``) records turns under
-    ``client.organization_id or DEFAULT_ORG_ID`` (the store column is NOT NULL).
-    Every read/mark of that store MUST mirror the same fallback, otherwise a
-    NULL-org client would write to DEFAULT_ORG_ID but read from ``None`` and its
-    sessions would never distill.
-    """
-    from mirix.constants import DEFAULT_ORG_ID
-
-    return actor.organization_id or DEFAULT_ORG_ID
-
-
-def _procedural_dream_lock(user_id: str, organization_id: Optional[str]) -> asyncio.Lock:
-    """Return the process-local lock that serializes procedural auto-dream runs
-    for one (user, organization). Created lazily; keyed so different owners never
-    block each other."""
-    key = f"{organization_id or '-'}::{user_id}"
-    lock = _PROCEDURAL_DREAM_LOCKS.get(key)
-    if lock is None:
-        lock = asyncio.Lock()
-        _PROCEDURAL_DREAM_LOCKS[key] = lock
-    return lock
+def _dream_lock_key(user_id: str, organization_id: Optional[str]) -> str:
+    """Registry key for the process-local procedural auto-dream lock — keyed
+    per (user, organization) so different owners never block each other."""
+    return f"{organization_id or '-'}::{user_id}"
 
 
 def _advisory_lock_key(user_id: str, organization_id: Optional[str]) -> int:
@@ -110,7 +92,7 @@ async def _procedural_dream_guard(user_id: str, organization_id: Optional[str]):
     from mirix.server.server import db_context
 
     key = _advisory_lock_key(user_id, organization_id)
-    async with _procedural_dream_lock(user_id, organization_id):
+    async with _PROCEDURAL_DREAM_LOCKS.acquire(_dream_lock_key(user_id, organization_id)):
         # Open a dedicated session and try to hold a session-level advisory lock
         # for the whole run. session_cm/session are None when we are not on
         # Postgres or acquisition failed — then the asyncio.Lock alone serializes.
@@ -378,7 +360,7 @@ class AutoDreamManager:
         meta_agent_state: AgentState,
     ) -> AgentState:
         """Return the auto_dream_agent state for this client, creating it if needed."""
-        from mirix.server.rest_api import get_server
+        from mirix.server.server import get_server
 
         server = get_server()
         children = await server.agent_manager.list_agents(
@@ -401,7 +383,7 @@ class AutoDreamManager:
         return await server.agent_manager.create_agent(agent_create=agent_create, actor=actor)
 
     # ------------------------------------------------------------------ #
-    # Goal 2/3 — general session-experience procedural path                #
+    # Session distillation + skill evolution — procedural path            #
     # ------------------------------------------------------------------ #
 
     async def _run_procedural_experience(
@@ -440,7 +422,7 @@ class AutoDreamManager:
         meta_agent_state: AgentState,
         now: dt.datetime,
     ) -> AutoDreamResponse:
-        """Goal-2 distillation (+ Goal-3 evolution unless dry_run).
+        """Session distillation (+ skill evolution unless dry_run).
 
         This is the explicit "program call" entry point for general
         session-experience distillation: calling
@@ -460,7 +442,7 @@ class AutoDreamManager:
           4. Mark the SUCCESSFULLY-processed sessions distilled so the rolling
              barrier advances and they are never re-distilled (failed sessions
              are left for retry).
-          5. dry_run → return counts; else run Goal-3 skill evolution over the
+          5. dry_run → return counts; else run skill evolution over the
              freshly-pending experiences, then write the dream checkpoint.
 
         Always invoked under the per-owner lock acquired by
@@ -566,7 +548,24 @@ class AutoDreamManager:
                 len(session_ids) - len(processed_session_ids),
             )
 
-        # -- Goal 3: evolve skills from the pending experiences. --
+        # Retention: distilled turns past the window have already yielded their
+        # learning into skill_experience rows; drop the verbatim transcripts so
+        # the store doesn't accumulate raw conversation content forever.
+        from mirix.constants import CONVERSATION_RETENTION_DAYS
+
+        try:
+            await conversation_manager.prune_distilled_turns(
+                user_id=user.id,
+                organization_id=_owner_org(actor),
+                actor=actor,
+                retention_days=CONVERSATION_RETENTION_DAYS,
+            )
+        except Exception:
+            # Best-effort: a failed prune must not fail the dream run; the next
+            # pass retries. Logged so a persistent failure is visible.
+            logger.exception("Auto dream (procedural): retention prune failed")
+
+        # -- Skill evolution: evolve skills from the pending experiences. --
         #
         # Two independent steps, so a prior round's stranded experiences are
         # drained even under active traffic (closing the "evolution failure
@@ -639,7 +638,7 @@ class AutoDreamManager:
         experience_ids: List[str],
         label: str,
     ) -> tuple:
-        """Run Goal-3 skill evolution over an explicit, scoped experience batch.
+        """Run skill evolution over an explicit, scoped experience batch.
 
         Returns ``(skills_changed, changes)``; on any failure returns ``(0, {})``
         and logs — the experiences are durably `pending`, so a failed evolution
@@ -670,10 +669,10 @@ class AutoDreamManager:
                 )
             return skills_changed, changes
         except ImportError:
-            # Goal-3 curator not yet present in this build — distillation alone is
+            # Experience curator not yet present in this build — distillation alone is
             # still valuable, so do not fail the run.
             logger.info(
-                "Goal-3 experience curator unavailable; experiences persisted as pending."
+                "Experience curator unavailable; experiences persisted as pending."
             )
             return 0, {}
         except Exception as e:  # noqa: BLE001 — evolution failure mustn't lose experiences
@@ -682,7 +681,7 @@ class AutoDreamManager:
             # would duplicate); these pending experiences are drained by the
             # RECOVERY step on a later procedural run. Logged LOUD for observability.
             logger.error(
-                "Goal-3 experience evolution (%s) FAILED for meta_agent=%s "
+                "Skill-evolution run (%s) FAILED for meta_agent=%s "
                 "(%d experience(s) left pending; auto-recovered on a later procedural "
                 "run, or via POST /memory/auto_dream mode=procedural): %s",
                 label,
@@ -756,18 +755,17 @@ class AutoDreamManager:
         actor: PydanticClient,
         meta_agent_state: AgentState,
     ) -> AutoDreamResponse:
-        from mirix.agent.auto_dream_agent import AutoDreamAgent
-        from mirix.server.rest_api import get_server
+        from mirix.server.server import get_server
 
         server = get_server()
         now = dt.datetime.now(dt.timezone.utc)
 
         # ----------------------------------------------------------------- #
-        # Goal 2/3 — mode='procedural' is general per-session experience    #
+        # mode='procedural' is general per-session experience distillation  #
         # distillation (NOT the legacy procedure-consolidation pass). It    #
         # reads the meta agent's last-N RETAINED sessions, distills each    #
         # session's transcript IN PARALLEL into pending SkillExperience     #
-        # rows, then (Goal 3, unless dry_run) drives skill self-evolution   #
+        # rows, then (unless dry_run) drives skill self-evolution           #
         # from those experiences. Other modes fall through to the generic   #
         # fetch → format → single-step path below, unchanged.               #
         # ----------------------------------------------------------------- #

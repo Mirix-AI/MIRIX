@@ -71,16 +71,35 @@ from mirix.queue.manager import get_manager as get_queue_manager
 from mirix.queue.queue_util import put_messages
 from mirix.server.constants import MAX_MEMORY_LIMIT
 # Initialize server (single instance shared across all requests)
-_server: Optional[AsyncServer] = None
+# The singleton accessor lives in mirix.server.server so service-layer modules
+# never need to import this REST module; re-exported here for existing callers.
+from mirix.server.server import get_server  # noqa: E402
 
 
-def get_server() -> AsyncServer:
-    """Get or create the singleton AsyncServer instance."""
-    global _server
-    if _server is None:
-        logger.info("Creating AsyncServer instance")
-        _server = AsyncServer()
-    return _server
+def _isoformat_or_none(value) -> Optional[str]:
+    if value is None:
+        return None
+    return value.isoformat() if hasattr(value, "isoformat") else str(value)
+
+
+def _procedural_memory_response(item, *, include_user_id: bool = False) -> Dict[str, Any]:
+    """Serialize procedural memory as the public skill-shaped read model."""
+    response = {
+        "memory_type": "procedural",
+        "id": item.id,
+        "entry_type": item.entry_type,
+        "name": item.name,
+        "description": item.description,
+        "instructions": item.instructions,
+        "triggers": getattr(item, "triggers", None) or [],
+        "examples": getattr(item, "examples", None) or [],
+        "version": getattr(item, "version", None),
+        "created_at": _isoformat_or_none(getattr(item, "created_at", None)),
+        "updated_at": _isoformat_or_none(getattr(item, "updated_at", None)),
+    }
+    if include_user_id:
+        response["user_id"] = str(getattr(item, "user_id", ""))
+    return response
 
 
 async def initialize():
@@ -420,7 +439,12 @@ async def extract_topics_and_temporal_info(
             # Convert from OpenAI format to internal format
             new_messages = []
             for msg in messages:
-                prefix = "[USER]" if msg["role"] == "user" else "[ASSISTANT]"
+                role = msg["role"]
+                prefix = (
+                    "[USER]"
+                    if role == "user"
+                    else "[TOOL]" if role in ("tool", "function") else "[ASSISTANT]"
+                )
                 new_messages.extend([{"type": "text", "text": prefix + " " + part} for part in msg["content"]])
             messages = new_messages
 
@@ -692,9 +716,9 @@ async def global_exception_handler(request: Request, exc: Exception):
 async def health_check():
     """Health check endpoint.
 
-    Also reports the effective skill-trigger config so eval harnesses (e.g. the
-    MetaClaw generic arm) can fail fast when the in-band procedural trigger is
-    not disabled. The added fields are additive and backward-compatible.
+    Also reports the effective skill-trigger config so drivers can fail fast
+    when the in-band procedural trigger is unexpectedly enabled. The added
+    fields are additive and backward-compatible.
     """
     from mirix.constants import (
         MESSAGE_RETAIN_LAST_N_SESSIONS,
@@ -1514,9 +1538,16 @@ async def delete_user(user_id: str):
 
 
 @router.delete("/users/{user_id}/memories")
-async def delete_user_memories(user_id: str):
+async def delete_user_memories(
+    user_id: str,
+    authorization: Optional[str] = Header(None),
+    http_request: Request = None,
+):
     """
     Hard delete all memories, messages, and blocks for a user.
+
+    **Accepts both JWT (dashboard) and Client API Key (programmatic).**
+    The target user must belong to the caller's organization.
 
     This permanently removes data records while preserving the user record.
     Use this for data cleanup/purging without affecting the user account itself.
@@ -1529,13 +1560,31 @@ async def delete_user_memories(user_id: str):
     - Knowledge vault items for this user
     - Messages for this user
     - Blocks for this user
+    - Conversation transcripts recorded for this user
+    - Skill experiences distilled from this user's sessions
 
     Records that are PRESERVED:
     - User record
 
     Warning: This operation is irreversible. Deleted data cannot be recovered.
     """
+    client, auth_type = await get_client_from_jwt_or_api_key(
+        authorization, http_request
+    )
     server = get_server()
+
+    # Tenant guard: an irreversible cross-org erasure must be impossible. A
+    # foreign-org target returns the same 404 as a missing user so the endpoint
+    # can't be used as a user-id existence oracle.
+    default_org = server.organization_manager.DEFAULT_ORG_ID
+    try:
+        target_user = await server.user_manager.get_user_by_id(user_id)
+    except Exception:
+        raise HTTPException(status_code=404, detail=f"User {user_id} not found")
+    caller_org = client.organization_id or default_org
+    target_org = target_user.organization_id or default_org
+    if caller_org != target_org:
+        raise HTTPException(status_code=404, detail=f"User {user_id} not found")
 
     try:
         await server.user_manager.delete_memories_by_user_id(user_id)
@@ -1753,9 +1802,16 @@ async def delete_client(client_id: str):
 
 
 @router.delete("/clients/{client_id}/memories")
-async def delete_client_memories(client_id: str):
+async def delete_client_memories(
+    client_id: str,
+    authorization: Optional[str] = Header(None),
+    http_request: Request = None,
+):
     """
     Hard delete all memories, messages, and blocks for a client.
+
+    **Accepts both JWT (dashboard) and Client API Key (programmatic).**
+    The target client must belong to the caller's organization.
 
     This permanently removes data records while preserving the client configuration.
     Use this for data cleanup/purging without affecting the client, agents, or tools.
@@ -1768,6 +1824,8 @@ async def delete_client_memories(client_id: str):
     - Knowledge vault items for this client
     - Messages for this client
     - Blocks created by this client
+    - Conversation transcripts recorded by this client
+    - Skill experiences created by this client
 
     Records that are PRESERVED:
     - Client record
@@ -1776,7 +1834,24 @@ async def delete_client_memories(client_id: str):
 
     Warning: This operation is irreversible. Deleted data cannot be recovered.
     """
+    client, auth_type = await get_client_from_jwt_or_api_key(
+        authorization, http_request
+    )
     server = get_server()
+
+    # Tenant guard: same-org only; a missing OR foreign-org target returns the
+    # same 404 so the endpoint can't be used to probe client-id existence.
+    # get_client_by_id RAISES (NoResultFound) on a miss rather than returning
+    # None, so the miss must be caught here, not compared to None.
+    default_org = server.organization_manager.DEFAULT_ORG_ID
+    try:
+        target_client = await server.client_manager.get_client_by_id(client_id)
+    except Exception:
+        raise HTTPException(status_code=404, detail=f"Client {client_id} not found")
+    if (target_client.organization_id or default_org) != (
+        client.organization_id or default_org
+    ):
+        raise HTTPException(status_code=404, detail=f"Client {client_id} not found")
 
     try:
         await server.client_manager.delete_memories_by_client_id(client_id)
@@ -2087,21 +2162,60 @@ class AddMemoryRequest(BaseModel):
         return self
 
 
+def _serialize_tool_calls(tool_calls: Any) -> str:
+    """Render an assistant message's tool_calls into a compact text form.
+
+    Accepts the OpenAI shape (`[{"function": {"name", "arguments"}, ...}]`) as
+    well as simpler `[{"name", "arguments"}]` dicts; anything unrecognized falls
+    back to `str()`. The distiller only needs to SEE which tool was called with
+    what arguments — a readable line beats a lossless JSON blob.
+    """
+    if not isinstance(tool_calls, list):
+        return str(tool_calls)
+    lines = []
+    for call in tool_calls:
+        if isinstance(call, dict):
+            function = call.get("function") if isinstance(call.get("function"), dict) else call
+            name = function.get("name") or call.get("name") or "unknown_tool"
+            arguments = function.get("arguments", call.get("arguments", ""))
+            if not isinstance(arguments, str):
+                import json as _json
+
+                try:
+                    arguments = _json.dumps(arguments, ensure_ascii=False)
+                except (TypeError, ValueError):
+                    arguments = str(arguments)
+            lines.append(f"[tool_call] {name}({arguments})")
+        else:
+            lines.append(f"[tool_call] {call}")
+    return "\n".join(lines)
+
+
 def _extract_conversation_turns(messages: List[Dict[str, Any]]) -> List[Dict[str, str]]:
     """Extract clean per-role turns for the Conversation Message Store.
 
     Reads the REAL roles from the raw add-memory payload (the same shape the
-    role-collapse branch consumes) and preserves them as 'user'/'assistant' —
-    NOT the [USER]/[ASSISTANT] role-collapsed blob the meta agent receives. The
-    store is the single source of truth for skill distillation, so it keeps the
-    true turn structure.
+    role-collapse branch consumes) and preserves them as
+    'user'/'assistant'/'tool' — NOT the [USER]/[ASSISTANT] role-collapsed blob
+    the meta agent receives. The store is the single source of truth for skill
+    distillation, so it keeps the true turn structure. Tool activity is kept
+    deliberately: work-process lessons (a tool error, a retry, the fix that
+    worked) live in tool calls and tool results, and dropping them would blind
+    the distiller to exactly that signal.
 
     Only role-bearing payloads (`[{"role": ..., "content": ...}, ...]`) yield
     turns; anything else (e.g. screenshot/content-only payloads) yields [] and
     nothing is written. `content` may be a string or a list of string parts; a
     list is joined with newlines to match how the collapse branch treats parts.
-    Roles other than 'user'/'assistant' are dropped — the store's schema only
-    knows those two, and a foreign role is not a learnable conversation turn.
+
+    Mapping:
+    - role 'user'/'assistant' → kept as-is; an assistant message that ALSO
+      carries `tool_calls` gets them serialized and appended to its content
+      (an assistant turn that is pure tool_calls with empty content still
+      yields a turn).
+    - role 'tool'/'function' → stored as a 'tool' turn (tool results). A
+      `name`/`tool_name` field, when present, is prefixed for readability.
+    - any other role is dropped — not a learnable conversation turn.
     """
     if not (
         isinstance(messages, list)
@@ -2111,18 +2225,100 @@ def _extract_conversation_turns(messages: List[Dict[str, Any]]) -> List[Dict[str
     ):
         return []
 
+    from mirix.schemas.conversation_message import (
+        CONVERSATION_MESSAGE_MAX_CONTENT_LEN,
+    )
+
+    # Truncate at the STORE's per-row cap so one oversized turn (typically a
+    # huge tool result) fails softly instead of failing the whole batch's
+    # Pydantic validation in record_turns — which would drop every turn of
+    # the request. Leave room for the truncation marker.
+    _marker = " …[truncated]"
+    _content_cap = CONVERSATION_MESSAGE_MAX_CONTENT_LEN - len(_marker)
+
+    def _cap(text: str) -> str:
+        if len(text) > CONVERSATION_MESSAGE_MAX_CONTENT_LEN:
+            return text[:_content_cap] + _marker
+        return text
+
+    def _part_text(part: Any) -> str:
+        # Standard SDK shape: {"type": "text", "text": "..."} — store the text,
+        # not the dict repr. Anything else falls back to str().
+        if isinstance(part, dict) and isinstance(part.get("text"), str):
+            return part["text"]
+        return str(part)
+
     turns: List[Dict[str, str]] = []
     for msg in messages:
         role = msg.get("role")
-        if role not in ("user", "assistant"):
-            continue
         content = msg.get("content", "")
         if isinstance(content, list):
-            content = "\n".join(str(part) for part in content)
+            content = "\n".join(_part_text(part) for part in content)
+        elif content is None:
+            content = ""
         elif not isinstance(content, str):
             content = str(content)
-        turns.append({"role": role, "content": content})
+
+        if role in ("user", "assistant"):
+            if role == "assistant" and msg.get("tool_calls"):
+                serialized = _serialize_tool_calls(msg["tool_calls"])
+                content = f"{content}\n{serialized}".strip() if content else serialized
+            turns.append({"role": role, "content": _cap(content)})
+        elif role in ("tool", "function"):
+            tool_name = msg.get("name") or msg.get("tool_name")
+            if tool_name:
+                content = f"[{tool_name}] {content}"
+            turns.append({"role": "tool", "content": _cap(content)})
     return turns
+
+
+async def _ingest_session_turns(request, input_messages, client, user_id: str) -> None:
+    """Shared /memory/add + /memory/add_sync session ingestion seam.
+
+    Stamps the batch-level session_id onto every message that didn't carry its
+    own, then persists the external turns (REAL user/assistant roles) into the
+    Conversation Message Store — the single source of truth for procedural
+    (skill) distillation. Without a session_id nothing is written, so no
+    procedural memory is produced; the other five components still extract via
+    the unchanged meta dispatch.
+
+    The store write is ADDITIVE: isolated in its own try/except so a store
+    failure (DB error, validation, etc.) is logged but never aborts the primary
+    memory ingestion. Worst case is a missed session for skill distillation,
+    not a dropped memory-add.
+    """
+    if request.session_id is None:
+        return
+
+    for msg_create in input_messages:
+        if msg_create.session_id is None:
+            msg_create.session_id = request.session_id
+
+    from mirix.services.conversation_message_manager import (
+        ConversationMessageManager,
+        owner_org,
+    )
+
+    # Extraction runs INSIDE the guard too: a malformed message shape (odd
+    # tool_calls, exotic content) must degrade to a missed session, never
+    # abort the primary memory ingestion.
+    try:
+        conversation_turns = _extract_conversation_turns(request.messages)
+        if not conversation_turns:
+            return
+        await ConversationMessageManager().record_turns(
+            session_id=request.session_id,
+            user_id=user_id,
+            organization_id=owner_org(client),
+            turns=conversation_turns,
+            actor=client,
+        )
+    except Exception:
+        logger.exception(
+            "Failed to record conversation turns to the store for "
+            "session_id=%s; memory ingestion will still proceed",
+            request.session_id,
+        )
 
 
 @router.post("/memory/add")
@@ -2181,7 +2377,12 @@ async def add_memory(
         # We need to convert the message to the format in "content"
         new_message = []
         for msg in message:
-            prefix = "[USER]" if msg["role"] == "user" else "[ASSISTANT]"
+            role = msg["role"]
+            prefix = (
+                "[USER]"
+                if role == "user"
+                else "[TOOL]" if role in ("tool", "function") else "[ASSISTANT]"
+            )
 
             # Handle both string and list content
             content = msg["content"]
@@ -2197,48 +2398,9 @@ async def add_memory(
 
     input_messages = convert_message_to_mirix_message(message)
 
-    # Batch-level session_id: stamp every message that didn't carry its own.
-    if request.session_id is not None:
-        for msg_create in input_messages:
-            if msg_create.session_id is None:
-                msg_create.session_id = request.session_id
-
-    # Conversation Message Store write (independent of the meta dispatch below).
-    # When the caller supplies a session_id, persist the external turns with
-    # their REAL user/assistant roles into the dedicated store that is the single
-    # source of truth for procedural-memory (skill) distillation. Without a
-    # session_id we write nothing here, so no procedural memory is produced — the
-    # other five components still extract via the unchanged meta dispatch.
-    #
-    # This write must be ADDITIVE: it is isolated in its own try/except so a store
-    # failure (DB error, validation, etc.) is logged but never aborts the primary
-    # memory ingestion (the put_messages dispatch below). Worst case is a missed
-    # session for skill distillation, not a dropped memory-add.
-    if request.session_id is not None:
-        conversation_turns = _extract_conversation_turns(request.messages)
-        if conversation_turns:
-            from mirix.services.conversation_message_manager import (
-                ConversationMessageManager,
-            )
-
-            store_org_id = (
-                client.organization_id
-                or server.organization_manager.DEFAULT_ORG_ID
-            )
-            try:
-                await ConversationMessageManager().record_turns(
-                    session_id=request.session_id,
-                    user_id=user_id,
-                    organization_id=store_org_id,
-                    turns=conversation_turns,
-                    actor=client,
-                )
-            except Exception:
-                logger.exception(
-                    "Failed to record conversation turns to the store for "
-                    "session_id=%s; memory ingestion will still proceed",
-                    request.session_id,
-                )
+    # Session ingestion (session_id stamping + Conversation Message Store write,
+    # independent of the meta dispatch below) — see _ingest_session_turns.
+    await _ingest_session_turns(request, input_messages, client, user_id)
 
     # Add client scope to filter_tags (create if not provided)
     if request.filter_tags is not None:
@@ -2342,7 +2504,12 @@ async def add_memory_sync(
     if isinstance(message, list) and "role" in message[0].keys():
         new_message = []
         for msg in message:
-            prefix = "[USER]" if msg["role"] == "user" else "[ASSISTANT]"
+            role = msg["role"]
+            prefix = (
+                "[USER]"
+                if role == "user"
+                else "[TOOL]" if role in ("tool", "function") else "[ASSISTANT]"
+            )
             content = msg["content"]
             if isinstance(content, str):
                 new_message.append({"type": "text", "text": prefix + " " + content})
@@ -2354,45 +2521,9 @@ async def add_memory_sync(
 
     input_messages = convert_message_to_mirix_message(message)
 
-    # Batch-level session_id: stamp every message that didn't carry its own.
-    if request.session_id is not None:
-        for msg_create in input_messages:
-            if msg_create.session_id is None:
-                msg_create.session_id = request.session_id
-
-    # Conversation Message Store write (independent of the meta dispatch below).
-    # Mirrors /memory/add: a session_id'd add persists the external turns with
-    # their REAL user/assistant roles into the dedicated store the procedural
-    # distiller reads. No session_id -> no store write -> no procedural memory,
-    # while the other five components still extract via the unchanged dispatch.
-    #
-    # Isolated in its own try/except so a store failure is logged but never
-    # aborts the primary memory ingestion (the send_messages dispatch below).
-    if request.session_id is not None:
-        conversation_turns = _extract_conversation_turns(request.messages)
-        if conversation_turns:
-            from mirix.services.conversation_message_manager import (
-                ConversationMessageManager,
-            )
-
-            store_org_id = (
-                client.organization_id
-                or server.organization_manager.DEFAULT_ORG_ID
-            )
-            try:
-                await ConversationMessageManager().record_turns(
-                    session_id=request.session_id,
-                    user_id=user_id,
-                    organization_id=store_org_id,
-                    turns=conversation_turns,
-                    actor=client,
-                )
-            except Exception:
-                logger.exception(
-                    "Failed to record conversation turns to the store for "
-                    "session_id=%s; memory ingestion will still proceed",
-                    request.session_id,
-                )
+    # Session ingestion (session_id stamping + Conversation Message Store write) —
+    # shared with /memory/add; see _ingest_session_turns.
+    await _ingest_session_turns(request, input_messages, client, user_id)
 
     if request.filter_tags is not None:
         filter_tags = dict(request.filter_tags)
@@ -2675,15 +2806,7 @@ async def retrieve_memories_by_keywords(
             "total_count": await procedural_manager.get_total_number_of_items(
                 user=user
             ),
-            "items": [
-                {
-                    "id": procedure.id,
-                    "entry_type": procedure.entry_type,
-                    "name": procedure.name,
-                    "description": procedure.description,
-                }
-                for procedure in procedures
-            ],
+            "items": [_procedural_memory_response(procedure) for procedure in procedures],
         }
     except Exception as e:
         logger.error("Error retrieving procedural memories: %s", e)
@@ -3342,30 +3465,7 @@ async def search_memory(
                     scopes=scopes,
                     similarity_threshold=similarity_threshold,
                 )
-                return [
-                    {
-                        "memory_type": "procedural",
-                        "id": x.id,
-                        "entry_type": x.entry_type,
-                        "name": x.name,
-                        "description": x.description,
-                        "instructions": x.instructions,
-                        # Procedural rows include the full searchable skill
-                        # shape; callers do not need a skill-specific route.
-                        "version": getattr(x, "version", None),
-                        "created_at": (
-                            x.created_at.isoformat()
-                            if getattr(x, "created_at", None)
-                            else None
-                        ),
-                        "updated_at": (
-                            x.updated_at.isoformat()
-                            if getattr(x, "updated_at", None)
-                            else None
-                        ),
-                    }
-                    for x in memories
-                ]
+                return [_procedural_memory_response(x) for x in memories]
             except Exception as e:
                 logger.error("Error searching procedural memories: %s", e)
                 return []
@@ -3586,30 +3686,7 @@ async def search_memory(
                 )
             )
             all_results.extend(
-                [
-                    {
-                        "memory_type": "procedural",
-                        "id": x.id,
-                        "entry_type": x.entry_type,
-                        "name": x.name,
-                        "description": x.description,
-                        "instructions": x.instructions,
-                        # Procedural rows include the full searchable skill
-                        # shape; callers do not need a skill-specific route.
-                        "version": getattr(x, "version", None),
-                        "created_at": (
-                            x.created_at.isoformat()
-                            if getattr(x, "created_at", None)
-                            else None
-                        ),
-                        "updated_at": (
-                            x.updated_at.isoformat()
-                            if getattr(x, "updated_at", None)
-                            else None
-                        ),
-                    }
-                    for x in procedural_memories
-                ]
+                [_procedural_memory_response(x) for x in procedural_memories]
             )
             # Report the user's total procedural count; the page's `count` is
             # only len(results), not the global total.
@@ -4058,28 +4135,7 @@ async def search_memory_all_users(
                     )
                 )
                 return [
-                    {
-                        "memory_type": "procedural",
-                        "id": x.id,
-                        "entry_type": x.entry_type,
-                        "name": x.name,
-                        "description": x.description,
-                        "instructions": x.instructions,
-                        # Uniform procedural-row superset across the unified
-                        # search surface (matches GET /memory/search).
-                        "version": getattr(x, "version", None),
-                        "created_at": (
-                            x.created_at.isoformat()
-                            if getattr(x, "created_at", None)
-                            else None
-                        ),
-                        "updated_at": (
-                            x.updated_at.isoformat()
-                            if getattr(x, "updated_at", None)
-                            else None
-                        ),
-                        "user_id": str(x.user_id),
-                    }
+                    _procedural_memory_response(x, include_user_id=True)
                     for x in memories
                 ]
             except Exception as e:
@@ -4285,28 +4341,7 @@ async def search_memory_all_users(
             )
             all_results.extend(
                 [
-                    {
-                        "memory_type": "procedural",
-                        "user_id": x.user_id,
-                        "id": x.id,
-                        "entry_type": x.entry_type,
-                        "name": x.name,
-                        "description": x.description,
-                        "instructions": x.instructions,
-                        # Uniform procedural-row superset across the unified
-                        # search surface (matches GET /memory/search).
-                        "version": getattr(x, "version", None),
-                        "created_at": (
-                            x.created_at.isoformat()
-                            if getattr(x, "created_at", None)
-                            else None
-                        ),
-                        "updated_at": (
-                            x.updated_at.isoformat()
-                            if getattr(x, "updated_at", None)
-                            else None
-                        ),
-                    }
+                    _procedural_memory_response(x, include_user_id=True)
                     for x in procedural_memories
                 ]
             )
@@ -4613,23 +4648,7 @@ async def list_memory_components(
                 user=user
             ),
             "items": [
-                {
-                    "id": item.id,
-                    "entry_type": item.entry_type,
-                    "name": item.name,
-                    "description": item.description,
-                    "instructions": item.instructions,
-                    "created_at": (
-                        item.created_at.isoformat()
-                        if getattr(item, "created_at", None)
-                        else None
-                    ),
-                    "updated_at": (
-                        item.updated_at.isoformat()
-                        if getattr(item, "updated_at", None)
-                        else None
-                    ),
-                }
+                _procedural_memory_response(item)
                 for item in procedural_items
             ],
         }
@@ -5011,40 +5030,35 @@ async def delete_semantic_memory(
         raise HTTPException(status_code=404, detail=str(e))
 
 
-# ============================================================================
-# Procedural Memory Internals
-# ============================================================================
-
-
-async def _reset_agent_in_context_to_system(server, agent_id: str, actor) -> None:
-    """Force an agent's in-context history back to system-message-only.
-
-    Production procedural-memory evolution runs through the automatic
-    experience-curation path. That path reuses one persistent procedural agent,
-    so it hard-resets the agent context before and after each evolution step.
-    This cleanup is unconditional: it does not depend on the LLM calling
-    finish_memory_update or on all tool calls succeeding.
-
-    Keeps index 0 (the system message) and hard-deletes the now-detached
-    conversation/tool/heartbeat messages so the DB does not accumulate them.
-    Idempotent: a no-op when the context is already system-only (or empty).
-
-    Concurrency: the read-then-write (read message_ids -> set [system] ->
-    delete-detached) is NOT atomic. Callers must serialize evolution per
-    procedural agent.
+@router.delete("/memory/procedural/{memory_id}")
+async def delete_procedural_memory(
+    memory_id: str,
+    authorization: Optional[str] = Header(None),
+    http_request: Request = None,
+):
     """
-    refreshed = await server.agent_manager.get_agent_by_id(
-        agent_id=agent_id, actor=actor
+    Delete a procedural memory (skill) by ID.
+
+    **Accepts both JWT (dashboard) and Client API Key (programmatic).**
+
+    Deletion stays on the public surface like every other memory type — a user
+    must be able to remove a skill that is wrong or unwanted. Skill WRITES, by
+    contrast, have no public endpoint: skills are created/edited only through
+    the session-distillation evolution flow (auto_dream mode='procedural').
+    """
+    client, auth_type = await get_client_from_jwt_or_api_key(
+        authorization, http_request
     )
-    msg_ids = refreshed.message_ids or []
-    if len(msg_ids) <= 1:
-        return  # already system-only (or empty) -- nothing to clear
-    await server.agent_manager.set_in_context_messages(
-        agent_id=agent_id, message_ids=[msg_ids[0]], actor=actor
-    )
-    await server.message_manager.delete_detached_messages_for_agent(
-        agent_id=agent_id, actor=actor
-    )
+
+    server = get_server()
+
+    try:
+        await server.procedural_memory_manager.delete_procedure_by_id(
+            memory_id, actor=client
+        )
+        return {"success": True, "message": f"Procedural memory {memory_id} deleted"}
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
 
 # ============================================================================
@@ -5696,11 +5710,37 @@ async def auto_dream_handler(
             user_id=ClientAuthManager.get_admin_user_id_for_client(client.id)
         )
 
-    meta_agents = await server.agent_manager.list_agents(actor=client)
-    meta_agent_state = next(
-        (a for a in meta_agents if a.agent_type == AgentType.meta_memory_agent),
-        None,
-    )
+    if request_body.meta_agent_id:
+        try:
+            meta_agent_state = await server.agent_manager.get_agent_by_id(
+                request_body.meta_agent_id,
+                client,
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Meta agent {request_body.meta_agent_id} not found.",
+            ) from exc
+        if meta_agent_state.agent_type != AgentType.meta_memory_agent:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Agent {request_body.meta_agent_id} is "
+                    f"{meta_agent_state.agent_type}, not a meta_memory_agent."
+                ),
+            )
+    else:
+        meta_agents = await server.agent_manager.list_agents(actor=client)
+        matching_meta_agents = [
+            a for a in meta_agents if a.agent_type == AgentType.meta_memory_agent
+        ]
+        meta_agent_state = matching_meta_agents[0] if matching_meta_agents else None
+        if len(matching_meta_agents) > 1:
+            logger.warning(
+                "Auto dream called without meta_agent_id; using first of %d meta agents for client %s",
+                len(matching_meta_agents),
+                client.id,
+            )
     if meta_agent_state is None:
         raise HTTPException(
             status_code=400,

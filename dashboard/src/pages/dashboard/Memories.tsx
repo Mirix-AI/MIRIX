@@ -61,6 +61,9 @@ interface ProceduralMemory {
   entry_type?: string;
   description?: string;
   instructions?: string;
+  triggers?: string[];
+  examples?: Record<string, unknown>[];
+  version?: string;
   created_at?: string;
   updated_at?: string;
 }
@@ -209,7 +212,7 @@ export const Memories: React.FC = () => {
   const handleSearch = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     if (!selectedUser || !query.trim()) return;
-    
+
     setLoading(true);
     setHasSearched(true);
     try {
@@ -445,10 +448,17 @@ export const Memories: React.FC = () => {
             {bucket.items.map((item) => (
               <Card key={item.id} className="border border-primary/10">
                 <CardContent className="space-y-2 pt-3 pb-3">
-                  <div className="flex items-center justify-between text-xs text-muted-foreground">
-                    <span className="font-semibold uppercase tracking-wide">
-                      {item.entry_type || 'Procedure'}
-                    </span>
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-semibold uppercase tracking-wide">
+                        {item.entry_type || 'Procedure'}
+                      </span>
+                      {item.version && (
+                        <span className="rounded bg-muted px-2 py-0.5 text-[11px]">
+                          v{item.version}
+                        </span>
+                      )}
+                    </div>
                     {item.created_at && <span>{formatDate(item.created_at)}</span>}
                   </div>
                   <div className="flex items-start justify-between gap-2">
@@ -806,4 +816,3 @@ export const Memories: React.FC = () => {
     </div>
   );
 };
-

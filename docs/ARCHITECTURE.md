@@ -175,8 +175,6 @@ When `max_chaining_steps` is reached, agents are directed to call their terminal
 | DELETE | `/memory/episodic/{memory_id}` |
 | PATCH | `/memory/semantic/{memory_id}` |
 | DELETE | `/memory/semantic/{memory_id}` |
-| PATCH | `/memory/procedural/{memory_id}` |
-| DELETE | `/memory/procedural/{memory_id}` |
 | PATCH | `/memory/resource/{memory_id}` |
 | DELETE | `/memory/resource/{memory_id}` |
 | DELETE | `/memory/knowledge_vault/{memory_id}` |

@@ -254,11 +254,15 @@ class TestDirectProceduralMemory:
             agent_state=procedural_agent,
             agent_id=meta_agent.id,
             entry_type="process",
-            name="deploy-production",
-            description="Deploy application to production",
-            instructions="Run all tests\nCreate release branch\nBuild production artifacts\nDeploy to staging\nVerify staging deployment\nDeploy to production",
-            triggers=["user mentions deployment", "discussing release"],
-            examples=[],
+            summary="Deploy application to production",
+            steps=[
+                "Run all tests",
+                "Create release branch",
+                "Build production artifacts",
+                "Deploy to staging",
+                "Verify staging deployment",
+                "Deploy to production",
+            ],
             actor=client,
             organization_id=user.organization_id,
             user_id=user.id,
@@ -266,9 +270,7 @@ class TestDirectProceduralMemory:
 
         assert procedure is not None
         assert procedure.id is not None
-        assert "Run all tests" in procedure.instructions
-        assert procedure.name == "deploy-production"
-        assert procedure.version == "0.1.0"
+        assert len(procedure.steps) == 6
         print(f"[OK] Inserted procedure: {procedure.id}")
 
     async def test_search_procedures(self, server, client, user, meta_agent):
@@ -280,7 +282,7 @@ class TestDirectProceduralMemory:
             user=user,
             query="deploy",
             search_method="embedding",
-            search_field="description",
+            search_field="summary",
             limit=10,
         )
 
@@ -506,22 +508,26 @@ class TestSearchMethodComparison:
             agent_state=procedural_agent,
             agent_id=meta_agent.id,
             entry_type="process",
-            name="deploy-production-search",
-            description="Deploy application to production",
-            instructions="Run all tests\nCreate release branch\nBuild production artifacts\nDeploy to staging\nVerify staging deployment\nDeploy to production",
-            triggers=["user mentions deployment", "discussing release"],
-            examples=[],
+            summary="Deploy application to production",
+            steps=[
+                "Run all tests",
+                "Create release branch",
+                "Build production artifacts",
+                "Deploy to staging",
+                "Verify staging deployment",
+                "Deploy to production",
+            ],
             actor=client,
             organization_id=user.organization_id,
             user_id=user.id,
         )
 
-        # Test different fields: description, instructions
+        # Test different fields: summary, steps
         test_cases = [
-            ("deploy", "description", "bm25"),
-            ("deploy", "description", "embedding"),
-            ("production", "instructions", "bm25"),
-            ("production", "instructions", "embedding"),
+            ("deploy", "summary", "bm25"),
+            ("deploy", "summary", "embedding"),
+            ("production", "steps", "bm25"),
+            ("production", "steps", "embedding"),
         ]
 
         for query, field, method in test_cases:

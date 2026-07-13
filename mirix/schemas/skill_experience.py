@@ -1,4 +1,4 @@
-"""Pydantic schemas for the general session-experience store (Goal 2).
+"""Pydantic schemas for the general session-experience store.
 
 A `SkillExperience` is one transferable lesson distilled from a single work
 session's transcript. Each is either `worth_learning` (an approach worth
@@ -6,12 +6,11 @@ repeating) or `worth_avoiding` (a pitfall to avoid), scored by `importance` and
 `credibility` in [0,1]. Records start `pending`, are `consumed` by a skill
 evolution run, or are `superseded` when later evidence overrides them.
 
-Mirrors `schemas/skill_evolution_record.py`: a Base with the user-facing fields,
-a full schema with DB columns, an Update schema, and a Response alias. Enums are
-`Literal`s (validated here in Pydantic), NOT pg ENUMs — the ORM column is a
-plain String, so adding a value never requires a DB migration. `importance` and
-`credibility` are clamped to [0,1] by validators (garbage -> 0.0), mirroring
-`_clamp01` in skill_session_distiller.
+This module has a Base with the user-facing fields, a full schema with DB
+columns, an Update schema, and a Response alias. Enums are `Literal`s (validated
+here in Pydantic), NOT pg ENUMs — the ORM column is a plain String, so adding a
+value never requires a DB migration. `importance` and `credibility` are clamped
+to [0,1] by validators (garbage -> 0.0).
 """
 
 import math
@@ -39,8 +38,8 @@ SKILL_EXPERIENCE_MAX_EVIDENCE_LEN = 2048
 def _clamp01(value, default: float = 0.0) -> float:
     """Coerce a distiller-reported score into [0.0, 1.0]; default on garbage.
 
-    Kept identical in spirit to `skill_session_distiller._clamp01` so the
-    validator and the distiller agree on out-of-range/garbage handling.
+    Kept in sync with the distiller so validation and persistence agree on
+    out-of-range/garbage handling.
     """
     try:
         f = float(value)
