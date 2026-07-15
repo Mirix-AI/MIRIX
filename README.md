@@ -170,6 +170,7 @@ psql "$MIRIX_PG_URI" -f scripts/migrate_add_conversation_message.sql
 psql "$MIRIX_PG_URI" -f scripts/migrate_add_conversation_message_phase2.sql # outside a transaction
 psql "$MIRIX_PG_URI" -f scripts/migrate_add_skill_experience.sql
 psql "$MIRIX_PG_URI" -f scripts/migrate_add_agent_trigger_state.sql
+psql "$MIRIX_PG_URI" -f scripts/migrate_backfill_procedural_scope.sql   # backfill filter_tags['scope'] from each skill's owning client
 ```
 
 Each script is idempotent where possible and documents its own preconditions in its header. Run them once, then restart the server.

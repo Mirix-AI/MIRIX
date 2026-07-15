@@ -55,6 +55,28 @@ logger = get_logger(__name__)
 _MAX_EXPERIENCES_PER_RUN = 50
 
 
+def scope_filter_tags(actor) -> Optional[dict]:
+    """Build the ``filter_tags`` scope stamp for skills this actor creates.
+
+    The evolution path is the single producer of procedural skills and bypasses
+    the REST layer's ``filter_tags["scope"] = client.write_scope`` injection
+    (``rest_api`` ``add_sync``/``add``), so it must stamp the owning client's
+    ``write_scope`` itself. ``skill_create`` later reads it back via
+    ``getattr(self, "filter_tags", None)``. Returns ``{"scope": write_scope}``
+    when the actor has a truthy ``write_scope``, else ``None`` (a scope-less,
+    read-only actor donates no scope — see caller warning).
+
+    Side effect (intended): ``Agent.__init__`` also derives ``_block_scopes``
+    from ``filter_tags["scope"]``, so the evolution agent's core-memory block
+    loading narrows to this scope — the same behavior the normal add-flow
+    procedural child already has.
+    """
+    write_scope = getattr(actor, "write_scope", None)
+    if write_scope:
+        return {"scope": write_scope}
+    return None
+
+
 def build_experience_payload(experiences: List) -> str:
     """Render pending experiences as a COMPACT, priority-ordered curator prompt.
 
@@ -193,11 +215,27 @@ async def run_experience_evolution(
 
     timezone_str = getattr(user, "timezone", None) or "UTC"
 
+    # Stamp the owning client's write_scope onto the agent so every skill_create
+    # in this run tags its row with filter_tags={"scope": write_scope}. This
+    # evolution path is the single producer of skills and bypasses the REST
+    # layer's filter_tags["scope"]=client.write_scope injection (rest_api
+    # add_sync), so it must stamp the scope itself; skill_create reads it via
+    # getattr(self, "filter_tags", None). A scope-less actor would produce
+    # skills invisible to every scoped reader, so warn loudly in that case.
+    skill_filter_tags = scope_filter_tags(actor)
+    if skill_filter_tags is None:
+        logger.warning(
+            "[experience-curator] actor %s has no write_scope; evolved skills "
+            "will be unscoped (filter_tags=NULL) and invisible to scoped readers",
+            getattr(actor, "id", "?"),
+        )
+
     proc_agent = ProceduralMemoryAgent(
         agent_state=proc_agent_state,
         interface=server.default_interface_factory(),
         actor=actor,
         user=user,
+        filter_tags=skill_filter_tags,
     )
 
     async def _snapshot():
