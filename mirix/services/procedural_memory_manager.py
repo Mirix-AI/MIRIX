@@ -1170,15 +1170,30 @@ class ProceduralMemoryManager:
                         )
                     else:
                         # Fallback to in-memory BM25 for SQLite (legacy method)
-                        # Load all candidate items (memory-intensive, kept for compatibility)
-                        result = await session.execute(
+                        # Load all candidate items (memory-intensive, kept for
+                        # compatibility). Mirror base_query's full WHERE set
+                        # (org + filter_tags + scopes) so the SQLite fallback
+                        # enforces the SAME scope filtering as the PG/other
+                        # paths — otherwise scoped reads leak NULL-scope rows.
+                        candidate_query = (
                             select(ProceduralMemoryItem)
                             .where(ProceduralMemoryItem.user_id == user.id)
+                            .where(
+                                ProceduralMemoryItem.organization_id
+                                == organization_id
+                            )
                             # Exclude soft-deleted skills from the SQLite BM25
                             # fallback too (this is the path the validity run's
                             # before/after evolve snapshot uses).
                             .where(~ProceduralMemoryItem.is_deleted)
                         )
+                        candidate_query = apply_filter_tags_sqlalchemy(
+                            candidate_query,
+                            ProceduralMemoryItem,
+                            filter_tags,
+                            scopes=scopes,
+                        )
+                        result = await session.execute(candidate_query)
                         all_items = result.scalars().all()
 
                         if not all_items:
@@ -1243,12 +1258,24 @@ class ProceduralMemoryManager:
 
                 elif search_method == "fuzzy_match":
                     # For fuzzy matching, load all candidate items into memory.
-                    result = await session.execute(
+                    # Mirror base_query's full WHERE set (org + filter_tags +
+                    # scopes) so fuzzy reads enforce the SAME scope filtering.
+                    candidate_query = (
                         select(ProceduralMemoryItem)
                         .where(ProceduralMemoryItem.user_id == user.id)
+                        .where(
+                            ProceduralMemoryItem.organization_id == organization_id
+                        )
                         # Exclude soft-deleted skills from the fuzzy path too.
                         .where(~ProceduralMemoryItem.is_deleted)
                     )
+                    candidate_query = apply_filter_tags_sqlalchemy(
+                        candidate_query,
+                        ProceduralMemoryItem,
+                        filter_tags,
+                        scopes=scopes,
+                    )
+                    result = await session.execute(candidate_query)
                     all_items = result.scalars().all()
                     scored_items = []
                     for item in all_items:

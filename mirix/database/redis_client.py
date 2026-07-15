@@ -1044,7 +1044,7 @@ class RedisMemoryClient:
                 logger.debug("🕐 Redis temporal filter: @occurred_at_ts:[%s %s]", min_ts, max_ts)
 
             # Add filter_tags filters
-            if filter_tags:
+            if filter_tags or scopes:
                 filter_query = self._build_filter_tags_query(filter_tags, scopes=scopes)
                 if filter_query:
                     query_parts.append(filter_query)
@@ -1176,7 +1176,7 @@ class RedisMemoryClient:
                 logger.debug("🕐 Redis temporal filter: @occurred_at_ts:[%s %s]", min_ts, max_ts)
 
             # Add filter_tags filters
-            if filter_tags:
+            if filter_tags or scopes:
                 filter_query = self._build_filter_tags_query(filter_tags, scopes=scopes)
                 if filter_query:
                     query_parts.append(filter_query)
@@ -1310,7 +1310,7 @@ class RedisMemoryClient:
                 logger.debug("🕐 Redis temporal filter: @occurred_at_ts:[%s %s]", min_ts, max_ts)
 
             # Add filter_tags filters
-            if filter_tags:
+            if filter_tags or scopes:
                 filter_query = self._build_filter_tags_query(filter_tags, scopes=scopes)
                 if filter_query:
                     query_parts.append(filter_query)
@@ -1418,7 +1418,7 @@ class RedisMemoryClient:
                 logger.debug("🕐 Redis temporal filter: @occurred_at_ts:[%s %s]", min_ts, max_ts)
 
             # Add filter_tags filters (including scope)
-            if filter_tags:
+            if filter_tags or scopes:
                 filter_query = self._build_filter_tags_query(filter_tags, scopes=scopes)
                 if filter_query:
                     query_parts.append(filter_query)
@@ -1511,7 +1511,7 @@ class RedisMemoryClient:
                 filter_parts.append(f"@occurred_at_ts:[{min_ts} {max_ts}]")
 
             # Add filter_tags filters (including scope)
-            if filter_tags:
+            if filter_tags or scopes:
                 filter_query = self._build_filter_tags_query(filter_tags, scopes=scopes)
                 if filter_query:
                     filter_parts.append(filter_query)
@@ -1609,7 +1609,7 @@ class RedisMemoryClient:
                 query_parts.append(f"@occurred_at_ts:[{min_ts} {max_ts}]")
 
             # Add filter_tags filters (including scope)
-            if filter_tags:
+            if filter_tags or scopes:
                 filter_query = self._build_filter_tags_query(filter_tags, scopes=scopes)
                 if filter_query:
                     query_parts.append(filter_query)

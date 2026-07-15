@@ -841,12 +841,23 @@ class KnowledgeVaultManager:
                         )
                     else:
                         # Fallback to in-memory BM25 for SQLite (legacy method)
-                        # Load all candidate items (memory-intensive, kept for compatibility)
-                        fuzzy_query = select(KnowledgeVaultItem).where(KnowledgeVaultItem.user_id == user.id)
+                        # Load all candidate items (memory-intensive, kept for
+                        # compatibility). Mirror base_query's WHERE set (org +
+                        # filter_tags + scopes) so the SQLite fallback enforces
+                        # the SAME scope filtering as the PG/other paths.
+                        fuzzy_query = (
+                            select(KnowledgeVaultItem)
+                            .where(KnowledgeVaultItem.user_id == user.id)
+                            .where(KnowledgeVaultItem.organization_id == organization_id)
+                        )
 
                         # Add sensitivity filter if provided
                         if sensitivity is not None:
                             fuzzy_query = fuzzy_query.where(KnowledgeVaultItem.sensitivity.in_(sensitivity))
+
+                        fuzzy_query = apply_filter_tags_sqlalchemy(
+                            fuzzy_query, KnowledgeVaultItem, filter_tags, scopes=scopes
+                        )
 
                         result = await session.execute(fuzzy_query)
                         all_items = result.scalars().all()
@@ -905,11 +916,21 @@ class KnowledgeVaultManager:
                 elif search_method == "fuzzy_match":
                     # Fuzzy matching: load all candidate items into memory,
                     # then compute fuzzy matching score using RapidFuzz.
-                    fuzzy_query = select(KnowledgeVaultItem).where(KnowledgeVaultItem.user_id == user.id)
+                    # Mirror base_query's WHERE set (org + filter_tags + scopes)
+                    # so fuzzy reads enforce the SAME scope filtering.
+                    fuzzy_query = (
+                        select(KnowledgeVaultItem)
+                        .where(KnowledgeVaultItem.user_id == user.id)
+                        .where(KnowledgeVaultItem.organization_id == organization_id)
+                    )
 
                     # Add sensitivity filter if provided
                     if sensitivity is not None:
                         fuzzy_query = fuzzy_query.where(KnowledgeVaultItem.sensitivity.in_(sensitivity))
+
+                    fuzzy_query = apply_filter_tags_sqlalchemy(
+                        fuzzy_query, KnowledgeVaultItem, filter_tags, scopes=scopes
+                    )
 
                     result = await session.execute(fuzzy_query)
                     all_items = result.scalars().all()

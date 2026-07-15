@@ -909,8 +909,19 @@ class EpisodicMemoryManager:
                         )
                     else:
                         # Fallback to in-memory BM25 for SQLite (legacy method)
-                        # Load all candidate events (memory-intensive, kept for compatibility)
-                        result = await session.execute(select(EpisodicEvent).where(EpisodicEvent.user_id == user.id))
+                        # Load all candidate events (memory-intensive, kept for
+                        # compatibility). Mirror base_query's WHERE set (org +
+                        # filter_tags + scopes) so the SQLite fallback enforces
+                        # the SAME scope filtering as the PG/other paths.
+                        candidate_query = (
+                            select(EpisodicEvent)
+                            .where(EpisodicEvent.user_id == user.id)
+                            .where(EpisodicEvent.organization_id == organization_id)
+                        )
+                        candidate_query = apply_filter_tags_sqlalchemy(
+                            candidate_query, EpisodicEvent, filter_tags, scopes=scopes
+                        )
+                        result = await session.execute(candidate_query)
                         all_events = result.scalars().all()
 
                         # Apply temporal filtering in memory for SQLite
@@ -971,8 +982,18 @@ class EpisodicMemoryManager:
                         return [event.to_pydantic() for event in episodic_memory]
 
                 elif search_method == "fuzzy_match":
-                    # Load all candidate events (kept for backward compatibility)
-                    result = await session.execute(select(EpisodicEvent).where(EpisodicEvent.user_id == user.id))
+                    # Load all candidate events (kept for backward compatibility).
+                    # Mirror base_query's WHERE set (org + filter_tags + scopes)
+                    # so fuzzy reads enforce the SAME scope filtering.
+                    candidate_query = (
+                        select(EpisodicEvent)
+                        .where(EpisodicEvent.user_id == user.id)
+                        .where(EpisodicEvent.organization_id == organization_id)
+                    )
+                    candidate_query = apply_filter_tags_sqlalchemy(
+                        candidate_query, EpisodicEvent, filter_tags, scopes=scopes
+                    )
+                    result = await session.execute(candidate_query)
                     all_events = result.scalars().all()
                     scored_events = []
                     for event in all_events:
