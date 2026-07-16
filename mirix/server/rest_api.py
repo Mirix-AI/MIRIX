@@ -86,10 +86,25 @@ async def initialize(skip_bootstrap_writes: bool = False):
     logger.info("Starting Mirix REST API server")
 
     # Create database tables (async engine) before initializing server.
-    # Skipped on read-replica processes — DDL is a write and the writer has
-    # already created the tables.
+    # Skipped in two cases:
+    #   - read-replica processes (skip_bootstrap_writes): DDL is a write and the
+    #     writer has already created the tables.
+    #   - a relational provider is registered (e.g. IPS): create_all is the
+    #     Postgres-ORM bootstrap only; under a provider the schema is provisioned
+    #     out-of-band, there is no local DB to create, and running create_all
+    #     would open a Postgres connection that no longer exists.
+    from mirix.database.relational_provider import get_relational_provider
+
     if skip_bootstrap_writes:
-        logger.info("Skipping ensure_tables_created (read-replica process); " "tables are owned by the writer/consumer")
+        logger.info(
+            "Skipping ensure_tables_created (read-replica process); "
+            "tables are owned by the writer/consumer"
+        )
+    elif get_relational_provider() is not None:
+        logger.info(
+            "Skipping ensure_tables_created (relational provider registered); "
+            "schema is provisioned out-of-band"
+        )
     else:
         await ensure_tables_created()
 
