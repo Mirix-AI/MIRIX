@@ -62,4 +62,10 @@ AGENT_CONFIGS = [
         "attr_name": "agent_state",
         "include_base_tools": True,
     },
+    {
+        "name": "auto_dream_agent",
+        "agent_type": AgentType.auto_dream_agent,
+        "attr_name": "auto_dream_agent_state",
+        "include_base_tools": False,
+    },
 ]

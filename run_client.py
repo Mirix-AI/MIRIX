@@ -373,9 +373,11 @@ async def main():
     )
 
     await client.initialize_meta_agent(
-        config_path="./evals/configs/0423a.yaml",
-        update_agents=False,
+        config_path="mirix/configs/examples/mirix_openai_with_auto_dram.yaml",
+        update_agents=True,
     )
+
+    breakpoint()
 
     # """
     result = await client.add(
