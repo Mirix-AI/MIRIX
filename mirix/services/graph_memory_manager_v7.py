@@ -122,7 +122,7 @@ class V7GraphManager:
         source_meta: Optional[dict[str, Any]] = None,
         entities: Optional[list[ExtractedEntity]] = None,
     ) -> dict[str, Any]:
-        if not settings.enable_graph_memory or settings.graph_version not in ("v7", "v7.1", "v7.2", "v7.3", "v7.4", "v8"):
+        if not settings.enable_graph_memory or settings.graph_version not in ("v7", "v7.1", "v7.2", "v7.3", "v7.4", "v7.6", "v8"):
             return {"skipped": "disabled"}
 
         from mirix.database.neo4j_client import get_neo4j_driver
@@ -136,12 +136,21 @@ class V7GraphManager:
         # Only name/entity_type are consumed downstream, so a caller that already
         # knows the entities (v7.3 extracts them in the same call that produces the
         # proposition) can pass them and skip the LightRAG round-trip entirely.
+        relations: list[tuple[str, str, str]] = []
         if entities is None:
             if settings.graph_version == "v7.4":
                 # v7.4: local GLiNER encoder instead of the per-memory LightRAG LLM
                 # call (~60x faster; drops User/Assistant noise hubs).
                 from mirix.services.gliner_extractor import extract_entities_gliner
                 entities = await extract_entities_gliner(text)
+            elif settings.graph_version == "v7.6":
+                # v7.6 (direction D): one LLM call -> typed entities + relations.
+                # Keeps abstraction (GLiNER can't) and the relations v7 discarded,
+                # which become anchor->anchor edges below.
+                from mirix.services.triple_extractor import extract_triples
+                res = await extract_triples(text, model=llm_model_from_agent(agent_state))
+                entities = res.entities
+                relations = res.relations
             else:
                 extraction = await extract_entities_and_relations(
                     text=text, llm_model=llm_model_from_agent(agent_state)
@@ -181,6 +190,12 @@ class V7GraphManager:
                 organization_id=organization_id,
                 user_id=user_id,
             )
+
+        # v7.6 (direction D): materialise the extracted relations as anchor->anchor
+        # edges. v7 discarded relations entirely; these give retrieval a graph to
+        # propagate over (PPR) and are what make multi-hop paths traversable.
+        if relations:
+            await self._link_relation_edges(driver, relations=relations, user_id=user_id)
 
         await self._link_support_edges(
             driver,
@@ -448,6 +463,36 @@ class V7GraphManager:
                 memory_ref_id=memory_ref_id,
                 user_id=user_id,
                 timestamp=timestamp,
+                now=now,
+            )
+
+    async def _link_relation_edges(
+        self, driver, *, relations: list[tuple[str, str, str]], user_id: str
+    ) -> None:
+        """v7.6: materialise (subject, relation, object) triples as anchor->anchor
+        V7_RELATION edges. Endpoints are matched by the same canonical key anchors
+        merge on, so an edge is only created when both entities survived as anchors.
+        Distinct relation phrases between the same pair are distinct edges."""
+        rows = []
+        for subj, rel, obj in relations:
+            sk = anchor_canonical_key(self._clean_name(subj))
+            ok = anchor_canonical_key(self._clean_name(obj))
+            if sk and ok and sk != ok:
+                rows.append({"s": sk, "o": ok, "r": (rel or "related to")[:80]})
+        if not rows:
+            return
+        now = iso(datetime.now(timezone.utc))
+        async with driver.session(database=settings.neo4j_database) as session:
+            await session.run(
+                """
+                UNWIND $rows AS row
+                MATCH (a:V7Anchor {user_id: $user_id, name_lower: row.s})
+                MATCH (b:V7Anchor {user_id: $user_id, name_lower: row.o})
+                MERGE (a)-[e:V7_RELATION {rel: row.r}]->(b)
+                ON CREATE SET e.created_at = $now
+                """,
+                rows=rows,
+                user_id=user_id,
                 now=now,
             )
 
