@@ -1,11 +1,13 @@
 """v7.3 ingest: build LongMemEval-S / MAB memory from ATOMIC PROPOSITIONS.
 
-Per chunk: one proposition-extraction call (mirix.services.proposition_extractor)
--> each proposition becomes a fine-grained semantic_memory (embedded) + is indexed
-by the existing V7 graph build (anchor -> DESCRIBED_BY -> ConceptRef).
+ONE LLM call per chunk emits both the propositions and their typed entities. Each
+proposition becomes a fine-grained semantic_memory (embedded); its entities are
+handed straight to the V7 graph build, which consumes only name + entity_type.
+LightRAG is never invoked -- it was ~97% of graph-build time, and its relations
+and descriptions were discarded by v7 anyway.
 
 Env:
-  MIRIX_PG_DB           target DB (schema must exist — start the server against it once)
+  MIRIX_PG_DB           target DB (schema must exist -- start the server against it once)
   MIRIX_ENABLE_GRAPH_MEMORY=true, MIRIX_GRAPH_VERSION=v7.3
   SOURCE                HF metadata.source (default longmemeval_s*)
   MAX_CHUNKS            optional cap for a smoke test
@@ -15,6 +17,7 @@ import asyncio
 import datetime
 import os
 import sys
+import time
 import types
 
 sys.path.insert(0, os.path.dirname(__file__))
@@ -28,7 +31,8 @@ from mirix.schemas.llm_config import LLMConfig
 from mirix.server.server import db_context
 from mirix.services._graph_common import embed_batch
 from mirix.services.graph_memory_manager_v7 import V7GraphManager
-from mirix.services.proposition_extractor import extract_propositions
+from mirix.services.lightrag_extractor import ExtractedEntity
+from mirix.services.proposition_extractor import extract_propositions_with_entities
 from mirix.settings import settings
 
 EMB = EmbeddingConfig(
@@ -52,8 +56,10 @@ async def main():
     await init_neo4j_client()
     drv = get_neo4j_driver()
     async with drv.session(database=settings.neo4j_database) as s:
-        await s.run("MATCH (n) DETACH DELETE n")
-    print("neo4j wiped", flush=True)
+        # consume() so the delete actually completes before we start writing
+        await (await s.run("MATCH (n) DETACH DELETE n")).consume()
+        left = (await (await s.run("MATCH (n) RETURN count(n) AS c")).single())["c"]
+    print(f"neo4j wiped (remaining nodes: {left})", flush=True)
 
     it = L.load_longmem_s(source=SOURCE, limit=1)[0]
     chunks = L.parse_sessions(it["context"])
@@ -62,37 +68,48 @@ async def main():
     print(f"chunks={len(chunks)} source={SOURCE}", flush=True)
 
     mgr = V7GraphManager()
-    total = 0
-    for ci, ch in enumerate(chunks):
-        props = await extract_propositions(ch["text"], api_key=API_KEY)
+    total = n_ents = 0
+    t0 = time.time()
+    for ci, ch in enumerate(chunks, 1):
+        props = await extract_propositions_with_entities(ch["text"], api_key=API_KEY)
         if not props:
+            print(f"chunk {ci}/{len(chunks)}: no propositions", flush=True)
             continue
-        embs = await embed_batch(props, AST)
-        rows = []  # (mid, proposition)
+
+        embs = await embed_batch([p.text for p in props], AST)
+        rows = []  # (memory_id, Proposition, embedding)
         for p, e in zip(props, embs):
             if e is None:
                 continue
             total += 1
             rows.append((f"prop_{total:06d}", p, e))
+
         async with db_context() as session:
             for mid, p, e in rows:
                 epad = str(list(e) + [0.0] * (MAX_EMBEDDING_DIM - len(e)))
                 await session.execute(INSERT, {
-                    "id": mid, "nm": p[:120], "sm": p, "dt": p, "src": f"chunk_{ci}",
-                    "ts": datetime.datetime.utcnow(), "u": UID, "o": ORG, "emb": epad})
+                    "id": mid, "nm": p.text[:120], "sm": p.text, "dt": p.text,
+                    "src": f"chunk_{ci - 1}", "ts": datetime.datetime.utcnow(),
+                    "u": UID, "o": ORG, "emb": epad})
             await session.commit()
-        for mid, p, e in rows:
+
+        for mid, p, _ in rows:
+            n_ents += len(p.entities)
             try:
                 await mgr.process_memory(
-                    source_kind="semantic", source_id=mid, text=p, title=p[:80],
-                    summary=p, source_meta=None, agent_state=AST,
-                    organization_id=ORG, user_id=UID)
+                    source_kind="semantic", source_id=mid, text=p.text, title=p.text[:80],
+                    summary=p.text, source_meta=None, agent_state=AST,
+                    organization_id=ORG, user_id=UID,
+                    entities=[ExtractedEntity(name=x.name, entity_type=x.type, description="")
+                              for x in p.entities])
             except Exception as ex:  # noqa: BLE001
                 print(f"  graph fail {mid}: {str(ex)[:80]}", flush=True)
-        if ci % 10 == 0:
-            print(f"chunk {ci}/{len(chunks)}  propositions {total}", flush=True)
 
-    print(f"DONE: {total} propositions ingested", flush=True)
+        print(f"chunk {ci}/{len(chunks)}  props={total} entities={n_ents} "
+              f"(+{time.time() - t0:.0f}s)", flush=True)
+
+    print(f"DONE: {total} propositions, {n_ents} entity mentions, "
+          f"{time.time() - t0:.0f}s, {len(chunks)} LLM extraction calls", flush=True)
 
 
 if __name__ == "__main__":
