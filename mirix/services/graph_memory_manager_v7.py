@@ -120,8 +120,9 @@ class V7GraphManager:
         summary: Optional[str] = None,
         occurred_at: Optional[object] = None,
         source_meta: Optional[dict[str, Any]] = None,
+        entities: Optional[list[ExtractedEntity]] = None,
     ) -> dict[str, Any]:
-        if not settings.enable_graph_memory or settings.graph_version not in ("v7", "v7.1", "v7.2", "v7.3", "v8"):
+        if not settings.enable_graph_memory or settings.graph_version not in ("v7", "v7.1", "v7.2", "v7.3", "v7.4", "v8"):
             return {"skipped": "disabled"}
 
         from mirix.database.neo4j_client import get_neo4j_driver
@@ -132,11 +133,22 @@ class V7GraphManager:
         if not text or not text.strip():
             return {"anchors": 0}
 
-        extraction = await extract_entities_and_relations(
-            text=text, llm_model=llm_model_from_agent(agent_state)
-        )
+        # Only name/entity_type are consumed downstream, so a caller that already
+        # knows the entities (v7.3 extracts them in the same call that produces the
+        # proposition) can pass them and skip the LightRAG round-trip entirely.
+        if entities is None:
+            if settings.graph_version == "v7.4":
+                # v7.4: local GLiNER encoder instead of the per-memory LightRAG LLM
+                # call (~60x faster; drops User/Assistant noise hubs).
+                from mirix.services.gliner_extractor import extract_entities_gliner
+                entities = await extract_entities_gliner(text)
+            else:
+                extraction = await extract_entities_and_relations(
+                    text=text, llm_model=llm_model_from_agent(agent_state)
+                )
+                entities = extraction.entities
         candidates = self._select_anchors(
-            extraction.entities,
+            entities,
             max_anchors=MAX_ANCHORS_PER_EPISODE if source_kind == "episodic" else MAX_ANCHORS_PER_SEMANTIC,
         )
 
