@@ -76,7 +76,24 @@ extraction draw within the ±42% noise, not a regression.)
 | v7.3 | proposition ingest, no LightRAG | G6 / extraction | **rejected** — collapsed edge structure (only DESCRIBED_BY survived; no episodic → lost APPEARS_IN / SUPPORTED_BY / NEXT_MEMORY); singleton ↑77% | 439 | 77% | not run (structure not comparable) | 0a7e7f1 |
 | **v7.4** | **GLiNER extractor** (local encoder) — dialogue roles (User/Assistant) filtered out | **G6** cost + **G4** noise hubs | **shipped-but-superseded** — ~200× faster, hubs gone, deterministic; **BUT GLiNER can't abstract → drops LightRAG's concept anchors (networking/team-collaboration=0), degrading concept-heavy retrieval (masked by net-neutral QA). See `extractor_direction_D.md`.** Kept as a cheap named-entity supplement. | 2473 (−52%) | 66% | **32/60 (vs v7 30/60; concept-loss caveat)** | 73c5207 |
 | **v7.6** | **LLM triple extraction (direction D)** — abstracts concepts (GLiNER can't) + keeps relations as `V7_RELATION` anchor→anchor edges; User/Assistant filtered | G6 cost + concept coverage + **relations (for PPR)** | **foundation shipped** — concept anchors back (2374, 41% vs v7.4's 294/12%), **3667 relation edges** (v7 had none), hubs gone, **34× faster than LightRAG** (9.7min vs ~5.5h for 962 mem). QA **31/60** = flat (v7 30 / v7.4 32, all within ±42% noise) **BY DESIGN: retrieval doesn't traverse V7_RELATION yet — the payoff needs PPR (next).** | 5777 | 81% | 31/60 (foundation; PPR unlocks relations) | pending |
-| **v7.7** | **PPR retrieval** over the v7.6 relation graph (query→anchor seed + Personalized PageRank) — turns V7_RELATION edges into multi-hop retrieval | multi-session (27%) | planned — **this is what monetizes v7.6's relations** | — | — | — | — |
+| **v7.7** | **PPR retrieval** over the v7.6 relation graph (query→anchor seed + Personalized PageRank, networkx — no GDS) | multi-session (27%) | **implemented; retrieval much better, QA flat (30/60)** — the colleague query reversed from off-topic fitness to on-topic social; context went from ~500-char titles to 37k-char rich. But QA = v7 30 / v7.4 32 / v7.6 31 / v7.7 30, **all flat.** | — | — | 30/60 | pending |
+
+### ⚠️ Pivotal finding: graph-context quality is NOT the QA bottleneck
+
+Four retrieval variants (v7 anchor-search, v7.4 GLiNER, v7.6 D, v7.7 PPR) span a
+huge range of graph-context quality yet **all land 30–32/60**. Root cause, verified
+from the QA transcripts: **the answerer calls its own `search_memory` (flat pgvector)
+tool on 60/60 questions.** The graph context we inject via `wrap_user_prompt` is only
+*one of two* retrieval sources — the answerer's parallel flat search does the heavy
+lifting, so improving the graph context barely moves QA.
+
+Implication — the whole v7.4→v7.7 line optimized a **secondary** path. To make the
+graph move QA it must either (a) provide what flat search cannot (true multi-hop
+bridges) AND be surfaced so the answerer uses it, or (b) *replace* the answerer's flat
+search (the earlier "graph-routed search" did this and was −18pp — flat search is a
+strong baseline). Next investigation should target the answerer's retrieval path, not
+graph-context quality. The v7.6 relation graph + v7.7 PPR remain a sound foundation
+*if* retrieval is rerouted; as a supplement to flat search they are ~neutral.
 | **v7.5** | **role/domain scoping** — User/Assistant become a `role ∈ {user,assistant,shared}` scope attribute on memory refs (from provenance, NOT an entity anchor); retrieval can filter by role. Built on v7.4. | single-session-user / assistant / **preference** (17%) | planned | — | — | — | — |
 | **v7.6** | keep relations + PPR retrieval (query→triple + passage-seeded) | multi-hop retrieval | planned (enables 7.7/7.8) | — | — | — | — |
 | **v7.7** | synonym edges (`name_embedding` cos ≥ τ, edge not merge) | **G2** alias, **G4** | planned | — | — | — | — |

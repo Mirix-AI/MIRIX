@@ -55,7 +55,7 @@ class V7Retriever:
         top_k: int = 18,
         max_items_per_kind: int = DEFAULT_MAX_ITEMS_PER_KIND,
     ) -> str:
-        if not settings.enable_graph_memory or settings.graph_version not in ("v7", "v7.1", "v7.2", "v7.3", "v7.4", "v7.6", "v8"):
+        if not settings.enable_graph_memory or settings.graph_version not in ("v7", "v7.1", "v7.2", "v7.3", "v7.4", "v7.6", "v7.7", "v8"):
             return ""
 
         from mirix.database.neo4j_client import get_neo4j_driver
@@ -73,7 +73,25 @@ class V7Retriever:
         if not anchors:
             return ""
 
-        if settings.graph_version == "v7.2":
+        if settings.graph_version == "v7.7":
+            # v7.7: Personalized PageRank over the v7.6 relation graph. Seed from the
+            # query-matched anchors and propagate through V7_RELATION (+ anchor↔memory)
+            # edges, then rank memory refs by PPR score. This is what turns v7.6's
+            # anchor→anchor edges into multi-hop retrieval — plain anchor search only
+            # reaches memories one hop from a seed; PPR reaches memories bridged by a
+            # chain of related entities. (No Neo4j GDS here, so PPR runs in networkx.)
+            episodic_ids, semantic_ids = await self._retrieve_ppr(
+                driver, user_id, anchors, max_items_per_kind)
+            if not episodic_ids and not semantic_ids:
+                return self._format_context(anchors, [], [])
+            ep_task = asyncio.create_task(
+                self._fetch_episodic(user_id, episodic_ids, q_emb=None, limit=max_items_per_kind))
+            sem_task = asyncio.create_task(
+                self._fetch_semantic(user_id, semantic_ids, q_emb=None, limit=max_items_per_kind))
+            ep_rows, sem_rows = await asyncio.gather(ep_task, sem_task, return_exceptions=True)
+            ep_rows = [] if isinstance(ep_rows, Exception) else ep_rows
+            sem_rows = [] if isinstance(sem_rows, Exception) else sem_rows
+        elif settings.graph_version == "v7.2":
             # v7.2: per-anchor coverage rerank. Rerank each matched anchor's own
             # memories by query text-cosine, then round-robin across anchors so a
             # multi-hop query spanning several entities keeps a memory for EACH.
@@ -225,6 +243,59 @@ class V7Retriever:
                 add_unique(sem_ids, rec["direct_sem"])
                 add_unique(sem_ids, rec["support_sem"])
         return ep_ids, sem_ids
+
+    async def _load_ppr_graph(self, driver, user_id: str):
+        """Pull the user's anchor↔memory + anchor→anchor(relation) graph into a
+        networkx DiGraph. Edges are added both ways so PPR mass flows in and out of
+        memory nodes. Returns (graph, {node_id: (memory_id, kind)})."""
+        import networkx as nx
+
+        g = nx.DiGraph()
+        mem: dict[str, tuple[str, str]] = {}
+        async with driver.session(database=settings.neo4j_database) as session:
+            res = await session.run(
+                """
+                MATCH (a:V7Anchor {user_id: $u})-[:V7_APPEARS_IN|V7_DESCRIBED_BY]->(m:V7MemoryRef)
+                RETURN a.id AS a, m.id AS m, m.memory_id AS mid, m.memory_type AS kind
+                """, u=user_id)
+            async for r in res:
+                g.add_edge(r["a"], r["m"], w=1.0)
+                g.add_edge(r["m"], r["a"], w=1.0)
+                if r["mid"]:
+                    mem[r["m"]] = (str(r["mid"]), r["kind"] or "episodic")
+            res2 = await session.run(
+                """
+                MATCH (a:V7Anchor {user_id: $u})-[:V7_RELATION]->(b:V7Anchor {user_id: $u})
+                RETURN a.id AS a, b.id AS b
+                """, u=user_id)
+            async for r in res2:
+                g.add_edge(r["a"], r["b"], w=0.7)
+                g.add_edge(r["b"], r["a"], w=0.7)
+        return g, mem
+
+    async def _retrieve_ppr(
+        self, driver, user_id: str, anchors: list[V7AnchorHit], max_items: int
+    ) -> tuple[list[str], list[str]]:
+        """Personalized PageRank seeded from the matched anchors; rank memory refs
+        by PPR score. Returns (episodic_ids, semantic_ids) in descending PPR order."""
+        import networkx as nx
+
+        g, mem = await self._load_ppr_graph(driver, user_id)
+        pers = {a.id: 1.0 for a in anchors if a.id in g}
+        if not pers or not mem:
+            return [], []
+        try:
+            pr = await asyncio.to_thread(
+                nx.pagerank, g, alpha=0.85, personalization=pers, weight="w", max_iter=200)
+        except Exception as e:  # noqa: BLE001 (e.g. power-iteration non-convergence)
+            logger.warning("v7.7 PPR failed: %s", e)
+            return [], []
+        scored = sorted(
+            ((mem[n][0], mem[n][1], pr.get(n, 0.0)) for n in mem),
+            key=lambda x: -x[2])
+        ep = [mid for mid, kind, _ in scored if kind == "episodic"][:max_items]
+        sem = [mid for mid, kind, _ in scored if kind == "semantic"][:max_items]
+        return ep, sem
 
     async def _collect_per_anchor(
         self, driver, *, user_id: str, anchor_ids: list[str]
