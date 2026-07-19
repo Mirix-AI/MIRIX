@@ -55,7 +55,7 @@ class V7Retriever:
         top_k: int = 18,
         max_items_per_kind: int = DEFAULT_MAX_ITEMS_PER_KIND,
     ) -> str:
-        if not settings.enable_graph_memory or settings.graph_version not in ("v7", "v7.1", "v7.2", "v7.3", "v7.4", "v7.6", "v7.7", "v8"):
+        if not settings.enable_graph_memory or settings.graph_version not in ("v7", "v7.1", "v7.2", "v7.3", "v7.4", "v7.6", "v7.7", "v7.8", "v8"):
             return ""
 
         from mirix.database.neo4j_client import get_neo4j_driver

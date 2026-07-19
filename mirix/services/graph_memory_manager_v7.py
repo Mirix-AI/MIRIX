@@ -122,7 +122,7 @@ class V7GraphManager:
         source_meta: Optional[dict[str, Any]] = None,
         entities: Optional[list[ExtractedEntity]] = None,
     ) -> dict[str, Any]:
-        if not settings.enable_graph_memory or settings.graph_version not in ("v7", "v7.1", "v7.2", "v7.3", "v7.4", "v7.6", "v7.7", "v8"):
+        if not settings.enable_graph_memory or settings.graph_version not in ("v7", "v7.1", "v7.2", "v7.3", "v7.4", "v7.6", "v7.7", "v7.8", "v8"):
             return {"skipped": "disabled"}
 
         from mirix.database.neo4j_client import get_neo4j_driver
@@ -143,7 +143,7 @@ class V7GraphManager:
                 # call (~60x faster; drops User/Assistant noise hubs).
                 from mirix.services.gliner_extractor import extract_entities_gliner
                 entities = await extract_entities_gliner(text)
-            elif settings.graph_version == "v7.6":
+            elif settings.graph_version in ("v7.6", "v7.8"):
                 # v7.6 (direction D): one LLM call -> typed entities + relations.
                 # Keeps abstraction (GLiNER can't) and the relations v7 discarded,
                 # which become anchor->anchor edges below.
@@ -151,6 +151,16 @@ class V7GraphManager:
                 res = await extract_triples(text, model=llm_model_from_agent(agent_state))
                 entities = res.entities
                 relations = res.relations
+                if settings.graph_version == "v7.8":
+                    # v7.8: registry-guided canonicalization — reuse existing anchor
+                    # names for the same entity so the graph stops fragmenting into
+                    # near-duplicate singletons. Also rename relation endpoints so the
+                    # anchor->anchor edges land on the canonical anchors.
+                    from mirix.services.entity_resolver import canonicalize_entities
+                    rename = await canonicalize_entities(
+                        entities, driver=driver, user_id=user_id, agent_state=agent_state)
+                    if rename:
+                        relations = [(rename.get(s, s), r, rename.get(o, o)) for s, r, o in relations]
             else:
                 extraction = await extract_entities_and_relations(
                     text=text, llm_model=llm_model_from_agent(agent_state)
