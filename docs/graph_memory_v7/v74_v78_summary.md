@@ -7,13 +7,18 @@ unless noted, so cross-version QA is a clean same-memory comparison.
 
 ## 1. The version line at a glance
 
-| ver | change | extract cost /mem | anchors | singleton | QA (/60) | verdict |
-|---|---|---:|---:|---:|---:|---|
-| v7 | LightRAG extractor + `anchor_canonical_key` (surface dedup) — **baseline** | 15.25s | 5165 | 66% | 30 | baseline (post-merge full) |
-| **v7.4** | **GLiNER** encoder extractor (local, deterministic) | **0.09s (~170×)** | 2473 | 66% | 32 | **superseded** — fast + kills User/Assistant hubs, but a span tagger **can't abstract** → drops LightRAG's concept anchors (networking/team-collab = 0); concept-heavy retrieval degrades (masked by net QA) |
-| **v7.6** | **LLM triple extraction (direction D)** — abstracts + keeps relations as `V7_RELATION` edges | 5.9s (2.6×) | 5777 | 81% | 31 | **foundation** — concept anchors back (41% concept), **3667 relation edges** (v7 had none); real value = relations, not speed |
-| **v7.7** | **PPR retrieval** over v7.6's relation graph (networkx, no GDS) | — | — | — | 30 | retrieval **much** better (colleague query: fitness→social; context 500→37k chars) but **QA flat** → **pivotal finding** |
-| **v7.8** | **registry-guided entity resolution** — embedding candidates + **LLM verify-merge**, rename to canonical at extract | 5.9s + resolve | 4744 (−18%) | 66% | **34 (best)** | cleaned the redundancy v7.6 introduced; **first change to move QA** (+3 vs v7.6; re-run to confirm vs answerer-LLM noise) |
+| ver | change | extract /mem | build 962 mem | anchors | singleton | QA (/60) | verdict |
+|---|---|---:|---:|---:|---:|---:|---|
+| v7 | LightRAG extractor + `anchor_canonical_key` (surface dedup) — **baseline** | 15.25s | ~24min (×10, extrap.) | 5165 | 66% | 30 | baseline (post-merge full) |
+| **v7.4** | **GLiNER** encoder extractor (local, deterministic) | **0.09s (~170×)** | **1m38s** (×10) | 2473 | 66% | 32 | **superseded** — fast + kills User/Assistant hubs, but a span tagger **can't abstract** → drops LightRAG's concept anchors (networking/team-collab = 0); concept-heavy retrieval degrades (masked by net QA) |
+| **v7.6** | **LLM triple extraction (direction D)** — abstracts + keeps relations as `V7_RELATION` edges | 5.9s (2.6×) | **9m41s** (×10) | 5777 | 81% | 31 | **foundation** — concept anchors back (41% concept), **3667 relation edges** (v7 had none); real value = relations, not speed |
+| **v7.7** | **PPR retrieval** over v7.6's relation graph (networkx, no GDS) | — | — (retrieval 1.6s/query) | — | — | 30 | retrieval **much** better (colleague query: fitness→social; context 500→37k chars) but **QA flat** → **pivotal finding** |
+| **v7.8** | **registry-guided entity resolution** — embedding candidates + **LLM verify-merge**, rename to canonical at extract | ~9s (5.9 + resolve) | **36m08s** (×4; ≈14min if ×10) | 4744 (−18%) | 66% | **34 (best)** | cleaned the redundancy v7.6 introduced; **first change to move QA** (+3 vs v7.6; re-run to confirm vs answerer-LLM noise) |
+
+*Build times measured on the 962-memory rebuild; "×N" = the `rebuild_graph.py` concurrency
+used (v7.8 was run at 4 for registry consistency, so its 36min ≠ apples-to-apples with the
+×10 runs — per-memory it's ~9s, i.e. ~14min at ×10). v7 LightRAG's 962-build is extrapolated
+from its measured 15.25s/mem (no clean full rebuild was run at that cost).*
 
 (Earlier: v7.1 rerank, v7.2 coverage — retrieval tweaks; v7.3 proposition ingest — rejected, collapsed edge structure. v7.5 role/domain scoping — planned, not built.)
 
