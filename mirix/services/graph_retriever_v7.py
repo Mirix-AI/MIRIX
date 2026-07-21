@@ -55,7 +55,7 @@ class V7Retriever:
         top_k: int = 18,
         max_items_per_kind: int = DEFAULT_MAX_ITEMS_PER_KIND,
     ) -> str:
-        if not settings.enable_graph_memory or settings.graph_version not in ("v7", "v7.1", "v7.2", "v7.3", "v7.4", "v7.6", "v7.7", "v7.8", "v8"):
+        if not settings.enable_graph_memory or settings.graph_version not in ("v7", "v7.1", "v7.2", "v7.3", "v7.4", "v7.6", "v7.7", "v7.8", "v7.9", "v7.10", "v8"):
             return ""
 
         from mirix.database.neo4j_client import get_neo4j_driver
@@ -371,14 +371,14 @@ class V7Retriever:
             from mirix.constants import MAX_EMBEDDING_DIM
             qp = str(list(q_emb) + [0.0] * (MAX_EMBEDDING_DIM - len(q_emb)))
             sql = (
-                "SELECT id, summary, details, occurred_at FROM episodic_memory "
+                "SELECT id, summary, details, occurred_at, actor FROM episodic_memory "
                 "WHERE user_id = :u AND id = ANY(:ids) AND summary_embedding IS NOT NULL "
                 "ORDER BY summary_embedding <=> CAST(:q AS vector) LIMIT :k"
             )
             params = {"u": user_id, "ids": ids, "q": qp, "k": limit or DEFAULT_MAX_ITEMS_PER_KIND}
         else:
             sql = (
-                "SELECT id, summary, details, occurred_at FROM episodic_memory "
+                "SELECT id, summary, details, occurred_at, actor FROM episodic_memory "
                 "WHERE user_id = :u AND id = ANY(:ids) ORDER BY occurred_at DESC NULLS LAST"
             )
             params = {"u": user_id, "ids": ids}
@@ -392,6 +392,7 @@ class V7Retriever:
                     summary=row[1] or "",
                     details=row[2] or "",
                     timestamp=row[3].isoformat() if row[3] is not None else None,
+                    extra={"actor": row[4] or ""},
                 )
                 for row in result.fetchall()
             ]
@@ -456,12 +457,32 @@ class V7Retriever:
                     lines.append(f"  {row.details[:500]}")
 
         if ep_rows:
-            lines.append("\n### Episodic memories (PG flat evidence)")
-            for row in ep_rows:
-                ts = row.timestamp[:10] if row.timestamp else ""
-                head = f"- [{ts}] {row.summary}" if ts else f"- {row.summary}"
-                lines.append(head.rstrip())
-                if row.details and row.details != row.summary:
-                    lines.append(f"  {row.details[:500]}")
+            if settings.graph_version == "v7.9":
+                # v7.9 role/domain: separate episodic evidence into what the USER
+                # said/did vs what the ASSISTANT said, so a role-specific question
+                # ("what did you recommend" / "what do I prefer") can be answered
+                # from the right side. Role comes from episodic.actor.
+                def _emit(title, rows):
+                    if not rows:
+                        return
+                    lines.append(f"\n### {title}")
+                    for row in rows:
+                        ts = row.timestamp[:10] if row.timestamp else ""
+                        head = f"- [{ts}] {row.summary}" if ts else f"- {row.summary}"
+                        lines.append(head.rstrip())
+                        if row.details and row.details != row.summary:
+                            lines.append(f"  {row.details[:500]}")
+                _emit("What the USER said/did (user-domain)",
+                      [r for r in ep_rows if str(r.extra.get("actor", "")).lower() == "user"])
+                _emit("What the ASSISTANT said (assistant-domain)",
+                      [r for r in ep_rows if str(r.extra.get("actor", "")).lower() != "user"])
+            else:
+                lines.append("\n### Episodic memories (PG flat evidence)")
+                for row in ep_rows:
+                    ts = row.timestamp[:10] if row.timestamp else ""
+                    head = f"- [{ts}] {row.summary}" if ts else f"- {row.summary}"
+                    lines.append(head.rstrip())
+                    if row.details and row.details != row.summary:
+                        lines.append(f"  {row.details[:500]}")
 
         return "\n".join(lines)

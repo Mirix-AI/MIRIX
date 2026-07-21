@@ -121,8 +121,9 @@ class V7GraphManager:
         occurred_at: Optional[object] = None,
         source_meta: Optional[dict[str, Any]] = None,
         entities: Optional[list[ExtractedEntity]] = None,
+        role: Optional[str] = None,
     ) -> dict[str, Any]:
-        if not settings.enable_graph_memory or settings.graph_version not in ("v7", "v7.1", "v7.2", "v7.3", "v7.4", "v7.6", "v7.7", "v7.8", "v8"):
+        if not settings.enable_graph_memory or settings.graph_version not in ("v7", "v7.1", "v7.2", "v7.3", "v7.4", "v7.6", "v7.7", "v7.8", "v7.9", "v7.10", "v8"):
             return {"skipped": "disabled"}
 
         from mirix.database.neo4j_client import get_neo4j_driver
@@ -143,7 +144,7 @@ class V7GraphManager:
                 # call (~60x faster; drops User/Assistant noise hubs).
                 from mirix.services.gliner_extractor import extract_entities_gliner
                 entities = await extract_entities_gliner(text)
-            elif settings.graph_version in ("v7.6", "v7.8"):
+            elif settings.graph_version in ("v7.6", "v7.8", "v7.10"):
                 # v7.6 (direction D): one LLM call -> typed entities + relations.
                 # Keeps abstraction (GLiNER can't) and the relations v7 discarded,
                 # which become anchor->anchor edges below.
@@ -151,7 +152,7 @@ class V7GraphManager:
                 res = await extract_triples(text, model=llm_model_from_agent(agent_state))
                 entities = res.entities
                 relations = res.relations
-                if settings.graph_version == "v7.8":
+                if settings.graph_version in ("v7.8", "v7.10"):
                     # v7.8: registry-guided canonicalization — reuse existing anchor
                     # names for the same entity so the graph stops fragmenting into
                     # near-duplicate singletons. Also rename relation endpoints so the
@@ -206,6 +207,15 @@ class V7GraphManager:
         # propagate over (PPR) and are what make multi-hop paths traversable.
         if relations:
             await self._link_relation_edges(driver, relations=relations, user_id=user_id)
+
+        # v7.10 (hypergraph): reify each triple as a V7Fact HYPEREDGE node linking its
+        # subject entity, object entity, the source memory, plus role (who) + time (when)
+        # as node properties — a multi-dimensional (entity × person/role × time) index
+        # over facts, instead of the binary anchor→anchor edge alone.
+        if settings.graph_version == "v7.10" and relations:
+            await self._upsert_facts(
+                driver, relations=relations, memory_ref_id=memory_ref_id,
+                role=role, timestamp=timestamp, user_id=user_id)
 
         await self._link_support_edges(
             driver,
@@ -475,6 +485,44 @@ class V7GraphManager:
                 timestamp=timestamp,
                 now=now,
             )
+
+    async def _upsert_facts(
+        self, driver, *, relations: list[tuple[str, str, str]], memory_ref_id: str,
+        role: Optional[str], timestamp: Optional[str], user_id: str,
+    ) -> None:
+        """v7.10 hypergraph: each triple becomes a V7Fact HYPEREDGE node connecting its
+        subject anchor, object anchor and the source memory, carrying role (user/
+        assistant/shared) and time as properties. This reifies the n-ary fact so it can
+        be queried on any dimension (entity, who, when) — e.g. "assistant-role facts
+        about X in month M" — which a binary anchor→anchor edge cannot express."""
+        rows = []
+        for subj, rel, obj in relations:
+            sk = anchor_canonical_key(self._clean_name(subj))
+            ok = anchor_canonical_key(self._clean_name(obj))
+            if not sk or not ok:
+                continue
+            fid = gen_id("v7fact")
+            rows.append({"fid": fid, "s": sk, "o": ok, "pred": (rel or "related to")[:80]})
+        if not rows:
+            return
+        now = iso(datetime.now(timezone.utc))
+        role_norm = (role or "shared").lower()
+        async with driver.session(database=settings.neo4j_database) as session:
+            await session.run(
+                """
+                MATCH (m:V7MemoryRef {id: $mref, user_id: $user_id})
+                UNWIND $rows AS row
+                MATCH (s:V7Anchor {user_id: $user_id, name_lower: row.s})
+                MATCH (o:V7Anchor {user_id: $user_id, name_lower: row.o})
+                MERGE (f:V7Fact {id: row.fid})
+                  SET f.user_id = $user_id, f.predicate = row.pred, f.role = $role,
+                      f.timestamp = $ts, f.created_at = $now
+                MERGE (f)-[:V7_FACT_SUBJECT]->(s)
+                MERGE (f)-[:V7_FACT_OBJECT]->(o)
+                MERGE (f)-[:V7_FACT_FROM]->(m)
+                """,
+                mref=memory_ref_id, user_id=user_id, rows=rows,
+                role=role_norm, ts=timestamp, now=now)
 
     async def _link_relation_edges(
         self, driver, *, relations: list[tuple[str, str, str]], user_id: str
