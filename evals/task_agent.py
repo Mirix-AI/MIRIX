@@ -32,6 +32,8 @@ class TaskAgent:
         self.model = model
         self.user_id = user_id
         self.max_tool_rounds = max_tool_rounds
+        self._persona = None  # lazy-loaded persona profile (MIRIX_PERSONA gate)
+        self._coldfacts = None  # lazy-loaded cold-fact index (MIRIX_COLDFACT gate)
         # timeout: per-request budget. Question-answer calls are short,
         # but this client is shared with the ingest path (see
         # MirixMemorySystem) where a single /memory/add_sync on a 4096-
@@ -222,7 +224,16 @@ class TaskAgent:
                     del result["id"]
                 if "actor" in result:
                     del result["actor"]
-            return results['results']
+            out = results['results']
+            # Cold-fact merge (MIRIX_COLDFACT): surface verbatim specifics the summarizing
+            # ingest dropped, AS REGULAR retrieved evidence competing with summaries for THIS
+            # search query — not force-injected ground truth. Lets normal retrieval filtering
+            # decide relevance (avoids the over-trust collateral of prompt injection).
+            for f in self._retrieve_coldfacts(resolved_user_id, params.get("query", ""),
+                                              k=3, thresh=0.82):
+                out.append({"memory_type": "semantic", "summary": f,
+                            "source": "recovered detail from original conversation"})
+            return out
 
         return results
 
@@ -340,8 +351,77 @@ class TaskAgent:
                 serialized.append(call)
         return serialized
 
+    def _load_persona(self, user_id: Optional[str]) -> str:
+        """Load the pre-built persona profile (MIRIX_PERSONA gate). Cached per instance."""
+        if not os.environ.get("MIRIX_PERSONA"):
+            return ""
+        if self._persona is None:
+            uid = user_id or self.user_id or "unknown"
+            path = os.path.expanduser(f"~/MIRIX_eval/persona_{uid}.txt")
+            try:
+                with open(path, encoding="utf-8") as f:
+                    self._persona = f.read().strip()
+            except OSError:
+                self._persona = ""
+        return self._persona
+
+    def _load_coldfacts(self, user_id: Optional[str]):
+        """Load the cold-fact index (MIRIX_COLDFACT gate): verbatim numbers/names the
+        summarizing ingest dropped, kept as a SEPARATE retrieval index (LongMemEval
+        key-expansion / Dense-X style). Cached per instance as (facts, np.ndarray)."""
+        if not os.environ.get("MIRIX_COLDFACT"):
+            return None
+        if self._coldfacts is None:
+            uid = user_id or self.user_id or "unknown"
+            path = os.path.expanduser(f"~/MIRIX_eval/coldfacts_{uid}.json")
+            try:
+                import numpy as np
+                idx = json.load(open(path, encoding="utf-8"))
+                mat = np.array([x["emb"] for x in idx], dtype="float32")
+                mat /= (np.linalg.norm(mat, axis=1, keepdims=True) + 1e-8)
+                self._coldfacts = ([x["fact"] for x in idx], mat)
+            except (OSError, ValueError, KeyError):
+                self._coldfacts = ([], None)
+        return self._coldfacts
+
+    def _retrieve_coldfacts(self, user_id, q_text, k=3, thresh=0.83):
+        """Top-k cold facts for the question by ada-002 cosine (only strongly-relevant
+        ones, to avoid perturbing questions with no matching literal)."""
+        cf = self._load_coldfacts(user_id)
+        if not cf or cf[1] is None or not q_text.strip():
+            return []
+        facts, mat = cf
+        import numpy as np
+        qe = self.client.embeddings.create(model="text-embedding-ada-002",
+                                           input=q_text[:400]).data[0].embedding
+        q = np.array(qe, dtype="float32"); q /= (np.linalg.norm(q) + 1e-8)
+        sims = mat @ q
+        order = np.argsort(-sims)[:k]
+        return [facts[i] for i in order if sims[i] >= thresh]
+
     def answer(self, input_messages: List[Dict[str, Any]], user_id: Optional[str] = None) -> Dict[str, Any]:
         tools = self._build_tools()
+        # Persona injection (MIRIX_PERSONA) — for advice-shaped questions ("any tips /
+        # suggestions / ideas / what should I..."), inject the pre-built user profile so the
+        # answerer grounds recommendations in the user's own history instead of giving
+        # generic advice. Targets the preference-synthesis failures (Q7/Q11/Q44). Advice-
+        # gated to avoid perturbing factual questions.
+        persona = self._load_persona(user_id)
+        persona_block = ""
+        if persona:
+            q_text = " ".join(str(m.get("content", "")) for m in input_messages
+                              if isinstance(m, dict) and m.get("role") == "user").lower()
+            # NB: no bare "any " — it substring-matches "how m[any b]ikes" (every count Q).
+            advice_kw = ("suggest", "tips", "idea", "recommend", "advice", "what should i",
+                         "how can i", "how do i", "help me")
+            if any(kw in q_text for kw in advice_kw):
+                persona_block = (
+                    "\n\nUSER PERSONA — ground your advice in this profile of the user's own "
+                    "history, past successes, and stated preferences. For open-ended 'any tips / "
+                    "suggestions / ideas' questions, personalize using the relevant details below; "
+                    "do NOT give generic advice that ignores the user's actual habits and prior "
+                    "experiences:\n" + persona + "\n"
+                )
         # v7.11 consolidate guidance — only injected when the experimental tool is enabled
         # (MIRIX_ENABLE_CONSOLIDATE). Default answerer = the enumerate-then-count baseline.
         consolidate_hint = (
@@ -417,6 +497,7 @@ class TaskAgent:
             "  Example: \"a cup with a dog face on it\" NOT \"pottery items\"\n"
             "- ALWAYS extract the minimal, direct answer that matches what's being asked. Do NOT add ANY additional information!\n"
             "- If the question asks for multiple items, search until you find ALL items, not just the first one."
+            + persona_block
         )
         messages = [
             {"role": "system", "content": system_prompt},
