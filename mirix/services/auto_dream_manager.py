@@ -401,11 +401,12 @@ class AutoDreamManager:
         await self.write_checkpoint(user, actor, meta_agent_state, now)
 
         # -- graph maintenance --
-        # auto_dream is the natural home for it: it already runs on a schedule and
-        # already mutates the memory store (so graph refs to consolidated/deleted
-        # memories dangle). It also collects the redundancy that cannot be prevented
-        # at write time — dead-weight anchors, whose value is corpus-global. Never
-        # allowed to fail the dream cycle.
+        # Hooked here because this is where the memory store gets mutated: the dream
+        # agent consolidates/deletes memories, leaving graph refs dangling. It also
+        # collects the redundancy that cannot be prevented at write time (dead-weight
+        # anchors, a corpus-global property). Never allowed to fail the dream cycle.
+        # NB: auto_dream is NOT self-scheduling — it is a REST endpoint someone has to
+        # call, so this runs only as often as that happens.
         graph_stats = None
         try:
             from mirix.services.graph_memory_manager_v7 import V7GraphManager

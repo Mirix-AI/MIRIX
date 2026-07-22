@@ -637,8 +637,13 @@ class V7GraphManager:
         self, user_id: str, *, valid_memory_ids: Optional[set[str]] = None
     ) -> dict[str, Any]:
         """Periodic graph maintenance — the redundancy that CANNOT be prevented at
-        write time. Intended for the auto_dream cycle, which already runs on a
-        schedule and already mutates the memory store.
+        write time. Wired into the auto_dream cycle because that is where the memory
+        store gets mutated.
+
+        NB: auto_dream is **not** self-scheduling — nothing in the codebase invokes it
+        on a timer; it is a REST endpoint (`/memory/auto_dream`) somebody has to call.
+        So this maintenance runs exactly as often as auto_dream is triggered, which may
+        be never. Call it directly if you need it on a real schedule.
 
         Ingest-time guards (``fact_identity`` / ``canon_predicate`` / the tautology
         skip in ``_upsert_facts``) keep NEW facts clean, but two things are only
