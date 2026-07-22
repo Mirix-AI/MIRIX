@@ -621,7 +621,13 @@ class EpisodicMemoryManager:
                             organization_id=organization_id,
                             user_id=user_id or "unknown",
                         )
-                    elif settings.graph_version in ("v7", "v7.1", "v7.2", "v7.3", "v8"):
+                    # Prefix match, not a version list: the old explicit tuple
+                    # ("v7","v7.1","v7.2","v7.3","v8") silently drifted six versions out of
+                    # date, so a server configured for v7.4+ fell through to the legacy
+                    # branch below and built the OLD schema. Measured on the eval store: an
+                    # auto_dream cycle under v7.10 created 1,101 EpisodicEntity + 611
+                    # SemanticEntity legacy nodes and left 185 memories with no V7 ref.
+                    elif settings.graph_version.startswith("v7") or settings.graph_version == "v8":
                         from mirix.services.graph_memory_manager_v7 import V7GraphManager
 
                         source_meta = (

@@ -1066,7 +1066,10 @@ class SemanticMemoryManager:
                             organization_id=organization_id,
                             user_id=user_id or "unknown",
                         )
-                    elif settings.graph_version in ("v7", "v7.1", "v7.2", "v7.3", "v8"):
+                    # Prefix match, not a version list — see the note in
+                    # episodic_memory_manager: the explicit tuple drifted six versions out
+                    # of date and silently routed v7.4+ servers to the legacy builder.
+                    elif settings.graph_version.startswith("v7") or settings.graph_version == "v8":
                         from mirix.services.graph_memory_manager_v7 import V7GraphManager
 
                         source_meta = (

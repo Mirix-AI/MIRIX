@@ -191,10 +191,16 @@ async def _merge_anchor(session, user_id: str, drop: str, keep: str) -> None:
 
 
 async def _due(driver, user_id: str, every_n: int) -> tuple[bool, int]:
-    """Chunk-count gate. Reconsolidation is LLM-priced, so it runs per N ingested
-    memories rather than per elapsed time: cost then tracks ingest volume instead of
-    firing on an idle store or falling far behind during a burst. The high-water mark
-    lives on a marker node so the graph carries its own maintenance state."""
+    """Churn gate. Reconsolidation is LLM-priced, so it runs per N memories CHANGED
+    rather than per elapsed time: cost tracks activity instead of firing on an idle
+    store or falling far behind during a burst. The mark lives on a marker node so the
+    graph carries its own maintenance state.
+
+    Compares |now - mark|, not now - mark. Consolidation makes the store SHRINK — an
+    auto_dream cycle here took it 962 -> 678 — so a growth-only test goes negative and
+    the gate can then never fire again. Shrinking is exactly when reconsolidation is
+    most warranted, since merges are what create new near-duplicates.
+    """
     async with driver.session(database=settings.neo4j_database) as session:
         rec = await (await session.run(
             """
@@ -205,7 +211,7 @@ async def _due(driver, user_id: str, every_n: int) -> tuple[bool, int]:
             """, u=user_id)).single()
     now = int(rec["now"]) if rec else 0
     mark = int(rec["mark"]) if rec else 0
-    return (now - mark) >= every_n, now
+    return abs(now - mark) >= every_n, now
 
 
 async def _mark_done(driver, user_id: str, count: int) -> None:

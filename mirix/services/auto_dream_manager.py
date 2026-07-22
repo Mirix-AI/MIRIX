@@ -367,8 +367,15 @@ class AutoDreamManager:
                 message="Dry run — no changes applied.",
             )
 
-        # -- build input message for the agent --
-        payload = _format_memories_as_message(memories, start_date, end_date, request.mode)
+        # -- split into batches --
+        # A single payload does not fit: this store's 962 memories serialise to ~569k
+        # chars (~142k tokens) against a 128k window, and the summariser cannot rescue
+        # it because there is only one message to compress (num_candidate_messages=0),
+        # so the whole run used to die with CONTEXT_WINDOW_EXCEEDED before touching
+        # anything. Batching makes the pass scale-independent.
+        batches = _batch_memories(memories, _batch_char_budget())
+        logger.info("Auto dream: %d batch(es) over %d items",
+                    len(batches), sum(len(v) for v in memories.values()))
 
         # -- get or create agent state --
         dream_agent_state = await self.get_or_create_dream_agent_state(actor, meta_agent_state)
@@ -387,15 +394,31 @@ class AutoDreamManager:
             dream_agent_state = deepcopy(dream_agent_state)
             dream_agent_state.llm_config.model = request.model
 
-        # -- load and run agent --
-        dream_agent = await server.load_agent(
-            agent_id=dream_agent_state.id,
-            actor=actor,
-            user=user,
-            use_cache=False,
-        )
-        input_msg = MessageCreate(role=MessageRole.user, content=payload)
-        await dream_agent.step(input_messages=input_msg, actor=actor, user=user)
+        # -- run the agent once per batch --
+        # Each batch gets a freshly loaded agent so context does not accumulate across
+        # batches (which would reintroduce the overflow). A failing batch is logged and
+        # skipped rather than aborting the cycle — partial consolidation beats none.
+        batches_ok = batches_failed = 0
+        for idx, batch in enumerate(batches, start=1):
+            try:
+                dream_agent = await server.load_agent(
+                    agent_id=dream_agent_state.id,
+                    actor=actor,
+                    user=user,
+                    use_cache=False,
+                )
+                payload = _format_memories_as_message(batch, start_date, end_date, request.mode)
+                await dream_agent.step(
+                    input_messages=MessageCreate(role=MessageRole.user, content=payload),
+                    actor=actor, user=user,
+                )
+                batches_ok += 1
+                logger.info("Auto dream: batch %d/%d ok (%d items)",
+                            idx, len(batches), sum(len(v) for v in batch.values()))
+            except Exception as exc:  # noqa: BLE001
+                batches_failed += 1
+                logger.warning("Auto dream: batch %d/%d failed (%s)", idx, len(batches), exc)
+        logger.info("Auto dream: %d batch(es) ok, %d failed", batches_ok, batches_failed)
 
         # -- write checkpoint --
         await self.write_checkpoint(user, actor, meta_agent_state, now)
@@ -463,6 +486,53 @@ def _serialize_item(item) -> dict:
         if key.endswith("_embedding"):
             del data[key]
     return data
+
+
+def _batch_char_budget() -> int:
+    """Serialised chars allowed per batch. ~80k chars ≈ 20k tokens, leaving the rest of
+    a 128k window for the system prompt, tool schemas, the agent's reasoning and its
+    tool results. Override with MIRIX_AUTO_DREAM_BATCH_CHARS."""
+    try:
+        return max(5_000, int(os.environ.get("MIRIX_AUTO_DREAM_BATCH_CHARS", "80000")))
+    except ValueError:
+        return 80_000
+
+
+def _item_chars(item) -> int:
+    d = _serialize_item(item)
+    return sum(len(str(v)) for v in d.values()) if isinstance(d, dict) else len(str(d))
+
+
+def _batch_memories(memories: dict, budget_chars: int) -> list[dict]:
+    """Split memories into batches that each hold a slice of EVERY component.
+
+    Not split by component: `experience` mode exists to review episodic, semantic and
+    knowledge *together*, so a batch that contained only one type could never merge
+    across types. Slicing every component proportionally keeps that cross-type view
+    inside each batch.
+
+    Order within a component is preserved (episodic arrives time-ordered, and duplicate
+    events tend to sit near each other in time, so they usually land in the same batch).
+
+    Known limitation: duplicates that fall in *different* batches are not merged in this
+    cycle — the agent only ever sees one batch. Successive runs will still converge, and
+    a smaller batch count (a larger budget) widens the window.
+    """
+    total = sum(_item_chars(it) for items in memories.values() for it in items)
+    if total <= budget_chars:
+        return [memories] if total else []
+    n = max(1, -(-total // budget_chars))  # ceil
+    batches: list[dict] = []
+    for b in range(n):
+        batch = {}
+        for comp, items in memories.items():
+            lo = (len(items) * b) // n
+            hi = (len(items) * (b + 1)) // n
+            if items[lo:hi]:
+                batch[comp] = items[lo:hi]
+        if batch:
+            batches.append(batch)
+    return batches
 
 
 def _format_memories_as_message(
