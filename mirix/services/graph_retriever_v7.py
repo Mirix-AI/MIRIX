@@ -46,7 +46,7 @@ class V7MemoryRow:
 
 
 class V7Retriever:
-    async def retrieve(
+    async def retrieve_rows(
         self,
         *,
         query: str,
@@ -54,24 +54,34 @@ class V7Retriever:
         agent_state: AgentState,
         top_k: int = 18,
         max_items_per_kind: int = DEFAULT_MAX_ITEMS_PER_KIND,
-    ) -> str:
-        if not settings.enable_graph_memory or settings.graph_version not in ("v7", "v7.1", "v7.2", "v7.3", "v7.4", "v7.6", "v7.7", "v7.8", "v7.9", "v7.10", "v8"):
-            return ""
+    ) -> tuple[list, list, list]:
+        """Graph retrieval as STRUCTURED rows: (anchors, episodic_rows, semantic_rows).
+
+        `retrieve()` renders these into a prompt blob. That blob turned out to be easy
+        for an answerer to ignore — measured: the graph context was injected on 60/60
+        questions and moved nothing, while the same facts merged into the answerer's own
+        search RESULTS did move QA. Callers that want the graph to actually influence an
+        answer should use these rows and merge them into the tool output.
+        """
+        if not settings.enable_graph_memory or not (
+            settings.graph_version.startswith("v7") or settings.graph_version == "v8"
+        ):
+            return [], [], []
 
         from mirix.database.neo4j_client import get_neo4j_driver
 
         driver = get_neo4j_driver()
         if driver is None or not query or not query.strip():
-            return ""
+            return [], [], []
 
         embs = await embed_batch([query], agent_state)
         q_emb = embs[0] if embs else None
         if q_emb is None:
-            return ""
+            return [], [], []
 
         anchors = await self._search_anchors(driver, user_id, q_emb, top_k)
         if not anchors:
-            return ""
+            return anchors, [], []
 
         if settings.graph_version == "v7.7":
             # v7.7: Personalized PageRank over the v7.6 relation graph. Seed from the
@@ -83,7 +93,7 @@ class V7Retriever:
             episodic_ids, semantic_ids = await self._retrieve_ppr(
                 driver, user_id, anchors, max_items_per_kind)
             if not episodic_ids and not semantic_ids:
-                return self._format_context(anchors, [], [])
+                return anchors, [], []
             ep_task = asyncio.create_task(
                 self._fetch_episodic(user_id, episodic_ids, q_emb=None, limit=max_items_per_kind))
             sem_task = asyncio.create_task(
@@ -104,7 +114,7 @@ class V7Retriever:
                 driver, user_id=user_id, anchor_ids=[a.id for a in anchors],
             )
             if not episodic_ids and not semantic_ids:
-                return self._format_context(anchors, [], [])
+                return anchors, [], []
             # v7.1: rerank the anchor-collected candidates by query full-text
             # similarity (anchor match = recall, text-cosine = precision) so a
             # salient-but-wrong same-name entity from another document sinks below
@@ -124,6 +134,25 @@ class V7Retriever:
                 logger.warning("v7 semantic PG fetch failed: %s", sem_rows)
                 sem_rows = []
 
+        logger.info("v7 retrieve_rows: %d anchors, %d ep, %d sem",
+                    len(anchors), len(ep_rows), len(sem_rows))
+        return anchors, ep_rows, sem_rows
+
+    async def retrieve(
+        self,
+        *,
+        query: str,
+        user_id: str,
+        agent_state: AgentState,
+        top_k: int = 18,
+        max_items_per_kind: int = DEFAULT_MAX_ITEMS_PER_KIND,
+    ) -> str:
+        """Graph retrieval rendered as a prompt context blob (the original API)."""
+        anchors, ep_rows, sem_rows = await self.retrieve_rows(
+            query=query, user_id=user_id, agent_state=agent_state,
+            top_k=top_k, max_items_per_kind=max_items_per_kind)
+        if not anchors:
+            return ""
         ctx = self._format_context(anchors, ep_rows, sem_rows)
 
         # Hybrid wrap: append flat query-similarity memories alongside the graph
@@ -133,14 +162,13 @@ class V7Retriever:
         # memory TEXT (the complementary disambiguation). Giving the answerer both
         # recovers the union of their correct answers. Gated for clean A/B.
         if os.getenv("MIRIX_GRAPH_HYBRID_WRAP") == "1":
-            flat = await self._flat_section(user_id, q_emb)
-            if flat:
-                ctx = ctx + "\n\n" + flat
+            embs = await embed_batch([query], agent_state)
+            if embs and embs[0] is not None:
+                flat = await self._flat_section(user_id, embs[0])
+                if flat:
+                    ctx = ctx + "\n\n" + flat
 
-        logger.info(
-            "v7 retrieve: %d anchors, %d ep, %d sem -> %d chars",
-            len(anchors), len(ep_rows), len(sem_rows), len(ctx),
-        )
+        logger.info("v7 retrieve: %d anchors -> %d chars", len(anchors), len(ctx))
         return ctx
 
     async def _flat_section(self, user_id: str, q_emb: list[float], limit: int = 8) -> str:

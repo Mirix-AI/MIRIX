@@ -142,3 +142,43 @@ should be reported as "rebuilt graph", not "clean graph caused it".
 ### Repro
 `evals/build_coldfacts.py <user>` → `coldfacts_<user>.json`; run the answerer with
 `MIRIX_COLDFACT=1`. Negatives are gated `MIRIX_ENABLE_CONSOLIDATE` / `MIRIX_PERSONA`.
+
+## 4c. Making the answerer actually USE the graph — still no gain
+
+A standing caveat on every "the graph doesn't move QA" result was that the answerer
+never really consumed the graph: its output was injected as a prompt context blob
+that the model could skip, while the answerer's own `search_memory` (flat pgvector)
+was what it actually read. That excuse is now removed.
+
+Two changes:
+1. `V7Retriever.retrieve_rows()` — the retrieval pipeline split so it can return
+   **structured rows** (anchors, episodic, semantic) instead of only a rendered blob;
+   `retrieve()` is now a thin formatting wrapper over it.
+2. The eval answerer merges those rows into its **own `search_memory` results** —
+   the exact delivery that made cold-facts work (+4.4), deduped against flat hits.
+
+Wiring that up surfaced a silent bug worth recording: the answerer is a separate
+process from the server and **never initialised the neo4j client**, so
+`get_neo4j_driver()` returned `None` and the retriever returned empty on every call,
+without an error or a log line. The graph had been contributing literally nothing
+through this path. After initialising it, the graph does return real memories
+(e.g. "vintage camera collection" → 6 memories flat search missed).
+
+**A/B on one restored store, one variable, 3 runs each:**
+
+| | runs | mean | sd |
+|---|---|---:|---:|
+| control (graph off) | 38 / 45 / 38 | 40.3 | 3.3 |
+| graph merged into search results | 39 / 40 / 40 | **39.7** | 0.5 |
+
+**−0.7 — no gain.** Per question it is a wash: 2 won (Q33, Q39), 2 lost (Q3, Q26).
+(The control's 45 is an outlier; that arm's sd is 3.3.)
+
+The mechanism behind the null result was measured directly: the graph's memories are
+**largely already in the flat results**. On three probe queries the graph returned
+15–16 memories and, after dedup, contributed 6 / 0 / 0 new ones. The graph is not
+adding recall that flat vector search lacks.
+
+So the conclusion survives its strongest test: it is not that the graph was wired up
+wrong — once genuinely wired, it still does not help on this benchmark. Kept behind
+`MIRIX_GRAPH_SEARCH` (default off).

@@ -233,9 +233,69 @@ class TaskAgent:
                                               k=3, thresh=0.82):
                 out.append({"memory_type": "semantic", "summary": f,
                             "source": "recovered detail from original conversation"})
+            # Graph merge (MIRIX_GRAPH_SEARCH): the graph→PG path (anchors → memory refs
+            # → full rows from PG) exists and works, but injecting its output as a prompt
+            # context blob left the answerer ignoring it — v7.7 made that retrieval much
+            # better and QA did not move. Merging the graph's memories into the answerer's
+            # own search RESULTS is the delivery that actually landed for cold-facts, so
+            # use it here too. Deduped against what flat search already returned.
+            out.extend(self._graph_search(resolved_user_id, params.get("query", ""), out))
             return out
 
         return results
+
+    def _graph_search(self, user_id, query: str, existing: list) -> list:
+        """Graph-retrieved memories, shaped like search results (MIRIX_GRAPH_SEARCH).
+
+        Runs the graph's own path — query → anchor vector search → V7MemoryRef →
+        full rows from PG — and returns whatever flat search missed. The graph
+        anchors on entity NAMES, flat anchors on memory TEXT, so each finds things
+        the other does not; merging is what lets the graph contribute to an answer
+        instead of sitting in a context blob the answerer skips.
+        """
+        if not os.environ.get("MIRIX_GRAPH_SEARCH") or not (query or "").strip():
+            return []
+        try:
+            import types as _types
+
+            from mirix.database.neo4j_client import get_neo4j_driver, init_neo4j_client
+            from mirix.schemas.embedding_config import EmbeddingConfig
+            from mirix.services.graph_retriever_v7 import V7Retriever
+
+            ast = _types.SimpleNamespace(embedding_config=EmbeddingConfig(
+                embedding_endpoint_type="openai", embedding_endpoint="https://api.openai.com/v1",
+                embedding_model="text-embedding-ada-002", embedding_dim=1536,
+                embedding_chunk_size=300))
+
+            async def _run():
+                # This process is the eval answerer, not the server, so the neo4j client
+                # is not initialised for it. Without this the retriever silently returns
+                # nothing (get_neo4j_driver() -> None) and the graph contributes zero.
+                if get_neo4j_driver() is None:
+                    await init_neo4j_client()
+                return await V7Retriever().retrieve_rows(
+                    query=query, user_id=user_id, agent_state=ast, top_k=12,
+                    max_items_per_kind=8)
+
+            _, ep_rows, sem_rows = asyncio.run(_run())
+            seen = {(r.get("summary") or "")[:120] for r in existing if isinstance(r, dict)}
+            merged = []
+            for row in list(ep_rows) + list(sem_rows):
+                summary = getattr(row, "summary", "") or ""
+                if not summary or summary[:120] in seen:
+                    continue
+                seen.add(summary[:120])
+                merged.append({
+                    "memory_type": getattr(row, "kind", "episodic"),
+                    "summary": summary,
+                    "details": (getattr(row, "details", "") or "")[:600],
+                    "occurred_at": getattr(row, "timestamp", None),
+                    "source": "graph-linked memory",
+                })
+            return merged[:8]
+        except Exception as exc:  # noqa: BLE001
+            print(f"[graph_search] skipped: {str(exc)[:120]}")
+            return []
 
     def _check_raw_item(self, params: Dict[str, Any]) -> Dict[str, Any]:
         if not self.mirix_client:
