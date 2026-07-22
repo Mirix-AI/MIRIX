@@ -19,6 +19,37 @@ source memory. Built store: **4785 anchors + 4633 V7Fact** over 962 memories.
 
 - The structure is sound and is the paper's "facts as first-class, role- and
   time-stamped hyperedges" contribution.
+
+### Refinement pass (`evals/refine_hypergraph.py`) — redundancy removed, free
+
+The as-built hypergraph carried real redundancy. Four passes, run to convergence
+(a second pass finds nothing), **at zero QA cost**:
+
+| | before | after | |
+|---|---:|---:|---|
+| V7Fact | 4,633 | **4,306** | −7.1% |
+| V7Anchor | 4,785 | **3,665** | −23.4% |
+| distinct predicates | 1,320 | **1,221** | −7.5% |
+| edges | 26,639 | **24,713** | −7.2% |
+
+1. **Tautologies (112)** — extraction artifacts where subject == object
+   (`french -include-> french`). Deleted.
+2. **Duplicate triples (215)** — identical (subject, predicate, object) collapsed
+   to ONE fact node, with each original source re-attached as an extra
+   `V7_FACT_FROM` edge. **Provenance is preserved, not lost**: 131 facts now cite
+   >1 memory (max 9), e.g. *"Seven Husbands of Evelyn Hugo -written by-> Taylor
+   Jenkins Reid"* cited by 4 memories. This is the correct hypergraph semantics —
+   a fact is one fact, cited N times, not N copies.
+3. **Predicate canonicalization (99 variants)** — `includes`(421) folded into
+   `include`(→823); `is/are located in` → `located in`; `offers` → `offer`.
+4. **Dead-weight anchors (1,120)** — no fact touches them *and* they link ≤1
+   memory, so they can neither answer nor bridge. Pruned. (Consistent with the
+   earlier v8 result: −66% anchors at zero accuracy cost.)
+
+Post-refinement invariants verified: 0 tautologies, 0 duplicate triples, 0
+malformed facts (every fact keeps subject + object + ≥1 source), 0 orphan
+anchors. **QA re-checked on the refined graph: 36/60**, inside the cold-fact band
+(37/36/37), with all five recovered-fact wins (Q46/Q56/Q57/Q1/Q15) still passing.
 - The **`query_facts` answerer tool** over it was **rejected**: QA 36 → 32. It
   returned descriptive/off-topic facts that misled the answerer. Superseded by
   `consolidate` (below), which is a better mechanism but also nets out negative.
