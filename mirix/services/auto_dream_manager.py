@@ -417,6 +417,25 @@ class AutoDreamManager:
         except Exception as exc:  # noqa: BLE001
             logger.warning("Auto dream: graph maintenance skipped (%s)", exc)
 
+        # -- graph semantic reconsolidation --
+        # The structural pass above cannot see meaning: anchors that say the same thing
+        # in different words. This one clusters them (LLM-verified, because cosine alone
+        # would merge "5-10% of budget" with "10-20% of budget") and reports — never
+        # resolves — apparent contradictions. Self-gated to every N new memories since
+        # it costs LLM calls. Never allowed to fail the dream cycle.
+        try:
+            from mirix.database.neo4j_client import get_neo4j_driver
+            from mirix.services.graph_reconsolidator import reconsolidate_graph
+
+            recon_stats = await reconsolidate_graph(
+                get_neo4j_driver(), user_id=user.id, agent_state=dream_agent_state,
+                every_n_memories=int(os.environ.get("MIRIX_GRAPH_RECONSOLIDATE_EVERY", "10")),
+            )
+            logger.info("Auto dream: graph reconsolidation %s",
+                        {k: v for k, v in recon_stats.items() if k != "conflict_samples"})
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Auto dream: graph reconsolidation skipped (%s)", exc)
+
         # -- build response (stats are approximate: we report totals fetched) --
         processed = {t: MemoryTypeStats(total=len(items)) for t, items in memories.items()}
         return AutoDreamResponse(
