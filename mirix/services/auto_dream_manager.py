@@ -360,6 +360,21 @@ class AutoDreamManager:
         # -- write checkpoint --
         await self.write_checkpoint(user, actor, meta_agent_state, now)
 
+        # -- graph maintenance --
+        # auto_dream is the natural home for it: it already runs on a schedule and
+        # already mutates the memory store (so graph refs to consolidated/deleted
+        # memories dangle). It also collects the redundancy that cannot be prevented
+        # at write time — dead-weight anchors, whose value is corpus-global. Never
+        # allowed to fail the dream cycle.
+        graph_stats = None
+        try:
+            from mirix.services.graph_memory_manager_v7 import V7GraphManager
+
+            graph_stats = await V7GraphManager().maintain_graph(user.id)
+            logger.info("Auto dream: graph maintenance %s", graph_stats)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Auto dream: graph maintenance skipped (%s)", exc)
+
         # -- build response (stats are approximate: we report totals fetched) --
         processed = {t: MemoryTypeStats(total=len(items)) for t, items in memories.items()}
         return AutoDreamResponse(

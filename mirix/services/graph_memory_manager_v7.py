@@ -618,6 +618,108 @@ class V7GraphManager:
 
     # ------------------------------------------------------------- v8 finalize
 
+    async def maintain_graph(
+        self, user_id: str, *, valid_memory_ids: Optional[set[str]] = None
+    ) -> dict[str, Any]:
+        """Periodic graph maintenance — the redundancy that CANNOT be prevented at
+        write time. Intended for the auto_dream cycle, which already runs on a
+        schedule and already mutates the memory store.
+
+        Ingest-time guards (``fact_identity`` / ``canon_predicate`` / the tautology
+        skip in ``_upsert_facts``) keep NEW facts clean, but two things are only
+        knowable corpus-globally, after the fact:
+
+        * **orphaned memory refs** — auto_dream consolidates/deletes PG memories, so
+          graph refs to them dangle. Pass ``valid_memory_ids`` to sweep them.
+        * **dead-weight anchors** — whether an anchor ever earns a fact or a second
+          memory depends on the whole corpus, unknowable when it was created.
+
+        The tautology/duplicate passes are defensive: those are prevented at ingest
+        now, but graphs built before that still carry them.
+
+        Idempotent and cheap (a handful of scans) relative to the LLM step
+        auto_dream already performs. Only ever removes graph nodes that can no
+        longer contribute — never PG rows.
+        """
+        if not settings.enable_graph_memory:
+            return {"skipped": "graph_disabled"}
+
+        from mirix.database.neo4j_client import get_neo4j_driver
+
+        driver = get_neo4j_driver()
+        if driver is None:
+            return {"skipped": "no_driver"}
+
+        stats: dict[str, Any] = {}
+        async with driver.session(database=settings.neo4j_database) as session:
+            # 1. refs whose source memory is gone (auto_dream deletions)
+            if valid_memory_ids is not None:
+                res = await session.run(
+                    """
+                    MATCH (m:V7MemoryRef {user_id: $uid})
+                    WHERE NOT m.memory_id IN $valid
+                    WITH m, count(*) AS _
+                    DETACH DELETE m
+                    RETURN count(*) AS n
+                    """,
+                    uid=user_id, valid=list(valid_memory_ids),
+                )
+                rec = await res.single()
+                stats["orphan_refs_removed"] = int(rec["n"]) if rec else 0
+
+            # 2. tautological facts (subject == object) — asserts nothing
+            res = await session.run(
+                """
+                MATCH (x)<-[:V7_FACT_SUBJECT]-(f:V7Fact {user_id: $uid})-[:V7_FACT_OBJECT]->(y)
+                WHERE toLower(x.name) = toLower(y.name)
+                DETACH DELETE f
+                RETURN count(*) AS n
+                """,
+                uid=user_id,
+            )
+            rec = await res.single()
+            stats["tautologies_removed"] = int(rec["n"]) if rec else 0
+
+            # 3. duplicate triples -> one fact, every source kept as a citation edge
+            res = await session.run(
+                """
+                MATCH (su)<-[:V7_FACT_SUBJECT]-(f:V7Fact {user_id: $uid})-[:V7_FACT_OBJECT]->(o)
+                WITH toLower(su.name) + '|' + coalesce(f.predicate, '') + '|' + toLower(o.name) AS k,
+                     collect(f) AS fs
+                WHERE size(fs) > 1
+                WITH head(fs) AS keep, tail(fs) AS dupes
+                UNWIND dupes AS dupe
+                OPTIONAL MATCH (dupe)-[:V7_FACT_FROM]->(m:V7MemoryRef)
+                FOREACH (_ IN CASE WHEN m IS NULL THEN [] ELSE [1] END |
+                         MERGE (keep)-[:V7_FACT_FROM]->(m))
+                WITH DISTINCT dupe
+                DETACH DELETE dupe
+                RETURN count(*) AS n
+                """,
+                uid=user_id,
+            )
+            rec = await res.single()
+            stats["duplicate_facts_merged"] = int(rec["n"]) if rec else 0
+
+            # 4. dead-weight anchors: no fact touches them AND they link <=1 memory,
+            #    so they can neither answer nor bridge
+            res = await session.run(
+                """
+                MATCH (a:V7Anchor {user_id: $uid})
+                WHERE NOT (a)<-[:V7_FACT_SUBJECT|V7_FACT_OBJECT]-(:V7Fact)
+                WITH a, size([(a)-[:V7_APPEARS_IN|V7_DESCRIBED_BY]->(:V7MemoryRef) | 1]) AS deg
+                WHERE deg <= 1
+                DETACH DELETE a
+                RETURN count(*) AS n
+                """,
+                uid=user_id,
+            )
+            rec = await res.single()
+            stats["dead_anchors_pruned"] = int(rec["n"]) if rec else 0
+
+        logger.info("graph maintenance for user=%s: %s", user_id, stats)
+        return stats
+
     async def prune_singletons(self, user_id: str) -> dict[str, Any]:
         """v8 finalize pass: delete degree-1 anchors — anchors that link only a
         single memory ref and therefore create no cross-memory retrieval path
