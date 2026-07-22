@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import re
 import json
+import asyncio
 import hashlib
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -541,11 +542,14 @@ class V7GraphManager:
             rows.append({"fid": fid, "s": sk, "o": ok, "pred": pred})
         if not rows:
             return
+        # Deterministic ids mean concurrent ingests now MERGE onto the SAME fact node
+        # (that is the point — one fact, many citations), so they contend for its lock.
+        # Sorting gives every transaction the same lock-acquisition order, which removes
+        # the classic lock-ordering deadlock; the retry covers what is left.
+        rows.sort(key=lambda r: r["fid"])
         now = iso(datetime.now(timezone.utc))
         role_norm = (role or "shared").lower()
-        async with driver.session(database=settings.neo4j_database) as session:
-            await session.run(
-                """
+        cypher = """
                 MATCH (m:V7MemoryRef {id: $mref, user_id: $user_id})
                 UNWIND $rows AS row
                 MATCH (s:V7Anchor {user_id: $user_id, name_lower: row.s})
@@ -557,9 +561,20 @@ class V7GraphManager:
                 MERGE (f)-[:V7_FACT_OBJECT]->(o)
                 MERGE (f)-[cite:V7_FACT_FROM]->(m)
                   ON CREATE SET cite.role = $role, cite.timestamp = $ts
-                """,
-                mref=memory_ref_id, user_id=user_id, rows=rows,
-                role=role_norm, ts=timestamp, now=now)
+                """
+        for attempt in range(5):
+            try:
+                async with driver.session(database=settings.neo4j_database) as session:
+                    await session.run(
+                        cypher, mref=memory_ref_id, user_id=user_id, rows=rows,
+                        role=role_norm, ts=timestamp, now=now)
+                return
+            except Exception as exc:  # noqa: BLE001
+                transient = "Deadlock" in type(exc).__name__ or "Deadlock" in str(exc) \
+                    or "TransientError" in type(exc).__name__ or "TransientError" in str(exc)
+                if not transient or attempt == 4:
+                    raise
+                await asyncio.sleep(0.1 * (2 ** attempt))
 
     async def _link_relation_edges(
         self, driver, *, relations: list[tuple[str, str, str]], user_id: str
