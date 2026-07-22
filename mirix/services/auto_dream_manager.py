@@ -111,6 +111,46 @@ class AutoDreamManager:
     # Memory fetching                                                      #
     # ------------------------------------------------------------------ #
 
+    async def _graph_memory_ids(self, user: PydanticUser) -> Optional[set]:
+        """Complete id set of the memories that can own a graph ref.
+
+        Only episodic and semantic memories call ``V7GraphManager.process_memory``,
+        so only those two can have a ``V7MemoryRef``.
+
+        This set MUST be complete: ``maintain_graph`` deletes every ref NOT in it, so
+        a truncated list would destroy live refs. That is why this queries the tables
+        directly instead of reusing the ``list_*`` helpers, which cap at limit=500 and
+        would silently truncate any store larger than that.
+
+        Returns ``None`` (meaning "skip the orphan sweep") on any failure or if the
+        result is empty — an empty set is far more likely a query bug than a real
+        store with graph refs but no memories, and acting on it would wipe the graph.
+        """
+        try:
+            from sqlalchemy import text as sa_text
+
+            from mirix.server.server import db_context
+
+            ids: set = set()
+            async with db_context() as session:
+                for table in ("episodic_memory", "semantic_memory"):
+                    res = await session.execute(
+                        sa_text(f"SELECT id FROM {table} "
+                                f"WHERE user_id = :uid AND NOT is_deleted"),
+                        {"uid": user.id},
+                    )
+                    ids.update(row[0] for row in res.fetchall())
+            if not ids:
+                logger.warning(
+                    "Auto dream: memory-id enumeration came back empty for user=%s; "
+                    "skipping orphan sweep rather than deleting every graph ref", user.id)
+                return None
+            return ids
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Auto dream: could not enumerate memory ids (%s); "
+                           "skipping orphan sweep", exc)
+            return None
+
     async def _fetch_episodic(
         self,
         user: PydanticUser,
@@ -370,7 +410,9 @@ class AutoDreamManager:
         try:
             from mirix.services.graph_memory_manager_v7 import V7GraphManager
 
-            graph_stats = await V7GraphManager().maintain_graph(user.id)
+            graph_stats = await V7GraphManager().maintain_graph(
+                user.id, valid_memory_ids=await self._graph_memory_ids(user)
+            )
             logger.info("Auto dream: graph maintenance %s", graph_stats)
         except Exception as exc:  # noqa: BLE001
             logger.warning("Auto dream: graph maintenance skipped (%s)", exc)
