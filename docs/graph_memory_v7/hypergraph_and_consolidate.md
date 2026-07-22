@@ -77,7 +77,55 @@ by both memories with per-citation roles (`user`, `assistant`).
 **The 4th (dead-weight anchors) is not preventable at write time** — whether an
 anchor ever gets a fact or a second memory is a corpus-global property unknown
 when it is created. That one stays a periodic maintenance pass
-(`refine_hypergraph.py`, pass 4).
+(`refine_hypergraph.py`, pass 4, and `maintain_graph` in the auto_dream cycle).
+
+### Verified by a full rebuild — clean from birth
+
+Rebuilding all 962 memories with the new write path, then checking **without
+running any cleanup**:
+
+| check | result |
+|---|---|
+| tautologies | **0** |
+| duplicate triples | **0** |
+| `includes`-style predicate variants | **0** |
+| citation edges carrying their own role | **4,471 / 4,471 (100%)** |
+
+Final shape: 4,305 facts · 4,862 anchors → **3,689 after** the maintenance pass,
+which reported `{tautologies: 0, duplicates: 0, dead_anchors_pruned: 1,173}` —
+exactly the intended division of labour: ingest prevents three kinds, the periodic
+pass collects the one it cannot. 137 facts are cited by >1 memory (max 14), each
+citation keeping its own role (shared 2,619 / assistant 1,048 / user 804).
+
+**A real bug the dedup change introduced.** Deterministic ids mean concurrent
+ingests MERGE onto the *same* node, so they contend for its lock — a rebuild at
+concurrency 10 started failing with `Neo.TransientError.Transaction.
+DeadlockDetected`. The old random-id scheme never collided, so this only appears
+once dedup actually works, and only under concurrency: a serial test cannot catch
+it. Fixed by sorting rows by fact id (uniform lock-acquisition order) plus
+exponential-backoff retry on transient errors. Re-verified: 962 memories at
+concurrency 10, **0 failures**.
+
+### How this interacts with auto_dream
+
+`auto_dream` is the PG-side analogue of this work: an LLM agent that reviews
+memories for duplicates/overlaps/conflicts and merges them via
+`episodic_memory_replace` / `semantic_memory_update` (prefer merging over
+deletion; keep the uncertainty when a conflict is unresolvable).
+
+Tracing that path matters for graph coherence:
+- `episodic_memory_replace` **hard-deletes** the old rows and touches nothing in
+  the graph → dangling refs. This is what `maintain_graph`'s orphan sweep exists
+  to clean.
+- It then **re-inserts** the merged item through `insert_event`, which *does* call
+  `process_memory` → the merged memory gets fresh graph refs.
+
+So the graph stays coherent across a dream cycle, provided the sweep runs. Note
+the standing assumption: `process_memory` is wired only to the `insert_*` paths,
+so any future in-place memory update would silently leave the graph stale.
+
+(auto_dream has never run on the eval store — 0 checkpoints — so none of the
+measurements in these docs are affected by it.)
 - The **`query_facts` answerer tool** over it was **rejected**: QA 36 → 32. It
   returned descriptive/off-topic facts that misled the answerer. Superseded by
   `consolidate` (below), which is a better mechanism but also nets out negative.

@@ -92,10 +92,45 @@ Per-question: **+7 won / −3 lost = +4 net deterministic.**
   conflicting/ambiguous cold facts; future work = dedup-by-recency + skip
   ordering/abstention Qs.
 
+## 4b. Rebuilding the graph adds another +4.0 (best: 40.7)
+
+Rebuilding the hypergraph with the clean write path (deterministic fact ids,
+canonical predicates, tautology guard, per-citation roles) and re-running the same
+cold-fact answerer:
+
+| config | runs | mean | sd |
+|---|---|---:|---:|
+| baseline (no cold-fact) | 36 / 30 / 33 / 30 | 32.2 | 2.5 |
+| cold-fact + old graph | 37 / 36 / 37 | 36.7 | 0.5 |
+| **cold-fact + rebuilt graph** | **39 / 42 / 41** | **40.7** | 1.2 |
+
+**+8.5 over baseline**, and the three distributions do not overlap (rebuilt min 39
+> old-graph max 37), so this is not noise. All five recovered-fact targets still
+pass.
+
+The gains (+7 / −2 vs the old graph) cluster tellingly in **temporal-ordering**
+(Q25 Spanish-classes 1/3→3/3, Q33 Page-Turners 0/3→3/3, Q39 camping-days 0/3→2/3)
+and **multi-session aggregation** (Q17 art-events 0/3→3/3, Q59 jewelry 0/3→2/3),
+plus two recall questions (Q52, Q42). That is precisely where graph structure —
+the temporal chain and cross-memory links — should help, and it is the **first
+time in this project that graph work moved QA at all**, contradicting the earlier
+"retrieval/graph is not the bottleneck" finding.
+
+⚠️ **Attribution is not isolated.** The rebuild changed two things at once:
+(a) structure (dedup, canonical predicates, per-citation roles) and (b) content
+(a completely fresh, non-deterministic LLM extraction). This experiment cannot
+separate them — the +4.0 could be largely a luckier extraction draw. The
+consistency of the temporal flips (0/3 → 3/3, not a scattered 1-or-2) *suggests* a
+structural cause, but suggestion is not proof. The controlled test is to rebuild
+once more with the **old** write path and re-run 3× QA; until then this number
+should be reported as "rebuilt graph", not "clean graph caused it".
+
 ## 5. Takeaways
 
 - **The lever is write-time, not the answerer.** Recovering summarized-away facts
-  is the only intervention that beat the noise band.
+  is the only intervention that beat the noise band — and rebuilding the graph
+  (also write-time) added the next +4.0. Every gain in this project came from what
+  gets *written*, never from how the answerer was told to *read*.
 - **Provide recovered facts as evidence, not ground truth.** Same facts, +5
   swing between the two framings.
 - **Deterministic wins shrink variance** — a real fix both raises the mean and
