@@ -50,6 +50,34 @@ Post-refinement invariants verified: 0 tautologies, 0 duplicate triples, 0
 malformed facts (every fact keeps subject + object + ≥1 source), 0 orphan
 anchors. **QA re-checked on the refined graph: 36/60**, inside the cold-fact band
 (37/36/37), with all five recovered-fact wins (Q46/Q56/Q57/Q1/Q15) still passing.
+
+### Prevented at ingest (3 of the 4 no longer need cleanup)
+
+`_upsert_facts` was *generating* the redundancy: it minted a random `gen_id()` per
+extraction, so `MERGE (f:V7Fact {id: ...})` always CREATED — the same triple from
+N memories became N nodes. It also stored the raw predicate surface form and had
+no tautology guard (while `_link_relation_edges` right below it did). Fixed at
+write time:
+
+- **Deterministic identity** — `fact_identity(user, subj_key, predicate, obj_key)`
+  hashes the canonical triple, so the same assertion MERGEs to ONE fact and each
+  new memory only adds a `V7_FACT_FROM` citation edge.
+- **Canonical predicates** — `canon_predicate()` folds copulas and singularizes
+  the verb (`includes`→`include`, `is located in`→`located in`) before storage.
+- **Tautology guard** — `sk == ok` triples are dropped, matching the existing
+  relation-edge guard.
+- **Role/time moved to the citation** — they are properties of *this memory
+  asserting the fact*, not of the fact, now that one fact spans memories. The
+  node keeps first-seen values via `ON CREATE SET` (nothing else read them).
+
+Verified end-to-end: the same triple submitted from two memories with different
+surface forms plus a tautology yields **1 fact node**, predicate `include`, cited
+by both memories with per-citation roles (`user`, `assistant`).
+
+**The 4th (dead-weight anchors) is not preventable at write time** — whether an
+anchor ever gets a fact or a second memory is a corpus-global property unknown
+when it is created. That one stays a periodic maintenance pass
+(`refine_hypergraph.py`, pass 4).
 - The **`query_facts` answerer tool** over it was **rejected**: QA 36 → 32. It
   returned descriptive/off-topic facts that misled the answerer. Superseded by
   `consolidate` (below), which is a better mechanism but also nets out negative.

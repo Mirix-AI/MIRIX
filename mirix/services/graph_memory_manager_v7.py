@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import re
 import json
+import hashlib
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Literal, Optional
@@ -94,6 +95,34 @@ def anchor_canonical_key(name: str) -> str:
     cleaned = re.sub(r"[^a-z0-9 ]", " ", (name or "").lower())
     tokens = {_singularize(t) for t in cleaned.split() if t and t not in _ANCHOR_STOPWORDS}
     return " ".join(sorted(tokens))
+
+
+_PRED_COPULA = re.compile(r"^(is|are|was|were|be|been|being)\s+", re.I)
+
+
+def canon_predicate(pred: str) -> str:
+    """Canonical predicate so surface variants are ONE relation, not several:
+    ``includes``->``include``, ``is located in``->``located in``, ``offers``->``offer``.
+    Applied at write time so the graph never accumulates the variants in the first
+    place (a corpus-wide cleanup previously had to fold 99 of them)."""
+    if not pred:
+        return "related to"
+    p = _PRED_COPULA.sub("", pred.lower().strip())
+    tokens = p.split()
+    if tokens:
+        head = tokens[0]
+        # singularize the verb, but keep has/is/ss-words intact
+        if len(head) > 4 and head.endswith("s") and not head.endswith(("ss", "us", "is", "as")):
+            tokens[0] = head[:-1]
+    return " ".join(tokens) or "related to"
+
+
+def fact_identity(user_id: str, subj_key: str, predicate: str, obj_key: str) -> str:
+    """Deterministic id for a fact, so the SAME (subject, predicate, object) asserted
+    in N memories MERGEs to ONE V7Fact cited N times — instead of N duplicate nodes.
+    A random id here was what generated the duplicate-triple redundancy."""
+    raw = f"{user_id}|{subj_key}|{predicate}|{obj_key}"
+    return "v7fact-" + hashlib.sha1(raw.encode("utf-8")).hexdigest()[:20]
 
 
 @dataclass(frozen=True)
@@ -496,13 +525,20 @@ class V7GraphManager:
         be queried on any dimension (entity, who, when) — e.g. "assistant-role facts
         about X in month M" — which a binary anchor→anchor edge cannot express."""
         rows = []
+        seen: set[str] = set()
         for subj, rel, obj in relations:
             sk = anchor_canonical_key(self._clean_name(subj))
             ok = anchor_canonical_key(self._clean_name(obj))
-            if not sk or not ok:
+            # Skip tautologies ("french -include-> french"): an extraction artifact that
+            # asserts nothing. Mirrors the sk != ok guard in _link_relation_edges.
+            if not sk or not ok or sk == ok:
                 continue
-            fid = gen_id("v7fact")
-            rows.append({"fid": fid, "s": sk, "o": ok, "pred": (rel or "related to")[:80]})
+            pred = canon_predicate(rel)[:80]
+            fid = fact_identity(user_id, sk, pred, ok)
+            if fid in seen:  # same triple repeated inside one memory
+                continue
+            seen.add(fid)
+            rows.append({"fid": fid, "s": sk, "o": ok, "pred": pred})
         if not rows:
             return
         now = iso(datetime.now(timezone.utc))
@@ -515,11 +551,12 @@ class V7GraphManager:
                 MATCH (s:V7Anchor {user_id: $user_id, name_lower: row.s})
                 MATCH (o:V7Anchor {user_id: $user_id, name_lower: row.o})
                 MERGE (f:V7Fact {id: row.fid})
-                  SET f.user_id = $user_id, f.predicate = row.pred, f.role = $role,
-                      f.timestamp = $ts, f.created_at = $now
+                  ON CREATE SET f.user_id = $user_id, f.predicate = row.pred,
+                                f.role = $role, f.timestamp = $ts, f.created_at = $now
                 MERGE (f)-[:V7_FACT_SUBJECT]->(s)
                 MERGE (f)-[:V7_FACT_OBJECT]->(o)
-                MERGE (f)-[:V7_FACT_FROM]->(m)
+                MERGE (f)-[cite:V7_FACT_FROM]->(m)
+                  ON CREATE SET cite.role = $role, cite.timestamp = $ts
                 """,
                 mref=memory_ref_id, user_id=user_id, rows=rows,
                 role=role_norm, ts=timestamp, now=now)
