@@ -18,6 +18,16 @@ class AutoDreamRequest(BaseModel):
         ),
     )
     dry_run: bool = Field(False, description="If true, return plan without applying changes")
+    graph_only: bool = Field(
+        False,
+        description=(
+            "If true, skip the LLM memory-merge pass entirely and only refine the graph "
+            "(maintenance + semantic reconsolidation). The flat PG memories — their ids, "
+            "content and embeddings — are left untouched, so flat retrieval is unchanged; "
+            "only the hypergraph structure is consolidated. This avoids the retrieval "
+            "degradation that memory merging causes on fact-recall QA."
+        ),
+    )
     model: Optional[str] = Field(None, description="Override LLM model (e.g. gpt-4.1-mini for testing)")
 
     @field_validator("mode")

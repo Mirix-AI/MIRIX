@@ -225,6 +225,31 @@ class TaskAgent:
                 if "actor" in result:
                     del result["actor"]
             out = results['results']
+            # Hybrid retrieval (MIRIX_HYBRID_SEARCH): the default is embedding-only, which
+            # misses a memory whose embedding is DILUTED even though the literal term is in
+            # its text — the exact failure consolidation creates (merging 5 topics into one
+            # broad memory blurs its vector, so "Glass Menagerie" no longer ranks, though
+            # the words are right there). A BM25 full-text pass over the same query recovers
+            # those by exact term. Union + dedup against the embedding hits.
+            if os.environ.get("MIRIX_HYBRID_SEARCH"):
+                bm = dict(params)
+                bm["search_method"] = "bm25"
+                try:
+                    bres = asyncio.run(self.mirix_client.search(user_id=resolved_user_id, **bm))
+                except Exception:  # noqa: BLE001
+                    bres = None
+                if bres and bres.get("success"):
+                    seen = {(r.get("summary") or "")[:120] for r in out if isinstance(r, dict)}
+                    for r in bres["results"]:
+                        s = (r.get("summary") or "")[:120]
+                        if not s or s in seen:
+                            continue
+                        seen.add(s)
+                        if "occurred_at" in r and r.get("occurred_at_description"):
+                            r["occurred_at"] = f"{r['occurred_at']} ({r['occurred_at_description']})"
+                        for k in ("id", "actor", "occurred_at_description"):
+                            r.pop(k, None)
+                        out.append(r)
             # Cold-fact merge (MIRIX_COLDFACT): surface verbatim specifics the summarizing
             # ingest dropped, AS REGULAR retrieved evidence competing with summaries for THIS
             # search query — not force-injected ground truth. Lets normal retrieval filtering

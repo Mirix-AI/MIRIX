@@ -5343,6 +5343,9 @@ async def auto_dream_handler(
             resource, procedural, knowledge, experience. experience processes
             episodic, semantic, and knowledge together in one agent pass.
         dry_run: If true, return counts without applying any changes
+        graph_only: If true, skip the LLM memory-merge pass and only refine the graph
+            (maintenance + reconsolidation). Flat PG memories are left untouched, so
+            flat retrieval is unchanged and only the hypergraph structure is consolidated.
         model: Override the LLM model (e.g. "gpt-4.1-mini" for testing)
     """
     from mirix.schemas.auto_dream import AutoDreamRequest, AutoDreamResponse

@@ -306,6 +306,57 @@ class AutoDreamManager:
         return await server.agent_manager.create_agent(agent_create=agent_create, actor=actor)
 
     # ------------------------------------------------------------------ #
+    # Graph refinement                                                     #
+    # ------------------------------------------------------------------ #
+
+    async def _refine_graph(self, user: PydanticUser, dream_agent_state: AgentState) -> dict:
+        """Refine the hypergraph only — never touches the flat PG memories.
+
+        Two passes, both self-contained on the graph and both fail-soft (a graph error
+        must never fail the dream cycle):
+
+        1. ``maintain_graph`` — structural cleanup: sweeps refs orphaned by any memory
+           deletion, drops tautologies and duplicate triples, prunes dead-weight anchors
+           (a corpus-global redundancy that cannot be prevented at write time).
+        2. ``reconsolidate_graph`` — semantic cleanup the structural pass cannot see:
+           clusters anchors that say the same thing in different words (LLM-verified,
+           because cosine alone would merge "5-10% of budget" with "10-20% of budget")
+           and reports — never resolves — apparent contradictions. Self-gated to every
+           N new memories since it costs LLM calls.
+
+        Because this only redirects graph edges to surviving anchors, every
+        anchor→memory_id link is preserved, so the graph→memory_id→PG retrieval path
+        keeps reaching the same memories. Returns the merged stats dict.
+        """
+        stats: dict = {}
+        try:
+            from mirix.services.graph_memory_manager_v7 import V7GraphManager
+
+            graph_stats = await V7GraphManager().maintain_graph(
+                user.id, valid_memory_ids=await self._graph_memory_ids(user)
+            )
+            stats["maintenance"] = graph_stats
+            logger.info("Auto dream: graph maintenance %s", graph_stats)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Auto dream: graph maintenance skipped (%s)", exc)
+
+        try:
+            from mirix.database.neo4j_client import get_neo4j_driver
+            from mirix.services.graph_reconsolidator import reconsolidate_graph
+
+            recon_stats = await reconsolidate_graph(
+                get_neo4j_driver(), user_id=user.id, agent_state=dream_agent_state,
+                every_n_memories=int(os.environ.get("MIRIX_GRAPH_RECONSOLIDATE_EVERY", "10")),
+            )
+            stats["reconsolidation"] = recon_stats
+            logger.info("Auto dream: graph reconsolidation %s",
+                        {k: v for k, v in recon_stats.items() if k != "conflict_samples"})
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Auto dream: graph reconsolidation skipped (%s)", exc)
+
+        return stats
+
+    # ------------------------------------------------------------------ #
     # Main entry point                                                     #
     # ------------------------------------------------------------------ #
 
@@ -335,6 +386,43 @@ class AutoDreamManager:
             start_date = start_date.astimezone(dt.timezone.utc).replace(tzinfo=None)
         if end_date.tzinfo is not None:
             end_date = end_date.astimezone(dt.timezone.utc).replace(tzinfo=None)
+
+        # -- graph-only dream: refine the graph, leave the flat PG memories alone --
+        # The LLM memory-merge pass (below) is what degrades fact-recall QA: it blends
+        # peripheral specifics into coarser merged memories whose embeddings no longer
+        # retrieve them. Retrieval is graph→memory_id→PG *and* flat pgvector, both keyed
+        # on those per-memory rows/embeddings; mutating them is what hurts. This mode
+        # skips the merge entirely and only consolidates the hypergraph structure —
+        # break-even QA, cleaner graph. reconsolidate still needs the dream agent state
+        # (for its LLM verification + embeddings), so we resolve it here too.
+        if request.graph_only:
+            # dry_run must resolve NOTHING and mutate NOTHING — return before
+            # get_or_create_dream_agent_state, which is not read-only (it can insert or
+            # update an agent row). The normal path likewise returns its dry_run before
+            # resolving the agent state.
+            if request.dry_run:
+                return AutoDreamResponse(
+                    start_date=None, end_date=None, processed={}, last_dream_at=now,
+                    dry_run=True,
+                    message="Dry run (graph_only) — would refine the graph; no memory changes.",
+                )
+            dream_agent_state = await self.get_or_create_dream_agent_state(actor, meta_agent_state)
+            if request.model:
+                from copy import deepcopy
+
+                dream_agent_state = deepcopy(dream_agent_state)
+                dream_agent_state.llm_config.model = request.model
+            # No checkpoint write here: the checkpoint only seeds the default window for
+            # the merge path, and that path fetches ALL memories regardless of window
+            # anyway — so in graph_only it is a pure no-op PG insert (plus a stray graph
+            # write for its own row). Skipping it makes the invariant exact: graph_only
+            # issues ZERO writes to the flat memory store, only graph mutations.
+            await self._refine_graph(user, dream_agent_state)
+            return AutoDreamResponse(
+                start_date=None, end_date=None, processed={}, last_dream_at=now,
+                dry_run=False,
+                message="Auto dream (graph_only) completed — graph refined, flat memories untouched.",
+            )
 
         components = _MODE_COMPONENTS[request.mode]
         logger.info("Auto dream: window %s → %s, mode=%s, components=%s", start_date, end_date, request.mode, components)
@@ -426,42 +514,8 @@ class AutoDreamManager:
         # -- write checkpoint --
         await self.write_checkpoint(user, actor, meta_agent_state, now)
 
-        # -- graph maintenance --
-        # Hooked here because this is where the memory store gets mutated: the dream
-        # agent consolidates/deletes memories, leaving graph refs dangling. It also
-        # collects the redundancy that cannot be prevented at write time (dead-weight
-        # anchors, a corpus-global property). Never allowed to fail the dream cycle.
-        # NB: auto_dream is NOT self-scheduling — it is a REST endpoint someone has to
-        # call, so this runs only as often as that happens.
-        graph_stats = None
-        try:
-            from mirix.services.graph_memory_manager_v7 import V7GraphManager
-
-            graph_stats = await V7GraphManager().maintain_graph(
-                user.id, valid_memory_ids=await self._graph_memory_ids(user)
-            )
-            logger.info("Auto dream: graph maintenance %s", graph_stats)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Auto dream: graph maintenance skipped (%s)", exc)
-
-        # -- graph semantic reconsolidation --
-        # The structural pass above cannot see meaning: anchors that say the same thing
-        # in different words. This one clusters them (LLM-verified, because cosine alone
-        # would merge "5-10% of budget" with "10-20% of budget") and reports — never
-        # resolves — apparent contradictions. Self-gated to every N new memories since
-        # it costs LLM calls. Never allowed to fail the dream cycle.
-        try:
-            from mirix.database.neo4j_client import get_neo4j_driver
-            from mirix.services.graph_reconsolidator import reconsolidate_graph
-
-            recon_stats = await reconsolidate_graph(
-                get_neo4j_driver(), user_id=user.id, agent_state=dream_agent_state,
-                every_n_memories=int(os.environ.get("MIRIX_GRAPH_RECONSOLIDATE_EVERY", "10")),
-            )
-            logger.info("Auto dream: graph reconsolidation %s",
-                        {k: v for k, v in recon_stats.items() if k != "conflict_samples"})
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Auto dream: graph reconsolidation skipped (%s)", exc)
+        # -- refine the graph (maintenance + semantic reconsolidation) --
+        await self._refine_graph(user, dream_agent_state)
 
         # -- build response (stats are approximate: we report totals fetched) --
         processed = {t: MemoryTypeStats(total=len(items)) for t, items in memories.items()}
