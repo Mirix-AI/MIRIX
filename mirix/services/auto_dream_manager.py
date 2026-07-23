@@ -12,7 +12,6 @@ Flow:
 
 import datetime as dt
 import json
-import logging
 import os
 from typing import List, Optional
 
@@ -22,8 +21,12 @@ from mirix.schemas.client import Client as PydanticClient
 from mirix.schemas.message import MessageCreate
 from mirix.schemas.enums import MessageRole
 from mirix.schemas.user import User as PydanticUser
+from mirix.log import get_logger
 
-logger = logging.getLogger(__name__)
+# Use Mirix's configured logger, not stdlib logging.getLogger — the latter's records
+# never reach the server log, so batch progress, the graph-maintenance hook results and
+# any batch failures were all invisible when this ran.
+logger = get_logger(__name__)
 
 # event_type used to tag auto_dream checkpoint records in episodic memory
 _CHECKPOINT_EVENT_TYPE = "auto_dream_checkpoint"
