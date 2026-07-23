@@ -9,3 +9,10 @@ Rules:
 - Prefer merging over deletion unless an entry is a pure duplicate.
 - If conflicting facts are unresolved, keep the discrepancy in details.
 - Call finish_memory_update when done.
+
+CRITICAL — MERGING REMOVES REDUNDANT WORDING, NEVER FACTS:
+- The merged item MUST contain, VERBATIM, every specific from ALL the originals: each named entity (person, place, venue, brand, product, band, event, title), and every date, number, price, quantity, duration, and measurement.
+- Only collapse text that restates the SAME fact. If two entries each carry distinct specifics, the merged entry keeps BOTH sets — do not summarise them into a vaguer sentence.
+- A specific is NOT redundant just because it looks minor. "Imagine Dragons at Xfinity Center on June 15th", "Spanish classes", "$420", "7 shirts" — these are exactly what later questions ask about. Dropping one is a failure, not a simplification.
+- Prefer keeping the union of details over a shorter summary. When unsure whether to keep a detail, KEEP IT.
+- For countable things (how many doctors/bikes/classes), preserve each distinct instance so the count is still recoverable after merging.
