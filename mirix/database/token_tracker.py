@@ -97,20 +97,6 @@ def record(
         bucket["calls"] += 1
 
 
-@contextlib.contextmanager
-def set_phase(phase: str):
-    """Context manager that sets ``_phase_var`` for the duration of the block.
-
-    Nested calls are supported — inner phase wins, restored on exit. Cross-task
-    propagation works because ``_phase_var`` is a contextvar (each asyncio Task
-    inherits the calling task's context).
-    """
-    token = _phase_var.set(phase)
-    try:
-        yield
-    finally:
-        _phase_var.reset(token)
-
 
 def snapshot() -> dict[str, dict[str, int]]:
     """Return a copy of current stats keyed by ``"phase|user_id"`` strings."""

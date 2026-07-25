@@ -1055,21 +1055,12 @@ class SemanticMemoryManager:
             # already completed.
             if settings.enable_graph_memory:
                 try:
-                    if settings.graph_version == "v6":
-                        from mirix.services.graph_memory_manager_v6 import V6GraphManager
-
-                        await V6GraphManager().process_chunk(
-                            source_kind="semantic",
-                            source_id=semantic_item.id,
-                            text=(name or "") + "\n" + (summary or "") + "\n" + (details or ""),
-                            agent_state=agent_state,
-                            organization_id=organization_id,
-                            user_id=user_id or "unknown",
-                        )
                     # Prefix match, not a version list — see the note in
                     # episodic_memory_manager: the explicit tuple drifted six versions out
                     # of date and silently routed v7.4+ servers to the legacy builder.
-                    elif settings.graph_version.startswith("v7") or settings.graph_version == "v8":
+                    # The v5/v6 builders are archived under archive/legacy_graph/;
+                    # unrecognised versions now skip graph writes.
+                    if settings.graph_version.startswith("v7") or settings.graph_version == "v8":
                         from mirix.services.graph_memory_manager_v7 import V7GraphManager
 
                         source_meta = (
@@ -1094,17 +1085,9 @@ class SemanticMemoryManager:
                             role="shared",
                         )
                     else:
-                        from mirix.services.semantic_graph_manager import SemanticGraphManager
-
-                        await SemanticGraphManager().process_concept(
-                            concept_id=semantic_item.id,
-                            name=name,
-                            summary=summary,
-                            details=details or "",
-                            agent_state=agent_state,
-                            organization_id=organization_id,
-                            user_id=user_id or "unknown",
-                        )
+                        logger.warning(
+                            "Semantic graph write skipped: graph_version=%r has no live "
+                            "builder (v5/v6 are archived)", settings.graph_version)
                 except Exception as graph_err:
                     logger.warning("Semantic graph write failed (non-fatal): %s", graph_err)
 

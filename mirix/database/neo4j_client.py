@@ -52,33 +52,6 @@ _neo4j_driver: Optional[AsyncDriver] = None
 
 # Constraint + non-vector index DDL. Idempotent.
 _SCHEMA_STATEMENTS = [
-    # G_episodic constraints
-    "CREATE CONSTRAINT episode_id_unique IF NOT EXISTS "
-    "FOR (e:Episode) REQUIRE e.id IS UNIQUE",
-    "CREATE CONSTRAINT episodic_entity_id_unique IF NOT EXISTS "
-    "FOR (e:EpisodicEntity) REQUIRE e.id IS UNIQUE",
-    "CREATE CONSTRAINT episodic_entity_user_name_unique IF NOT EXISTS "
-    "FOR (e:EpisodicEntity) REQUIRE (e.user_id, e.name_lower) IS UNIQUE",
-    "CREATE INDEX episode_user_time IF NOT EXISTS "
-    "FOR (e:Episode) ON (e.user_id, e.occurred_at)",
-
-    # G_semantic constraints
-    "CREATE CONSTRAINT concept_id_unique IF NOT EXISTS "
-    "FOR (c:Concept) REQUIRE c.id IS UNIQUE",
-    "CREATE CONSTRAINT semantic_entity_id_unique IF NOT EXISTS "
-    "FOR (e:SemanticEntity) REQUIRE e.id IS UNIQUE",
-    "CREATE CONSTRAINT semantic_entity_user_name_unique IF NOT EXISTS "
-    "FOR (e:SemanticEntity) REQUIRE (e.user_id, e.name_lower) IS UNIQUE",
-    "CREATE INDEX concept_user_created IF NOT EXISTS "
-    "FOR (c:Concept) ON (c.user_id, c.created_at)",
-
-    # G_v6 (lean entity index) — orthogonal to v5 labels so both can coexist.
-    # Only built when graph_version=v6; harmless when graph_version=v5.
-    "CREATE CONSTRAINT v6_entity_id_unique IF NOT EXISTS "
-    "FOR (e:V6Entity) REQUIRE e.id IS UNIQUE",
-    "CREATE CONSTRAINT v6_entity_user_name_unique IF NOT EXISTS "
-    "FOR (e:V6Entity) REQUIRE (e.user_id, e.name_lower) IS UNIQUE",
-
     # G_v7 (minimal semantic+episodic linkage graph). Separate labels so v7
     # can be compared against v5/v6 without deleting earlier experiments.
     "CREATE CONSTRAINT v7_anchor_id_unique IF NOT EXISTS "
@@ -132,19 +105,6 @@ def _vector_index_statement(name: str, label_or_rel: str, prop: str, dim: int, i
 # in the future (P3 may or may not use it).
 def _vector_indexes(dim: int) -> list[str]:
     return [
-        # G_episodic — entity nodes + entity-entity relations
-        _vector_index_statement("ep_entity_name_emb", "EpisodicEntity", "name_embedding", dim, is_rel=False),
-        _vector_index_statement("ep_rel_kw_emb", "EP_RELATES", "keywords_embedding", dim, is_rel=True),
-
-        # G_semantic — entity nodes + entity-entity relations + concept-concept relations
-        _vector_index_statement("sem_entity_name_emb", "SemanticEntity", "name_embedding", dim, is_rel=False),
-        _vector_index_statement("sem_rel_kw_emb", "SEM_RELATES", "keywords_embedding", dim, is_rel=True),
-        _vector_index_statement("concept_rel_kw_emb", "CONCEPT_RELATES", "keywords_embedding", dim, is_rel=True),
-
-        # G_v6 — lean entity index. Single vector index on V6Entity.name_embedding.
-        # No edge index — V6_COOCCUR carries only a count, no embedding.
-        _vector_index_statement("v6_entity_name_emb", "V6Entity", "name_embedding", dim, is_rel=False),
-
         # G_v7 — minimal linkage graph. Only anchors are vector searched;
         # memory refs point back to PG flat memory rows for details.
         _vector_index_statement("v7_anchor_name_emb", "V7Anchor", "name_embedding", dim, is_rel=False),
@@ -227,11 +187,6 @@ async def close_neo4j_driver() -> None:
         _neo4j_driver = None
 
 
-async def neo4j_healthcheck() -> bool:
-    """Return True iff a trivial Cypher round-trip succeeds."""
-    driver = _neo4j_driver
-    if driver is None:
-        return False
     try:
         async with driver.session(database=settings.neo4j_database) as session:
             result = await session.run("RETURN 1 AS ok")

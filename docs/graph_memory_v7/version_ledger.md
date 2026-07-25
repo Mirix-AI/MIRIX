@@ -29,7 +29,7 @@ version).
 
 Extraction is LLM-based and non-deterministic (the meta-agent's per-chunk routing
 and each sub-agent's yield both vary). Measured over **5 fresh post-merge 10-chunk
-builds** (2026-07-18, code d83cf96): a delta smaller than this spread is **not** a
+builds** (2026-07-18, code pre-squash tag): a delta smaller than this spread is **not** a
 real effect.
 
 | run (10-chunk, post-merge v7) | ep+sem memories |
@@ -70,19 +70,19 @@ extraction draw within the ±42% noise, not a regression.)
 
 > **On the `commit` column.** The branch history was consolidated into six thematic
 > commits, so a version no longer owns a commit one-to-one: v7/v7.1/v7.2/v7.3 all sit
-> in `d83cf96` and v7.4/v7.6/v7.7/v7.8 all sit in `58fa119`. The original
+> in `pre-squash tag` and v7.4/v7.6/v7.7/v7.8 all sit in `pre-squash tag`. The original
 > one-commit-per-version history is preserved at the tag `graph_revision_pre_squash`
 > — check it out when you need a single version's exact code state. Push that tag
 > alongside the branch, or those states become unreachable on the remote.
 
 | ver | change | targets gap | status | anchors | singleton% | QA (full / MH / SH) | commit |
 |---|---|---|---|---:|---:|---|---|
-| v7 | LightRAG extractor + `anchor_canonical_key` (surface dedup) | baseline | **current** | 5165 (full) | 66% | **30/60 (post-merge full)** | d83cf96 |
-| v7.1 | rerank candidates by query text-cosine | retrieval | shipped | — | — | SH-Doc +4 | d83cf96 |
-| v7.2 | per-anchor coverage round-robin | retrieval | shipped (neutral) | — | — | +0 | d83cf96 |
-| v7.3 | proposition ingest, no LightRAG | G6 / extraction | **rejected** — collapsed edge structure (only DESCRIBED_BY survived; no episodic → lost APPEARS_IN / SUPPORTED_BY / NEXT_MEMORY); singleton ↑77% | 439 | 77% | not run (structure not comparable) | d83cf96 |
-| **v7.4** | **GLiNER extractor** (local encoder) — dialogue roles (User/Assistant) filtered out | **G6** cost + **G4** noise hubs | **shipped-but-superseded** — ~200× faster, hubs gone, deterministic; **BUT GLiNER can't abstract → drops LightRAG's concept anchors (networking/team-collaboration=0), degrading concept-heavy retrieval (masked by net-neutral QA). See `extractor_direction_D.md`.** Kept as a cheap named-entity supplement. | 2473 (−52%) | 66% | **32/60 (vs v7 30/60; concept-loss caveat)** | 58fa119 |
-| **v7.6** | **LLM triple extraction (direction D)** — abstracts concepts (GLiNER can't) + keeps relations as `V7_RELATION` anchor→anchor edges; User/Assistant filtered | concept coverage + **relations (for PPR)** | **foundation shipped** — concept anchors back (2374, 41% vs v7.4's 294/12%), **3667 relation edges** (v7 had none), hubs gone. Only **2.6× faster than LightRAG** per-memory (5.9s vs 15.25s — measured; NOT the 34× I first claimed, which mixed concurrent-D vs sequential-LightRAG). **The real value is the RELATIONS, not speed.** QA 31/60 = flat, BY DESIGN (retrieval didn't traverse V7_RELATION until v7.7). | 5777 | 81% | 31/60 | 58fa119 |
+| v7 | LightRAG extractor + `anchor_canonical_key` (surface dedup) | baseline | **current** | 5165 (full) | 66% | **30/60 (post-merge full)** | pre-squash tag |
+| v7.1 | rerank candidates by query text-cosine | retrieval | shipped | — | — | SH-Doc +4 | pre-squash tag |
+| v7.2 | per-anchor coverage round-robin | retrieval | shipped (neutral) | — | — | +0 | pre-squash tag |
+| v7.3 | proposition ingest, no LightRAG | G6 / extraction | **rejected** — collapsed edge structure (only DESCRIBED_BY survived; no episodic → lost APPEARS_IN / SUPPORTED_BY / NEXT_MEMORY); singleton ↑77% | 439 | 77% | not run (structure not comparable) | pre-squash tag |
+| **v7.4** | **GLiNER extractor** (local encoder) — dialogue roles (User/Assistant) filtered out | **G6** cost + **G4** noise hubs | **shipped-but-superseded** — ~200× faster, hubs gone, deterministic; **BUT GLiNER can't abstract → drops LightRAG's concept anchors (networking/team-collaboration=0), degrading concept-heavy retrieval (masked by net-neutral QA). See `archive/extractor_direction_D.md`.** Kept as a cheap named-entity supplement. | 2473 (−52%) | 66% | **32/60 (vs v7 30/60; concept-loss caveat)** | pre-squash tag |
+| **v7.6** | **LLM triple extraction (direction D)** — abstracts concepts (GLiNER can't) + keeps relations as `V7_RELATION` anchor→anchor edges; User/Assistant filtered | concept coverage + **relations (for PPR)** | **foundation shipped** — concept anchors back (2374, 41% vs v7.4's 294/12%), **3667 relation edges** (v7 had none), hubs gone. Only **2.6× faster than LightRAG** per-memory (5.9s vs 15.25s — measured; NOT the 34× I first claimed, which mixed concurrent-D vs sequential-LightRAG). **The real value is the RELATIONS, not speed.** QA 31/60 = flat, BY DESIGN (retrieval didn't traverse V7_RELATION until v7.7). | 5777 | 81% | 31/60 | pre-squash tag |
 | **v7.7** | **PPR retrieval** over the v7.6 relation graph (query→anchor seed + Personalized PageRank, networkx — no GDS) | multi-session (27%) | **implemented; retrieval much better, QA flat (30/60)** — the colleague query reversed from off-topic fitness to on-topic social; context went from ~500-char titles to 37k-char rich. But QA = v7 30 / v7.4 32 / v7.6 31 / v7.7 30, **all flat.** | — | — | 30/60 | pending |
 
 | **v7.8** | **registry-guided entity resolution** (canonicalization at extract) — embedding retrieves candidate existing anchors, an **LLM decides same-or-new** and renames to the canonical (relation endpoints too). Closes a gap present since v7, amplified by v7.6. | graph quality / redundancy (the long-standing canonicalization gap; enables G1/G2) | **shipped (graph quality)** — anchors **5777→4744 (−18%)**, singleton **81%→66%** (back to v7's level), V7_RELATION 3667→4317 (endpoints consolidate). No over-merge (42 vs 46 campsites kept apart; max hub deg 14). **18% vs the 2% a pure embedding-cosine merge could safely reach** — the LLM makes the identity decision cosine can't. QA not yet measured (user deferred). | 4744 | 66% | (deferred) | pending |

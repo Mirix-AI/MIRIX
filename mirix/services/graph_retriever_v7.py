@@ -83,65 +83,42 @@ class V7Retriever:
         if not anchors:
             return anchors, [], []
 
-        if settings.graph_version == "v7.7":
-            # v7.7: Personalized PageRank over the v7.6 relation graph. Seed from the
-            # query-matched anchors and propagate through V7_RELATION (+ anchor↔memory)
-            # edges, then rank memory refs by PPR score. This is what turns v7.6's
-            # anchor→anchor edges into multi-hop retrieval — plain anchor search only
-            # reaches memories one hop from a seed; PPR reaches memories bridged by a
-            # chain of related entities. (No Neo4j GDS here, so PPR runs in networkx.)
-            episodic_ids, semantic_ids = await self._retrieve_ppr(
-                driver, user_id, anchors, max_items_per_kind)
-            if not episodic_ids and not semantic_ids:
-                return anchors, [], []
-            ep_task = asyncio.create_task(
-                self._fetch_episodic(user_id, episodic_ids, q_emb=None, limit=max_items_per_kind))
-            sem_task = asyncio.create_task(
-                self._fetch_semantic(user_id, semantic_ids, q_emb=None, limit=max_items_per_kind))
-            ep_rows, sem_rows = await asyncio.gather(ep_task, sem_task, return_exceptions=True)
-            ep_rows = [] if isinstance(ep_rows, Exception) else ep_rows
-            sem_rows = [] if isinstance(sem_rows, Exception) else sem_rows
-        elif settings.graph_version == "v7.2":
-            # v7.2: per-anchor coverage rerank. Rerank each matched anchor's own
-            # memories by query text-cosine, then round-robin across anchors so a
-            # multi-hop query spanning several entities keeps a memory for EACH.
-            # (v7.1's single pooled rerank collapses onto one entity — good for
-            # single-hop, useless for multi-hop.)
-            ep_rows, sem_rows = await self._retrieve_coverage(
-                driver, user_id, anchors, q_emb, max_items_per_kind)
-        else:
-            episodic_ids, semantic_ids = await self._collect_memory_refs(
-                driver, user_id=user_id, anchor_ids=[a.id for a in anchors],
-            )
-            if not episodic_ids and not semantic_ids:
-                return anchors, [], []
-            # v7.1+: rerank the anchor-collected candidates by query full-text
-            # similarity (anchor match = recall, text-cosine = precision) so a
-            # salient-but-wrong same-name entity from another document sinks below
-            # the true answer. Only plain v7 keeps the original anchor-traversal/date
-            # order (the unranked baseline). This used to be `== "v7.1"`, which
-            # silently switched the rerank OFF for every later version (v7.3+, v7.10,
-            # v8): they fell through to a plain traversal-order truncation — the same
-            # stale-exact-match guard bug as the ingest routing one fixed earlier.
-            # MIRIX_GRAPH_RERANK=0 restores the unranked traversal-order truncation —
-            # an A/B toggle so "graph without reranker" can be measured explicitly.
-            rerank = None if (
-                settings.graph_version == "v7"
-                or os.environ.get("MIRIX_GRAPH_RERANK") == "0"
-            ) else q_emb
-            ep_arg = episodic_ids if rerank else episodic_ids[:max_items_per_kind]
-            sem_arg = semantic_ids if rerank else semantic_ids[:max_items_per_kind]
-            ep_task = asyncio.create_task(
-                self._fetch_episodic(user_id, ep_arg, q_emb=rerank, limit=max_items_per_kind))
-            sem_task = asyncio.create_task(
-                self._fetch_semantic(user_id, sem_arg, q_emb=rerank, limit=max_items_per_kind))
-            ep_rows, sem_rows = await asyncio.gather(ep_task, sem_task, return_exceptions=True)
-            if isinstance(ep_rows, Exception):
-                logger.warning("v7 episodic PG fetch failed: %s", ep_rows)
-                ep_rows = []
-            if isinstance(sem_rows, Exception):
-                logger.warning("v7 semantic PG fetch failed: %s", sem_rows)
-                sem_rows = []
+        # Single retrieval path for the whole v7 family. The experimental variants
+        # that used to branch here — v7.7 Personalized PageRank (retrieval richer, QA
+        # flat) and v7.2 per-anchor coverage round-robin (neutral) — are archived; see
+        # docs/graph_memory_v7/development_history.md.
+        episodic_ids, semantic_ids = await self._collect_memory_refs(
+            driver, user_id=user_id, anchor_ids=[a.id for a in anchors],
+        )
+        if not episodic_ids and not semantic_ids:
+            return anchors, [], []
+        # v7.1+: rerank the anchor-collected candidates by query full-text
+        # similarity (anchor match = recall, text-cosine = precision) so a
+        # salient-but-wrong same-name entity from another document sinks below
+        # the true answer. Only plain v7 keeps the original anchor-traversal/date
+        # order (the unranked baseline). This used to be `== "v7.1"`, which
+        # silently switched the rerank OFF for every later version (v7.3+, v7.10,
+        # v8): they fell through to a plain traversal-order truncation — the same
+        # stale-exact-match guard bug as the ingest routing one fixed earlier.
+        # MIRIX_GRAPH_RERANK=0 restores the unranked traversal-order truncation —
+        # an A/B toggle so "graph without reranker" can be measured explicitly.
+        rerank = None if (
+            settings.graph_version == "v7"
+            or os.environ.get("MIRIX_GRAPH_RERANK") == "0"
+        ) else q_emb
+        ep_arg = episodic_ids if rerank else episodic_ids[:max_items_per_kind]
+        sem_arg = semantic_ids if rerank else semantic_ids[:max_items_per_kind]
+        ep_task = asyncio.create_task(
+            self._fetch_episodic(user_id, ep_arg, q_emb=rerank, limit=max_items_per_kind))
+        sem_task = asyncio.create_task(
+            self._fetch_semantic(user_id, sem_arg, q_emb=rerank, limit=max_items_per_kind))
+        ep_rows, sem_rows = await asyncio.gather(ep_task, sem_task, return_exceptions=True)
+        if isinstance(ep_rows, Exception):
+            logger.warning("v7 episodic PG fetch failed: %s", ep_rows)
+            ep_rows = []
+        if isinstance(sem_rows, Exception):
+            logger.warning("v7 semantic PG fetch failed: %s", sem_rows)
+            sem_rows = []
 
         logger.info("v7 retrieve_rows: %d anchors, %d ep, %d sem",
                     len(anchors), len(ep_rows), len(sem_rows))
@@ -281,119 +258,9 @@ class V7Retriever:
                 add_unique(sem_ids, rec["support_sem"])
         return ep_ids, sem_ids
 
-    async def _load_ppr_graph(self, driver, user_id: str):
-        """Pull the user's anchor↔memory + anchor→anchor(relation) graph into a
-        networkx DiGraph. Edges are added both ways so PPR mass flows in and out of
-        memory nodes. Returns (graph, {node_id: (memory_id, kind)})."""
-        import networkx as nx
-
-        g = nx.DiGraph()
-        mem: dict[str, tuple[str, str]] = {}
-        async with driver.session(database=settings.neo4j_database) as session:
-            res = await session.run(
-                """
-                MATCH (a:V7Anchor {user_id: $u})-[:V7_APPEARS_IN|V7_DESCRIBED_BY]->(m:V7MemoryRef)
-                RETURN a.id AS a, m.id AS m, m.memory_id AS mid, m.memory_type AS kind
-                """, u=user_id)
-            async for r in res:
-                g.add_edge(r["a"], r["m"], w=1.0)
-                g.add_edge(r["m"], r["a"], w=1.0)
-                if r["mid"]:
-                    mem[r["m"]] = (str(r["mid"]), r["kind"] or "episodic")
-            res2 = await session.run(
-                """
-                MATCH (a:V7Anchor {user_id: $u})-[:V7_RELATION]->(b:V7Anchor {user_id: $u})
-                RETURN a.id AS a, b.id AS b
-                """, u=user_id)
-            async for r in res2:
-                g.add_edge(r["a"], r["b"], w=0.7)
-                g.add_edge(r["b"], r["a"], w=0.7)
-        return g, mem
-
-    async def _retrieve_ppr(
-        self, driver, user_id: str, anchors: list[V7AnchorHit], max_items: int
-    ) -> tuple[list[str], list[str]]:
-        """Personalized PageRank seeded from the matched anchors; rank memory refs
-        by PPR score. Returns (episodic_ids, semantic_ids) in descending PPR order."""
-        import networkx as nx
-
-        g, mem = await self._load_ppr_graph(driver, user_id)
-        pers = {a.id: 1.0 for a in anchors if a.id in g}
-        if not pers or not mem:
-            return [], []
-        try:
-            pr = await asyncio.to_thread(
-                nx.pagerank, g, alpha=0.85, personalization=pers, weight="w", max_iter=200)
-        except Exception as e:  # noqa: BLE001 (e.g. power-iteration non-convergence)
-            logger.warning("v7.7 PPR failed: %s", e)
-            return [], []
-        scored = sorted(
-            ((mem[n][0], mem[n][1], pr.get(n, 0.0)) for n in mem),
-            key=lambda x: -x[2])
-        ep = [mid for mid, kind, _ in scored if kind == "episodic"][:max_items]
-        sem = [mid for mid, kind, _ in scored if kind == "semantic"][:max_items]
-        return ep, sem
-
-    async def _collect_per_anchor(
-        self, driver, *, user_id: str, anchor_ids: list[str]
-    ) -> dict:
-        """Per-anchor direct memory refs (APPEARS_IN episodic / DESCRIBED_BY
-        semantic), keyed by anchor id — for v7.2 coverage round-robin."""
-        if not anchor_ids:
-            return {}
-        cypher = """
-        UNWIND $anchor_ids AS aid
-        MATCH (a:V7Anchor {id: aid, user_id: $user_id})
-        OPTIONAL MATCH (a)-[:V7_APPEARS_IN]->(ep:V7EpisodeRef)
-        OPTIONAL MATCH (a)-[:V7_DESCRIBED_BY]->(sem:V7ConceptRef)
-        RETURN aid AS aid,
-               collect(DISTINCT ep.memory_id) AS ep_ids,
-               collect(DISTINCT sem.memory_id) AS sem_ids
-        """
-        out: dict = {}
-        async with driver.session(database=settings.neo4j_database) as session:
-            result = await session.run(cypher, anchor_ids=anchor_ids, user_id=user_id)
-            async for rec in result:
-                ep = [str(x) for x in (rec["ep_ids"] or []) if x is not None]
-                sem = [str(x) for x in (rec["sem_ids"] or []) if x is not None]
-                out[rec["aid"]] = (ep, sem)
-        return out
-
-    async def _retrieve_coverage(
-        self, driver, user_id: str, anchors: list, q_emb: list[float], max_items: int,
-        n_anchors: int = 8, per_anchor: int = 6,
-    ) -> tuple[list[V7MemoryRow], list[V7MemoryRow]]:
-        """v7.2: rerank each top anchor's own memories by query text-cosine
-        (top `per_anchor`), then round-robin across anchors so every entity the
-        query touches stays represented (multi-hop coverage)."""
-        groups = await self._collect_per_anchor(
-            driver, user_id=user_id, anchor_ids=[a.id for a in anchors])
-        ordered = [(a.id, *groups.get(a.id, ([], []))) for a in anchors]
-        ordered = [g for g in ordered if g[1] or g[2]][:n_anchors]
-        if not ordered:
-            return [], []
-        ep_lists = await asyncio.gather(*[
-            self._fetch_episodic(user_id, g[1], q_emb=q_emb, limit=per_anchor) for g in ordered])
-        sem_lists = await asyncio.gather(*[
-            self._fetch_semantic(user_id, g[2], q_emb=q_emb, limit=per_anchor) for g in ordered])
-        return (self._round_robin(ep_lists, max_items),
-                self._round_robin(sem_lists, max_items))
-
-    @staticmethod
-    def _round_robin(lists: list, max_items: int) -> list:
-        """Interleave per-anchor reranked lists (each anchor's #1, then #2 …) so
-        coverage spans anchors instead of collapsing onto one."""
-        merged: list = []
-        seen: set = set()
-        depth = max((len(l) for l in lists), default=0)
-        for i in range(depth):
-            for l in lists:
-                if i < len(l) and l[i].id not in seen:
-                    merged.append(l[i])
-                    seen.add(l[i].id)
-                    if len(merged) >= max_items:
-                        return merged
-        return merged
+    # (v7.7 PPR and v7.2 coverage retrieval helpers — _load_ppr_graph, _retrieve_ppr,
+    #  _collect_per_anchor, _retrieve_coverage, _round_robin — are archived; see
+    #  docs/graph_memory_v7/development_history.md.)
 
     async def _fetch_episodic(
         self, user_id: str, ids: list[str],
@@ -494,32 +361,14 @@ class V7Retriever:
                     lines.append(f"  {row.details[:500]}")
 
         if ep_rows:
-            if settings.graph_version == "v7.9":
-                # v7.9 role/domain: separate episodic evidence into what the USER
-                # said/did vs what the ASSISTANT said, so a role-specific question
-                # ("what did you recommend" / "what do I prefer") can be answered
-                # from the right side. Role comes from episodic.actor.
-                def _emit(title, rows):
-                    if not rows:
-                        return
-                    lines.append(f"\n### {title}")
-                    for row in rows:
-                        ts = row.timestamp[:10] if row.timestamp else ""
-                        head = f"- [{ts}] {row.summary}" if ts else f"- {row.summary}"
-                        lines.append(head.rstrip())
-                        if row.details and row.details != row.summary:
-                            lines.append(f"  {row.details[:500]}")
-                _emit("What the USER said/did (user-domain)",
-                      [r for r in ep_rows if str(r.extra.get("actor", "")).lower() == "user"])
-                _emit("What the ASSISTANT said (assistant-domain)",
-                      [r for r in ep_rows if str(r.extra.get("actor", "")).lower() != "user"])
-            else:
-                lines.append("\n### Episodic memories (PG flat evidence)")
-                for row in ep_rows:
-                    ts = row.timestamp[:10] if row.timestamp else ""
-                    head = f"- [{ts}] {row.summary}" if ts else f"- {row.summary}"
-                    lines.append(head.rstrip())
-                    if row.details and row.details != row.summary:
-                        lines.append(f"  {row.details[:500]}")
+            # (The v7.9 role-split rendering — user-domain vs assistant-domain
+            # sections — was rejected at QA 34→30 and is archived.)
+            lines.append("\n### Episodic memories (PG flat evidence)")
+            for row in ep_rows:
+                ts = row.timestamp[:10] if row.timestamp else ""
+                head = f"- [{ts}] {row.summary}" if ts else f"- {row.summary}"
+                lines.append(head.rstrip())
+                if row.details and row.details != row.summary:
+                    lines.append(f"  {row.details[:500]}")
 
         return "\n".join(lines)

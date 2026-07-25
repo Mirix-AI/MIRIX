@@ -18,7 +18,6 @@ tightens the ontology:
 from __future__ import annotations
 
 import re
-import json
 import asyncio
 import hashlib
 from dataclasses import dataclass
@@ -181,16 +180,12 @@ class V7GraphManager:
             return {"anchors": 0}
 
         # Only name/entity_type are consumed downstream, so a caller that already
-        # knows the entities (v7.3 extracts them in the same call that produces the
-        # proposition) can pass them and skip the LightRAG round-trip entirely.
+        # knows the entities can pass them and skip the extraction round-trip.
+        # (The v7.3 proposition and v7.4 GLiNER extraction branches are archived
+        # under archive/legacy_graph/ — both were superseded by direction D.)
         relations: list[tuple[str, str, str]] = []
         if entities is None:
-            if settings.graph_version == "v7.4":
-                # v7.4: local GLiNER encoder instead of the per-memory LightRAG LLM
-                # call (~60x faster; drops User/Assistant noise hubs).
-                from mirix.services.gliner_extractor import extract_entities_gliner
-                entities = await extract_entities_gliner(text)
-            elif settings.graph_version in ("v7.6", "v7.8", "v7.10"):
+            if settings.graph_version in ("v7.6", "v7.8", "v7.10"):
                 # v7.6 (direction D): one LLM call -> typed entities + relations.
                 # Keeps abstraction (GLiNER can't) and the relations v7 discarded,
                 # which become anchor->anchor edges below.

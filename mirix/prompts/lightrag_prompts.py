@@ -132,76 +132,9 @@ relation{tuple_delimiter}Caroline{tuple_delimiter}Quantum Optics{tuple_delimiter
 ]
 
 
-# Used by the description merge step in lightrag_merger when an entity or
-# relation accumulates more than FORCE_LLM_SUMMARY_ON_MERGE descriptions.
-SUMMARIZE_DESCRIPTIONS_PROMPT = """---Role---
-You are a Knowledge Graph Specialist, proficient in data curation and synthesis.
-
----Task---
-Your task is to synthesize a list of descriptions of a given {description_type} into a single, comprehensive, and cohesive summary.
-
----Instructions---
-1. Comprehensiveness: The summary must integrate all key information from *every* provided description. Do not omit any important facts or details.
-2. Context & Objectivity:
-  - Write the summary from an objective, third-person perspective.
-  - Explicitly mention the full name of the {description_type} at the beginning of the summary to ensure immediate clarity and context.
-3. Conflict Handling:
-  - In cases of conflicting or inconsistent descriptions, attempt to reconcile them or present both viewpoints with noted uncertainty.
-4. Length Constraint: The summary's total length must not exceed {summary_length} tokens, while still maintaining depth and completeness.
-5. Output: Plain text, no markdown fences, no preamble.
-
----Input---
-{description_type} Name: {description_name}
-
-Description List:
-```
-{description_list}
-```
-
----Output---
-"""
 
 
-KEYWORDS_EXTRACTION_PROMPT = """---Role---
-You are an expert keyword extractor, specializing in analyzing user queries for a Retrieval-Augmented Generation (RAG) system. Your purpose is to identify both high-level and low-level keywords in the user's query that will be used for effective document retrieval.
 
----Goal---
-Given a user query, your task is to extract two distinct types of keywords:
-1. **high_level_keywords**: for overarching concepts or themes, capturing user's core intent, the subject area, or the type of question being asked.
-2. **low_level_keywords**: for specific entities or details, identifying the specific entities, proper nouns, technical jargon, product names, or concrete items.
-
----Instructions & Constraints---
-1. **Output Format**: Your output MUST be a valid JSON object and nothing else. Do not include any explanatory text, markdown code fences (like ```json), or any other text before or after the JSON. It will be parsed directly by a JSON parser.
-2. **Source of Truth**: All keywords must be explicitly derived from the user query, with both high-level and low-level keyword categories are required to contain content.
-3. **Concise & Meaningful**: Keywords should be concise words or meaningful phrases. Prioritize multi-word phrases when they represent a single concept. For example, from "latest financial report of Apple Inc.", you should extract "latest financial report" and "Apple Inc." rather than "latest", "financial", "report", and "Apple".
-4. **Handle Edge Cases**: For queries that are too simple, vague, or nonsensical (e.g., "hello", "ok", "asdfghjkl"), you must return a JSON object with empty lists for both keyword types.
-5. **Language**: All extracted keywords MUST be in {language}. Proper nouns (e.g., personal names, place names, organization names) should be kept in their original language.
-
----Examples---
-Example 1:
-Query: "How does international trade influence global economic stability?"
-Output:
-{{"high_level_keywords": ["International trade", "Global economic stability", "Economic impact"], "low_level_keywords": ["Trade agreements", "Tariffs", "Currency exchange", "Imports", "Exports"]}}
-
-Example 2:
-Query: "Where did Caroline live during her PhD?"
-Output:
-{{"high_level_keywords": ["Past residence", "Academic life"], "low_level_keywords": ["Caroline", "PhD", "Munich"]}}
-
-Example 3:
-Query: "What is the role of education in reducing poverty?"
-Output:
-{{"high_level_keywords": ["Education", "Poverty reduction", "Socioeconomic development"], "low_level_keywords": ["School access", "Literacy rates", "Job training", "Income inequality"]}}
-
----Real Data---
-User Query: {query}
-
----Output---
-"""
-
-
-def render_keywords_extraction_prompt(query: str, language: str = "English") -> str:
-    return KEYWORDS_EXTRACTION_PROMPT.format(query=query, language=language)
 
 
 def render_extraction_system_prompt(
@@ -239,15 +172,3 @@ def render_extraction_user_prompt(
     )
 
 
-def render_summarize_descriptions_prompt(
-    description_type: str,
-    description_name: str,
-    description_list: list[str],
-    summary_length: int = 500,
-) -> str:
-    return SUMMARIZE_DESCRIPTIONS_PROMPT.format(
-        description_type=description_type,
-        description_name=description_name,
-        description_list="\n".join(f"- {d}" for d in description_list),
-        summary_length=summary_length,
-    )

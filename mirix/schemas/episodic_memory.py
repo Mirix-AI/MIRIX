@@ -142,6 +142,3 @@ class EpisodicEventUpdate(MirixBase):
     filter_tags: Optional[Dict[str, Any]] = Field(
         None, description="Custom filter tags for filtering and categorization"
     )
-    source_refs: Optional[List[Dict[str, Any]]] = Field(
-        None, description="Replace the event's source_refs list (conflict-resolution path)."
-    )

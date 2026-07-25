@@ -106,7 +106,7 @@ re-ingest), and CoN is the only method with a published LongMemEval result. **St
   persona subgraph) — expose the graph as tools the answerer calls, not context it ignores.
 
 ### Commits
-v7.4, v7.6, v7.7 and v7.8 all land in `58fa119` (the extractor-line commit) — the
+v7.4, v7.6, v7.7 and v7.8 all land in `pre-squash tag` (the extractor-line commit) — the
 branch history was consolidated into six thematic commits, so a version no longer
 owns a commit one-to-one. The original per-version commits (`73c5207` v7.4,
 `7fb68fc` v7.6, `dcefe3e` v7.7, `a04de8f` v7.8) are preserved at the tag

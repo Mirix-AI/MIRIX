@@ -610,24 +610,15 @@ class EpisodicMemoryManager:
             # already completed.
             if settings.enable_graph_memory:
                 try:
-                    if settings.graph_version == "v6":
-                        from mirix.services.graph_memory_manager_v6 import V6GraphManager
-
-                        await V6GraphManager().process_chunk(
-                            source_kind="episodic",
-                            source_id=event.id,
-                            text=(summary or "") + ("\n" + details if details else ""),
-                            agent_state=agent_state,
-                            organization_id=organization_id,
-                            user_id=user_id or "unknown",
-                        )
                     # Prefix match, not a version list: the old explicit tuple
                     # ("v7","v7.1","v7.2","v7.3","v8") silently drifted six versions out of
                     # date, so a server configured for v7.4+ fell through to the legacy
-                    # branch below and built the OLD schema. Measured on the eval store: an
+                    # branch and built the OLD schema. Measured on the eval store: an
                     # auto_dream cycle under v7.10 created 1,101 EpisodicEntity + 611
                     # SemanticEntity legacy nodes and left 185 memories with no V7 ref.
-                    elif settings.graph_version.startswith("v7") or settings.graph_version == "v8":
+                    # The v5/v6 builders that branch dispatched to are archived under
+                    # archive/legacy_graph/; unrecognised versions now skip graph writes.
+                    if settings.graph_version.startswith("v7") or settings.graph_version == "v8":
                         from mirix.services.graph_memory_manager_v7 import V7GraphManager
 
                         source_meta = (
@@ -653,17 +644,9 @@ class EpisodicMemoryManager:
                             role=event.actor,
                         )
                     else:
-                        from mirix.services.episodic_graph_manager import EpisodicGraphManager
-
-                        await EpisodicGraphManager().process_episode(
-                            episode_id=event.id,
-                            summary=summary,
-                            details=details,
-                            occurred_at=timestamp,
-                            agent_state=agent_state,
-                            organization_id=organization_id,
-                            user_id=user_id or "unknown",
-                        )
+                        logger.warning(
+                            "Episodic graph write skipped: graph_version=%r has no live "
+                            "builder (v5/v6 are archived)", settings.graph_version)
                 except Exception as graph_err:
                     logger.warning("Episodic graph write failed (non-fatal): %s", graph_err)
 

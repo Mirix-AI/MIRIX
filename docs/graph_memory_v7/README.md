@@ -12,10 +12,16 @@ it; v5/v6 labels and previous results remain comparable.
 - `docs/graph_memory_v6/README.md` - v6 design, LongMem-S run, judge result,
   and v6 graph visualization links.
 - `docs/graph_memory_v6/visualizations/index.html` - sampled v6 graph views.
-- [`10chunk_ingest_analysis.md`](10chunk_ingest_analysis.md) - controlled
-  10-chunk LongMem-S ingest: size scaling vs the full build, a broken-ingest
-  pitfall (synchronous `add_chunk`, not an async queue), and the real graph shape
-  (degree distribution, hubs, clusters).
+- [`development_history.md`](development_history.md) - the research arc from the
+  v7 baseline to the current system: failed branches, the measurements that
+  killed them, and the meta-lessons. Start here for "why is it like this".
+- [`version_ledger.md`](version_ledger.md) - per-version table with QA numbers.
+- [`archive/`](archive/README.md) - superseded design-era documents (10-chunk
+  study, extractor direction D memo, v7.4-v7.8 summary, hypergraph build log).
+- [`locomo_dream_ablation.md`](locomo_dream_ablation.md) - LoCoMo conv-26
+  six-arm ablation (graph / reranker / consolidation): why the dream loses
+  facts (rewrite + hard delete), the union-coverage gate that makes it
+  lossless at break-even QA, and the graph-as-insurance interaction.
 
 ## Principle
 
