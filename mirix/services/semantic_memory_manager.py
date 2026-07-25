@@ -1087,6 +1087,11 @@ class SemanticMemoryManager:
                             agent_state=agent_state,
                             organization_id=organization_id,
                             user_id=user_id or "unknown",
+                            # Semantic knowledge is distilled from the whole dialogue,
+                            # so its role provenance is "shared" (same convention as
+                            # the rebuild script). The live hook previously passed
+                            # nothing, losing role attribution on organic builds.
+                            role="shared",
                         )
                     else:
                         from mirix.services.semantic_graph_manager import SemanticGraphManager

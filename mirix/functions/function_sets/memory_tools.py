@@ -26,6 +26,11 @@ from mirix.schemas.semantic_memory import SemanticMemoryItemBase
 
 logger = get_logger(__name__)
 
+# NB: no module-level helper functions in this file — the tool schema generator
+# scans every function defined here and requires tool-style type annotations.
+# The merge-coverage gate helpers live in mirix.services.merge_coverage and are
+# imported locally inside the tool bodies.
+
 
 async def core_memory_append(
     self: "Agent", blocks_in_memory: "Memory", label: str, content: str
@@ -246,9 +251,23 @@ async def episodic_memory_replace(self: "Agent", event_ids: List[str], new_items
     if self.actor.organization_id is None:
         raise ValueError("Organization ID is required to access episodic memory")
 
+    old_texts = []
     for event_id in event_ids:
         # It will raise an error if the event_id is not found in the episodic memory.
-        await self.episodic_memory_manager.get_episodic_memory_by_id(event_id, user=self.user)
+        ev = await self.episodic_memory_manager.get_episodic_memory_by_id(event_id, user=self.user)
+        if ev is not None:
+            old_texts.append(f"{ev.summary or ''}\n{ev.details or ''}")
+
+    # Union-coverage gate: a consolidation merge must not destroy specifics.
+    # Raises (rejecting the whole call, BEFORE any deletion) if the replacement
+    # text drops a number/date/name present in the originals.
+    from mirix.services.merge_coverage import enforce_merge_coverage, merge_item_text
+
+    enforce_merge_coverage(
+        self, old_texts,
+        [merge_item_text(ni, ("summary", "details")) for ni in new_items],
+        "episodic_memory_replace",
+    )
 
     for event_id in event_ids:
         try:
@@ -719,6 +738,25 @@ async def semantic_memory_update(
     client_id = getattr(self, "client_id", None)
     user_id = getattr(self, "user_id", None)
 
+    # Union-coverage gate (see episodic_memory_replace): fetch the old items'
+    # text and reject the call BEFORE any deletion if the replacement drops
+    # specifics. This function previously deleted without ever reading the old
+    # rows, so nothing could notice a lossy rewrite.
+    old_texts = []
+    for old_id in old_semantic_item_ids:
+        it = await self.semantic_memory_manager.get_semantic_item_by_id(
+            old_id, user=self.user, timezone_str="UTC"
+        )
+        if it is not None:
+            old_texts.append(f"{it.name or ''}\n{it.summary or ''}\n{it.details or ''}")
+    from mirix.services.merge_coverage import enforce_merge_coverage, merge_item_text
+
+    enforce_merge_coverage(
+        self, old_texts,
+        [merge_item_text(ni, ("name", "summary", "details")) for ni in new_items],
+        "semantic_memory_update",
+    )
+
     for old_id in old_semantic_item_ids:
         try:
             await self.semantic_memory_manager.delete_semantic_item_by_id(
@@ -866,6 +904,24 @@ async def knowledge_vault_update(self: "Agent", old_ids: List[str], new_items: L
     use_cache = getattr(self, "use_cache", True)
     client_id = getattr(self, "client_id", None)
     user_id = getattr(self, "user_id", None)
+
+    # Union-coverage gate (see episodic_memory_replace).
+    kv_old_texts = []
+    for old_id in old_ids:
+        it = await self.knowledge_vault_manager.get_item_by_id(
+            old_id, user=self.user, timezone_str="UTC"
+        )
+        if it is not None:
+            kv_old_texts.append(
+                f"{getattr(it, 'caption', '') or ''}\n{getattr(it, 'secret_value', '') or ''}"
+            )
+    from mirix.services.merge_coverage import enforce_merge_coverage, merge_item_text
+
+    enforce_merge_coverage(
+        self, kv_old_texts,
+        [merge_item_text(ni, ("caption", "secret_value")) for ni in new_items],
+        "knowledge_vault_update",
+    )
 
     for old_id in old_ids:
         try:

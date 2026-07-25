@@ -44,6 +44,10 @@ _LABEL_TO_TYPE = {
 _NOISE = {
     "user", "assistant", "you", "i", "me", "we", "us", "they", "them",
     "he", "she", "it", "my", "your", "our", "their",
+    # Plurals slipped this filter (a "Users" anchor reached degree 1016), and this
+    # set never had the singular article forms triple_extractor always had.
+    "users", "assistants", "the users", "the assistants",
+    "the user", "the assistant",
 }
 
 

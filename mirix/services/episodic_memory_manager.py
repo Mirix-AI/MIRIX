@@ -646,6 +646,11 @@ class EpisodicMemoryManager:
                             agent_state=agent_state,
                             organization_id=organization_id,
                             user_id=user_id or "unknown",
+                            # Role provenance for the hypergraph (fact.role +
+                            # per-citation cite.role). Without this the organically
+                            # built graph loses all user/assistant attribution — the
+                            # offline rebuild script passed it, the live hook didn't.
+                            role=event.actor,
                         )
                     else:
                         from mirix.services.episodic_graph_manager import EpisodicGraphManager

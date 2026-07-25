@@ -241,7 +241,43 @@ def main() -> None:
         # Reset server-side token counter so build_tokens reflects only this sample's ingest
         _reset_tokens()
 
+        # Interleaved consolidation (MIRIX_DREAM_EVERY_N_CHUNKS=N): fire one
+        # auto_dream cycle after every Nth ingested chunk, plus one final cycle
+        # after the last chunk if the total is not a multiple of N. This models
+        # the ONLINE periodic-reconsolidation design (consolidate while
+        # ingesting), not a one-shot post-hoc dream on a finished store.
+        dream_every = int(os.environ.get("MIRIX_DREAM_EVERY_N_CHUNKS", "0") or 0)
+
+        def _fire_dream(after_idx: int) -> None:
+            dream_key = f"dream_{after_idx}"
+            if dream_key in sample_result["responses"]:
+                return
+            start = time.perf_counter()
+            try:
+                r = httpx.post(
+                    f"{server_base}/memory/auto_dream",
+                    params={"user_id": sample_id},
+                    headers={"x-client-id": mirix_client_id, "x-org-id": mirix_org_id},
+                    json={"mode": "experience"},
+                    timeout=3000,
+                )
+                payload = r.json()
+            except Exception as exc:  # noqa: BLE001
+                payload = {"error": str(exc)}
+            elapsed = time.perf_counter() - start
+            print(f"[main_eval] auto_dream after chunk {after_idx}: "
+                  f"{elapsed:.0f}s {str(payload)[:160]}", flush=True)
+            sample_result["responses"][dream_key] = {
+                "type": "auto_dream",
+                "chunk_index": after_idx,
+                "question_index": None,
+                "response": payload,
+                "elapsed_seconds": elapsed,
+            }
+            save_sample_result(sample_path, sample_result)
+
         conversation = item.get("conversation", {})
+        total_chunks = sum(1 for _ in iter_sessions(conversation))
         for idx, session in enumerate(iter_sessions(conversation), start=1):
             idx_key = str(idx)
             if idx_key in sample_result["responses"]:
@@ -266,6 +302,13 @@ def main() -> None:
             }
             sample_result["timings"]["add_chunk"][idx_key] = elapsed
             save_sample_result(sample_path, sample_result)
+
+            if dream_every and idx % dream_every == 0:
+                _fire_dream(idx)
+
+        if dream_every and total_chunks % dream_every != 0:
+            # final consolidation so the tail chunks are dreamed before QA
+            _fire_dream(total_chunks)
 
         # Snapshot build tokens (everything since reset, before any QA runs)
         build_stats = _snapshot_tokens()

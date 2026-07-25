@@ -38,6 +38,10 @@ ENTITY_TYPES = (
 _NOISE = {
     "user", "assistant", "you", "i", "me", "we", "us", "they", "them",
     "he", "she", "it", "my", "your", "our", "their", "the user", "the assistant",
+    # Plurals slipped this filter: a lone "Users" anchor reached degree 1016 —
+    # 7.4x the biggest real hub — built purely from role-noise predicates
+    # ("interested in", "inquire about", "plan"). Same dialogue role, same fate.
+    "users", "assistants", "the users", "the assistants",
 }
 
 TRIPLE_PROMPT = """Extract knowledge-graph triples from the text: every meaningful (subject, relation, object) fact.

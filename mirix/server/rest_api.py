@@ -2989,7 +2989,13 @@ async def _graph_routed_search_results(query, user_id, agent_state, memory_type,
     When graph memory is enabled, route the agent's episodic/semantic search
     THROUGH the graph (anchor vector search -> memory refs) and fetch only those
     PG rows, so the agent cannot bypass the graph straight to the DB. Returns
-    formatted result dicts (episodic + semantic). Empty list falls back to flat.
+    formatted result dicts (episodic + semantic).
+
+    NB: this is a HARD gate — the caller returns whatever comes back, including an
+    empty list (no driver / no anchors / no refs), and the flat pgvector path never
+    runs. That is the point of the A/B ("the agent cannot bypass the graph"); an
+    earlier version of this docstring wrongly claimed an empty result falls back
+    to flat.
     """
     from mirix.database.neo4j_client import get_neo4j_driver
     from mirix.services.graph_retriever_v7 import V7Retriever
@@ -3009,14 +3015,19 @@ async def _graph_routed_search_results(query, user_id, agent_state, memory_type,
         driver, user_id=user_id, anchor_ids=[a.id for a in anchors]
     )
     results = []
+    # Pass q_emb so the candidates are RANKED by query similarity before the limit is
+    # applied (the SQL orders by cosine, then LIMIT). The previous ep_ids[:limit]
+    # pre-slice truncated in Cypher collect() order — when a big anchor matched, the
+    # first `limit` ids were whatever that anchor collected first, regardless of
+    # relevance; the measured rerank gain never applied to this delivery path.
     if memory_type in ("all", "episodic"):
-        for x in await r._fetch_episodic(user_id, ep_ids[:limit]):
+        for x in await r._fetch_episodic(user_id, ep_ids, q_emb=embs[0], limit=limit):
             results.append({
                 "memory_type": "episodic", "id": x.id,
                 "occurred_at": x.timestamp, "summary": x.summary, "details": x.details,
             })
     if memory_type in ("all", "semantic"):
-        for x in await r._fetch_semantic(user_id, sem_ids[:limit]):
+        for x in await r._fetch_semantic(user_id, sem_ids, q_emb=embs[0], limit=limit):
             results.append({
                 "memory_type": "semantic", "id": x.id,
                 "name": x.extra.get("name", ""), "summary": x.summary, "details": x.details,
@@ -3196,7 +3207,7 @@ async def search_memory(
     if (
         os.getenv("MIRIX_GRAPH_ROUTED_SEARCH") == "1"
         and settings.enable_graph_memory
-        and settings.graph_version in ("v7", "v7.1", "v7.2", "v7.3", "v8")
+        and (settings.graph_version.startswith("v7") or settings.graph_version == "v8")
         and search_method == "embedding"
         and query
         and memory_type in ("all", "episodic", "semantic")

@@ -69,7 +69,10 @@ class GraphRetrieverDispatcher:
                 query=query, user_id=user_id, agent_state=agent_state,
                 top_k=item_top_k,
             )
-        if settings.graph_version in ("v7", "v7.1", "v7.2", "v7.3", "v8"):
+        # startswith, not an exact tuple: a stale tuple here stranded v7.4-v7.10 on the
+        # v5 dual-graph pipeline below (keyword-LLM call + v5 node labels), which on a
+        # v7-built graph burns an LLM call and returns nothing.
+        if settings.graph_version.startswith("v7") or settings.graph_version == "v8":
             from mirix.services.graph_retriever_v7 import V7Retriever
 
             return await V7Retriever().retrieve(

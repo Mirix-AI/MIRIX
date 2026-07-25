@@ -115,11 +115,20 @@ class V7Retriever:
             )
             if not episodic_ids and not semantic_ids:
                 return anchors, [], []
-            # v7.1: rerank the anchor-collected candidates by query full-text
+            # v7.1+: rerank the anchor-collected candidates by query full-text
             # similarity (anchor match = recall, text-cosine = precision) so a
             # salient-but-wrong same-name entity from another document sinks below
-            # the true answer. v7 keeps the original anchor-traversal/date order.
-            rerank = q_emb if settings.graph_version == "v7.1" else None
+            # the true answer. Only plain v7 keeps the original anchor-traversal/date
+            # order (the unranked baseline). This used to be `== "v7.1"`, which
+            # silently switched the rerank OFF for every later version (v7.3+, v7.10,
+            # v8): they fell through to a plain traversal-order truncation — the same
+            # stale-exact-match guard bug as the ingest routing one fixed earlier.
+            # MIRIX_GRAPH_RERANK=0 restores the unranked traversal-order truncation —
+            # an A/B toggle so "graph without reranker" can be measured explicitly.
+            rerank = None if (
+                settings.graph_version == "v7"
+                or os.environ.get("MIRIX_GRAPH_RERANK") == "0"
+            ) else q_emb
             ep_arg = episodic_ids if rerank else episodic_ids[:max_items_per_kind]
             sem_arg = semantic_ids if rerank else semantic_ids[:max_items_per_kind]
             ep_task = asyncio.create_task(

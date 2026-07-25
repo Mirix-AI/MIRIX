@@ -98,6 +98,16 @@ def anchor_canonical_key(name: str) -> str:
     return " ".join(sorted(tokens))
 
 
+# Canonical keys of dialogue-role names that must never become anchors — checked in
+# _select_anchors so it covers EVERY extractor path (LightRAG has no _NOISE filter of
+# its own). anchor_canonical_key folds case, articles and plurals, so "user" here
+# blocks "User", "Users", "The User", "the users", ... in one entry.
+# NB: entries must be in the key's own form — canonical keys are SORTED token sets,
+# so the combined role is "assistant user" (never "user assistant"), and possessives
+# leave a stray "s" token ("User's" -> "s user") because the bare s survives
+# _singularize's length guard.
+_ROLE_NOISE_KEYS = {"user", "assistant", "assistant user", "s user", "assistant s"}
+
 _PRED_COPULA = re.compile(r"^(is|are|was|were|be|been|being)\s+", re.I)
 
 
@@ -153,7 +163,13 @@ class V7GraphManager:
         entities: Optional[list[ExtractedEntity]] = None,
         role: Optional[str] = None,
     ) -> dict[str, Any]:
-        if not settings.enable_graph_memory or settings.graph_version not in ("v7", "v7.1", "v7.2", "v7.3", "v7.4", "v7.6", "v7.7", "v7.8", "v7.9", "v7.10", "v8"):
+        # startswith, not an exact tuple: the old tuple silently skipped ingest for any
+        # version it didn't list (it already omitted v7.5, and every new v7.x had to
+        # remember to add itself) while the retrieval side accepts startswith("v7") —
+        # a version outside the tuple would retrieve against a graph nothing ingests to.
+        if not settings.enable_graph_memory or not (
+            settings.graph_version.startswith("v7") or settings.graph_version == "v8"
+        ):
             return {"skipped": "disabled"}
 
         from mirix.database.neo4j_client import get_neo4j_driver
@@ -271,6 +287,14 @@ class V7GraphManager:
             name = self._clean_name(entity.name)
             nl = anchor_canonical_key(name)
             if not name or not nl:
+                continue
+            # Dialogue roles must never anchor, regardless of which extractor produced
+            # them. The per-extractor _NOISE sets are surface-form blocklists and keep
+            # leaking variants ("Users" reached degree 1016 through triple extraction;
+            # LightRAG has no filter at all, so plain v7/v8 could mint the same hub).
+            # Gating on the canonical key here — the funnel every path goes through —
+            # is case/article/plural-insensitive by construction ("The Users" -> "user").
+            if nl in _ROLE_NOISE_KEYS:
                 continue
             score = self._specificity_score(name, entity.entity_type or "Other")
             if score <= 0:
@@ -721,6 +745,26 @@ class V7GraphManager:
             rec = await res.single()
             stats["duplicate_facts_merged"] = int(rec["n"]) if rec else 0
 
+            # 3b. zombie facts: a fact whose every V7_FACT_FROM citation died (its
+            #    source memories were consolidated away) is unverifiable residue — in
+            #    v7.10 a fact's existence is justified by its citations. Without this
+            #    sweep the graph GROWS through consolidation instead of shrinking:
+            #    merged memories re-extract new facts while the old ones linger
+            #    (measured on LoCoMo conv-26: 1583 facts post-dream vs 1249 no-dream,
+            #    +27% for a 2% smaller store). Runs before the dead-anchor pass so
+            #    anchors orphaned by this deletion are pruned in the same cycle.
+            res = await session.run(
+                """
+                MATCH (f:V7Fact {user_id: $uid})
+                WHERE NOT (f)-[:V7_FACT_FROM]->()
+                DETACH DELETE f
+                RETURN count(*) AS n
+                """,
+                uid=user_id,
+            )
+            rec = await res.single()
+            stats["zombie_facts_removed"] = int(rec["n"]) if rec else 0
+
             # 4. dead-weight anchors: no fact touches them AND they link <=1 memory,
             #    so they can neither answer nor bridge
             res = await session.run(
@@ -736,6 +780,53 @@ class V7GraphManager:
             )
             rec = await res.single()
             stats["dead_anchors_pruned"] = int(rec["n"]) if rec else 0
+
+            # 5. role-noise anchors: dialogue roles that slipped past older extractor
+            #    filters ("Users" once reached degree 1016 with 504 role-noise facts —
+            #    10.5% of all facts). The _select_anchors gate stops NEW ones, but on a
+            #    graph built before that fix the existing anchor keeps accreting edges
+            #    (relation/fact endpoints MATCH it by canonical name). Purge it and the
+            #    facts that cite it as subject/object — those facts are role noise by
+            #    construction ("Users interested in X" carries no entity identity).
+            res = await session.run(
+                """
+                MATCH (a:V7Anchor {user_id: $uid})
+                WHERE a.name_lower IN $noise
+                OPTIONAL MATCH (f:V7Fact)-[:V7_FACT_SUBJECT|V7_FACT_OBJECT]->(a)
+                WITH a, collect(DISTINCT f) AS facts
+                FOREACH (f IN facts | DETACH DELETE f)
+                DETACH DELETE a
+                RETURN count(a) AS anchors, sum(size(facts)) AS facts
+                """,
+                uid=user_id, noise=sorted(_ROLE_NOISE_KEYS),
+            )
+            rec = await res.single()
+            stats["role_noise_anchors_purged"] = int(rec["anchors"] or 0) if rec else 0
+            stats["role_noise_facts_purged"] = int(rec["facts"] or 0) if rec else 0
+
+            # 6. temporal-chain repair: consolidation deletes episode refs, and the
+            #    V7_NEXT_MEMORY edges through them die with the DETACH — leaving the
+            #    chain fragmented (measured: 52 edges over 100 refs post-dream where a
+            #    full chain has n-1 = 99). Rebuild it from ref timestamps, per user.
+            #    Idempotent; same construction the ingest path produces incrementally.
+            await session.run(
+                "MATCH (e:V7EpisodeRef {user_id: $uid})-[r:V7_NEXT_MEMORY]->() DELETE r",
+                uid=user_id,
+            )
+            res = await session.run(
+                """
+                MATCH (e:V7EpisodeRef {user_id: $uid}) WHERE e.timestamp IS NOT NULL
+                WITH e ORDER BY e.timestamp ASC
+                WITH collect(e) AS refs
+                UNWIND range(0, size(refs) - 2) AS i
+                WITH refs[i] AS prev, refs[i + 1] AS cur
+                MERGE (prev)-[:V7_NEXT_MEMORY]->(cur)
+                RETURN count(*) AS n
+                """,
+                uid=user_id,
+            )
+            rec = await res.single()
+            stats["temporal_chain_edges"] = int(rec["n"]) if rec else 0
 
         logger.info("graph maintenance for user=%s: %s", user_id, stats)
         return stats
