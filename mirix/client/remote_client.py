@@ -1467,6 +1467,15 @@ class MirixClient(AbstractClient):
 
         return await self._request("POST", "/memory/retrieve/conversation", json=request_data, headers=headers)
 
+    async def compact_graph(self, user_id: str, headers: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+        """v8 finalize: prune singleton anchors after ingestion.
+
+        No-op for other graph versions (server returns ``{"skipped": ...}``).
+        """
+        return await self._request(
+            "POST", "/memory/graph/compact", json={"user_id": user_id}, headers=headers
+        )
+
     async def retrieve_with_topic(
         self,
         user_id: str,

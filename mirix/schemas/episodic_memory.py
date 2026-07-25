@@ -87,6 +87,13 @@ class EpisodicEvent(EpisodicEventBase):
         ],
     )
 
+    # Provenance pointers for this event. Same shape as the equivalent field
+    # on SemanticMemoryItem; see `mirix.orm.episodic_memory`.
+    source_refs: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="Provenance pointers (turn_id / chunk_id / serial / occurred_at).",
+    )
+
     # need to validate both details_embedding and summary_embedding to ensure they are the same size
     @field_validator("details_embedding", "summary_embedding")
     @classmethod
@@ -134,4 +141,7 @@ class EpisodicEventUpdate(MirixBase):
     )
     filter_tags: Optional[Dict[str, Any]] = Field(
         None, description="Custom filter tags for filtering and categorization"
+    )
+    source_refs: Optional[List[Dict[str, Any]]] = Field(
+        None, description="Replace the event's source_refs list (conflict-resolution path)."
     )
