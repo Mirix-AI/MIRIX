@@ -367,11 +367,13 @@ class QueueWorker:
             user_id = message.user_id if message.HasField("user_id") else None
 
             async def _resolve_actor_and_user():
-                actor = await server.client_manager.get_client_by_id(client_id)
-                if not actor:
-                    from mirix.errors import QueueMessageRejectedError
-                    from mirix.observability.skip_spans import emit_refused_to_process_span
+                from mirix.errors import QueueMessageRejectedError
+                from mirix.observability.skip_spans import emit_refused_to_process_span
+                from mirix.orm.errors import NoResultFound
 
+                try:
+                    actor = await server.client_manager.get_client_by_id(client_id)
+                except NoResultFound:
                     # A client_id that doesn't resolve is deterministic
                     # (retrying the same lookup won't make the row appear) —
                     # refuse and dead-letter immediately instead of defaulting

@@ -118,6 +118,15 @@ def _mock_server_with_client(client):
     return mock_server
 
 
+def _mock_server_with_unregistered_client():
+    """Set up mock server whose client_manager raises NoResultFound (unregistered client)."""
+    from mirix.orm.errors import NoResultFound
+
+    mock_server = MagicMock()
+    mock_server.client_manager.get_client_by_id = AsyncMock(side_effect=NoResultFound("Client not found"))
+    return mock_server
+
+
 class TestGetMemorySourceRoute:
 
     @pytest.mark.asyncio
@@ -226,6 +235,22 @@ class TestGetMemorySourceRoute:
 
                     assert exc_info.value.status_code == 404
 
+    @pytest.mark.asyncio
+    async def test_404_when_client_not_registered(self):
+        """An unregistered X-Client-UUID raises 404, not an unhandled NoResultFound."""
+        from mirix.server.rest_api import get_memory_source
+
+        with patch(
+            "mirix.server.rest_api.get_client_and_org", new_callable=AsyncMock, return_value=("client-missing", "org-1")
+        ):
+            with patch("mirix.server.rest_api.get_server", return_value=_mock_server_with_unregistered_client()):
+                from fastapi import HTTPException as FastHTTPException
+
+                with pytest.raises(FastHTTPException) as exc_info:
+                    await get_memory_source(source_id=SRC_ID_1, x_client_id="client-missing")
+
+                assert exc_info.value.status_code == 404
+
 
 class TestGetMemorySourceMessagesRoute:
 
@@ -278,3 +303,19 @@ class TestGetMemorySourceMessagesRoute:
                         await get_memory_source_messages(source_id=SRC_ID_1, x_client_id="client-1")
 
                     assert exc_info.value.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_404_when_client_not_registered(self):
+        """An unregistered X-Client-UUID raises 404, not an unhandled NoResultFound."""
+        from mirix.server.rest_api import get_memory_source_messages
+
+        with patch(
+            "mirix.server.rest_api.get_client_and_org", new_callable=AsyncMock, return_value=("client-missing", "org-1")
+        ):
+            with patch("mirix.server.rest_api.get_server", return_value=_mock_server_with_unregistered_client()):
+                from fastapi import HTTPException as FastHTTPException
+
+                with pytest.raises(FastHTTPException) as exc_info:
+                    await get_memory_source_messages(source_id=SRC_ID_1, x_client_id="client-missing")
+
+                assert exc_info.value.status_code == 404

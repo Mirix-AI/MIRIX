@@ -13,6 +13,7 @@ import pytest
 from google.protobuf.struct_pb2 import Struct
 
 from mirix.errors import QueueMessageRejectedError
+from mirix.orm.errors import NoResultFound
 from mirix.queue.message_pb2 import QueueMessage
 from mirix.queue.worker import QueueWorker
 
@@ -88,6 +89,27 @@ async def test_worker_rejects_client_without_write_scope():
     worker, send_spy, user = _make_worker(write_scope=None)
 
     with pytest.raises(QueueMessageRejectedError, match="no write_scope"):
+        await _run(worker, user, _build_message())
+
+    send_spy.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_worker_rejects_unresolvable_client_id():
+    """client_manager.get_client_by_id raises NoResultFound (never returns None)
+    on a missing client. The worker must catch that and dead-letter via
+    QueueMessageRejectedError, not let the raw NoResultFound propagate and get
+    misclassified as a retryable/transient failure."""
+    user = SimpleNamespace(id="user-1", organization_id="org-1")
+
+    server = MagicMock()
+    server.client_manager.get_client_by_id = AsyncMock(side_effect=NoResultFound("Client not found"))
+    send_spy = AsyncMock(return_value=MagicMock())
+    server.send_messages = send_spy
+
+    worker = QueueWorker(queue=MagicMock(), server=server)
+
+    with pytest.raises(QueueMessageRejectedError, match="not found in database"):
         await _run(worker, user, _build_message())
 
     send_spy.assert_not_called()
