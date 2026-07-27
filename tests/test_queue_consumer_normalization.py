@@ -195,11 +195,12 @@ async def test_worker_unified_messages_field_flattens_and_persists_per_turn():
     server.send_messages.assert_awaited_once()
     kwargs = server.send_messages.call_args.kwargs
 
-    # Packed agent input: one MessageCreate with [USER]/[ASSISTANT] markers.
+    # Packed agent input: one MessageCreate with the whole transcript coalesced
+    # into a single text block ([USER]/[ASSISTANT] markers inline).
     input_messages = kwargs["input_messages"]
     assert len(input_messages) == 1
-    texts = [part.text for part in input_messages[0].content]
-    assert texts == ["[USER]", "hi there", "[ASSISTANT]", "hello!"]
+    assert len(input_messages[0].content) == 1
+    assert input_messages[0].content[0].text == "[USER]\nhi there\n[ASSISTANT]\nhello!"
 
     # Per-turn provenance dicts with role + external_message_id intact.
     source_messages = kwargs["source_messages"]

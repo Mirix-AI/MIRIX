@@ -1918,25 +1918,42 @@ def flatten_messages_for_agent(messages: List[dict]) -> List[MessageCreate]:
     for provenance (see worker._convert_proto_source_message_to_dict).
 
     Each turn becomes a `[USER]`/`[ASSISTANT]` text marker followed by its
-    content — matching the exact behavior of the old pre-queue flattening in
-    rest_api.py, including its "role == user ? [USER] : [ASSISTANT]" ternary
-    (any non-"user" role, e.g. "system", is marked [ASSISTANT]). Preserved
-    as-is here rather than "fixed" so this refactor doesn't also change
-    save-path semantics for existing traffic.
+    content, keeping the old pre-queue flattening's
+    "role == user ? [USER] : [ASSISTANT]" ternary (any non-"user" role, e.g.
+    "system", is marked [ASSISTANT]). All consecutive text (markers and turn
+    content) is joined with "\n" into the minimal number of text blocks — a
+    single block when every turn is textual — so downstream per-block scanners
+    see one content block while the model-visible text stays identical to the
+    old packed wire format ("\n"-joined, as the queue producer used to emit).
+    Non-text content items pass through unchanged as their own parts, flushing
+    any buffered text before them.
     """
     if not messages:
         return []
 
-    new_message: List[dict] = []
+    parts: List[dict] = []
+    text_buffer: List[str] = []
+
+    def _flush() -> None:
+        if text_buffer:
+            parts.append({"type": "text", "text": "\n".join(text_buffer)})
+            text_buffer.clear()
+
     for msg in messages:
-        new_message.append({"type": "text", "text": "[USER]" if msg.get("role") == "user" else "[ASSISTANT]"})
+        text_buffer.append("[USER]" if msg.get("role") == "user" else "[ASSISTANT]")
 
         content = msg.get("content", "")
         if isinstance(content, str):
-            new_message.append({"type": "text", "text": content})
+            text_buffer.append(content)
         elif isinstance(content, list):
-            new_message.extend(content)
+            for item in content:
+                if isinstance(item, dict) and item.get("type") == "text":
+                    text_buffer.append(item.get("text", ""))
+                else:
+                    _flush()
+                    parts.append(item)
         else:
             raise ValueError(f"Invalid content type: {type(content)}")
 
-    return convert_message_to_mirix_message(new_message)
+    _flush()
+    return convert_message_to_mirix_message(parts)
