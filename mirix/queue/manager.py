@@ -80,7 +80,8 @@ class QueueManager:
         self._queue = self._create_queue()
         logger.info(f"Queue created: type={type(self._queue).__name__}")
 
-        await self._queue.start()
+        producer_only = not config.AUTO_START_WORKERS and config.QUEUE_TYPE == "kafka"
+        await self._queue.start(producer_only=producer_only)
 
         self._workers = []
 

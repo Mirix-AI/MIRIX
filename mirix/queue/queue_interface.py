@@ -15,11 +15,15 @@ logger = logging.getLogger(__name__)
 class QueueInterface(ABC):
     """Abstract base class for async queue implementations"""
 
-    async def start(self) -> None:
+    async def start(self, producer_only: bool = False) -> None:
         """
         Start the queue (connect to brokers, etc.).
         No-op for in-memory queues; required for external systems like Kafka.
         Called by QueueManager after construction.
+
+        Args:
+            producer_only: If True, only start the producer side (skip consumer).
+                          Ignored by in-memory queues.
         """
 
     @abstractmethod

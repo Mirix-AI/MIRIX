@@ -91,18 +91,20 @@ class KafkaQueue(QueueInterface):
             value_serializer=value_serializer,
         )
 
-        self.consumer = AIOKafkaConsumer(
-            topic,
-            bootstrap_servers=bootstrap_servers,
-            group_id=group_id,
-            security_protocol=security_protocol.upper(),
-            ssl_context=ssl_context,
-            value_deserializer=value_deserializer,
-            auto_offset_reset=auto_offset_reset,
-            enable_auto_commit=True,
-            max_poll_interval_ms=max_poll_interval_ms,
-            session_timeout_ms=session_timeout_ms,
-        )
+        self._consumer_config = {
+            "topic": topic,
+            "bootstrap_servers": bootstrap_servers,
+            "group_id": group_id,
+            "security_protocol": security_protocol.upper(),
+            "ssl_context": ssl_context,
+            "value_deserializer": value_deserializer,
+            "auto_offset_reset": auto_offset_reset,
+            "enable_auto_commit": True,
+            "max_poll_interval_ms": max_poll_interval_ms,
+            "session_timeout_ms": session_timeout_ms,
+        }
+        self.consumer = None
+        self._consumer_started = False
 
         logger.info(
             "Kafka consumer configured: auto_offset_reset=%s, max_poll_interval=%dms (%.1f min), session_timeout=%dms",
@@ -112,12 +114,37 @@ class KafkaQueue(QueueInterface):
             session_timeout_ms,
         )
 
-    async def start(self) -> None:
-        """Connect producer and consumer to Kafka brokers."""
-        logger.info("Starting aiokafka producer and consumer...")
+    def _create_consumer(self):
+        """Lazily create the AIOKafkaConsumer from stored config."""
+        from aiokafka import AIOKafkaConsumer
+
+        cfg = self._consumer_config
+        return AIOKafkaConsumer(
+            cfg["topic"],
+            bootstrap_servers=cfg["bootstrap_servers"],
+            group_id=cfg["group_id"],
+            security_protocol=cfg["security_protocol"],
+            ssl_context=cfg["ssl_context"],
+            value_deserializer=cfg["value_deserializer"],
+            auto_offset_reset=cfg["auto_offset_reset"],
+            enable_auto_commit=cfg["enable_auto_commit"],
+            max_poll_interval_ms=cfg["max_poll_interval_ms"],
+            session_timeout_ms=cfg["session_timeout_ms"],
+        )
+
+    async def start(self, producer_only: bool = False) -> None:
+        """Connect producer (and optionally consumer) to Kafka brokers."""
+        logger.info("Starting aiokafka producer...")
         await self.producer.start()
-        await self.consumer.start()
-        logger.info("Kafka producer and consumer started")
+        if producer_only:
+            logger.info(
+                "Kafka producer started (producer-only mode — consumer not started)"
+            )
+        else:
+            self.consumer = self._create_consumer()
+            await self.consumer.start()
+            self._consumer_started = True
+            logger.info("Kafka producer and consumer started")
 
     async def put(self, message: QueueMessage) -> None:
         """
@@ -158,6 +185,11 @@ class KafkaQueue(QueueInterface):
         Raises:
             asyncio.TimeoutError: If no message available within timeout
         """
+        if not self._consumer_started or self.consumer is None:
+            raise RuntimeError(
+                "Cannot consume messages: Kafka consumer was not started "
+                "(producer-only mode). Use an external consumer."
+            )
         effective_timeout = timeout if timeout is not None else self._consumer_timeout_s
         logger.debug("Polling Kafka topic %s for messages (timeout=%.1fs)", self.topic, effective_timeout)
 
@@ -178,8 +210,9 @@ class KafkaQueue(QueueInterface):
             logger.debug("Kafka producer stopped")
         except Exception as e:
             logger.warning("Error stopping Kafka producer: %s", e)
-        try:
-            await self.consumer.stop()
-            logger.debug("Kafka consumer stopped")
-        except Exception as e:
-            logger.warning("Error stopping Kafka consumer: %s", e)
+        if self._consumer_started and self.consumer is not None:
+            try:
+                await self.consumer.stop()
+                logger.debug("Kafka consumer stopped")
+            except Exception as e:
+                logger.warning("Error stopping Kafka consumer: %s", e)
