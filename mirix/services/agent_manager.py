@@ -105,8 +105,8 @@ class AgentManager:
     ) -> PydanticAgentState:
         system = derive_system_message(agent_type=agent_create.agent_type, system=agent_create.system)
 
-        if not agent_create.llm_config or not agent_create.embedding_config:
-            raise ValueError("llm_config and embedding_config are required")
+        if not agent_create.llm_config:
+            raise ValueError("llm_config is required")
 
         # Check tool rules are valid
         if agent_create.tool_rules:
@@ -189,8 +189,8 @@ class AgentManager:
                                            including the "meta_memory_agent" parent
         """
 
-        if not meta_agent_create.llm_config or not meta_agent_create.embedding_config:
-            raise ValueError("llm_config and embedding_config are required")
+        if not meta_agent_create.llm_config:
+            raise ValueError("llm_config is required")
 
         # Get organization's default user to serve as the template for block seeding
         user_manager = UserManager()
@@ -651,7 +651,7 @@ class AgentManager:
         system: str,
         agent_type: AgentType,
         llm_config: LLMConfig,
-        embedding_config: EmbeddingConfig,
+        embedding_config: Optional[EmbeddingConfig],
         tool_ids: List[str],
         tool_rules: Optional[List[PydanticToolRule]] = None,
         parent_id: Optional[str] = None,
@@ -675,7 +675,7 @@ class AgentManager:
                 "agent_type": agent_type,
                 "llm_config": llm_config.model_dump() if hasattr(llm_config, "model_dump") else llm_config,
                 "embedding_config": (
-                    embedding_config.model_dump() if hasattr(embedding_config, "model_dump") else embedding_config
+                    embedding_config.model_dump() if embedding_config and hasattr(embedding_config, "model_dump") else embedding_config
                 ),
                 "organization_id": actor.organization_id,
                 "tools": tool_ids,
@@ -1528,7 +1528,7 @@ class AgentManager:
                     parent_id=row.get("agent_parent_id"),
                     organization_id=row.get("agent_organization_id"),
                     llm_config=LLMConfig(**_parse_json(row.get("agent_llm_config"))),
-                    embedding_config=EmbeddingConfig(**_parse_json(row.get("agent_embedding_config"))),
+                    embedding_config=EmbeddingConfig(**_parse_json(row.get("agent_embedding_config"))) if row.get("agent_embedding_config") else None,
                     tool_rules=_parse_json(row.get("agent_tool_rules")),
                     mcp_tools=_parse_json(row.get("agent_mcp_tools")),
                     tools=[],
