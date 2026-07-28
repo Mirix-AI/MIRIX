@@ -917,6 +917,46 @@ class ResourceMemoryManager:
     ) -> PydanticResourceMemoryItem:
         """Create a new resource memory item."""
         try:
+            # Set client_id from actor, user_id with fallback to DEFAULT_USER_ID
+            from mirix.services.user_manager import UserManager
+
+            client_id = actor.id  # Always derive from actor
+            if user_id is None:
+                user_id = UserManager.ADMIN_USER_ID
+
+            # Provider delegation (create) — embeddings are owned by the search
+            # index in provider mode, not Mirix.  We forward embedding_config as
+            # metadata but never compute a summary embedding; the vector is
+            # stripped before persistence, so computing it is wasted work.
+            # (Matches episodic/semantic/procedural/knowledge_vault provider
+            # branches.)
+            from mirix.database.relational_provider import get_relational_provider
+
+            provider = get_relational_provider()
+            if provider:
+                from datetime import datetime, timezone
+
+                resource_id = PydanticResourceMemoryItem._generate_id()
+                data_dict = {
+                    "id": resource_id,
+                    "title": title,
+                    "summary": summary,
+                    "content": content,
+                    "resource_type": resource_type,
+                    "filter_tags": filter_tags or {},
+                    "embedding_config": agent_state.embedding_config,
+                    "organization_id": organization_id,
+                    "user_id": user_id,
+                    "agent_id": agent_id,
+                    "client_id": client_id,
+                    "last_modify": {
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "operation": "created",
+                    },
+                }
+                result = await provider.create("resource_memory", data_dict, actor=actor)
+                return PydanticResourceMemoryItem(**result)
+
             # Conditionally calculate embeddings based on BUILD_EMBEDDINGS_FOR_MEMORY flag
             if BUILD_EMBEDDINGS_FOR_MEMORY:
                 embed_model = await embedding_model(agent_state.embedding_config)
@@ -925,13 +965,6 @@ class ResourceMemoryManager:
             else:
                 summary_embedding = None
                 embedding_config = None
-
-            # Set client_id from actor, user_id with fallback to DEFAULT_USER_ID
-            from mirix.services.user_manager import UserManager
-
-            client_id = actor.id  # Always derive from actor
-            if user_id is None:
-                user_id = UserManager.ADMIN_USER_ID
 
             resource = await self.create_item(
                 item_data=PydanticResourceMemoryItem(
