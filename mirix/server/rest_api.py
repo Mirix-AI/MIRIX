@@ -336,7 +336,10 @@ def with_langfuse_tracing(func):
 
             except Exception as e:
                 try:
-                    span.update(output={"error": str(e)}, level="ERROR")
+                    # Type name only — exception messages can carry PII and
+                    # must not reach LangFuse; full detail is in the logs via
+                    # the tid tag.
+                    span.update(output={"error_type": type(e).__name__}, level="ERROR")
                 except Exception as trace_error:
                     logger.debug(f"Failed to update trace on error: {trace_error}")
                 raise
