@@ -75,7 +75,6 @@ class AgentToolRow:
     agent_name: Optional[str] = None
     agent_description: Optional[str] = None
     agent_llm_config: Optional[str] = None
-    agent_embedding_config: Optional[str] = None
     agent_system: Optional[str] = None
     agent_tool_rules: Optional[str] = None
     agent_mcp_tools: Optional[str] = None
