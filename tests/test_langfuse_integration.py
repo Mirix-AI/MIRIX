@@ -335,3 +335,118 @@ def test_log_filter_injects_tid():
     rec2 = logging.LogRecord("Mirix", logging.INFO, "/tmp/x.py", 1, "msg", None, None)
     _tid_log_filter.filter(rec2)
     assert rec2.tid == "-"
+
+
+# ============================================================================
+# HTTP-entry tracing decorator (with_langfuse_tracing) — ECMS-113
+#
+# The root span opens with the request's non-sensitive input (method, path,
+# client id — the decorator never parses bodies) and the tid/client tags go
+# through the accumulate-and-rewrite helper so the worker leg of a stitched
+# trace can only extend the tag set, never clobber it.
+# ============================================================================
+
+
+def _make_request(headers=None):
+    from unittest.mock import MagicMock
+
+    request = MagicMock()
+    request.method = "POST"
+    request.url.path = "/v1/memories"
+    request.headers = headers or {}
+    return request
+
+
+def _make_span_client():
+    from unittest.mock import MagicMock
+
+    span = MagicMock()
+    span.id = "http-obs-1"
+    cm = MagicMock()
+    cm.__enter__ = MagicMock(return_value=span)
+    cm.__exit__ = MagicMock(return_value=False)
+    client = MagicMock()
+    client.start_as_current_observation.return_value = cm
+    return client, span
+
+
+@pytest.mark.asyncio
+async def test_http_entry_span_carries_request_input_and_client_tag():
+    import mirix.server.rest_api as rest_api
+    from mirix.observability.context import set_tid
+
+    client, span = _make_span_client()
+    request = _make_request(headers={"x-client-id": "aqna-client", "user-agent": "pytest"})
+
+    with (
+        patch("mirix.observability.is_langfuse_enabled", return_value=True),
+        patch("mirix.observability.get_langfuse_client", return_value=client),
+        patch.object(rest_api, "get_current_request", return_value=request),
+        patch("mirix.observability.trace_attrs.get_langfuse_client", return_value=client),
+    ):
+
+        @rest_api.with_langfuse_tracing
+        async def endpoint():
+            return "ok"
+
+        set_tid("tid-http-1")
+        try:
+            result = await endpoint()
+        finally:
+            from mirix.observability.context import clear_tid
+
+            clear_tid()
+
+    assert result == "ok"
+
+    # Root-span input: request line + client only (body never parsed).
+    kwargs = client.start_as_current_observation.call_args.kwargs
+    assert kwargs["input"] == {
+        "method": "POST",
+        "path": "/v1/memories",
+        "client_id": "aqna-client",
+    }
+
+    # Tags written via the helper reach update_current_trace as the FULL set.
+    tag_writes = [c for c in client.update_current_trace.call_args_list if "tags" in c.kwargs]
+    assert tag_writes, "expected a tags write through the trace-attribute helper"
+    final_tags = tag_writes[-1].kwargs["tags"]
+    assert "tid:tid-http-1" in final_tags
+    assert "client:aqna-client" in final_tags
+    # Metadata carries the client key alongside the legacy fields.
+    md = tag_writes[-1].kwargs["metadata"]
+    assert md["client"] == "aqna-client"
+    assert md["method"] == "POST"
+
+    # Identity fields still go through update_current_trace directly.
+    ident_writes = [c for c in client.update_current_trace.call_args_list if "session_id" in c.kwargs]
+    assert ident_writes and ident_writes[0].kwargs["user_id"] == "aqna-client"
+
+    # Output behavior unchanged.
+    span.update.assert_any_call(output={"status": "completed"})
+
+
+@pytest.mark.asyncio
+async def test_http_entry_omits_client_tag_when_header_absent():
+    """R1 AC2: no placeholder client tag when the client cannot be resolved."""
+    import mirix.server.rest_api as rest_api
+
+    client, _span = _make_span_client()
+    request = _make_request(headers={})
+
+    with (
+        patch("mirix.observability.is_langfuse_enabled", return_value=True),
+        patch("mirix.observability.get_langfuse_client", return_value=client),
+        patch.object(rest_api, "get_current_request", return_value=request),
+        patch("mirix.observability.trace_attrs.get_langfuse_client", return_value=client),
+    ):
+
+        @rest_api.with_langfuse_tracing
+        async def endpoint():
+            return "ok"
+
+        await endpoint()
+
+    for call in client.update_current_trace.call_args_list:
+        for tag in call.kwargs.get("tags") or []:
+            assert not tag.startswith("client:"), f"unexpected client tag: {tag}"

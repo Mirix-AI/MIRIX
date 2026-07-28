@@ -60,6 +60,8 @@ from mirix.errors import (
     QueueMessageRejectedError,
 )
 from mirix.observability.context import clear_tid, clear_trace_context
+from mirix.observability.skip_spans import emit_save_outcome_span
+from mirix.observability.trace_attrs import reset_save_write_counts, set_save_write_counts
 from mirix.settings import settings
 
 logger = logging.getLogger(__name__)
@@ -468,6 +470,11 @@ async def dispatch_save(
     # set_active_source no-ops (returns None) when injection is disabled.
     from mirix.testing import fault_injection
 
+    # Fresh write-count dict per save (same per-save boundary as the fault
+    # injection scope): _write_citation bumps it, the worker root span reads
+    # it as writes_by_memory_type, and the finally below resets it so counts
+    # never leak into the next message on a reused worker task.
+    wc_token = set_save_write_counts()
     try:
         fi_token = fault_injection.set_active_source(memory_source_id)
         try:
@@ -482,6 +489,17 @@ async def dispatch_save(
 
             await MemorySourceManager().finalize_source(memory_source_id, outcome.kind)
 
+        # Terminal trace marker (R4): fires for EVERY outcome — unlike the DB
+        # finalize above, it is NOT gated on memory_source_id, so a refusal
+        # with no source row still gets its terminal tag. Must run inside the
+        # try (before the finally clears trace context + TID) so the marker
+        # can attach to the right trace. The emitter never raises.
+        emit_save_outcome_span(
+            outcome.kind,
+            memory_source_id,
+            error_type=type(outcome.cause).__name__ if outcome.cause else None,
+        )
+
         return outcome
     finally:
         # The step restored the message's TID + trace context into this task's
@@ -491,5 +509,6 @@ async def dispatch_save(
         # correlation signal and must carry the TID. A worker task processes
         # messages sequentially, so this boundary is also what prevents one
         # message's TID leaking into the next.
+        reset_save_write_counts(wc_token)
         clear_trace_context()
         clear_tid()

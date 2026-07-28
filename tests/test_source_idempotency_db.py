@@ -12,7 +12,7 @@ import pytest_asyncio
 from mirix.services.memory_source_manager import MemorySourceManager
 from mirix.services.source_message_manager import compute_batch_hash
 
-pytestmark = pytest.mark.asyncio(loop_scope="module")
+pytestmark = [pytest.mark.asyncio(loop_scope="module"), pytest.mark.requires_pg]
 
 TEST_ORG_ID = "dedup-test-org"
 TEST_CLIENT_ID = "dedup-test-client"

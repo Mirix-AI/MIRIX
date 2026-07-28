@@ -96,14 +96,10 @@ async def initialize(skip_bootstrap_writes: bool = False):
     from mirix.database.relational_provider import get_relational_provider
 
     if skip_bootstrap_writes:
-        logger.info(
-            "Skipping ensure_tables_created (read-replica process); "
-            "tables are owned by the writer/consumer"
-        )
+        logger.info("Skipping ensure_tables_created (read-replica process); " "tables are owned by the writer/consumer")
     elif get_relational_provider() is not None:
         logger.info(
-            "Skipping ensure_tables_created (relational provider registered); "
-            "schema is provisioned out-of-band"
+            "Skipping ensure_tables_created (relational provider registered); " "schema is provisioned out-of-band"
         )
     else:
         await ensure_tables_created()
@@ -255,7 +251,7 @@ def with_langfuse_tracing(func):
 
     from langfuse.types import TraceContext
 
-    from mirix.observability import get_langfuse_client, is_langfuse_enabled
+    from mirix.observability import get_langfuse_client, is_langfuse_enabled, update_trace_attributes
     from mirix.observability.context import clear_trace_context, get_tid, set_trace_context
 
     @functools.wraps(func)
@@ -289,6 +285,10 @@ def with_langfuse_tracing(func):
             name=f"{method} {path}",
             as_type="span",
             trace_context=cast(TraceContext, {"trace_id": trace_id}),
+            # Root-span input: the request line + calling client only. The
+            # decorator is generic and never parses bodies, so this can never
+            # carry conversation content.
+            input={"method": method, "path": path, "client_id": client_id},
         ) as span:
             try:
                 observation_id = getattr(span, "id", None)
@@ -296,24 +296,12 @@ def with_langfuse_tracing(func):
                     f"LangFuse trace created: trace_id={trace_id}, observation_id={observation_id}, path={path}"
                 )
 
-                # Transaction id (TID): caller/gateway-provided request id. Put it
-                # in trace metadata (visible) AND tags (filterable in the Langfuse
-                # dashboard) so a broken trace surfaces its TID for a log pivot.
-                tid = get_tid()
-                trace_tags = [f"tid:{tid}"] if tid else None
+                # Trace identity fields (not tags) keep going through
+                # update_current_trace directly.
                 langfuse.update_current_trace(
                     name=f"{method} {path}",
                     user_id=user_id or client_id,
                     session_id=session_id,
-                    tags=trace_tags,
-                    metadata={
-                        "method": method,
-                        "path": path,
-                        "client_id": client_id,
-                        "org_id": org_id,
-                        "user_agent": request.headers.get("user-agent"),
-                        "tid": tid,
-                    },
                 )
 
                 set_trace_context(
@@ -321,6 +309,33 @@ def with_langfuse_tracing(func):
                     observation_id=observation_id,
                     user_id=user_id or client_id,
                     session_id=session_id,
+                )
+
+                # Transaction id (TID) + calling client: trace metadata
+                # (visible) AND tags (filterable in the Langfuse dashboard).
+                # Written through the accumulate-and-rewrite helper so a later
+                # write on the same stitched trace (the worker leg) can only
+                # ever extend the tag set, never clobber it. Runs AFTER
+                # set_trace_context — the helper no-ops without an active
+                # trace_id ContextVar. The client tag is OMITTED when the
+                # header is absent (no placeholder values).
+                tid = get_tid()
+                trace_tags = []
+                if tid:
+                    trace_tags.append(f"tid:{tid}")
+                if client_id:
+                    trace_tags.append(f"client:{client_id}")
+                update_trace_attributes(
+                    tags=trace_tags,
+                    metadata={
+                        "method": method,
+                        "path": path,
+                        "client_id": client_id,
+                        "client": client_id,
+                        "org_id": org_id,
+                        "user_agent": request.headers.get("user-agent"),
+                        "tid": tid,
+                    },
                 )
 
                 # Execute the actual endpoint function

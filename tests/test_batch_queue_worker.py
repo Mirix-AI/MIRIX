@@ -262,3 +262,158 @@ async def test_partition_id_drains_only_its_partition(monkeypatch):
 
     assert len(batch) == 3
     assert all(m.agent_id.startswith("agent-p1-") for m in batch)
+
+
+# ============================================================================
+# Worker root span: input, trace tags, output (ECMS-113 — unit layer;
+# authoritative verification is the FST suite)
+# ============================================================================
+
+
+async def test_meta_agent_span_carries_root_input_tags_and_output():
+    """The Meta Agent observation opens with the request's non-sensitive
+    parameters as input (R3 AC3), writes tid/client/write_kind trace tags
+    through the accumulate-and-rewrite helper (R1/R2), and closes with
+    ``{step_count, writes_by_memory_type}`` as output (R3 AC4)."""
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from mirix.observability import context as obs_context
+    from mirix.queue.worker import QueueWorker
+
+    # --- message: one conversation turn, no direct writes -> extraction ---
+    msg = QueueMessage()
+    msg.agent_id = "agent-span"
+    msg.client_id = "client-uuid-1"
+    pm = msg.messages.add()
+    pm.text_content = "hello"
+    msg.memory_source_id = "src-span-1"
+
+    # --- actor / user resolution ---
+    actor = SimpleNamespace(
+        id="client-uuid-1",
+        name="e2e-client",
+        organization_id="org-1",
+        write_scope="scope-1",
+    )
+    user = SimpleNamespace(id="admin", organization_id="org-1")
+
+    server = MagicMock()
+    server.client_manager.get_client_by_id = AsyncMock(return_value=actor)
+    usage = MagicMock()
+    usage.step_count = 2
+    usage.model_dump.return_value = {"step_count": 2}
+    server.send_messages = AsyncMock(return_value=usage)
+
+    user_manager = MagicMock()
+    user_manager.get_admin_user = AsyncMock(return_value=user)
+
+    # --- langfuse span capture ---
+    span = MagicMock()
+    span.id = "meta-agent-obs"
+    cm = MagicMock()
+    cm.__enter__ = MagicMock(return_value=span)
+    cm.__exit__ = MagicMock(return_value=False)
+    langfuse = MagicMock()
+    langfuse.start_as_current_observation.return_value = cm
+
+    worker = QueueWorker(MemoryQueue(), server=server)
+
+    obs_context.clear_trace_context()
+    obs_context.set_trace_context(trace_id="trace-span-1")
+    obs_context.set_tid("tid-span-1")
+    try:
+        with (
+            patch("mirix.queue.worker.restore_trace_from_queue_message", return_value=True),
+            patch("mirix.queue.worker.get_langfuse_client", return_value=langfuse),
+            patch("mirix.queue.worker.UserManager", return_value=user_manager),
+            patch("mirix.observability.trace_attrs.update_trace_attributes") as upd,
+            patch("mirix.queue.worker.mark_observation_as_child"),
+        ):
+            await worker._process_message_async(msg)
+    finally:
+        obs_context.clear_trace_context()
+        obs_context.clear_tid()
+
+    # Root input: ids / enums / counts only, per the design catalog.
+    kwargs = langfuse.start_as_current_observation.call_args.kwargs
+    assert kwargs["name"] == "Meta Agent"
+    root_input = kwargs["input"]
+    assert root_input["message_count"] == 1
+    assert root_input["direct_write_count"] == 0
+    assert root_input["memory_source_id"] == "src-span-1"
+    assert root_input["scope"] == "scope-1"
+    assert root_input["filter_tag_keys"] == ["scope"]
+    assert root_input["agent_id"] == "agent-span"
+    assert root_input["summarize"] is False
+    assert root_input["has_caller_summary"] is False
+
+    # Trace tags via the central helper: tid + client + write_kind.
+    upd.assert_called_once()
+    tags = upd.call_args.kwargs["tags"]
+    assert "tid:tid-span-1" in tags
+    assert "client:e2e-client" in tags
+    assert "write_kind:extraction" in tags
+    md = upd.call_args.kwargs["metadata"]
+    assert md["client"] == "e2e-client"
+    assert md["write_kind"] == "extraction"
+
+    # Root output: what the save produced.
+    span.update.assert_any_call(output={"step_count": 2, "writes_by_memory_type": {}})
+
+
+async def test_meta_agent_trace_tags_omit_client_when_name_falsy():
+    """R1 AC2: no placeholder client tag when the resolved actor has no name."""
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from mirix.observability import context as obs_context
+    from mirix.queue.worker import QueueWorker
+
+    msg = QueueMessage()
+    msg.agent_id = "agent-span2"
+    msg.client_id = "client-uuid-2"
+    w = msg.direct_writes.add()
+    w.memory_type = "episodic"
+    w.payload_json = "{}"
+
+    actor = SimpleNamespace(id="client-uuid-2", name="", organization_id="org-1", write_scope="scope-1")
+    user = SimpleNamespace(id="admin", organization_id="org-1")
+
+    server = MagicMock()
+    server.client_manager.get_client_by_id = AsyncMock(return_value=actor)
+    server.send_messages = AsyncMock(return_value=None)
+
+    user_manager = MagicMock()
+    user_manager.get_admin_user = AsyncMock(return_value=user)
+
+    span = MagicMock()
+    span.id = "meta-agent-obs2"
+    cm = MagicMock()
+    cm.__enter__ = MagicMock(return_value=span)
+    cm.__exit__ = MagicMock(return_value=False)
+    langfuse = MagicMock()
+    langfuse.start_as_current_observation.return_value = cm
+
+    worker = QueueWorker(MemoryQueue(), server=server)
+
+    obs_context.clear_trace_context()
+    obs_context.set_trace_context(trace_id="trace-span-2")
+    try:
+        with (
+            patch("mirix.queue.worker.restore_trace_from_queue_message", return_value=True),
+            patch("mirix.queue.worker.get_langfuse_client", return_value=langfuse),
+            patch("mirix.queue.worker.UserManager", return_value=user_manager),
+            patch("mirix.observability.trace_attrs.update_trace_attributes") as upd,
+            patch("mirix.queue.worker.mark_observation_as_child"),
+        ):
+            await worker._process_message_async(msg)
+    finally:
+        obs_context.clear_trace_context()
+        obs_context.clear_tid()
+
+    tags = upd.call_args.kwargs["tags"]
+    assert not any(t.startswith("client:") for t in tags)
+    assert "write_kind:direct" in tags
+    # No-usage (None) closes with step_count=0.
+    span.update.assert_any_call(output={"step_count": 0, "writes_by_memory_type": {}})

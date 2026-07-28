@@ -284,7 +284,7 @@ class ToolManager:
                 "chunks": (len(unique_ids) + _BATCH_CHUNK_SIZE - 1) // _BATCH_CHUNK_SIZE,
                 "provider": "ips_relational" if provider else "postgres",
             },
-        ):
+        ) as rec:
             if provider:
                 for start in range(0, len(unique_ids), _BATCH_CHUNK_SIZE):
                     chunk = unique_ids[start : start + _BATCH_CHUNK_SIZE]
@@ -311,6 +311,7 @@ class ToolManager:
                     )
                     rows = await session.execute(stmt)
                     results = [t.to_pydantic() for t in rows.scalars().all()]
+            rec["span_output"] = {"tools_loaded": len(results)}
 
         if len(results) < len(unique_ids):
             returned = {t.id for t in results}

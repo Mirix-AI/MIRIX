@@ -4,6 +4,8 @@ Shared test fixtures for Mirix.
 Provides:
 - Module-scoped engine reset (NullPool) so each test module gets fresh DB connections
 - Session-scoped API key tied to a test client for integration tests
+- The ``requires_pg`` marker: skips tests that assert PostgreSQL semantics when no
+  PG is configured (the silent SQLite fallback would fail them misleadingly)
 """
 
 import asyncio
@@ -19,6 +21,25 @@ from mirix.security.api_keys import generate_api_key
 from mirix.services.client_manager import ClientManager
 from mirix.services.organization_manager import OrganizationManager
 from mirix.settings import settings
+
+
+def pytest_collection_modifyitems(config, items):
+    # When no PG is configured, mirix.server.server silently falls back to
+    # SQLite — and every requires_pg test fails MISLEADINGLY (looks like a code
+    # regression). Skip them loudly instead.
+    if settings.mirix_pg_uri_no_default:
+        return
+    skip_no_pg = pytest.mark.skip(
+        reason=(
+            "requires PostgreSQL, but MIRIX_PG_URI is not configured (SQLite "
+            "fallback active). Provide the repo .env / MIRIX_PG_URI, or run via "
+            "./scripts/run_tests_with_docker.sh"
+        )
+    )
+    for item in items:
+        if item.get_closest_marker("requires_pg"):
+            item.add_marker(skip_no_pg)
+
 
 # Pure unit modules that do not touch the DB or server; skip engine setup so
 # pytest does not import mirix.server.server (heavy stack) for these files.

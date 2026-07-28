@@ -445,3 +445,60 @@ class TestMemorySourceIdPropagation:
         child = captured_agent["instance"]
         assert child.memory_source_id == "src-propagate"
         assert child.external_thread_id == "thread-t"
+
+
+# --- write-count accumulator bump (ECMS-113, R3 AC4) ---
+
+
+class TestWriteCitationBumpsWriteCount:
+    """_write_citation is the single funnel every memory write passes through
+    (LLM pipeline and direct writes alike), so it is the one bump site for the
+    per-save writes_by_memory_type accumulator."""
+
+    @pytest.mark.asyncio
+    async def test_bumps_count_for_each_citation_write(self):
+        from mirix.observability.trace_attrs import (
+            get_write_counts,
+            reset_save_write_counts,
+            set_save_write_counts,
+        )
+
+        agent = _make_agent(memory_source_id="src-wc-1")
+        token = set_save_write_counts()
+        try:
+            with patch("mirix.services.memory_citation_manager.MemoryCitationManager") as MockMgr:
+                MockMgr.return_value.create = AsyncMock(return_value=None)
+                await _write_citation(agent, "episodic", "mem-1", "created")
+                await _write_citation(agent, "episodic", "mem-2", "created")
+                await _write_citation(agent, "core", "blk-1", "updated")
+
+            assert get_write_counts() == {"episodic": 2, "core": 1}
+        finally:
+            reset_save_write_counts(token)
+
+    @pytest.mark.asyncio
+    async def test_no_bump_without_memory_source_id(self):
+        """The early return (no provenance) also means no count — nothing was
+        citable, and outside the ECMS save path counts aren't collected."""
+        from mirix.observability.trace_attrs import (
+            get_write_counts,
+            reset_save_write_counts,
+            set_save_write_counts,
+        )
+
+        agent = _make_agent(memory_source_id=None)
+        token = set_save_write_counts()
+        try:
+            await _write_citation(agent, "episodic", "mem-1", "created")
+            assert get_write_counts() == {}
+        finally:
+            reset_save_write_counts(token)
+
+    @pytest.mark.asyncio
+    async def test_bump_outside_active_save_is_silent_noop(self):
+        """No set_save_write_counts() (e.g. a tool exercised directly in a
+        unit test): the bump must neither raise nor create state."""
+        agent = _make_agent(memory_source_id="src-wc-2")
+        with patch("mirix.services.memory_citation_manager.MemoryCitationManager") as MockMgr:
+            MockMgr.return_value.create = AsyncMock(return_value=None)
+            await _write_citation(agent, "semantic", "mem-3", "created")  # must not raise

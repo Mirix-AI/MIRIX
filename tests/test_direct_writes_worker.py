@@ -20,7 +20,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 import pytest_asyncio
 
-pytestmark = pytest.mark.asyncio(loop_scope="module")
+pytestmark = [pytest.mark.asyncio(loop_scope="module"), pytest.mark.requires_pg]
 
 TEST_ORG_ID = "direct-writes-worker-org"
 TEST_CLIENT_ID = "direct-writes-worker-client"

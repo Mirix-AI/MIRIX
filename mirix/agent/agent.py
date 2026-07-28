@@ -42,7 +42,11 @@ from mirix.llm_api.llm_api_tools import create
 from mirix.llm_api.llm_client import LLMClient
 from mirix.log import get_logger
 from mirix.memory import summarize_messages
-from mirix.observability.context import get_trace_context, mark_observation_as_child
+from mirix.observability.context import (
+    get_trace_context,
+    mark_observation_as_child,
+)
+from mirix.observability.context import stamp_tid as _tid_stamped
 from mirix.observability.langfuse_client import get_langfuse_client
 from mirix.observability.skip_spans import emit_idempotency_skip_span
 from mirix.queue.error_policy import Bucket, classify
@@ -629,11 +633,13 @@ class Agent(BaseAgent):
                     as_type="tool",
                     trace_context=cast(TraceContext, trace_context_dict),
                     input={"tool_name": function_name, "args": args_for_trace},
-                    metadata={
-                        "tool_type": str(target_mirix_tool.tool_type),
-                        "tool_name": function_name,
-                        "agent_name": self.agent_state.name,
-                    },
+                    metadata=_tid_stamped(
+                        {
+                            "tool_type": str(target_mirix_tool.tool_type),
+                            "tool_name": function_name,
+                            "agent_name": self.agent_state.name,
+                        }
+                    ),
                 ) as span:
                     mark_observation_as_child(span)
 
@@ -1315,13 +1321,14 @@ class Agent(BaseAgent):
                 async with timedspan(
                     "Load Retained History",
                     metadata={"agent_id": retention_agent_id, "limit": retention},
-                ):
+                ) as rec:
                     retained_input_sets = await self.message_manager.get_messages_for_agent_user(
                         agent_id=retention_agent_id,
                         user_id=self.user_id,
                         actor=self.actor,
                         limit=retention,
                     )
+                    rec["span_output"] = {"loaded_count": len(retained_input_sets)}
 
             logger.info(
                 "[RETENTION] agent=%s retention=%d should_read=%s loaded=%d",
@@ -1355,8 +1362,14 @@ class Agent(BaseAgent):
                 async with timedspan(
                     "Check Source Processing State",
                     metadata={"memory_source_id": self.memory_source_id},
-                ):
+                ) as rec:
                     source = await self.memory_source_manager.get_by_id(self.memory_source_id)
+                    # The decision this step reached: does the source row exist,
+                    # and is it already marked complete (-> idempotency skip)?
+                    rec["span_output"] = {
+                        "found": source is not None,
+                        "processing_complete": bool(source and source.processing_complete),
+                    }
                 if source and source.processing_complete:
                     logger.info("Source %s already processed, skipping", self.memory_source_id)
                     emit_idempotency_skip_span(
@@ -1379,7 +1392,7 @@ class Agent(BaseAgent):
                 async with timedspan(
                     "Persist Memory Source",
                     metadata={"memory_source_id": self.memory_source_id},
-                ):
+                ) as rec:
                     # In a race condition scenario (kafka redelivery while still processing),
                     # this relies on DB unique constraints to avoid writing duplicate rows.
                     # Note: should_continue will be False in a scenario where a source with the
@@ -1391,6 +1404,12 @@ class Agent(BaseAgent):
                         memory_source_id=self.memory_source_id,
                         input_messages=raw_input_messages,
                     )
+                    # persisted=False means the content is owned by a different
+                    # submission (deduped-elsewhere) and processing short-circuits.
+                    rec["span_output"] = {
+                        "persisted": should_continue,
+                        "message_count": len(raw_input_messages),
+                    }
                 if not should_continue:
                     logger.info("Source %s deduped, skipping agent processing", self.memory_source_id)
                     emit_idempotency_skip_span(
@@ -1469,7 +1488,7 @@ class Agent(BaseAgent):
                     )
                     loop_iteration_messages.append(meta_message)
 
-                async with timedspan("Inner Step", metadata={"step_count": step_count}):
+                async with timedspan("Inner Step", metadata={"step_count": step_count}) as rec:
                     step_response = await self.inner_step(
                         messages=loop_iteration_messages,
                         accumulated=accumulated,
@@ -1478,6 +1497,11 @@ class Agent(BaseAgent):
                         retained_count=len(retained_input_sets),
                         **kwargs,
                     )
+                    # What this iteration decided: keep chaining? did a tool fail?
+                    rec["span_output"] = {
+                        "continue_chaining": step_response.continue_chaining,
+                        "function_failed": step_response.function_failed,
+                    }
 
                 continue_chaining = step_response.continue_chaining
                 function_failed = step_response.function_failed
@@ -1673,16 +1697,20 @@ class Agent(BaseAgent):
         if parent_span_id:
             trace_context_dict["parent_span_id"] = parent_span_id
 
+        direct_writes_io = {
+            "memory_source_id": self.memory_source_id,
+            "agent_name": self.agent_state.name,
+            "direct_write_count": len(self.direct_writes),
+            "memory_types": [w["memory_type"] for w in self.direct_writes],
+        }
         with langfuse.start_as_current_observation(
             name="Direct Writes",
             as_type="span",
             trace_context=cast(TraceContext, trace_context_dict),
-            metadata={
-                "memory_source_id": self.memory_source_id,
-                "agent_name": self.agent_state.name,
-                "direct_write_count": len(self.direct_writes),
-                "memory_types": [w["memory_type"] for w in self.direct_writes],
-            },
+            # Metadata mirror as input: counts + type enums only (payloads are
+            # caller-authored content and never reach the span).
+            input=direct_writes_io,
+            metadata=_tid_stamped(direct_writes_io),
         ) as span:
             mark_observation_as_child(span)
             span_observation_id = getattr(span, "id", None)
@@ -1721,11 +1749,13 @@ class Agent(BaseAgent):
                         as_type="span",
                         trace_context=cast(TraceContext, insert_trace_dict),
                         input=trace_input,
-                        metadata={
-                            "memory_source_id": self.memory_source_id,
-                            "memory_type": memory_type,
-                            "function": function_name,
-                        },
+                        metadata=_tid_stamped(
+                            {
+                                "memory_source_id": self.memory_source_id,
+                                "memory_type": memory_type,
+                                "function": function_name,
+                            }
+                        ),
                     )
                 except Exception as e:
                     logger.debug(
@@ -1762,6 +1792,11 @@ class Agent(BaseAgent):
                             user_id=parent_trace_context.get("user_id"),
                             session_id=parent_trace_context.get("session_id"),
                         )
+
+            try:
+                span.update(output={"status": "completed"})
+            except Exception as e:
+                logger.debug("Langfuse Direct Writes span output update failed: %s", e)
 
     async def _persist_memory_source(
         self,
@@ -1892,14 +1927,18 @@ class Agent(BaseAgent):
         if parent_span_id:
             trace_context_dict["parent_span_id"] = parent_span_id
 
+        summary_agent_io = {
+            "memory_source_id": self.memory_source_id,
+            "agent_name": self.agent_state.name,
+        }
         with langfuse.start_as_current_observation(
             name="Summary Agent",
             as_type="agent",
             trace_context=cast(TraceContext, trace_context_dict),
-            metadata={
-                "memory_source_id": self.memory_source_id,
-                "agent_name": self.agent_state.name,
-            },
+            # Metadata mirror as input — ids only; the transcript this agent
+            # reads is conversation content and never reaches the span.
+            input=summary_agent_io,
+            metadata=_tid_stamped(summary_agent_io),
         ) as span:
             mark_observation_as_child(span)
             span_observation_id = getattr(span, "id", None)
@@ -1910,16 +1949,29 @@ class Agent(BaseAgent):
                     user_id=parent_trace_context.get("user_id"),
                     session_id=parent_trace_context.get("session_id"),
                 )
-            await self._generate_source_summary()
+            summary_text = await self._generate_source_summary()
+            try:
+                # Shape only (chars count) — the summary text is LLM output
+                # and stays inside the masked generation pathway.
+                span.update(
+                    output={
+                        "summary_generated": bool(summary_text),
+                        "summary_chars": len(summary_text) if summary_text else 0,
+                    }
+                )
+            except Exception as e:
+                logger.debug("Failed to set Summary Agent span output: %s", e)
 
-    async def _generate_source_summary(self) -> None:
+    async def _generate_source_summary(self) -> Optional[str]:
         """Generate a summary for the memory source using the agent's LLM.
 
         Retrieves source messages, formats them into a prompt, and calls the LLM.
         The generated summary is written to memory_sources.summary with
         summary_source="generated".
 
-        Raises on failure — caller is responsible for error handling.
+        Returns the generated summary text (or None when skipped/empty) — used
+        by the traced wrapper for span-shape reporting only (chars, never
+        content). Raises on failure — caller is responsible for error handling.
         """
         from mirix.prompts.gpt_summarize_source_messages import SYSTEM as SUMMARY_PROMPT_SYSTEM
         from mirix.schemas.enums import MessageRole
@@ -2001,6 +2053,9 @@ class Agent(BaseAgent):
             logger.info("Generated summary for memory source %s", self.memory_source_id)
         else:
             logger.warning("LLM returned empty summary for source %s", self.memory_source_id)
+        # Returned ONLY so the Summary Agent span can report shape (chars),
+        # never content — the summary text itself is LLM output (sensitive).
+        return summary_text
 
     async def _fetch_recent_indexing_lag_window(
         self,
@@ -2036,7 +2091,7 @@ class Agent(BaseAgent):
         cutoff = datetime.now(timezone.utc) - timedelta(seconds=HYBRID_READ_WINDOW_SECONDS)
         # Child span so the IPS-R recent-window leg shows up distinctly under the
         # parent "Retrieve <type>" span, separate from the IPS-S "IPS Search" leg.
-        async with timedspan("Recent window fetch", metadata={"backend": "ipsr", "table": table}):
+        async with timedspan("Recent window fetch", metadata={"backend": "ipsr", "table": table}) as rec:
             recent_records = await rp.list(
                 table,
                 user_id=self.user.id,
@@ -2048,6 +2103,7 @@ class Agent(BaseAgent):
                 time_range_or_null_updated=True,
                 limit=MAX_RETRIEVAL_LIMIT_IN_SYSTEM,
             )
+            rec["span_output"] = {"records_count": len(recent_records)}
         return [pydantic_cls(**r) for r in recent_records]
 
     async def build_system_prompt_with_memories(
@@ -2108,7 +2164,7 @@ class Agent(BaseAgent):
 
         async def _retrieve_core():
             if self.agent_state.is_type(AgentType.core_memory_agent) or "core" not in retrieved_memories:
-                async with timedspan("Retrieve core", metadata={"backend": "ipsr", "memory_type": "core"}):
+                async with timedspan("Retrieve core", metadata={"backend": "ipsr", "memory_type": "core"}) as rec:
                     # Scope the core memory fed into the prompt to the current
                     # save's scope. Without any_scopes this returns the user's
                     # blocks across ALL scopes, leaking another scope's core
@@ -2128,6 +2184,7 @@ class Agent(BaseAgent):
                     )
                     core_memory = current_persisted_memory.compile()
                     retrieved_memories["core"] = core_memory
+                    rec["span_output"] = {"block_count": len(current_persisted_memory.blocks)}
 
         async def _retrieve_knowledge_vault():
             is_owning_kv_agent = self.agent_state.is_type(
@@ -2140,7 +2197,7 @@ class Agent(BaseAgent):
                 async with timedspan(
                     "Retrieve knowledge_vault",
                     metadata={"backend": "ipss+ipsr", "memory_type": "knowledge_vault"},
-                ):
+                ) as rec:
                     current_knowledge_vault = await self.knowledge_vault_manager.list_knowledge(
                         agent_state=self.agent_state,
                         user=self.user,
@@ -2171,6 +2228,10 @@ class Agent(BaseAgent):
                         "current_count": len(merged_knowledge_vault),
                         "text": knowledge_vault_memory.strip(),
                     }
+                    rec["span_output"] = {
+                        "merged_count": len(merged_knowledge_vault),
+                        "total_items": retrieved_memories["knowledge_vault"]["total_number_of_items"],
+                    }
 
         async def _retrieve_episodic():
             is_owning_agent = self.agent_state.is_type(AgentType.episodic_memory_agent, AgentType.reflexion_agent)
@@ -2178,7 +2239,7 @@ class Agent(BaseAgent):
                 async with timedspan(
                     "Retrieve episodic",
                     metadata={"backend": "ipss+ipsr", "memory_type": "episodic"},
-                ):
+                ) as rec:
                     current_episodic_memory = await self.episodic_memory_manager.list_episodic_memory(
                         agent_state=self.agent_state,
                         user=self.user,
@@ -2222,6 +2283,11 @@ class Agent(BaseAgent):
                         "recent_episodic_memory": recent_episodic_memory,
                         "relevant_episodic_memory": relevant_episodic_memory,
                     }
+                    rec["span_output"] = {
+                        "recent_count": len(current_episodic_memory),
+                        "relevant_count": len(most_relevant_episodic_memory),
+                        "total_items": retrieved_memories["episodic"]["total_number_of_items"],
+                    }
 
         async def _retrieve_resource():
             # Owning agents need IDs for merge/update operations, so always retrieve fresh
@@ -2230,7 +2296,7 @@ class Agent(BaseAgent):
                 async with timedspan(
                     "Retrieve resource",
                     metadata={"backend": "ipss+ipsr", "memory_type": "resource"},
-                ):
+                ) as rec:
                     current_resource_memory = await self.resource_memory_manager.list_resources(
                         agent_state=self.agent_state,
                         user=self.user,
@@ -2263,6 +2329,10 @@ class Agent(BaseAgent):
                         "current_count": len(merged_resource_memory),
                         "text": resource_memory,
                     }
+                    rec["span_output"] = {
+                        "merged_count": len(merged_resource_memory),
+                        "total_items": retrieved_memories["resource"]["total_number_of_items"],
+                    }
 
         async def _retrieve_procedural():
             # Owning agents need IDs for merge/update operations, so always retrieve fresh
@@ -2271,7 +2341,7 @@ class Agent(BaseAgent):
                 async with timedspan(
                     "Retrieve procedural",
                     metadata={"backend": "ipss+ipsr", "memory_type": "procedural"},
-                ):
+                ) as rec:
                     current_procedural_memory = await self.procedural_memory_manager.list_procedures(
                         agent_state=self.agent_state,
                         user=self.user,
@@ -2306,6 +2376,10 @@ class Agent(BaseAgent):
                         "current_count": len(merged_procedural_memory),
                         "text": procedural_memory,
                     }
+                    rec["span_output"] = {
+                        "merged_count": len(merged_procedural_memory),
+                        "total_items": retrieved_memories["procedural"]["total_number_of_items"],
+                    }
 
         async def _retrieve_semantic():
             # Owning agents need IDs for merge/update operations, so always retrieve fresh
@@ -2314,7 +2388,7 @@ class Agent(BaseAgent):
                 async with timedspan(
                     "Retrieve semantic",
                     metadata={"backend": "ipss+ipsr", "memory_type": "semantic"},
-                ):
+                ) as rec:
                     current_semantic_memory = await self.semantic_memory_manager.list_semantic_items(
                         agent_state=self.agent_state,
                         user=self.user,
@@ -2347,6 +2421,10 @@ class Agent(BaseAgent):
                         ),
                         "current_count": len(merged_semantic_memory),
                         "text": semantic_memory,
+                    }
+                    rec["span_output"] = {
+                        "merged_count": len(merged_semantic_memory),
+                        "total_items": retrieved_memories["semantic"]["total_number_of_items"],
                     }
 
         # Run the six retrievals concurrently. gather (return_exceptions=False)
@@ -2843,12 +2921,24 @@ These keywords have been used to retrieve relevant memories from the database.
                     "agent_type": str(self.agent_state.agent_type),
                     "step_count": step_count,
                 },
-            ):
+            ) as build_prompt_rec:
                 complete_system_prompt, retrieved_memories = await self.build_system_prompt_with_memories(
                     raw_system=raw_system,
                     topics=topics,
                     retrieved_memories=retrieved_memories,
                 )
+                # Counts only (the retrieved text is memory content). Core is a
+                # compiled string here — its item count lives on the "Retrieve
+                # core" child span; this reports the countable dict entries.
+                _counts_by_type = {
+                    k: v["current_count"] if "current_count" in v else v.get("recent_count", 0)
+                    for k, v in retrieved_memories.items()
+                    if isinstance(v, dict) and ("current_count" in v or "recent_count" in v)
+                }
+                build_prompt_rec["span_output"] = {
+                    "counts_by_memory_type": _counts_by_type,
+                    "prompt_chars": len(complete_system_prompt),
+                }
 
             system_msg = Message.dict_to_message(
                 agent_id=self.agent_state.id,

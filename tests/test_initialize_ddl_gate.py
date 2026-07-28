@@ -3,13 +3,14 @@
 Under IPS (provider registered) the schema is provisioned out-of-band, so the
 create_all DDL — the one remaining hard PG dependency at startup — must not run.
 """
+
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from mirix.database.relational_provider import (
-    get_relational_provider,
     get_registered_relational_providers,
+    get_relational_provider,
     register_relational_provider,
     reset_provider_mode_latch,
     unregister_relational_provider,
@@ -46,10 +47,10 @@ async def test_ddl_skipped_when_relational_provider_registered(_clear_provider):
     register_relational_provider("test_provider", object())
     assert get_relational_provider() is not None
 
-    with patch(
-        "mirix.server.rest_api.ensure_tables_created", new_callable=AsyncMock
-    ) as mock_ddl, patch("mirix.server.rest_api.get_server") as mock_get_server, patch(
-        "mirix.server.rest_api.get_redis_client", return_value=None, create=True
+    with (
+        patch("mirix.server.rest_api.ensure_tables_created", new_callable=AsyncMock) as mock_ddl,
+        patch("mirix.server.rest_api.get_server") as mock_get_server,
+        patch("mirix.server.rest_api.get_redis_client", return_value=None, create=True),
     ):
         mock_get_server.return_value.ensure_defaults = AsyncMock()
         from mirix.server.rest_api import initialize
@@ -63,10 +64,10 @@ async def test_ddl_skipped_when_relational_provider_registered(_clear_provider):
 async def test_ddl_runs_when_no_relational_provider(_clear_provider):
     assert get_relational_provider() is None
 
-    with patch(
-        "mirix.server.rest_api.ensure_tables_created", new_callable=AsyncMock
-    ) as mock_ddl, patch("mirix.server.rest_api.get_server") as mock_get_server, patch(
-        "mirix.server.rest_api.get_redis_client", return_value=None, create=True
+    with (
+        patch("mirix.server.rest_api.ensure_tables_created", new_callable=AsyncMock) as mock_ddl,
+        patch("mirix.server.rest_api.get_server") as mock_get_server,
+        patch("mirix.server.rest_api.get_redis_client", return_value=None, create=True),
     ):
         mock_get_server.return_value.ensure_defaults = AsyncMock()
         from mirix.server.rest_api import initialize

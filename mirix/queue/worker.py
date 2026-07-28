@@ -76,6 +76,28 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
+def derive_write_kind(message: QueueMessage) -> str:
+    """Categorize a save by its payload shape (R2 trace tag ``write_kind:``).
+
+    Fully determined by the message: a conversation payload (unified
+    ``messages`` field, or the legacy packed ``input_messages``) means LLM
+    extraction; ``direct_writes`` bypass the LLM pipeline. Both present →
+    ``"mixed"`` — never one of the pure kinds, so eval tooling can select
+    pure-extraction traces with a single exact-match filter.
+
+    The no-payload combination is rejected upstream (ECMS validates that at
+    least one is present before enqueueing); the helper stays total and maps
+    it to ``"extraction"``.
+    """
+    has_messages = bool(message.messages or message.input_messages)
+    has_direct = bool(message.direct_writes)
+    if has_direct and has_messages:
+        return "mixed"
+    if has_direct:
+        return "direct"
+    return "extraction"
+
+
 def reconcile_user_org_to_actor(user, actor):
     """Return ``user`` with its org corrected to the actor's (client's) org.
 
@@ -590,13 +612,42 @@ class QueueWorker:
                 from langfuse.types import TraceContext
 
                 from mirix.observability.context import set_trace_context
+                from mirix.observability.trace_attrs import (
+                    get_write_counts,
+                    update_trace_attributes,
+                )
+
+                # Write kind (R2) is fully determined by the message; derived
+                # before the span opens so both the trace tag and any future
+                # span field agree.
+                write_kind = derive_write_kind(message)
 
                 trace_context_dict: dict = {"trace_id": trace_id}
+
+                # Root-span input (R3 AC3): the request's non-sensitive
+                # parameters — ids, enums, and counts only. Conversation
+                # content never appears here (pre-mask design).
+                root_input = {
+                    "message_count": len(input_messages),
+                    "direct_write_count": len(direct_writes) if direct_writes else 0,
+                    "memory_source_id": memory_source_id,
+                    "source_type": source_type,
+                    "source_system": source_system,
+                    "external_thread_id": external_thread_id,
+                    "filter_tag_keys": sorted(filter_tags.keys()),
+                    "scope": actor.write_scope,
+                    "summarize": summarize,
+                    "has_caller_summary": bool(summary),
+                    "occurred_at": str(occurred_at) if occurred_at else None,
+                    "agent_id": message.agent_id,
+                    "user_id": user_id,
+                }
 
                 with langfuse.start_as_current_observation(
                     name="Meta Agent",
                     as_type="agent",
                     trace_context=cast(TraceContext, trace_context_dict),
+                    input=root_input,
                     metadata={
                         "agent_id": message.agent_id,
                         "message_count": len(input_messages),
@@ -608,20 +659,28 @@ class QueueWorker:
                 ) as span:
                     mark_observation_as_child(span)
 
-                    # Surface the TID at the TRACE level (tag = filterable in the
-                    # Langfuse dashboard, metadata = visible) so a failed save's
-                    # trace shows its TID for a log pivot. This is the worker
-                    # trace, decoupled from the HTTP-entry trace, so it needs its
-                    # own trace-level TID independent of the span metadata above.
+                    # Surface TID / client / write-kind at the TRACE level
+                    # (tags = filterable in the Langfuse dashboard, metadata =
+                    # visible). This is the worker trace, decoupled from the
+                    # HTTP-entry trace, so it needs its own trace-level tags.
+                    # Written through the accumulate-and-rewrite helper so this
+                    # write is a strict superset of whatever the HTTP entry
+                    # wrote on a stitched trace (last-writer-wins safety); the
+                    # helper never raises.
                     _worker_tid = get_tid()
+                    _trace_tags = []
+                    _trace_metadata: dict = {}
                     if _worker_tid:
-                        try:
-                            langfuse.update_current_trace(
-                                tags=[f"tid:{_worker_tid}"],
-                                metadata={"tid": _worker_tid},
-                            )
-                        except Exception as e:
-                            logger.debug("Failed to set TID on worker trace: %s", e)
+                        _trace_tags.append(f"tid:{_worker_tid}")
+                        _trace_metadata["tid"] = _worker_tid
+                    # Client tag from the resolved actor's registered name —
+                    # omitted when falsy (R1 AC2: no placeholder values).
+                    if actor.name:
+                        _trace_tags.append(f"client:{actor.name}")
+                        _trace_metadata["client"] = actor.name
+                    _trace_tags.append(f"write_kind:{write_kind}")
+                    _trace_metadata["write_kind"] = write_kind
+                    update_trace_attributes(tags=_trace_tags, metadata=_trace_metadata)
 
                     span_observation_id = getattr(span, "id", None)
                     if span_observation_id:
@@ -632,6 +691,19 @@ class QueueWorker:
                             session_id=trace_context.get("session_id"),
                         )
                     usage = await _do_send_messages()
+
+                    # Root-span output (R3 AC4): what the save produced. An
+                    # idempotency-skipped save reads step_count=0 with {}
+                    # writes — the explicit "skips read as successes" shape.
+                    try:
+                        span.update(
+                            output={
+                                "step_count": usage.step_count if usage else 0,
+                                "writes_by_memory_type": get_write_counts(),
+                            }
+                        )
+                    except Exception as e:
+                        logger.debug("Failed to set Meta Agent span output: %s", e)
             else:
                 usage = await _do_send_messages()
 

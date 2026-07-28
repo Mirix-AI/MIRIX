@@ -138,7 +138,7 @@ async def test_timed_span_stamps_tid_in_metadata():
     with (
         patch("mirix.observability.timed.get_langfuse_client", return_value=langfuse),
         patch("mirix.observability.timed.mark_observation_as_child"),
-        patch("mirix.observability.timed.get_tid", return_value="tid-xyz"),
+        patch("mirix.observability.context.get_tid", return_value="tid-xyz"),
     ):
         async with timed_span("Resolve Child Agents", metadata={"k": "v"}):
             pass
@@ -161,7 +161,7 @@ async def test_timed_span_omits_tid_when_absent():
     with (
         patch("mirix.observability.timed.get_langfuse_client", return_value=langfuse),
         patch("mirix.observability.timed.mark_observation_as_child"),
-        patch("mirix.observability.timed.get_tid", return_value=None),
+        patch("mirix.observability.context.get_tid", return_value=None),
     ):
         async with timed_span("Resolve Child Agents"):
             pass

@@ -28,7 +28,7 @@ from mirix.functions.function_sets.memory_tools import (
 from mirix.services.memory_citation_manager import MemoryCitationManager
 from mirix.services.memory_source_manager import MemorySourceManager
 
-pytestmark = pytest.mark.asyncio(loop_scope="module")
+pytestmark = [pytest.mark.asyncio(loop_scope="module"), pytest.mark.requires_pg]
 
 TEST_ORG_ID = "citation-test-org"
 TEST_CLIENT_ID = "citation-test-client"

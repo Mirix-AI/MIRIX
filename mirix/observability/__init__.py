@@ -23,6 +23,15 @@ from mirix.observability.pii_mask import (
 from mirix.observability.skip_spans import (
     emit_idempotency_skip_span,
     emit_refused_to_process_span,
+    emit_save_outcome_span,
+)
+from mirix.observability.trace_attrs import (
+    bump_write_count,
+    get_write_counts,
+    reset_save_write_counts,
+    reset_trace_tags,
+    set_save_write_counts,
+    update_trace_attributes,
 )
 from mirix.observability.trace_propagation import (
     add_trace_to_queue_message,
@@ -43,6 +52,14 @@ __all__ = [
     "clear_tid",
     "emit_idempotency_skip_span",
     "emit_refused_to_process_span",
+    "emit_save_outcome_span",
+    # Trace-level attributes + per-save write counts.
+    "update_trace_attributes",
+    "reset_trace_tags",
+    "set_save_write_counts",
+    "reset_save_write_counts",
+    "bump_write_count",
+    "get_write_counts",
     # PII masking for Langfuse exports.
     "REDACTED_PLACEHOLDER",
     "build_langfuse_mask",

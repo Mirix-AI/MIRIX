@@ -1080,6 +1080,7 @@ async def test_api_create_raw_memory_auto_creates_user(api_client, test_actor, t
 # =================================================================
 
 
+@pytest.mark.requires_pg
 async def test_raw_memory_concurrent_append(raw_memory_manager, test_actor, test_user):
     """
     Test that concurrent appends don't lose updates.
@@ -1135,6 +1136,7 @@ async def test_raw_memory_concurrent_append(raw_memory_manager, test_actor, test
     print(f"Final context length: {len(final_context)} chars")
 
 
+@pytest.mark.requires_pg
 async def test_raw_memory_concurrent_tag_merge(raw_memory_manager, test_actor, test_user):
     """
     Test that concurrent filter_tags merges don't lose updates.

@@ -257,6 +257,214 @@ async def test_dispatch_save_keeps_tid_through_finalize_then_clears():
     assert get_tid() is None
 
 
+# --------------------------------------------------------------------------- #
+# Save-outcome marker (R4) + write-count accumulator lifecycle (R3 AC4).
+#
+# dispatch_save is the single per-save boundary that (a) knows the outcome for
+# ALL paths including refusals without source rows and (b) still holds the
+# trace context (its finally clears it AFTER the marker fires). The marker is
+# NOT gated on memory_source_id — only the DB finalize is.
+# --------------------------------------------------------------------------- #
+
+
+def _finalize_mgr():
+    return MagicMock(finalize_source=AsyncMock())
+
+
+@pytest.mark.asyncio
+async def test_marker_fires_exactly_once_on_success():
+    async def _run():
+        return None
+
+    with (
+        patch("mirix.services.memory_source_manager.MemorySourceManager", return_value=_finalize_mgr()),
+        patch("mirix.queue.error_policy.emit_save_outcome_span") as marker,
+    ):
+        await dispatch_save(_run, memory_source_id="src-ok")
+
+    marker.assert_called_once_with(SaveOutcome.SUCCESS, "src-ok", error_type=None)
+
+
+@pytest.mark.asyncio
+async def test_marker_fires_exactly_once_on_permanent_with_error_type():
+    async def _run():
+        raise LLMUnprocessableEntityError("422 rejected")
+
+    with (
+        patch("mirix.services.memory_source_manager.MemorySourceManager", return_value=_finalize_mgr()),
+        patch("mirix.queue.error_policy.emit_save_outcome_span") as marker,
+    ):
+        await dispatch_save(_run, memory_source_id="src-perm")
+
+    marker.assert_called_once_with(SaveOutcome.PERMANENT_FAILURE, "src-perm", error_type="LLMUnprocessableEntityError")
+
+
+@pytest.mark.asyncio
+async def test_marker_fires_exactly_once_on_transient_exhausted(monkeypatch):
+    from mirix.queue import error_policy as ep
+
+    monkeypatch.setattr(ep, "_backoff_seconds", lambda *_: 0.0)
+
+    async def _run():
+        raise LLMRateLimitError("429 always")
+
+    with (
+        patch("mirix.services.memory_source_manager.MemorySourceManager", return_value=_finalize_mgr()),
+        patch("mirix.queue.error_policy.emit_save_outcome_span") as marker,
+    ):
+        await dispatch_save(_run, memory_source_id="src-trans")
+
+    marker.assert_called_once_with(SaveOutcome.TRANSIENT_EXHAUSTED, "src-trans", error_type="LLMRateLimitError")
+
+
+@pytest.mark.asyncio
+async def test_no_intermediate_markers_across_in_policy_retries(monkeypatch):
+    """Transient retries happen INSIDE process_with_policy — a save that fails
+    transiently then succeeds gets exactly ONE marker, with the terminal
+    outcome (AC1/AC3: markers only at terminal states)."""
+    from mirix.queue import error_policy as ep
+
+    monkeypatch.setattr(ep, "_backoff_seconds", lambda *_: 0.0)
+    attempts = {"n": 0}
+
+    async def _run():
+        attempts["n"] += 1
+        if attempts["n"] < 3:
+            raise LLMRateLimitError("429 transient")
+        return None
+
+    with (
+        patch("mirix.services.memory_source_manager.MemorySourceManager", return_value=_finalize_mgr()),
+        patch("mirix.queue.error_policy.emit_save_outcome_span") as marker,
+    ):
+        await dispatch_save(_run, memory_source_id="src-retry")
+
+    assert attempts["n"] == 3
+    marker.assert_called_once_with(SaveOutcome.SUCCESS, "src-retry", error_type=None)
+
+
+@pytest.mark.asyncio
+async def test_marker_fires_even_without_memory_source_id():
+    """Refusal path: no source row, DB finalize skipped — the trace marker
+    still fires (a refused save must not look in-flight forever)."""
+    finalize = AsyncMock()
+
+    async def _run():
+        from mirix.errors import QueueMessageRejectedError
+
+        raise QueueMessageRejectedError("missing client_id")
+
+    with (
+        patch(
+            "mirix.services.memory_source_manager.MemorySourceManager",
+            return_value=MagicMock(finalize_source=finalize),
+        ),
+        patch("mirix.queue.error_policy.emit_save_outcome_span") as marker,
+    ):
+        outcome = await dispatch_save(_run, memory_source_id=None)
+
+    assert outcome.kind is SaveOutcome.PERMANENT_FAILURE
+    finalize.assert_not_awaited()
+    marker.assert_called_once_with(SaveOutcome.PERMANENT_FAILURE, None, error_type="QueueMessageRejectedError")
+
+
+@pytest.mark.asyncio
+async def test_marker_fires_before_trace_context_and_tid_clear():
+    """The finally clears trace context + TID; the marker must fire while they
+    are still set so it can attach to the right trace."""
+    from mirix.observability.context import get_tid, get_trace_context, set_tid, set_trace_context
+
+    seen = {}
+
+    def _capture(outcome, memory_source_id, error_type=None):
+        seen["tid"] = get_tid()
+        seen["trace_id"] = get_trace_context().get("trace_id")
+
+    async def _run():
+        set_tid("tid-marker")
+        set_trace_context(trace_id="trace-marker")
+
+    with (
+        patch("mirix.services.memory_source_manager.MemorySourceManager", return_value=_finalize_mgr()),
+        patch("mirix.queue.error_policy.emit_save_outcome_span", side_effect=_capture),
+    ):
+        await dispatch_save(_run, memory_source_id="src-order")
+
+    assert seen["tid"] == "tid-marker"
+    assert seen["trace_id"] == "trace-marker"
+    assert get_tid() is None
+    assert get_trace_context().get("trace_id") is None
+
+
+@pytest.mark.asyncio
+async def test_write_counts_fresh_during_save_and_reset_after():
+    """dispatch_save publishes a fresh write-count dict per save (R3 AC4) and
+    resets it in its finally — on the success path."""
+    from mirix.observability.trace_attrs import bump_write_count, get_write_counts
+
+    seen = {}
+
+    async def _run():
+        bump_write_count("episodic")
+        seen["during"] = get_write_counts()
+
+    with (
+        patch("mirix.services.memory_source_manager.MemorySourceManager", return_value=_finalize_mgr()),
+        patch("mirix.queue.error_policy.emit_save_outcome_span"),
+    ):
+        await dispatch_save(_run, memory_source_id="src-wc")
+
+    assert seen["during"] == {"episodic": 1}
+    assert get_write_counts() == {}
+
+
+@pytest.mark.asyncio
+async def test_write_counts_reset_even_when_step_raises():
+    from mirix.observability.trace_attrs import bump_write_count, get_write_counts
+
+    async def _run():
+        bump_write_count("core")
+        raise LLMUnprocessableEntityError("422")
+
+    with (
+        patch("mirix.services.memory_source_manager.MemorySourceManager", return_value=_finalize_mgr()),
+        patch("mirix.queue.error_policy.emit_save_outcome_span"),
+    ):
+        outcome = await dispatch_save(_run, memory_source_id="src-wc-fail")
+
+    assert outcome.kind is SaveOutcome.PERMANENT_FAILURE
+    assert get_write_counts() == {}
+
+
+@pytest.mark.asyncio
+async def test_sequential_saves_each_get_fresh_write_counts():
+    """Batch-worker shape: two saves back-to-back in the same task must not
+    see each other's counts."""
+    from mirix.observability.trace_attrs import bump_write_count, get_write_counts
+
+    seen = {}
+
+    async def _run_1():
+        bump_write_count("episodic")
+        seen["first"] = get_write_counts()
+
+    async def _run_2():
+        seen["second_at_start"] = get_write_counts()
+        bump_write_count("semantic")
+        seen["second"] = get_write_counts()
+
+    with (
+        patch("mirix.services.memory_source_manager.MemorySourceManager", return_value=_finalize_mgr()),
+        patch("mirix.queue.error_policy.emit_save_outcome_span"),
+    ):
+        await dispatch_save(_run_1, memory_source_id="src-1")
+        await dispatch_save(_run_2, memory_source_id="src-2")
+
+    assert seen["first"] == {"episodic": 1}
+    assert seen["second_at_start"] == {}
+    assert seen["second"] == {"semantic": 1}
+
+
 @pytest.mark.asyncio
 async def test_dispatch_save_clears_tid_even_when_step_raises_permanent():
     """The TID boundary holds on every exit path: a permanently-failing step

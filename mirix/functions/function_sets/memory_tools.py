@@ -37,6 +37,15 @@ async def _write_citation(agent: "Agent", memory_type: str, memory_id: str, cita
     if not memory_source_id:
         return
 
+    # Count this memory write for the save's root-span output
+    # (writes_by_memory_type). The citation funnel is the ONE path every
+    # memory write passes through — LLM pipeline and direct writes alike —
+    # so bumping here needs no per-tool plumbing. Pure ContextVar bump: no
+    # I/O, silent no-op outside an active save.
+    from mirix.observability.trace_attrs import bump_write_count
+
+    bump_write_count(memory_type)
+
     from mirix.services.memory_citation_manager import MemoryCitationManager
 
     citation_mgr = MemoryCitationManager()
@@ -954,10 +963,11 @@ async def trigger_memory_update(self: "Agent", user_message: object, memory_type
     async with timedspan(
         "Resolve Child Agents",
         metadata={"meta_agent_id": self.agent_state.id},
-    ):
+    ) as rec:
         child_agent_states = await self.agent_manager.list_agents_with_tools(
             parent_id=self.agent_state.id, actor=self.actor
         )
+        rec["span_output"] = {"child_agent_count": len(child_agent_states)}
 
     # Map agent types to agent states (key by string so lookup works for enum or deserialized string)
     def _agent_type_key(at):
@@ -1101,14 +1111,24 @@ async def trigger_memory_update(self: "Agent", user_message: object, memory_type
                 if parent_span_id:
                     trace_context_dict["parent_span_id"] = parent_span_id
 
+                # Metadata mirror as input — type + agent name only; topics are
+                # LLM output (sensitive) and deliberately excluded.
+                sub_agent_io = {
+                    "memory_type": memory_type,
+                    "agent_name": agent_state.name,
+                }
+                # Stamp the TID so the TID-filtered FST span capture keeps
+                # this span (without it the sub-agent spans are silently
+                # dropped from every capture).
+                from mirix.observability.context import stamp_tid
+
+                sub_agent_metadata = stamp_tid(sub_agent_io)
                 with langfuse.start_as_current_observation(
                     name=span_name,
                     as_type="agent",
                     trace_context=cast(TraceContext, trace_context_dict),
-                    metadata={
-                        "memory_type": memory_type,
-                        "agent_name": agent_state.name,
-                    },
+                    input=sub_agent_io,
+                    metadata=sub_agent_metadata,
                 ) as span:
                     mark_observation_as_child(span)
 
@@ -1135,6 +1155,21 @@ async def trigger_memory_update(self: "Agent", user_message: object, memory_type
                         topics=topics,
                         retrieved_memories=retrieved_memories,
                     )
+
+                    # This sub-agent's contribution to the save, from the
+                    # per-save write-count accumulator (shared dict across the
+                    # gathered sub-agent tasks).
+                    try:
+                        from mirix.observability.trace_attrs import get_write_counts
+
+                        span.update(
+                            output={
+                                "status": "completed",
+                                "writes_for_type": get_write_counts().get(memory_type, 0),
+                            }
+                        )
+                    except Exception as span_update_error:
+                        logger.debug("Failed to set %s span output: %s", span_name, span_update_error)
             else:
                 # No tracing available, run directly
                 await memory_agent.step(

@@ -703,8 +703,10 @@ class AsyncServer(Server):
         async with timedspan(
             "Load Agent State",
             metadata={"agent_id": agent_id},
-        ):
+        ) as rec:
             agent_state = await self.agent_manager.get_agent_by_id(agent_id=agent_id, actor=actor)
+            # Which agent class the id resolved to — the decision this step made.
+            rec["span_output"] = {"agent_type": str(agent_state.agent_type)}
 
         common_kwargs = dict(
             interface=interface or self.default_interface_factory(),

@@ -91,9 +91,12 @@ async def test_each_memory_type_emits_a_retrieve_span(monkeypatch):
     captured = []
 
     @asynccontextmanager
-    async def fake_timed_span(name, metadata=None):
-        captured.append((name, dict(metadata or {})))
-        yield
+    async def fake_timed_span(name, metadata=None, **kwargs):
+        # Mirror the real contract: yield a mutable ``rec`` dict the body may
+        # populate (incl. the reserved ``span_output`` key).
+        rec = {}
+        captured.append((name, dict(metadata or {}), rec))
+        yield rec
 
     # This patches the source module attribute. It intercepts correctly ONLY
     # because agent.py imports timedspan function-locally (binding at call
@@ -105,6 +108,35 @@ async def test_each_memory_type_emits_a_retrieve_span(monkeypatch):
     agent = _make_agent_for_prompt_build()
     await agent.build_system_prompt_with_memories(raw_system="SYS", topics="hello")
 
-    names = [n for n, _ in captured]
+    names = [n for n, _, _ in captured]
     for mem_type in ("core", "knowledge_vault", "episodic", "resource", "procedural", "semantic"):
         assert f"Retrieve {mem_type}" in names, f"missing Retrieve {mem_type} span; got {names}"
+
+
+@pytest.mark.asyncio
+async def test_each_retrieve_span_records_output_counts(monkeypatch):
+    """R3 AC2: every retrieval span carries a non-empty output — the item
+    counts it produced — instead of rendering Output: undefined."""
+    captured = []
+
+    @asynccontextmanager
+    async def fake_timed_span(name, metadata=None, **kwargs):
+        rec = {}
+        captured.append((name, rec))
+        yield rec
+
+    monkeypatch.setattr("mirix.observability.timed.timedspan", fake_timed_span)
+
+    agent = _make_agent_for_prompt_build()
+    await agent.build_system_prompt_with_memories(raw_system="SYS", topics="hello")
+
+    outputs = {name: rec.get("span_output") for name, rec in captured}
+    assert outputs["Retrieve core"] == {"block_count": 0}
+    assert outputs["Retrieve knowledge_vault"] == {"merged_count": 0, "total_items": 0}
+    assert outputs["Retrieve episodic"] == {
+        "recent_count": 0,
+        "relevant_count": 0,
+        "total_items": 0,
+    }
+    for mem_type in ("resource", "procedural", "semantic"):
+        assert outputs[f"Retrieve {mem_type}"] == {"merged_count": 0, "total_items": 0}

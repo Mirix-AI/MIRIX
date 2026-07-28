@@ -20,6 +20,14 @@ from mirix.utils import is_valid_url, printd
 logger = get_logger(__name__)
 
 
+def _embedding_span_metadata(metadata: dict) -> dict:
+    """Stamp the current TID into embedding-span metadata (a copy) — the FST
+    span capture filters by the tid metadata attribute."""
+    from mirix.observability.context import stamp_tid
+
+    return stamp_tid(metadata)
+
+
 def is_embedding_tracing_enabled() -> bool:
     """Check if Langfuse tracing is available and active for embeddings."""
     langfuse = get_langfuse_client()
@@ -88,11 +96,13 @@ async def traced_embedding_with_retry(
                 trace_context=cast(TraceContext, trace_context_dict),
                 model=model,
                 input={"text": text_preview},
-                metadata={
-                    "provider": provider,
-                    "endpoint": endpoint,
-                    "input_length": len(text),
-                },
+                metadata=_embedding_span_metadata(
+                    {
+                        "provider": provider,
+                        "endpoint": endpoint,
+                        "input_length": len(text),
+                    }
+                ),
             )
         except Exception as e:
             logger.error(f"Langfuse failed to start observation. Continuing without tracing: {e}")

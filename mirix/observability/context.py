@@ -36,6 +36,21 @@ def get_tid() -> Optional[str]:
     return current_tid.get()
 
 
+def stamp_tid(metadata: dict) -> dict:
+    """Return a copy of ``metadata`` with the current TID stamped in.
+
+    The Langfuse OTel export emits ``langfuse.observation.metadata.tid``, which
+    the full-stack-test span capture filters by — a span without it is silently
+    dropped from every TID-scoped capture. Omitted when there is no active TID
+    so we don't write a misleading ``tid=None``.
+    """
+    stamped = dict(metadata)
+    tid = get_tid()
+    if tid:
+        stamped.setdefault("tid", tid)
+    return stamped
+
+
 def set_trace_context(
     trace_id: Optional[str] = None,
     observation_id: Optional[str] = None,
@@ -79,11 +94,20 @@ def clear_trace_context() -> None:
 
     Should be called at the end of request/task processing to avoid
     context leaking between unrelated operations.
+
+    Also resets the accumulated trace-tag set (mirix.observability.trace_attrs)
+    so its lifecycle matches the trace context exactly: one request/save's tags
+    can never leak into the next one processed on the same task.
     """
     current_trace_id.set(None)
     current_observation_id.set(None)
     current_session_id.set(None)
     current_user_id.set(None)
+
+    # Local import to avoid a module cycle (trace_attrs imports this module).
+    from mirix.observability.trace_attrs import reset_trace_tags
+
+    reset_trace_tags()
 
 
 def clear_tid() -> None:
