@@ -1388,6 +1388,69 @@ class Agent(BaseAgent):
                 # runs.
                 fault_injection.resolve_directives(self.memory_source_id, getattr(self, "source_metadata", None))
 
+                # Thread-level message dedup (ECMS-513): for incremental threads,
+                # filter out messages already processed in prior saves so the LLM
+                # only extracts from genuinely new turns. Engaged only when
+                # external_thread_id is set and no explicit external_id was provided
+                # (explicit external_id = save-once source, keeps all-or-nothing).
+                if getattr(self, "external_thread_id", None) and not getattr(self, "external_id", None) and getattr(self, "source_messages", None):
+                    from mirix.services.source_message_manager import filter_new_messages
+                    from mirix.utils import flatten_messages_for_agent
+
+                    incoming_count = len(self.source_messages)
+                    async with timedspan(
+                        "Thread Message Dedup",
+                        metadata={
+                            "memory_source_id": self.memory_source_id,
+                            "external_thread_id": self.external_thread_id,
+                            "incoming_count": incoming_count,
+                        },
+                    ) as dedup_rec:
+                        seen_ext_ids, seen_hashes = await self.source_message_manager.get_seen_keys_for_thread(
+                            external_thread_id=self.external_thread_id,
+                        )
+                        new_msgs = filter_new_messages(self.source_messages, seen_ext_ids, seen_hashes)
+                        dedup_rec["span_output"] = {
+                            "seen_ext_ids": len(seen_ext_ids),
+                            "seen_hashes": len(seen_hashes),
+                            "new_count": len(new_msgs),
+                            "filtered_count": incoming_count - len(new_msgs),
+                        }
+
+                    if not new_msgs:
+                        logger.info(
+                            "All %d messages already seen for thread %s, skipping",
+                            incoming_count,
+                            self.external_thread_id,
+                        )
+                        emit_idempotency_skip_span(
+                            name="Idempotency Skip: thread messages all seen",
+                            reason="thread-message-dedup-all-seen",
+                            metadata={
+                                "memory_source_id": self.memory_source_id,
+                                "external_thread_id": self.external_thread_id,
+                                "incoming_count": incoming_count,
+                            },
+                        )
+                        return MirixUsageStatistics(step_count=0)
+
+                    # Replace source_messages with survivors and re-pack LLM input
+                    self.source_messages = new_msgs
+                    raw_input_messages = flatten_messages_for_agent(new_msgs)
+                    normalized_input_messages = []
+                    for m in raw_input_messages:
+                        if isinstance(m, Message):
+                            normalized_input_messages.append(m)
+                        elif isinstance(m, MessageCreate):
+                            normalized_input_messages.append(
+                                prepare_input_message_create(
+                                    m,
+                                    self.agent_state.id,
+                                    wrap_user_message=False,
+                                    wrap_system_message=True,
+                                )
+                            )
+
                 # Persist the memory source and its messages before we process it.
                 async with timedspan(
                     "Persist Memory Source",

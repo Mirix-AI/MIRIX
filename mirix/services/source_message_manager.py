@@ -75,6 +75,40 @@ def derive_external_id_from_message_ids(message_ids: List[str]) -> str:
     return f"auto-{h.hexdigest()}"
 
 
+def filter_new_messages(
+    msg_dicts: List[Dict[str, Any]],
+    seen_ext_ids: set,
+    seen_hashes: set,
+) -> List[Dict[str, Any]]:
+    """Filter a batch down to messages not yet seen for a thread.
+
+    Accepts raw source_message dicts (pre-normalization). For hash fallback,
+    normalizes content internally so the hash matches what bulk_insert persists.
+
+    Dedup key precedence: external_message_id if present, else content_hash.
+    Also dedupes within the incoming batch itself.
+    """
+    new_msgs = []
+    batch_ext_ids: set = set()
+    batch_hashes: set = set()
+
+    for msg in msg_dicts:
+        ext_id = msg.get("external_message_id")
+        if ext_id:
+            if ext_id in seen_ext_ids or ext_id in batch_ext_ids:
+                continue
+            batch_ext_ids.add(ext_id)
+        else:
+            normalized = normalize_message(msg)
+            ch = compute_content_hash(normalized["role"], normalized["content"])
+            if ch in seen_hashes or ch in batch_hashes:
+                continue
+            batch_hashes.add(ch)
+        new_msgs.append(msg)
+
+    return new_msgs
+
+
 def _get(msg, key, default=None):
     """Read a field from a dict or an object attribute."""
     if isinstance(msg, dict):
@@ -135,6 +169,48 @@ class SourceMessageManager:
         from mirix.server.server import db_context
 
         self.session_maker = db_context
+
+    async def get_seen_keys_for_thread(
+        self,
+        external_thread_id: str,
+    ) -> tuple:
+        """Return (set of external_message_ids, set of content_hashes) already
+        persisted for this thread across all memory_sources.
+
+        Used by message-level idempotency to filter overlapping sends.
+        """
+        from mirix.database.relational_provider import get_relational_provider
+
+        provider = get_relational_provider()
+        if provider:
+            from mirix.services.memory_manager_helpers import find_all_using_named_query
+
+            records = await find_all_using_named_query(
+                provider,
+                "source_messages",
+                "source_message_manager.get_seen_keys_by_thread",
+                params={"externalThreadId": external_thread_id},
+            )
+            ext_ids = {r["external_message_id"] for r in records if r.get("external_message_id")}
+            hashes = {r["content_hash"] for r in records if r.get("content_hash")}
+            return ext_ids, hashes
+
+        async with self.session_maker() as session:
+            query = (
+                select(
+                    SourceMessageModel.external_message_id,
+                    SourceMessageModel.content_hash,
+                )
+                .where(
+                    SourceMessageModel.external_thread_id == external_thread_id,
+                    ~SourceMessageModel.is_deleted,
+                )
+            )
+            result = await session.execute(query)
+            rows = result.all()
+            ext_ids = {r.external_message_id for r in rows if r.external_message_id}
+            hashes = {r.content_hash for r in rows if r.content_hash}
+            return ext_ids, hashes
 
     async def bulk_insert(
         self,
