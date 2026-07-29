@@ -1393,9 +1393,10 @@ class Agent(BaseAgent):
                 # only extracts from genuinely new turns. Engaged only when:
                 # - external_thread_id is set (incremental thread)
                 # - no explicit external_id (save-once sources keep all-or-nothing)
-                # - source is None (first attempt; on retry the source row exists
-                #   and _persist_memory_source + bulk_insert handle idempotency)
-                if getattr(self, "external_thread_id", None) and not getattr(self, "external_id", None) and getattr(self, "source_messages", None) and source is None:
+                # On Kafka retry (source exists), exclude this source's own
+                # persisted messages from the "seen" set so the filter correctly
+                # returns the same delta as the first attempt.
+                if getattr(self, "external_thread_id", None) and not getattr(self, "external_id", None) and getattr(self, "source_messages", None):
                     from mirix.services.source_message_manager import filter_new_messages
                     from mirix.utils import flatten_messages_for_agent
 
@@ -1410,6 +1411,7 @@ class Agent(BaseAgent):
                     ) as dedup_rec:
                         seen_ext_ids, seen_hashes = await self.source_message_manager.get_seen_keys_for_thread(
                             external_thread_id=self.external_thread_id,
+                            exclude_source_id=self.memory_source_id if source is not None else None,
                         )
                         new_msgs = filter_new_messages(self.source_messages, seen_ext_ids, seen_hashes)
                         dedup_rec["span_output"] = {

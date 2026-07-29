@@ -173,11 +173,18 @@ class SourceMessageManager:
     async def get_seen_keys_for_thread(
         self,
         external_thread_id: str,
+        exclude_source_id: Optional[str] = None,
     ) -> tuple:
         """Return (set of external_message_ids, set of content_hashes) already
         persisted for this thread across all memory_sources.
 
         Used by message-level idempotency to filter overlapping sends.
+
+        Args:
+            exclude_source_id: If set, exclude messages belonging to this
+                memory_source_id from the result. Used on Kafka retry so the
+                current source's own persisted messages don't appear in the
+                "already seen" set.
         """
         from mirix.database.relational_provider import get_relational_provider
 
@@ -191,6 +198,8 @@ class SourceMessageManager:
                 "source_message_manager.get_seen_keys_by_thread",
                 params={"externalThreadId": external_thread_id},
             )
+            if exclude_source_id:
+                records = [r for r in records if r.get("memory_source_id") != exclude_source_id]
             ext_ids = {r["external_message_id"] for r in records if r.get("external_message_id")}
             hashes = {r["content_hash"] for r in records if r.get("content_hash")}
             return ext_ids, hashes
@@ -206,6 +215,8 @@ class SourceMessageManager:
                     ~SourceMessageModel.is_deleted,
                 )
             )
+            if exclude_source_id:
+                query = query.where(SourceMessageModel.memory_source_id != exclude_source_id)
             result = await session.execute(query)
             rows = result.all()
             ext_ids = {r.external_message_id for r in rows if r.external_message_id}

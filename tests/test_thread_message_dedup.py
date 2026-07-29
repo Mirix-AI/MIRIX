@@ -223,6 +223,11 @@ class TestThreadMessageDedupInStep:
                 user=user,
             )
 
+        # First attempt: exclude_source_id is None (no prior source row)
+        agent.source_message_manager.get_seen_keys_for_thread.assert_called_once_with(
+            external_thread_id="thread-1",
+            exclude_source_id=None,
+        )
         # source_messages stays intact for full provenance storage
         assert len(agent.source_messages) == 3
         agent._persist_memory_source.assert_called_once()
@@ -296,9 +301,10 @@ class TestThreadMessageDedupInStep:
         agent._persist_memory_source.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_retry_skips_thread_dedup(self):
+    async def test_retry_excludes_own_source_from_seen_set(self):
         """On Kafka retry (source exists, processing_complete=False), thread
-        dedup is skipped so _persist_memory_source handles idempotency."""
+        dedup runs but excludes this source's own messages so the filter
+        returns the same delta as the first attempt."""
         source_messages = [
             {"role": "user", "content": "old msg", "external_message_id": "m4"},
             {"role": "assistant", "content": "old reply", "external_message_id": "m5"},
@@ -309,6 +315,10 @@ class TestThreadMessageDedupInStep:
         existing_source = MagicMock()
         existing_source.processing_complete = False
         agent.memory_source_manager.get_by_id = AsyncMock(return_value=existing_source)
+        # Seen set from prior saves (excluding this source's own messages)
+        agent.source_message_manager.get_seen_keys_for_thread = AsyncMock(
+            return_value=({"m4", "m5"}, set())
+        )
 
         resp = MagicMock()
         resp.continue_chaining = False
@@ -333,7 +343,11 @@ class TestThreadMessageDedupInStep:
                 user=user,
             )
 
-        agent.source_message_manager.get_seen_keys_for_thread.assert_not_called()
+        agent.source_message_manager.get_seen_keys_for_thread.assert_called_once_with(
+            external_thread_id="thread-1",
+            exclude_source_id="src-123",
+        )
+        # source_messages stays intact for provenance
         assert len(agent.source_messages) == 3
         agent._persist_memory_source.assert_called_once()
 
