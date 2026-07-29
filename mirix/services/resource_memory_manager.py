@@ -949,6 +949,7 @@ class ResourceMemoryManager:
                     "user_id": user_id,
                     "agent_id": agent_id,
                     "client_id": client_id,
+                    "_created_by_id": actor.id,
                     "last_modify": {
                         "timestamp": datetime.now(timezone.utc).isoformat(),
                         "operation": "created",

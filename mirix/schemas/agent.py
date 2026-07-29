@@ -66,7 +66,7 @@ class AgentState(OrmMetadataBase, validate_assignment=True):
 
     # llm information
     llm_config: LLMConfig = Field(..., description="The LLM configuration used by the agent.")
-    embedding_config: EmbeddingConfig = Field(..., description="The embedding configuration used by the agent.")
+    embedding_config: Optional[EmbeddingConfig] = Field(default=None, description="The embedding configuration used by the agent.")
 
     # This is an object representing the in-process state of a running `Agent`
     # Field in this object can be theoretically edited by tools, and will be persisted by the ORM
