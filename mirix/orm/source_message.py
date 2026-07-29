@@ -119,30 +119,6 @@ class SourceMessage(SqlalchemyBase):
                     if settings.mirix_pg_uri_no_default
                     else None
                 ),
-                # Cross-source thread dedup: look up seen external_message_ids for a thread
-                (
-                    Index(
-                        "ix_source_messages_thread_ext_msg",
-                        "external_thread_id",
-                        "external_message_id",
-                        postgresql_where=text(
-                            "external_thread_id IS NOT NULL AND external_message_id IS NOT NULL"
-                        ),
-                    )
-                    if settings.mirix_pg_uri_no_default
-                    else None
-                ),
-                # Cross-source thread dedup: look up seen content_hashes for a thread
-                (
-                    Index(
-                        "ix_source_messages_thread_hash",
-                        "external_thread_id",
-                        "content_hash",
-                        postgresql_where=text("external_thread_id IS NOT NULL"),
-                    )
-                    if settings.mirix_pg_uri_no_default
-                    else None
-                ),
             ],
         )
     )
