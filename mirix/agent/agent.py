@@ -1390,10 +1390,12 @@ class Agent(BaseAgent):
 
                 # Thread-level message dedup (ECMS-513): for incremental threads,
                 # filter out messages already processed in prior saves so the LLM
-                # only extracts from genuinely new turns. Engaged only when
-                # external_thread_id is set and no explicit external_id was provided
-                # (explicit external_id = save-once source, keeps all-or-nothing).
-                if getattr(self, "external_thread_id", None) and not getattr(self, "external_id", None) and getattr(self, "source_messages", None):
+                # only extracts from genuinely new turns. Engaged only when:
+                # - external_thread_id is set (incremental thread)
+                # - no explicit external_id (save-once sources keep all-or-nothing)
+                # - source is None (first attempt; on retry the source row exists
+                #   and _persist_memory_source + bulk_insert handle idempotency)
+                if getattr(self, "external_thread_id", None) and not getattr(self, "external_id", None) and getattr(self, "source_messages", None) and source is None:
                     from mirix.services.source_message_manager import filter_new_messages
                     from mirix.utils import flatten_messages_for_agent
 
@@ -1434,8 +1436,10 @@ class Agent(BaseAgent):
                         )
                         return MirixUsageStatistics(step_count=0)
 
-                    # Replace source_messages with survivors and re-pack LLM input
-                    self.source_messages = new_msgs
+                    # Keep self.source_messages intact for _persist_memory_source
+                    # (stores ALL messages under this source for full provenance;
+                    # bulk_insert ON CONFLICT handles per-source uniqueness).
+                    # Only re-pack the LLM input to the filtered set.
                     raw_input_messages = flatten_messages_for_agent(new_msgs)
                     normalized_input_messages = []
                     for m in raw_input_messages:
@@ -1450,6 +1454,7 @@ class Agent(BaseAgent):
                                     wrap_system_message=True,
                                 )
                             )
+                    input_messages_for_persistence = list(normalized_input_messages)
 
                 # Persist the memory source and its messages before we process it.
                 async with timedspan(

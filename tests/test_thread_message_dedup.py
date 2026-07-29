@@ -223,8 +223,8 @@ class TestThreadMessageDedupInStep:
                 user=user,
             )
 
-        assert len(agent.source_messages) == 1
-        assert agent.source_messages[0]["external_message_id"] == "m6"
+        # source_messages stays intact for full provenance storage
+        assert len(agent.source_messages) == 3
         agent._persist_memory_source.assert_called_once()
 
     @pytest.mark.asyncio
@@ -293,6 +293,48 @@ class TestThreadMessageDedupInStep:
             )
 
         agent.source_message_manager.get_seen_keys_for_thread.assert_not_called()
+        agent._persist_memory_source.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_retry_skips_thread_dedup(self):
+        """On Kafka retry (source exists, processing_complete=False), thread
+        dedup is skipped so _persist_memory_source handles idempotency."""
+        source_messages = [
+            {"role": "user", "content": "old msg", "external_message_id": "m4"},
+            {"role": "assistant", "content": "old reply", "external_message_id": "m5"},
+            {"role": "user", "content": "new msg", "external_message_id": "m6"},
+        ]
+        agent, actor, user = _setup_agent(source_messages=source_messages)
+        # Simulate retry: source exists but not complete
+        existing_source = MagicMock()
+        existing_source.processing_complete = False
+        agent.memory_source_manager.get_by_id = AsyncMock(return_value=existing_source)
+
+        resp = MagicMock()
+        resp.continue_chaining = False
+        resp.function_failed = False
+        resp.usage = MagicMock(completion_tokens=10, prompt_tokens=20, total_tokens=30)
+        resp.messages = []
+        agent.inner_step = AsyncMock(return_value=resp)
+        agent._extract_topics_from_messages = AsyncMock(return_value=["topic1"])
+
+        from mirix.schemas.message import MessageCreate
+
+        input_msg = MessageCreate(role="user", content="placeholder")
+
+        with patch("mirix.agent.agent.LLMClient"):
+            await agent.step(
+                input_messages=[input_msg],
+                chaining=False,
+                max_chaining_steps=1,
+                stream=False,
+                skip_verify=True,
+                actor=actor,
+                user=user,
+            )
+
+        agent.source_message_manager.get_seen_keys_for_thread.assert_not_called()
+        assert len(agent.source_messages) == 3
         agent._persist_memory_source.assert_called_once()
 
     @pytest.mark.asyncio
