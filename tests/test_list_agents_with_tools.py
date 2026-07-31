@@ -35,6 +35,13 @@ def _agent_row(agent_id, agent_type, tool_id, tool_name):
         "agent_llm_config": json.dumps(
             {"model": "gpt-4o-mini", "model_endpoint_type": "openai", "context_window": 8192}
         ),
+        "agent_embedding_config": json.dumps(
+            {
+                "embedding_endpoint_type": "openai",
+                "embedding_model": "text-embedding-3-small",
+                "embedding_dim": 1536,
+            }
+        ),
         "agent_system": "you are a memory agent",
         "agent_tool_rules": None,
         "agent_mcp_tools": None,
@@ -182,6 +189,7 @@ _NQ_COLUMN_ORDER = [
     "agent_name",
     "agent_description",
     "agent_llm_config",
+    "agent_embedding_config",
     "agent_system",
     "agent_tool_rules",
     "agent_mcp_tools",

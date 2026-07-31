@@ -1528,6 +1528,7 @@ class AgentManager:
                     parent_id=row.get("agent_parent_id"),
                     organization_id=row.get("agent_organization_id"),
                     llm_config=LLMConfig(**_parse_json(row.get("agent_llm_config"))),
+                    embedding_config=EmbeddingConfig(**_parse_json(row.get("agent_embedding_config"))) if row.get("agent_embedding_config") else None,
                     tool_rules=_parse_json(row.get("agent_tool_rules")),
                     mcp_tools=_parse_json(row.get("agent_mcp_tools")),
                     tools=[],
