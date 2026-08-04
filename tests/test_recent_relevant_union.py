@@ -78,6 +78,7 @@ class TestFetchRecentIndexingLagWindow:
     def _agent(self):
         agent = Agent.__new__(Agent)
         agent.user = SimpleNamespace(id="u1", organization_id="org1")
+        agent._block_scopes = ["scope-a"]
         return agent
 
     async def test_returns_empty_when_search_provider_missing(self):
@@ -113,6 +114,7 @@ class TestFetchRecentIndexingLagWindow:
         assert call[0][0] == "semantic_memory"
         assert call[1]["user_id"] == "u1"
         assert call[1]["organization_id"] == "org1"
+        assert call[1]["scopes"] == ["scope-a"]
         tr = call[1]["time_range"]
         assert "updated_at__gte" in tr and "created_at__gte" in tr
         assert call[1]["time_range_or_null_updated"] is True
