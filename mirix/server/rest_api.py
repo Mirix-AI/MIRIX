@@ -3369,7 +3369,14 @@ async def search_memory(
                     user=user,
                     query=query,
                     embedded_text=(embedded_text_padded if search_method == "embedding" and query else None),
-                    search_field=search_field if search_field != "null" else "summary",
+                    # Unlike the other memory types, semantic items split their
+                    # distinguishing content across `name` (the entity name)
+                    # plus prose `summary`/`details` — a single hardcoded
+                    # field misses whichever of those the query terms land in
+                    # (e.g. a token repeated only in `name`). Passing None lets
+                    # the manager's own default search every configured text
+                    # field for semantic (`name`, `summary`, `details`).
+                    search_field=search_field if search_field != "null" else None,
                     search_method=search_method,
                     limit=limit,
                     timezone_str=timezone_str,
@@ -3506,7 +3513,10 @@ async def search_memory(
                 user=user,
                 query=query,
                 embedded_text=(embedded_text_padded if search_method == "embedding" and query else None),
-                search_field=search_field if search_field != "null" else "summary",
+                # See search_semantic() above: semantic's distinguishing content
+                # spans name/summary/details, so None lets the manager search
+                # all of them instead of hardcoding a single field.
+                search_field=search_field if search_field != "null" else None,
                 search_method=search_method,
                 limit=limit,
                 timezone_str=timezone_str,
@@ -3821,7 +3831,10 @@ async def search_memory_all_users(
                     organization_id=effective_org_id,
                     query=query,
                     embedded_text=(embedded_text_padded if search_method == "embedding" and query else None),
-                    search_field=search_field if search_field != "null" else "summary",
+                    # See search_semantic() in search_memory() above: semantic's
+                    # distinguishing content spans name/summary/details, so
+                    # None lets the manager search all of them.
+                    search_field=search_field if search_field != "null" else None,
                     search_method=search_method,
                     limit=limit,
                     timezone_str="UTC",
@@ -3941,7 +3954,10 @@ async def search_memory_all_users(
                 organization_id=effective_org_id,
                 query=query,
                 embedded_text=(embedded_text_padded if search_method == "embedding" and query else None),
-                search_field=search_field if search_field != "null" else "summary",
+                # See search_semantic() above: semantic's distinguishing
+                # content spans name/summary/details, so None lets the
+                # manager search all of them.
+                search_field=search_field if search_field != "null" else None,
                 search_method=search_method,
                 limit=limit,
                 timezone_str="UTC",
