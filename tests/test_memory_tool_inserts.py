@@ -505,6 +505,29 @@ class TestEpisodicMemoryInsertMissingActor:
         assert call_kwargs["event_actor"] == "user"
 
 
+class TestEpisodicMemoryInsertMissingEventType:
+    async def test_defaults_event_type_to_user_message_when_omitted(self):
+        agent, mock_insert = _make_agent_stub(
+            manager_attr="episodic_memory_manager",
+            insert_method="insert_event",
+        )
+        items = [
+            {
+                # 'event_type' omitted entirely — must not raise KeyError.
+                "actor": "user",
+                "summary": "s",
+                "details": "d",
+                "occurred_at": datetime.now().isoformat(),
+            }
+        ]
+
+        result = await episodic_memory_insert(agent, items)
+
+        assert "Events inserted" in result
+        call_kwargs = mock_insert.call_args[1]
+        assert call_kwargs["event_type"] == "user_message"
+
+
 class TestEpisodicMemoryReplaceMissingActor:
     async def test_defaults_actor_to_user_when_omitted(self):
         agent, mock_insert = _make_agent_stub(
@@ -527,6 +550,31 @@ class TestEpisodicMemoryReplaceMissingActor:
 
         call_kwargs = mock_insert.call_args[1]
         assert call_kwargs["event_actor"] == "user"
+
+
+class TestEpisodicMemoryReplaceMissingEventType:
+    async def test_defaults_event_type_to_user_message_when_omitted(self):
+        agent, mock_insert = _make_agent_stub(
+            manager_attr="episodic_memory_manager",
+            insert_method="insert_event",
+        )
+        agent.episodic_memory_manager.get_episodic_memory_by_id = AsyncMock(return_value=SimpleNamespace())
+        agent.episodic_memory_manager.delete_event_by_id = AsyncMock()
+
+        new_items = [
+            {
+                # 'event_type' omitted entirely — must not raise KeyError.
+                "actor": "user",
+                "summary": "s",
+                "details": "d",
+                "occurred_at": datetime.now().isoformat(),
+            }
+        ]
+
+        await episodic_memory_replace(agent, ["event-1"], new_items)
+
+        call_kwargs = mock_insert.call_args[1]
+        assert call_kwargs["event_type"] == "user_message"
 
 
 class TestSemanticMemoryInsertMissingSource:

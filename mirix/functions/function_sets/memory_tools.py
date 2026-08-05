@@ -259,7 +259,9 @@ async def episodic_memory_insert(self: "Agent", items: List[EpisodicEventForLLM]
             agent_state=self.agent_state,
             agent_id=agent_id,
             timestamp=timestamp,  # Use potentially overridden timestamp
-            event_type=item["event_type"],
+            # `event_type` is a prompt-mandated constant ("user_message"); same
+            # omission risk as `actor` below (ECMS-534).
+            event_type=item.get("event_type", "user_message"),
             # Extraction-path clients feed raw record text as a synthetic user
             # message with no real user/assistant turn, so the LLM has no
             # natural value to supply for `actor` and omits it. Default to
@@ -375,7 +377,9 @@ async def episodic_memory_replace(self: "Agent", event_ids: List[str], new_items
             agent_state=self.agent_state,
             agent_id=agent_id,
             timestamp=timestamp,  # Use potentially overridden timestamp
-            event_type=new_item["event_type"],
+            # See episodic_memory_insert above (ECMS-534): event_type is a
+            # prompt-mandated constant ("user_message"), same omission risk.
+            event_type=new_item.get("event_type", "user_message"),
             # See episodic_memory_insert above (ECMS-534): default to "user"
             # when the LLM omits actor on an extraction-path save.
             event_actor=new_item.get("actor", "user"),
