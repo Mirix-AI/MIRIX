@@ -260,7 +260,11 @@ async def episodic_memory_insert(self: "Agent", items: List[EpisodicEventForLLM]
             agent_id=agent_id,
             timestamp=timestamp,  # Use potentially overridden timestamp
             event_type=item["event_type"],
-            event_actor=item["actor"],
+            # Extraction-path clients feed raw record text as a synthetic user
+            # message with no real user/assistant turn, so the LLM has no
+            # natural value to supply for `actor` and omits it. Default to
+            # "user" — correct in virtually every omission case (ECMS-534).
+            event_actor=item.get("actor", "user"),
             summary=item["summary"],
             details=item["details"],
             organization_id=self.actor.organization_id,
@@ -372,7 +376,9 @@ async def episodic_memory_replace(self: "Agent", event_ids: List[str], new_items
             agent_id=agent_id,
             timestamp=timestamp,  # Use potentially overridden timestamp
             event_type=new_item["event_type"],
-            event_actor=new_item["actor"],
+            # See episodic_memory_insert above (ECMS-534): default to "user"
+            # when the LLM omits actor on an extraction-path save.
+            event_actor=new_item.get("actor", "user"),
             summary=new_item["summary"],
             details=new_item["details"],
             organization_id=self.actor.organization_id,
@@ -634,7 +640,10 @@ async def semantic_memory_insert(self: "Agent", items: List[SemanticMemoryItemBa
             name=item["name"],
             summary=item["summary"],
             details=item["details"],
-            source=item["source"],
+            # `source` is a free-text origin reference; when the LLM omits it
+            # the info came straight from the user message rather than a
+            # citable artifact (ECMS-534).
+            source=item.get("source", "user message"),
             organization_id=self.actor.organization_id,
             actor=self.actor,  # Client for write operations
             filter_tags=filter_tags if filter_tags else None,
@@ -685,7 +694,8 @@ async def semantic_memory_update(
             name=item["name"],
             summary=item["summary"],
             details=item["details"],
-            source=item["source"],
+            # See semantic_memory_insert above (ECMS-534).
+            source=item.get("source", "user message"),
             actor=self.actor,
             organization_id=self.actor.organization_id,
             filter_tags=filter_tags if filter_tags else None,
@@ -727,7 +737,8 @@ async def knowledge_vault_insert(self: "Agent", items: List[KnowledgeVaultItemBa
             agent_state=self.agent_state,
             agent_id=agent_id,
             entry_type=item["entry_type"],
-            source=item["source"],
+            # See semantic_memory_insert above (ECMS-534).
+            source=item.get("source", "user message"),
             sensitivity=item["sensitivity"],
             secret_value=item["secret_value"],
             caption=item["caption"],
@@ -774,7 +785,8 @@ async def knowledge_vault_update(self: "Agent", old_ids: List[str], new_items: L
             agent_state=self.agent_state,
             agent_id=agent_id,
             entry_type=item["entry_type"],
-            source=item["source"],
+            # See semantic_memory_insert above (ECMS-534).
+            source=item.get("source", "user message"),
             sensitivity=item["sensitivity"],
             secret_value=item["secret_value"],
             caption=item["caption"],

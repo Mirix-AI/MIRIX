@@ -16,10 +16,13 @@ import pytest
 
 from mirix.functions.function_sets.memory_tools import (
     episodic_memory_insert,
+    episodic_memory_replace,
     knowledge_vault_insert,
+    knowledge_vault_update,
     procedural_memory_insert,
     resource_memory_insert,
     semantic_memory_insert,
+    semantic_memory_update,
 )
 
 pytestmark = pytest.mark.asyncio(loop_scope="module")
@@ -467,3 +470,137 @@ class TestEpisodicMemoryInsertCitation:
             MockMgr.return_value.create = AsyncMock(return_value=None)
             await episodic_memory_insert(agent, items)
             MockMgr.return_value.create.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# ECMS-534 — LLM-omitted 'actor'/'source' keys must be defaulted, not KeyError
+#
+# Extraction-path clients feed raw record text as a synthetic user message
+# with no real user/assistant turn, so the LLM sometimes omits these
+# schema-required free-text fields. A bare dict access (`item["actor"]`)
+# used to raise an uncaught KeyError that dead-lettered the entire save.
+# ---------------------------------------------------------------------------
+
+
+class TestEpisodicMemoryInsertMissingActor:
+    async def test_defaults_actor_to_user_when_omitted(self):
+        agent, mock_insert = _make_agent_stub(
+            manager_attr="episodic_memory_manager",
+            insert_method="insert_event",
+        )
+        items = [
+            {
+                "event_type": "activity",
+                # 'actor' omitted entirely — must not raise KeyError.
+                "summary": "s",
+                "details": "d",
+                "occurred_at": datetime.now().isoformat(),
+            }
+        ]
+
+        result = await episodic_memory_insert(agent, items)
+
+        assert "Events inserted" in result
+        call_kwargs = mock_insert.call_args[1]
+        assert call_kwargs["event_actor"] == "user"
+
+
+class TestEpisodicMemoryReplaceMissingActor:
+    async def test_defaults_actor_to_user_when_omitted(self):
+        agent, mock_insert = _make_agent_stub(
+            manager_attr="episodic_memory_manager",
+            insert_method="insert_event",
+        )
+        agent.episodic_memory_manager.get_episodic_memory_by_id = AsyncMock(return_value=SimpleNamespace())
+        agent.episodic_memory_manager.delete_event_by_id = AsyncMock()
+
+        new_items = [
+            {
+                "event_type": "activity",
+                "summary": "s",
+                "details": "d",
+                "occurred_at": datetime.now().isoformat(),
+            }
+        ]
+
+        await episodic_memory_replace(agent, ["event-1"], new_items)
+
+        call_kwargs = mock_insert.call_args[1]
+        assert call_kwargs["event_actor"] == "user"
+
+
+class TestSemanticMemoryInsertMissingSource:
+    async def test_defaults_source_to_user_message_when_omitted(self):
+        agent, mock_insert = _make_agent_stub(
+            manager_attr="semantic_memory_manager",
+            insert_method="insert_semantic_item",
+        )
+        # 'source' omitted entirely — must not raise KeyError.
+        items = [{"name": "n", "summary": "s", "details": "d"}]
+
+        result = await semantic_memory_insert(agent, items)
+
+        assert "1" in result
+        call_kwargs = mock_insert.call_args[1]
+        assert call_kwargs["source"] == "user message"
+
+
+class TestSemanticMemoryUpdateMissingSource:
+    async def test_defaults_source_to_user_message_when_omitted(self):
+        agent, mock_insert = _make_agent_stub(
+            manager_attr="semantic_memory_manager",
+            insert_method="insert_semantic_item",
+        )
+        agent.semantic_memory_manager.delete_semantic_item_by_id = AsyncMock()
+
+        new_items = [{"name": "n", "summary": "s", "details": "d"}]
+
+        await semantic_memory_update(agent, ["sem-old-1"], new_items)
+
+        call_kwargs = mock_insert.call_args[1]
+        assert call_kwargs["source"] == "user message"
+
+
+class TestKnowledgeVaultInsertMissingSource:
+    async def test_defaults_source_to_user_message_when_omitted(self):
+        agent, mock_insert = _make_agent_stub(
+            manager_attr="knowledge_vault_manager",
+            insert_method="insert_knowledge",
+        )
+        items = [
+            {
+                "entry_type": "secret",
+                "sensitivity": "high",
+                "secret_value": "val",
+                "caption": "cap",
+            }
+        ]
+
+        result = await knowledge_vault_insert(agent, items)
+
+        assert "1" in result
+        call_kwargs = mock_insert.call_args[1]
+        assert call_kwargs["source"] == "user message"
+
+
+class TestKnowledgeVaultUpdateMissingSource:
+    async def test_defaults_source_to_user_message_when_omitted(self):
+        agent, mock_insert = _make_agent_stub(
+            manager_attr="knowledge_vault_manager",
+            insert_method="insert_knowledge",
+        )
+        agent.knowledge_vault_manager.delete_knowledge_by_id = AsyncMock()
+
+        new_items = [
+            {
+                "entry_type": "secret",
+                "sensitivity": "high",
+                "secret_value": "val",
+                "caption": "cap",
+            }
+        ]
+
+        await knowledge_vault_update(agent, ["kv-old-1"], new_items)
+
+        call_kwargs = mock_insert.call_args[1]
+        assert call_kwargs["source"] == "user message"
