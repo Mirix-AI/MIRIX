@@ -2297,7 +2297,11 @@ async def retrieve_memories_by_keywords(
         Dictionary containing all memory types with their items
     """
     scopes = client.read_scopes
-    search_method = "bm25"
+    # Conversation-path retrieval method for all six memory types. Defaults to
+    # "hybrid" (lexical + semantic score fusion); env-overridable via
+    # settings.conversation_search_method for A/B measurement (e.g.
+    # LongMemEval). See mirix/settings.py for the accepted values.
+    search_method = settings.conversation_search_method
 
     # Log temporal filtering for monitoring
     if start_date or end_date:
