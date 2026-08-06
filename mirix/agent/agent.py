@@ -10,6 +10,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 import numpy as np
 import pytz
 
+from mirix.agent.tool_normalizers import normalize_tool_args
 from mirix.agent.tool_validators import validate_tool_args
 from mirix.constants import (
     CHAINING_FOR_MEMORY_UPDATE,
@@ -1058,6 +1059,13 @@ class Agent(BaseAgent):
                         )
 
                     continue_chaining = True
+
+                    # Fill in omitted prompt-mandated constant fields (e.g.
+                    # actor, event_type, source) before validation, so a
+                    # missing key degrades to its default instead of either
+                    # failing validation or crashing later via bare item[...]
+                    # access in memory_tools.py (ECMS-534).
+                    normalize_tool_args(function_name, function_args)
 
                     # Failure case 3: function arguments fail validation
                     validation_error = validate_tool_args(function_name, function_args)
