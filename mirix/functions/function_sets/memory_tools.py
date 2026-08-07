@@ -374,7 +374,6 @@ async def episodic_memory_replace(self: "Agent", event_ids: List[str], new_items
             agent_state=self.agent_state,
             agent_id=agent_id,
             timestamp=timestamp,  # Use potentially overridden timestamp
-            # See episodic_memory_insert above (ECMS-534).
             event_type=new_item["event_type"],
             event_actor=new_item["actor"],
             summary=new_item["summary"],
@@ -691,7 +690,6 @@ async def semantic_memory_update(
             name=item["name"],
             summary=item["summary"],
             details=item["details"],
-            # See semantic_memory_insert above (ECMS-534).
             source=item["source"],
             actor=self.actor,
             organization_id=self.actor.organization_id,
@@ -734,7 +732,6 @@ async def knowledge_vault_insert(self: "Agent", items: List[KnowledgeVaultItemBa
             agent_state=self.agent_state,
             agent_id=agent_id,
             entry_type=item["entry_type"],
-            # See semantic_memory_insert above (ECMS-534).
             source=item["source"],
             sensitivity=item["sensitivity"],
             secret_value=item["secret_value"],
@@ -782,7 +779,6 @@ async def knowledge_vault_update(self: "Agent", old_ids: List[str], new_items: L
             agent_state=self.agent_state,
             agent_id=agent_id,
             entry_type=item["entry_type"],
-            # See semantic_memory_insert above (ECMS-534).
             source=item["source"],
             sensitivity=item["sensitivity"],
             secret_value=item["secret_value"],
