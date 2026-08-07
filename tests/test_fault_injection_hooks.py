@@ -55,7 +55,7 @@ def _make_tool_agent(memory_source_id="src-hook") -> Agent:
     # get_blocks runs before the hook; stub it out.
     agent.block_manager = MagicMock()
     agent.block_manager.get_blocks = AsyncMock(return_value=[])
-    agent._block_scopes = []
+    agent._save_scopes = []
 
     agent_state = MagicMock(spec=AgentState)
     agent_state.id = "agent-meta"

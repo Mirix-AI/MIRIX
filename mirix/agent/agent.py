@@ -251,10 +251,12 @@ class Agent(BaseAgent):
         # See the comment in queue_util.py put_messages() for the full explanation.
         self.source_messages = None
 
-        # Derive block scopes from filter_tags for block_manager.get_blocks() calls.
-        # filter_tags["scope"] is the client's write_scope, set by the server when queuing work.
+        # The save's write scope, derived from filter_tags["scope"] (the client's
+        # write_scope, set by the server when queuing work).  Used to scope all
+        # memory retrieval — blocks, episodic, semantic, procedural, resource,
+        # knowledge_vault — so the LLM prompt only sees the current scope's data.
         scope = self.filter_tags.get("scope") if self.filter_tags else None
-        self._block_scopes: list[str] | None = [scope] if scope else None
+        self._save_scopes: list[str] | None = [scope] if scope else None
 
         # Initialize logger early in constructor
         self.logger = logging.getLogger(f"Mirix.Agent.{self.agent_state.name}")
@@ -374,7 +376,7 @@ class Agent(BaseAgent):
             # (mirrors step()/_retrieve_core; see VEPAGE-1474).
             blocks_result = await self.block_manager.get_blocks(
                 user=self.user,
-                any_scopes=self._block_scopes,
+                any_scopes=self._save_scopes,
                 auto_create_from_default=False,  # Don't auto-create here, only in step()
             )
             self.blocks_in_memory = Memory(
@@ -486,7 +488,7 @@ class Agent(BaseAgent):
         """
         blocks_result = await self.block_manager.get_blocks(
             user=self.user,
-            any_scopes=self._block_scopes,
+            any_scopes=self._save_scopes,
             auto_create_from_default=False,  # Don't auto-create here, only in step()
         )
         self.blocks_in_memory = Memory(blocks=blocks_result)
@@ -1265,7 +1267,7 @@ class Agent(BaseAgent):
             # filter_tags_set_on_create is applied only when new blocks are created (e.g. from default template).
             existing_blocks = await self.block_manager.get_blocks(
                 user=self.user,
-                any_scopes=self._block_scopes,
+                any_scopes=self._save_scopes,
                 filter_tags_set_on_create=self.block_filter_tags,
             )
 
@@ -2251,7 +2253,7 @@ class Agent(BaseAgent):
                     # block written here). See VEPAGE-1474.
                     blocks_result = await self.block_manager.get_blocks(
                         user=self.user,
-                        any_scopes=self._block_scopes,
+                        any_scopes=self._save_scopes,
                         auto_create_from_default=False,  # Don't auto-create here, only in step()
                     )
                     current_persisted_memory = Memory(

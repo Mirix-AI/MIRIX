@@ -115,7 +115,7 @@ def _build_loaded_agent(actor, user, ep_memory_id: str):
     agent.source_summary_source = None
     agent.summarize = False
     agent.source_messages = None
-    agent._block_scopes = [actor.write_scope or "test"]
+    agent._save_scopes = [actor.write_scope or "test"]
 
     # Real source + citation managers — hit the DB
     agent.memory_source_manager = MemorySourceManager()

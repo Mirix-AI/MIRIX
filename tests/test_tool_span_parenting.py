@@ -27,7 +27,7 @@ def _make_fake_self():
     fake_self = MagicMock()
     fake_self.agent_state = SimpleNamespace(name="meta_memory_agent", id="meta-1")
     fake_self.user = SimpleNamespace(timezone="UTC")
-    fake_self._block_scopes = None
+    fake_self._save_scopes = None
 
     async def _get_blocks(*args, **kwargs):
         return []

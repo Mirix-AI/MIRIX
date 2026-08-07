@@ -249,7 +249,7 @@ def build_step_test_agent(agent_state: AgentState, user: User) -> Agent:
     agent.model = "gpt-4o-mini"
     agent.filter_tags = None
     agent.block_filter_tags = None
-    agent._block_scopes = None
+    agent._save_scopes = None
     agent.blocks_in_memory = None
     agent.last_function_response = None
     agent.block_manager = SimpleNamespace(get_blocks=AsyncMock(return_value=[]))
@@ -595,7 +595,7 @@ def build_inner_step_test_agent(agent_state: AgentState, user: User) -> Agent:
     agent.model = "gpt-4o-mini"
     agent.filter_tags = None
     agent.block_filter_tags = None
-    agent._block_scopes = None
+    agent._save_scopes = None
     agent.blocks_in_memory = None
     agent.last_function_response = None
     agent.logger = MagicMock()

@@ -55,7 +55,7 @@ def _make_agent_for_prompt_build() -> Agent:
     agent.agent_state = agent_state
     agent.user = user
     agent.user_id = user.id
-    agent._block_scopes = None
+    agent._save_scopes = None
 
     agent.block_manager = SimpleNamespace(
         get_blocks=AsyncMock(return_value=[]),

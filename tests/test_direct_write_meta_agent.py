@@ -190,7 +190,7 @@ def _make_meta_agent_stub(
     agent.source_summary_source = None
     agent.summarize = False
     agent.source_messages = None
-    agent._block_scopes = ["test"]
+    agent._save_scopes = ["test"]
 
     # Managers — stubbed to record calls; message_manager retention read must return []
     agent.message_manager = MagicMock()
