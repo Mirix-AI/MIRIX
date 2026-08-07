@@ -259,6 +259,19 @@ def build_step_test_agent(agent_state: AgentState, user: User) -> Agent:
         hard_delete_user_messages_for_agent=AsyncMock(return_value=0),
     )
     agent._extract_topics_from_messages = AsyncMock(return_value="topic-a;topic-b")
+    # ECMS-522 task 9: _extract_topics_from_messages's real body (exercised by
+    # test_extract_topics_from_messages_topic_extraction_agent.py, not this
+    # file's tests -- they all mock the method wholesale above) needs
+    # self.agent_manager/self.actor to look up the client's
+    # topic_extraction_agent row. self.actor is a Client (agent.py:207,222,
+    # 1225,1250), not the User this fixture otherwise builds around -- this
+    # file has no Client fixture to reuse, so build a minimal one inline.
+    agent.agent_manager = SimpleNamespace(
+        list_agents=AsyncMock(return_value=[agent_state]),
+        create_agent=AsyncMock(),
+        get_agent_by_id=AsyncMock(),
+    )
+    agent.actor = make_client()
     agent.inner_step = AsyncMock(
         return_value=AgentStepResponse(
             messages=[],

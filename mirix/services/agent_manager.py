@@ -137,6 +137,8 @@ class AgentManager:
             tool_names.extend(META_MEMORY_TOOLS + UNIVERSAL_MEMORY_TOOLS)
         if agent_create.agent_type == AgentType.reflexion_agent:
             tool_names.extend(SEARCH_MEMORY_TOOLS + CHAT_AGENT_TOOLS + UNIVERSAL_MEMORY_TOOLS + EXTRAS_TOOLS)
+        # topic_extraction_agent intentionally has no branch here — it stays tool-less
+        # (utility agent; see AgentType.topic_extraction_agent docstring / ECMS-522).
 
         # Remove duplicates
         tool_names = list(set(tool_names))
@@ -157,6 +159,7 @@ class AgentManager:
 
         # Create the agent
         agent_state = await self._create_agent(
+            id=agent_create.id,
             name=agent_create.name,
             system=system,
             agent_type=agent_create.agent_type,
@@ -222,6 +225,7 @@ class AgentManager:
             "reflexion_agent": AgentType.reflexion_agent,
             "background_agent": AgentType.background_agent,
             "chat_agent": AgentType.chat_agent,
+            "topic_extraction_agent": AgentType.topic_extraction_agent,
         }
 
         # Load default system prompts from base folder
@@ -378,6 +382,7 @@ class AgentManager:
             "reflexion_agent": AgentType.reflexion_agent,
             "background_agent": AgentType.background_agent,
             "chat_agent": AgentType.chat_agent,
+            "topic_extraction_agent": AgentType.topic_extraction_agent,
         }
 
         # Load default system prompts from base folder
@@ -655,6 +660,7 @@ class AgentManager:
         tool_ids: List[str],
         tool_rules: Optional[List[PydanticToolRule]] = None,
         parent_id: Optional[str] = None,
+        id: Optional[str] = None,
     ) -> PydanticAgentState:
         """Create a new agent."""
         from mirix.database.relational_provider import get_relational_provider
@@ -665,11 +671,18 @@ class AgentManager:
                 name = create_random_username()
 
             data_dict = {
-                # Pre-generate a UUID so Relational DB provider uses it as the system entity.id.
-                # Relational DB provider requires a valid UUID for engine table entity.id.
-                # Using str(uuid.uuid4()) (no prefix) ensures the provider accepts it directly.
-                # The matching entity_key stores this UUID for natural-key lookups.
-                "id": str(uuid.uuid4()),
+                # Caller-supplied id (e.g. topic_extraction_agent's deterministic
+                # get-or-create id, ECMS-522) takes priority; otherwise a fresh
+                # UUID is generated. `agents` is a non-IEDM (engine) table, and
+                # IPS Relational stores an engine table's entity.id AS-IS — it
+                # does not require a UUID and does not assign its own (see
+                # FieldMapper.to_entity's engine-table branch, common/ipsr/
+                # field_mapper.py:668-676, and the identical deterministic-id
+                # precedent in UserManager.get_or_create_org_default_user's
+                # f"user-default-{org_id}"). The uuid.uuid4() default here is
+                # this method's own choice for callers that don't need a
+                # deterministic id, not a provider requirement.
+                "id": id or str(uuid.uuid4()),
                 "name": name,
                 "system": system,
                 "agent_type": agent_type,
@@ -711,6 +724,11 @@ class AgentManager:
                 "tool_rules": tool_rules,
                 "parent_id": parent_id,
             }
+            # Only set `id` when the caller supplied one (e.g. topic_extraction_agent's
+            # deterministic get-or-create id) -- otherwise omit it so the ORM
+            # column's own `default=lambda: f"agent-{uuid.uuid4()}"` fires, unchanged.
+            if id is not None:
+                data["id"] = id
 
             # Create the new agent using SqlalchemyBase.create_with_redis
             new_agent = AgentModel(**data)
@@ -2022,3 +2040,102 @@ class AgentManager:
             # Commit and refresh the agent
             await agent.update(session, actor=actor)
             return agent.to_pydantic()
+
+
+# ======================================================================================================================
+# Shared topic_extraction_agent lazy get-or-create helper (ECMS-522)
+# ======================================================================================================================
+def _topic_extraction_agent_id(client_id: str) -> str:
+    """Deterministic id for a client's topic_extraction_agent row (ECMS-522
+    race-safety fix). Mirrors client_manager.create_default_client's pattern,
+    not get_or_create_org_default_user's looser string-matched variant.
+    """
+    return f"agent-topic-extraction-{client_id}"
+
+
+async def get_or_create_topic_extraction_agent(
+    agent_manager: "AgentManager",
+    actor: PydanticClient,
+    all_agents: List[PydanticAgentState],
+    fallback_llm_config: Optional[LLMConfig] = None,
+) -> LLMConfig:
+    """Find the client's topic_extraction_agent row's llm_config among
+    `all_agents` (already fetched by the caller -- this function does not
+    call list_agents itself, so callers that already hold a roster for
+    another reason don't pay for a second read), or lazily create the row
+    using `fallback_llm_config` (defaulting to `all_agents[0].llm_config`)
+    as the seed value on a miss.
+
+    Used by both topic-extraction call sites (ECMS-522):
+    - retrieve path: mirix/server/rest_api.py's retrieve_memory_with_conversation
+    - save path: mirix/agent/agent.py's Agent._extract_topics_from_messages
+
+    Race-safe: the create uses a deterministic id (`_topic_extraction_agent_id`),
+    so two concurrent first-ever calls for the same client both attempt to
+    insert the SAME id. The backend's create() enforces primary-key
+    uniqueness (raising `ProviderConflictError` on a duplicate id, never
+    silently overwriting), so the losing racer's insert is rejected, not
+    silently duplicated. On that conflict we re-read once and use the
+    winner's row -- never raise, never retry more than once (a conflict is a
+    permanent/non-retryable error class, not a transient one, so there is
+    nothing to gain from retrying further).
+
+    Never raises -- a create failure (conflict or otherwise) is logged and
+    the fallback value is returned, so neither call site needs its own
+    try/except around this call.
+    """
+    from mirix.database.provider_write_retry import is_conflict
+
+    if not all_agents:
+        raise ValueError("all_agents must be non-empty; caller already handles the empty-roster case")
+
+    topic_extraction_agent = next(
+        (a for a in all_agents if a.agent_type == AgentType.topic_extraction_agent),
+        None,
+    )
+    if topic_extraction_agent is not None:
+        return topic_extraction_agent.llm_config
+
+    fallback_llm_config = fallback_llm_config or all_agents[0].llm_config
+    deterministic_id = _topic_extraction_agent_id(actor.id)
+    try:
+        created = await agent_manager.create_agent(
+            agent_create=CreateAgent(
+                id=deterministic_id,
+                name=f"{actor.name}_topic_extraction_agent",
+                agent_type=AgentType.topic_extraction_agent,
+                llm_config=fallback_llm_config,
+                embedding_config=all_agents[0].embedding_config,
+                include_base_tools=False,
+            ),
+            actor=actor,
+        )
+        logger.info("Lazily created topic_extraction_agent row for client %s", actor.id)
+        return created.llm_config
+    except Exception as e:
+        if is_conflict(e):
+            # Lost the create race to a concurrent caller that won with the
+            # same deterministic id -- re-read once and use the winner's row.
+            try:
+                winner = await agent_manager.get_agent_by_id(agent_id=deterministic_id, actor=actor)
+                logger.info(
+                    "Lost topic_extraction_agent create race for client %s; using winner's row",
+                    actor.id,
+                )
+                return winner.llm_config
+            except Exception:
+                logger.warning(
+                    "Lost topic_extraction_agent create race for client %s but "
+                    "could not re-read the winner's row; falling back to "
+                    "the fallback llm_config for this call",
+                    actor.id,
+                    exc_info=True,
+                )
+                return fallback_llm_config
+        logger.warning(
+            "Failed to lazily create topic_extraction_agent for client %s; "
+            "falling back to the fallback llm_config for this call",
+            actor.id,
+            exc_info=True,
+        )
+        return fallback_llm_config

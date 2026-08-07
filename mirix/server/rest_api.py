@@ -45,6 +45,7 @@ from mirix.schemas.tool import Tool
 from mirix.schemas.tool_rule import BaseToolRule
 from mirix.schemas.user import User
 from mirix.server.server import AsyncServer, ensure_tables_created
+from mirix.services.agent_manager import get_or_create_topic_extraction_agent
 from mirix.settings import model_settings, settings
 from mirix.utils import convert_message_to_mirix_message
 
@@ -2635,10 +2636,13 @@ async def retrieve_memory_with_conversation(
 
     filter_tags = dict(request.filter_tags) if request.filter_tags is not None else {}
 
-    # Fetch one agent for this client (filtered by client via apply_access_predicate)
-    # for its llm/embedding config only — no tools needed here, so skip the
-    # per-agent tool hydration (include_tools=False) and the full-roster list.
-    all_agents = await server.agent_manager.list_agents(actor=client, limit=1, include_tools=False)
+    # Fetch the client's full agent roster once (still include_tools=False —
+    # neither path needs tools). list_agents has no server-side agent_type
+    # filter (only parent_id/query_text/cursor/limit), so we filter
+    # client-side, mirroring update_agent_llm.py's existing pattern. The
+    # roster must be complete (no limit) to find or confirm the absence of
+    # the topic_extraction_agent row, not just an arbitrary first agent.
+    all_agents = await server.agent_manager.list_agents(actor=client, include_tools=False)
 
     if not all_agents:
         return {
@@ -2648,9 +2652,15 @@ async def retrieve_memory_with_conversation(
             "memories": {},
         }
 
-    # Extract topics from the conversation
-    # TODO: Consider allowing custom model selection in the future
-    llm_config = all_agents[0].llm_config
+    # Extract topics from the conversation using the client's independently
+    # configurable topic_extraction_agent row (falls back to all_agents[0]'s
+    # config, and lazily creates the row, on a miss — see
+    # get_or_create_topic_extraction_agent).
+    llm_config = await get_or_create_topic_extraction_agent(
+        agent_manager=server.agent_manager,
+        actor=client,
+        all_agents=all_agents,
+    )
 
     # Check if messages have actual content before calling LLM
     has_content = False

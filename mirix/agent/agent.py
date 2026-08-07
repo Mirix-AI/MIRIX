@@ -1396,7 +1396,11 @@ class Agent(BaseAgent):
                 # On Kafka retry (source exists), exclude this source's own
                 # persisted messages from the "seen" set so the filter correctly
                 # returns the same delta as the first attempt.
-                if getattr(self, "external_thread_id", None) and not getattr(self, "external_id", None) and getattr(self, "source_messages", None):
+                if (
+                    getattr(self, "external_thread_id", None)
+                    and not getattr(self, "external_id", None)
+                    and getattr(self, "source_messages", None)
+                ):
                     from mirix.services.source_message_manager import filter_new_messages
                     from mirix.utils import flatten_messages_for_agent
 
@@ -2750,9 +2754,32 @@ These keywords have been used to retrieve relevant memories from the database.
                 }
             ]
 
+            # Resolve the llm_config to use for topic extraction: the client's
+            # independently configurable topic_extraction_agent row, falling back
+            # to this agent's own config (meta_memory_agent's) unconditionally on
+            # a miss -- preserving today's exact save-path fallback identity
+            # (R3.3), not the shared helper's own all_agents[0] default.
+            from mirix.services.agent_manager import get_or_create_topic_extraction_agent
+
+            all_agents = await self.agent_manager.list_agents(actor=self.actor, include_tools=False)
+
+            if all_agents:
+                extraction_llm_config = await get_or_create_topic_extraction_agent(
+                    agent_manager=self.agent_manager,
+                    actor=self.actor,
+                    all_agents=all_agents,
+                    fallback_llm_config=self.agent_state.llm_config,
+                )
+            else:
+                # No agents at all for this client (shouldn't happen in practice —
+                # this Agent instance itself is one of the client's agents — but
+                # fail safe exactly like today: use this agent's own config,
+                # unconditionally).
+                extraction_llm_config = self.agent_state.llm_config
+
             # Use LLMClient to extract topics (run async in event loop from sync context)
             llm_client = LLMClient.create(
-                llm_config=self.agent_state.llm_config,
+                llm_config=extraction_llm_config,
             )
 
             if llm_client:
@@ -2764,7 +2791,7 @@ These keywords have been used to retrieve relevant memories from the database.
                 )
             else:
                 response = await create(
-                    llm_config=self.agent_state.llm_config,
+                    llm_config=extraction_llm_config,
                     messages=temporary_messages,
                     functions=functions,
                     force_tool_call="update_topic",

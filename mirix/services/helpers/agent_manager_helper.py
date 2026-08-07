@@ -82,6 +82,8 @@ def derive_system_message(agent_type: AgentType, system: Optional[str] = None):
             system = gpt_system.get_system_text("base/reflexion_agent")
         elif agent_type == AgentType.background_agent:
             system = gpt_system.get_system_text("base/background_agent")
+        elif agent_type == AgentType.topic_extraction_agent:
+            system = ""  # tool-less utility agent; no system prompt is ever read (extract_topics_and_temporal_info builds its own prompt inline)
         else:
             raise ValueError(f"Invalid agent type: {agent_type}")
 
