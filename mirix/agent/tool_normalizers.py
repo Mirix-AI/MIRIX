@@ -19,6 +19,10 @@ Usage:
 
 from typing import Callable, Dict
 
+from mirix.log import get_logger
+
+logger = get_logger(__name__)
+
 # Registry: tool_name -> normalizer_function
 _NORMALIZERS: Dict[str, Callable[[str, dict], None]] = {}
 
@@ -86,4 +90,17 @@ def normalize_constant_fields(function_name: str, args: dict) -> None:
         return
     for item in items:
         for field, default in defaults.items():
+            # setdefault only fills in a truly missing key (not an empty/
+            # falsy value the LLM did supply), matching the .get(field,
+            # default) semantics this replaced. Log only the omission case —
+            # this is the metric that tells us whether prompt compliance is
+            # holding up in prod, not a per-save no-op (ECMS-534).
+            if field not in item:
+                logger.warning(
+                    "Defaulted omitted constant field (ECMS-534) "
+                    "field=%s default_value=%r function_name=%s",
+                    field,
+                    default,
+                    function_name,
+                )
             item.setdefault(field, default)
