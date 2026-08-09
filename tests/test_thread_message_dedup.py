@@ -166,7 +166,7 @@ def _setup_agent(
     agent.model = "gpt-4o-mini"
     agent.blocks_in_memory = None
     agent.interface = MagicMock()
-    agent._block_scopes = None
+    agent._save_scopes = None
 
     agent.memory_source_manager = MagicMock()
     agent.memory_source_manager.get_by_id = AsyncMock(return_value=None)

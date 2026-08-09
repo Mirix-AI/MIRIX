@@ -78,7 +78,7 @@ class TestFetchRecentIndexingLagWindow:
     def _agent(self):
         agent = Agent.__new__(Agent)
         agent.user = SimpleNamespace(id="u1", organization_id="org1")
-        agent._block_scopes = ["scope-a"]
+        agent._save_scopes = ["scope-a"]
         return agent
 
     async def test_returns_empty_when_search_provider_missing(self):
