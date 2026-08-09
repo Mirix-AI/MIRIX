@@ -560,7 +560,9 @@ class ResourceMemoryManager:
         """
         return [await self.create_item(i, actor, client_id=client_id, user_id=user_id) for i in items]
 
-    async def get_total_number_of_items(self, user: PydanticUser) -> int:
+    async def get_total_number_of_items(
+        self, user: PydanticUser, scopes: Optional[List[str]] = None,
+    ) -> int:
         """Get the total number of items in the resource memory for the user."""
         from mirix.database.search_provider import get_search_provider
 
@@ -570,6 +572,7 @@ class ResourceMemoryManager:
                 "resource_memory",
                 user_id=user.id,
                 organization_id=user.organization_id,
+                scopes=scopes,
             )
 
         async with self.session_maker() as session:
@@ -578,6 +581,8 @@ class ResourceMemoryManager:
                 ResourceMemoryItem.organization_id == user.organization_id,
                 ResourceMemoryItem.is_deleted == False,
             )
+            from mirix.database.filter_tags_query import apply_filter_tags_sqlalchemy
+            query = apply_filter_tags_sqlalchemy(query, ResourceMemoryItem, None, scopes=scopes)
             result = await session.execute(query)
             return result.scalar_one()
 

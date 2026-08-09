@@ -2305,7 +2305,7 @@ class Agent(BaseAgent):
                             knowledge_vault_memory += f"[{idx}] Knowledge Vault Item ID: {knowledge_vault_item.id}; Caption: {knowledge_vault_item.caption}\n"
                     retrieved_memories["knowledge_vault"] = {
                         "total_number_of_items": await self.knowledge_vault_manager.get_total_number_of_items(
-                            user=self.user
+                            user=self.user, scopes=self._save_scopes,
                         ),
                         "current_count": len(merged_knowledge_vault),
                         "text": knowledge_vault_memory.strip(),
@@ -2360,7 +2360,7 @@ class Agent(BaseAgent):
                     relevant_episodic_memory = most_relevant_episodic_memory_str.strip()
                     retrieved_memories["episodic"] = {
                         "total_number_of_items": await self.episodic_memory_manager.get_total_number_of_items(
-                            user=self.user
+                            user=self.user, scopes=self._save_scopes,
                         ),
                         "recent_count": len(current_episodic_memory),
                         "relevant_count": len(most_relevant_episodic_memory),
@@ -2409,7 +2409,7 @@ class Agent(BaseAgent):
                     resource_memory = resource_memory.strip()
                     retrieved_memories["resource"] = {
                         "total_number_of_items": await self.resource_memory_manager.get_total_number_of_items(
-                            user=self.user
+                            user=self.user, scopes=self._save_scopes,
                         ),
                         "current_count": len(merged_resource_memory),
                         "text": resource_memory,
@@ -2457,7 +2457,7 @@ class Agent(BaseAgent):
                     procedural_memory = procedural_memory.strip()
                     retrieved_memories["procedural"] = {
                         "total_number_of_items": await self.procedural_memory_manager.get_total_number_of_items(
-                            user=self.user
+                            user=self.user, scopes=self._save_scopes,
                         ),
                         "current_count": len(merged_procedural_memory),
                         "text": procedural_memory,
@@ -2504,7 +2504,7 @@ class Agent(BaseAgent):
                     semantic_memory = semantic_memory.strip()
                     retrieved_memories["semantic"] = {
                         "total_number_of_items": await self.semantic_memory_manager.get_total_number_of_items(
-                            user=self.user
+                            user=self.user, scopes=self._save_scopes,
                         ),
                         "current_count": len(merged_semantic_memory),
                         "text": semantic_memory,

@@ -687,7 +687,9 @@ class KnowledgeVaultManager:
         except Exception as e:
             raise e
 
-    async def get_total_number_of_items(self, user: PydanticUser) -> int:
+    async def get_total_number_of_items(
+        self, user: PydanticUser, scopes: Optional[List[str]] = None,
+    ) -> int:
         """Get the total number of items in the knowledge vault for the user."""
         from mirix.database.search_provider import get_search_provider
 
@@ -697,6 +699,7 @@ class KnowledgeVaultManager:
                 "knowledge_vault",
                 user_id=user.id,
                 organization_id=user.organization_id,
+                scopes=scopes,
             )
 
         async with self.session_maker() as session:
@@ -705,6 +708,8 @@ class KnowledgeVaultManager:
                 KnowledgeVaultItem.organization_id == user.organization_id,
                 KnowledgeVaultItem.is_deleted == False,
             )
+            from mirix.database.filter_tags_query import apply_filter_tags_sqlalchemy
+            query = apply_filter_tags_sqlalchemy(query, KnowledgeVaultItem, None, scopes=scopes)
             result = await session.execute(query)
             return result.scalar_one()
 

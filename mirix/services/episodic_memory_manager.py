@@ -776,12 +776,15 @@ class EpisodicMemoryManager:
 
             return [event.to_pydantic() for event in episodic_memory]
 
-    async def get_total_number_of_items(self, user: PydanticUser) -> int:
+    async def get_total_number_of_items(
+        self, user: PydanticUser, scopes: Optional[List[str]] = None,
+    ) -> int:
         """
         Get the total number of items in the episodic memory for the user.
 
         Args:
             user: User who owns the memories to count
+            scopes: Optional scope filter — when set, only count items in these scopes
         """
         # IPS provider delegation (count)
         from mirix.database.search_provider import get_search_provider
@@ -792,6 +795,7 @@ class EpisodicMemoryManager:
                 "episodic_memory",
                 user_id=user.id,
                 organization_id=user.organization_id,
+                scopes=scopes,
             )
 
         async with self.session_maker() as session:
@@ -800,6 +804,8 @@ class EpisodicMemoryManager:
                 EpisodicEvent.organization_id == user.organization_id,
                 ~EpisodicEvent.is_deleted,
             )
+            from mirix.database.filter_tags_query import apply_filter_tags_sqlalchemy
+            query = apply_filter_tags_sqlalchemy(query, EpisodicEvent, None, scopes=scopes)
             result = await session.execute(query)
             return result.scalar_one()
 
