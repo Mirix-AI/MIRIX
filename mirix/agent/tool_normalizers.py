@@ -62,9 +62,18 @@ def normalize_tool_args(function_name: str, function_args: dict) -> None:
 # context-and-memory-service/configs/prompts/intuit-tuned/. Adding a new
 # constant field to an existing tool, or a new tool with one, is a one-line
 # addition to this table rather than a fresh .get() call site sweep.
+#
+# procedural_memory_insert/update and resource_memory_insert/update are
+# deliberately absent — their prompts (procedural_memory_agent.txt,
+# resource_memory_agent.txt) have no "Always use value ..." / "Constant"
+# field; every item field for those two types is genuine model-authored
+# content. If a future prompt change adds one, add it here.
 # ============================================================
 
 _CONSTANT_FIELD_DEFAULTS: Dict[str, tuple] = {
+    # episodic_memory_replace shares the same bare item["actor"]/item["event_type"]
+    # access pattern as insert (no .get() fallback) — the normalizer is load-bearing
+    # for both, not redundant for either.
     "episodic_memory_insert": ("items", {"actor": "user", "event_type": "user_message"}),
     "episodic_memory_replace": ("new_items", {"actor": "user", "event_type": "user_message"}),
     "semantic_memory_insert": ("items", {"source": "user message"}),

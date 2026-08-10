@@ -16,13 +16,10 @@ import pytest
 
 from mirix.functions.function_sets.memory_tools import (
     episodic_memory_insert,
-    episodic_memory_replace,
     knowledge_vault_insert,
-    knowledge_vault_update,
     procedural_memory_insert,
     resource_memory_insert,
     semantic_memory_insert,
-    semantic_memory_update,
 )
 
 pytestmark = pytest.mark.asyncio(loop_scope="module")
@@ -470,4 +467,3 @@ class TestEpisodicMemoryInsertCitation:
             MockMgr.return_value.create = AsyncMock(return_value=None)
             await episodic_memory_insert(agent, items)
             MockMgr.return_value.create.assert_not_awaited()
-
