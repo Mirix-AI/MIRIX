@@ -391,8 +391,25 @@ class TestEpisodicMemoryManagerDelegation:
                 "episodic_memory",
                 user_id="user-1",
                 organization_id="org-1",
+                scopes=None,
             )
             assert n == 42
+
+    @pytest.mark.asyncio
+    async def test_get_total_number_passes_scopes_to_search_count(self):
+        mock_search = MagicMock()
+        mock_search.count = AsyncMock(return_value=3)
+
+        with patch("mirix.database.search_provider.get_search_provider", return_value=mock_search):
+            mgr = _episodic_mgr()
+            n = await mgr.get_total_number_of_items(_mock_user(), scopes=["scope-a"])
+            mock_search.count.assert_awaited_once_with(
+                "episodic_memory",
+                user_id="user-1",
+                organization_id="org-1",
+                scopes=["scope-a"],
+            )
+            assert n == 3
 
 
 class TestSemanticMemoryManagerDelegation:
@@ -517,8 +534,25 @@ class TestSemanticMemoryManagerDelegation:
                 "semantic_memory",
                 user_id="user-1",
                 organization_id="org-1",
+                scopes=None,
             )
             assert n == 7
+
+    @pytest.mark.asyncio
+    async def test_get_total_number_passes_scopes_to_search_count(self):
+        mock_search = MagicMock()
+        mock_search.count = AsyncMock(return_value=2)
+
+        with patch("mirix.database.search_provider.get_search_provider", return_value=mock_search):
+            mgr = _semantic_mgr()
+            n = await mgr.get_total_number_of_items(_mock_user(), scopes=["scope-b"])
+            mock_search.count.assert_awaited_once_with(
+                "semantic_memory",
+                user_id="user-1",
+                organization_id="org-1",
+                scopes=["scope-b"],
+            )
+            assert n == 2
 
 
 class TestBlockManagerDelegation:

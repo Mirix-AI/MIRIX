@@ -2303,6 +2303,9 @@ class Agent(BaseAgent):
                     if len(merged_knowledge_vault) > 0:
                         for idx, knowledge_vault_item in enumerate(merged_knowledge_vault):
                             knowledge_vault_memory += f"[{idx}] Knowledge Vault Item ID: {knowledge_vault_item.id}; Caption: {knowledge_vault_item.caption}\n"
+                    # total_number_of_items is scoped to _save_scopes (ECMS-58) so
+                    # the LLM prompt and span output reflect the current scope's
+                    # corpus size, not the cross-scope total.
                     retrieved_memories["knowledge_vault"] = {
                         "total_number_of_items": await self.knowledge_vault_manager.get_total_number_of_items(
                             user=self.user, scopes=self._save_scopes,
