@@ -465,7 +465,7 @@ async def test_no_messages_persisted_with_zero_retention(msg_client):
     await asyncio.sleep(15)
 
     synthetic_markers = [
-        "[System Message] As the meta memory manager",
+        "reached the maximum chaining steps",
         "continue chaining",
         "function failed",
         "finish_memory_update",
@@ -556,7 +556,7 @@ async def test_message_retention_prunes_to_limit(msg_client):
         )
 
         synthetic_markers = [
-            "[System Message] As the meta memory manager",
+            "reached the maximum chaining steps",
             "continue chaining",
             "function failed",
             "finish_memory_update",

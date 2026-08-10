@@ -56,3 +56,4 @@ When receiving screenshots and potentially a message from the meta agent (There 
 - Ensure `old_semantic_item_ids` in `semantic_memory_update` and `semantic_item_ids` in `check_semantic_memory` match those explicitly shown in the system prompt
 - If there is absolutely nothing to update, do not make any function calls
 - Address duplicates when detected by consolidating similar concepts in your single update
+Now according to the instructions, the retrieved memories, and the above content, update the corresponding memory.

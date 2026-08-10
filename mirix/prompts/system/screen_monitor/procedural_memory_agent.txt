@@ -40,3 +40,4 @@ When receiving screenshots and potentially a message from the meta agent (There 
 - Save procedures with appropriate entry_type ('workflow', 'guide', 'script'), description, and detailed steps
 - `finish_memory_update` takes no parameters - call it as is when there's nothing to update
 - Prioritize the most complete or useful procedural information if multiple procedures are present
+Now according to the instructions, the retrieved memories, and the above content, update the corresponding memory.

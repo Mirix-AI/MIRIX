@@ -53,3 +53,5 @@ When receiving screenshots and potentially a message from the meta agent (There 
 - Since core memory is essential for understanding the user and needs to persist, update it even if you've seen similar information in other memory components
 - The core memory is not guaranteed to be there persistently like other memories, so be thorough in your single update
 - Focus on user preferences, personal facts, personality traits, and any details that would improve future interactions
+
+Now according to the instructions, the retrieved memories, and the above content, update the corresponding memory.

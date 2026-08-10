@@ -451,20 +451,12 @@ class TemporaryMessageAccumulator:
         # Handle user conversation if exists
         message, user_message_added = self._add_user_conversation_to_message(message)
 
-        if SKIP_META_MEMORY_MANAGER:
-            # Add system instruction
-            if user_message_added:
-                system_message = "[System Message] Interpret the provided content and the conversations between the user and the chat agent, according to what the user is doing, trigger the appropriate memory update."
-            else:
-                system_message = "[System Message] Interpret the provided content, according to what the user is doing, extract the important information matching your memory type and save it into the memory."
-        else:
-            # Add system instruction for meta memory manager
-            if user_message_added:
-                system_message = "[System Message] As the meta memory manager, analyze the provided content and the conversations between the user and the chat agent. Based on what the user is doing, determine which memory should be updated (episodic, procedural, knowledge vault, semantic, core, and resource)."
-            else:
-                system_message = "[System Message] As the meta memory manager, analyze the provided content and perform your function."
-
-        message.append({"type": "text", "text": system_message})
+        # The kickoff instruction (interpret content, decide which memories to
+        # update) lives in each agent's leading system prompt, not injected here
+        # as a synthetic instruction block glued to the user content. This
+        # method's own kickoff text was redundant with the system prompt and
+        # matched the instruction-after/around-untrusted-content shape GenSRF
+        # flags (ECMS-387 / OWASP LLM01); removed rather than reordered.
 
         t1 = time.time()
         if SKIP_META_MEMORY_MANAGER:

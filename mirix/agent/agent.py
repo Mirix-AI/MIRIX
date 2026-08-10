@@ -1556,19 +1556,12 @@ class Agent(BaseAgent):
                 kwargs["first_message"] = False
                 kwargs["step_count"] = step_count
 
+                # The meta-memory agent's kickoff instruction lives in its leading
+                # system prompt (prompts/system/*/meta_memory_agent.txt), not as a
+                # trailing user turn. Keeping instructions colocated in the single
+                # leading system message preserves a clean trust boundary: everything
+                # after the system prompt is untrusted user/retrieved content.
                 loop_iteration_messages = list(loop_input_messages)
-                if self.agent_state.is_type(AgentType.meta_memory_agent) and step_count == 0:
-                    meta_message = prepare_input_message_create(
-                        MessageCreate(
-                            role="user",
-                            content="[System Message] As the meta memory manager, analyze the provided content and perform your function.",
-                            filter_tags=self.filter_tags,
-                        ),
-                        self.agent_state.id,
-                        wrap_user_message=False,
-                        wrap_system_message=True,
-                    )
-                    loop_iteration_messages.append(meta_message)
 
                 async with timedspan("Inner Step", metadata={"step_count": step_count}) as rec:
                     step_response = await self.inner_step(
@@ -1604,9 +1597,9 @@ class Agent(BaseAgent):
                 elif max_chaining_steps is not None and counter == max_chaining_steps:
                     # Add warning message based on agent type
                     if self.agent_state.is_type(AgentType.chat_agent):
-                        warning_content = "[System Message] You have reached the maximum chaining steps. Please call 'send_message' to send your response to the user."
+                        warning_content = "You have reached the maximum chaining steps. Please call 'send_message' to send your response to the user."
                     else:
-                        warning_content = "[System Message] You have reached the maximum chaining steps. Please call 'finish_memory_update' to end the chaining."
+                        warning_content = "You have reached the maximum chaining steps. Please call 'finish_memory_update' to end the chaining."
                     loop_input_messages = [
                         Message.dict_to_message(
                             agent_id=self.agent_state.id,

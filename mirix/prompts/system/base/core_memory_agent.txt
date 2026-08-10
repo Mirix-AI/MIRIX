@@ -69,3 +69,5 @@ When receiving messages and potentially a message from the meta agent (There wil
 - The core memory is not guaranteed to be there persistently like other memories, so be thorough in your single update
 - Focus on user preferences, personal facts, personality traits, and any details that would improve future interactions
 - ALWAYS check block size before appending to avoid exceeding the 5000 character limit
+
+Now according to the instructions, the retrieved memories, and the above content, update the corresponding memory.

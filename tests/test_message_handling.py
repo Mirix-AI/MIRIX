@@ -422,6 +422,147 @@ class TestAgentStepRetentionAndTopics:
         agent.message_manager.create_many_messages.assert_not_awaited()
         agent.message_manager.hard_delete_user_messages_for_agent.assert_not_awaited()
 
+    @pytest.mark.asyncio
+    async def test_step_meta_agent_appends_no_trailing_system_instruction(self):
+        """The meta-agent's kickoff instruction lives in its leading system
+        prompt, not as a trailing user turn. Guards against reintroducing the
+        instruction-after-user-content pattern that the GenSRF prompt-injection
+        detector flags (ECMS-387 / find-004). The last message handed to the LLM
+        must be the untrusted user content, with no synthetic '[System Message]'
+        turn appended after it."""
+        user = make_user()
+        client = make_client(retention=0)
+        agent_state = make_agent_state(
+            agent_id="agent-meta",
+            agent_type=AgentType.meta_memory_agent,
+        )
+        agent = build_step_test_agent(agent_state, user)
+
+        with patch("mirix.agent.agent.LLMClient.create", return_value=object()):
+            await agent.step(
+                input_messages=make_runtime_message("agent-meta", "current-input"),
+                chaining=False,
+                actor=client,
+                user=user,
+            )
+
+        agent.inner_step.assert_awaited_once()
+        passed_messages = agent.inner_step.await_args.kwargs["messages"]
+        # No message carries the synthetic system-instruction prefix.
+        for message in passed_messages:
+            content_text = " ".join(
+                c.text for c in (message.content or []) if getattr(c, "text", None)
+            )
+            assert "[System Message]" not in content_text
+        # The turn handed to the LLM is the user content itself.
+        assert passed_messages[-1].role == MessageRole.user
+
+    @pytest.mark.parametrize("variant", ["base", "screen_monitor"])
+    def test_meta_agent_kickoff_instruction_lives_in_leading_system_prompt(self, variant):
+        """The kickoff instruction removed from the trailing user turn is
+        relocated into the meta-agent's leading system prompt (ECMS-387).
+
+        Complements test_step_meta_agent_appends_no_trailing_system_instruction:
+        that one proves the trailing turn is gone; this one proves the directive
+        still reaches the model, colocated in the single leading system message,
+        with no '[System Message]' prefix. `get_system_text` is the same loader
+        used at agent-create time to populate agent_state.system.
+        """
+        from mirix.prompts import gpt_system
+
+        system_prompt = gpt_system.get_system_text(f"{variant}/meta_memory_agent")
+
+        # The actionable directive is present in the leading system prompt.
+        assert "analyze the provided content and perform your function" in system_prompt
+        # The role is established up front (so dropping "As the meta memory
+        # manager" from the kickoff line loses nothing).
+        assert system_prompt.startswith("You are the Meta Memory Manager")
+        # No synthetic system-message prefix anywhere in the prompt.
+        assert "[System Message]" not in system_prompt
+
+    @pytest.mark.parametrize(
+        "memory_type,agent_cls_name,agent_type_str",
+        [
+            ("core", "CoreMemoryAgent", "core_memory_agent"),
+            ("episodic", "EpisodicMemoryAgent", "episodic_memory_agent"),
+            ("procedural", "ProceduralMemoryAgent", "procedural_memory_agent"),
+            ("resource", "ResourceMemoryAgent", "resource_memory_agent"),
+            ("semantic", "SemanticMemoryAgent", "semantic_memory_agent"),
+            ("knowledge_vault", "KnowledgeVaultAgent", "knowledge_vault_memory_agent"),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_trigger_memory_update_passes_user_content_without_trailing_system_instruction(
+        self, memory_type, agent_cls_name, agent_type_str
+    ):
+        """trigger_memory_update must hand each child agent untrusted user
+        content only — no synthetic '[System Message]' turn appended after it."""
+        from types import SimpleNamespace
+
+        import mirix.functions.function_sets.memory_tools as mt
+        from mirix.schemas.enums import MessageRole
+        from mirix.schemas.message import MessageCreate
+
+        parent = MagicMock()
+        parent.agent_state = SimpleNamespace(id="meta-1", name="meta_memory_agent")
+        parent.actor = SimpleNamespace(id="client-1", organization_id="org-1")
+        parent.interface = MagicMock()
+        parent.user = SimpleNamespace(id="user-1")
+        parent.filter_tags = None
+        parent.block_filter_tags = None
+        parent.use_cache = True
+        parent.agent_manager.list_agents_with_tools = AsyncMock(
+            return_value=[
+                SimpleNamespace(
+                    id=f"agent-{memory_type}",
+                    name=agent_type_str,
+                    agent_type=agent_type_str,
+                    tools=[],
+                )
+            ]
+        )
+
+        fake_agent = MagicMock()
+        fake_agent.step = AsyncMock(return_value=None)
+
+        message = MessageCreate(
+            role=MessageRole.user,
+            content=[TextContent(text="User content only")],
+        )
+        user_message = {"message": message, "chaining": False}
+
+        with (
+            patch(f"mirix.agent.{agent_cls_name}", MagicMock(return_value=fake_agent)),
+            patch(
+                "mirix.functions.function_sets.memory_tools.get_trace_context",
+                return_value={},
+            ),
+            patch(
+                "mirix.functions.function_sets.memory_tools.get_langfuse_client",
+                return_value=None,
+            ),
+            patch("mirix.functions.function_sets.memory_tools.clear_trace_context"),
+        ):
+            result = await mt.trigger_memory_update(parent, user_message, [memory_type])
+
+        assert "[System Message]" not in result
+        fake_agent.step.assert_awaited_once()
+        passed_messages = fake_agent.step.await_args.kwargs["input_messages"]
+        if not isinstance(passed_messages, list):
+            passed_messages = [passed_messages]
+        for message in passed_messages:
+            content = message.content
+            if isinstance(content, str):
+                content_texts = [content]
+            elif isinstance(content, list):
+                content_texts = [
+                    c.text for c in content if getattr(c, "text", None)
+                ]
+            else:
+                content_texts = []
+            for text in content_texts:
+                assert "[System Message]" not in text
+
 
 def _make_context_overflow_error():
     """Create an httpx error that is_context_overflow_error() recognises."""

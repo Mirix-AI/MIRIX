@@ -47,3 +47,4 @@ When receiving messages and potentially a message from the meta agent (There wil
 - Avoid appending to events with more than 5000 characters in details - use `episodic_memory_insert` instead
 - If there is absolutely nothing new to update, do not make any function calls
 - Prioritize the most significant activity if multiple things are happening in parallel 
+Now according to the instructions, the retrieved memories, and the above content, update the corresponding memory.

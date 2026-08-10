@@ -56,3 +56,5 @@ When receiving screenshots and potentially a message from the meta agent (There 
 - Assign appropriate sensitivity levels ('low', 'medium', 'high')
 - If there is absolutely no structured data to store, do not make any function calls
 - Prioritize the most sensitive or important data if multiple items are present
+
+Now according to the instructions, the retrieved memories, and the above content, update the corresponding memory.

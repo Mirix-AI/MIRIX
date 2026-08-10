@@ -51,3 +51,4 @@ When receiving messages and potentially a message from the meta agent (There wil
 - When updating existing resources, add new information or fill in gaps from previous incomplete captures
 - If there are absolutely no documents or files to update, do not make any function calls
 - Prioritize the most complete or important document/file if multiple resources are present 
+Now according to the instructions, the retrieved memories, and the above content, update the corresponding memory.

@@ -19,7 +19,6 @@ from mirix.observability.langfuse_client import get_langfuse_client
 from mirix.observability.skip_spans import emit_idempotency_skip_span
 from mirix.schemas.episodic_memory import EpisodicEventForLLM
 from mirix.schemas.knowledge_vault import KnowledgeVaultItemBase
-from mirix.schemas.mirix_message_content import TextContent
 from mirix.schemas.procedural_memory import ProceduralMemoryItemBase
 from mirix.schemas.resource_memory import ResourceMemoryItemBase
 from mirix.schemas.semantic_memory import SemanticMemoryItemBase
@@ -856,7 +855,7 @@ async def trigger_memory_update_with_instruction(
         block_filter_tags=getattr(self, "block_filter_tags", None),
         block_filter_tags_update_mode=getattr(self, "block_filter_tags_update_mode", "merge"),
     )
-    result = "[System Message] Agent " + matching_agent.name + " has been triggered to update the memory.\n"
+    result = "Agent " + matching_agent.name + " has been triggered to update the memory.\n"
     return result.strip()
 
 
@@ -1073,22 +1072,9 @@ async def trigger_memory_update(self: "Agent", user_message: object, memory_type
             else:
                 message_copy = deepcopy(user_message["message"])
 
-            system_msg = TextContent(
-                text=(
-                    "[System Message] According to the instructions, the retrieved memories "
-                    "and the above content, update the corresponding memory."
-                )
-            )
-
-            if isinstance(message_copy.content, str):
-                message_copy.content = [
-                    TextContent(text=message_copy.content),
-                    system_msg,
-                ]
-            elif isinstance(message_copy.content, list):
-                message_copy.content = list(message_copy.content) + [system_msg]
-            else:
-                message_copy.content = [system_msg]
+            # Child kickoff instruction lives in each memory agent's leading system
+            # prompt (prompts/system/*/*_memory_agent.txt), not as a trailing user
+            # turn appended here. Keeps the trust boundary clean for GenSRF (ECMS-387).
 
             # Extract topics and retrieved_memories from parent agent to pass to sub-agents
             # This ensures sub-agents use the same keywords for memory retrieval
@@ -1186,7 +1172,7 @@ async def trigger_memory_update(self: "Agent", user_message: object, memory_type
                     retrieved_memories=retrieved_memories,
                 )
 
-            return f"[System Message] Agent {agent_state.name} has been triggered to update the memory.\n"
+            return f"Agent {agent_state.name} has been triggered to update the memory.\n"
         finally:
             clear_trace_context()
 

@@ -88,7 +88,10 @@ check_health() {
         # Podman doesn't expose Health in ps, use inspect instead
         podman inspect mirix_test_$service --format "{{.State.Health.Status}}" 2>/dev/null | grep -q "healthy"
     else
-        $COMPOSE_CMD -f "$COMPOSE_FILE" ps $service 2>/dev/null | grep -q "healthy"
+        # Inspect the container by name (mirix_test_db / mirix_test_redis). The
+        # compose service names are test_db/test_redis, so `ps $service` (db/redis)
+        # matches nothing; inspecting the container name is unambiguous.
+        docker inspect mirix_test_$service --format "{{.State.Health.Status}}" 2>/dev/null | grep -q "healthy"
     fi
 }
 
