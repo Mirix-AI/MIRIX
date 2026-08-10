@@ -2152,6 +2152,9 @@ class Agent(BaseAgent):
         in that mode reads come from the canonical SQL store, so the
         indexing-lag distinction does not exist. Fail-closed: a raising
         Relational call propagates.
+
+        Scoped to ``self._block_scopes`` so this save's recent-window read
+        never surfaces the user's rows from another scope (see ECMS-58).
         """
         from mirix.database.relational_provider import get_relational_provider
         from mirix.database.search_provider import get_search_provider
@@ -2171,6 +2174,7 @@ class Agent(BaseAgent):
                 table,
                 user_id=self.user.id,
                 organization_id=self.user.organization_id,
+                scopes=self._block_scopes,
                 time_range={
                     "updated_at__gte": cutoff.isoformat(),
                     "created_at__gte": cutoff.isoformat(),
@@ -2283,6 +2287,7 @@ class Agent(BaseAgent):
                         limit=MAX_RETRIEVAL_LIMIT_IN_SYSTEM,
                         timezone_str=timezone_str,
                         sensitivity=None if is_owning_kv_agent else ["low", "medium"],
+                        scopes=self._block_scopes,
                     )
                     recent_knowledge_vault = await self._fetch_recent_indexing_lag_window(
                         table="knowledge_vault",
@@ -2320,6 +2325,7 @@ class Agent(BaseAgent):
                         user=self.user,
                         limit=MAX_RETRIEVAL_LIMIT_IN_SYSTEM,
                         timezone_str=timezone_str,
+                        scopes=self._block_scopes,
                     )
                     episodic_memory = ""
                     if len(current_episodic_memory) > 0:
@@ -2340,6 +2346,7 @@ class Agent(BaseAgent):
                         search_method=search_method,
                         limit=MAX_RETRIEVAL_LIMIT_IN_SYSTEM,
                         timezone_str=timezone_str,
+                        scopes=self._block_scopes,
                     )
                     most_relevant_episodic_memory_str = ""
                     if len(most_relevant_episodic_memory) > 0:
@@ -2381,6 +2388,7 @@ class Agent(BaseAgent):
                         search_method=search_method,
                         limit=MAX_RETRIEVAL_LIMIT_IN_SYSTEM,
                         timezone_str=timezone_str,
+                        scopes=self._block_scopes,
                     )
                     recent_resource_memory_items = await self._fetch_recent_indexing_lag_window(
                         table="resource_memory",
@@ -2426,6 +2434,7 @@ class Agent(BaseAgent):
                         search_method=search_method,
                         limit=MAX_RETRIEVAL_LIMIT_IN_SYSTEM,
                         timezone_str=timezone_str,
+                        scopes=self._block_scopes,
                     )
                     recent_procedural_memory_items = await self._fetch_recent_indexing_lag_window(
                         table="procedural_memory",
@@ -2473,6 +2482,7 @@ class Agent(BaseAgent):
                         search_method=search_method,
                         limit=MAX_RETRIEVAL_LIMIT_IN_SYSTEM,
                         timezone_str=timezone_str,
+                        scopes=self._block_scopes,
                     )
                     recent_semantic_memory_items = await self._fetch_recent_indexing_lag_window(
                         table="semantic_memory",
