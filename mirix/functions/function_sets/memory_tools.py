@@ -268,6 +268,9 @@ async def episodic_memory_insert(self: "Agent", items: List[EpisodicEventForLLM]
             agent_state=self.agent_state,
             agent_id=agent_id,
             timestamp=timestamp,  # Use potentially overridden timestamp
+            # actor/event_type are prompt-mandated constants; omission
+            # defaults are applied centrally by tool_normalizers.py before
+            # this tool body runs (ECMS-534).
             event_type=item["event_type"],
             event_actor=item["actor"],
             summary=item["summary"],
@@ -643,6 +646,8 @@ async def semantic_memory_insert(self: "Agent", items: List[SemanticMemoryItemBa
             name=item["name"],
             summary=item["summary"],
             details=item["details"],
+            # `source` is a prompt-mandated constant; omission default is
+            # applied centrally by tool_normalizers.py (ECMS-534).
             source=item["source"],
             organization_id=self.actor.organization_id,
             actor=self.actor,  # Client for write operations
