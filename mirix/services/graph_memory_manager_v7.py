@@ -43,6 +43,14 @@ SourceKind = Literal["episodic", "semantic"]
 
 MAX_ANCHORS_PER_EPISODE = 8
 MAX_ANCHORS_PER_SEMANTIC = 10
+# v7.12 frames routinely name more participants than the v7.10 budget allowed: a
+# 7-arg frame alone exhausted MAX_ANCHORS_PER_EPISODE, and every arg that failed to
+# become an anchor silently dropped an arm off the frame. Measured on a 12-memory
+# probe: 31% of frames landed with fewer than 2 live arms. The cap still exists (an
+# unbounded anchor space is what it was protecting against) — it is just sized for
+# arguments of an assertion rather than for a bag of keywords.
+MAX_FRAME_ANCHORS_PER_EPISODE = 16
+MAX_FRAME_ANCHORS_PER_SEMANTIC = 18
 PREVIEW_CHARS = 160
 
 _GENERIC_NAMES = {
@@ -108,6 +116,68 @@ def anchor_canonical_key(name: str) -> str:
 _ROLE_NOISE_KEYS = {"user", "assistant", "assistant user", "s user", "assistant s"}
 
 _PRED_COPULA = re.compile(r"^(is|are|was|were|be|been|being)\s+", re.I)
+
+
+
+def is_frame_version(version: Optional[str] = None) -> bool:
+    """True for the n-ary frame family: v7.12 and every later v7.x.
+
+    Exact `== "v7.12"` checks are what this file's own history warns about — the
+    previous version tuple drifted six releases out of date and silently sent newer
+    versions down a legacy path that built the wrong schema. Anything from v7.12 up
+    uses frames, ref-free anchors and the V7_FACT_ARG hypergraph, so the test is a
+    floor, not a list.
+    """
+    v = version if version is not None else settings.graph_version
+    m = re.match(r"^v7\.(\d+)$", str(v or ""))
+    return bool(m) and int(m.group(1)) >= 12
+
+def frame_identity(user_id: str, predicate: str, role_keys: list) -> str:
+    """Deterministic id for an n-ary frame.
+
+    Keyed on the SET of (role, anchor) pairs, sorted, so the same frame extracted
+    from another memory — or with its args listed in another order — lands on the
+    same node and merely adds a citation. Binary facts hash the same way with two
+    pairs, so v7.10 and v7.12 ids differ (by design: the graphs are rebuilt, never
+    migrated in place).
+    """
+    payload = "|".join([user_id, predicate] + sorted(role_keys))
+    return "v7frm-" + hashlib.sha1(payload.encode("utf-8")).hexdigest()[:20]
+
+
+def frame_identity_for_source(
+    user_id: str,
+    predicate: str,
+    role_keys: list[str],
+    *,
+    literals: dict[str, Any] | None,
+    source_kind: SourceKind,
+    memory_id: str,
+    version: str | None = None,
+) -> str:
+    """Return a merge-safe frame id for semantic claims and episodic events.
+
+    Semantic rows may cite the same durable claim, so their identity remains the
+    predicate plus role-typed anchors.  In v7.24 an episodic frame additionally
+    carries an occurrence key.  An explicit event time joins repeat mentions of
+    the same event; when no event time was extracted, the immutable memory id
+    keeps separate occurrences from collapsing merely because they were ingested
+    in the same chunk.
+    """
+
+    identity_parts = list(role_keys)
+    if (version or settings.graph_version) == "v7.24" and source_kind == "episodic":
+        literal_map = literals or {}
+        event_key = next(
+            (
+                str(literal_map[key]).strip()
+                for key in ("event_time", "event_date", "occurred_at", "date", "time")
+                if key in literal_map and str(literal_map[key]).strip()
+            ),
+            None,
+        )
+        identity_parts.append(f"event:{event_key or f'memory:{memory_id}'}")
+    return frame_identity(user_id, predicate, identity_parts)
 
 
 def canon_predicate(pred: str) -> str:
@@ -184,8 +254,26 @@ class V7GraphManager:
         # (The v7.3 proposition and v7.4 GLiNER extraction branches are archived
         # under archive/legacy_graph/ — both were superseded by direction D.)
         relations: list[tuple[str, str, str]] = []
+        frames: list = []
         if entities is None:
-            if settings.graph_version in ("v7.6", "v7.8", "v7.10"):
+            if is_frame_version():
+                # v7.12: n-ary frames. One predicate, any number of typed args, with
+                # dates/amounts kept as literals on the frame instead of polluting the
+                # anchor space. The binary projection still feeds the anchor<->anchor
+                # relation edges, so retrieval keeps everything v7.10 had.
+                from mirix.services.frame_extractor import extract_frames
+                fres = await extract_frames(text, model=llm_model_from_agent(agent_state))
+                entities = fres.entities
+                relations = fres.as_relations()
+                frames = fres.frames
+                from mirix.services.entity_resolver import canonicalize_entities
+                rename = await canonicalize_entities(
+                    entities, driver=driver, user_id=user_id, agent_state=agent_state)
+                if rename:
+                    relations = [(rename.get(a, a), r, rename.get(b, b)) for a, r, b in relations]
+                    for fr in frames:
+                        fr.args = [(role, rename.get(nm, nm)) for role, nm in fr.args]
+            elif settings.graph_version in ("v7.6", "v7.8", "v7.10"):
                 # v7.6 (direction D): one LLM call -> typed entities + relations.
                 # Keeps abstraction (GLiNER can't) and the relations v7 discarded,
                 # which become anchor->anchor edges below.
@@ -210,7 +298,13 @@ class V7GraphManager:
                 entities = extraction.entities
         candidates = self._select_anchors(
             entities,
-            max_anchors=MAX_ANCHORS_PER_EPISODE if source_kind == "episodic" else MAX_ANCHORS_PER_SEMANTIC,
+            max_anchors=(
+                (MAX_FRAME_ANCHORS_PER_EPISODE if source_kind == "episodic"
+                 else MAX_FRAME_ANCHORS_PER_SEMANTIC)
+                if is_frame_version() else
+                (MAX_ANCHORS_PER_EPISODE if source_kind == "episodic"
+                 else MAX_ANCHORS_PER_SEMANTIC)
+            ),
         )
 
         memory_ref_id = f"{source_kind}:{source_id}"
@@ -218,19 +312,24 @@ class V7GraphManager:
         timestamp = self._to_iso(occurred_at) or (source_meta or {}).get("occurred_at")
         preview = self._preview(summary or title or text)
 
-        await self._upsert_memory_ref(
-            driver,
-            source_kind=source_kind,
-            ref_id=memory_ref_id,
-            memory_id=source_id,
-            title=title or "",
-            preview=preview,
-            timestamp=timestamp,
-            source_key=source_key,
-            source_meta=source_meta or {},
-            organization_id=organization_id,
-            user_id=user_id,
-        )
+        # v7.12 has no ref nodes: anchors and facts carry the PG ids directly, and the
+        # two ref-to-ref bookkeeping edges are recomputed from PG at retrieval time
+        # (source_refs carries chunk_id on 641/641 rows, occurred_at on 641/641) —
+        # see _expand_via_pg in the retriever.
+        if not is_frame_version():
+            await self._upsert_memory_ref(
+                driver,
+                source_kind=source_kind,
+                ref_id=memory_ref_id,
+                memory_id=source_id,
+                title=title or "",
+                preview=preview,
+                timestamp=timestamp,
+                source_key=source_key,
+                source_meta=source_meta or {},
+                organization_id=organization_id,
+                user_id=user_id,
+            )
 
         if candidates:
             await self._upsert_anchors_and_edges(
@@ -238,6 +337,7 @@ class V7GraphManager:
                 anchors=candidates,
                 source_kind=source_kind,
                 memory_ref_id=memory_ref_id,
+                memory_id=source_id,
                 agent_state=agent_state,
                 organization_id=organization_id,
                 user_id=user_id,
@@ -246,27 +346,47 @@ class V7GraphManager:
         # v7.6 (direction D): materialise the extracted relations as anchor->anchor
         # edges. v7 discarded relations entirely; these give retrieval a graph to
         # propagate over (PPR) and are what make multi-hop paths traversable.
-        if relations:
+        # v7.12 does NOT write these. V7_RELATION is the binary projection of the very
+        # frames stored below — a strict SUBSET of them, since arity>4 degrades to a
+        # star — and nothing reads it: grepped every caller, the retriever traverses
+        # only V7_FACT_ARG. It was 42% of the remaining edges (221 of 531 on a
+        # 28-memory probe) written and merge-rewired for no consumer. Any anchor->anchor
+        # pair it encoded is one hop through the frame that produced it.
+        if relations and not is_frame_version():
             await self._link_relation_edges(driver, relations=relations, user_id=user_id)
 
         # v7.10 (hypergraph): reify each triple as a V7Fact HYPEREDGE node linking its
         # subject entity, object entity, the source memory, plus role (who) + time (when)
         # as node properties — a multi-dimensional (entity × person/role × time) index
         # over facts, instead of the binary anchor→anchor edge alone.
-        if settings.graph_version == "v7.10" and relations:
+        if is_frame_version() and frames:
+            await self._upsert_frames(
+                driver, frames=frames, memory_id=source_id,
+                source_kind=source_kind,
+                role=role, timestamp=timestamp,
+                mentioned_at=(source_meta or {}).get("mentioned_at"),
+                user_id=user_id)
+        elif settings.graph_version == "v7.10" and relations:
             await self._upsert_facts(
                 driver, relations=relations, memory_ref_id=memory_ref_id,
                 role=role, timestamp=timestamp, user_id=user_id)
 
-        await self._link_support_edges(
-            driver,
-            source_kind=source_kind,
-            memory_ref_id=memory_ref_id,
-            user_id=user_id,
-            source_key=source_key,
-        )
-        if source_kind == "episodic":
-            await self._link_temporal_edge(driver, memory_ref_id=memory_ref_id, user_id=user_id, timestamp=timestamp)
+        if not is_frame_version():
+            # Both edges connect ref to ref, so they die with the ref layer. They were
+            # never knowledge: V7_SUPPORTED_BY is "these two rows share a source_key"
+            # (337 edges from just 12 distinct chunks — a near-clique per chunk) and
+            # V7_NEXT_MEMORY is "ORDER BY occurred_at". PG answers both exactly.
+            await self._link_support_edges(
+                driver,
+                source_kind=source_kind,
+                memory_ref_id=memory_ref_id,
+                user_id=user_id,
+                source_key=source_key,
+            )
+            if source_kind == "episodic":
+                await self._link_temporal_edge(
+                    driver, memory_ref_id=memory_ref_id, user_id=user_id,
+                    timestamp=timestamp)
 
         return {
             "anchors": len(candidates),
@@ -403,6 +523,7 @@ class V7GraphManager:
         anchors: list[V7AnchorCandidate],
         source_kind: SourceKind,
         memory_ref_id: str,
+        memory_id: str,
         agent_state: AgentState,
         organization_id: str,
         user_id: str,
@@ -424,13 +545,35 @@ class V7GraphManager:
             }
             for a in anchors
         ]
-        rel_type = "V7_APPEARS_IN" if source_kind == "episodic" else "V7_DESCRIBED_BY"
+        if is_frame_version():
+            # v7.12 drops the ref-node layer. An anchor records WHICH PG rows it came
+            # from as a property and retrieval goes straight to PG with those ids. The
+            # ref node never held anything PG did not already have: measured on the
+            # longmem graph, pointer edges into refs (1,491) plus ref-to-ref
+            # bookkeeping (407) were 55% of all 3,493 edges and carried no knowledge.
+            # Dedup is an O(n) list scan rather than an O(1) MERGE — acceptable at this
+            # store size, and the alternative was an edge per (anchor, memory) pair.
+            id_prop = "episodic_ids" if source_kind == "episodic" else "semantic_ids"
+            tail = f"""
+                WITH a
+                SET a.{id_prop} = CASE
+                    WHEN $memory_id IN coalesce(a.{id_prop}, []) THEN a.{id_prop}
+                    ELSE coalesce(a.{id_prop}, []) + $memory_id END
+            """
+        else:
+            rel_type = "V7_APPEARS_IN" if source_kind == "episodic" else "V7_DESCRIBED_BY"
+            tail = f"""
+                WITH a
+                MATCH (m:V7MemoryRef {{id: $memory_ref_id}})
+                MERGE (a)-[r:{rel_type}]->(m)
+                ON CREATE SET r.created_at = $now
+            """
 
         async with driver.session(database=settings.neo4j_database) as session:
             await session.run(
-                f"""
+                """
                 UNWIND $rows AS row
-                MERGE (a:V7Anchor {{user_id: $user_id, name_lower: row.name_lower}})
+                MERGE (a:V7Anchor {user_id: $user_id, name_lower: row.name_lower})
                 ON CREATE SET
                     a.id = row.id,
                     a.name = row.name,
@@ -442,20 +585,17 @@ class V7GraphManager:
                     a.admission_score = row.score,
                     a.mention_count = coalesce(a.mention_count, 0) + 1
                 WITH a, row
-                CALL (a, row) {{
+                CALL (a, row) {
                     WITH a, row WHERE row.name_embedding IS NOT NULL
                     CALL db.create.setNodeVectorProperty(a, 'name_embedding', row.name_embedding)
                     RETURN count(*) AS _
-                }}
-                WITH a
-                MATCH (m:V7MemoryRef {{id: $memory_ref_id}})
-                MERGE (a)-[r:{rel_type}]->(m)
-                ON CREATE SET r.created_at = $now
-                """,
+                }
+                """ + tail,
                 rows=rows,
                 user_id=user_id,
                 organization_id=organization_id,
                 memory_ref_id=memory_ref_id,
+                memory_id=memory_id,
                 now=now,
             )
 
@@ -595,6 +735,112 @@ class V7GraphManager:
                     raise
                 await asyncio.sleep(0.1 * (2 ** attempt))
 
+    async def _upsert_frames(
+        self, driver, *, frames: list, memory_id: str, source_kind: SourceKind,
+        role: Optional[str], timestamp: Optional[str], mentioned_at: Optional[str],
+        user_id: str,
+    ) -> None:
+        """v7.12: store each frame as ONE V7Fact hyperedge with N role-typed arms.
+
+        The difference from _upsert_facts is the arity. v7.10 gave every fact exactly
+        two arms (SUBJECT/OBJECT) because the extractor only produced triples; here a
+        flight with an origin, a destination, a carrier and a companion is one node
+        with four V7_FACT_ARG edges, each carrying its role. That keeps the
+        co-participants of an event reachable from each other in one hop through the
+        fact, which a triple store can only approximate by joining several facts.
+
+        Literals (dates, prices, counts) go on the fact as parallel key/value arrays
+        rather than becoming anchors. Neo4j has no map property and dynamic property
+        keys need APOC, which is not installed; two aligned lists are queryable enough
+        (``f.lit_vals[indexOf(f.lit_keys,'date')]``) and keep the entity space clean.
+        """
+        rows = []
+        seen: set[str] = set()
+        for fr in frames:
+            arms = []
+            arm_seen: set[tuple[str, str]] = set()
+            for arg_role, name in getattr(fr, "args", []):
+                key = anchor_canonical_key(self._clean_name(name))
+                if not key or (arg_role, key) in arm_seen:
+                    continue
+                arm_seen.add((arg_role, key))
+                arms.append({"role": arg_role, "k": key})
+            # Distinct ANCHORS, not distinct arms: "Boston as origin and destination"
+            # asserts nothing, same as v7.10's sk == ok tautology guard.
+            if len({a["k"] for a in arms}) < 2:
+                continue
+            pred = canon_predicate(fr.predicate)[:80]
+            identity_parts = [f"{a['role']}:{a['k']}" for a in arms]
+            lits = getattr(fr, "literals", {}) or {}
+            fid = frame_identity_for_source(
+                user_id,
+                pred,
+                identity_parts,
+                literals=lits,
+                source_kind=source_kind,
+                memory_id=memory_id,
+            )
+            if fid in seen:
+                continue
+            seen.add(fid)
+            rows.append({
+                "fid": fid, "pred": pred, "arms": arms, "arity": len(arms),
+                "lit_keys": list(lits.keys()), "lit_vals": [lits[k] for k in lits],
+            })
+        if not rows:
+            return
+        rows.sort(key=lambda r: r["fid"])  # stable lock order, see _upsert_facts
+        now = iso(datetime.now(timezone.utc))
+        role_norm = (role or "shared").lower()
+        # Resolve the arms FIRST and only then decide whether the frame is worth
+        # writing. An arg only becomes an arm if it survived anchor selection, and a
+        # frame reduced to one live anchor asserts nothing — the n-ary equivalent of
+        # v7.10's subject==object tautology. Writing it anyway is what put 31% arity-1
+        # facts in the first probe: the per-arm MATCH succeeds or fails independently,
+        # so partial frames landed instead of being dropped the way a triple with a
+        # missing endpoint was.
+        cypher = """
+                UNWIND $rows AS row
+                UNWIND row.arms AS arm
+                OPTIONAL MATCH (a:V7Anchor {user_id: $user_id, name_lower: arm.k})
+                WITH row,
+                     collect(CASE WHEN a IS NULL THEN NULL
+                                  ELSE {role: arm.role, id: a.id} END) AS raw_arms,
+                     collect(DISTINCT coalesce(a.id, '')) AS raw_ids
+                WITH row, [x IN raw_arms WHERE x IS NOT NULL] AS arms,
+                          [x IN raw_ids  WHERE x <> ''] AS ids
+                WHERE size(ids) >= 2
+                MERGE (f:V7Fact {id: row.fid})
+                  ON CREATE SET f.user_id = $user_id, f.predicate = row.pred,
+                                f.arity = size(ids), f.role = $role, f.timestamp = $ts,
+                                f.mentioned_at = $mentioned_at,
+                                f.created_at = $now, f.lit_keys = row.lit_keys,
+                                f.lit_vals = row.lit_vals
+                SET f.memory_ids = CASE
+                        WHEN $mid IN coalesce(f.memory_ids, []) THEN f.memory_ids
+                        ELSE coalesce(f.memory_ids, []) + $mid END,
+                    f.memory_roles = CASE
+                        WHEN $mid IN coalesce(f.memory_ids, []) THEN f.memory_roles
+                        ELSE coalesce(f.memory_roles, []) + $role END
+                WITH f, arms
+                UNWIND arms AS arm
+                MATCH (a:V7Anchor {id: arm.id})
+                MERGE (f)-[:V7_FACT_ARG {role: arm.role}]->(a)
+                """
+        for attempt in range(5):
+            try:
+                async with driver.session(database=settings.neo4j_database) as session:
+                    await session.run(
+                        cypher, mid=memory_id, user_id=user_id, rows=rows,
+                        role=role_norm, ts=timestamp, mentioned_at=mentioned_at, now=now)
+                return
+            except Exception as exc:  # noqa: BLE001
+                transient = "Deadlock" in type(exc).__name__ or "Deadlock" in str(exc) \
+                    or "TransientError" in type(exc).__name__ or "TransientError" in str(exc)
+                if not transient or attempt == 4:
+                    raise
+                await asyncio.sleep(0.1 * (2 ** attempt))
+
     async def _link_relation_edges(
         self, driver, *, relations: list[tuple[str, str, str]], user_id: str
     ) -> None:
@@ -691,8 +937,38 @@ class V7GraphManager:
 
         stats: dict[str, Any] = {}
         async with driver.session(database=settings.neo4j_database) as session:
-            # 1. refs whose source memory is gone (auto_dream deletions)
-            if valid_memory_ids is not None:
+            # 1. pointers to memories that no longer exist (auto_dream deletions).
+            #    v7.12 keeps them in node properties, so the sweep filters the arrays
+            #    rather than deleting ref nodes.
+            if valid_memory_ids is not None and is_frame_version():
+                res = await session.run(
+                    """
+                    MATCH (a:V7Anchor {user_id: $uid})
+                    WHERE any(x IN coalesce(a.episodic_ids, []) + coalesce(a.semantic_ids, [])
+                              WHERE NOT x IN $valid)
+                    SET a.episodic_ids = [x IN coalesce(a.episodic_ids, []) WHERE x IN $valid],
+                        a.semantic_ids = [x IN coalesce(a.semantic_ids, []) WHERE x IN $valid]
+                    RETURN count(*) AS n
+                    """,
+                    uid=user_id, valid=list(valid_memory_ids),
+                )
+                rec = await res.single()
+                stats["anchors_repointed"] = int(rec["n"]) if rec else 0
+                res = await session.run(
+                    """
+                    MATCH (f:V7Fact {user_id: $uid})
+                    WHERE any(x IN coalesce(f.memory_ids, []) WHERE NOT x IN $valid)
+                    WITH f, [i IN range(0, size(f.memory_ids) - 1)
+                             WHERE f.memory_ids[i] IN $valid] AS keep
+                    SET f.memory_roles = [i IN keep | coalesce(f.memory_roles, [])[i]],
+                        f.memory_ids = [i IN keep | f.memory_ids[i]]
+                    RETURN count(*) AS n
+                    """,
+                    uid=user_id, valid=list(valid_memory_ids),
+                )
+                rec = await res.single()
+                stats["facts_repointed"] = int(rec["n"]) if rec else 0
+            elif valid_memory_ids is not None:
                 res = await session.run(
                     """
                     MATCH (m:V7MemoryRef {user_id: $uid})
@@ -719,6 +995,23 @@ class V7GraphManager:
             rec = await res.single()
             stats["tautologies_removed"] = int(rec["n"]) if rec else 0
 
+            # 2b. degenerate n-ary frames: a v7.12 frame is only vacuous when ALL its
+            #     arms land on ONE anchor. Unlike a triple, repeating an anchor in a
+            #     wide frame is legitimate ("met X at Y about X"), so the binary
+            #     subject==object test above would delete real facts here.
+            res = await session.run(
+                """
+                MATCH (f:V7Fact {user_id: $uid})-[:V7_FACT_ARG]->(a:V7Anchor)
+                WITH f, count(DISTINCT a) AS distinct_args
+                WHERE distinct_args < 2
+                DETACH DELETE f
+                RETURN count(*) AS n
+                """,
+                uid=user_id,
+            )
+            rec = await res.single()
+            stats["degenerate_frames_removed"] = int(rec["n"]) if rec else 0
+
             # 3. duplicate triples -> one fact, every source kept as a citation edge
             res = await session.run(
                 """
@@ -740,6 +1033,45 @@ class V7GraphManager:
             rec = await res.single()
             stats["duplicate_facts_merged"] = int(rec["n"]) if rec else 0
 
+            # 3c. duplicate n-ary frames. frame_identity dedups at write time, but an
+            #     anchor merge can make two previously-distinct frames identical after
+            #     the fact ("flew to NYC" + "flew to New York City", once NYC and New
+            #     York City are one anchor). Signature is the role:anchor arm set sorted
+            #     before collect (plain Cypher — APOC is not installed), so arg order
+            #     cannot split a duplicate pair.
+            res = await session.run(
+                """
+                MATCH (f:V7Fact {user_id: $uid})-[r:V7_FACT_ARG]->(a:V7Anchor)
+                WITH f, r.role + ':' + toLower(a.name) AS arm
+                ORDER BY arm
+                WITH f, collect(arm) AS arms
+                WITH coalesce(f.predicate, '') + '#'
+                     + reduce(acc = '', x IN arms | acc + '|' + x) AS k, collect(f) AS fs
+                WHERE size(fs) > 1
+                WITH head(fs) AS keep, tail(fs) AS dupes
+                UNWIND dupes AS dupe
+                // Citations on a v7.12 frame live in f.memory_ids, NOT on a
+                // V7_FACT_FROM edge — v7.12 never writes that edge at all. Migrating
+                // over it here matched nothing and the DETACH DELETE below then took
+                // the duplicate's citations with it: every source memory that only
+                // ever asserted the losing node became unreachable, silently, the
+                // first time anyone ran auto_dream against a v7.12+ store.
+                WITH keep, dupe,
+                     [i IN range(0, size(coalesce(dupe.memory_ids, [])) - 1)
+                      WHERE NOT dupe.memory_ids[i] IN coalesce(keep.memory_ids, [])] AS add
+                SET keep.memory_ids = coalesce(keep.memory_ids, [])
+                                      + [i IN add | dupe.memory_ids[i]],
+                    keep.memory_roles = coalesce(keep.memory_roles, [])
+                                      + [i IN add | coalesce(dupe.memory_roles, [])[i]]
+                WITH DISTINCT dupe
+                DETACH DELETE dupe
+                RETURN count(*) AS n
+                """,
+                uid=user_id,
+            )
+            rec = await res.single()
+            stats["duplicate_frames_merged"] = int(rec["n"]) if rec else 0
+
             # 3b. zombie facts: a fact whose every V7_FACT_FROM citation died (its
             #    source memories were consolidated away) is unverifiable residue — in
             #    v7.10 a fact's existence is justified by its citations. Without this
@@ -751,10 +1083,11 @@ class V7GraphManager:
             res = await session.run(
                 """
                 MATCH (f:V7Fact {user_id: $uid})
-                WHERE NOT (f)-[:V7_FACT_FROM]->()
+                WHERE CASE WHEN $ref_free THEN size(coalesce(f.memory_ids, [])) = 0
+                           ELSE NOT (f)-[:V7_FACT_FROM]->() END
                 DETACH DELETE f
                 RETURN count(*) AS n
-                """,
+                """, ref_free=(is_frame_version()),
                 uid=user_id,
             )
             rec = await res.single()
@@ -765,13 +1098,16 @@ class V7GraphManager:
             res = await session.run(
                 """
                 MATCH (a:V7Anchor {user_id: $uid})
-                WHERE NOT (a)<-[:V7_FACT_SUBJECT|V7_FACT_OBJECT]-(:V7Fact)
-                WITH a, size([(a)-[:V7_APPEARS_IN|V7_DESCRIBED_BY]->(:V7MemoryRef) | 1]) AS deg
+                WHERE NOT (a)<-[:V7_FACT_SUBJECT|V7_FACT_OBJECT|V7_FACT_ARG]-(:V7Fact)
+                WITH a, CASE WHEN $ref_free
+                        THEN size(coalesce(a.episodic_ids, [])) + size(coalesce(a.semantic_ids, []))
+                        ELSE size([(a)-[:V7_APPEARS_IN|V7_DESCRIBED_BY]->(:V7MemoryRef) | 1])
+                        END AS deg
                 WHERE deg <= 1
                 DETACH DELETE a
                 RETURN count(*) AS n
                 """,
-                uid=user_id,
+                uid=user_id, ref_free=(is_frame_version()),
             )
             rec = await res.single()
             stats["dead_anchors_pruned"] = int(rec["n"]) if rec else 0
@@ -788,6 +1124,10 @@ class V7GraphManager:
                 MATCH (a:V7Anchor {user_id: $uid})
                 WHERE a.name_lower IN $noise
                 OPTIONAL MATCH (f:V7Fact)-[:V7_FACT_SUBJECT|V7_FACT_OBJECT]->(a)
+                // NB: V7_FACT_ARG is deliberately NOT here. A wide frame that happens
+                // to name a dialogue role in one arm is still a real assertion about
+                // its other args; the arm dies with the DETACH DELETE below and pass
+                // 2b removes the frame only if it drops under 2 distinct anchors.
                 WITH a, collect(DISTINCT f) AS facts
                 FOREACH (f IN facts | DETACH DELETE f)
                 DETACH DELETE a
@@ -804,6 +1144,10 @@ class V7GraphManager:
             #    chain fragmented (measured: 52 edges over 100 refs post-dream where a
             #    full chain has n-1 = 99). Rebuild it from ref timestamps, per user.
             #    Idempotent; same construction the ingest path produces incrementally.
+            #    v7.12 has no chain to repair — ordering is an ORDER BY in PG.
+            if is_frame_version():
+                logger.info("graph maintenance for user=%s: %s", user_id, stats)
+                return stats
             await session.run(
                 "MATCH (e:V7EpisodeRef {user_id: $uid})-[r:V7_NEXT_MEMORY]->() DELETE r",
                 uid=user_id,

@@ -227,8 +227,8 @@ class Settings(BaseSettings):
     llm_retry_max_delay: float = Field(10.0, env="MIRIX_LLM_RETRY_MAX_DELAY")  # Max delay between retries (seconds)
 
     # Graph memory: LightRAG-style dual-level retrieval over Neo4j.
-    # When enabled, episodic event inserts also extract entities/relations into
-    # Neo4j; retrieval supplements flat memory with graph context.
+    # When enabled, episodic/semantic candidate generation starts in Neo4j;
+    # PostgreSQL only fetches or reranks IDs selected by graph traversal.
     enable_graph_memory: bool = Field(False, env="MIRIX_ENABLE_GRAPH_MEMORY")
     # Graph schema variant. "v5" = full LightRAG dual-graph (Episode/Concept +
     # EpisodicEntity/SemanticEntity with relation edges). "v6" = lean entity

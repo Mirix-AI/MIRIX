@@ -52,3 +52,31 @@ class GraphRetrieverDispatcher:
             "archived); returning empty context", settings.graph_version,
         )
         return ""
+
+    async def retrieve_rows(
+        self,
+        *,
+        query: str,
+        user_id: str,
+        agent_state: AgentState,
+        item_top_k: int = 15,
+        max_items_per_kind: int = 15,
+    ) -> list:
+        """Same retrieval as ``retrieve`` but as STRUCTURED rows, flattened.
+
+        The blob form of graph context proved easy for an answerer to ignore. This is
+        the form /search serves as the answerer's graph-owned tool results, which is
+        the channel that actually reaches an answer.
+        """
+        if not settings.enable_graph_memory:
+            return []
+        if not (settings.graph_version.startswith("v7") or settings.graph_version == "v8"):
+            return []
+
+        from mirix.services.graph_retriever_v7 import V7Retriever
+
+        _anchors, ep_rows, sem_rows = await V7Retriever().retrieve_rows(
+            query=query, user_id=user_id, agent_state=agent_state,
+            top_k=item_top_k, max_items_per_kind=max_items_per_kind,
+        )
+        return list(ep_rows) + list(sem_rows)
