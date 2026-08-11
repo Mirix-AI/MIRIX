@@ -44,3 +44,21 @@ superseded by ingest-time prevention + maintenance passes),
 `visualize_v6_graph.py`, `draw_hypergraph.py` (viz one-off). (`memory_snapshot.py` was initially archived here too,
 then restored — the MAB runner scripts call it for post-run snapshots; the
 "unreferenced" scan had only covered *.py, not *.sh.)
+
+## rejected/
+
+`semantic_consolidator.py` — the auto_dream "v2" flat-store stage. It clustered
+near-duplicate semantic memory rows and had an LLM rewrite each cluster into one
+additive replacement row (originals kept, provenance edges written back). It was
+removed because it consolidated the WRONG THING: the requirement was that
+consolidation happen on graph nodes and leave the flat store alone, and even an
+additive row changes flat retrieval — it is indexed, competes for top-k and
+shifts answers. Measured before removal on LongMemEval-S: 36/60 vs 34/60
+no-dream (inside the noise band) for ~6.3h of LLM time per run, with merged rows
+averaging 2.3k chars against 640 for a raw row and compounding as products were
+re-merged. Published work agrees the trade is bad at this scale (Kang et al.
+2026 measure merging as net-harmful once the raw rows already fit the context;
+Zhang et al. 2026 measure a 42-point decay from consolidating consolidations).
+Node merging in `graph_reconsolidator` — value union plus edge rewiring, no text
+generation — is the mechanism that was actually wanted, and it costs about a
+minute.
