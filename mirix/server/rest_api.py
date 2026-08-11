@@ -6,9 +6,9 @@ allowing MirixClient instances to communicate with a cloud-hosted server.
 
 import asyncio
 import copy
+import os
 import functools
 import json
-import os
 import traceback
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -2457,6 +2457,10 @@ async def retrieve_memories_by_keywords(
     # LightRAG-style dual-level graph retrieval (P3). Supplements flat memory
     # retrieval with KG entities/relations + episodic chunks. Returns an empty
     # context string when no hits — caller is robust to that.
+    # Whether the graph could be CONSULTED, which is not the same as whether it had
+    # anything to say. The flat fallback below keys off this: an empty answer from a
+    # working graph is a real answer, an exception is not an answer at all.
+    graph_consulted = False
     if settings.enable_graph_memory:
         try:
             from mirix.services.graph_retriever_dispatcher import GraphRetrieverDispatcher
@@ -2473,6 +2477,7 @@ async def retrieve_memories_by_keywords(
             logger.info("Graph retrieve result: ctx_len=%d", len(graph_context or ""))
             if graph_context:
                 memories["graph"] = {"context": graph_context}
+            graph_consulted = True
         except Exception as e:
             logger.error("Graph retrieval failed: %s", e, exc_info=True)
 
@@ -2481,7 +2486,15 @@ async def retrieve_memories_by_keywords(
     # search below is skipped (kept as a fallback for graph-disabled mode).
     # The other four memory types (resource / procedural / knowledge_vault /
     # core) have no graph counterpart and are always retrieved flat.
-    if settings.enable_graph_memory:
+    #
+    # `and graph_consulted` is load-bearing. Keying the skip on the CONFIG FLAG alone
+    # means any graph outage silently returns an empty memory system: the rows are all
+    # still in Postgres, but nothing ever queries them. A LoCoMo run lost this way
+    # completed all 1540 questions, passed the judge and exited rc=0 at 0.3461 — a
+    # plausible-looking number produced with no memory at all, which is far worse than
+    # a crash. Falling back to flat search costs a slower, less precise answer; not
+    # falling back costs the answer entirely.
+    if settings.enable_graph_memory and graph_consulted:
         memories["episodic"] = {"total_count": 0, "recent": [], "relevant": []}
         memories["semantic"] = {"total_count": 0, "items": []}
     else:
@@ -2784,6 +2797,32 @@ async def retrieve_memory_with_conversation(
 
         logger.debug("Extracted topics: %s, temporal: %s", topics, temporal_expr)
         key_words = topics if topics else ""
+        # v7.21+ relation lanes need the question's predicate and argument
+        # structure. Topic extraction is useful for semantic recall but can turn
+        # "What instruments does X play?" into "X instruments", deleting the
+        # relation that makes the bounded fact lookup selective. Preserve the raw
+        # question only when the policy recognizes an explicit relation; all other
+        # versions and non-relation questions keep the existing topic query.
+        if settings.graph_version in ("v7.21", "v7.22", "v7.23", "v7.24"):
+            if settings.graph_version == "v7.24":
+                from mirix.services.retrieval_policy_v724 import predicate_hints
+            elif settings.graph_version == "v7.23":
+                from mirix.services.retrieval_policy_v723 import predicate_hints
+            elif settings.graph_version == "v7.22":
+                from mirix.services.retrieval_policy_v722 import predicate_hints
+            else:
+                from mirix.services.retrieval_policy_v721 import predicate_hints
+
+            raw_parts: list[str] = []
+            for message in request.messages:
+                if not isinstance(message, dict):
+                    continue
+                for content_item in message.get("content", []):
+                    if isinstance(content_item, dict) and content_item.get("text"):
+                        raw_parts.append(str(content_item["text"]))
+            raw_question = " ".join(raw_parts).strip()
+            if raw_question and predicate_hints(raw_question):
+                key_words = raw_question
     else:
         # No content - skip LLM call and retrieve recent items
         logger.debug("No content in messages - retrieving recent items")
@@ -3147,8 +3186,46 @@ async def search_memory(
     if memory_type == "all":
         search_field = "null"
 
-    # Pre-compute embedding once if using embedding search (to avoid redundant embeddings)
-    embedded_text, embedded_text_padded = await _precompute_embedding_for_search(search_method, query, agent_state)
+    # With graph memory enabled, episodic and semantic retrieval are graph-owned:
+    # the query must enter through anchors/frames, and PostgreSQL may only fetch or
+    # rerank the IDs selected by that traversal.  In particular, do not run a full
+    # table vector/BM25 search and discard its output later; merely hiding those
+    # rows would still violate the graph-first retrieval boundary.
+    graph_owns_memory = settings.enable_graph_memory and memory_type in (
+        "all", "episodic", "semantic"
+    )
+
+    # A direct episodic/semantic graph-owned request does not need the flat-search
+    # embedding. GraphRetrieverDispatcher embeds the query for anchor lookup. An
+    # "all" request still needs this embedding for memory kinds that have no graph
+    # representation (resource/procedural/knowledge-vault).
+    # MIRIX_GRAPH_UNION: let the graph SUPPLEMENT flat retrieval instead of replacing it.
+    #
+    # Measured on LoCoMo conv-30/41/43, clean prompts, 411 questions: the graph rescues 24
+    # answers the flat store gets wrong and breaks 15 the flat store gets right, netting +9
+    # for 4.8x the ingest time. The 15 are not subtle. Flat says "his colleague Rob", graph
+    # says "a colleague". Flat says "The Lean Startup", graph says there is no information.
+    # Counting the gold string inside the context actually handed to the answerer:
+    #
+    #     "Lean Startup"    flat 5 occurrences,  graph 0    <- displaced entirely
+    #     "Middle-earth"    flat 3,              graph 1
+    #     "Rob"             flat 4,              graph 2
+    #
+    # while the graph's context is 60-70% LARGER. The cause is not ranking. It is the line
+    # below: when the graph owns episodic and semantic, their flat searches are never
+    # scheduled at all, so a row the flat search would have found has no path into the
+    # candidate set. The graph is the only generator, and whatever it misses is simply gone.
+    #
+    # Under union both run, the flat top-k is a floor the graph cannot push out, and graph
+    # rows fill what is left. If the 15 are lost purely to flat's absence, union keeps the
+    # 24 and recovers them.
+    graph_union = graph_owns_memory and os.environ.get("MIRIX_GRAPH_UNION") == "1"
+    if graph_owns_memory and not graph_union and memory_type in ("episodic", "semantic"):
+        embedded_text, embedded_text_padded = None, None
+    else:
+        embedded_text, embedded_text_padded = await _precompute_embedding_for_search(
+            search_method, query, agent_state
+        )
 
 
     # Collect results from requested memory types
@@ -3337,8 +3414,12 @@ async def search_memory(
                 logger.error("Error retrieving core memory blocks: %s", e, exc_info=True)
                 return []
 
-        # Run all searches concurrently
-        tasks = [search_episodic(), search_resource(), search_procedural(), search_knowledge(), search_semantic()]
+        # Run all eligible searches concurrently. Episodic and semantic are omitted
+        # entirely when graph memory owns them; they are populated by the graph pass
+        # below. Other memory kinds have no graph representation and remain direct.
+        tasks = [search_resource(), search_procedural(), search_knowledge()]
+        if not graph_owns_memory or graph_union:
+            tasks = [search_episodic(), *tasks, search_semantic()]
         if include_core_memory:
             tasks.append(search_core())
         results = await asyncio.gather(*tasks)
@@ -3348,7 +3429,7 @@ async def search_memory(
             all_results.extend(result_list)
 
     # Single memory type searches (run serially)
-    elif memory_type == "episodic":
+    elif memory_type == "episodic" and (not graph_owns_memory or graph_union):
         try:
             episodic_memories = await server.episodic_memory_manager.list_episodic_memory(
                 agent_state=agent_state,
@@ -3483,7 +3564,7 @@ async def search_memory(
             logger.error("Error searching knowledge vault: %s", e)
 
     # Search semantic memories
-    elif memory_type == "semantic":
+    elif memory_type == "semantic" and (not graph_owns_memory or graph_union):
         try:
             semantic_memories = await server.semantic_memory_manager.list_semantic_items(
                 agent_state=agent_state,
@@ -3513,6 +3594,146 @@ async def search_memory(
             )
         except Exception as e:
             logger.error("Error searching semantic memories: %s", e)
+
+    # ---- graph-owned episodic / semantic pass ---------------------------------
+    # This is the only candidate-generation path for graph-backed memory kinds when
+    # enable_graph_memory is true. The retriever starts from graph anchors/frames,
+    # obtains memory IDs, then fetches/reranks only that bounded candidate set in PG.
+    if graph_owns_memory and query:
+        try:
+            from mirix.services.graph_retriever_dispatcher import GraphRetrieverDispatcher
+
+            graph_rows = await GraphRetrieverDispatcher().retrieve_rows(
+                query=query, user_id=user_id, agent_state=agent_state,
+                max_items_per_kind=limit or 15,
+            )
+            wanted = {"episodic", "semantic"} if memory_type == "all" else {memory_type}
+            graph_results = []
+            for row in graph_rows:
+                if row.kind not in wanted and row.kind != "graph_fact":
+                    continue
+                if row.kind == "graph_fact":
+                    graph_results.append({
+                        "memory_type": "graph_fact", "id": row.id,
+                        "timestamp": row.timestamp,
+                        "predicate": (row.extra or {}).get("name"),
+                        "summary": row.summary, "details": row.details,
+                        "citation_memory_ids": (
+                            (row.extra or {}).get("citation_memory_ids") or []
+                        ),
+                        "role_alignment": (row.extra or {}).get("v724_role_score"),
+                        "temporal_state_alignment": (
+                            (row.extra or {}).get("v724_temporal_state_score")
+                        ),
+                        "retrieved_by": "graph_relation",
+                    })
+                elif row.kind == "episodic":
+                    graph_results.append({
+                        "memory_type": "episodic", "id": row.id,
+                        "timestamp": row.timestamp, "event_type": None,
+                        "actor": (row.extra or {}).get("actor"),
+                        "mentioned_at": (row.extra or {}).get("mentioned_at"),
+                        "source_refs": (row.extra or {}).get("source_refs") or [],
+                        "summary": row.summary, "details": row.details,
+                        "retrieved_by": "graph",
+                    })
+                else:
+                    graph_results.append({
+                        "memory_type": "semantic", "id": row.id,
+                        "name": (row.extra or {}).get("name"),
+                        "summary": row.summary, "details": row.details,
+                        "source": (row.extra or {}).get("source"),
+                        "mentioned_at": (row.extra or {}).get("mentioned_at"),
+                        "source_refs": (row.extra or {}).get("source_refs") or [],
+                        "retrieved_by": "graph",
+                    })
+            if graph_union:
+                # Union. The flat rows are already in all_results because their searches
+                # ran above; keep every one of them and append only the graph rows they do
+                # not already contain. Order matters downstream — the answerer reads a
+                # prefix of this list under a token budget — so flat leads, which is the
+                # whole point: the row flat found can no longer be pushed out by graph
+                # expansion. graph_fact rows carry no PG identity and are always appended.
+                seen = {(r.get("memory_type"), r.get("id")) for r in all_results}
+                added = 0
+                for row in graph_results:
+                    key = (row.get("memory_type"), row.get("id"))
+                    if row.get("memory_type") != "graph_fact" and key in seen:
+                        continue
+                    seen.add(key)
+                    all_results.append(row)
+                    added += 1
+                logger.info(
+                    "search_memory graph-union: %d flat, %d graph, %d graph-only added",
+                    len(all_results) - added, len(graph_results), added,
+                )
+            else:
+                # all_results can contain only non-graph-backed kinds here. Episodic and
+                # semantic flat searches were never scheduled above.
+                all_results = graph_results + all_results
+            logger.info(
+                "search_memory graph-owned pass: %d graph rows, %d total",
+                len(graph_results), len(all_results),
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.error("search_memory graph pass failed: %s", e, exc_info=True)
+            # FALL BACK TO FLAT SEARCH. The episodic/semantic flat passes were skipped
+            # above on `not graph_owns_memory`, so without this the endpoint returns
+            # zero rows for the two kinds that hold nearly all the content — while
+            # every row sits untouched in Postgres.
+            #
+            # This is not hypothetical: a Neo4j outage took a whole LoCoMo run down this
+            # path. All 1540 questions were answered with an empty memory, the judge
+            # scored them, and the harness exited rc=0 reporting 0.3461 — a number that
+            # looks like a result. A degraded answer is recoverable; a confident answer
+            # from no memory at all is not.
+            try:
+                fb_emb = embedded_text_padded
+                if fb_emb is None and query:
+                    _, fb_emb = await _precompute_embedding_for_search(
+                        "embedding", query, agent_state
+                    )
+                kinds = ({"episodic", "semantic"} if memory_type == "all"
+                         else {memory_type})
+                if "episodic" in kinds:
+                    for x in await server.episodic_memory_manager.list_episodic_memory(
+                        agent_state=agent_state, user=user, query=query,
+                        embedded_text=fb_emb,
+                        search_field=search_field if search_field != "null" else "summary",
+                        search_method="embedding" if fb_emb is not None else "bm25",
+                        limit=limit, timezone_str=timezone_str,
+                        filter_tags=parsed_filter_tags, scopes=scopes,
+                        start_date=parsed_start_date, end_date=parsed_end_date,
+                        similarity_threshold=similarity_threshold,
+                    ):
+                        all_results.append({
+                            "memory_type": "episodic", "id": x.id,
+                            "timestamp": (x.occurred_at.isoformat()
+                                          if x.occurred_at else None),
+                            "event_type": x.event_type, "actor": x.actor,
+                            "summary": x.summary, "details": x.details,
+                            "retrieved_by": "flat_fallback",
+                        })
+                if "semantic" in kinds:
+                    for x in await server.semantic_memory_manager.list_semantic_items(
+                        agent_state=agent_state, user=user, query=query,
+                        embedded_text=fb_emb,
+                        search_field=search_field if search_field != "null" else "summary",
+                        search_method="embedding" if fb_emb is not None else "bm25",
+                        limit=limit, timezone_str=timezone_str,
+                        filter_tags=parsed_filter_tags, scopes=scopes,
+                        similarity_threshold=similarity_threshold,
+                    ):
+                        all_results.append({
+                            "memory_type": "semantic", "id": x.id, "name": x.name,
+                            "summary": x.summary, "details": x.details,
+                            "source": x.source, "retrieved_by": "flat_fallback",
+                        })
+                logger.warning(
+                    "search_memory fell back to flat search: %d rows", len(all_results),
+                )
+            except Exception as fb:  # noqa: BLE001
+                logger.error("flat fallback ALSO failed: %s", fb, exc_info=True)
 
     # For single memory type searches, fetch core memory sequentially if requested
     if include_core_memory and memory_type != "all":
@@ -5285,9 +5506,11 @@ async def auto_dream_handler(
             resource, procedural, knowledge, experience. experience processes
             episodic, semantic, and knowledge together in one agent pass.
         dry_run: If true, return counts without applying any changes
-        graph_only: If true, skip the LLM memory-merge pass and only refine the graph
-            (maintenance + reconsolidation). Flat PG memories are left untouched, so
-            flat retrieval is unchanged and only the hypergraph structure is consolidated.
+        graph_only: DEFAULT TRUE — refine the graph only (structural maintenance,
+            node merging by value union + edge rewiring, conflict flagging). Flat PG
+            memories are left untouched, so flat retrieval is unchanged. Pass false
+            to opt into the legacy LLM memory-merge pass, in which case `mode`
+            selects which memory components it rewrites.
         model: Override the LLM model (e.g. "gpt-4.1-mini" for testing)
     """
     from mirix.schemas.auto_dream import AutoDreamRequest, AutoDreamResponse

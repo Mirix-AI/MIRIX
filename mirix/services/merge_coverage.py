@@ -118,8 +118,95 @@ def enforce_merge_coverage(agent, old_texts, new_texts, tool_name: str) -> None:
         )
 
 
-def coverage_gaps(old_texts: Iterable[str], new_text: str) -> list:
-    """Specifics present in the union of old_texts but missing from new_text.
+def coverage_gaps(old_texts: Iterable[str], new_text: str,
+                  label_texts: Iterable[str] = ()) -> list:
+    """As above, but ``label_texts`` (a memory's ``name``/title field) are checked
+    at COMPONENT level instead of phrase level.
+
+    A title is a filing label, not an assertion: a consolidated entry gets a new
+    title of its own and cannot be expected to restate "Exploring New Genres
+    Beyond Thrillers" verbatim. Demanding the whole phrase made the gate reject
+    43% of clusters on a real store — and the bigger the cluster (more titles),
+    the likelier the rejection, which is exactly backwards.
+
+    Dropping titles from the check entirely is not safe either: measured on the
+    same store, 32.6% of the specifics found in ``name`` appear NOWHERE in that
+    row's summary/details ("Citi AAdvantage Executive Credit Card", "The
+    Mandalorian TV Series"), so ignoring titles would open a real fact-loss hole.
+
+    So titles contribute their COMPONENTS: every capitalised word and every
+    number inside a title must still appear in the replacement, while the exact
+    title string need not. Generic filing words ("overview", "options",
+    "recommendations", ...) are dropped — they classify, they do not assert.
+    """
+    gaps: dict = {}
+    for key, display in _gap_items(old_texts, new_text):
+        gaps.setdefault(key, display)
+    for key, display in _label_gap_items(label_texts, new_text,
+                                         corroborating=old_texts):
+        gaps.setdefault(key, display)
+    return sorted(gaps.values())
+
+
+# Words that only ever classify a memory rather than assert something about the
+# user. Stripped from title component checks.
+_LABEL_STOPWORDS = {
+    "overview", "options", "option", "recommendations", "recommendation",
+    "tips", "guide", "guides", "guidelines", "ideas", "idea", "suggestions",
+    "suggestion", "notes", "note", "list", "lists", "summary", "details",
+    "info", "information", "topics", "topic", "misc", "general", "other",
+    "beyond", "for", "and", "of", "the", "in", "on", "at", "with", "as",
+    "plan", "plans", "preferences", "preference", "interests", "interest",
+    "activities", "activity", "experience", "experiences", "discussion",
+    "discussions", "challenge", "challenges", "series", "location", "locations",
+}
+
+
+def _label_gap_items(label_texts: Iterable[str], new_text: str,
+                     corroborating: Iterable[str] = ()):
+    """Component-level check for title fields; yields (key, display) gaps.
+
+    Title-Case makes every word look like a proper noun, so a component is only
+    demanded when it is *corroborated* as a real name: it appears capitalised
+    mid-sentence somewhere in the bodies (real names are capitalised wherever
+    they occur; ordinary words like "Book" or "Exploring" are not), or it is a
+    number/date. Everything else in a title is treated as filing vocabulary.
+    """
+    new_norm = _normalize(new_text)
+    new_words = set(_WORDS.findall(new_norm))
+    corroborated = set()
+    for body in corroborating:
+        for m in re.finditer(r"(?<![.!?]\s)(?<!^)\b([A-Z][a-zA-Z]+)", body or ""):
+            corroborated.add(m.group(1).lower())
+    for text in label_texts:
+        if not text:
+            continue
+        for key, display in extract_specifics(text).items():
+            if " " in key:
+                # Phrase from a title -> require its meaningful components only.
+                for comp in key.split():
+                    if comp in _LABEL_STOPWORDS or len(comp) < 3:
+                        continue
+                    if not (comp in corroborated or comp in _MONTHS
+                            or comp in _WEEKDAYS or comp in _WORD_NUMBERS):
+                        continue  # Title-Case artifact, not a name
+                    if comp not in new_words:
+                        yield comp, comp
+            elif not key.isalpha():
+                if key not in new_norm:
+                    yield key, display
+            else:
+                if key in _LABEL_STOPWORDS:
+                    continue
+                if not (key in corroborated or key in _MONTHS
+                        or key in _WEEKDAYS or key in _WORD_NUMBERS):
+                    continue
+                if key not in new_words:
+                    yield key, display
+
+
+def _gap_items(old_texts: Iterable[str], new_text: str) -> list:
+    """(key, display) pairs for specifics in old_texts missing from new_text.
 
     Containment is checked on normalized text; word-level keys (months,
     weekdays, word-numbers) require a word-boundary match so "may" the month
@@ -150,4 +237,4 @@ def coverage_gaps(old_texts: Iterable[str], new_text: str) -> list:
             else:
                 if key not in new_words:
                     gaps[key] = display
-    return sorted(gaps.values())
+    return list(gaps.items())

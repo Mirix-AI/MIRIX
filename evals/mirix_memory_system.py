@@ -66,7 +66,8 @@ class MirixMemorySystem:
 
 
     def add_chunk(self, chunk: str, raw_input: Optional[str] = None, async_add: bool = False,
-                  occurred_at: Optional[str] = None):
+                  occurred_at: Optional[str] = None,
+                  source_meta: Optional[dict] = None):
         """Ingest one chunk.
 
         occurred_at: optional ISO 8601 timestamp for when this chunk's events
@@ -74,6 +75,9 @@ class MirixMemorySystem:
         of letting the LLM guess a year (LongMemEval conversations carry their
         own per-session "Chat Time" — see longmem_eval.py).
         """
+        filter_tags = {"scope": "read_write", "kind": "conversation_session"}
+        if source_meta:
+            filter_tags["source_meta"] = dict(source_meta)
         add_kwargs = dict(
             user_id=self.user_id,
             messages=[
@@ -81,7 +85,7 @@ class MirixMemorySystem:
             ],
             # LoCoMo ingestion: avoid running the full multi-agent chain on every session.
             chaining=False,
-            filter_tags={"scope": "read_write", "kind": "conversation_session"},
+            filter_tags=filter_tags,
             async_add=async_add,
         )
         if occurred_at is not None:
