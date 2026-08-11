@@ -58,19 +58,42 @@ Judge the VALUES, not the wording of the predicate. When unsure answer LIST: wro
 Return JSON: {"results": [{"i": <index>, "contradiction": true/false}, ...]}"""
 
 
-async def _anchor_pairs(driver, user_id: str) -> list[tuple[str, str, float]]:
-    """Near-duplicate anchor candidates via the existing name-embedding index."""
+async def _anchor_pairs(
+    driver,
+    user_id: str,
+    source_anchor_ids: Optional[list[str]] = None,
+) -> list[tuple[str, str, float]]:
+    """Near-duplicate candidates via the existing name-embedding index.
+
+    The legacy v7.12 path leaves ``source_anchor_ids`` unset and therefore starts
+    from every anchor in the user's graph.  v7.16 supplies the semantic anchors
+    touched by the current ingest batch.  Only the left/source side changes: the
+    ANN fan-out, threshold, target eligibility and name-based de-duplication remain
+    exactly the v7.12 behavior.
+    """
+    if source_anchor_ids is not None and not source_anchor_ids:
+        return []
     pairs: dict[tuple[str, str], float] = {}
     async with driver.session(database=settings.neo4j_database) as session:
+        source_clause = (
+            "UNWIND $source_anchor_ids AS source_id\n"
+            "MATCH (a:V7Anchor {user_id: $u, id: source_id})"
+            if source_anchor_ids is not None
+            else "MATCH (a:V7Anchor {user_id: $u})"
+        )
         res = await session.run(
-            """
-            MATCH (a:V7Anchor {user_id: $u}) WHERE a.name_embedding IS NOT NULL
+            f"""
+            {source_clause}
+            WHERE a.name_embedding IS NOT NULL
             CALL db.index.vector.queryNodes('v7_anchor_name_emb', 4, a.name_embedding)
             YIELD node AS b, score AS sc
             WHERE b.user_id = $u AND b.name <> a.name AND sc >= $th
             RETURN a.name AS a, b.name AS b, sc
             """,
-            u=user_id, th=_PAIR_COS)
+            u=user_id,
+            th=_PAIR_COS,
+            source_anchor_ids=source_anchor_ids,
+        )
         async for r in res:
             key = tuple(sorted((r["a"], r["b"])))  # undirected, dedup both directions
             pairs[key] = max(pairs.get(key, 0.0), float(r["sc"]))
@@ -158,20 +181,68 @@ async def _arity_candidates(driver, user_id: str) -> list[dict]:
 
 
 async def _merge_anchor(session, user_id: str, drop: str, keep: str) -> None:
-    """Redirect every edge off `drop` onto `keep`, then remove `drop`.
+    """Fold `drop` into `keep`: union the node's own values, redirect every edge,
+    then remove `drop`.
 
-    Done per relationship type because APOC is not installed. MERGE (not CREATE)
-    on the target so redirecting never duplicates an edge that already exists.
+    Edges are redirected per relationship type because APOC is not installed.
+    MERGE (not CREATE) on the target so redirecting never duplicates an edge that
+    already exists.
+
+    The value fold matters as much as the rewiring: a merge that keeps only the
+    survivor's properties silently discards evidence. Each property gets the
+    reconciliation its meaning demands —
+      * ``mention_count``   SUM — both nodes' mentions are real observations, and
+        the count is the graph's only frequency/importance signal.
+      * ``admission_score`` MAX — the score is "how anchor-worthy is this", so the
+        stronger evidence wins rather than whichever node happened to survive.
+      * ``anchor_type``     the loser's specific type is promoted when the survivor
+        carries the generic ``Other``.
+      * ``aliases``         the loser's name (and its own aliases) are kept on the
+        survivor, so the surface form stays resolvable after the node is gone.
+    Set-union / max / sum are idempotent, commutative and associative, so repeated
+    or reordered merges converge on the same node (Swoosh's ICAR properties);
+    last-writer-wins would not.
     """
     if drop == keep:
         return
     stmts = [
+        """MATCH (d:V7Anchor {user_id:$u, name:$drop})
+           MATCH (k:V7Anchor {user_id:$u, name:$keep})
+           SET k.mention_count   = coalesce(k.mention_count, 0) + coalesce(d.mention_count, 0),
+               k.admission_score = CASE
+                   WHEN coalesce(d.admission_score, 0) > coalesce(k.admission_score, 0)
+                   THEN d.admission_score ELSE k.admission_score END,
+               k.anchor_type = CASE
+                   WHEN (k.anchor_type IS NULL OR toLower(k.anchor_type) = 'other')
+                        AND d.anchor_type IS NOT NULL AND toLower(d.anchor_type) <> 'other'
+                   THEN d.anchor_type ELSE k.anchor_type END,
+               k.updated_at = datetime()
+           WITH k, d
+           UNWIND coalesce(k.aliases, []) + coalesce(d.aliases, []) + [d.name] AS alias
+           WITH k, collect(DISTINCT alias) AS all_aliases
+           SET k.aliases = [x IN all_aliases WHERE x IS NOT NULL AND x <> k.name]""",
+        # v7.12 keeps the anchor's PG row ids in properties, so the union that used to
+        # happen by rewiring V7_APPEARS_IN / V7_DESCRIBED_BY is a list merge. This is
+        # the "node1 -> ref 20 25, node2 -> ref 40 70, merged -> 20 25 40 70" case: the
+        # survivor must be able to reach every memory BOTH anchors pointed at.
+        """MATCH (d:V7Anchor {user_id:$u, name:$drop})
+           MATCH (k:V7Anchor {user_id:$u, name:$keep})
+           SET k.episodic_ids = coalesce(k.episodic_ids, [])
+               + [x IN coalesce(d.episodic_ids, []) WHERE NOT x IN coalesce(k.episodic_ids, [])],
+               k.semantic_ids = coalesce(k.semantic_ids, [])
+               + [x IN coalesce(d.semantic_ids, []) WHERE NOT x IN coalesce(k.semantic_ids, [])]""",
         """MATCH (f:V7Fact)-[r:V7_FACT_SUBJECT]->(d:V7Anchor {user_id:$u, name:$drop})
            MATCH (k:V7Anchor {user_id:$u, name:$keep})
            MERGE (f)-[:V7_FACT_SUBJECT]->(k) DELETE r""",
         """MATCH (f:V7Fact)-[r:V7_FACT_OBJECT]->(d:V7Anchor {user_id:$u, name:$drop})
            MATCH (k:V7Anchor {user_id:$u, name:$keep})
            MERGE (f)-[:V7_FACT_OBJECT]->(k) DELETE r""",
+        # v7.12 arms carry their role, so the rewire MERGEs on (role) too — otherwise
+        # a frame with the dropped anchor as both origin and destination would collapse
+        # to one arm and lose which role survived.
+        """MATCH (f:V7Fact)-[r:V7_FACT_ARG]->(d:V7Anchor {user_id:$u, name:$drop})
+           MATCH (k:V7Anchor {user_id:$u, name:$keep})
+           MERGE (f)-[:V7_FACT_ARG {role: r.role}]->(k) DELETE r""",
         """MATCH (d:V7Anchor {user_id:$u, name:$drop})-[r:V7_APPEARS_IN]->(m)
            MATCH (k:V7Anchor {user_id:$u, name:$keep})
            MERGE (k)-[:V7_APPEARS_IN]->(m) DELETE r""",
@@ -201,14 +272,35 @@ async def _due(driver, user_id: str, every_n: int) -> tuple[bool, int]:
     the gate can then never fire again. Shrinking is exactly when reconsolidation is
     most warranted, since merges are what create new near-duplicates.
     """
-    async with driver.session(database=settings.neo4j_database) as session:
-        rec = await (await session.run(
+    # The churn measure has to count something the CURRENT schema actually writes.
+    # v7.12 dropped the ref-node layer, so V7MemoryRef is structurally absent there:
+    # `now` was 0, `mark` was 0, and abs(0-0) >= every_n is False forever — node
+    # merging silently never ran on a v7.12+ store. Measured on the v712smoke store:
+    # 86 anchors, 43 facts, 0 V7MemoryRef, _due False at every_n 1/8/10, while
+    # _anchor_pairs had 23 real candidates waiting ("Delta SkyMiles" / "Delta SkyMiles
+    # holder", cos 0.975). Worse, maintain_graph's dead-anchor sweep sits in a separate
+    # ungated try block, so a dream-enabled v7.12 run would PRUNE without MERGING —
+    # exactly the ordering hazard commit 882edbc was written to remove.
+    from mirix.services.graph_memory_manager_v7 import is_frame_version
+
+    if is_frame_version():
+        cypher = """
+            MATCH (a:V7Anchor {user_id: $u})
+            WITH sum(size(coalesce(a.episodic_ids, [])) +
+                     size(coalesce(a.semantic_ids, []))) AS now
+            OPTIONAL MATCH (k:V7Meta {user_id: $u})
+            RETURN coalesce(now, 0) AS now,
+                   coalesce(k.last_reconsolidated_at_count, 0) AS mark
             """
+    else:
+        cypher = """
             MATCH (m:V7MemoryRef {user_id: $u})
             WITH count(m) AS now
             OPTIONAL MATCH (k:V7Meta {user_id: $u})
             RETURN now, coalesce(k.last_reconsolidated_at_count, 0) AS mark
-            """, u=user_id)).single()
+            """
+    async with driver.session(database=settings.neo4j_database) as session:
+        rec = await (await session.run(cypher, u=user_id)).single()
     now = int(rec["now"]) if rec else 0
     mark = int(rec["mark"]) if rec else 0
     return abs(now - mark) >= every_n, now
@@ -224,6 +316,7 @@ async def _mark_done(driver, user_id: str, count: int) -> None:
 async def reconsolidate_graph(
     driver, *, user_id: str, agent_state: Any, dry_run: bool = False,
     every_n_memories: Optional[int] = None,
+    source_anchor_ids: Optional[list[str]] = None,
 ) -> dict[str, Any]:
     """Run one semantic reconsolidation cycle. Returns stats.
 
@@ -238,7 +331,7 @@ async def reconsolidate_graph(
             return {"skipped": "not_due", "memory_count": memory_count}
 
     # ---- Pass A: cluster near-duplicate anchors ----
-    pairs = await _anchor_pairs(driver, user_id)
+    pairs = await _anchor_pairs(driver, user_id, source_anchor_ids)
     stats["candidate_pairs"] = len(pairs)
     confirmed = await _verify(pairs[:_MAX_VERIFY], agent_state) if pairs else []
     stats["llm_confirmed_merges"] = len(confirmed)
@@ -270,6 +363,36 @@ async def reconsolidate_graph(
                 """, u=user_id)
             rec = await res.single()
             stats["facts_collapsed_after_merge"] = int(rec["n"]) if rec else 0
+
+            # same collapse for v7.12 n-ary frames: two frames that differed only by an
+            # anchor now merged into one are the same assertion. Arms sorted before
+            # collect so arg order can't hide a duplicate.
+            res_n = await session.run(
+                """
+                MATCH (f:V7Fact {user_id:$u})-[r:V7_FACT_ARG]->(a:V7Anchor)
+                WITH f, r.role + ':' + toLower(a.name) AS arm
+                ORDER BY arm
+                WITH f, collect(arm) AS arms
+                WITH coalesce(f.predicate,'') + '#'
+                     + reduce(acc = '', x IN arms | acc + '|' + x) AS k, collect(f) AS fs
+                WHERE size(fs) > 1
+                WITH head(fs) AS keep, tail(fs) AS dupes
+                UNWIND dupes AS dupe
+                // v7.12 citations are a property, so the union is a list concat.
+                // Roles ride along positionally with the ids they belong to.
+                WITH keep, dupe,
+                     [i IN range(0, size(coalesce(dupe.memory_ids, [])) - 1)
+                      WHERE NOT dupe.memory_ids[i] IN coalesce(keep.memory_ids, [])] AS add
+                SET keep.memory_ids = coalesce(keep.memory_ids, [])
+                                      + [i IN add | dupe.memory_ids[i]],
+                    keep.memory_roles = coalesce(keep.memory_roles, [])
+                                      + [i IN add | coalesce(dupe.memory_roles, [])[i]]
+                WITH DISTINCT dupe
+                DETACH DELETE dupe
+                RETURN count(*) AS n
+                """, u=user_id)
+            rec_n = await res_n.single()
+            stats["frames_collapsed_after_merge"] = int(rec_n["n"]) if rec_n else 0
     stats["anchors_merged"] = merged
 
     # ---- Pass B: REPORT conflicts. Never resolves, never deletes. ----
