@@ -8,6 +8,13 @@ from typing import Dict, Iterable, List, Optional
 
 from mirix_memory_system import MirixMemorySystem
 from task_agent import TaskAgent
+from v720_policy import (
+    format_visual_evidence,
+    is_v720,
+    mentioned_at_iso,
+    needs_selective_ocr,
+    relative_time_annotations,
+)
 
 
 instructions = """Instructions:
@@ -19,6 +26,14 @@ instructions = """Instructions:
 5. Focus only on the content of the memories from both speakers. Do not confuse character names mentioned in memories with the actual users who created those memories.
 6. You are supposed to extract the event/fact/semantic knowledge from the conversation. For example, if the conversation happens at 2023 and the conversation says that "John went to India last year", then you should save the fact that "John went to India in 2022". Similarly for all other kinds of memories.
 7. Make sure to extract the facts about the characters, such as their name, age, gender, occupation, hometown, etc."""
+
+
+def dream_source_chunk_ids(after_idx: int, dream_every: int) -> list[int]:
+    """Return zero-based source chunk ids for the dream ending at ``after_idx``."""
+    if dream_every <= 0 or after_idx <= 0:
+        return []
+    batch_start = ((after_idx - 1) // dream_every) * dream_every + 1
+    return list(range(batch_start - 1, after_idx))
 
 def load_locomo(path: Path) -> List[Dict]:
     with path.open("r", encoding="utf-8") as handle:
@@ -37,27 +52,132 @@ def iter_sessions(conversation: Dict) -> Iterable[Dict]:
         match = re.match(r"^session_(\d+)$", key)
         if match and isinstance(value, list):
             session_numbers.append(int(match.group(1)))
+    # MIRIX_WINDOW_TURNS: hand the extractor a few turns at a time instead of a whole
+    # session.
+    #
+    # A session is thirty-odd turns and arrives in ONE add_chunk call, so the extractor
+    # picks a handful of memories to stand for all of it, and what loses is the specific
+    # noun. Traced on three of the 60 never-written errors:
+    #     "Hey Jo, guess what I did? Dyed my hair last week"
+    #         -> "Nate dyed his hair purple last week"      the nickname is gone
+    #     "I'm reading 'The Lean Startup' hoping it'll give me tips for my biz"
+    #         -> "Jon is wrapping up a business plan"       the title is gone
+    # Measured over three conversations, 17-46% of the source's distinctive tokens (quoted
+    # titles, proper nouns, numbers) never reach the store.
+    #
+    # Windows overlap by one turn so a fact stated across a turn boundary is not split, and
+    # each window keeps its session number and date_time — the resolver needs the session
+    # date to turn "next month" into a date, and occurred_at is 100% populated today.
+    #
+    # This was tried before and abandoned: evals/_chunking.py records fine-grained chunking
+    # scoring 38/60 against ~30 canonical, dropped for leaderboard comparability rather than
+    # for accuracy. Off by default for exactly that reason.
+    window = int(os.environ.get("MIRIX_WINDOW_TURNS", "0") or 0)
+    overlap = 1 if window > 1 else 0
     for number in sorted(session_numbers):
-        yield {
-            "number": number,
-            "date_time": conversation.get(f"session_{number}_date_time"),
-            "turns": conversation.get(f"session_{number}", []),
-        }
+        turns = conversation.get(f"session_{number}", [])
+        date_time = conversation.get(f"session_{number}_date_time")
+        if window <= 0 or len(turns) <= window:
+            yield {"number": number, "date_time": date_time, "turns": turns}
+            continue
+        start = 0
+        while start < len(turns):
+            yield {
+                "number": number,
+                "date_time": date_time,
+                "turns": turns[start:start + window],
+            }
+            if start + window >= len(turns):
+                break
+            start += window - overlap
 
 
-def format_session_chunk(session: Dict, date_time: str) -> str:
+def format_session_chunk(
+    session: Dict,
+    date_time: str,
+    *,
+    v720: bool = False,
+    visual_evidence: Optional[Dict[str, str]] = None,
+) -> str:
 
     header = f"Session {session['number']}"
     if session.get("date_time"):
         header += f" ({session['date_time']})"
     lines = [f"You have access to the conversation between two speakers. The conversation is timestamped at {date_time}.\n"]
     lines.append(instructions)
+    if v720:
+        lines.append(
+            "v7.20 temporal/provenance rules:\n"
+            "- `mentioned_at` is the timestamp of this conversation session.\n"
+            "- `event_time` is when a described event actually happened. Store it as the "
+            "episodic occurred_at; never replace it with mentioned_at.\n"
+            "- Preserve the speaker's exact relative-time phrase in details and also use "
+            "the supplied event_time_hint when it is present.\n"
+            "- BLIP and selective OCR/vision lines are first-class visual observations. "
+            "Image retrieval metadata is only a search hint.\n"
+            f"mentioned_at={mentioned_at_iso(date_time) or date_time}"
+        )
     lines.append(header)
     for turn in session.get("turns", []):
         speaker = turn.get("speaker", "").strip()
         text = turn.get("text", "").strip()
-        lines.append(f"{speaker}: {text}")
+        dia_id = str(turn.get("dia_id") or "").strip()
+        label = f"{speaker} [{dia_id}]" if v720 and dia_id else speaker
+        lines.append(f"{label}: {text}")
+        if v720:
+            for annotation in relative_time_annotations(text, date_time):
+                lines.append(
+                    "[Temporal evidence " + (dia_id or "unknown") + "]: "
+                    f"relative_phrase={annotation['phrase']!r}; "
+                    f"event_time_hint={annotation['event_time_hint']}; "
+                    f"mentioned_at={mentioned_at_iso(date_time) or date_time}"
+                )
+            vision_text = (visual_evidence or {}).get(dia_id)
+            lines.extend(format_visual_evidence(turn, vision_text))
     return "\n".join(lines)
+
+
+def extract_selective_visual_evidence(turn: Dict, task_agent: Optional[TaskAgent]) -> str:
+    """Use vision only for likely text-bearing images; BLIP covers all other images."""
+
+    if os.environ.get("MIRIX_DISABLE_SELECTIVE_OCR") == "1":
+        return ""
+    if task_agent is None or not needs_selective_ocr(turn):
+        return ""
+    urls = turn.get("img_url") or []
+    if isinstance(urls, str):
+        urls = [urls]
+    url = next((str(value) for value in urls if value), "")
+    if not url:
+        return ""
+    model = os.environ.get("MIRIX_V720_VISION_MODEL", task_agent.model)
+    try:
+        response = task_agent.client.chat.completions.create(
+            model=model,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": (
+                            "Inspect this conversation image as raw evidence. First transcribe "
+                            "all visible text exactly (including title/sign wording). Then give "
+                            "one precise factual description. Do not infer facts not visible."
+                        ),
+                    },
+                    {"type": "image_url", "image_url": {"url": url, "detail": "high"}},
+                ],
+            }],
+            max_completion_tokens=180,
+            temperature=0,
+        )
+        return (response.choices[0].message.content or "").strip()
+    except Exception as exc:  # noqa: BLE001
+        print(
+            f"[main_eval] v7.20 selective OCR failed for {turn.get('dia_id')}: {exc}",
+            flush=True,
+        )
+        return ""
 
 def load_sample_result(path: Path) -> Optional[Dict]:
     if not path.exists():
@@ -145,6 +265,12 @@ def main() -> None:
         help="Limit number of questions per sample.",
     )
     parser.add_argument(
+        "--question-indices",
+        type=str,
+        default=None,
+        help="Optional comma-separated, one-based question indices to evaluate.",
+    )
+    parser.add_argument(
         "--run-llm",
         action="store_true",
         default=True,
@@ -175,6 +301,24 @@ def main() -> None:
 
     mirix_client_id = os.environ.get("MIRIX_CLIENT_ID", "mirix-eval-client")
     mirix_org_id = os.environ.get("MIRIX_ORG_ID", "mirix-eval-org")
+    # Optional storage-only namespace for side-by-side graph evaluations.  The
+    # public sample_id and result filenames remain unchanged, while PG/Neo4j
+    # user ownership is isolated so a fresh run cannot contaminate an existing
+    # benchmark graph with the same LoCoMo conversation ids.
+    eval_user_prefix = os.environ.get("MIRIX_EVAL_USER_PREFIX", "")
+    v720_enabled = is_v720(os.environ.get("MIRIX_GRAPH_VERSION"))
+    if v720_enabled:
+        graph_version = os.environ.get("MIRIX_GRAPH_VERSION", "v7.20")
+        print(
+            f"[main_eval] {graph_version} policy enabled: multimodal evidence + temporal provenance + compact QA retrieval",
+            flush=True,
+        )
+    qa_only_existing_store = os.environ.get("MIRIX_QA_ONLY_EXISTING_STORE") == "1"
+    if qa_only_existing_store:
+        print(
+            "[main_eval] QA-only mode: reusing existing PG/Neo4j state; ingest and Dream are skipped",
+            flush=True,
+        )
 
     # Force every main_eval run into the LoCoMo namespace so MAB and LoCoMo
     # outputs cannot bleed into each other. The user can still pass an
@@ -218,9 +362,16 @@ def main() -> None:
         sample_id = item.get("sample_id")
         if sample_id is None:
             continue
+        storage_user_id = f"{eval_user_prefix}{sample_id}"
         sample_path = output_path / f"{sample_id}.json"
 
-        task_agent = TaskAgent(mirix_config_path=str(args.mirix_config_path), client_id=mirix_client_id, org_id=mirix_org_id, user_id=sample_id) if args.run_llm else None
+        task_agent = TaskAgent(
+            mirix_config_path=str(args.mirix_config_path),
+            client_id=mirix_client_id,
+            org_id=mirix_org_id,
+            user_id=storage_user_id,
+            model=os.environ.get("MIRIX_QA_MODEL", "gpt-4.1-mini"),
+        ) if args.run_llm else None
 
         sample_result = load_sample_result(sample_path)
         if sample_result is None:
@@ -233,8 +384,10 @@ def main() -> None:
 
         sample_result.setdefault("sample_id", sample_id)
         sample_result = normalize_sample_result(sample_result)
+        if v720_enabled:
+            sample_result.setdefault("visual_evidence", {})
 
-        memory_system = MirixMemorySystem(user_id=sample_id,
+        memory_system = MirixMemorySystem(user_id=storage_user_id,
                     mirix_config_path=str(args.mirix_config_path),
                     client=task_agent.mirix_client)
 
@@ -252,13 +405,32 @@ def main() -> None:
             dream_key = f"dream_{after_idx}"
             if dream_key in sample_result["responses"]:
                 return
+            # Source metadata uses zero-based chunk ids.  The batch starts after the
+            # previous N-boundary, so a 19-chunk run with N=5 yields [15,16,17,18]
+            # for the final (four-chunk) dream instead of accidentally overlapping
+            # chunk 15 again.
+            source_chunk_ids = dream_source_chunk_ids(after_idx, dream_every)
             start = time.perf_counter()
             try:
                 r = httpx.post(
                     f"{server_base}/memory/auto_dream",
-                    params={"user_id": sample_id},
+                    params={"user_id": storage_user_id},
                     headers={"x-client-id": mirix_client_id, "x-org-id": mirix_org_id},
-                    json={"mode": "experience"},
+                    json={
+                        "mode": os.environ.get("MIRIX_DREAM_MODE", "experience"),
+                        # Eval AutoDream arms measure graph consolidation only. Keep
+                        # PG rows byte-stable so retrieval changes can be attributed
+                        # to the graph instead of an LLM rewrite of flat memories.
+                        "graph_only": True,
+                        # v7.14+ resolves the semantic-memory delta from exactly this
+                        # batch. Older versions ignore the field and retain their
+                        # historical full-graph behaviour.
+                        "source_chunk_ids": source_chunk_ids,
+                        # Hybrid Dream revisions keep intermediate cycles local and
+                        # perform their one full semantic sweep only after ingest is
+                        # complete.  Do not infer finality from a hard-coded chunk id.
+                        "final_full_graph": after_idx == total_chunks,
+                    },
                     timeout=3000,
                 )
                 payload = r.json()
@@ -270,6 +442,8 @@ def main() -> None:
             sample_result["responses"][dream_key] = {
                 "type": "auto_dream",
                 "chunk_index": after_idx,
+                "source_chunk_ids": source_chunk_ids,
+                "final_full_graph": after_idx == total_chunks,
                 "question_index": None,
                 "response": payload,
                 "elapsed_seconds": elapsed,
@@ -278,6 +452,14 @@ def main() -> None:
 
         conversation = item.get("conversation", {})
         total_chunks = sum(1 for _ in iter_sessions(conversation))
+        if qa_only_existing_store:
+            for idx in range(1, total_chunks + 1):
+                sample_result["responses"].setdefault(str(idx), {
+                    "type": "qa_only_existing_store",
+                    "chunk_index": idx,
+                    "question_index": None,
+                    "response": {"skipped": "existing_store"},
+                })
         for idx, session in enumerate(iter_sessions(conversation), start=1):
             idx_key = str(idx)
             if idx_key in sample_result["responses"]:
@@ -286,11 +468,47 @@ def main() -> None:
             date_time = conversation.get(date_time_key)
             if date_time is None:
                 date_time = conversation.get(f"session_{idx + 1}_date_time")
-            chunk = format_session_chunk(session, date_time=date_time)
+            session_visual: Dict[str, str] = {}
+            if v720_enabled:
+                cached_visual = sample_result.setdefault("visual_evidence", {})
+                for turn in session.get("turns", []):
+                    dia_id = str(turn.get("dia_id") or "")
+                    cached = cached_visual.get(dia_id)
+                    if isinstance(cached, str) and cached:
+                        session_visual[dia_id] = cached
+                        continue
+                    extracted = extract_selective_visual_evidence(turn, task_agent)
+                    if extracted:
+                        cached_visual[dia_id] = extracted
+                        session_visual[dia_id] = extracted
+                save_sample_result(sample_path, sample_result)
+
+            chunk = format_session_chunk(
+                session,
+                date_time=date_time,
+                v720=v720_enabled,
+                visual_evidence=session_visual,
+            )
 
             start = time.perf_counter()
 
-            response = memory_system.add_chunk(chunk, raw_input=chunk)
+            source_meta = None
+            if v720_enabled:
+                mentioned_at = mentioned_at_iso(date_time)
+                source_meta = {
+                    # ``occurred_at`` remains the compatibility ordering field for
+                    # source provenance. It is the session/mention time here; the
+                    # episodic row's occurred_at is independently extracted event_time.
+                    "occurred_at": mentioned_at or str(date_time),
+                    "mentioned_at": mentioned_at or str(date_time),
+                    "temporal_role": "mentioned_at",
+                    "session_id": session.get("number"),
+                }
+            response = memory_system.add_chunk(
+                chunk,
+                raw_input=chunk,
+                source_meta=source_meta,
+            )
 
             elapsed = time.perf_counter() - start
 
@@ -315,11 +533,18 @@ def main() -> None:
         sample_result["token_stats"] = {"build_raw": build_stats, "build_sum": _sum_tokens(build_stats)}
         save_sample_result(sample_path, sample_result)
 
-        qa_list = item.get("qa", [])
+        qa_list = list(enumerate(item.get("qa", []), start=1))
         if args.max_questions is not None:
             qa_list = qa_list[: args.max_questions]
+        if args.question_indices:
+            selected = {
+                int(value.strip())
+                for value in args.question_indices.split(",")
+                if value.strip()
+            }
+            qa_list = [(qidx, qa) for qidx, qa in qa_list if qidx in selected]
 
-        for qidx, qa in enumerate(qa_list, start=1):
+        for qidx, qa in qa_list:
             qidx_key = str(qidx)
             if qidx_key in sample_result["records"]:
                 record = sample_result["records"][qidx_key]
@@ -361,7 +586,7 @@ def main() -> None:
             usage_total = None
             if task_agent:
                 start = time.perf_counter()
-                trace = task_agent.answer(input_messages, user_id=sample_id)
+                trace = task_agent.answer(input_messages, user_id=storage_user_id)
                 predicted = trace.get("answer")
                 message_trace = trace.get("messages")
                 usage_trace = trace.get("usage")
@@ -379,6 +604,10 @@ def main() -> None:
                 "category": qa.get("category"),
                 "input_messages": input_messages,
                 "predicted_answer": predicted,
+                # Pre-strip text, kept so a chain-of-thought run can be re-judged both
+                # with and without its reasoning. The gap between those two scores is the
+                # judge's length bias, which is otherwise inseparable from a real gain.
+                "raw_answer": trace.get("raw_answer") if task_agent else None,
                 "messages": message_trace,
                 "usage": usage_trace,
                 "usage_total": usage_total,
@@ -393,7 +622,7 @@ def main() -> None:
             all_memories = {
                 "success": False,
                 "error": str(exc),
-                "user_id": sample_id,
+                "user_id": storage_user_id,
             }
 
         memories_path = output_path / f"{sample_id}_memories.json"

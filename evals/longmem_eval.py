@@ -400,6 +400,48 @@ def main() -> None:
         print(f"[longmem_eval] {sample_id}: ingesting {len(chunks)} session chunk(s) "
               f"({dated} with timestamps)")
 
+        # Interleaved consolidation (MIRIX_DREAM_EVERY_N_CHUNKS=N): one auto_dream
+        # cycle after every Nth ingested chunk, plus a final cycle after the last
+        # chunk when the total is not a multiple of N — the ONLINE periodic design
+        # (same hook as main_eval.py's LoCoMo path). For LongMemEval's 534-chunk
+        # stream pick N proportionally (e.g. 100), not the LoCoMo-scale 10.
+        dream_every = int(os.environ.get("MIRIX_DREAM_EVERY_N_CHUNKS", "0") or 0)
+
+        def _fire_dream(after_idx: int) -> None:
+            dream_key = f"dream_{after_idx}"
+            if dream_key in sample_result["responses"]:
+                return
+            d_start = time.perf_counter()
+            try:
+                batch_start = ((after_idx - 1) // dream_every) * dream_every
+                source_chunk_ids = list(range(batch_start, after_idx))
+                r = httpx.post(
+                    f"{server_base}/memory/auto_dream",
+                    params={"user_id": sample_id},
+                    headers={"x-client-id": mirix_client_id, "x-org-id": mirix_org_id},
+                    json={
+                        "mode": os.environ.get("MIRIX_DREAM_MODE", "experience"),
+                        "graph_only": True,
+                        "source_chunk_ids": source_chunk_ids,
+                        "final_full_graph": after_idx == len(chunks),
+                    },
+                    timeout=6000,
+                )
+                payload = r.json()
+            except Exception as exc:  # noqa: BLE001
+                payload = {"error": str(exc)}
+            d_elapsed = time.perf_counter() - d_start
+            print(f"[longmem_eval] auto_dream after chunk {after_idx}: "
+                  f"{d_elapsed:.0f}s {str(payload)[:160]}", flush=True)
+            sample_result["responses"][dream_key] = {
+                "type": "auto_dream",
+                "chunk_index": after_idx,
+                "question_index": None,
+                "response": payload,
+                "elapsed_seconds": d_elapsed,
+            }
+            save_sample_result(sample_path, sample_result)
+
         for idx, chunk in enumerate(chunks, start=1):
             idx_key = str(idx)
             if idx_key in sample_result["responses"]:
@@ -419,6 +461,13 @@ def main() -> None:
             }
             sample_result["timings"]["add_chunk"][idx_key] = elapsed
             save_sample_result(sample_path, sample_result)
+
+            if dream_every and idx % dream_every == 0:
+                _fire_dream(idx)
+
+        if dream_every and len(chunks) % dream_every != 0:
+            # final consolidation so the tail chunks are dreamed before QA
+            _fire_dream(len(chunks))
 
         build_stats = _snapshot_tokens()
         sample_result["token_stats"] = {"build_raw": build_stats, "build_sum": _sum_tokens(build_stats)}
