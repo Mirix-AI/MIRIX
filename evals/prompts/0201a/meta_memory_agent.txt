@@ -43,8 +43,8 @@ You do **not** chat with the user. You only **analyze, classify, and route infor
 ### Always Include Semantic For:
 - **Complete lists** of stable attributes:
   - Books read (store ALL book titles mentioned)
-  - Instruments played (store ALL instruments, e.g., "clarinet and violin")
-  - Items purchased (store ALL items, e.g., "figurines, shoes")
+  - Instruments played (store ALL instruments, e.g., "trombone and cello")
+  - Items purchased (store ALL items, e.g., "brass lamps, wool scarves")
   - Hobbies and activities (store ALL activities)
   - Paintings created (store ALL subjects)
   - Pets owned (store ALL pet names and types)
@@ -79,29 +79,29 @@ You do **not** chat with the user. You only **analyze, classify, and route infor
 ## Examples
 
 **Example 1: List of books**
-Input: "Melanie read 'Nothing is Impossible' and 'Charlotte's Web' in 2022"
+Input: "Priya read 'The Tin Compass' and 'Harbour Lights' in 2022"
 Route: `['episodic', 'semantic']`
 - Episodic: Event of reading in 2022
 - Semantic: Books read list (both titles)
 
 **Example 2: Multiple instruments**
-Input: "Caroline plays clarinet and violin"
+Input: "Tomas plays trombone and cello"
 Route: `['semantic']`
 - Semantic: Stable skill, complete list of both instruments
 
 **Example 3: Future plan**
-Input: "Melanie is planning to go camping in June 2023"
+Input: "Priya is planning to go camping in June 2023"
 Route: `['episodic']`
 - Episodic: Future plan with date
 
 **Example 4: Relationship status**
-Input: "Caroline is single after a tough breakup"
+Input: "Tomas is left-handed after a tough breakup"
 Route: `['episodic', 'semantic']`
 - Episodic: Breakup event
 - Semantic: Current relationship status (single)
 
 **Example 5: Items purchased**
-Input: "Melanie bought figurines and shoes"
+Input: "Priya bought brass lamps and wool scarves"
 Route: `['episodic', 'semantic']`
 - Episodic: Purchase event
 - Semantic: Items owned (both items)

@@ -214,13 +214,22 @@ def main() -> None:
             for k in s: s[k] += v.get(k, 0)
         return s
 
+    # Storage-only namespace, so a v7.1 run cannot land on top of another version's
+    # graph. Without it every run writes to the bare LoCoMo conversation id — which is
+    # how the shared Neo4j came to hold unprefixed conv-42/43/48 namespaces from this
+    # era, and how a later run silently scored 0.882 against 959 anchors it did not
+    # create. The public sample_id and result filenames are unchanged; only PG and
+    # Neo4j ownership moves.
+    eval_user_prefix = os.environ.get("MIRIX_EVAL_USER_PREFIX", "")
+
     for item in items:
         sample_id = item.get("sample_id")
         if sample_id is None:
             continue
+        storage_user_id = f"{eval_user_prefix}{sample_id}"
         sample_path = output_path / f"{sample_id}.json"
 
-        task_agent = TaskAgent(mirix_config_path=str(args.mirix_config_path), client_id=mirix_client_id, org_id=mirix_org_id, user_id=sample_id) if args.run_llm else None
+        task_agent = TaskAgent(mirix_config_path=str(args.mirix_config_path), client_id=mirix_client_id, org_id=mirix_org_id, user_id=storage_user_id) if args.run_llm else None
 
         sample_result = load_sample_result(sample_path)
         if sample_result is None:
@@ -234,7 +243,7 @@ def main() -> None:
         sample_result.setdefault("sample_id", sample_id)
         sample_result = normalize_sample_result(sample_result)
 
-        memory_system = MirixMemorySystem(user_id=sample_id,
+        memory_system = MirixMemorySystem(user_id=storage_user_id,
                     mirix_config_path=str(args.mirix_config_path),
                     client=task_agent.mirix_client)
 
@@ -318,7 +327,7 @@ def main() -> None:
             usage_total = None
             if task_agent:
                 start = time.perf_counter()
-                trace = task_agent.answer(input_messages, user_id=sample_id)
+                trace = task_agent.answer(input_messages, user_id=storage_user_id)
                 predicted = trace.get("answer")
                 message_trace = trace.get("messages")
                 usage_trace = trace.get("usage")
