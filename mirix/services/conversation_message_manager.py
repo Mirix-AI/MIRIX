@@ -34,9 +34,9 @@ from __future__ import annotations
 
 import datetime as dt
 from datetime import timedelta
-from typing import List
+from typing import List, Optional
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, or_, select, update
 
 from mirix.client.utils import get_utc_time
 from mirix.log import get_logger
@@ -85,6 +85,7 @@ class ConversationMessageManager:
         organization_id: str,
         turns: List[dict],
         actor: PydanticClient,
+        session_tag: Optional[str] = None,
     ) -> List[PydanticConversationMessage]:
         """Append `turns` to `session_id`, preserving their given order.
 
@@ -147,6 +148,7 @@ class ConversationMessageManager:
                     organization_id=payload.organization_id,
                     role=payload.role,
                     content=payload.content,
+                    session_tag=session_tag,
                     # +offset microseconds keeps a strict, stable order within
                     # the batch even though they share one transaction.
                     created_at=base + timedelta(microseconds=offset),
@@ -231,6 +233,8 @@ class ConversationMessageManager:
         if limit <= 0:
             return []
 
+        from mirix.constants import SESSION_TAG_CONVERSATION
+
         async with self.session_maker() as session:
             first_ts = func.min(ConversationMessageModel.created_at).label("first_ts")
             # NULL distilled_at on EVERY turn of a session <=> the session is
@@ -250,6 +254,16 @@ class ConversationMessageManager:
                     ConversationMessageModel.organization_id == organization_id,
                     ConversationMessageModel.user_id == user_id,
                     ConversationMessageModel.is_deleted.is_(False),
+                    # Adaptive-routing hard gate: never distill sessions EXPLICITLY
+                    # tagged 'conversation' (LOCOMO-style dialogue must never become
+                    # a skill). Fail OPEN — 'task' and untagged (NULL, legacy)
+                    # sessions stay eligible so a missing/failed tag can never
+                    # silently zero out task skill-building.
+                    or_(
+                        ConversationMessageModel.session_tag
+                        != SESSION_TAG_CONVERSATION,
+                        ConversationMessageModel.session_tag.is_(None),
+                    ),
                 )
                 .group_by(ConversationMessageModel.session_id)
                 .order_by(first_ts.asc())

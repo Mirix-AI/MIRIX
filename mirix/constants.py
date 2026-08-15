@@ -309,6 +309,27 @@ SKILL_TRIGGER_MESSAGE_THRESHOLD = int(
 SKILL_TRIGGER_SESSION_THRESHOLD = int(os.getenv("SKILL_TRIGGER_SESSION_THRESHOLD", "5"))
 
 # ---------------------------------------------------------------------------
+# Adaptive per-session routing (session_tag).
+# ---------------------------------------------------------------------------
+# A session is either a "task" (agentic tool-use rollout; ALFWorld-style) or a
+# "conversation" (chat/dialogue; LOCOMO-style). The tag decides which memory
+# machinery engages:
+#   task         -> procedural/skill distillation (auto_dream mode="procedural")
+#                   fires on the every-N-session batch trigger; the inline
+#                   episodic/semantic extraction is suppressed (task = skill-only).
+#   conversation -> inline episodic/semantic extraction runs as usual; the
+#                   procedural batch trigger does NOT fire (no skills), and
+#                   experience consolidation stays operator-invoked (auto_dream
+#                   mode="experience"), matching how LOCOMO ran it.
+# Callers declare the tag on ingest (AddMemoryRequest.session_tag). Unset falls
+# back to DEFAULT_SESSION_TAG so historical/untagged callers stay LOCOMO-safe
+# (no spurious skill distillation).
+SESSION_TAG_TASK = "task"
+SESSION_TAG_CONVERSATION = "conversation"
+VALID_SESSION_TAGS = (SESSION_TAG_TASK, SESSION_TAG_CONVERSATION)
+DEFAULT_SESSION_TAG = os.getenv("MIRIX_DEFAULT_SESSION_TAG", SESSION_TAG_CONVERSATION)
+
+# ---------------------------------------------------------------------------
 # Bounded, count-driven, quality-aware edit budget (skill evolution).
 #
 # The budget is the MAX number of skill mutations (create+edit) a single
