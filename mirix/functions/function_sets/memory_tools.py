@@ -1650,9 +1650,21 @@ async def trigger_memory_update(
     # concurrent workers can never double-fire for the same window, and it
     # advances the cursor to the observed MAX(messages.created_at) so the
     # next window cannot skip messages inserted mid-check.
-    from mirix.constants import DEFAULT_ORG_ID, SKILL_TRIGGER_SESSION_THRESHOLD
+    from mirix.constants import (
+        DEFAULT_ORG_ID,
+        DEFAULT_SESSION_TAG,
+        SESSION_TAG_TASK,
+        SKILL_TRIGGER_SESSION_THRESHOLD,
+    )
     from mirix.schemas.agent_trigger_state import TRIGGER_TYPE_PROCEDURAL_SKILL
     from mirix.services.agent_trigger_state_manager import AgentTriggerStateManager
+
+    # Adaptive routing: the session_tag rides on filter_tags (stamped at ingest),
+    # which is set on this agent instance (self.filter_tags). "task" sessions
+    # feed procedural skill distillation; "conversation" sessions never do.
+    session_tag = (getattr(self, "filter_tags", None) or {}).get(
+        "session_tag"
+    ) or DEFAULT_SESSION_TAG
 
     # Messages are stored against the top-level (chat) agent, not the meta
     # agent, so count sessions on the parent when this tool runs inside a
@@ -1670,7 +1682,16 @@ async def trigger_memory_update(
     )
     current_session_id = getattr(self, "_current_step_session_id", None)
 
-    if trigger_user_id is None:
+    if session_tag != SESSION_TAG_TASK:
+        # Adaptive routing: only "task" sessions produce procedural skills.
+        # A "conversation" session (LOCOMO-style dialogue) must NEVER fire the
+        # every-N-session procedural batch trigger; its consolidation is the
+        # operator-invoked experience auto-dream (mode="experience"), never skills.
+        logger.debug(
+            "Skipping procedural session trigger: session_tag=%s (not 'task').",
+            session_tag,
+        )
+    elif trigger_user_id is None:
         # No user scope — we cannot bookkeep a per-user cursor. Skip the
         # auto-trigger rather than silently lumping all users together.
         logger.debug("Skipping session-based procedural trigger: no user on agent.")
@@ -1719,15 +1740,29 @@ async def trigger_memory_update(
     # an accepted input value (a harmless no-op) so existing callers / LLM emissions
     # don't error; it simply no longer dispatches. The procedural_memory_agent
     # registration and infrastructure are retained for the distillation path.
-    filtered_memory_types = [mt for mt in memory_types if mt != "procedural"]
-    if len(filtered_memory_types) != len(memory_types):
-        logger.debug(
-            "Filtered 'procedural' out of trigger_memory_update dispatch "
-            "(procedural memory is produced solely by the distillation path): "
-            "%s -> %s",
-            list(memory_types),
-            filtered_memory_types,
-        )
+    if session_tag == SESSION_TAG_TASK:
+        # Adaptive routing: a "task" session is skill-only. Its conversation turns
+        # feed the procedural distiller (auto_dream mode="procedural"); the inline
+        # episodic/semantic/core/... extraction is intentionally suppressed so a
+        # tool-use rollout does not spend LLM calls building conversational memory
+        # nobody reads.
+        if memory_types:
+            logger.debug(
+                "Suppressing inline memory extraction for task session "
+                "(skill-only): %s -> []",
+                list(memory_types),
+            )
+        filtered_memory_types = []
+    else:
+        filtered_memory_types = [mt for mt in memory_types if mt != "procedural"]
+        if len(filtered_memory_types) != len(memory_types):
+            logger.debug(
+                "Filtered 'procedural' out of trigger_memory_update dispatch "
+                "(procedural memory is produced solely by the distillation path): "
+                "%s -> %s",
+                list(memory_types),
+                filtered_memory_types,
+            )
     memory_types = filtered_memory_types
 
     # De-duplicate memory types while preserving order.

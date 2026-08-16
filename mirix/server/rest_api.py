@@ -2134,6 +2134,9 @@ class AddMemoryRequest(BaseModel):
     session_id: Optional[str] = (
         None  # Batch-level session id applied to every message in this request
     )
+    session_tag: Optional[str] = (
+        None  # "task" | "conversation"; routes memory machinery. None -> DEFAULT_SESSION_TAG.
+    )
     block_filter_tags: Optional[Dict[str, Any]] = (
         None  # Applied only when blocks are created (e.g. from default template)
     )
@@ -2147,6 +2150,19 @@ class AddMemoryRequest(BaseModel):
     @classmethod
     def _check_session_id(cls, v: Optional[str]) -> Optional[str]:
         return _validate_session_id(v)
+
+    @field_validator("session_tag")
+    @classmethod
+    def _check_session_tag(cls, v: Optional[str]) -> Optional[str]:
+        from mirix.constants import VALID_SESSION_TAGS
+
+        if v is None:
+            return None
+        if v not in VALID_SESSION_TAGS:
+            raise ValueError(
+                f"session_tag must be one of {VALID_SESSION_TAGS}; got {v!r}"
+            )
+        return v
 
     @model_validator(mode="after")
     def _check_session_id_agrees_with_filter_tags(self) -> "AddMemoryRequest":
@@ -2306,12 +2322,15 @@ async def _ingest_session_turns(request, input_messages, client, user_id: str) -
         conversation_turns = _extract_conversation_turns(request.messages)
         if not conversation_turns:
             return
+        from mirix.constants import DEFAULT_SESSION_TAG
+
         await ConversationMessageManager().record_turns(
             session_id=request.session_id,
             user_id=user_id,
             organization_id=owner_org(client),
             turns=conversation_turns,
             actor=client,
+            session_tag=request.session_tag or DEFAULT_SESSION_TAG,
         )
     except Exception:
         logger.exception(
@@ -2414,6 +2433,12 @@ async def add_memory(
     # The model_validator on AddMemoryRequest has already ensured agreement if both were set.
     if request.session_id is not None:
         filter_tags["session_id"] = request.session_id
+
+    # Stamp the resolved session_tag so downstream routing (trigger_memory_update)
+    # and extracted-memory provenance always see it, with or without a session_id.
+    from mirix.constants import DEFAULT_SESSION_TAG
+
+    filter_tags["session_tag"] = request.session_tag or DEFAULT_SESSION_TAG
 
     if request.block_filter_tags is not None and not isinstance(
         request.block_filter_tags, dict
@@ -2533,6 +2558,12 @@ async def add_memory_sync(
     # The AddMemoryRequest model_validator already ensured agreement if both were set.
     if request.session_id is not None:
         filter_tags["session_id"] = request.session_id
+
+    # Stamp the resolved session_tag so downstream routing (trigger_memory_update)
+    # and extracted-memory provenance always see it, with or without a session_id.
+    from mirix.constants import DEFAULT_SESSION_TAG
+
+    filter_tags["session_tag"] = request.session_tag or DEFAULT_SESSION_TAG
 
     if client.write_scope is None:
         raise HTTPException(

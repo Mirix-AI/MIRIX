@@ -93,6 +93,17 @@ class ConversationMessage(SqlalchemyBase, OrganizationMixin, UserMixin):
         doc="Set when this session's turns were consumed by a distill round. "
         "NULL = not yet distilled; the rolling barrier reads only NULL sessions.",
     )
+    session_tag: Mapped[Optional[str]] = mapped_column(
+        String,
+        nullable=True,
+        default=None,
+        index=True,
+        doc="Adaptive routing tag for this session: 'task' | 'conversation' | NULL. "
+        "The procedural distiller excludes sessions explicitly tagged "
+        "'conversation' (LOCOMO-style dialogue never becomes a skill); 'task' and "
+        "untagged (NULL, legacy) sessions remain eligible so the gate fails OPEN "
+        "and never silently drops task skill-building.",
+    )
 
     # Indexes mirror the skill_experience pg/sqlite guard pattern: an explicit
     # `is not None` filter (not `filter(None, ...)`) because an un-attached Index
