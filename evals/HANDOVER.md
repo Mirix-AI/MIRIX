@@ -538,6 +538,7 @@ worked example of a judge-free store metric. Only pay for a full re-ingest if th
 
 ```
 /home/lj/MIRIX_eval/
+  (all of these are now also in evals/harness/ — see its README)
   locomo_clean.sh          full LoCoMo ingest + QA — copy for a new ingest arm
   graph_ablation.sh        4-arm QA-only template — copy for a new retrieval/answer arm
   hypermem_judge.py        HyperMem's grader, majority-of-3, re-scores any stored run
