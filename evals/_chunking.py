@@ -26,6 +26,8 @@ from __future__ import annotations
 
 from typing import List
 
+import os
+
 import nltk
 import tiktoken
 
@@ -78,13 +80,22 @@ def chunk_text_into_sentences(
     if not text:
         return []
 
+    # MIRIX_CHUNK_UNIT=char restores the pre-fix policy, where the budget counted
+    # CHARACTERS rather than tokens. 4096 characters is roughly 1024 tokens, so it emits
+    # about four times as many chunks as the official MemoryAgentBench setting and scatters
+    # each semantic unit across several memories. It is kept only so the two can be measured
+    # against each other on one branch — the token path stays the default.
+    unit = os.environ.get("MIRIX_CHUNK_UNIT", "token").strip().lower()
+    measure = (lambda t: len(t)) if unit == "char" else (
+        lambda t: len(_ENCODING.encode(t, allowed_special={"<|endoftext|>"})))
+
     sentences = nltk.sent_tokenize(text)
     chunks: List[str] = []
     buf: List[str] = []
     buf_tokens = 0
 
     for sentence in sentences:
-        st = len(_ENCODING.encode(sentence, allowed_special={"<|endoftext|>"}))
+        st = measure(sentence)
         if buf and buf_tokens + st > chunk_size:
             chunks.append(" ".join(buf))
             buf = [sentence]

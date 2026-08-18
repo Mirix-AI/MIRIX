@@ -248,12 +248,17 @@ def main() -> None:
         return s
 
     for item in items:
+        # Storage-only namespace, matching main_eval. Without it this runner writes every row
+        # and graph node under the bare sample id: a run against a fresh database then reports
+        # zero rows under its own prefix while 964 sit outside it, and every arm shares one
+        # namespace whether or not that was intended.
+        eval_user_prefix = os.environ.get("MIRIX_EVAL_USER_PREFIX", "")
         sample_id = item["sample_id"]
         sample_path = output_path / f"{sample_id}.json"
 
         task_agent = (
             TaskAgent(mirix_config_path=str(args.mirix_config_path),
-                      client_id=mirix_client_id, org_id=mirix_org_id, user_id=sample_id)
+                      client_id=mirix_client_id, org_id=mirix_org_id, user_id=f"{eval_user_prefix}{sample_id}")
             if args.run_llm else None
         )
 
@@ -266,7 +271,7 @@ def main() -> None:
         sample_result.setdefault("sample_id", sample_id)
 
         memory_system = MirixMemorySystem(
-            user_id=sample_id,
+            user_id=f"{eval_user_prefix}{sample_id}",
             mirix_config_path=str(args.mirix_config_path),
             client=task_agent.mirix_client if task_agent else None,
         )
@@ -342,7 +347,7 @@ def main() -> None:
             usage_total = None
             if task_agent:
                 start = time.perf_counter()
-                trace = task_agent.answer(input_messages, user_id=sample_id)
+                trace = task_agent.answer(input_messages, user_id=f"{eval_user_prefix}{sample_id}")
                 predicted = trace.get("answer")
                 message_trace = trace.get("messages")
                 usage_trace = trace.get("usage")
