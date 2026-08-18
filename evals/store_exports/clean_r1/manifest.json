@@ -1,0 +1,6 @@
+{
+ "db": "mirix_locomo_clean_r1",
+ "prefix": "clean-r1__",
+ "rows": 2908,
+ "note": "embeddings omitted; regenerate with --rebuild"
+}

@@ -299,7 +299,11 @@ def main() -> None:
     parser.add_argument(
         "input_dir",
         type=Path,
-        help="Path to results folder (e.g., results/0124a).",
+        help=(
+            "Results folder. Relative paths resolve against "
+            "<repo>/evals/results/locomo/, so 'foo' -> evals/results/locomo/foo. "
+            "Existing-as-given paths are also accepted for backwards compatibility."
+        ),
     )
     parser.add_argument(
         "--output-file",
@@ -331,7 +335,12 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    input_dir = args.input_dir
+    locomo_root = Path(__file__).resolve().parent / "results" / "locomo"
+    requested = args.input_dir
+    if requested.is_absolute() or requested.exists():
+        input_dir = requested
+    else:
+        input_dir = locomo_root / requested
     output_file = args.output_file or (input_dir / "metrics.json")
 
     # Honour the legacy boolean alias.

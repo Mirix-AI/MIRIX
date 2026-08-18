@@ -50,6 +50,21 @@ class User(UserBase):
     created_at: Optional[datetime] = Field(default_factory=get_utc_time, description="The creation date of the user.")
     updated_at: Optional[datetime] = Field(default_factory=get_utc_time, description="The update date of the user.")
     is_deleted: bool = Field(default=False, description="Whether this user is deleted or not.")
+    turn_counter: int = Field(
+        default=0,
+        description=(
+            "Next turn_id to hand out for this user's next /memory/add request. "
+            "Used by the source-provenance fallback in conflict resolution; the "
+            "server bumps this atomically when assigning fallback turn_ids."
+        ),
+    )
+    chunk_counter: int = Field(
+        default=0,
+        description=(
+            "Next chunk_id to hand out for this user's next /memory/add request. "
+            "Same provenance fallback as turn_counter."
+        ),
+    )
 
 
 class UserCreate(UserBase):

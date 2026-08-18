@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>v6 LongMem-S Graph Visualizations</title>
+  <style>
+    body { font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 32px; color: #1f2937; }
+    h1 { margin-bottom: 4px; }
+    .note { max-width: 920px; color: #4b5563; }
+    section { margin-top: 36px; }
+    object { width: 100%; min-height: 760px; border: 1px solid #d1d5db; border-radius: 8px; background: white; }
+  </style>
+</head>
+<body>
+  <h1>v6 LongMem-S Graph Visualizations</h1>
+  <p class="note">
+    Sampled from <code>user_id=longmem_s_0</code>. The full graph has
+    7,281 nodes and 14,125 edges; these views show readable slices.
+    Entity nodes link to V6MemoryRef nodes, which point back to PostgreSQL
+    episodic and semantic flat memory.
+  </p>
+  
+            <section>
+              <h2>Overview: Top-Degree Entities</h2>
+              <p>130 nodes, 112 sampled edges</p>
+              <object data="overview_top_entities.svg" type="image/svg+xml"></object>
+            </section>
+            
+            <section>
+              <h2>Aquarium / Fish Detail</h2>
+              <p>35 nodes, 50 sampled edges</p>
+              <object data="topic_aquarium.svg" type="image/svg+xml"></object>
+            </section>
+            
+            <section>
+              <h2>Career / Campaign Work Detail</h2>
+              <p>45 nodes, 50 sampled edges</p>
+              <object data="topic_career.svg" type="image/svg+xml"></object>
+            </section>
+            
+            <section>
+              <h2>Fitness / Health Devices Detail</h2>
+              <p>65 nodes, 65 sampled edges</p>
+              <object data="topic_fitness.svg" type="image/svg+xml"></object>
+            </section>
+            
+            <section>
+              <h2>Travel / Places Detail</h2>
+              <p>55 nodes, 56 sampled edges</p>
+              <object data="topic_travel.svg" type="image/svg+xml"></object>
+            </section>
+            
+</body>
+</html>

@@ -107,6 +107,42 @@ class UserManager:
             return existing_user.to_pydantic()
 
     @enforce_types
+    async def reserve_source_ids(
+        self,
+        user_id: str,
+        n_turns: int = 1,
+    ) -> dict:
+        """Atomically reserve the next ``n_turns`` turn_ids and one chunk_id
+        for ``user_id``. Used by ``/memory/add`` to fill in
+        ``source_meta.turn_id`` / ``source_meta.chunk_id`` when the client
+        did not supply them.
+
+        Returns ``{"turn_id_start", "turn_id_end", "chunk_id"}``. Counters
+        are bumped to ``turn_counter += n_turns`` and ``chunk_counter += 1``.
+        Concurrent ``/memory/add`` calls for the same user are serialised
+        by the underlying UPDATE ... RETURNING (PostgreSQL) /
+        SELECT FOR UPDATE in a single transaction.
+        """
+        from sqlalchemy import update
+        from mirix.orm.user import User as UserModel
+
+        if n_turns < 1:
+            n_turns = 1
+        async with self.session_maker() as session:
+            existing_user = await UserModel.read(
+                db_session=session, identifier=user_id
+            )
+            turn_id_start = existing_user.turn_counter
+            chunk_id = existing_user.chunk_counter
+            existing_user.turn_counter = turn_id_start + n_turns
+            existing_user.chunk_counter = chunk_id + 1
+            await existing_user.update_with_redis(session, actor=None)
+            return {
+                "turn_id_start": turn_id_start,
+                "turn_id_end": turn_id_start + n_turns - 1,
+                "chunk_id": chunk_id,
+            }
+
     async def delete_user_by_id(self, user_id: str):
         """
         Soft delete a user and cascade soft delete to all associated records using memory managers.

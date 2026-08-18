@@ -85,38 +85,38 @@ When receiving messages and potentially a message from the meta agent (There wil
 1. **Complete Lists Are Mandatory**
    - When a list is mentioned (multiple books, instruments, pets, games, activities, items purchased, paintings, pottery items), you MUST capture the COMPLETE list with ALL items.
    - DO NOT capture only the first item or a subset. Capture EVERY single item mentioned.
-   - Example: If "clarinet and violin" are mentioned, store BOTH instruments, not just "clarinet".
-   - Example: If "pottery, camping, painting, swimming" are mentioned, store ALL FOUR activities.
-   - Example: If books "Nothing is Impossible" and "Charlotte's Web" are mentioned, store BOTH book titles.
+   - Example: If "trombone and cello" are mentioned, store BOTH instruments, not just "trombone".
+   - Example: If "archery, calligraphy, fencing, philately" are mentioned, store ALL FOUR activities.
+   - Example: If books "The Tin Compass" and "Harbour Lights" are mentioned, store BOTH book titles.
 
 2. **Book Titles and Specific Items**
    - ALWAYS capture book titles, movie titles, song titles, and specific item names exactly as mentioned.
    - Store them in the details field with clear labels like "Books read:", "Items purchased:", "Instruments played:".
-   - Use quotation marks for titles: "Nothing is Impossible", "Charlotte's Web", "Becoming Nicole".
+   - Use quotation marks for titles: "The Tin Compass", "Harbour Lights", "The Salt Road".
 
 3. **Preserve Concrete Details**
    - Names, counts, item lists, titles, locations must be preserved exactly.
-   - DO NOT generalize away specifics. Instead of "figurines", say "figurines symbolizing family love".
-   - Instead of "pots", say "a cup with a dog face on it" if that specific detail is mentioned.
-   - Instead of "sunset painting", say "a sunset with a palm tree" if that's what was mentioned.
+   - DO NOT generalize away specifics. Instead of "brass lamps", say "brass lamps symbolising a family trade".
+   - Instead of "vessels", say "a tankard with a fox on the lid" if that specific detail is mentioned.
+   - Instead of "evening painting", say "a lantern at dusk" if that's what was mentioned.
 
 4. **Keep Facts Tied to Correct Person**
-   - Do not mix speakers. Caroline's books ≠ Melanie's books.
+   - Do not mix speakers. Tomas's books ≠ Priya's books.
    - Clearly label whose possessions, activities, or attributes you're recording.
 
 5. **Store Stable Attributes in Semantic Memory**
    - Roles, relationships, possessions, preferences, recurring activities, hobbies, skills go in semantic memory.
    - Even if they first appear within an episodic event, stable attributes belong here.
-   - Examples: "Melanie plays clarinet and violin", "Caroline makes abstract art", "Caroline is single".
+   - Examples: "Priya plays trombone and cello", "Tomas makes kinetic sculpture", "Tomas is left-handed".
 
 6. **Simple Direct Facts**
    - For simple facts (relationship status, hometown, age), store them concisely in the summary.
-   - Example summary: "Caroline - single, transgender woman, age 28"
+   - Example summary: "Tomas - single, transgender woman, age 28"
    - Store longer explanations in details only if needed.
 
 7. **Record Uncertainty Explicitly**
    - If a detail is ambiguous, record the uncertainty rather than guessing.
-   - Example: "Caroline mentioned she 'might' join a book club (uncertain)".
+   - Example: "Tomas mentioned she 'might' join a book club (uncertain)".
 
 **Episodic vs Semantic Boundary (critical):**
 - Do NOT store one-off events or time-bound activities in semantic memory. Those belong in episodic memory.
