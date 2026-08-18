@@ -173,7 +173,23 @@ Never score an ingest change against a stored baseline.
 ### 3.3 Judge: ~25 questions on 1540
 
 Single-call grading. HyperMem grades three times and takes a 2-of-3 majority
-(`stage6_eval.py:344/287/481`); adopting that costs about \$1 per full run.
+(`stage6_eval.py:344/287/481`); adopting that costs about $1 per full run.
+
+### 3.4 Not every benchmark has this problem
+
+SHDocQA re-run against the same store gave **79/100 twice, with an identical per-question
+score distribution** — not merely the same total. The substring judge is deterministic, and
+RULER answers are short exact needles, so a shift in retrieval order rarely changes whether
+the needle appears in the answer at all.
+
+| benchmark | judge | same-config re-run spread |
+|---|---|---|
+| SHDocQA / MHDocQA | substring | **0 questions** |
+| LoCoMo | LLM | 9-15 on 1540 |
+| LongMemEval-S (60 q) | LLM | 7 on 60 — see §6.4 |
+
+**Budget accordingly:** the RULER tracks can be compared from single runs; LoCoMo and
+LongMemEval-S need two runs per arm. That halves the cost of four of the eight V1/V2 cells.
 
 ---
 
@@ -292,6 +308,15 @@ v7.1, 4096 chars         BLOCKED at 21/245 chunks by OpenAI rate limiting
 `V7MemoryRef` is the ref-node layer v7.12 removed, which confirms this is genuinely the v7.1
 architecture. Whether char chunking scores worse **remains unmeasured** — one arm is not a
 comparison.
+
+The QA was re-run against the same store and reproduced **79/100 exactly**, per question.
+Its 21 errors are all single-entity lookups clustered on proper nouns — "What was the Norman
+religion?", "Who was Emma's brother?" — the same failure as LoCoMo's largest error bucket,
+appearing on encyclopedic text instead of conversation.
+
+The char arm's stop was **spent API credits** (`429 ... You have no credits remaining`), not
+a rate ceiling. The first reading implied a fix — pace the ingest — that would not have
+worked.
 
 ### 6.3 The historical batch — none of it is quotable
 
