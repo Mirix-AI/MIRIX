@@ -77,6 +77,33 @@ code wearing an old version string.
 Scoring is the **substring** judge that RULER-style short answers use, not an LLM judge, so
 this number carries no judge noise — it is deterministic given the answers.
 
+### The re-run reproduces exactly, and that is itself a finding
+
+The QA was re-run against the same store a second time: **79/100 again, with an identical
+per-question score distribution** — not merely the same total. Compare LoCoMo, where two
+identical QA-only runs over one store differ by 9-15 questions.
+
+Two causes stack. The substring judge is deterministic, where LoCoMo's LLM judge contributes
+about 25 questions of noise on 1540 by itself. And RULER answers are short exact needles —
+"France", "30,000" — so a small change in retrieval order rarely changes whether the needle
+appears in the answer at all, while a LoCoMo answer is free text whose phrasing shifts.
+
+**Practical consequence for planning:** the RULER tracks (SHDocQA, MHDocQA) can be compared
+from single runs. LoCoMo and LongMemEval-S cannot — budget two runs per arm there and compare
+means. For the eight-cell MIRIX-V1/V2 matrix that halves the cost of four of the cells.
+
+### What the 21 errors look like
+
+```
+What was the Norman religion?            What was the name of the Norman castle?
+What was the naval base called?          Who was Emma's brother?
+Who kicked Ethelred out?                 Who was Edward the Confessor's half-brother?
+```
+
+Every one is a single-entity lookup, and they cluster on proper nouns. That is the same
+failure LoCoMo's largest error bucket shows — the extractor keeps the gist of a passage and
+drops the specific name — appearing here on encyclopedic text rather than conversation.
+
 ### It does not reproduce the historical 87/100
 
 `shdoc_v71` scored 87/100 in July 2026. That run is not comparable to this one:
