@@ -39,11 +39,15 @@ MIRIX_CHUNK_UNIT=char    4096 chars   ->  245 chunks      4.9x
 | semantic rows | 1052 | 149 |
 | rows outside the prefix | 0 | 0 |
 
-The char arm died on `LLMRateLimitError` from OpenAI, which surfaced as a 500 from
-`/memory/add_sync` after the client exhausted its retries. Five times the chunks means five
-times the request density over the same wall-clock, and the account's rate limit is the
-binding constraint. **This is an infrastructure limit, not a result about chunking** — do not
-read it as "char chunking fails".
+The char arm died on `LLMRateLimitError` from OpenAI, surfacing as a 500 from
+`/memory/add_sync` after the client exhausted its retries.
+
+**Correction.** That was first read as request density — five times the chunks over the same
+wall-clock hitting a rate ceiling. It was not. A later attempt returned
+`429 ... You have no credits remaining`, so the account had simply run out of budget partway
+through. The distinction matters: a rate ceiling would have been fixable by pacing the
+ingest, and it is not. **Neither reading says anything about chunking** — do not take this as
+"char chunking fails".
 
 One number is worth extracting from the partial run anyway: the char arm's median chunk took
 **93 s against the token arm's 414 s**, a ratio of 4.5, almost exactly the chunk-count ratio.
