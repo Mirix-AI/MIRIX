@@ -51,6 +51,7 @@ async def test_core_memory(client: MirixClient, user_id: str, filter_tags: Optio
             ],
             chaining=True,
             filter_tags=filter_tags,
+            session_id="sample-procedural-session",
             occurred_at="2025-11-16T10:30:00",
         )
         logger.info("✅ Core memory added successfully: %s", result.get("success", False))
@@ -128,7 +129,7 @@ async def test_procedural_memory(client: MirixClient, user_id: str, filter_tags:
                 {
                     "role": "assistant",
                     "content": [
-                        {"type": "text", "text": "I've saved your deployment workflow procedure with 5 steps."}
+                        {"type": "text", "text": "I've saved your deployment workflow."}
                     ],
                 },
             ],

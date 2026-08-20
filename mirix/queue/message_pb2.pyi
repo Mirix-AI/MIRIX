@@ -63,7 +63,7 @@ class User(_message.Message):
     def __init__(self, id: _Optional[str] = ..., organization_id: _Optional[str] = ..., name: _Optional[str] = ..., status: _Optional[str] = ..., timezone: _Optional[str] = ..., created_at: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ..., updated_at: _Optional[_Union[_timestamp_pb2.Timestamp, _Mapping]] = ..., is_deleted: bool = ...) -> None: ...
 
 class MessageCreate(_message.Message):
-    __slots__ = ("role", "text_content", "structured_content", "name", "otid", "sender_id", "group_id")
+    __slots__ = ("role", "text_content", "structured_content", "name", "otid", "sender_id", "group_id", "session_id")
     class Role(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
         __slots__ = ()
         ROLE_UNSPECIFIED: _ClassVar[MessageCreate.Role]
@@ -79,6 +79,7 @@ class MessageCreate(_message.Message):
     OTID_FIELD_NUMBER: _ClassVar[int]
     SENDER_ID_FIELD_NUMBER: _ClassVar[int]
     GROUP_ID_FIELD_NUMBER: _ClassVar[int]
+    SESSION_ID_FIELD_NUMBER: _ClassVar[int]
     role: MessageCreate.Role
     text_content: str
     structured_content: MessageContentList
@@ -86,7 +87,8 @@ class MessageCreate(_message.Message):
     otid: str
     sender_id: str
     group_id: str
-    def __init__(self, role: _Optional[_Union[MessageCreate.Role, str]] = ..., text_content: _Optional[str] = ..., structured_content: _Optional[_Union[MessageContentList, _Mapping]] = ..., name: _Optional[str] = ..., otid: _Optional[str] = ..., sender_id: _Optional[str] = ..., group_id: _Optional[str] = ...) -> None: ...
+    session_id: str
+    def __init__(self, role: _Optional[_Union[MessageCreate.Role, str]] = ..., text_content: _Optional[str] = ..., structured_content: _Optional[_Union[MessageContentList, _Mapping]] = ..., name: _Optional[str] = ..., otid: _Optional[str] = ..., sender_id: _Optional[str] = ..., group_id: _Optional[str] = ..., session_id: _Optional[str] = ...) -> None: ...
 
 class MessageContentList(_message.Message):
     __slots__ = ("parts",)

@@ -26,7 +26,7 @@ from mirix.schemas.environment_variables import (
 from mirix.schemas.file import FileMetadata
 from mirix.schemas.llm_config import LLMConfig
 from mirix.schemas.memory import ArchivalMemorySummary, Memory, RecallMemorySummary
-from mirix.schemas.message import Message, MessageCreate
+from mirix.schemas.message import Message, MessageCreate, _validate_session_id
 from mirix.schemas.mirix_response import MirixResponse
 from mirix.schemas.organization import Organization
 from mirix.schemas.sandbox_config import (
@@ -1257,6 +1257,7 @@ class MirixClient(AbstractClient):
         block_filter_tags_update_mode: Optional[str] = "merge",
         use_cache: bool = True,
         occurred_at: Optional[str] = None,
+        session_id: Optional[str] = None,
         async_add: bool = True,
         headers: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
@@ -1274,6 +1275,13 @@ class MirixClient(AbstractClient):
                          {"role": "user", "content": [{"type": "text", "text": "..."}]},
                          {"role": "assistant", "content": [{"type": "text", "text": "..."}]}
                      ]
+                     Tool activity may be included and is used by skill
+                     distillation (tool errors/retries are strong learning
+                     signals): pass tool results as {"role": "tool",
+                     "name": "...", "content": "..."} turns, and/or a
+                     "tool_calls" list on an assistant message (OpenAI shape) —
+                     both are preserved in the session conversation store when
+                     session_id is set.
             chaining: Enable/disable chaining (default: True)
             verbose: If True, enable verbose output during memory processing
             filter_tags: Optional dict of tags for filtering and categorization.
@@ -1286,6 +1294,9 @@ class MirixClient(AbstractClient):
                         If provided, episodic memories will use this timestamp instead of current time.
                         Format: "2025-11-18T10:30:00" or "2025-11-18T10:30:00+00:00"
                         Example: "2025-11-18T15:30:00"
+            session_id: Optional external conversation session id. Required for
+                        procedural session distillation and sent as a top-level
+                        request field.
             headers: Optional headers dict to include in the request. Useful for passing
                     per-request authentication tokens. Example: {"Authorization": "Bearer token123"}
 
@@ -1312,7 +1323,7 @@ class MirixClient(AbstractClient):
             ...         {"role": "assistant", "content": [{"type": "text", "text": "That's great!"}]}
             ...     ],
             ...     verbose=True,
-            ...     filter_tags={"session_id": "sess-789"},
+            ...     session_id="sess-789",
             ...     occurred_at="2025-11-18T15:30:00"
             ... )
             >>> logger.debug(response)
@@ -1334,6 +1345,14 @@ class MirixClient(AbstractClient):
         if occurred_at is not None:
             _validate_occurred_at(occurred_at)  # Raises ValueError if invalid
 
+        if session_id is not None:
+            _validate_session_id(session_id)
+            if isinstance(filter_tags, dict) and filter_tags.get("session_id") not in (None, session_id):
+                raise ValueError(
+                    "session_id and filter_tags['session_id'] must agree; "
+                    f"got {session_id!r} vs {filter_tags.get('session_id')!r}"
+                )
+
         await self._ensure_user_exists(user_id, headers=headers)
 
         # Prepare request data - org is determined from API key on server side
@@ -1344,6 +1363,9 @@ class MirixClient(AbstractClient):
             "chaining": chaining,
             "verbose": verbose,
         }
+
+        if session_id is not None:
+            request_data["session_id"] = session_id
 
         if filter_tags is not None:
             request_data["filter_tags"] = filter_tags
@@ -1527,7 +1549,7 @@ class MirixClient(AbstractClient):
         query: str,
         memory_type: str = "all",
         search_field: str = "null",
-        search_method: str = "embedding",
+        search_method: Optional[str] = None,
         limit: int = 10,
         filter_tags: Optional[Dict[str, Any]] = None,
         similarity_threshold: Optional[float] = None,
@@ -1554,11 +1576,15 @@ class MirixClient(AbstractClient):
             search_field: Field to search in. Options vary by memory type:
                          - episodic: "summary", "details"
                          - resource: "summary", "content"
-                         - procedural: "summary", "steps"
+                         - procedural: "description", "instructions"
                          - knowledge_vault: "caption", "secret_value"
                          - semantic: "name", "summary", "details"
                          - For "all": use "null" (default)
-            search_method: Search method. Options: "bm25" (default), "embedding"
+            search_method: Search method. Options: "embedding", "bm25", and
+                          "hybrid" (procedural memory only; BM25 + embedding
+                          fused with Reciprocal Rank Fusion). Omit (None, the
+                          default) to use the server's per-type default:
+                          "hybrid" for procedural, "embedding" otherwise.
             limit: Maximum number of results per memory type (default: 10)
             filter_tags: Optional filter tags for additional filtering (scope added automatically)
             similarity_threshold: Optional similarity threshold for embedding search (0.0-2.0).
@@ -1647,9 +1673,14 @@ class MirixClient(AbstractClient):
             "query": query,
             "memory_type": memory_type,
             "search_field": search_field,
-            "search_method": search_method,
             "limit": limit,
         }
+
+        # Omit search_method when unset so the server applies its per-type
+        # default (procedural -> hybrid, everything else -> embedding).
+        # Sending a value here would override that resolution.
+        if search_method is not None:
+            params["search_method"] = search_method
 
         # Add filter_tags if provided
         if filter_tags:
@@ -1677,7 +1708,7 @@ class MirixClient(AbstractClient):
         query: str,
         memory_type: str = "all",
         search_field: str = "null",
-        search_method: str = "embedding",
+        search_method: Optional[str] = None,
         limit: int = 10,
         client_id: Optional[str] = None,
         filter_tags: Optional[Dict[str, Any]] = None,
@@ -1702,11 +1733,15 @@ class MirixClient(AbstractClient):
             search_field: Field to search in. Options vary by memory type:
                          - episodic: "summary", "details"
                          - resource: "summary", "content"
-                         - procedural: "summary", "steps"
+                         - procedural: "description", "instructions"
                          - knowledge_vault: "caption", "secret_value"
                          - semantic: "name", "summary", "details"
                          - For "all": use "null" (default)
-            search_method: Search method. Options: "bm25" (default), "embedding"
+            search_method: Search method. Options: "embedding", "bm25", and
+                          "hybrid" (procedural memory only; BM25 + embedding
+                          fused with Reciprocal Rank Fusion). Omit (None, the
+                          default) to use the server's per-type default:
+                          "hybrid" for procedural, "embedding" otherwise.
             limit: Maximum results per memory type (total across all users)
             client_id: Optional client ID (uses its org_id and scope for filtering)
             filter_tags: Optional additional filter tags (scope added automatically)
@@ -1784,9 +1819,13 @@ class MirixClient(AbstractClient):
             "query": query,
             "memory_type": memory_type,
             "search_field": search_field,
-            "search_method": search_method,
             "limit": limit,
         }
+
+        # Omit search_method when unset so the server applies its per-type
+        # default (procedural -> hybrid, everything else -> embedding).
+        if search_method is not None:
+            params["search_method"] = search_method
 
         # Add client_id if provided (server will use this client's org_id)
         if client_id:
@@ -1860,6 +1899,8 @@ class MirixClient(AbstractClient):
         mode: str = "experience",
         dry_run: bool = False,
         model: Optional[str] = None,
+        meta_agent_id: Optional[str] = None,
+        last_n_sessions: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         """
@@ -1875,6 +1916,9 @@ class MirixClient(AbstractClient):
                 episodic, semantic, and knowledge together.
             dry_run: If true, fetch and count memories without invoking the agent.
             model: Optional model override for this auto-dream run.
+            meta_agent_id: Optional meta memory agent id to run against.
+            last_n_sessions: For procedural mode, how many recent retained
+                sessions to distill.
 
         Returns:
             AutoDreamResponse dict with stats on removed/merged/resolved items
@@ -1884,6 +1928,10 @@ class MirixClient(AbstractClient):
         body: Dict[str, Any] = {"mode": mode, "dry_run": dry_run}
         if model is not None:
             body["model"] = model
+        if meta_agent_id is not None:
+            body["meta_agent_id"] = meta_agent_id
+        if last_n_sessions is not None:
+            body["last_n_sessions"] = last_n_sessions
 
         return await self._request(
             "POST",

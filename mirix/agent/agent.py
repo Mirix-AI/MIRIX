@@ -946,6 +946,18 @@ class Agent(BaseAgent):
         if response_message_id is not None:
             assert response_message_id.startswith("message-"), response_message_id
 
+        # Only the chat_agent inherits the triggering input's session_id so its
+        # synthesized assistant/tool messages stay in the same session. For all
+        # non-chat agents (meta_memory_agent + the memory sub-agents) the
+        # synthesized messages carry NO session_id: session_id identifies an
+        # external conversation, never the memory-production machinery. Context
+        # reconstruction uses message_ids (not session_id), so nulling this is safe.
+        input_session_id = (
+            getattr(input_message, "session_id", None)
+            if self.agent_state.is_type(AgentType.chat_agent)
+            else None
+        )
+
         messages = []  # append these to the history when done
         function_name = None
 
@@ -974,7 +986,7 @@ class Agent(BaseAgent):
                 and len(response_message.tool_calls) > 1
             ):
                 self.logger.info(
-                    "Memory agent %s returned %d tool call(s); executing each sequentially",
+                    "Agent %s returned %d tool call(s); executing each sequentially",
                     self.agent_state.agent_type,
                     len(response_message.tool_calls),
                 )
@@ -988,6 +1000,7 @@ class Agent(BaseAgent):
                     agent_id=self.agent_state.id,
                     model=self.model,
                     openai_message_dict=response_message.model_dump(),
+                    session_id=input_session_id,
                 )
             )  # extend conversation with assistant's reply
 
@@ -1037,6 +1050,7 @@ class Agent(BaseAgent):
                                 "content": function_response,
                                 "tool_call_id": tool_call_id,
                             },
+                            session_id=input_session_id,
                         )
                     )  # extend conversation with function response
                     self.interface.function_message(f"Error: {error_msg}", msg_obj=messages[-1])
@@ -1062,6 +1076,7 @@ class Agent(BaseAgent):
                                 "content": function_response,
                                 "tool_call_id": tool_call_id,
                             },
+                            session_id=input_session_id,
                         )
                     )  # extend conversation with function response
                     self.interface.function_message(f"Error: {error_msg}", msg_obj=messages[-1])
@@ -1111,6 +1126,7 @@ class Agent(BaseAgent):
                                 "content": function_response,
                                 "tool_call_id": tool_call_id,
                             },
+                            session_id=input_session_id,
                         )
                     )
                     self.interface.function_message(f"Validation Error: {validation_error}", msg_obj=messages[-1])
@@ -1197,6 +1213,7 @@ class Agent(BaseAgent):
                                 "content": function_response,
                                 "tool_call_id": tool_call_id,
                             },
+                            session_id=input_session_id,
                         )
                     )  # extend conversation with function response
                     self.interface.function_message(f"Ran {function_name}()", msg_obj=messages[-1])
@@ -1218,6 +1235,7 @@ class Agent(BaseAgent):
                                 "content": function_response,
                                 "tool_call_id": tool_call_id,
                             },
+                            session_id=input_session_id,
                         )
                     )  # extend conversation with function response
                     self.interface.function_message(f"Ran {function_name}()", msg_obj=messages[-1])
@@ -1237,6 +1255,7 @@ class Agent(BaseAgent):
                             "content": function_response,
                             "tool_call_id": tool_call_id,
                         },
+                        session_id=input_session_id,
                     )
                 )  # extend conversation with function response
                 self.interface.function_message(f"Ran {function_name}()", msg_obj=messages[-1])
@@ -1320,17 +1339,21 @@ class Agent(BaseAgent):
                         )
                         if memory_item:
                             memory_item = memory_item[0]
+                            # Phase 1 of skill-evolve replaced the legacy
+                            # summary+steps shape with name/description/
+                            # instructions/version. Surface the new fields.
                             memory_item_str = ""
-                            memory_item_str += "[Procedural Memory ID]: " + memory_item.id + "\n"
+                            memory_item_str += "[Skill ID]: " + memory_item.id + "\n"
+                            memory_item_str += "[Name]: " + memory_item.name + "\n"
                             memory_item_str += "[Entry Type]: " + memory_item.entry_type + "\n"
-                            memory_item_str += "[Summary]: " + (memory_item.summary or "N/A") + "\n"
-                            memory_item_str += "[Steps]: " + "; ".join(memory_item.steps) + "\n"
+                            memory_item_str += "[Description]: " + (memory_item.description or "N/A") + "\n"
+                            memory_item_str += "[Instructions]: " + (memory_item.instructions or "N/A") + "\n"
+                            memory_item_str += "[Version]: " + str(getattr(memory_item, "version", "0.1.0")) + "\n"
+                            ts = memory_item.last_modify.get("timestamp") if isinstance(memory_item.last_modify, dict) else None
+                            ts_str = ts.strftime("%Y-%m-%d %H:%M:%S") if hasattr(ts, "strftime") else str(ts)
+                            op = memory_item.last_modify.get("operation") if isinstance(memory_item.last_modify, dict) else "?"
                             memory_item_str += (
-                                "[Last Modified]: "
-                                + memory_item.last_modify["operation"]
-                                + " at "
-                                + memory_item.last_modify["timestamp"].strftime("%Y-%m-%d %H:%M:%S")
-                                + "\n"
+                                "[Last Modified]: " + str(op) + " at " + ts_str + "\n"
                             )
                             memory_item_str = memory_item_str.strip()
 
@@ -1424,6 +1447,7 @@ class Agent(BaseAgent):
                                     "role": "user",
                                     "content": message_content,
                                 },
+                                session_id=input_session_id,
                             )
 
                             # persist the message to the database
@@ -1446,8 +1470,17 @@ class Agent(BaseAgent):
                         message_ids=message_ids,
                         actor=self.actor,
                     )
+                    # Retention: the memory-production machinery (meta_memory_agent
+                    # + the 6 memory sub-agents) is a pure transient producer again.
+                    # The canonical learnable conversation lives in the dedicated
+                    # Conversation Message Store, so the meta agent no longer needs to
+                    # retain a transcript for the distiller. All non-chat agents keep
+                    # the legacy full delete (retain=0) of detached extraction scratch.
                     await self.message_manager.delete_detached_messages_for_agent(
-                        agent_id=self.agent_state.id, actor=self.actor
+                        agent_id=self.agent_state.id,
+                        actor=self.actor,
+                        retain_last_n_sessions=0,
+                        user_id=self.user_id,
                     )
 
                     # Clear all messages since they were manually added to the conversation history
@@ -1466,6 +1499,7 @@ class Agent(BaseAgent):
                     agent_id=self.agent_state.id,
                     model=self.model,
                     openai_message_dict=response_message.model_dump(),
+                    session_id=input_session_id,
                 )
             )  # extend conversation with assistant's reply
             self.interface.internal_monologue(response_message.content, msg_obj=messages[-1])
@@ -1541,6 +1575,22 @@ class Agent(BaseAgent):
         max_chaining_steps = max_chaining_steps or MAX_CHAINING_STEPS
 
         first_input_message = input_messages[0] if isinstance(input_messages, list) else input_messages
+
+        # Derive the session_id for this step once so all synthesized messages
+        # (heartbeats, warnings, meta-memory bootstrap, summaries) inherit it.
+        # Only the chat_agent inherits it; for every non-chat agent the
+        # synthesized messages carry NO session_id (session_id identifies an
+        # external conversation, never the meta agent's own bookkeeping).
+        step_session_id = (
+            getattr(first_input_message, "session_id", None)
+            if self.agent_state.is_type(AgentType.chat_agent)
+            else None
+        )
+        # Expose on self so helpers called without an explicit session_id
+        # (e.g. summarize_messages_inplace) can pick it up. Other entrypoints
+        # that skip step() (e.g. step_user_message) must set/reset this
+        # themselves — see step_user_message for the save/restore pattern.
+        self._current_step_session_id = step_session_id
 
         # Convert MessageCreate objects to Message objects
         if not isinstance(input_messages, list):
@@ -1630,6 +1680,7 @@ class Agent(BaseAgent):
                         sender_id=None,
                         group_id=None,
                         filter_tags=self.filter_tags,
+                        session_id=step_session_id,
                     ),
                     self.agent_state.id,
                     wrap_user_message=False,
@@ -1678,6 +1729,7 @@ class Agent(BaseAgent):
                         "role": "user",
                         "content": warning_content,
                     },
+                    session_id=step_session_id,
                 )
                 continue  # give agent one more chance to respond
             elif max_chaining_steps is not None and counter > max_chaining_steps:
@@ -1695,6 +1747,7 @@ class Agent(BaseAgent):
                         "role": "user",  # TODO: change to system?
                         "content": get_token_limit_warning(),
                     },
+                    session_id=step_session_id,
                 )
                 continue  # always chain
             elif function_failed:
@@ -1706,6 +1759,7 @@ class Agent(BaseAgent):
                         "role": "user",  # TODO: change to system?
                         "content": get_contine_chaining(FUNC_FAILED_HEARTBEAT_MESSAGE),
                     },
+                    session_id=step_session_id,
                 )
                 continue  # always chain
             elif continue_chaining:
@@ -1717,6 +1771,7 @@ class Agent(BaseAgent):
                         "role": "user",  # TODO: change to system?
                         "content": get_contine_chaining(REQ_HEARTBEAT_MESSAGE),
                     },
+                    session_id=step_session_id,
                 )
                 continue  # always chain
             # Mirix no-op / yield
@@ -1897,35 +1952,20 @@ class Agent(BaseAgent):
                 "text": resource_memory,
             }
 
-        # Retrieve procedural memory
-        # Owning agents need IDs for merge/update operations, so always retrieve fresh
-        is_owning_agent = self.agent_state.is_type(AgentType.procedural_memory_agent, AgentType.reflexion_agent)
-        if is_owning_agent or "procedural" not in retrieved_memories:
-            current_procedural_memory = await self.procedural_memory_manager.list_procedures(
-                agent_state=self.agent_state,
-                user=self.user,
-                query=key_words,
-                embedded_text=embedded_text,
-                search_field="summary",
-                search_method=search_method,
-                limit=MAX_RETRIEVAL_LIMIT_IN_SYSTEM,
-                timezone_str=timezone_str,
-            )
-            procedural_memory = ""
-            if len(current_procedural_memory) > 0:
-                for idx, procedure in enumerate(current_procedural_memory):
-                    if is_owning_agent:
-                        procedural_memory += f"[Procedure ID: {procedure.id}] Entry Type: {procedure.entry_type}; Summary: {procedure.summary}\n"
-                    else:
-                        procedural_memory += (
-                            f"[{idx}] Entry Type: {procedure.entry_type}; Summary: {procedure.summary}\n"
-                        )
-            procedural_memory = procedural_memory.strip()
-            retrieved_memories["procedural"] = {
-                "total_number_of_items": await self.procedural_memory_manager.get_total_number_of_items(user=self.user),
-                "current_count": len(current_procedural_memory),
-                "text": procedural_memory,
-            }
+        # Procedural memory (skills) is intentionally NOT injected into any
+        # agent's system prompt. Skills are a RETRIEVAL TARGET, not ambient
+        # context:
+        #   * the procedural_memory_agent surveys them ON DEMAND via its
+        #     `skill_list` / `skill_read` tools (its system prompt explicitly
+        #     instructs "Survey existing skills: Call skill_list()"), and
+        #   * task-executing / external agents fetch them through the unified
+        #     search interface (GET /memory/search?memory_type=procedural, or
+        #     the search_in_memory tool).
+        # Passively broadcasting the whole skill list into every agent's prompt
+        # was redundant for the owner (it uses the tool) and pure token noise
+        # for the pure-extractor agents (episodic/semantic/resource/...), which
+        # never act on skills. Removing it also drops a per-prompt-build
+        # retrieval from the hot path.
 
         # Retrieve semantic memory
         # Owning agents need IDs for merge/update operations, so always retrieve fresh
@@ -1995,7 +2035,6 @@ These keywords have been used to retrieve relevant memories from the database.
         episodic_memory = retrieved_memories["episodic"]
         resource_memory = retrieved_memories["resource"]
         semantic_memory = retrieved_memories["semantic"]
-        procedural_memory = retrieved_memories["procedural"]
         knowledge_vault = retrieved_memories["knowledge_vault"]
 
         system_prompt = template.format(
@@ -2046,15 +2085,10 @@ These keywords have been used to retrieve relevant memories from the database.
             + "\n</resource_memory>\n"
         )
 
-        # Add procedural memory with counts
-        procedural_total = procedural_memory["total_number_of_items"] if procedural_memory else 0
-        procedural_text = procedural_memory["text"] if procedural_memory else ""
-        procedural_count = procedural_memory["current_count"] if procedural_memory else 0
-        system_prompt += (
-            f"\n<procedural_memory> ({procedural_count} out of {procedural_total} Items):\n"
-            + (procedural_text if procedural_text else "Empty")
-            + "\n</procedural_memory>"
-        )
+        # NOTE: no <procedural_memory> block — skills are retrieved on demand
+        # (procedural_memory_agent via skill_list; consumers via /memory/search),
+        # not broadcast into every prompt. See the procedural-retrieval removal
+        # note earlier in this method.
 
         return system_prompt
 
@@ -2566,7 +2600,12 @@ These keywords have been used to retrieve relevant memories from the database.
                 )
                 raise e
 
-    async def step_user_message(self, user_message_str: str, **kwargs) -> AgentStepResponse:
+    async def step_user_message(
+        self,
+        user_message_str: str,
+        session_id: Optional[str] = None,
+        **kwargs,
+    ) -> AgentStepResponse:
         """Takes a basic user message string, turns it into a stringified JSON with extra metadata, then sends it to the agent
 
         Example:
@@ -2592,18 +2631,39 @@ These keywords have been used to retrieve relevant memories from the database.
             "name": name,
         }
 
+        # session_id identifies an external conversation and is only stamped on the
+        # chat_agent's messages. For any non-chat agent reaching this entrypoint the
+        # message (and the step-level session context below) must carry NO session_id,
+        # matching the guard applied to input_session_id/step_session_id in step().
+        effective_session_id = (
+            session_id if self.agent_state.is_type(AgentType.chat_agent) else None
+        )
+
         # Create the associated Message object (in the database)
         assert self.agent_state.created_by_id is not None, "User ID is not set"
         user_message = Message.dict_to_message(
             agent_id=self.agent_state.id,
             model=self.model,
             openai_message_dict=openai_message_dict,
+            session_id=effective_session_id,
             # created_at=timestamp,
         )
 
-        return await self.inner_step(messages=[user_message], **kwargs)
+        # Seed the step-level session context so any pre-persist summarization
+        # triggered inside inner_step() / _get_ai_reply() stamps the correct
+        # session_id on the summary message (Codex review v3, Important).
+        prev_session_id = getattr(self, "_current_step_session_id", None)
+        self._current_step_session_id = effective_session_id
+        try:
+            return await self.inner_step(messages=[user_message], **kwargs)
+        finally:
+            self._current_step_session_id = prev_session_id
 
-    async def summarize_messages_inplace(self, existing_file_uris: Optional[List[str]] = None):
+    async def summarize_messages_inplace(
+        self,
+        existing_file_uris: Optional[List[str]] = None,
+        session_id: Optional[str] = None,
+    ):
         in_context_messages = await self.agent_manager.get_in_context_messages(
             agent_state=self.agent_state, actor=self.actor, user=self.user
         )
@@ -2679,13 +2739,31 @@ These keywords have been used to retrieve relevant memories from the database.
         )
         packed_summary_message = {"role": "user", "content": summary_message}
 
-        # Prepend the summary
+        # Prepend the summary. The summary is a synthesized message, so it follows
+        # the same rule as every other synthesized message: only the chat_agent
+        # carries a session_id; for any non-chat (memory-production) agent the
+        # summary carries NONE. Within the chat_agent, preference order is:
+        #   1. explicit `session_id` argument (caller-provided, e.g. step_user_message)
+        #   2. _current_step_session_id stashed by Agent.step() for the current step
+        #   3. the latest in-context message's session_id (inherits whatever session
+        #      the conversation being summarized is already in)
+        summary_session_id = None
+        if self.agent_state.is_type(AgentType.chat_agent):
+            summary_session_id = session_id
+            if summary_session_id is None:
+                summary_session_id = getattr(self, "_current_step_session_id", None)
+            if summary_session_id is None:
+                for m in reversed(in_context_messages):
+                    if getattr(m, "session_id", None):
+                        summary_session_id = m.session_id
+                        break
         self.agent_state = await self.agent_manager.prepend_to_in_context_messages(
             messages=[
                 Message.dict_to_message(
                     agent_id=self.agent_state.id,
                     model=self.model,
                     openai_message_dict=packed_summary_message,
+                    session_id=summary_session_id,
                 )
             ],
             agent_id=self.agent_state.id,

@@ -849,10 +849,19 @@ class SemanticMemoryManager:
                         )
                     else:
                         # Fallback to in-memory BM25 for SQLite (legacy method)
-                        # Load all candidate items (memory-intensive, kept for compatibility)
-                        result = await session.execute(
-                            select(SemanticMemoryItem).where(SemanticMemoryItem.user_id == user.id)
+                        # Load all candidate items (memory-intensive, kept for
+                        # compatibility). Mirror base_query's WHERE set (org +
+                        # filter_tags + scopes) so the SQLite fallback enforces
+                        # the SAME scope filtering as the PG/other paths.
+                        candidate_query = (
+                            select(SemanticMemoryItem)
+                            .where(SemanticMemoryItem.user_id == user.id)
+                            .where(SemanticMemoryItem.organization_id == organization_id)
                         )
+                        candidate_query = apply_filter_tags_sqlalchemy(
+                            candidate_query, SemanticMemoryItem, filter_tags, scopes=scopes
+                        )
+                        result = await session.execute(candidate_query)
                         all_items = result.scalars().all()
 
                         if not all_items:
@@ -908,7 +917,17 @@ class SemanticMemoryManager:
 
                 elif search_method == "fuzzy_match":
                     # Fuzzy matching: load all candidate items into memory and compute a fuzzy match score.
-                    result = await session.execute(select(SemanticMemoryItem).where(SemanticMemoryItem.user_id == user.id))
+                    # Mirror base_query's WHERE set (org + filter_tags + scopes)
+                    # so fuzzy reads enforce the SAME scope filtering.
+                    candidate_query = (
+                        select(SemanticMemoryItem)
+                        .where(SemanticMemoryItem.user_id == user.id)
+                        .where(SemanticMemoryItem.organization_id == organization_id)
+                    )
+                    candidate_query = apply_filter_tags_sqlalchemy(
+                        candidate_query, SemanticMemoryItem, filter_tags, scopes=scopes
+                    )
+                    result = await session.execute(candidate_query)
                     all_items = result.scalars().all()
                     scored_items = []
                     for item in all_items:

@@ -14,6 +14,7 @@ This test suite verifies the complete deletion workflow:
 
 import asyncio
 import logging
+import os
 import time
 import uuid
 from pathlib import Path
@@ -340,8 +341,13 @@ async def test_3_delete_user_memories(client):
     for memory_type, count in counts_before.items():
         logger.info("  %s: %d", memory_type, count)
 
-    # Delete memories via API
-    response = requests.delete(f"{BASE_URL}/users/{TEST_USER_ID}/memories")
+    # Delete memories via API. These endpoints are authenticated + tenant-scoped,
+    # so pass the test client's API key (the middleware resolves it to the
+    # X-Client-Id/X-Org-Id the tenant guard checks).
+    response = requests.delete(
+        f"{BASE_URL}/users/{TEST_USER_ID}/memories",
+        headers={"X-API-Key": os.environ["MIRIX_API_KEY"]},
+    )
     response.raise_for_status()
     result = response.json()
 
@@ -401,8 +407,11 @@ async def test_5_delete_client_memories(client):
     for memory_type, count in counts_before.items():
         logger.info("  %s: %d", memory_type, count)
 
-    # Delete memories via API
-    response = requests.delete(f"{BASE_URL}/clients/{TEST_CLIENT_ID}/memories")
+    # Delete memories via API (authenticated + tenant-scoped — see the user case).
+    response = requests.delete(
+        f"{BASE_URL}/clients/{TEST_CLIENT_ID}/memories",
+        headers={"X-API-Key": os.environ["MIRIX_API_KEY"]},
+    )
     response.raise_for_status()
     result = response.json()
 

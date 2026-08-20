@@ -736,33 +736,20 @@ class Mirix:
                 else:
                     procedural_items = []
 
-                memories["procedural"] = []
-                for item in procedural_items:
-                    import json
-
-                    # Parse steps if it's a JSON string
-                    steps = item.steps
-                    if isinstance(steps, str):
-                        try:
-                            steps = json.loads(steps)
-                            # Extract just the instruction text for simpler display
-                            if isinstance(steps, list) and steps and isinstance(steps[0], dict):
-                                steps = [step.get("instruction", str(step)) for step in steps]
-                        except (json.JSONDecodeError, KeyError, TypeError):
-                            # If parsing fails, keep as string and split by common delimiters
-                            if isinstance(steps, str):
-                                steps = [s.strip() for s in steps.replace("\n", "|").split("|") if s.strip()]
-                            else:
-                                steps = []
-
-                    memories["procedural"].append(
-                        {
-                            "title": item.entry_type,
-                            "type": "procedural",
-                            "summary": item.summary,
-                            "steps": steps if isinstance(steps, list) else [],
-                        }
-                    )
+                memories["procedural"] = [
+                    {
+                        "title": item.name,
+                        "type": "procedural",
+                        "entry_type": item.entry_type,
+                        "name": item.name,
+                        "description": item.description,
+                        "instructions": item.instructions,
+                        "triggers": getattr(item, "triggers", None) or [],
+                        "examples": getattr(item, "examples", None) or [],
+                        "version": getattr(item, "version", None),
+                    }
+                    for item in procedural_items
+                ]
             except Exception:
                 memories["procedural"] = []
 

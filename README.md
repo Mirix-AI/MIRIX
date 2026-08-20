@@ -4,7 +4,7 @@
 
 Your personal AI that builds memory through screen observation and natural conversation
 
-| 🌐 [Website](https://mirix.io) | 📚 [Documentation](https://docs.mirix.io) | 📄 [Paper](https://arxiv.org/abs/2507.07957) | 💬 [Discord](https://discord.gg/S6CeHNrJ) 
+| 🌐 [Website](https://mirix.io) | 📚 [Documentation](https://docs.mirix.io) | 📄 [Paper](https://arxiv.org/abs/2507.07957) | 💬 [Discord](https://discord.gg/S6CeHNrJ)
 <!-- | [Twitter/X](https://twitter.com/mirix_ai) | [Discord](https://discord.gg/S6CeHNrJ) | -->
 
 ---
@@ -12,7 +12,7 @@ Your personal AI that builds memory through screen observation and natural conve
 ### Key Features 🔥
 
 - **Multi-Agent Memory System:** Six specialized memory components (Core, Episodic, Semantic, Procedural, Resource, Knowledge Vault) managed by dedicated agents
-- **Screen Activity Tracking:** Continuous visual data capture and intelligent consolidation into structured memories  
+- **Screen Activity Tracking:** Continuous visual data capture and intelligent consolidation into structured memories
 - **Privacy-First Design:** All long-term data stored locally with user-controlled privacy settings
 - **Advanced Search:** PostgreSQL-native BM25 full-text search with vector similarity support
 - **Multi-Modal Input:** Text, images, voice, and screen captures processed seamlessly
@@ -22,8 +22,8 @@ Your personal AI that builds memory through screen observation and natural conve
 ```
 docker compose up -d --pull always
 ```
-- Dashboard: http://localhost:5173  
-- API: http://localhost:8531  
+- Dashboard: http://localhost:5173
+- API: http://localhost:8531
 
 **Step 2: Create an API key in the dashboard (http://localhost:5173) and set as the environmental variable `MIRIX_API_KEY`.**
 
@@ -83,6 +83,25 @@ client.add(
         {"role": "user", "content": [{"type": "text", "text": "The moon now has a president."}]},
         {"role": "assistant", "content": [{"type": "text", "text": "Noted."}]},
     ],
+    session_id="sess-demo-001",
+)
+
+# Include tool activity when you want skills learned from the WORK PROCESS:
+# tool errors, retries, and the fix that finally worked are the distiller's
+# strongest signals. Pass tool results as role="tool" turns and/or a
+# "tool_calls" list on assistant messages (OpenAI shape) — both are preserved
+# in the session conversation store.
+client.add(
+    user_id="demo-user",
+    messages=[
+        {"role": "user", "content": [{"type": "text", "text": "Deploy the service."}]},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"function": {"name": "kubectl_apply", "arguments": "{\"file\": \"deploy.yaml\"}"}}
+        ]},
+        {"role": "tool", "name": "kubectl_apply", "content": "error: forbidden (missing RBAC)"},
+        {"role": "assistant", "content": [{"type": "text", "text": "Fixed the RBAC role and redeployed successfully."}]},
+    ],
+    session_id="sess-demo-001",
 )
 
 memories = client.retrieve_with_conversation(
@@ -123,17 +142,38 @@ Supported `mode` values:
 | `knowledge` | Knowledge Vault memories |
 | `experience` | Episodic, Semantic, and Knowledge Vault memories together |
 
-Use `dry_run: true` to fetch counts and inspect what would be processed without applying updates. The optional `model` field can override the auto-dream agent model for that request.
+Use `dry_run: true` to fetch counts and inspect what would be processed without applying updates. The optional `model` field can override the auto-dream agent model for that request. For procedural mode, pass the target `meta_agent_id` and optionally `last_n_sessions` to distill recent session experiences.
 
 Python client example:
 ```python
 result = client.auto_dream(
     user_id="demo-user",
-    mode="experience",
+    mode="procedural",
+    meta_agent_id=meta_agent.id,
+    last_n_sessions=3,
     dry_run=False,
 )
 print(result)
 ```
+
+### Upgrading an Existing Database
+
+Fresh databases get their full schema automatically at startup. **Existing databases require manual migrations** when upgrading to a version that alters tables — startup creates missing tables but never adds columns to existing ones. If migrations are pending, the server refuses to start and names the exact scripts to run.
+
+For the skill-based procedural memory release, run against your database (in this order):
+
+```bash
+psql "$MIRIX_PG_URI" -f scripts/migrate_procedural_to_skill.sql
+psql "$MIRIX_PG_URI" -f scripts/migrate_add_message_session_id.sql
+psql "$MIRIX_PG_URI" -f scripts/migrate_add_message_session_id_phase2.sql   # outside a transaction (CREATE INDEX CONCURRENTLY)
+psql "$MIRIX_PG_URI" -f scripts/migrate_add_conversation_message.sql
+psql "$MIRIX_PG_URI" -f scripts/migrate_add_conversation_message_phase2.sql # outside a transaction
+psql "$MIRIX_PG_URI" -f scripts/migrate_add_skill_experience.sql
+psql "$MIRIX_PG_URI" -f scripts/migrate_add_agent_trigger_state.sql
+psql "$MIRIX_PG_URI" -f scripts/migrate_backfill_procedural_scope.sql   # backfill filter_tags['scope'] from each skill's owning client
+```
+
+Each script is idempotent where possible and documents its own preconditions in its header. Run them once, then restart the server.
 
 ## License
 
@@ -158,7 +198,7 @@ We host weekly discussion sessions where you can:
 - Get general consultations and support
 - Connect with the development team and community
 
-**📅 Schedule:** Friday nights, 8-9 PM PST  
+**📅 Schedule:** Friday nights, 8-9 PM PST
 **🔗 Zoom Link:** [https://ucsd.zoom.us/j/96278791276](https://ucsd.zoom.us/j/96278791276)
 
 ### 📱 WeChat Group

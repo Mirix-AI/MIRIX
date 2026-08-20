@@ -168,8 +168,19 @@ def load_function_set(module: ModuleType) -> dict:
         # Get the attribute
         attr = getattr(module, attr_name)
 
-        # Check if it's a callable function and not a built-in or special method
-        if inspect.isfunction(attr) and attr.__module__ == module.__name__:
+        # Check if it's a callable function and not a built-in or special method.
+        # Only public coroutine functions are tools: a tool is always `async def`
+        # and never underscore-prefixed. Module-level sync/private helpers (e.g.
+        # `compute_edit_budget`, `_edit_exceeds_size_gate` in memory_tools) are
+        # NOT tools and frequently lack the per-parameter docstrings that
+        # generate_schema() requires — skipping them keeps one such helper from
+        # raising and dropping every real tool in the module.
+        if (
+            inspect.isfunction(attr)
+            and attr.__module__ == module.__name__
+            and inspect.iscoroutinefunction(attr)
+            and not attr_name.startswith("_")
+        ):
             if attr_name in function_dict:
                 raise ValueError(f"Found a duplicate of function name '{attr_name}'")
 
