@@ -568,5 +568,14 @@ async def embedding_model(config: EmbeddingConfig, user_id: Optional[uuid.UUID] 
         )
         return model
 
+    elif endpoint_type == "openrouter":
+        api_key = config.api_key or model_settings.openai_api_key
+        return OpenRouterEmbedding(
+            api_key=api_key,
+            model=config.embedding_model,
+            base_url=config.embedding_endpoint,
+            user=str(user_id) if user_id else "",
+        )
+
     else:
         raise ValueError(f"Unknown endpoint type {endpoint_type}")
