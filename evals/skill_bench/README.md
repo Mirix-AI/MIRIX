@@ -65,7 +65,7 @@ The launcher runs up to 4 cells per replicate (`P16_CONCURRENCY`), so up to 12 c
 
 **Disk.** The launch gate keeps `--min-free-disk-gb 15` free under the runs directory. Space is used by:
 - the ALFWorld game files (`$ALFWORLD_DATA`): a download of about 320 MB that unpacks to about 2 GB;
-- the WebShop image: about 5.7 GB of pinned product data (the file sizes in `WEBSHOP_DATA`), its Lucene index, Java and Python layers, and Docker's build cache;
+- the WebShop image: about 5.7 GB of pinned product data (the file sizes in `WEBSHOP_DATA`), its Lucene index, Java and Python layers, and Docker's build cache. The built image is about 18 GB, and Docker needs about that much free space while it builds;
 - the Postgres volume, with one database per MIRIX cell attempt;
 - the runs directories: trajectories, gateway ledgers, the latest two learning checkpoints per cell (a full database dump for MIRIX cells), and what learning resumes rolled back.
 
@@ -149,7 +149,7 @@ No Redis or Kafka is needed: every cell's MIRIX server runs with Redis disabled 
 # Optional: show the docker build and docker run commands the CLI uses
 .venv/bin/python -m evals.skill_bench.envs.webshop --print-argv
 
-# Build the image (long; downloads about 5.7 GB of product data and builds a Lucene index)
+# Build the image (long, typically tens of minutes: downloads about 5.7 GB of product data and builds a Lucene index)
 .venv/bin/python -m evals.skill_bench.envs.webshop --build
 
 # Start the server and wait up to 30 minutes until it is ready
