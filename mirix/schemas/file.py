@@ -21,6 +21,10 @@ class FileMetadata(FileMetadataBase):
         None,
         description="The unique identifier of the organization associated with the document.",
     )
+    user_id: Optional[str] = Field(
+        None,
+        description="The user whose data this file belongs to (None if not attributable to a user).",
+    )
     source_id: Optional[str] = Field(
         None,
         description="The unique identifier of the source associated with the file.",

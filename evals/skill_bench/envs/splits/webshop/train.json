@@ -1,0 +1,842 @@
+[
+ {
+  "id": "fixed_1794",
+  "goal_index": 1794,
+  "asin": "B09RH6LR1F",
+  "instruction": "im looking for a mens classic fit button-down shirt for special occasions",
+  "instruction_text": "i'm looking for a men's classic fit button-down shirt for special occasions, and price lower than 140.00 dollars",
+  "attributes": [
+   "classic fit"
+  ],
+  "goal_options": [],
+  "price_upper": 140.0,
+  "name": "Fathers Day Matching Shirts,daddy's Drinking Buddy Shirt, Matching Fathers Day Shirts For Dad And Son, Dad And Son Matching Shirts, Father's Day Outfit For Son And Dad",
+  "query": "men's casual button-down shirts",
+  "category": "fashion",
+  "product_category": "Clothing, Shoes & Jewelry › Men › Clothing › Shirts › Casual Button-Down Shirts",
+  "best_reward": 1.0,
+  "options_available": true,
+  "gold_search_rank": null
+ },
+ {
+  "id": "fixed_1802",
+  "goal_index": 1802,
+  "asin": "B002UDITGM",
+  "instruction": "im looking for an 11 ounce bag of caffeine-free, acid-free, prebiotic chicory coffee alternative.  also, include vanilla nut flavor.  additionally, include medium roast",
+  "instruction_text": "i'm looking for an 11 ounce bag of caffeine-free, acid-free, prebiotic chicory coffee alternative.  also, include vanilla nut flavor.  additionally, include medium roast, and price lower than 50.00 dollars",
+  "attributes": [
+   "caffeine free",
+   "artificial flavors"
+  ],
+  "goal_options": [],
+  "price_upper": 50.0,
+  "name": "Teeccino Chicory Coffee Alternative - Vanilla Nut - Ground Herbal Coffee That’s Prebiotic, Caffeine Free & Acid Free, Medium Roast, 11 Ounce",
+  "query": "non-dairy milks",
+  "category": "grocery",
+  "product_category": "Grocery & Gourmet Food › Beverages › Coffee, Tea & Cocoa › Coffee Substitutes",
+  "best_reward": 1.0,
+  "options_available": true,
+  "gold_search_rank": 1
+ },
+ {
+  "id": "fixed_2441",
+  "goal_index": 2441,
+  "asin": "B09492M5DY",
+  "instruction": "i want an easy to install tv antenna with usb port",
+  "instruction_text": "i want an easy to install tv antenna with usb port, and price lower than 140.00 dollars",
+  "attributes": [
+   "easy install",
+   "usb port"
+  ],
+  "goal_options": [],
+  "price_upper": 140.0,
+  "name": "ColorCoral Digital TV Antenna High Sensitive 4K 1080P HDTV Digital Signal Amplifier for Local Channels VHF UHF Waterproof HD TV Antenna Compatible with All TV with 4M Coax Cable and Magnetic Mount",
+  "query": "analog-to-digital (dtv) converters",
+  "category": "electronics",
+  "product_category": "Electronics › Accessories & Supplies › Audio & Video Accessories › Antennas › TV Antennas",
+  "best_reward": 1.0,
+  "options_available": true,
+  "gold_search_rank": null
+ },
+ {
+  "id": "fixed_2519",
+  "goal_index": 2519,
+  "asin": "B08K4GFDTG",
+  "instruction": "i am interested in highly pigmented eyeshadow",
+  "instruction_text": "i am interested in highly pigmented eyeshadow, and price lower than 40.00 dollars",
+  "attributes": [
+   "highly pigmented"
+  ],
+  "goal_options": [],
+  "price_upper": 40.0,
+  "name": "FREEORR 2Pcs 16 Colors Diamond Pearly Rose Eyeshadow Palette Highly Pigmented，Waterproof, Long-Lasting, Warm Eyeshadows Professional Nudes Natural Mineral Eyeshadow Palette Set for Makeup Novice",
+  "query": "makeup palettes",
+  "category": "beauty",
+  "product_category": "Beauty & Personal Care › Makeup › Eyes › Eyeshadow",
+  "best_reward": 1.0,
+  "options_available": true,
+  "gold_search_rank": null
+ },
+ {
+  "id": "fixed_2756",
+  "goal_index": 2756,
+  "asin": "B079TZX2S9",
+  "instruction": "looking for relaxed fit mens dark pajamas with checker pant",
+  "instruction_text": "looking for relaxed fit men's dark pajamas with checker pant, and price lower than 80.00 dollars",
+  "attributes": [
+   "relaxed fit"
+  ],
+  "goal_options": [
+   "with checker pant"
+  ],
+  "price_upper": 80.0,
+  "name": "CafePress Hulk Rage Men's Dark Pajamas Pajama Set",
+  "query": "men's sleep & lounge",
+  "category": "fashion",
+  "product_category": "Clothing, Shoes & Jewelry › Novelty & More › Clothing › Novelty › Men › Sleep & Lounge › Sets",
+  "best_reward": 1.0,
+  "options_available": true,
+  "gold_search_rank": null
+ },
+ {
+  "id": "fixed_3600",
+  "goal_index": 3600,
+  "asin": "B09PQWGMPH",
+  "instruction": "i need type b monoculars that are easy to carry",
+  "instruction_text": "i need type b monoculars that are easy to carry, and price lower than 380.00 dollars",
+  "attributes": [
+   "easy carry"
+  ],
+  "goal_options": [
+   "type b"
+  ],
+  "price_upper": 380.0,
+  "name": "VDSOIUTYHFV Monoculars, Portable Telescopes, High-Definition Night Vision Telescopes, Mobile Phone Camera Lenses, for Adults Bird Watching, Traveling, Hiking, Sightseeing",
+  "query": "binoculars & scopes",
+  "category": "electronics",
+  "product_category": "Electronics › Camera & Photo › Binoculars & Scopes › Monoculars",
+  "best_reward": 1.0,
+  "options_available": true,
+  "gold_search_rank": 4
+ },
+ {
+  "id": "fixed_3613",
+  "goal_index": 3613,
+  "asin": "B07R4VNCRC",
+  "instruction": "i am looking for ethylene vinyl cat color women road running shoes , and size is 6",
+  "instruction_text": "i am looking for ethylene vinyl cat color women road running shoes , and size is 6, and price lower than 50.00 dollars",
+  "attributes": [
+   "ethylene vinyl"
+  ],
+  "goal_options": [
+   "cat-1",
+   "6"
+  ],
+  "price_upper": 50.0,
+  "name": "chaqlin Women Road Running Shoes Trainers Low-top Lace Up Lightweight Travel Walking Lovely Dog Designer Athletics",
+  "query": "women's outdoor shoes",
+  "category": "fashion",
+  "product_category": "Clothing, Shoes & Jewelry › Women › Shoes › Athletic › Running › Road Running",
+  "best_reward": 1.0,
+  "options_available": true,
+  "gold_search_rank": null
+ },
+ {
+  "id": "fixed_4519",
+  "goal_index": 4519,
+  "asin": "B08LDQGYVH",
+  "instruction": "get me a high power bird watching monocular that is 10x50 in size",
+  "instruction_text": "get me a high power bird watching monocular that is 10x50 in size, and price lower than 80.00 dollars",
+  "attributes": [
+   "high power",
+   "bird watching"
+  ],
+  "goal_options": [
+   "10x50"
+  ],
+  "price_upper": 80.0,
+  "name": "DIFOO Monocular Telescope 16X50 High Power Monocular for Smartphone Adults for Hunting Bird Watching Equipped with iPhone Holder Tripod BAK4 Prism and IPX7 Nitrogen-Filled Waterproof",
+  "query": "binoculars & scopes",
+  "category": "electronics",
+  "product_category": "Electronics › Camera & Photo › Binoculars & Scopes › Monoculars",
+  "best_reward": 1.0,
+  "options_available": true,
+  "gold_search_rank": 2
+ },
+ {
+  "id": "fixed_4636",
+  "goal_index": 4636,
+  "asin": "B093YTB1SH",
+  "instruction": "im looking for a vintage laundry bag for blouse hosiery",
+  "instruction_text": "i'm looking for a vintage laundry bag for blouse hosiery, and price lower than 40.00 dollars",
+  "attributes": [
+   "blouse hosiery",
+   "laundry bag"
+  ],
+  "goal_options": [],
+  "price_upper": 40.0,
+  "name": "Set of 2 Mesh Laundry Bags Tropical Vintage Flower-1 Medium & 1 Small Bags Laundry,Blouse, Hosiery, Stocking, Underwear, Bra Lingerie, Travel Laundry Bag(8rp9m)",
+  "query": "women's socks & hosiery",
+  "category": "fashion",
+  "product_category": "Clothing, Shoes & Jewelry › Women › Accessories › Wallets, Card Cases & Money Organizers › Wallets",
+  "best_reward": 1.0,
+  "options_available": true,
+  "gold_search_rank": 42
+ },
+ {
+  "id": "fixed_4699",
+  "goal_index": 4699,
+  "asin": "B01LWJAXIG",
+  "instruction": "i want a pack of 2 32 fl oz original sprout classic shampoos that are non toxic",
+  "instruction_text": "i want a pack of 2 32 fl oz original sprout classic shampoos that are non toxic, and price lower than 40.00 dollars",
+  "attributes": [
+   "non toxic"
+  ],
+  "goal_options": [
+   "32 fl oz (pack of 2)"
+  ],
+  "price_upper": 40.0,
+  "name": "Original Sprout Classic Shampoo. Sulfate Free Shampoo for Classic Hair Care. 12 oz (2 pack) (Packaging May Vary)",
+  "query": "body care",
+  "category": "beauty",
+  "product_category": "Baby Products › Baby Care › Bathing › Shampoo",
+  "best_reward": 1.0,
+  "options_available": true,
+  "gold_search_rank": 0
+ },
+ {
+  "id": "fixed_5534",
+  "goal_index": 5534,
+  "asin": "B00GTQ0TL4",
+  "instruction": "i am looking for bronze finish chandelier for my living room",
+  "instruction_text": "i am looking for bronze finish chandelier for my living room, and price lower than 530.00 dollars",
+  "attributes": [
+   "bronze finish",
+   "living room"
+  ],
+  "goal_options": [],
+  "price_upper": 530.0,
+  "name": "Zula Dark Bronze Crystal Pendant Chandelier Lighting 22\" Wide White Fabric Drum Shade 5-Light Fixture for Dining Room House Foyer Kitchen Bedroom Living Room High Ceilings - Vienna Full Spectrum",
+  "query": "pendants and chandeliers",
+  "category": "garden",
+  "product_category": "Tools & Home Improvement › Lighting & Ceiling Fans › Ceiling Lights › Chandeliers",
+  "best_reward": 1.0,
+  "options_available": true,
+  "gold_search_rank": null
+ },
+ {
+  "id": "fixed_5751",
+  "goal_index": 5751,
+  "asin": "B08XMD5NG2",
+  "instruction": "i want to find an industrial i7 8550u computer that has a quad core. it needs to have 16 gigabytes of storage space on its ram",
+  "instruction_text": "i want to find an industrial i7 8550u computer that has a quad core. it needs to have 16 gigabytes of storage space on its ram, and price lower than 990.00 dollars",
+  "attributes": [
+   "quad core"
+  ],
+  "goal_options": [
+   "i7 8550u",
+   "16g ram 512g ssd 1tb hdd"
+  ],
+  "price_upper": 990.0,
+  "name": "Industrial Computer, IPC, Fanless Mini PC, Windows 10 or Linux Ubuntu, Intel Core I7 8550U, IM07, GPIO, Watchdog, WOL, 4G Supported, WiFi/BT/2LAN/VGA/HDMI/6COM, (32G DDR4 RAM/1TB NVME SSD)",
+  "query": "pc",
+  "category": "electronics",
+  "product_category": "Electronics › Computers & Accessories › Computers & Tablets › Desktops › Minis",
+  "best_reward": 1.0,
+  "options_available": true,
+  "gold_search_rank": 3
+ },
+ {
+  "id": "fixed_5927",
+  "goal_index": 5927,
+  "asin": "B07RMK36GG",
+  "instruction": "i need a 2 pack of lemon cookie mini bars that have high protein",
+  "instruction_text": "i need a 2 pack of lemon cookie mini bars that have high protein, and price lower than 50.00 dollars",
+  "attributes": [
+   "high protein"
+  ],
+  "goal_options": [
+   "lemon cookie",
+   "12 count (pack of 2)"
+  ],
+  "price_upper": 50.0,
+  "name": "WW Lemon Cookie Mini Bar - High Protein Snack Bar, 2 SmartPoints - 1 Box (12 Count Total) - Weight Watchers Reimagined",
+  "query": "breakfast foods",
+  "category": "grocery",
+  "product_category": "",
+  "best_reward": 1.0,
+  "options_available": true,
+  "gold_search_rank": 0
+ },
+ {
+  "id": "fixed_6015",
+  "goal_index": 6015,
+  "asin": "B09NLWZMDW",
+  "instruction": "looking for valentines cupcake toppers for valentine day with pattern name in red",
+  "instruction_text": "looking for valentine's cupcake toppers for valentine day with pattern name in red, and price lower than 30.00 dollars",
+  "attributes": [
+   "valentine day"
+  ],
+  "goal_options": [
+   "design 1 a red"
+  ],
+  "price_upper": 30.0,
+  "name": "36 Pack Valentine's day Cupcake Toppers Red Glitter Sweet Love Kiss Me Cupid Be Mine Cupcake Food Picks Valentine's Day Theme Wedding Bridal Shower Birthday Party Cake Decorations Supplies",
+  "query": "toothpicks",
+  "category": "grocery",
+  "product_category": "Grocery & Gourmet Food › Pantry Staples › Cooking & Baking › Frosting, Icing & Decorations › Cupcake Toppers",
+  "best_reward": 1.0,
+  "options_available": true,
+  "gold_search_rank": 2
+ },
+ {
+  "id": "fixed_6145",
+  "goal_index": 6145,
+  "asin": "B01DN401DK",
+  "instruction": "i am looking for an easy to clean ivory colored plush area rug",
+  "instruction_text": "i am looking for an easy to clean ivory colored plush area rug, and price lower than 290.00 dollars",
+  "attributes": [
+   "easy clean"
+  ],
+  "goal_options": [
+   "ivory"
+  ],
+  "price_upper": 290.0,
+  "name": "Unique Loom Solo Solid Shag Collection Area Modern Plush Rug Lush & Soft, 9 x 12 ft, Cloud Gray",
+  "query": "area rugs",
+  "category": "garden",
+  "product_category": "Home & Kitchen › Home Décor Products › Rugs, Pads & Protectors › Area Rugs",
+  "best_reward": 1.0,
+  "options_available": true,
+  "gold_search_rank": null
+ },
+ {
+  "id": "fixed_6207",
+  "goal_index": 6207,
+  "asin": "B07WDCXSX1",
+  "instruction": "i am looking for a six piece  peppermint bark holiday cookie that is gluten, vegan and dairy free",
+  "instruction_text": "i am looking for a six piece  peppermint bark holiday cookie that is gluten, vegan and dairy free, and price lower than 30.00 dollars",
+  "attributes": [
+   "gluten free",
+   "dairy free"
+  ],
+  "goal_options": [],
+  "price_upper": 30.0,
+  "name": "Enjoy Life Foods Gluten Free Holiday Cookies Vegan, Peppermint Bark, 6 Oz, Pack of 6",
+  "query": "grocery cookies",
+  "category": "grocery",
+  "product_category": "Grocery & Gourmet Food › Breads & Bakery › Cookies",
+  "best_reward": 1.0,
+  "options_available": true,
+  "gold_search_rank": 0
+ },
+ {
+  "id": "fixed_6278",
+  "goal_index": 6278,
+  "asin": "B09GVWK6FX",
+  "instruction": "i am looking for some storage cabinets for storage space",
+  "instruction_text": "i am looking for some storage cabinets for storage space, and price lower than 250.00 dollars",
+  "attributes": [
+   "storage space"
+  ],
+  "goal_options": [],
+  "price_upper": 250.0,
+  "name": "Inval Engineered Wood Mini Refrigerator/Microwave Storage Cabinet, Washed Oak",
+  "query": "cabinets",
+  "category": "garden",
+  "product_category": "Home & Kitchen › Furniture › Accent Furniture › Storage Cabinets",
+  "best_reward": 1.0,
+  "options_available": true,
+  "gold_search_rank": null
+ },
+ {
+  "id": "fixed_6404",
+  "goal_index": 6404,
+  "asin": "B08T1QVF28",
+  "instruction": "i need a blanket with lighthouse printing with 70x90 in grey brown",
+  "instruction_text": "i need a blanket with lighthouse printing with 70x90\" in grey brown, and price lower than 60.00 dollars",
+  "attributes": [
+   "printing technology"
+  ],
+  "goal_options": [
+   "grey brown",
+   "70\" x 90\""
+  ],
+  "price_upper": 60.0,
+  "name": "Ambesonne Lighthouse Soft Flannel Fleece Throw Blanket, Day by The Seaside Sailboats Lighthouse Rocks Clear Sea Clouds Island Seascape, Cozy Plush for Indoor and Outdoor Use, 50\" x 60\", Sky Blue",
+  "query": "throw blankets",
+  "category": "garden",
+  "product_category": "Home & Kitchen › Bedding › Blankets & Throws › Throws",
+  "best_reward": 1.0,
+  "options_available": true,
+  "gold_search_rank": 1
+ },
+ {
+  "id": "fixed_6493",
+  "goal_index": 6493,
+  "asin": "B09DFFVJMQ",
+  "instruction": "im looking for soft, blue plaid throw pillows for the living room, also machine washable",
+  "instruction_text": "i'm looking for soft, blue plaid throw pillows for the living room, also machine washable, and price lower than 30.00 dollars",
+  "attributes": [
+   "super soft",
+   "machine washable",
+   "living room"
+  ],
+  "goal_options": [
+   "blue ,plaid"
+  ],
+  "price_upper": 30.0,
+  "name": "Pivtora 2-Pack Throw Pillow Covers, Decorative Luxury Pillows, Square Cushion case Without Insert for Bedroom, Couch, Sofa, Office. 16 x 16 inch 40 x 40 cm - Blue, Plaid",
+  "query": "decorative pillows",
+  "category": "garden",
+  "product_category": "Home & Kitchen › Bedding › Decorative Pillows, Inserts & Covers › Throw Pillow Covers",
+  "best_reward": 1.0,
+  "options_available": true,
+  "gold_search_rank": 1
+ },
+ {
+  "id": "fixed_6497",
+  "goal_index": 6497,
+  "asin": "B09DNBN853",
+  "instruction": "i would like a bianca white crib dresser with a lot of storage space",
+  "instruction_text": "i would like a bianca white crib dresser with a lot of storage space, and price lower than 930.00 dollars",
+  "attributes": [
+   "storage space"
+  ],
+  "goal_options": [
+   "bianca white",
+   "crib"
+  ],
+  "price_upper": 930.0,
+  "name": "Simmons Kids Juliette 6 Drawer Dresser with Changing Top, Moonstruck Grey",
+  "query": "dressers",
+  "category": "garden",
+  "product_category": "Home & Kitchen › Furniture › Bedroom Furniture › Dressers",
+  "best_reward": 1.0,
+  "options_available": true,
+  "gold_search_rank": 1
+ },
+ {
+  "id": "fixed_6498",
+  "goal_index": 6498,
+  "asin": "B0773FVPXQ",
+  "instruction": "i need a long sleeve shirt with a red contrast color",
+  "instruction_text": "i need a long sleeve shirt with a red contrast color, and price lower than 50.00 dollars",
+  "attributes": [
+   "contrast color",
+   "long sleeve"
+  ],
+  "goal_options": [
+   "z-red"
+  ],
+  "price_upper": 50.0,
+  "name": "LOGEEYAR Men's Casual Slim Fit Long Sleeve Color Block Printing Henley T-Shirts",
+  "query": "men's henleys",
+  "category": "fashion",
+  "product_category": "Clothing, Shoes & Jewelry › Men › Clothing › Shirts › Henleys",
+  "best_reward": 1.0,
+  "options_available": true,
+  "gold_search_rank": null
+ },
+ {
+  "id": "fixed_6693",
+  "goal_index": 6693,
+  "asin": "B08M9Q7987",
+  "instruction": "i am looking for some pink cupcake toppers for a birthday cake",
+  "instruction_text": "i am looking for some pink cupcake toppers for a birthday cake, and price lower than 30.00 dollars",
+  "attributes": [
+   "birthday cake"
+  ],
+  "goal_options": [
+   "pink"
+  ],
+  "price_upper": 30.0,
+  "name": "Amosfun 1 Set 12pcs Christmas Cupcake Toppers Glitters Snowflake Picks 1st Cake Topper Birthday Toothpicks Dessert Cupcake Picks with Bow for Cake Decoration Holiday Party Decor Pink",
+  "query": "toothpicks",
+  "category": "grocery",
+  "product_category": "Home & Kitchen › Home Décor Products › Candles & Holders › Candles › Specialty Candles › Birthday Candles",
+  "best_reward": 1.0,
+  "options_available": true,
+  "gold_search_rank": null
+ },
+ {
+  "id": "fixed_6822",
+  "goal_index": 6822,
+  "asin": "B095MP65P5",
+  "instruction": "i would like some 18 inch high quality synthetic hair extensions that are gray",
+  "instruction_text": "i would like some 18 inch high quality synthetic hair extensions that are gray, and price lower than 60.00 dollars",
+  "attributes": [
+   "high quality",
+   "synthetic hair"
+  ],
+  "goal_options": [
+   "1b | gray",
+   "18 inch"
+  ],
+  "price_upper": 60.0,
+  "name": "Gx Beauty 6 Packs New Goddess Locs Crochet Hair 14 Inch Faux Bohemia Locs with Curly in Middle and Ends for Black Women Boho Hippie Locs Synthetic Braiding Hair Extension(14 inch,6Packs,1B-30)",
+  "query": "hair extensions, wigs & accessories",
+  "category": "beauty",
+  "product_category": "Beauty & Personal Care › Hair Care › Hair Extensions, Wigs & Accessories › Hair Extensions",
+  "best_reward": 1.0,
+  "options_available": true,
+  "gold_search_rank": null
+ },
+ {
+  "id": "fixed_6834",
+  "goal_index": 6834,
+  "asin": "B09R1JX97F",
+  "instruction": "i am looking for rose pink color stainless steel bands",
+  "instruction_text": "i am looking for rose pink color stainless steel bands, and price lower than 40.00 dollars",
+  "attributes": [
+   "stainless steel"
+  ],
+  "goal_options": [
+   "rose pink"
+  ],
+  "price_upper": 40.0,
+  "name": "Star Engraved Silicone Sport Wristbands Compatible with Apple Watch Bands 38mm 40mm 41mm 42mm 44mm 45mm Soft Sport Watch Band Men Women Bracelet Wristband Strap for iWatch Series 7 6 5 4 3 2 1 SE 1 Packs",
+  "query": "wearable technology",
+  "category": "electronics",
+  "product_category": "Cell Phones & Accessories › Accessories › Smartwatch Accessories › Smartwatch Bands",
+  "best_reward": 1.0,
+  "options_available": true,
+  "gold_search_rank": null
+ },
+ {
+  "id": "fixed_7511",
+  "goal_index": 7511,
+  "asin": "B01N3TDQJ0",
+  "instruction": "i need a sugar free 5 pound pack of coconut flakes. it should be plant based",
+  "instruction_text": "i need a sugar free 5 pound pack of coconut flakes. it should be plant based, and price lower than 100.00 dollars",
+  "attributes": [
+   "sugar free",
+   "plant based"
+  ],
+  "goal_options": [
+   "5 pound (pack of 1)"
+  ],
+  "price_upper": 100.0,
+  "name": "Gourmet Toasted Unsweetened Coconut Fancy Shred Flakes by It's Delish –10 LBS Bulk Bag – Creative Snacks Favorite Food Crunch – Oven Roasted Shredded Coconut for Snacking, Baking, Decorating",
+  "query": "meat snacks",
+  "category": "grocery",
+  "product_category": "Grocery & Gourmet Food › Pantry Staples › Cooking & Baking › Coconut Flakes",
+  "best_reward": 1.0,
+  "options_available": true,
+  "gold_search_rank": 10
+ },
+ {
+  "id": "fixed_7839",
+  "goal_index": 7839,
+  "asin": "B09PND7S3Q",
+  "instruction": "single color short sleeve polo shirt",
+  "instruction_text": "single color short sleeve polo shirt, and price lower than 50.00 dollars",
+  "attributes": [
+   "short sleeve"
+  ],
+  "goal_options": [],
+  "price_upper": 50.0,
+  "name": "Mens Moisture Wicking Golf Polo Shirt Short Sleeve Stand Collar Top Performance Athletic Casual Solid Color Tops Tee",
+  "query": "men's polos",
+  "category": "fashion",
+  "product_category": "Clothing, Shoes & Jewelry › Men › Clothing › Shirts › Polos",
+  "best_reward": 1.0,
+  "options_available": true,
+  "gold_search_rank": null
+ },
+ {
+  "id": "fixed_8040",
+  "goal_index": 8040,
+  "asin": "B0895X475B",
+  "instruction": "looking for hiking shoes non slip and waterproof in orange size 7.5",
+  "instruction_text": "looking for hiking shoes non slip and waterproof in orange size 7.5, and price lower than 90.00 dollars",
+  "attributes": [
+   "non slip"
+  ],
+  "goal_options": [
+   "orange",
+   "7.5"
+  ],
+  "price_upper": 90.0,
+  "name": "Wantdo Men's Waterproof Hiking SHOS Low Top Waterproof Hiking Boots Lightweight Trekking Shoes",
+  "query": "men's athletic shoes",
+  "category": "fashion",
+  "product_category": "Clothing, Shoes & Jewelry › Men › Shoes › Outdoor › Hiking & Trekking › Backpacking Boots",
+  "best_reward": 1.0,
+  "options_available": true,
+  "gold_search_rank": null
+ },
+ {
+  "id": "fixed_8301",
+  "goal_index": 8301,
+  "asin": "B09L7QFVTQ",
+  "instruction": "i need a small red womens fleece jacket that is made of polyester spandex,",
+  "instruction_text": "i need a small red womens fleece jacket that is made of polyester spandex,, and price lower than 60.00 dollars",
+  "attributes": [
+   "polyester spandex"
+  ],
+  "goal_options": [
+   "l-red",
+   "small"
+  ],
+  "price_upper": 60.0,
+  "name": "Womens Fleece Jacket with Hood Zip Up Cardigan Winter Warm Thick Women's Fleece Coats & Jackets Shaggy Outwear",
+  "query": "women's coats, jackets & vests",
+  "category": "fashion",
+  "product_category": "Clothing, Shoes & Jewelry › Women › Clothing › Coats, Jackets & Vests › Active & Performance › Fleece",
+  "best_reward": 1.0,
+  "options_available": true,
+  "gold_search_rank": null
+ },
+ {
+  "id": "fixed_8508",
+  "goal_index": 8508,
+  "asin": "B00AARRS9Y",
+  "instruction": "i want speak 510 wireless bluetooth portable speakers, which is uc optimized and comes with a carrying case",
+  "instruction_text": "i want speak 510 wireless bluetooth portable speakers, which is uc optimized and comes with a carrying case, and price lower than 110.00 dollars",
+  "attributes": [
+   "carrying case",
+   "wireless bluetooth"
+  ],
+  "goal_options": [
+   "uc optimized (standard)",
+   "speak 510"
+  ],
+  "price_upper": 110.0,
+  "name": "Jabra Speak 510 UC Wireless Bluetooth Speaker for Softphone and Mobile Phone – Easy Setup, Portable Speaker for Holding Meetings Anywhere with Outstanding Sound Quality",
+  "query": "home theater systems",
+  "category": "electronics",
+  "product_category": "Electronics › Portable Audio & Video › Portable Speakers & Docks › Portable Bluetooth Speakers",
+  "best_reward": 1.0,
+  "options_available": true,
+  "gold_search_rank": 0
+ },
+ {
+  "id": "fixed_9545",
+  "goal_index": 9545,
+  "asin": "B08Z6TCTTM",
+  "instruction": "im looking for farmhouse chandelier light with clear glass",
+  "instruction_text": "i'm looking for farmhouse chandelier light with clear glass, and price lower than 460.00 dollars",
+  "attributes": [
+   "clear glass"
+  ],
+  "goal_options": [
+   "satin brass | frosted"
+  ],
+  "price_upper": 460.0,
+  "name": "Linea di Liara Teramo Large Modern Farmhouse Chandelier Light Fixture Dining Room Lighting Fixture Hanging Entryway Wagon Wheel Chandelier Round Lights Black Industrial Rustic Metal with Clear Glass",
+  "query": "dining tables",
+  "category": "garden",
+  "product_category": "Tools & Home Improvement › Lighting & Ceiling Fans › Ceiling Lights › Chandeliers",
+  "best_reward": 1.0,
+  "options_available": true,
+  "gold_search_rank": null
+ },
+ {
+  "id": "fixed_9631",
+  "goal_index": 9631,
+  "asin": "B09165NLQL",
+  "instruction": "im looking for hair clips and a hair pad for my hair extensions in the color dark brown",
+  "instruction_text": "im looking for hair clips and a hair pad for my hair extensions in the color dark brown, and price lower than 40.00 dollars",
+  "attributes": [
+   "hair extensions"
+  ],
+  "goal_options": [
+   "dark brown"
+  ],
+  "price_upper": 40.0,
+  "name": "1/2/3 Pcs Invisible Fluffy Hair Pad, Hair Thickening Fluffy Wig Real Hair Pad, Invisible False Hair Clip ,Hair Extensions Hair Pad False Hair Clip Princess Styling Tools (10cm, Dark brown)",
+  "query": "hair extensions, wigs & accessories",
+  "category": "beauty",
+  "product_category": "Beauty & Personal Care › Hair Care › Hair Accessories › Hair Pins",
+  "best_reward": 1.0,
+  "options_available": true,
+  "gold_search_rank": 8
+ },
+ {
+  "id": "fixed_9915",
+  "goal_index": 9915,
+  "asin": "B071SGP6Y6",
+  "instruction": "i search no ram no ssd no wifi but  high performance memory",
+  "instruction_text": "i search no ram no ssd no wifi but  high performance memory, and price lower than 120.00 dollars",
+  "attributes": [
+   "high performance"
+  ],
+  "goal_options": [],
+  "price_upper": 120.0,
+  "name": "Qotom 4 LAN Mini PC Q190G4U-S01 with 4GB RAM 32GB SSD, Intel Celeron J1900 Processor, Quad core 2.0 GHz, x86 Mini PC Fanless",
+  "query": "pc",
+  "category": "electronics",
+  "product_category": "Electronics › Computers & Accessories › Computers & Tablets › Desktops › Minis",
+  "best_reward": 1.0,
+  "options_available": true,
+  "gold_search_rank": null
+ },
+ {
+  "id": "fixed_10262",
+  "goal_index": 10262,
+  "asin": "B07KK42V6D",
+  "instruction": "im looking for a keto friendly hot cocoa mix in dark chocolate flavor",
+  "instruction_text": "i'm looking for a keto friendly hot cocoa mix in dark chocolate flavor, and price lower than 60.00 dollars",
+  "attributes": [
+   "keto friendly"
+  ],
+  "goal_options": [
+   "simply dark chocolate"
+  ],
+  "price_upper": 60.0,
+  "name": "Swiss Miss Milk Chocolate Flavor Reduced Calorie Hot Cocoa Mix, Keto Friendly, 0.39 oz. 8-Count (Pack of 12)",
+  "query": "food & beverage gifts",
+  "category": "grocery",
+  "product_category": "Grocery & Gourmet Food › Beverages › Coffee, Tea & Cocoa › Cocoa",
+  "best_reward": 1.0,
+  "options_available": true,
+  "gold_search_rank": 0
+ },
+ {
+  "id": "fixed_10377",
+  "goal_index": 10377,
+  "asin": "B00QTUCVAM",
+  "instruction": "i would like a chandelier for my dining room",
+  "instruction_text": "i would like a chandelier for my dining room, and price lower than 120.00 dollars",
+  "attributes": [
+   "dining room"
+  ],
+  "goal_options": [],
+  "price_upper": 120.0,
+  "name": "Kadence Brushed Nickel Chandelier 23 1/4\" Wide Modern Opal Frosted Glass 5-Light Fixture for Dining Room House Foyer Kitchen Island Entryway Bedroom Living Room - Possini Euro Design",
+  "query": "kitchen islands",
+  "category": "garden",
+  "product_category": "Tools & Home Improvement › Lighting & Ceiling Fans › Ceiling Lights › Chandeliers",
+  "best_reward": 1.0,
+  "options_available": true,
+  "gold_search_rank": null
+ },
+ {
+  "id": "fixed_10719",
+  "goal_index": 10719,
+  "asin": "B07QJ7J993",
+  "instruction": "i want a mothers love scented long lasting jewelry jar candle with a size 9 ring",
+  "instruction_text": "i want a mother's love scented long lasting jewelry jar candle with a size 9 ring, and price lower than 60.00 dollars",
+  "attributes": [
+   "long lasting"
+  ],
+  "goal_options": [
+   "mother's love",
+   "ring (size 9)"
+  ],
+  "price_upper": 60.0,
+  "name": "Aquarius | Zodiac Star Signs Jewelry Candle 21oz | Surprise Prize Valued at $15 - $7,500 Inside | Choose From 30+ Scents | Vanilla Lavender | Necklace",
+  "query": "candles",
+  "category": "garden",
+  "product_category": "Home & Kitchen › Home Décor Products › Candles & Holders › Candles › Jar Candles",
+  "best_reward": 1.0,
+  "options_available": true,
+  "gold_search_rank": null
+ },
+ {
+  "id": "fixed_11357",
+  "goal_index": 11357,
+  "asin": "B075MNJ4PS",
+  "instruction": "i need a button tufted couch preferably in emerald color",
+  "instruction_text": "i need a button tufted couch preferably in emerald color, and price lower than 540.00 dollars",
+  "attributes": [
+   "button tufted"
+  ],
+  "goal_options": [
+   "emerald"
+  ],
+  "price_upper": 540.0,
+  "name": "Melaina Tufted Chesterfield Velvet Loveseat with Scrolled Arms, Emerald and Dark Brown",
+  "query": "sofas and couches",
+  "category": "garden",
+  "product_category": "Home & Kitchen › Furniture › Living Room Furniture › Sofas & Couches",
+  "best_reward": 1.0,
+  "options_available": true,
+  "gold_search_rank": 0
+ },
+ {
+  "id": "fixed_11373",
+  "goal_index": 11373,
+  "asin": "B08XXG9N1Q",
+  "instruction": "i am looking a charging adpter fot fast charging jetpack  4g lte mobile hotspot",
+  "instruction_text": "i am looking a charging adpter fot fast charging jetpack  4g lte mobile hotspot, and price lower than 30.00 dollars",
+  "attributes": [
+   "fast charging",
+   "4g lte"
+  ],
+  "goal_options": [],
+  "price_upper": 30.0,
+  "name": "Wall Charger for Verizon MiFi 7730L 8800L Jetpack - UL Listed MiFi 7730L 8800L Jetpack 4G LTE Mobile Hotspot WiFi USB Rapid Charger with 5FT USB C Charging Cable Adapter Power Supply Cord",
+  "query": "chargers",
+  "category": "electronics",
+  "product_category": "Cell Phones & Accessories › Accessories › Cables & Adapters",
+  "best_reward": 1.0,
+  "options_available": true,
+  "gold_search_rank": 3
+ },
+ {
+  "id": "fixed_11549",
+  "goal_index": 11549,
+  "asin": "B091C8JKQQ",
+  "instruction": "i am looking for an 18 light chandelier for my dining room",
+  "instruction_text": "i am looking for an 18 light chandelier for my dining room, and price lower than 130.00 dollars",
+  "attributes": [
+   "dining room"
+  ],
+  "goal_options": [
+   "18-light"
+  ],
+  "price_upper": 130.0,
+  "name": "8 Lights Chandeliers for Dining Room Black and Gold Light Fixture ADSENSTY Modern Industrial Brass and Black Pendant Ceiling Light for Living Room Kitchen Island Bedroom",
+  "query": "pendants and chandeliers",
+  "category": "garden",
+  "product_category": "Tools & Home Improvement › Lighting & Ceiling Fans › Ceiling Lights › Chandeliers",
+  "best_reward": 1.0,
+  "options_available": true,
+  "gold_search_rank": null
+ },
+ {
+  "id": "fixed_11840",
+  "goal_index": 11840,
+  "asin": "B01J43HCFO",
+  "instruction": "i need some black and white fashion sneakers in size 11 with a rubber sole",
+  "instruction_text": "i need some black and white fashion sneakers in size 11 with a rubber sole, and price lower than 70.00 dollars",
+  "attributes": [
+   "rubber sole"
+  ],
+  "goal_options": [
+   "black | white",
+   "11"
+  ],
+  "price_upper": 70.0,
+  "name": "Glam Pie Custom Adult Sneaker, Black",
+  "query": "women's fashion sneakers",
+  "category": "fashion",
+  "product_category": "Clothing, Shoes & Jewelry › Women › Shoes › Fashion Sneakers",
+  "best_reward": 1.0,
+  "options_available": true,
+  "gold_search_rank": null
+ },
+ {
+  "id": "fixed_12044",
+  "goal_index": 12044,
+  "asin": "B08PCNXQJH",
+  "instruction": "i want the n!cks swedish chocolate variety pack ice cream but i want the bakery flavor.  it must be keto friendly",
+  "instruction_text": "i want the n!ck's swedish chocolate variety pack ice cream but i want the bakery flavor.  it must be keto friendly, and price lower than 100.00 dollars",
+  "attributes": [
+   "keto friendly"
+  ],
+  "goal_options": [
+   "bakery"
+  ],
+  "price_upper": 100.0,
+  "name": "N!CK'S Swedish Chocolate Variety Pack Ice Cream - Keto Creamy Ice Cream, No Added Sugar - (2) Chocolate - (2) Cherry Chocolate - (2) Brownies and Fudge - 6 Pints, #1 Frozen Delivered Ice Cream",
+  "query": "frozen",
+  "category": "grocery",
+  "product_category": "Grocery & Gourmet Food › Frozen › Ice Cream & Novelties › Ice Cream",
+  "best_reward": 1.0,
+  "options_available": true,
+  "gold_search_rank": 0
+ }
+]

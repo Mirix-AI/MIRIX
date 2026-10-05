@@ -12,6 +12,7 @@ from mirix.constants import (
     KNOWLEDGE_VAULT_TOOLS,
     MCP_TOOLS,
     META_MEMORY_TOOLS,
+    SKILL_CURATION_TOOLS,
     SKILL_TOOLS,
     RESOURCE_MEMORY_TOOLS,
     SEMANTIC_MEMORY_TOOLS,
@@ -163,6 +164,7 @@ class ToolManager:
                     in CORE_MEMORY_TOOLS
                     + EPISODIC_MEMORY_TOOLS
                     + SKILL_TOOLS
+                    + SKILL_CURATION_TOOLS
                     + RESOURCE_MEMORY_TOOLS
                     + KNOWLEDGE_VAULT_TOOLS
                     + META_MEMORY_TOOLS

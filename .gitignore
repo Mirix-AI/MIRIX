@@ -50,3 +50,6 @@ test-results/
 test_*.db
 *.log
 .persist
+# evals/skill_bench: downloaded data and experiment runs are never committed
+evals/skill_bench/data/
+evals/skill_bench/runs/

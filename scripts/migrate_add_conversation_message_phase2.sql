@@ -13,8 +13,8 @@
 -- If a build fails midway, Postgres leaves an INVALID index behind: drop it
 -- (DROP INDEX <name>) and re-run.
 
--- Primary access pattern: list/seal/order this (org, user)'s sessions by
--- first-appearance time.
+-- Primary access pattern: this (org, user, session)'s turns in order (reads,
+-- claim-time watermarks, per-row distilled marks).
 CREATE INDEX CONCURRENTLY IF NOT EXISTS
     ix_conversation_message_org_user_session_created
     ON conversation_message (organization_id, user_id, session_id, created_at);

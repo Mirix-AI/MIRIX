@@ -171,7 +171,7 @@ def load_function_set(module: ModuleType) -> dict:
         # Check if it's a callable function and not a built-in or special method.
         # Only public coroutine functions are tools: a tool is always `async def`
         # and never underscore-prefixed. Module-level sync/private helpers (e.g.
-        # `compute_edit_budget`, `_edit_exceeds_size_gate` in memory_tools) are
+        # `_bump_patch_version`, `_validate_skill_fields` in memory_tools) are
         # NOT tools and frequently lack the per-parameter docstrings that
         # generate_schema() requires — skipping them keeps one such helper from
         # raising and dropping every real tool in the module.

@@ -1,0 +1,115 @@
+{
+  "comment": "Frozen text and limits of the ReasoningBank baseline. success_system.md / failure_system.md are the paper's Figure 9 extraction instructions with only the two de-domaining substitutions; tests diff them against the verbatim originals in originals/. The input, retrieval and injection texts below are the RB repo's (ed80611), with the one substitution in the retrieval instruction. Code (methods/reasoningbank.py) contains no model-visible literal.",
+  "provenance": {
+    "paper": {
+      "id": "arXiv 2509.25140 (ReasoningBank: Scaling Agent Self-Evolving with Reasoning Memory)",
+      "pdf_sha256": "d9e08c61ab714304a6a88e014f552597d9ac654c4cb23dc63a5d53248715da13",
+      "text_extraction_sha256": "414ce3a18aa66faa2b51a1877d3f2c371cee91422c8cc1492cf2d27db8c7a59a",
+      "figure9": "Figure 9, 'System instructions for extracting memory items from agent trajectories: the left panel targets successful trajectories (summarizing why they succeed), while the right targets failed trajectories (reflecting on failure and deriving lessons)' (appendix A.1)",
+      "originals": {
+        "originals/paper_2509.25140_figure9_success_system.txt": {
+          "what": "Figure 9 left panel, System Instruction: the PDF text layer verbatim (lines 1024-1027 of its text extraction)",
+          "sha256": "09bd1fd3d1637eb8eba71937726d7a142942f287969834111005e17bfe07fe34"
+        },
+        "originals/paper_2509.25140_figure9_failure_system.txt": {
+          "what": "Figure 9 right panel, System Instruction (lines 1031-1034)",
+          "sha256": "4e79222563216a450c6b67d5f716ba265bb68c57e6a85c6680f9d0be7c114a5b"
+        },
+        "originals/paper_2509.25140_figure9_input.txt": {
+          "what": "Figure 9 Input Prompt, identical in both panels (lines 1029-1030 and 1036-1037)",
+          "sha256": "b30f706c7ad89984e105e5830625662d980521d555c4743a54ded64a88011205"
+        },
+        "originals/paper_2509.25140_figure9_spans.txt": {
+          "what": "Figure 9's text spans with their fonts (PyMuPDF on page 21): where the figure sets words in bold (Avenir-Heavy) or italic (Avenir-BookOblique)",
+          "sha256": "e64be21cf44bea51347e3b91cb7ffa720e3513b767c7af369174f4a581bac367"
+        },
+        "originals/paper_2509.25140_appendix_a2_extraction_retrieval.txt": {
+          "what": "Appendix A.2, memory extraction (at most 3 items, both successes and failures, LLM judge) and retrieval (gemini-embedding-001, cosine, top-k with default k = 1, each item represented by its title and content) (lines 1070-1087)",
+          "sha256": "8424ca0e4cb95a0dc33d2fe14efe353a22b2ea128720a22efe076096b33d63e7"
+        },
+        "originals/paper_2509.25140_appendix_a2_injection_consolidation.txt": {
+          "what": "Appendix A.2, the injection instruction and memory consolidation (append only) (lines 1106-1111)",
+          "sha256": "a68c0e19e9a4bf6256ad148f4a3a611ddd56414688a93bc28f15804afd622118"
+        }
+      },
+      "text_layer_note": "The PDF text layer flattens the figure's line breaks into double spaces, drops the space after the list dashes ('-You'), keeps the 'fi'/'fl' ligatures of the failure panel and prints the apostrophe of 'it's' as U+2019. Tests compare whitespace-normalised text after undoing exactly these."
+    },
+    "repo": {
+      "url": "https://github.com/google-research/reasoning-bank",
+      "commit": "ed80611788292ea739f1effd31f16c53823b8a0d",
+      "license": "Apache-2.0 (originals/reasoning-bank-ed80611/LICENSE)",
+      "files": {
+        "originals/reasoning-bank-ed80611/memory_instruction.py.txt": {
+          "source": "WebArena/prompts/memory_instruction.py",
+          "git_blob": "359eee561af4a4fb0be2878a69a9d875be003213",
+          "sha256": "073d354bc84a24ba8a2c697133b5d832fe89ca67a53705fb0af419528f7b11ee"
+        },
+        "originals/reasoning-bank-ed80611/induce_memory.py.txt": {
+          "source": "WebArena/induce_memory.py",
+          "git_blob": "7dd8bc4d17505e068f11dc60a83c3a666855342a",
+          "sha256": "97d7da3fe5bd3e37d05e4aa07c050b1154334951cc2cad20619774ae77e0912c"
+        },
+        "originals/reasoning-bank-ed80611/memory_management.py.txt": {
+          "source": "WebArena/memory_management.py",
+          "git_blob": "cb852c863602b3a2597c174c2cdb7b48b5c3716e",
+          "sha256": "35b8b800180024f3446c4a295fe9d7c19d4aa2cddd0b2f2a44b6680e4d6bc4f9"
+        },
+        "originals/reasoning-bank-ed80611/run.py.txt": {
+          "source": "WebArena/run.py",
+          "git_blob": "e89316613c1c13e3f24566a7c45a1333772fc727",
+          "sha256": "f9edcac62cc612f48db9859c60f71b7479aa126beda802437dd82d81030817b3"
+        },
+        "originals/reasoning-bank-ed80611/agent.py.txt": {
+          "source": "WebArena/agents/legacy/agent.py",
+          "git_blob": "58d9590078a68380f36b0fc750d356690530a5d9",
+          "sha256": "00ab439e7245ad4ac41aed75bfbd2a1a6db8be9efc01ac526360606e098d9a99"
+        },
+        "originals/reasoning-bank-ed80611/swebench_instruction.py.txt": {
+          "source": "third_party/src/minisweagent/memory/instruction.py",
+          "git_blob": "9308c7fd6c85fe102406b59f1f0793772c73171e",
+          "sha256": "08e11fbeac1ba9e20d1dafb20728be24194b56bdfea33f05f6a1220ae2cc9bae"
+        }
+      }
+    }
+  },
+  "system_prompts": {
+    "rule": "The paper's Figure 9 wins over the repo where they differ. The words are Figure 9's. The layout (line breaks, blank lines, the '  - ' list items, the code fence on its own lines) is the repo's copy of the same prompts (memory_instruction.py SUCCESSFUL_SI / FAILED_SI), without their leading and trailing newline. Emphasis is Figure 9's: the figure renders a Markdown prompt, and the spans the repo copy marks ('**how an agent successfully accomplished the task**', '*at most 3*') are exactly the spans the figure sets in Avenir-Heavy and Avenir-BookOblique. So every Heavy span of the figure's system instruction is written '**...**' and every Oblique span '*...*'; the figure also sets 'based on the agent's successful/failed trajectory', 'think why the trajectory is successful' and 'first reflect and think why the trajectory failed' in bold, which the repo's later copy does not mark.",
+    "success_file": "success_system.md",
+    "failure_file": "failure_system.md",
+    "substitutions": [
+      {
+        "original": "You are an expert in web navigation.",
+        "replacement": "You are an expert AI agent analyst.",
+        "rule": "'expert in web navigation' -> 'expert AI agent analyst'"
+      },
+      {
+        "original": "Do not mention specific websites, queries, or string contents",
+        "replacement": "Do not mention specific entities, file names, queries, or string contents",
+        "rule": "'specific websites, queries, or string contents' -> 'specific entities, file names, queries, or string contents'"
+      }
+    ],
+    "repo_differs": "The repo's WebArena copy (memory_instruction.py) words the notes and the output format differently ('Prefer concrete, actionable procedures over abstract principles. Do not embed specific product names, queries, or literal string contents from the task.'; '<one sentence summary describing when or when NOT to use the memory item>'; a different Content line); J's prompts follow the paper instead. The repo's SWE-bench copy (swebench_instruction.py) keeps the paper's notes wording in the repo layout."
+  },
+  "user_template": "**Query:** {query}\n\n**Trajectory:**\n{trajectory}",
+  "user_template_source": "induce_memory.py:143 (f\"**Query:** {ex['query']}\\n\\n**Trajectory:**\\n{trajectory}\"); Figure 9's Input Prompt shows the same two labels in bold. induce_memory.py:145-162 then appends the judge's reasoning ('The task succeeded/failed because: ...'); the paper has no such step, so it is not appended.",
+  "step": "<think>\n{think}\n</think>\n<action>\n{action}\n</action>",
+  "step_source": "induce_memory.py:70-76 format_trajectory (AWM's induce_prompt.py:66-71 format_trajectory, which RB copied): one '<think>...</think>\\n<action>...</action>' block per step, blocks joined by an empty line. RB passes one action string per step; several actions of one turn are joined by a newline, as AWM joins a step's actions.",
+  "action_joiner": "\n",
+  "observation": "<observation>\n{text}\n</observation>",
+  "observation_joiner": "\n",
+  "step_joiner": "\n\n",
+  "observations_note": "RB's WebArena code gives the extractor only the reasoning and the actions; here each step is followed by the environment's raw output after it, and the environment's output before the first model turn opens the trajectory, each observation as its own <observation> block, head and tail kept (the same per-observation cap as J, RB's MAX_OBS_CHARS). A step whose turn has no action (no reply, or no <action> tag) is skipped with its observations, as RB's extract_think_and_action skips steps without an action. A turn is read the way the environment reads it (methods/judge.py episode_turns): the environment plays its fallback action for a turn without an <action> tag (ALFWorld's 'look'), so those turns are skipped. J's action history applies the same rule, so J and the learners read the same steps. The think/action split and the rendering of tool calls are J's (methods/judge.py split_turn / content_text): the same RB definition.",
+  "observation_max_chars": 40000,
+  "min_truncated_chars": 200,
+  "max_items_per_task": 3,
+  "max_items_note": "Figure 9 and A.2: at most 3 memory items per trajectory; the repo does not enforce it (it stores the reply split on empty lines). Here the reply is parsed into {title, description, content} items and the first 3 complete ones are kept; further items are dropped and counted.",
+  "retrieval_task": "Given the prior task queries, your task is to analyze a current query's intent and select relevant prior queries that could help resolve it.",
+  "retrieval_query": "Instruct: {task}\nQuery: {query}",
+  "retrieval_source": "memory_management.py:127-128 get_detailed_instruct (f'Instruct: {task_description}\\nQuery: {query}') and :204 task, with only 'web navigation' -> 'task'. The query (the item's instruction) is embedded wrapped; the stored vectors are those of the unwrapped queries (memory_management.py:187-196). Similarity is cosine over L2-normalised vectors (:118, :208-211); the top k = 1 prior task wins (run.py:177), ties go to the earlier task (Python's stable sort, :213), and all of its memory items are injected (run.py:188-191). The repo embeds with task_type RETRIEVAL_DOCUMENT and output_dimensionality 3072 on Vertex; OpenRouter takes neither, and gemini-embedding-001's default dimensionality is 3072.",
+  "top_k": 1,
+  "injection_preamble": "Below are some memory items that I accumulated from past interaction from the environment that may be helpful to solve the task. You can use it when you feel it's relevant. In each step, please first explicitly discuss if you want to use each memory item or not, and then take action.",
+  "injection_item": "# Memory Item {i}\n## Title {title}\n## Content {content}",
+  "injection_joiner": "\n\n",
+  "injection_source": "Paper A.2: 'The retrieved items are concatenated into the agent's system prompt with a simple formatting template (each item represented by its title and content) and instruction: Below are some memory items ...' (agent.py:135 has the same sentence, which it adds only when there is memory, followed by an empty line and the items joined by empty lines, agent.py:134-137 and run.py:188-192). The repo injects each item as the model wrote it, description included; the paper represents each item by its title and content, so the item is written in Figure 9's own Markdown layout without its Description line, numbered in the order injected. The whole text goes into the SkillOpt skill slot, not the end of the system prompt.",
+  "status_note": "The stored status is J's verdict, 'success' or 'failure' (the repo writes 'success' / 'fail'); J's failure, including an unparseable verdict, selects the failure prompt (induce_memory.py:131-134, 163-166)."
+}

@@ -19,13 +19,13 @@ if TYPE_CHECKING:
 
 class AgentTriggerState(SqlalchemyBase, OrganizationMixin, UserMixin, AgentMixin):
     """
-    Persists per-(agent, user, trigger_type) bookkeeping for interval-driven
-    memory triggers (e.g. "fire a procedural-memory extraction every N sessions").
+    Per-(agent, user, trigger_type) cursor row of the skill-learning trigger.
 
-    Only the last-fire cursor is stored here. The live counter (e.g. "how many
-    sessions since the last fire") is derived at read time from the messages
-    table via a COUNT(DISTINCT session_id) — the single source of truth for
-    session accrual.
+    The row is the scope's lock: every trigger claim locks it with
+    ``SELECT ... FOR UPDATE`` so concurrent checks of one (meta agent, user)
+    serialize. Its fields are diagnostics only — the count of pending sessions
+    is always derived live from conversation_session / conversation_message /
+    skill_learning_run (see AgentTriggerStateManager.check_and_claim_fire).
     """
 
     __tablename__ = "agent_trigger_state"
@@ -44,30 +44,21 @@ class AgentTriggerState(SqlalchemyBase, OrganizationMixin, UserMixin, AgentMixin
     last_fired_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True),
         nullable=True,
-        doc="Created_at of the message that caused the last fire. Used as the "
-        "lower bound when counting new sessions.",
+        doc="When the scope last fired a skill learning run (diagnostics).",
     )
 
     last_fired_session_id: Mapped[Optional[str]] = mapped_column(
         String(64),
         nullable=True,
-        doc="session_id that was in-progress on the agent when the last fire "
-        "claimed. Stored for audit/logging only; the fire filter is MIN-based "
-        "and subsumes in-progress-session dedup automatically.",
+        doc="session_id whose write/close triggered the last fire (diagnostics).",
     )
 
     last_fired_tied_session_ids: Mapped[Optional[List[str]]] = mapped_column(
         JSON,
         nullable=True,
         default=list,
-        doc="session_ids whose MIN(created_at) (first-appearance timestamp) "
-        "equalled last_fired_at in the last fire's counted window. The fire "
-        "filter uses MIN semantics so each session_id can only contribute to "
-        "exactly one window; this tied set handles the exact-microsecond case "
-        "where a session's first message commits at the same timestamp as our "
-        "watermark but was not visible to our SELECT. The next window lets "
-        "such sessions qualify via `first_ts = last_fired_at AND session_id "
-        "NOT IN last_fired_tied_session_ids`.",
+        doc="session_ids claimed by the last fired learning run (diagnostics "
+        "only; claims are tracked on skill_learning_run.session_ids).",
     )
 
     __table_args__ = (

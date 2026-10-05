@@ -1,0 +1,135 @@
+Third-party material in evals/skill_bench/envs
+================================================
+
+1. SkillOpt (https://github.com/microsoft/SkillOpt), commit 79124b3, MIT License.
+
+   Copied or ported from it:
+   - envs/templates/alfworld/rollout_no_history.md      (byte-exact copy)
+   - envs/templates/alfworld/rollout_with_history.md    (byte-exact copy)
+   - envs/templates/alfworld/format.json                (string pieces and verbatim excerpts
+                                                         of skillopt/envs/alfworld/rollout.py and
+                                                         vendor/{memory,env_manager}.py)
+   - envs/splits/alfworld/*.json                        (byte-exact copies of data/alfworld_path_split)
+   - the ALFWorld response fallbacks and prompt rendering in envs/alfworld.py (ports of the
+     code named in its format.json)
+
+   MIT License
+
+   Copyright (c) 2026 Microsoft Corporation
+
+   Permission is hereby granted, free of charge, to any person obtaining a copy
+   of this software and associated documentation files (the "Software"), to deal
+   in the Software without restriction, including without limitation the rights
+   to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+   copies of the Software, and to permit persons to whom the Software is
+   furnished to do so, subject to the following conditions:
+
+   The above copyright notice and this permission notice shall be included in all
+   copies or substantial portions of the Software.
+
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+   AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+   SOFTWARE.
+
+2. SkillRL (https://github.com/NTU-LANTERN/SkillRL), Apache License 2.0, as vendored by
+   SkillOpt 79124b3 under skillopt/envs/alfworld/vendor/.
+
+   - envs/vendor/alfworld_projection.py   (from agent_system/environments/env_package/alfworld/
+                                           projection.py; reformatted, logic unchanged)
+   - envs/templates/alfworld/format.json  (the history-entry format of agent_system/memory/memory.py
+                                           and the observation template of
+                                           agent_system/environments/env_manager.py)
+   - envs/templates/alfworld/config_tw.yaml (see item 3)
+   - the text of envs/templates/alfworld/rollout_{no,with}_history.md originates from SkillRL's
+     agent_system/environments/prompts/alfworld.py (SkillOpt keeps it as .md prompt files and
+     loads it through skillopt/envs/alfworld/vendor/alfworld_prompts.py)
+
+   Modified files carry a notice of the change in their header. The full license text is in
+   LICENSE-APACHE-2.0.txt in this directory.
+
+3. ALFWorld (https://github.com/alfworld/alfworld), MIT License.
+
+   - envs/templates/alfworld/config_tw.yaml is ALFWorld's TextWorld base config as vendored by
+     SkillRL and SkillOpt. skill_bench changes one value (general.training_method 'dagger' ->
+     'dqn', so that no AlfredExpert is built); the file header records the change.
+
+   MIT License
+
+   Copyright (c) 2020 Mohit Shridhar and others
+
+   Permission is hereby granted, free of charge, to any person obtaining a copy
+   of this software and associated documentation files (the "Software"), to deal
+   in the Software without restriction, including without limitation the rights
+   to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+   copies of the Software, and to permit persons to whom the Software is
+   furnished to do so, subject to the following conditions:
+
+   The above copyright notice and this permission notice shall be included in all
+   copies or substantial portions of the Software.
+
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+   AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+   SOFTWARE.
+
+4. verl-agent (https://github.com/langfengQ/verl-agent), commit
+   20bd331bdbc9026a5668e11362178e10ab7400c8, Apache License 2.0, Copyright 2025 Nanyang
+   Technological University (NTU), Singapore and the verl-agent (GiGPO) team. SkillRL
+   (https://github.com/aiming-lab/SkillRL, commit 4d984d4) carries the same files.
+
+   - envs/vendor/webshop_projection.py     (agent_system/environments/env_package/webshop/
+                                            projection.py; reformatted, logic unchanged)
+   - envs/templates/webshop/rollout_no_history.md, rollout_with_history.md
+                                           (byte-exact copies of WEBSHOP_TEMPLATE_NO_HIS and
+                                            WEBSHOP_TEMPLATE, agent_system/environments/
+                                            prompts/webshop.py)
+   - envs/templates/webshop/format.json    (string pieces and verbatim excerpts of
+                                            agent_system/environments/env_manager.py and
+                                            agent_system/memory/memory.py)
+   - the observation formatting, available-action listing and history rendering in
+     envs/webshop.py (ports of the code named in that format.json)
+
+   The full license text is in LICENSE-APACHE-2.0.txt in this directory.
+
+5. WebShop (https://github.com/princeton-nlp/WebShop), commit
+   64fa2a5c15c7daa698b9ac93f5bb5437b634c9bd, MIT License, Copyright (c) 2023 Princeton
+   Natural Language Processing.
+
+   - envs/templates/webshop_server/server.py drives upstream's SimServer and
+     WebAgentTextEnv unchanged inside the server image (envs/templates/webshop_server/
+     Dockerfile clones upstream at that commit); its action parsing and the refused
+     special search commands are ported into envs/webshop.py.
+   - The product data (Hugging Face YWZBrandon/webshop-data, revision
+     ce990fff5aee388db2706f07820c578ab68e0453, pinned in protocol.WEBSHOP_DATA) is never
+     committed; the image downloads and verifies it. tools/prepare_webshop.py writes the
+     split manifests under envs/splits/webshop/ from upstream's
+     baseline_models/data/human_goals.json and items_human_ins.json and the server's dump.
+
+   MIT License
+
+   Copyright (c) 2023 Princeton Natural Language Processing
+
+   Permission is hereby granted, free of charge, to any person obtaining a copy
+   of this software and associated documentation files (the "Software"), to deal
+   in the Software without restriction, including without limitation the rights
+   to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+   copies of the Software, and to permit persons to whom the Software is
+   furnished to do so, subject to the following conditions:
+
+   The above copyright notice and this permission notice shall be included in all
+   copies or substantial portions of the Software.
+
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+   AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+   SOFTWARE.

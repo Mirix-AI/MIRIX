@@ -124,6 +124,17 @@ class OrganizationManager:
                 logger = get_logger(__name__)
                 logger.warning("Failed to remove organization %s from cache: %s", org_id, e)
 
+            # The organization's skill history (skill_version, skill_object)
+            # goes first, in the same transaction and under the exclusive
+            # skill-store lock: the objects reference the organization, and
+            # its skills are deleted with it (ORM cascade).
+            from mirix.services.procedural_memory_manager import (
+                ProceduralMemoryManager,
+            )
+
+            await ProceduralMemoryManager(
+                session_maker=self.session_maker
+            ).purge_organization_history(session, org_id)
             await organization.hard_delete(session)
 
     @enforce_types

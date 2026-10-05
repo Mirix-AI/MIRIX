@@ -1,3 +1,4 @@
+import asyncio
 import json
 import uuid
 from typing import List, Optional, Tuple
@@ -12,7 +13,22 @@ from google.genai.types import (
 from mirix.constants import NON_USER_MSG_PREFIX
 from mirix.helpers.datetime_helpers import get_utc_time
 from mirix.helpers.json_helpers import json_dumps
-from mirix.llm_api.helpers import make_post_request
+from mirix.errors import (
+    ErrorCode,
+    LLMAuthenticationError,
+    LLMBadRequestError,
+    LLMConnectionError,
+    LLMNotFoundError,
+    LLMPermissionDeniedError,
+    LLMRateLimitError,
+    LLMServerError,
+    LLMTimeoutError,
+)
+from mirix.llm_api.helpers import (
+    llm_transport_options,
+    post_json_with_retries,
+    read_file_base64,
+)
 from mirix.llm_api.llm_client_base import LLMClientBase
 from mirix.log import get_logger
 from mirix.schemas.llm_config import LLMConfig
@@ -26,6 +42,7 @@ from mirix.schemas.openai.chat_completion_response import (
     ToolCall,
     UsageStatistics,
 )
+from mirix.services.context_budget import output_cap_for_request
 from mirix.services.provider_manager import ProviderManager
 from mirix.settings import model_settings
 from mirix.utils import (
@@ -52,7 +69,17 @@ class GoogleAIClient(LLMClientBase):
             key_in_header=True,
             generate_content=True,
         )
-        return await make_post_request(url, headers, request_data)
+        # Explicit timeout and transport retries: there is no SDK
+        # here, so the retry loop is ours (connection errors, timeouts,
+        # 408/409/429/5xx, Retry-After honored; asyncio.sleep between tries).
+        options = llm_transport_options()
+        return await post_json_with_retries(
+            url,
+            headers,
+            request_data,
+            timeout=options["timeout"],
+            max_retries=options["max_retries"],
+        )
 
     async def build_request_data(
         self,
@@ -106,7 +133,72 @@ class GoogleAIClient(LLMClientBase):
             )
         )
         request_data["tool_config"] = tool_config.model_dump()
+        if llm_config.max_output_tokens:
+            # The output cap follows THIS request's estimated
+            # input; ContextBudgetExceeded (raised before sending) below 1,024.
+            generation_config["max_output_tokens"] = await output_cap_for_request(
+                request_data, llm_config
+            )
         return request_data
+
+    def handle_llm_error(self, e: Exception) -> Exception:
+        """Map the HTTP errors of the Gemini REST call to common LLMError types
+        (so callers and the retry classifier see the same types as for the SDK
+        clients)."""
+        if isinstance(e, httpx.TimeoutException) and not isinstance(
+            e, httpx.ConnectTimeout
+        ):
+            logger.warning("[Google AI] Request timed out: %s", e)
+            return LLMTimeoutError(
+                message=f"Google AI request timed out: {str(e)}",
+                code=ErrorCode.DEPENDENCY_TIMEOUT,
+            )
+        if isinstance(e, httpx.TransportError):
+            logger.warning("[Google AI] Connection error: %s", e)
+            return LLMConnectionError(
+                message=f"Failed to connect to Google AI: {str(e)}",
+                code=ErrorCode.INTERNAL_SERVER_ERROR,
+                details={"cause": type(e).__name__},
+            )
+        if isinstance(e, httpx.HTTPStatusError):
+            status = e.response.status_code if e.response is not None else None
+            details = {"status_code": status}
+            if status == 429:
+                return LLMRateLimitError(
+                    message=f"Rate limited by Google AI: {str(e)}",
+                    code=ErrorCode.RATE_LIMIT_EXCEEDED,
+                    details=details,
+                )
+            if status == 401:
+                return LLMAuthenticationError(
+                    message=f"Authentication failed with Google AI: {str(e)}",
+                    code=ErrorCode.UNAUTHENTICATED,
+                    details=details,
+                )
+            if status == 403:
+                return LLMPermissionDeniedError(
+                    message=f"Permission denied by Google AI: {str(e)}",
+                    code=ErrorCode.PERMISSION_DENIED,
+                    details=details,
+                )
+            if status == 404:
+                return LLMNotFoundError(
+                    message=f"Resource not found in Google AI: {str(e)}",
+                    code=ErrorCode.NOT_FOUND,
+                    details=details,
+                )
+            if status is not None and (status >= 500 or status == 408):
+                return LLMServerError(
+                    message=f"Google AI API error: {str(e)}",
+                    code=ErrorCode.INTERNAL_SERVER_ERROR,
+                    details=details,
+                )
+            return LLMBadRequestError(
+                message=f"Bad request to Google AI: {str(e)}",
+                code=ErrorCode.INVALID_ARGUMENT,
+                details=details,
+            )
+        return super().handle_llm_error(e)
 
     def combine_tool_responses(self, contents: List[dict]) -> List[dict]:
         idx = 0
@@ -177,28 +269,42 @@ class GoogleAIClient(LLMClientBase):
                         message_parts.append({"text": f"<image {global_image_idx}>"})
                         file = await self.file_manager.get_file_metadata_by_id(part["image_id"])
                         if file.source_url is not None:
+                            # A caller-supplied URL: fetched only under the SSRF
+                            # guard (https, public addresses only, no redirects,
+                            # size and time bounded); otherwise a placeholder.
                             import base64
 
-                            async with httpx.AsyncClient() as client:
-                                response = await client.get(file.source_url)
-                            base64_data = base64.b64encode(response.content).decode("utf-8")
-                            # Determine mime type from URL or default to jpeg
-                            mime_type = file.file_type
-                            message_parts.append(
-                                {
-                                    "inline_data": {
-                                        "mime_type": mime_type,
-                                        "data": base64_data,
-                                    }
-                                }
+                            from mirix.helpers.remote_image_fetch import (
+                                RemoteImageRejected,
+                                fetch_remote_image,
                             )
-                        elif file.file_path is not None:
-                            # Read from file path and convert to base64
-                            import base64
 
+                            try:
+                                data, mime_type = await fetch_remote_image(file.source_url)
+                            except RemoteImageRejected as exc:
+                                logger.warning(
+                                    "Remote image %s was not fetched: %s", file.source_url, exc
+                                )
+                                message_parts.append(
+                                    {"text": f"[Remote image {file.source_url} could not be loaded]"}
+                                )
+                            else:
+                                base64_data = await asyncio.to_thread(
+                                    lambda: base64.b64encode(data).decode("utf-8")
+                                )
+                                message_parts.append(
+                                    {
+                                        "inline_data": {
+                                            "mime_type": mime_type,
+                                            "data": base64_data,
+                                        }
+                                    }
+                                )
+                        elif file.file_path is not None:
+                            # Read from file path and convert to base64 — off the
+                            # event loop (multi-MB images on the request path).
                             mime_type = file.file_type
-                            with open(file.file_path, "rb") as img_file:
-                                base64_data = base64.b64encode(img_file.read()).decode("utf-8")
+                            base64_data = await asyncio.to_thread(read_file_base64, file.file_path)
                             message_parts.append(
                                 {
                                     "inline_data": {

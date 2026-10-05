@@ -15,6 +15,7 @@ from mirix.constants import (
     KNOWLEDGE_VAULT_TOOLS,
     MCP_TOOLS,
     META_MEMORY_TOOLS,
+    SKILL_CURATION_TOOLS,
     SKILL_TOOLS,
     RESOURCE_MEMORY_TOOLS,
     SEARCH_MEMORY_TOOLS,
@@ -125,7 +126,7 @@ class AgentManager:
         if agent_create.agent_type == AgentType.episodic_memory_agent:
             tool_names.extend(EPISODIC_MEMORY_TOOLS + UNIVERSAL_MEMORY_TOOLS)
         if agent_create.agent_type == AgentType.procedural_memory_agent:
-            tool_names.extend(SKILL_TOOLS + UNIVERSAL_MEMORY_TOOLS)
+            tool_names.extend(SKILL_TOOLS + SKILL_CURATION_TOOLS + UNIVERSAL_MEMORY_TOOLS)
         if agent_create.agent_type == AgentType.resource_memory_agent:
             tool_names.extend(RESOURCE_MEMORY_TOOLS + UNIVERSAL_MEMORY_TOOLS)
         if agent_create.agent_type == AgentType.knowledge_vault_memory_agent:
@@ -564,7 +565,7 @@ class AgentManager:
         if agent_state.agent_type == AgentType.episodic_memory_agent:
             tool_names.extend(EPISODIC_MEMORY_TOOLS + UNIVERSAL_MEMORY_TOOLS)
         if agent_state.agent_type == AgentType.procedural_memory_agent:
-            tool_names.extend(SKILL_TOOLS + UNIVERSAL_MEMORY_TOOLS)
+            tool_names.extend(SKILL_TOOLS + SKILL_CURATION_TOOLS + UNIVERSAL_MEMORY_TOOLS)
         if agent_state.agent_type == AgentType.resource_memory_agent:
             tool_names.extend(RESOURCE_MEMORY_TOOLS + UNIVERSAL_MEMORY_TOOLS)
         if agent_state.agent_type == AgentType.knowledge_vault_memory_agent:
@@ -1494,6 +1495,19 @@ class AgentManager:
 
                 logger = get_logger(__name__)
                 logger.warning("Failed to remove agent %s from cache: %s", agent_id, e)
+
+            if agent.agent_type == AgentType.meta_memory_agent:
+                # Its pending skill experiences are cascade-deleted with it:
+                # their sessions' rows become undistilled (same transaction),
+                # so the meta agent that adopts those sessions learns from
+                # them again.
+                from mirix.services.conversation_session_manager import (
+                    ConversationSessionManager,
+                )
+
+                await ConversationSessionManager.release_pending_learning(
+                    session, agent_id=agent_id
+                )
 
             await agent.hard_delete(session)
 

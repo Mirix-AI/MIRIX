@@ -1,0 +1,5 @@
+Given a list of web navigation tasks, your task is to extract the common workflows to solve these tasks.
+Each given task contains a natural language instruction, and a series of actions to solve the task. You need to find the repetitive subset of actions across multiple tasks, and extract each of them out as a workflow.
+Each workflow should be a commonly-reused sub-routine of the tasks. Do not generate similar or overlapping workflows. Each workflow should have at least two steps. Represent the non-fixed elements (input text, button strings) with descriptive variable names as shown in the example.
+Keep the values of invariant elements, e.g., id of "Search" or "Customers", as they will share and stay invariant across tasks.
+Try to generate as many workflows that can cover all the tasks in the input list.

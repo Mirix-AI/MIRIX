@@ -1,0 +1,10 @@
+A.1 M ODEL PROMPT
+We provide the exact prompt inputted to the model for WebArena and Mind2Web experiments be-
+low. Experiments on both datasets use the same prompt.
+Given a list of web navigation tasks, your task is to extract the common workflows.
+Each given task contains a natural language instruction, and a series of actions to solve the task.
+You need to find the repetitive subset of actions across multiple tasks, and extract each of them out
+as a workflow.
+Each workflow should be a commonly reused sub-routine of the tasks. Do not generate similar or
+overlapping workflows. Each workflow should have at least two steps. Represent the non-fixed
+elements (input text, button strings) with descriptive variable names as shown in the example.

@@ -1,0 +1,17 @@
+Concretely, the agent starts with the default memory
+M; given the t-th test instruction qt passed into the
+agent, the agent attempts to solve the task by gen-
+erating an action trajectory (pt
+1, pt
+2, ⋯), which col-
+lectively forms an experience et = (qt,{pt}). We
+adopt the LM-based evaluation model of Pan et al.
+(2024) to output a binary label, Leval(et) ∈ {0, 1},
+that judges if et successfully solves qt by prompting
+a neural model. If et is predicted as success, i.e., 1,
+we then transform it into workflow(s) I(et) → {wt}
+and add {wt} into the agent memory M t + {wt} → M t+1, which serves as the agent memory to
+process the t + 1-th instruction. As depicted in Figure 4, we continue this memory-updating process
+by iteratively predicting actions for and inducing workflows from streamed test instructions, until
+all tests are processed. We evaluate the success rate of the predicted action trajectories {pt} for all
+tests and report the average score.

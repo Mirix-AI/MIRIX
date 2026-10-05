@@ -2,7 +2,7 @@ import datetime as dt
 from datetime import datetime
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import JSON, Column, ForeignKey, Index, String, UniqueConstraint, text
+from sqlalchemy import JSON, Column, Computed, ForeignKey, Index, String, text
 from sqlalchemy.orm import Mapped, declared_attr, mapped_column, relationship
 
 from mirix.constants import MAX_EMBEDDING_DIM
@@ -17,12 +17,49 @@ if TYPE_CHECKING:
     from mirix.orm.organization import Organization
     from mirix.orm.user import User
 
+# Keyword-retrieval document of a skill: name and triggers at
+# weight A, description at weight B.
+#
+# The triggers are indexed from `triggers::jsonb::text`, not `triggers::text`:
+# create_all makes `triggers` a JSON column, whose text is the stored
+# `json.dumps` output with every non-ASCII character escaped
+# (`["\u201ccool\u201d the apple\u2014then store it"]`), so the words next to a
+# curly quote, a dash or any accented / CJK character reached the index as
+# 'u201ccool' / 'u2014then' / 'caf' + 'u00e9' and never matched a query.
+# The JSONB cast decodes those escapes (and is a no-op for databases whose
+# column is JSONB, upgraded by scripts/migrate_procedural_to_skill.sql).
+#
+# jsonb's own text still escapes a control character, a quote and a
+# backslash (`["line1\nline2"]`), which Postgres' parser read as the junk
+# lexeme 'nline2' while the SQLite path (a Python tokenizer over the trigger
+# strings) found 'line2'. `regexp_replace` (immutable, so allowed in a
+# generated column) turns every such escape — `\"`, `\\`, `\/`, `\b`, `\f`,
+# `\n`, `\r`, `\t`, `\uXXXX` — into a space first, so both backends index the
+# same words.
+#
+# Must stay byte-identical to the expression in
+# scripts/migrate_skill_retrieval_fields.sql.
+RETRIEVAL_TSV_TRIGGERS_TEXT = (
+    "regexp_replace(triggers::jsonb::text, "
+    r"""'\\(["\\/bfnrt]|u[0-9a-fA-F]{4})', ' ', 'g')"""
+)
+RETRIEVAL_TSV_EXPRESSION = (
+    "setweight(to_tsvector('english', coalesce(name, '')), 'A') || "
+    f"setweight(to_tsvector('english', coalesce({RETRIEVAL_TSV_TRIGGERS_TEXT}, '')), 'A') || "
+    "setweight(to_tsvector('english', coalesce(description, '')), 'B')"
+)
+
+# Skill names are unique per (organization, user) among LIVE skills only, so a
+# soft-deleted skill's name can be reused. Replaces the old full
+# UniqueConstraint uq_procedural_memory_org_user_name.
+UNIQUE_LIVE_NAME_INDEX = "uq_procedural_memory_org_user_name_active"
+
 
 class ProceduralMemoryItem(SqlalchemyBase, OrganizationMixin, UserMixin):
     """
     Stores procedural knowledge as reusable skills.
 
-    name:         Short skill identifier (e.g. 'deploy-production')
+    name:         Short skill identifier: lowercase words joined by hyphens
     entry_type:   Category or tag of the skill (e.g. 'workflow', 'guide', 'script')
     description:  Short descriptive text about what this skill accomplishes
     instructions: Step-by-step instructions as plain text
@@ -58,7 +95,9 @@ class ProceduralMemoryItem(SqlalchemyBase, OrganizationMixin, UserMixin):
     )
 
     # Short skill identifier
-    name: Mapped[str] = mapped_column(String, nullable=False, doc="Short skill identifier (e.g. 'deploy-production')")
+    name: Mapped[str] = mapped_column(
+        String, nullable=False, doc="Short skill identifier: lowercase words joined by hyphens"
+    )
 
     # Distinguish the type/category of the skill
     entry_type: Mapped[str] = mapped_column(String, doc="Category or type (e.g. 'workflow', 'guide', 'script')")
@@ -98,15 +137,27 @@ class ProceduralMemoryItem(SqlalchemyBase, OrganizationMixin, UserMixin):
         EmbeddingConfigColumn, nullable=True, doc="Embedding configuration"
     )
 
-    # Vector embedding field based on database type
+    # The skill's single retrieval vector, padded to MAX_EMBEDDING_DIM.
+    # `instructions` deliberately has no vector: an embedding search on
+    # it is served by full-text search instead.
     if settings.mirix_pg_uri_no_default:
         from pgvector.sqlalchemy import Vector
+        from sqlalchemy.dialects.postgresql import TSVECTOR
 
-        description_embedding = mapped_column(Vector(MAX_EMBEDDING_DIM), nullable=True)
-        instructions_embedding = mapped_column(Vector(MAX_EMBEDDING_DIM), nullable=True)
+        retrieval_embedding = mapped_column(Vector(MAX_EMBEDDING_DIM), nullable=True)
+
+        # Postgres-only generated keyword document for BM25 retrieval,
+        # GIN-indexed below. Deferred: it is only ever read by ranking SQL, so
+        # ORM loads never ship it. Absent on SQLite, whose create_all has no
+        # tsvector type (the SQLite path tokenizes in Python instead).
+        retrieval_tsv = mapped_column(
+            TSVECTOR,
+            Computed(RETRIEVAL_TSV_EXPRESSION, persisted=True),
+            nullable=True,
+            deferred=True,
+        )
     else:
-        description_embedding = Column(CommonVector, nullable=True)
-        instructions_embedding = Column(CommonVector, nullable=True)
+        retrieval_embedding = Column(CommonVector, nullable=True)
 
     # Database indexes for efficient querying.
     # NB: use an explicit ``is not None`` filter rather than ``filter(None, ...)``
@@ -152,12 +203,26 @@ class ProceduralMemoryItem(SqlalchemyBase, OrganizationMixin, UserMixin):
                 ),
                 # Enforce per-user skill-name uniqueness at the DB level. The
                 # application also pre-checks via a search, but that is racy
-                # under concurrent creates — this constraint closes the race.
-                UniqueConstraint(
+                # under concurrent creates — this index closes the race. Partial
+                # (live rows only) on BOTH backends so a soft-deleted skill never
+                # blocks re-creating its name.
+                Index(
+                    UNIQUE_LIVE_NAME_INDEX,
                     "organization_id",
                     "user_id",
                     "name",
-                    name="uq_procedural_memory_org_user_name",
+                    unique=True,
+                    postgresql_where=text("NOT is_deleted"),
+                    sqlite_where=text("NOT is_deleted"),
+                ),
+                (
+                    Index(
+                        "ix_procedural_memory_retrieval_tsv",
+                        "retrieval_tsv",
+                        postgresql_using="gin",
+                    )
+                    if settings.mirix_pg_uri_no_default
+                    else None
                 ),
                 # SQLite indexes
                 (

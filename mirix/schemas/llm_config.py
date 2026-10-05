@@ -19,6 +19,7 @@ class LLMConfig(BaseModel):
         context_window (int): The context window size for the model.
         temperature (float): The temperature to use when generating text with the model. A higher temperature will result in more random text.
         max_tokens (int): The maximum number of tokens to generate.
+        max_output_tokens (int, optional): The model's own output limit; when set, each call's max_tokens follows the context budget.
         api_key (str, optional): Custom API key for this specific model configuration.
         api_version (str, optional): The API version for Azure OpenAI (e.g., '2024-10-01-preview').
         azure_endpoint (str, optional): The Azure endpoint for the model (e.g., 'https://your-resource.openai.azure.com/').
@@ -67,6 +68,18 @@ class LLMConfig(BaseModel):
         4096,
         description="The maximum number of tokens to generate. If not set, the model will use its default value.",
     )
+    max_output_tokens: Optional[int] = Field(
+        None,
+        ge=1,
+        description=(
+            "The MODEL's own output-token limit. When set, every call's "
+            "max_tokens is computed from the budget instead of max_tokens: "
+            "min(floor(max_output_tokens * 0.8), floor(context_window * 0.8) - "
+            "estimated input), and a call that would leave fewer than 1,024 output "
+            "tokens is refused before sending (ContextBudgetExceeded). Unset: the "
+            "fixed max_tokens is sent as before."
+        ),
+    )
     enable_reasoner: bool = Field(
         False,
         description="Whether or not the model should use extended thinking if it is a 'reasoning' style model",
@@ -82,6 +95,15 @@ class LLMConfig(BaseModel):
     put_inner_thoughts_in_kwargs: Optional[bool] = Field(
         None,
         description="Whether to put inner thoughts/thinking inside tool call kwargs instead of as separate content",
+    )
+    parallel_tool_calls: Optional[bool] = Field(
+        None,
+        description=(
+            "Sent as the request's parallel_tool_calls (OpenAI-compatible endpoints) "
+            "when set and the request offers tools; None (the default) omits the "
+            "key, as before, since some OpenAI-compatible endpoints refuse it. "
+            "False asks the model for one tool call per turn."
+        ),
     )
     api_key: Optional[str] = Field(
         None,

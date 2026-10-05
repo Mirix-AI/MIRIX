@@ -1,0 +1,2 @@
+Input PromptQuery: <user query> 
+Trajectory: <trajectory that completes the query>

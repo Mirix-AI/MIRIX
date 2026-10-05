@@ -7,10 +7,11 @@ Layered exactly like the session_id tests:
   * DB-free shape/contract tests (mirroring tests/test_session_id.py): the ORM
     column set, the Pydantic schema shape, role/session_id validation, and the
     Postgres-only CHECK-constraint dialect gating. No DB, no running server.
-  * Postgres round-trip tests (marked @pytest.mark.integration, mirroring
-    tests/test_session_id_integration.py): record_turns ordering + accumulation,
-    count_distinct_sessions, the OLDEST-first sealed-only selection,
-    mark_sessions_distilled idempotency, and per-(user, org) scoping isolation.
+  * Postgres round-trip tests (marked @pytest.mark.integration, run through
+    scripts/run_pg_integration_tests.sh): record_turns ordering + accumulation
+    and its conversation_session row, count_distinct_sessions, row-level
+    distillation up to a watermark, mark_sessions_distilled idempotency, and
+    per-(user, org) scoping isolation.
 
 The DB-free run (`pytest -m "not integration"`) executes only the shape tests;
 everything that needs Postgres carries the integration marker.
@@ -148,8 +149,14 @@ class TestConversationMessageSchema:
             "distilled_at",
             "created_at",
             "updated_at",
+            "session_tag",
+            "content_parts",
+            "original_text_length",
         }:
             assert expected in fields, f"missing schema field {expected!r}"
+        # No static max_length on content any more.
+        content_meta = fields["content"].metadata
+        assert not any(getattr(m, "max_length", None) for m in content_meta)
 
     def test_create_carries_owner_ids(self):
         from mirix.schemas.conversation_message import ConversationMessageCreate
@@ -258,20 +265,75 @@ class TestConversationMessageSchema:
         )
         assert ok.session_id == "sess_Abc-123"
 
-    def test_content_length_cap_enforced(self):
-        from mirix.schemas.conversation_message import (
-            CONVERSATION_MESSAGE_MAX_CONTENT_LEN,
-            ConversationMessageCreate,
-        )
+    def test_no_static_content_length_cap(self):
+        """The schema no longer hard-caps content at 65,536 chars; the cap is
+        derived from the writing meta agent's context window and applied (head +
+        tail, with a marker) by record_turns."""
+        import mirix.schemas.conversation_message as schema_module
+        from mirix.schemas.conversation_message import ConversationMessageCreate
 
+        assert not hasattr(schema_module, "CONVERSATION_MESSAGE_MAX_CONTENT_LEN")
+        long_text = "c" * 200_000
+        msg = ConversationMessageCreate(
+            session_id="sess-1",
+            role="user",
+            content=long_text,
+            user_id="u",
+            organization_id="o",
+        )
+        assert msg.content == long_text
+        assert msg.content_parts is None and msg.original_text_length is None
+
+    def test_content_parts_image_ref_shape_accepted(self):
+        from mirix.schemas.conversation_message import ConversationMessageCreate
+
+        parts = [
+            {"type": "text", "text": "what is this?"},
+            {
+                "type": "image_ref",
+                "file_id": "file-1",
+                "mime_type": "image/png",
+                "width": 2,
+                "height": 3,
+                "sha256": "a" * 64,
+                "bytes": 70,
+            },
+        ]
+        msg = ConversationMessageCreate(
+            session_id="sess-1",
+            role="user",
+            content="what is this?\n[image: file-1]",
+            content_parts=parts,
+            user_id="u",
+            organization_id="o",
+        )
+        assert msg.content_parts == parts
         with pytest.raises(ValueError):
             ConversationMessageCreate(
                 session_id="sess-1",
                 role="user",
-                content="c" * (CONVERSATION_MESSAGE_MAX_CONTENT_LEN + 1),
+                content_parts=[{"type": "image_ref"}],
                 user_id="u",
                 organization_id="o",
             )
+
+    def test_placeholder_rendering(self):
+        from mirix.schemas.conversation_message import (
+            content_parts_have_images,
+            render_content_parts_text,
+        )
+
+        parts = [
+            {"type": "image_ref", "file_id": "file-9"},
+            {"type": "text", "text": "above: the chart"},
+            {"type": "image_ref", "url": "https://x.test/a.png"},
+        ]
+        assert render_content_parts_text(parts) == (
+            "[image: file-9]\nabove: the chart\n[image: https://x.test/a.png]"
+        )
+        assert content_parts_have_images(parts)
+        assert not content_parts_have_images([{"type": "text", "text": "t"}])
+        assert not content_parts_have_images(None)
 
     def test_content_defaults_to_empty(self):
         from mirix.schemas.conversation_message import ConversationMessageCreate
@@ -303,7 +365,7 @@ class TestConversationMessageManagerContract:
         for name in (
             "record_turns",
             "count_distinct_sessions",
-            "list_sealed_undistilled_sessions",
+            "session_watermarks",
             "list_turns_for_session",
             "mark_sessions_distilled",
             "prune_distilled_turns",
@@ -339,6 +401,28 @@ class TestConversationMessageManagerContract:
                 params[expected].kind is inspect.Parameter.KEYWORD_ONLY
             ), f"{expected} must be keyword-only"
 
+    def test_sealing_query_is_gone(self):
+        # Sessions end only by explicit close or idle timeout; there is no
+        # "a newer session seals the older one" query any more.
+        from mirix.services.conversation_message_manager import (
+            ConversationMessageManager,
+        )
+
+        assert not hasattr(ConversationMessageManager, "list_sealed_undistilled_sessions")
+
+    def test_mark_sessions_distilled_takes_watermarks(self):
+        import inspect
+
+        from mirix.services.conversation_message_manager import (
+            ConversationMessageManager,
+        )
+
+        params = inspect.signature(
+            ConversationMessageManager.mark_sessions_distilled
+        ).parameters
+        assert "session_watermarks" in params
+        assert "session_ids" not in params
+
     def test_count_distinct_sessions_has_only_undistilled_flag(self):
         import inspect
 
@@ -358,7 +442,6 @@ class TestConversationMessageManagerContract:
 # Everything below needs a live Postgres (docker-compose). It is marked with the
 # integration marker so the default `-m "not integration"` CI subset skips it.
 
-import asyncio  # noqa: E402
 import sys  # noqa: E402
 import uuid  # noqa: E402
 from pathlib import Path  # noqa: E402
@@ -367,15 +450,17 @@ import pytest_asyncio  # noqa: E402
 
 pytestmark = []  # module-level markers applied per-class below instead
 
+from mirix.settings import settings as _settings  # noqa: E402
+
+# Never fall back to the default database: without MIRIX_PG_URI the global
+# engine is SQLite under $HOME (~/.mirix), which these tests must not touch.
+_REQUIRES_PG = pytest.mark.skipif(
+    not _settings.mirix_pg_uri_no_default,
+    reason="needs Postgres: run via scripts/run_pg_integration_tests.sh",
+)
+
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
-
-
-@pytest_asyncio.fixture(scope="module")
-def event_loop():
-    loop = asyncio.new_event_loop()
-    yield loop
-    loop.close()
 
 
 async def _make_actor():
@@ -415,13 +500,31 @@ async def _make_actor():
         )
 
 
-@pytest_asyncio.fixture(scope="module")
-async def cm_actor():
+@pytest_asyncio.fixture(scope="module", loop_scope="module")
+async def _pg_tables():
+    """The fresh per-run database (scripts/run_pg_integration_tests.sh) starts
+    empty; create the schema once per module. The global engine's pooled
+    asyncpg connections belong to the loop that opened them, so connections an
+    earlier module left behind are dropped first and ours disposed at the end."""
+    from mirix.server import server
+
+    assert server.engine.dialect.name == "postgresql", (
+        "Postgres integration tests need MIRIX_PG_URI (fresh database); "
+        f"refusing to run DDL on {server.engine.url!r}"
+    )
+    await server.engine.dispose(close=False)
+    await server.ensure_tables_created()
+    yield
+    await server.engine.dispose()
+
+
+@pytest_asyncio.fixture(scope="module", loop_scope="module")
+async def cm_actor(_pg_tables):
     return await _make_actor()
 
 
-@pytest_asyncio.fixture(scope="module")
-async def cm_actor_org_b():
+@pytest_asyncio.fixture(scope="module", loop_scope="module")
+async def cm_actor_org_b(_pg_tables):
     """A second actor in a DIFFERENT organization, for cross-org isolation."""
     return await _make_actor()
 
@@ -445,9 +548,17 @@ async def _make_user(org_id: str):
         )
 
 
-@pytest_asyncio.fixture(scope="module")
+@pytest_asyncio.fixture(scope="module", loop_scope="module")
 async def cm_user(cm_actor):
     return await _make_user(cm_actor.organization_id)
+
+
+# A watermark after every row these tests write: "mark all rows so far".
+_FAR_FUTURE = __import__("datetime").datetime(2100, 1, 1, tzinfo=__import__("datetime").timezone.utc)
+
+
+def _wm(*session_ids):
+    return {sid: _FAR_FUTURE for sid in session_ids}
 
 
 @pytest.fixture
@@ -460,6 +571,7 @@ def manager():
 
 
 @pytest.mark.integration
+@_REQUIRES_PG
 @pytest.mark.asyncio(loop_scope="module")
 class TestRecordTurns:
     async def test_records_turns_in_order_with_real_roles(
@@ -557,6 +669,7 @@ class TestRecordTurns:
 
 
 @pytest.mark.integration
+@_REQUIRES_PG
 @pytest.mark.asyncio(loop_scope="module")
 class TestCountDistinctSessions:
     async def test_counts_distinct_sessions_for_owner(
@@ -595,7 +708,7 @@ class TestCountDistinctSessions:
             )
         # Distill one session.
         await manager.mark_sessions_distilled(
-            session_ids=[sids[0]],
+            session_watermarks=_wm(sids[0]),
             user_id=user.id,
             organization_id=cm_actor.organization_id,
             actor=cm_actor,
@@ -616,87 +729,112 @@ class TestCountDistinctSessions:
 
 
 @pytest.mark.integration
+@_REQUIRES_PG
 @pytest.mark.asyncio(loop_scope="module")
-class TestSealedUndistilledSelection:
-    async def test_returns_oldest_first_sealed_only(
-        self, manager, cm_actor, cm_user
-    ):
-        user = await _make_user(cm_actor.organization_id)
-        # Create 6 sessions, each a clearly-later MIN(created_at) than the last.
-        ordered = []
-        for i in range(6):
-            sid = f"seal-{i}-{uuid.uuid4().hex[:6]}"
-            ordered.append(sid)
-            await manager.record_turns(
-                session_id=sid,
-                user_id=user.id,
-                organization_id=cm_actor.organization_id,
-                turns=[{"role": "user", "content": f"turn {i}"}],
-                actor=cm_actor,
-            )
-        sealed = await manager.list_sealed_undistilled_sessions(
-            user_id=user.id,
-            organization_id=cm_actor.organization_id,
-            actor=cm_actor,
-            limit=5,
-        )
-        # 6 sessions → 5 oldest sealed, oldest-FIRST; the newest is the open head.
-        assert sealed == ordered[:5]
-        assert ordered[5] not in sealed  # open head never returned
+class TestRowLevelDistillation:
+    """Distillation state is per row and bounded by a watermark;
+    the session row is maintained in the same transaction as the turns."""
 
-    async def test_single_session_is_never_sealed(
-        self, manager, cm_actor, cm_user
-    ):
+    async def test_marks_only_rows_up_to_the_watermark(self, manager, cm_actor):
         user = await _make_user(cm_actor.organization_id)
-        await manager.record_turns(
-            session_id=f"solo-{uuid.uuid4().hex[:8]}",
+        org = cm_actor.organization_id
+        sid = f"wm-{uuid.uuid4().hex[:8]}"
+        first = await manager.record_turns(
+            session_id=sid,
             user_id=user.id,
-            organization_id=cm_actor.organization_id,
-            turns=[{"role": "user", "content": "alone"}],
+            organization_id=org,
+            turns=[
+                {"role": "user", "content": "a"},
+                {"role": "assistant", "content": "b"},
+            ],
             actor=cm_actor,
+            session_tag="task",
         )
-        sealed = await manager.list_sealed_undistilled_sessions(
-            user_id=user.id,
-            organization_id=cm_actor.organization_id,
-            actor=cm_actor,
-            limit=5,
-        )
-        assert sealed == []
-
-    async def test_distilled_sessions_drop_out_of_sealed_window(
-        self, manager, cm_actor, cm_user
-    ):
-        user = await _make_user(cm_actor.organization_id)
-        ordered = []
-        for i in range(4):
-            sid = f"drop-{i}-{uuid.uuid4().hex[:6]}"
-            ordered.append(sid)
-            await manager.record_turns(
-                session_id=sid,
-                user_id=user.id,
-                organization_id=cm_actor.organization_id,
-                turns=[{"role": "user", "content": f"t{i}"}],
-                actor=cm_actor,
+        async with manager.session_maker() as db:
+            watermarks = await manager.session_watermarks(
+                db, user_id=user.id, organization_id=org, session_ids=[sid]
             )
-        # Distill the two oldest; they must drop out of the sealed window.
-        await manager.mark_sessions_distilled(
-            session_ids=ordered[:2],
+        assert watermarks[sid] == first[-1].created_at
+        # A later write lands strictly after the watermark.
+        later = await manager.record_turns(
+            session_id=sid,
             user_id=user.id,
-            organization_id=cm_actor.organization_id,
+            organization_id=org,
+            turns=[{"role": "user", "content": "c"}],
             actor=cm_actor,
         )
-        sealed = await manager.list_sealed_undistilled_sessions(
+        assert later[0].created_at > watermarks[sid]
+
+        marked = await manager.mark_sessions_distilled(
+            session_watermarks=watermarks,
             user_id=user.id,
-            organization_id=cm_actor.organization_id,
+            organization_id=org,
             actor=cm_actor,
-            limit=5,
         )
-        # 4 sessions, newest is open head (ordered[3]); ordered[0..1] distilled →
-        # only ordered[2] remains sealed-and-undistilled.
-        assert sealed == [ordered[2]]
+        assert marked == 2
+        pending = await manager.list_turns_for_session(
+            session_id=sid,
+            user_id=user.id,
+            organization_id=org,
+            actor=cm_actor,
+            undistilled_only=True,
+        )
+        assert [t.content for t in pending] == ["c"]
+        bounded = await manager.list_turns_for_session(
+            session_id=sid,
+            user_id=user.id,
+            organization_id=org,
+            actor=cm_actor,
+            watermark=watermarks[sid],
+        )
+        assert [t.content for t in bounded] == ["a", "b"]
+        # The session still has undistilled rows, so it still counts.
+        assert (
+            await manager.count_distinct_sessions(
+                user_id=user.id,
+                organization_id=org,
+                actor=cm_actor,
+                only_undistilled=True,
+            )
+            == 1
+        )
+
+    async def test_record_turns_maintains_the_session_row(self, manager, cm_actor):
+        user = await _make_user(cm_actor.organization_id)
+        org = cm_actor.organization_id
+        sid = f"row-{uuid.uuid4().hex[:8]}"
+        first = await manager.record_turns(
+            session_id=sid,
+            user_id=user.id,
+            organization_id=org,
+            turns=[{"role": "user", "content": "x"}, {"role": "assistant", "content": "y"}],
+            actor=cm_actor,
+            session_tag="task",
+        )
+        assert first.created is True and first.effective_tag == "task"
+        second = await manager.record_turns(
+            session_id=sid,
+            user_id=user.id,
+            organization_id=org,
+            turns=[{"role": "user", "content": "z"}],
+            actor=cm_actor,
+            session_tag="conversation",
+        )
+        # The first write fixed the tag; the mismatch is a warning, not an error.
+        assert second.created is False
+        assert second.effective_tag == "task"
+        assert second[0].session_tag == "task"
+        assert second.warnings and "session_tag mismatch" in second.warnings[0]
+        session = second.session
+        assert session.session_tag == "task"
+        assert session.message_count == 3
+        assert session.first_message_at == first[0].created_at
+        assert session.last_message_at == second[-1].created_at
+        assert session.closed_at is None
 
 
 @pytest.mark.integration
+@_REQUIRES_PG
 @pytest.mark.asyncio(loop_scope="module")
 class TestMarkSessionsDistilled:
     async def test_idempotent_rerun_marks_zero(self, manager, cm_actor, cm_user):
@@ -713,13 +851,13 @@ class TestMarkSessionsDistilled:
             actor=cm_actor,
         )
         first = await manager.mark_sessions_distilled(
-            session_ids=[sid],
+            session_watermarks=_wm(sid),
             user_id=user.id,
             organization_id=cm_actor.organization_id,
             actor=cm_actor,
         )
         second = await manager.mark_sessions_distilled(
-            session_ids=[sid],
+            session_watermarks=_wm(sid),
             user_id=user.id,
             organization_id=cm_actor.organization_id,
             actor=cm_actor,
@@ -729,7 +867,7 @@ class TestMarkSessionsDistilled:
 
     async def test_empty_session_ids_is_noop(self, manager, cm_actor, cm_user):
         n = await manager.mark_sessions_distilled(
-            session_ids=[],
+            session_watermarks={},
             user_id=cm_user.id,
             organization_id=cm_actor.organization_id,
             actor=cm_actor,
@@ -738,6 +876,7 @@ class TestMarkSessionsDistilled:
 
 
 @pytest.mark.integration
+@_REQUIRES_PG
 @pytest.mark.asyncio(loop_scope="module")
 class TestPerUserOrgScoping:
     async def test_sessions_isolated_per_user(self, manager, cm_actor):
@@ -801,7 +940,7 @@ class TestPerUserOrgScoping:
         )
         # User B attempting to mark A's session distills nothing.
         crossed = await manager.mark_sessions_distilled(
-            session_ids=[sid],
+            session_watermarks=_wm(sid),
             user_id=user_b.id,
             organization_id=cm_actor.organization_id,
             actor=cm_actor,
@@ -891,7 +1030,7 @@ class TestPerUserOrgScoping:
         )
         # Marking under org B's organization_id must be a no-op.
         crossed = await manager.mark_sessions_distilled(
-            session_ids=[sid],
+            session_watermarks=_wm(sid),
             user_id=user_a.id,
             organization_id=org_b,
             actor=cm_actor_org_b,
@@ -910,6 +1049,7 @@ class TestPerUserOrgScoping:
 
 
 @pytest.mark.integration
+@_REQUIRES_PG
 @pytest.mark.asyncio(loop_scope="module")
 class TestDataLifecycle:
     """Retention pruning and the user/client erasure paths.
@@ -979,7 +1119,7 @@ class TestDataLifecycle:
             )
         # old + fresh get distilled; old is then backdated past the window.
         await manager.mark_sessions_distilled(
-            session_ids=[old_sid, fresh_sid],
+            session_watermarks=_wm(old_sid, fresh_sid),
             user_id=cm_user.id,
             organization_id=org,
             actor=cm_actor,

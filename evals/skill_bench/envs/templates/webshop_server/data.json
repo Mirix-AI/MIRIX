@@ -1,0 +1,19 @@
+{
+  "comment": "The product data the image downloads (SPEC D16): protocol.WEBSHOP_DATA, which a test keeps equal to this file. server.py fetch-data verifies each file's size and sha256.",
+  "hf_repo": "YWZBrandon/webshop-data",
+  "hf_revision": "ce990fff5aee388db2706f07820c578ab68e0453",
+  "files": {
+    "items_shuffle.json": {
+      "size": 5479720229,
+      "sha256": "2ef591d65df3af89e972ab72468eb82cbf124d876552d9f3678667edd620a6c8"
+    },
+    "items_ins_v2.json": {
+      "size": 186295270,
+      "sha256": "1d36af476bdb8f82a5da62bd8acdabe54cd8de2fa84010d37da5c4890feb447e"
+    },
+    "items_human_ins.json": {
+      "size": 5137548,
+      "sha256": "cf78667548a71786e1d9049c24b802e48e1084ad4bb021cae56ce1f6d96954a3"
+    }
+  }
+}

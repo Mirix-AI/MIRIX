@@ -557,7 +557,7 @@ class TestBackfillMigrationSql:
 
 
 # --------------------------------------------------------------------------- #
-# Production wiring: run_experience_evolution must construct the procedural
+# Production wiring: curate_pending_experiences must construct the procedural
 # agent WITH the actor-derived scope stamp. The round-trip test above supplies
 # filter_tags by hand, so without this spy the stamping line in
 # skill_experience_curator could be deleted and the suite would stay green.
@@ -567,7 +567,7 @@ class _StampSentinel(Exception):
 
 
 @pytest.mark.asyncio
-async def test_run_experience_evolution_stamps_actor_scope(
+async def test_the_curator_stamps_the_actor_scope(
     monkeypatch, actor, user, agent_state
 ):
     import mirix.agent as agent_pkg
@@ -585,11 +585,18 @@ async def test_run_experience_evolution_stamps_actor_scope(
         async def update_agent_tools_and_system_prompts(self, *a, **k):
             raise RuntimeError("refresh skipped in spy test")
 
+        async def get_agent_by_id(self, agent_id, actor):
+            return agent_state
+
     class _StubServer:
         agent_manager = _StubAgentManager()
 
         def default_interface_factory(self):
             return None
+
+    class _OnePending:
+        async def list_pending_for_curation(self, **kwargs):
+            return [type("E", (), {"id": "e1", "influenced_skill_ids": None})()]
 
     async def _fake_resolve(server, resolve_actor, meta_agent_state):
         return agent_state
@@ -599,8 +606,12 @@ async def test_run_experience_evolution_stamps_actor_scope(
     monkeypatch.setattr(curator, "_resolve_procedural_agent_state", _fake_resolve)
 
     with pytest.raises(_StampSentinel):
-        await curator.run_experience_evolution(
-            user=user, actor=actor, meta_agent_state=agent_state
+        await curator.curate_pending_experiences(
+            run_id="run-stamp",
+            user=user,
+            actor=actor,
+            meta_agent_state=agent_state,
+            experience_manager=_OnePending(),
         )
 
     assert captured["filter_tags"] == {"scope": SCOPE}

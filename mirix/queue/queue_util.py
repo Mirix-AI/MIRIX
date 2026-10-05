@@ -13,9 +13,47 @@ from mirix.schemas.client import Client
 from mirix.schemas.enums import MessageRole
 from mirix.schemas.message import MessageCreate
 from mirix.schemas.message import MessageCreate as PydanticMessageCreate
-from mirix.schemas.mirix_message_content import TextContent
+from mirix.schemas.mirix_message_content import (
+    CloudFileContent,
+    FileContent,
+    ImageContent,
+    TextContent,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _set_list_content(proto_msg: ProtoMessageCreate, parts: list) -> None:
+    """Carry a MessageCreate's part list onto the queue message.
+
+    Text-only lists keep the historical flat ``text_content`` (parts joined by
+    newlines), so workers of any version read them unchanged. A list with an
+    image or file part goes through ``structured_content`` part by part, in
+    order — it used to be flattened to its text, silently dropping every image.
+    """
+    if all(isinstance(part, TextContent) for part in parts):
+        proto_msg.text_content = "\n".join(part.text for part in parts)
+        return
+    structured = proto_msg.structured_content
+    for part in parts:
+        proto_part = structured.parts.add()
+        if isinstance(part, TextContent):
+            proto_part.text.text = part.text
+        elif isinstance(part, ImageContent):
+            proto_part.image.image_id = part.image_id
+            if part.detail is not None:
+                proto_part.image.detail = part.detail
+        elif isinstance(part, FileContent):
+            proto_part.file.file_id = part.file_id
+        elif isinstance(part, CloudFileContent):
+            proto_part.cloud_file.cloud_file_uri = part.cloud_file_uri
+        else:
+            text = getattr(part, "text", None)
+            if not isinstance(text, str):
+                raise ValueError(
+                    f"Cannot queue a content part of type {getattr(part, 'type', type(part))!r}"
+                )
+            proto_part.text.text = text
 
 
 # Queue message serialization utilities
@@ -126,15 +164,8 @@ async def put_messages(
         # Handle content (can be string or list)
         if isinstance(msg.content, str):
             proto_msg.text_content = msg.content
-        # For list content, we'd need to convert to structured_content
-        # but for now, just convert to string representation
         elif isinstance(msg.content, list):
-            # Convert list of content to string for now
-            text_parts = []
-            for content_part in msg.content:
-                if isinstance(content_part, TextContent):
-                    text_parts.append(content_part.text)
-            proto_msg.text_content = "\n".join(text_parts)
+            _set_list_content(proto_msg, msg.content)
 
         # Optional fields
         if msg.name:

@@ -1,0 +1,18 @@
+A.2. Implementation Details
+Memory Extraction. We use an LLM-based extraction pipeline to convert raw trajectories into
+structured memory items. Specifically, we design a prompt template that asks the model to distill
+reasoning patterns into three components:title, description, andcontent as previously mentioned
+in Appendix A.1. The backbone LLM of the extractor is set to the same as the agent system with
+temperature 1.0. For each trajectory, at most3 memory items could be extracted. Crucially, we
+induce items fromboth successful and failed trajectories. Successes provide validated strategies, while
+failures supply counterfactual pitfalls that act as negative signals. To determine success or failure, we
+adopt an LLM-based binary classifier following (Pan et al., 2024; Wang et al., 2025d). The classifier
+is prompted with the trajectory and the given user query, and asked to output a categorical judgment
+(Success or Failure) as shown in Figure 10. Similarly, the backbone of the classifier is set to the
+same as the agent system, with decoding temperature setting to0.0 for determinism.
+Memory Retrieval and Response Generation.For retrieval, we embed each task query using
+gemini-embedding-001 (Lee et al., 2025), accessed via Vertex AI.5 Similarity search is conducted
+over the memory pool using cosine distance. We select memory items of the top-𝑘 most similar
+experiences (default𝑘 = 1; ablation study in §5). The retrieved items are concatenated into the
+agent’s system prompt with a simple formatting template (each item represented by its title and
+content) and instruction:

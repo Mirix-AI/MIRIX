@@ -1,9 +1,10 @@
+import re
 import sys
 from pathlib import Path
 from typing import Optional
 
 from dotenv import load_dotenv
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Load .env file if it exists before initializing settings
@@ -58,6 +59,9 @@ class ModelSettings(BaseSettings):
     # openai
     openai_api_key: Optional[str] = None
     openai_api_base: str = "https://api.openai.com/v1"
+
+    # openrouter (OpenAI-compatible; model/embedding endpoint type "openrouter")
+    openrouter_api_key: Optional[str] = None
 
     # groq
     groq_api_key: Optional[str] = None
@@ -119,6 +123,37 @@ if "--use-file-pg-uri" in sys.argv:
             print("Read pg_uri from ~/.mirix/pg_uri")
     except FileNotFoundError:
         pass
+
+
+#: An HTTP header name (RFC 7230 ``token``).
+_HTTP_TOKEN_RE = re.compile(r"[!#$%&'*+\-.^_`|~0-9A-Za-z]+")
+#: Headers the session id never goes in: credentials, HTTP framing, and the ones the
+#: SDK clients set themselves.
+_RESERVED_HEADERS = frozenset(
+    {
+        "authorization",
+        "proxy-authorization",
+        "cookie",
+        "set-cookie",
+        "x-api-key",
+        "api-key",
+        "x-goog-api-key",
+        "host",
+        "content-length",
+        "content-type",
+        "content-encoding",
+        "transfer-encoding",
+        "connection",
+        "keep-alive",
+        "te",
+        "trailer",
+        "upgrade",
+        "accept",
+        "accept-encoding",
+        "user-agent",
+    }
+)
+_RESERVED_HEADER_PREFIXES = ("x-stainless-", "openai-", "anthropic-")
 
 
 class Settings(BaseSettings):
@@ -248,6 +283,31 @@ class Settings(BaseSettings):
     jwt_secret_key: Optional[str] = Field(None, env="MIRIX_JWT_SECRET_KEY")
     jwt_expiration_hours: int = Field(24, env="MIRIX_JWT_EXPIRATION_HOURS")
 
+    # The request header (MIRIX_LLM_SESSION_HEADER) that carries, on every outbound
+    # LLM and embedding request made while serving one conversation session, that
+    # session's id: per-session cost attribution at a proxy (a gateway, Helicone,
+    # LiteLLM). Off (None) by default; see mirix.observability.context.
+    llm_session_header: Optional[str] = None
+
+    @field_validator("llm_session_header")
+    @classmethod
+    def _check_llm_session_header(cls, value: Optional[str]) -> Optional[str]:
+        # A header name never holds whitespace: what surrounds it is an
+        # artifact of a .env line or shell quoting ("x-item "), not a name to
+        # refuse at import. Whitespace inside a name still fails fast.
+        value = value.strip() if value is not None else None
+        if not value:
+            return None
+        if not _HTTP_TOKEN_RE.fullmatch(value):
+            raise ValueError(f"MIRIX_LLM_SESSION_HEADER={value!r} is not an HTTP header name (RFC 7230 token)")
+        lowered = value.lower()
+        if lowered in _RESERVED_HEADERS or lowered.startswith(_RESERVED_HEADER_PREFIXES):
+            raise ValueError(
+                f"MIRIX_LLM_SESSION_HEADER={value!r} names a credential, framing or SDK header; "
+                "the session id may only go in a header of its own"
+            )
+        return value
+
     @property
     def mirix_pg_uri(self) -> str:
         if self.pg_uri:
@@ -256,6 +316,32 @@ class Settings(BaseSettings):
             return f"postgresql+pg8000://{self.pg_user}:{self.pg_password}@{self.pg_host}:{self.pg_port}/{self.pg_db}"
         else:
             return "postgresql+pg8000://mirix:mirix@localhost:5432/mirix"
+
+    # The model SDK clients' per-call timeout and transport retries.
+    # mirix.constants reads and validates MIRIX_LLM_TIMEOUT_SECONDS /
+    # MIRIX_LLM_MAX_RETRIES once; these mirror the effective values so a
+    # deployment can check them where it reads every other setting — the eval
+    # harness refuses to start a MIRIX whose settings.llm_max_retries is not
+    # the 0 it set (its gateway alone retries).
+    @property
+    def llm_timeout_seconds(self) -> float:
+        from mirix import constants
+
+        return float(constants.LLM_TIMEOUT_SECONDS)
+
+    @property
+    def llm_max_retries(self) -> int:
+        from mirix import constants
+
+        return int(constants.LLM_MAX_RETRIES)
+
+    # The embedding calls' per-attempt timeout (MIRIX_EMBEDDING_TIMEOUT_SECONDS,
+    # read and validated by mirix.constants): the eval harness checks it too.
+    @property
+    def embedding_timeout_seconds(self) -> float:
+        from mirix import constants
+
+        return float(constants.EMBEDDING_TIMEOUT_SECONDS)
 
     # add this property to avoid being returned the default
     # reference: https://github.com/mirix-ai/mirix/issues/1362

@@ -44,6 +44,58 @@ def test_public_memory_surface_excludes_direct_skill_write_routes():
     assert procedural_methods == {"DELETE"}
 
 
+def test_session_and_learning_run_routes_are_public():
+    methods = {}
+    for route in _routes():
+        for method in getattr(route, "methods", None) or set():
+            methods.setdefault(route.path, set()).add(method)
+    assert methods["/memory/sessions/{session_id}/close"] == {"POST"}
+    assert methods["/memory/skills/flush"] == {"POST"}
+    assert methods["/memory/learning_runs"] == {"GET"}
+    assert methods["/memory/learning_runs/{run_id}"] == {"GET"}
+
+
+def test_skill_history_routes_are_public():
+    """Version history lives under /memory/skills, not under
+    /memory/procedural* (which only allows DELETE)."""
+    methods = {}
+    for route in _routes():
+        for method in getattr(route, "methods", None) or set():
+            methods.setdefault(route.path, set()).add(method)
+    assert methods["/memory/skills/{skill_id}/history"] == {"GET"}
+    assert methods["/memory/skills/{skill_id}/versions/{version_no}"] == {"GET"}
+    assert methods["/memory/skills/{skill_id}/restore"] == {"POST"}
+
+
+def test_session_and_learning_run_endpoints_require_authentication():
+    import inspect
+
+    from mirix.server.rest_api import (
+        close_conversation_session,
+        delete_procedural_memory,
+        flush_skills_endpoint,
+        get_learning_run,
+        get_skill_history_endpoint,
+        get_skill_version_endpoint,
+        list_learning_runs,
+        restore_skill_endpoint,
+    )
+
+    for endpoint in (
+        close_conversation_session,
+        flush_skills_endpoint,
+        list_learning_runs,
+        get_learning_run,
+        get_skill_history_endpoint,
+        get_skill_version_endpoint,
+        restore_skill_endpoint,
+        delete_procedural_memory,
+    ):
+        params = inspect.signature(endpoint).parameters
+        assert "authorization" in params, f"{endpoint.__name__} missing auth header"
+        assert "http_request" in params, f"{endpoint.__name__} missing request param"
+
+
 def test_procedural_delete_route_is_uniform_with_other_memory_types():
     paths = _paths()
     for memory_type in ("episodic", "semantic", "procedural", "resource"):
@@ -97,5 +149,18 @@ def test_procedural_read_shape_is_full_skill_schema():
         "version": "0.2.0",
         "created_at": "2026-01-01T12:00:00",
         "updated_at": "2026-01-02T12:00:00",
+        "retrieval_scores": None,  # not ranked by the skill retrieval pipeline
         "user_id": "user-1",
     }
+
+    # A skill ranked by retrieval carries its scores.
+    ranked = _procedural_memory_response(
+        item, retrieval_scores={"bm25": 1.5, "cosine": 0.82, "rrf": 0.0325}
+    )
+    assert ranked["retrieval_scores"] == {"bm25": 1.5, "cosine": 0.82, "rrf": 0.0325}
+    assert "user_id" not in ranked
+    # Without a query vector there is no cosine.
+    fallback = _procedural_memory_response(
+        item, retrieval_scores={"bm25": 1.5, "cosine": None, "rrf": 0.0164}
+    )
+    assert fallback["retrieval_scores"]["cosine"] is None

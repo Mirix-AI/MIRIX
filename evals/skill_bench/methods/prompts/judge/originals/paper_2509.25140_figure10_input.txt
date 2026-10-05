@@ -1,0 +1,5 @@
+System Instruction
+Input PromptUser Intent: {intent}  
+Trajectory: {trajectory}  
+The detailed ﬁnal state of the webpage: ```md {cap} ```  
+Bot response to the user: {response if response else "N/A"}

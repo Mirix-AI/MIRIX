@@ -1,12 +1,12 @@
-"""DB-free tests for the procedural Redis index schema upgrade.
+"""DB-free tests for procedural memory's Redis index.
 
-An FT index created before the skill schema (summary / summary_embedding /
-steps_embedding) persists across deploys. Because index creation used to
-early-return whenever FT.INFO succeeded, that stale index was never rebuilt and
-every skill-field query (description/instructions, description_embedding KNN)
-missed Redis forever. These tests pin the upgrade behavior with a mocked
-client: fresh → create; current schema → leave alone; stale schema → drop the
-index (keep documents) and recreate.
+Procedural memory no longer uses Redis at all: skills are read and written in
+Postgres only (a cached copy could be served after an edit or a delete, and a
+Redis search bypassed the ranking and the retrieval gate). What remains is the
+cleanup of what older versions left behind: at startup, an existing
+``idx:procedural_memory`` index is dropped TOGETHER with its ``procedural:*``
+documents, and no procedural index is ever created. The generic FT.INFO
+attribute helper is still pinned. Mocked client, no Redis needed.
 """
 
 import pytest
@@ -51,8 +51,16 @@ def _client_with(ft) -> RedisMemoryClient:
 
 
 def _skill_schema_info():
-    return {"attributes": [[b"identifier", b"$.description_embedding",
-                            b"attribute", b"description_embedding", b"type", b"VECTOR"]]}
+    return {"attributes": [[b"identifier", b"$.retrieval_embedding",
+                            b"attribute", b"retrieval_embedding", b"type", b"VECTOR"]]}
+
+
+def _two_vector_skill_info():
+    """The skill schema before the retrieval-field migration."""
+    return {"attributes": [
+        [b"identifier", b"$.description_embedding", b"attribute", b"description_embedding", b"type", b"VECTOR"],
+        [b"identifier", b"$.instructions_embedding", b"attribute", b"instructions_embedding", b"type", b"VECTOR"],
+    ]}
 
 
 def _pre_skill_info():
@@ -66,21 +74,24 @@ def _pre_skill_info():
 class TestIndexHasAttribute:
     def test_finds_attribute_in_bytes_tokens(self):
         assert RedisMemoryClient._index_has_attribute(
-            _skill_schema_info(), "description_embedding"
+            _skill_schema_info(), "retrieval_embedding"
         )
 
     def test_missing_attribute(self):
         assert not RedisMemoryClient._index_has_attribute(
-            _pre_skill_info(), "description_embedding"
+            _pre_skill_info(), "retrieval_embedding"
+        )
+        assert not RedisMemoryClient._index_has_attribute(
+            _two_vector_skill_info(), "retrieval_embedding"
         )
 
     def test_str_tokens_and_str_key(self):
-        info = {"attributes": [["attribute", "description_embedding"]]}
-        assert RedisMemoryClient._index_has_attribute(info, "description_embedding")
+        info = {"attributes": [["attribute", "retrieval_embedding"]]}
+        assert RedisMemoryClient._index_has_attribute(info, "retrieval_embedding")
 
     def test_bytes_top_level_key(self):
-        info = {b"attributes": [[b"attribute", b"description_embedding"]]}
-        assert RedisMemoryClient._index_has_attribute(info, "description_embedding")
+        info = {b"attributes": [[b"attribute", b"retrieval_embedding"]]}
+        assert RedisMemoryClient._index_has_attribute(info, "retrieval_embedding")
 
     def test_non_dict_info_is_false(self):
         assert not RedisMemoryClient._index_has_attribute(None, "x")
@@ -88,31 +99,55 @@ class TestIndexHasAttribute:
 
 
 @pytest.mark.asyncio
-class TestCreateProceduralIndexUpgrade:
-    async def test_fresh_index_is_created(self):
+class TestLegacyProceduralIndexIsDropped:
+    async def test_no_legacy_index_is_a_no_op(self):
         ft = _FakeFT(info_raises=True)
-        await _client_with(ft)._create_procedural_index()
+        await _client_with(ft)._drop_legacy_procedural_index()
 
-        assert len(ft.create_calls) == 1
         assert ft.drop_calls == []
+        assert ft.create_calls == []
 
-    async def test_current_schema_left_alone(self):
-        ft = _FakeFT(info_result=_skill_schema_info())
-        await _client_with(ft)._create_procedural_index()
+    @pytest.mark.parametrize(
+        "info", [_skill_schema_info(), _two_vector_skill_info(), _pre_skill_info()]
+    )
+    async def test_any_legacy_index_is_dropped_with_its_documents(self, info):
+        ft = _FakeFT(info_result=info)
+        await _client_with(ft)._drop_legacy_procedural_index()
+
+        # The stale skill documents go too: nothing may serve them any more.
+        assert ft.drop_calls == [{"delete_documents": True}]
+        assert ft.create_calls == []
+
+    async def test_a_drop_failure_is_logged_not_raised(self):
+        ft = _FakeFT(info_result=_skill_schema_info(), drop_raises=True)
+        await _client_with(ft)._drop_legacy_procedural_index()
 
         assert ft.create_calls == []
-        assert ft.drop_calls == []
 
-    async def test_stale_pre_skill_index_dropped_and_recreated(self):
-        ft = _FakeFT(info_result=_pre_skill_info())
-        await _client_with(ft)._create_procedural_index()
+    async def test_create_indexes_never_creates_a_procedural_index(self, monkeypatch):
+        client = RedisMemoryClient.__new__(RedisMemoryClient)
+        calls = []
 
-        # The documents must be preserved: index-only drop.
-        assert ft.drop_calls == [{"delete_documents": False}]
-        assert len(ft.create_calls) == 1
+        async def record(name):
+            calls.append(name)
 
-    async def test_drop_failure_does_not_recreate_over_live_index(self):
-        ft = _FakeFT(info_result=_pre_skill_info(), drop_raises=True)
-        await _client_with(ft)._create_procedural_index()
+        for method in (
+            "_create_block_index",
+            "_create_message_index",
+            "_create_organization_index",
+            "_create_user_index",
+            "_create_agent_index",
+            "_create_tool_index",
+            "_create_episodic_index",
+            "_create_semantic_index",
+            "_create_resource_index",
+            "_create_knowledge_index",
+            "_drop_legacy_procedural_index",
+        ):
+            monkeypatch.setattr(
+                client, method, lambda method=method: record(method), raising=True
+            )
+        await client.create_indexes()
 
-        assert ft.create_calls == []
+        assert "_drop_legacy_procedural_index" in calls
+        assert not hasattr(RedisMemoryClient, "_create_procedural_index")

@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, Optional
 
 from google.protobuf.json_format import MessageToDict
 
+from mirix.constants import SESSION_TAG_TASK
 from mirix.log import get_logger
 from mirix.observability import get_langfuse_client, mark_observation_as_child, restore_trace_from_queue_message
 from mirix.observability.context import clear_trace_context, get_trace_context
@@ -89,7 +90,10 @@ class QueueWorker:
         else:
             role = MessageRole.user
 
-        content = proto_msg.text_content if proto_msg.HasField("text_content") else ""
+        if proto_msg.HasField("structured_content"):
+            content = self._convert_proto_parts_to_pydantic(proto_msg.structured_content)
+        else:
+            content = proto_msg.text_content if proto_msg.HasField("text_content") else ""
 
         return MessageCreate(
             role=role,
@@ -101,6 +105,34 @@ class QueueWorker:
             session_id=proto_msg.session_id if proto_msg.HasField("session_id") else None,
             filter_tags=None,
         )
+
+    @staticmethod
+    def _convert_proto_parts_to_pydantic(structured) -> list:
+        """Rebuild a MessageCreate part list from ``structured_content``."""
+        from mirix.schemas.mirix_message_content import (
+            CloudFileContent,
+            FileContent,
+            ImageContent,
+            TextContent,
+        )
+
+        parts: list = []
+        for part in structured.parts:
+            kind = part.WhichOneof("content")
+            if kind == "text":
+                parts.append(TextContent(text=part.text.text))
+            elif kind == "image":
+                parts.append(
+                    ImageContent(
+                        image_id=part.image.image_id,
+                        detail=part.image.detail if part.image.HasField("detail") else None,
+                    )
+                )
+            elif kind == "file":
+                parts.append(FileContent(file_id=part.file.file_id))
+            elif kind == "cloud_file":
+                parts.append(CloudFileContent(cloud_file_uri=part.cloud_file.cloud_file_uri))
+        return parts
 
     def set_server(self, server: Any) -> None:
         """Set or update the server instance."""
@@ -147,6 +179,20 @@ class QueueWorker:
             client_id = message.client_id if message.client_id else None
             if not client_id:
                 raise ValueError(f"Queue message for agent {message.agent_id} missing required client_id")
+
+            # Defense in depth: a task session is stored in the
+            # conversation store only and never reaches the meta memory agent.
+            # /memory/add never queues one; drop any that arrives anyway.
+            if message.HasField("filter_tags") and message.filter_tags:
+                queued_tag = MessageToDict(message.filter_tags).get("session_tag")
+                if queued_tag == SESSION_TAG_TASK:
+                    logger.warning(
+                        "Dropping queued message for agent_id=%s: session_tag=%r "
+                        "sessions never reach the meta memory agent",
+                        message.agent_id,
+                        queued_tag,
+                    )
+                    return
 
             input_messages = [self._convert_proto_message_to_pydantic(msg) for msg in message.input_messages]
             chaining = message.chaining if message.HasField("chaining") else True

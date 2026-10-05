@@ -1,0 +1,258 @@
+{
+  "comment": "Frozen WebShop actor-prompt pieces. The prompt is verl-agent's WebShop template (Apache-2.0; SkillRL 4d984d4 carries the same text apart from trailing spaces), the observation and action handling are verl-agent's env manager and projection, and the environment is princeton-nlp/WebShop (MIT). 'templates' is what evals/skill_bench/envs/webshop.py renders with; 'provenance' holds the verbatim source lines each value was copied from (tests compare them with the clones when present). rollout_no_history.md and rollout_with_history.md next to this file are byte-exact copies of the template literals; rollout_turn.md is rollout_with_history.md with three lines removed. The actor's prompt is one append-only conversation of the whole episode (provenance 'history'), so rollout_with_history.md is not sent.",
+  "verl_agent": {
+    "repo": "https://github.com/langfengQ/verl-agent",
+    "commit": "20bd331bdbc9026a5668e11362178e10ab7400c8",
+    "license": "Apache-2.0"
+  },
+  "skillrl": {
+    "repo": "https://github.com/aiming-lab/SkillRL",
+    "commit": "4d984d4",
+    "note": "prompts/webshop.py differs from verl-agent's only by trailing spaces and an extra WEBSHOP_TEMPLATE_WITH_MEMORY (unused); its projection.py is byte-identical"
+  },
+  "webshop": {
+    "repo": "https://github.com/princeton-nlp/WebShop",
+    "commit": "64fa2a5c15c7daa698b9ac93f5bb5437b634c9bd",
+    "license": "MIT"
+  },
+  "templates": {
+    "no_history_file": "rollout_no_history.md",
+    "with_history_file": "rollout_with_history.md",
+    "turn_file": "rollout_turn.md",
+    "history": "full_conversation",
+    "no_reply_turn": "(no reply)",
+    "observation_separator": " [SEP] ",
+    "instruction_marker": "Instruction:",
+    "observation_part": "'{part}'",
+    "available_search": "search[<your query>]",
+    "available_click": "click[{clickable}]",
+    "available_excluded_clickables": [
+      "search"
+    ],
+    "available_item": "'{action}',",
+    "available_joiner": "\n",
+    "memory_slot": "{memory}\n",
+    "memory_joiner": "\n",
+    "action_tag_pattern": "(?i)<action>(.*?)</action>",
+    "action_parse_pattern": "(.+)\\[(.+)\\]",
+    "special_search_pattern": "<[a-z]>",
+    "noop_action": "",
+    "observation_message": "{observation}\n\nAvailable actions:\n{available_actions}",
+    "observation_message_joiner": "\n",
+    "final_message": "Thank you for shopping with us! Your score (min 0.0, max 1.0): {reward:.2f}",
+    "cap_message": "The episode ended at the step limit without a purchase. Your score (min 0.0, max 1.0): {reward:.2f}",
+    "leak_markers": [
+      [
+        "Thank you for shopping with us!",
+        "Your code:"
+      ],
+      [
+        "(Paste it in your MTurk interface.)"
+      ],
+      [
+        "Purchased",
+        "asin"
+      ],
+      [
+        "Target",
+        "asin"
+      ],
+      [
+        "price upper"
+      ],
+      [
+        "instuction text"
+      ],
+      [
+        "Your score (min 0.0, max 1.0)"
+      ],
+      [
+        "Reward Details"
+      ]
+    ]
+  },
+  "provenance": {
+    "no_history_file": {
+      "repo": "verl_agent",
+      "file": "agent_system/environments/env_manager.py",
+      "file_sha256": "6294aef97cf12775222b8c189273f990065ecca13d1308650311ebe0ab1c64f5",
+      "lines": [
+        480,
+        485
+      ],
+      "excerpt": "            if init or self.config.env.history_length <= 0:\n                obs = WEBSHOP_TEMPLATE_NO_HIS.format(\n                    task_description=self.tasks[i],\n                    current_observation=text_obs[i],\n                    available_actions=reformatted_available_actions\n                )\n",
+      "change": "byte-exact copy of WEBSHOP_TEMPLATE_NO_HIS (agent_system/environments/prompts/webshop.py:17-29), used for the first step: the first user message of the conversation (see 'history')"
+    },
+    "with_history_file": {
+      "repo": "verl_agent",
+      "file": "agent_system/environments/env_manager.py",
+      "file_sha256": "6294aef97cf12775222b8c189273f990065ecca13d1308650311ebe0ab1c64f5",
+      "lines": [
+        486,
+        495
+      ],
+      "excerpt": "            else:\n                obs = WEBSHOP_TEMPLATE.format(\n                    task_description=self.tasks[i],\n                    step_count=len(self.memory[i]),\n                    history_length=valid_lens[i],\n                    action_history=memory_contexts[i],\n                    current_step=len(self.memory[i]) + 1,\n                    current_observation=text_obs[i],\n                    available_actions=reformatted_available_actions\n                )\n",
+      "change": "byte-exact copy of WEBSHOP_TEMPLATE (agent_system/environments/prompts/webshop.py:31-44), verl-agent's prompt after the first step. Not sent (see 'history'): kept as the source rollout_turn.md is derived from"
+    },
+    "turn_file": {
+      "repo": "verl_agent",
+      "file": "agent_system/environments/prompts/webshop.py",
+      "file_sha256": "c7411b8a8fe1f8d587a5585a57ce3ae85ab87bbd7a021f2e39c03f97e214b738",
+      "lines": [
+        31,
+        44
+      ],
+      "excerpt": "WEBSHOP_TEMPLATE = \"\"\"\nYou are an expert autonomous agent operating in the WebShop e‑commerce environment.\nYour task is to: {task_description}.\nPrior to this step, you have already taken {step_count} step(s). Below are the most recent {history_length} observations and the corresponding actions you took: {action_history}\nYou are now at step {current_step} and your current observation is: {current_observation}.\nYour admissible actions of the current situation are: \n[\n{available_actions}\n].\n\nNow it's your turn to take one action for the current step.\nYou should first reason step-by-step about the current situation, then think carefully which admissible action best advances the shopping goal. This reasoning process MUST be enclosed within <think> </think> tags. \nOnce you've finished your reasoning, you should choose an admissible action for current step and present it within <action> </action> tags.\n\"\"\"",
+      "change": "derived from verl-agent's WEBSHOP_TEMPLATE: its leading blank line (the newline after the opening quotes), its first line ('You are an expert autonomous agent operating in the WebShop e‑commerce environment.') and its 'Prior to this step, ...' line removed, every other line copied byte-exact (trailing spaces included). The user message appended at step 2 and later (see 'history'): the persona and the first page are in the conversation's first message and the earlier steps are the conversation itself, so neither line is repeated; {current_step} is the step's number (2, 3, ...)"
+    },
+    "history": {
+      "file": null,
+      "change": "WebShop's actor sees its whole episode as one append-only conversation. Step 1's request is one user message, rollout_no_history.md behind the memory slot; the request of step k >= 2 is step k-1's followed by the model's reply of step k-1 as an assistant message (the raw reply text the episode received, each lone surrogate replaced by U+FFFD; 'no_reply_turn' when there was none, or an empty or whitespace-only one) and rollout_turn.md filled with step k's page and actions as a user message. Earlier messages are never changed, re-rendered, truncated or dropped: no history window, no 13,000-character fallback, and the memory stays in the first message. verl-agent instead re-renders one user message per step with the last history_length (2) observation/action pairs (env_manager.py:486-495, memory.py:84-97, ppo_trainer.yaml's history_length: 2) and falls back to the no-history prompt above 13,000 characters (env_manager.py:496-502). Why: a WebShop page never shows which option (size, color) is selected, so a two-step window loses a selection once the agent opens a detail page (description, features, reviews) after it; the whole conversation keeps every earlier step. The conversation is one prefix that only grows, so provider prefix caching (config/models.json) reads every earlier turn and a call pays in full only for its new turn. ALFWorld keeps its window of 2 (envs/templates/alfworld, unchanged)."
+    },
+    "no_reply_turn": {
+      "file": null,
+      "change": "skill_bench's own text: the assistant message of a step whose call had no reply (the frozen no-op, envs/webshop.py NO_REPLY_KEY) or whose reply was empty or whitespace only. Every step keeps its assistant message, so user and assistant messages alternate and each step's page stays its own user message (two user messages in a row, or an empty assistant message some providers refuse, would not). The method-visible assistant turn of such a step is unchanged (the rollout records an empty one for a call without a reply)"
+    },
+    "templates_source": {
+      "repo": "verl_agent",
+      "file": "agent_system/environments/prompts/webshop.py",
+      "file_sha256": "c7411b8a8fe1f8d587a5585a57ce3ae85ab87bbd7a021f2e39c03f97e214b738",
+      "lines": [
+        17,
+        44
+      ],
+      "excerpt": "WEBSHOP_TEMPLATE_NO_HIS = \"\"\"\nYou are an expert autonomous agent operating in the WebShop e‑commerce environment. \nYour task is to: {task_description}.\nYour current observation is: {current_observation}.\nYour admissible actions of the current situation are: \n[\n{available_actions}\n].\n\nNow it's your turn to take one action for the current step.\nYou should first reason step-by-step about the current situation, then think carefully which admissible action best advances the shopping goal. This reasoning process MUST be enclosed within <think> </think> tags. \nOnce you've finished your reasoning, you should choose an admissible action for current step and present it within <action> </action> tags.\n\"\"\"\n\nWEBSHOP_TEMPLATE = \"\"\"\nYou are an expert autonomous agent operating in the WebShop e‑commerce environment.\nYour task is to: {task_description}.\nPrior to this step, you have already taken {step_count} step(s). Below are the most recent {history_length} observations and the corresponding actions you took: {action_history}\nYou are now at step {current_step} and your current observation is: {current_observation}.\nYour admissible actions of the current situation are: \n[\n{available_actions}\n].\n\nNow it's your turn to take one action for the current step.\nYou should first reason step-by-step about the current situation, then think carefully which admissible action best advances the shopping goal. This reasoning process MUST be enclosed within <think> </think> tags. \nOnce you've finished your reasoning, you should choose an admissible action for current step and present it within <action> </action> tags.\n\"\"\"",
+      "change": "the two template literals, copied byte-exact (leading newline, trailing spaces and the U+2011 hyphen of 'e‑commerce' kept)"
+    },
+    "max_steps": {
+      "repo": "verl_agent",
+      "file": "examples/gigpo_trainer/run_webshop.sh",
+      "file_sha256": "179ec9f2d64b572e9362a49ce90f030a9d0c1ed66435eb23ae3aa0fbbab3e7a4",
+      "lines": [
+        60,
+        60
+      ],
+      "excerpt": "    env.max_steps=15 \\\n",
+      "change": "the step cap (protocol.WEBSHOP_MAX_STEPS, not a template value): every WebShop example script of verl-agent sets env.max_steps=15 (ppo_trainer.yaml's default of 50 is ALFWorld's), so WebShop runs 15 steps here, as verl-agent runs it. The prompt does not state it"
+    },
+    "instruction_marker": {
+      "repo": "verl_agent",
+      "file": "agent_system/environments/env_manager.py",
+      "file_sha256": "6294aef97cf12775222b8c189273f990065ecca13d1308650311ebe0ab1c64f5",
+      "lines": [
+        426,
+        432
+      ],
+      "excerpt": "    def extract_task(self, text_obs: List[str]):\n        tasks = []\n        for obs in text_obs:\n            parts = obs.split(\" [SEP] \")\n            assert parts[1]=='Instruction:'\n            tasks.append(parts[2])\n        return tasks\n",
+      "change": "the task description is the part after 'Instruction:' of the first observation (the item's instruction); a first observation without the marker is an environment error"
+    },
+    "observation_part": {
+      "repo": "verl_agent",
+      "file": "agent_system/environments/env_manager.py",
+      "file_sha256": "6294aef97cf12775222b8c189273f990065ecca13d1308650311ebe0ab1c64f5",
+      "lines": [
+        434,
+        447
+      ],
+      "excerpt": "    def format_obs(self, text_obs):\n        postprocess_text_obs = []\n        for i in range(len(text_obs)):\n            parts = text_obs[i].split(\" [SEP] \")\n            # the index of self.tasks[i] in parts\n            try:\n                index = parts.index(self.tasks[i])\n                reformatted_obs = \" [SEP] \".join(f\"'{p}'\" for p in parts[index+1:])\n            except:\n                reformatted_obs = text_obs[i]\n\n            postprocess_text_obs.append(reformatted_obs)\n\n        return postprocess_text_obs\n",
+      "change": "format_obs: the parts after the instruction, each quoted, joined by ' [SEP] ' (the page of each of the actor's user messages); a page without the instruction stays raw. Methods receive the same formatted page after the first message"
+    },
+    "available_search": {
+      "repo": "verl_agent",
+      "file": "agent_system/environments/env_manager.py",
+      "file_sha256": "6294aef97cf12775222b8c189273f990065ecca13d1308650311ebe0ab1c64f5",
+      "lines": [
+        449,
+        462
+      ],
+      "excerpt": "    def format_avail_actions(self, avail):\n        actions = []\n\n        for key in avail.keys():\n            if key not in [\"has_search_bar\", \"clickables\"]:\n                raise ValueError(f\"Unknown key in available actions: {key}\")\n\n        if avail[\"has_search_bar\"]:\n            actions.append(\"search[<your query>]\")\n\n        for txt in avail[\"clickables\"]:\n            actions.append(f\"click[{txt}]\")\n\n        return actions\n",
+      "change": "format_avail_actions; 'click[search]' (the search button, which upstream refuses: web_agent_text_env.py:107-110) is left out, as ALFWorld leaves out 'help'"
+    },
+    "available_item": {
+      "repo": "verl_agent",
+      "file": "agent_system/environments/env_manager.py",
+      "file_sha256": "6294aef97cf12775222b8c189273f990065ecca13d1308650311ebe0ab1c64f5",
+      "lines": [
+        477,
+        478
+      ],
+      "excerpt": "            available_actions = self.format_avail_actions(infos[i]['available_actions'])\n            reformatted_available_actions = \"\\n\".join(f\"'{s}',\" for s in available_actions)\n",
+      "change": "each available action quoted with a trailing comma, joined by '\\n'"
+    },
+    "memory_slot": {
+      "file": null,
+      "change": "The memory goes at the start of the user prompt as for ALFWorld (envs/templates/alfworld/format.json memory_slot and memory_joiner: '<memory>\\n' + '\\n' + prompt); verl-agent has no memory slot, and SkillRL's WEBSHOP_TEMPLATE_WITH_MEMORY is not used. An empty or whitespace-only memory injects nothing. In the conversation (see 'history') it heads the first user message only; later messages never carry it."
+    },
+    "action_tag_pattern": {
+      "file": null,
+      "change": "the same check as envs/alfworld.py (SkillOpt rollout.py:38-40), case-insensitive ((?i)) as verl-agent's projection reads the tags (it lower-cases the reply and finds the first tags, projection.py:31-37): a response without an <action>...</action> pair in any case, or whose tag is empty after the projection, is a format error and a frozen no-op: the page stays as it is, nothing reaches the server, and the step counts. The check and the projection therefore always agree on whether a pair is there, so the projection's fallback never runs: verl-agent would send the reply's last 20 characters instead (projection.py:41), which could execute a 'click[buy now]' written outside any tag"
+    },
+    "projection": {
+      "repo": "verl_agent",
+      "file": "agent_system/environments/env_package/webshop/projection.py",
+      "file_sha256": "0808d4643459acf2a4c496eab3fc8735025c440f28cc517066355a1f5fbc048f",
+      "lines": [
+        19,
+        64
+      ],
+      "excerpt": "def webshop_projection(actions: List[str]):\n    \"\"\"\n    A function to process the actions.\n    actions: the list of actions to be processed, it is a list of strings.\n    Expected format:\n        <think>some reasoning...</think><action>up/down/left/right/still</action>\n    \"\"\"\n\n    valids = [0] * len(actions)\n\n    for i in range(len(actions)):\n        original_str = actions[i]  # keep the original string\n        actions[i] = actions[i].lower()\n\n        # Attempt to extract the substring within <action>...</action>\n        start_tag = \"<action>\"\n        end_tag = \"</action>\"\n        start_idx = actions[i].find(start_tag)\n        end_idx = actions[i].find(end_tag)\n        try:\n            if start_idx == -1 or end_idx == -1:\n                # If we can't find a valid <action>...</action> block, mark as invalid\n                actions[i] = actions[i][-20:]  # 0 is invalid action for Sokoban\n                continue\n\n            # Extract just the content between the tags\n            extracted_action = actions[i][start_idx + len(start_tag):end_idx].strip().lower()\n            \n            actions[i] = extracted_action\n            valids[i] = 1\n\n        except:\n            # randomly choose an action from the action list if illegal\n            actions[i] = actions[i][-20:]\n\n        # check <think>...</think>\n        think_start_idx = original_str.find(\"<think>\")\n        think_end_idx = original_str.find(\"</think>\")\n        if think_start_idx == -1 or think_end_idx == -1:\n            valids[i] = 0\n\n        # check if contains any Chinese characters\n        if re.search(r'[\\u4e00-\\u9fff]', original_str):\n            valids[i] = 0\n\n    return actions, valids",
+      "change": "vendored as evals/skill_bench/envs/vendor/webshop_projection.py (reformatted only); used only on responses that have an action tag"
+    },
+    "action_parse_pattern": {
+      "repo": "webshop",
+      "file": "web_agent_site/engine/engine.py",
+      "file_sha256": "9b86ffc82951124f5c4a7eb8103de14100dbee11ba8869951ed6fb8feaeef804",
+      "lines": [
+        117,
+        128
+      ],
+      "excerpt": "def parse_action(action):\n    \"\"\"\n    Parse action string to action name and its arguments.\n    \"\"\"\n    pattern = re.compile(r'(.+)\\[(.+)\\]')\n    m = re.match(pattern, action)\n    if m is None:\n        action_name = action\n        action_arg = None\n    else:\n        action_name, action_arg = m.groups()\n    return action_name, action_arg\n",
+      "change": "upstream's parse_action, ported to tell a search from a click before the server sees the action (the server parses it again with this very function)"
+    },
+    "special_search_pattern": {
+      "repo": "webshop",
+      "file": "web_agent_site/engine/engine.py",
+      "file_sha256": "9b86ffc82951124f5c4a7eb8103de14100dbee11ba8869951ed6fb8feaeef804",
+      "lines": [
+        148,
+        166
+      ],
+      "excerpt": "def get_top_n_product_from_keywords(\n        keywords,\n        search_engine,\n        all_products,\n        product_item_dict,\n        attribute_to_asins=None,\n    ):\n    if keywords[0] == '<r>':\n        top_n_products = random.sample(all_products, k=SEARCH_RETURN_N)\n    elif keywords[0] == '<a>':\n        attribute = ' '.join(keywords[1:]).strip()\n        asins = attribute_to_asins[attribute]\n        top_n_products = [p for p in all_products if p['asin'] in asins]\n    elif keywords[0] == '<c>':\n        category = keywords[1].strip()\n        top_n_products = [p for p in all_products if p['category'] == category]\n    elif keywords[0] == '<q>':\n        query = ' '.join(keywords[1:]).strip()\n        top_n_products = [p for p in all_products if p['query'] == query]\n",
+      "change": "a search whose first word is '<r>', '<a>', '<c>' or '<q>' bypasses the search engine (an unseeded random sample, a crash, or a scan by the goal's hidden query or category). Any search whose first word matches <[a-z]> is refused as an invalid no-op (page unchanged), before it reaches the server and again in the server"
+    },
+    "invalid_action": {
+      "repo": "webshop",
+      "file": "web_agent_site/envs/web_agent_text_env.py",
+      "file_sha256": "f4efee238c2a69ad76ff5372716a16051c67ea0351c7006491834822ea9afda3",
+      "lines": [
+        96,
+        112
+      ],
+      "excerpt": "        info = None\n        self.get_available_actions()\n\n        # Determine action type (click, search) and argument\n        action_name, action_arg = parse_action(action)\n        if action_arg is not None:\n            action_arg = action_arg.lower()\n        if (action_name == 'search' and \n            action_arg is not None and \n            action_arg != ''):\n            status = self.browser.search(action_arg)\n        elif (action_name == 'click' and \n              action_arg in self.text_to_clickable.keys() and \n              action_arg != 'search'):\n            status = self.browser.click(action_arg, self.text_to_clickable)\n        else:\n            status = dict(reward=0, done=False)\n",
+      "change": "an action upstream does not accept leaves the page unchanged; no 'Invalid action!' text is added (verl-agent behaves the same)"
+    },
+    "observation_message": {
+      "file": null,
+      "change": "skill_bench's own format for the method-visible user message: the first message is the raw search page, which states the instruction; later messages are the page without the instruction (format_obs), each followed by the available actions, one per line. It never reaches the actor."
+    },
+    "final_message": {
+      "repo": "webshop",
+      "file": "web_agent_site/templates/done_page.html",
+      "file_sha256": "6da5b494522666f0644b948e5c2c5a0e5c5104926f3c643c7828ff653d5e8eb9",
+      "lines": [
+        13,
+        44
+      ],
+      "excerpt": "        <div class=\"row\">\n          <div id=\"thankyou\" class=\"text-center\">\n            <h1>Thank you for shopping with us!</h1>\n          </div>\n          <div id=\"stats\" class=\"text-center\">\n            <h3 align=\"mturk_code\">Your code: </h3>\n            <p><pre>{{ mturk_code }}</pre> (Paste it in your MTurk interface.)</p>\n            <div style=\"display:none\">\n              <h2 align=\"left\">Purchased</h2>\n              <hr class=\"solid\">\n              <h4 id=\"asin\">asin<pre>{{ asin }}</pre></p>\n              <h4 id=\"options\">options<pre>{{ options | tojson }}</pre></h4>\n              <h4 id=\"purchased_attrs\">attrs<pre>{{ purchased_attrs }}</pre></h4>\n              <h4 id=\"purchased-category\">category<pre>{{ category }}</pre></h4>\n              <h4 id=\"purchased-query\">query<pre>{{ query }}</pre></h4>\n              <h4 id=\"purchased-pc\">product category<pre>{{ product_category }}</pre></h4>\n              <h2 align=\"left\">Target</h2>\n              <hr class=\"solid\">\n              <h4 id=\"goal-asin\">asin<pre>{{ goal.asin }}</pre></p>\n              <h4 id=\"goal-options\">options<pre>{{ goal.goal_options }}</pre></h4>\n              <h4 id=\"goal-attrs\">attrs<pre>{{ goal.attributes }}</pre></h4>\n              <h4 id=\"goal-price\">price upper<pre>{{ goal.price_upper }}</pre></h4>\n              <h4 id=\"goal-instruction-text\">instuction text<pre>{{ goal.instruction_text }}</pre></h4>\n              <h4 id=\"goal-category\">category<pre>{{ goal.category }}</pre></h4>\n              <h4 id=\"goal-pc\">product category<pre>{{ goal.product_category }}</pre></h4>\n              <h4 id=\"goal-query\">query<pre>{{ goal.query }}</pre></h4>\n              <h4>Goal <div id=\"goal\"><pre>{{ goal | pprint }}</pre></div></h4>\n              <h2 align=\"left\">Reward</h2>\n            </div>\n            <hr class=\"solid\">\n      \t\t\t<h3   id=\"reward\">Your score (min 0.0, max 1.0)<pre>{{ reward }}</pre></h3>\n            <h4 hidden>Reward Details <div id=\"reward_info\"><pre>{{ reward_info | pprint }}</pre></div></h4>\n",
+      "change": "after Buy Now the method-visible message is only this line with the reward (to two decimals); no [SEP], no purchase or target details, never the rendered done page, whose hidden blocks keep the goal (the text env keeps display:none text, web_agent_text_env.py:269-273). ReAct shows the score the same way (forks/react/WebShop.ipynb cell 2). Shown to every method in the learning phase"
+    },
+    "cap_message": {
+      "file": null,
+      "change": "skill_bench's own line: an episode the step cap ends without a purchase gets this line with its score, 0.00, as the last method-visible message, after the last page, so every learner sees how each learning episode ended, as it sees the score line after Buy Now (final_message). Upstream and verl-agent end such an episode silently. Like the score line it reaches methods in the learning phase only, never the actor (the episode is over), and it states neither the cap's number nor anything of the goal; it must match this template exactly and come last (the structural leak check)."
+    },
+    "leak_markers": {
+      "file": null,
+      "change": "done-page labels (done_page.html lines 13-44, 'instuction text' as misspelled there), each a run of whole parts of the page as upstream's text mode renders it (web_agent_text_env.py:210-216: every text stripped, joined by ' [SEP] '; envs/webshop.py page_parts drops the empty parts, splits a message's lines and strips format_obs's quotes). No method-visible message may hold one, nor the score line among other text; the final message itself must match final_message exactly and come last (the audit's structural leak check). Whole parts, not substrings: a seller's description or bullet that merely contains 'Thank you for shopping with us!' or 'price upper' is not done-page text. 'Thank you for shopping with us!' is anchored on the 'Your code:' part after it, 'Purchased' and 'Target' on the 'asin' label after them"
+    }
+  }
+}

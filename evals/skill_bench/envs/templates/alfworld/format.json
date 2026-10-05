@@ -1,0 +1,165 @@
+{
+  "comment": "Frozen ALFWorld actor-prompt pieces from SkillOpt 79124b3 (MIT; vendor/* Apache-2.0 from SkillRL). 'templates' is what evals/skill_bench/envs/alfworld.py renders with; 'provenance' holds the verbatim SkillOpt source lines each value was copied from (tests compare them with the clone). rollout_no_history.md and rollout_with_history.md next to this file are byte-exact copies.",
+  "skillopt": {
+    "repo": "https://github.com/microsoft/SkillOpt",
+    "commit": "79124b3"
+  },
+  "templates": {
+    "system_prompt": "You are an expert agent operating in the ALFRED Embodied Environment.",
+    "no_history_file": "rollout_no_history.md",
+    "with_history_file": "rollout_with_history.md",
+    "history_length": 2,
+    "history_entry": "[Observation {step_num}: '{obs}', Action {step_num}: '{act}']",
+    "history_joiner": "\n",
+    "admissible_item": "'{action}'",
+    "admissible_joiner": "\n ",
+    "admissible_excluded": [
+      "help"
+    ],
+    "task_marker": "Your task is to: ",
+    "memory_slot": "{memory}\n",
+    "memory_joiner": "\n",
+    "action_tag_pattern": "<action>(.*?)</action>",
+    "fallback_empty_response": "<think>empty model response</think><action>look</action>",
+    "fallback_missing_action": "<think>missing action tag</think><action>look</action>",
+    "fallback_call_error": "<think>error</think><action>look</action>",
+    "observation_message": "{observation}\n\nAdmissible actions:\n{admissible_actions}",
+    "observation_message_joiner": "\n"
+  },
+  "provenance": {
+    "system_prompt": {
+      "file": "skillopt/envs/alfworld/rollout.py",
+      "file_sha256": "eaacb4e895e4b399801b0496ee4cd4de51820a484bfa856e3804f5d47e298a20",
+      "lines": [
+        229,
+        232
+      ],
+      "excerpt": "            try:\n                response, _ = chat_target(\n                    system=\"You are an expert agent operating in the ALFRED Embodied Environment.\",\n                    user=prompts[idx],\n",
+      "change": "byte-exact string literal (system message of every actor call)"
+    },
+    "no_history_file": {
+      "file": "skillopt/envs/alfworld/vendor/env_manager.py",
+      "file_sha256": "f20a9b34cc365b985ea0b08fd5ead5fe2d843b796f9eec6a7f988840d9f26b9a",
+      "lines": [
+        96,
+        100
+      ],
+      "excerpt": "            if init or self.config.env.history_length <= 0:\n                obs = ALFWORLD_TEMPLATE_NO_HIS.format(\n                    current_observation=text_obs[i],\n                    admissible_actions=reformatted_admissible_actions,\n                )\n",
+      "change": "byte-exact copy of skillopt/envs/alfworld/prompts/rollout_no_history.md, used at reset"
+    },
+    "with_history_file": {
+      "file": "skillopt/envs/alfworld/vendor/env_manager.py",
+      "file_sha256": "f20a9b34cc365b985ea0b08fd5ead5fe2d843b796f9eec6a7f988840d9f26b9a",
+      "lines": [
+        101,
+        110
+      ],
+      "excerpt": "            else:\n                obs = ALFWORLD_TEMPLATE.format(\n                    task_description=self.tasks[i],\n                    step_count=len(self.memory[i]),\n                    history_length=valid_lens[i],\n                    action_history=memory_contexts[i],\n                    current_step=len(self.memory[i]) + 1,\n                    current_observation=text_obs[i],\n                    admissible_actions=reformatted_admissible_actions,\n                )\n",
+      "change": "byte-exact copy of skillopt/envs/alfworld/prompts/rollout_with_history.md, used after the first step"
+    },
+    "history_length": {
+      "file": "skillopt/envs/alfworld/rollout.py",
+      "file_sha256": "eaacb4e895e4b399801b0496ee4cd4de51820a484bfa856e3804f5d47e298a20",
+      "lines": [
+        131,
+        138
+      ],
+      "excerpt": "    config = OmegaConf.create(\n        {\n            \"env\": {\n                \"history_length\": 2,\n                \"env_name\": \"alfworld/AlfredTWEnv\",\n            }\n        }\n    )\n",
+      "change": "history_length=2 from build_alfworld_env"
+    },
+    "history_entry": {
+      "file": "skillopt/envs/alfworld/vendor/memory.py",
+      "file_sha256": "16cab09411702c5d885387a5921f6ae3dfdb9bc277057e4fb3c2efac48638e33",
+      "lines": [
+        73,
+        84
+      ],
+      "excerpt": "            start_idx = len(self._data[env_idx]) - valid_len\n\n            lines = []\n            for j, rec in enumerate(recent):\n                step_num = start_idx + j + 1\n                act = rec[action_key]\n                obs = rec[obs_key]\n                lines.append(\n                    f\"[Observation {step_num}: '{obs}', Action {step_num}: '{act}']\"\n                )\n\n            memory_contexts.append(\"\\n\".join(lines))\n",
+      "change": "f-string body of line 81 as a str.format template; joiner from line 84"
+    },
+    "history_joiner": {
+      "file": "skillopt/envs/alfworld/vendor/memory.py",
+      "file_sha256": "16cab09411702c5d885387a5921f6ae3dfdb9bc277057e4fb3c2efac48638e33",
+      "lines": [
+        84,
+        84
+      ],
+      "excerpt": "            memory_contexts.append(\"\\n\".join(lines))\n",
+      "change": "byte-exact"
+    },
+    "admissible_item": {
+      "file": "skillopt/envs/alfworld/vendor/env_manager.py",
+      "file_sha256": "f20a9b34cc365b985ea0b08fd5ead5fe2d843b796f9eec6a7f988840d9f26b9a",
+      "lines": [
+        92,
+        94
+      ],
+      "excerpt": "            reformatted_admissible_actions = \"\\n \".join(\n                f\"'{s}'\" for s in admissible_actions[i] if s != 'help'\n            )\n",
+      "change": "f-string body \"'{s}'\" as a str.format template ({action}); 'help' excluded; joiner \"\\n \""
+    },
+    "task_marker": {
+      "file": "skillopt/envs/alfworld/vendor/env_manager.py",
+      "file_sha256": "f20a9b34cc365b985ea0b08fd5ead5fe2d843b796f9eec6a7f988840d9f26b9a",
+      "lines": [
+        74,
+        80
+      ],
+      "excerpt": "    def extract_task(self, text_obs: List[str]):\n        for obs in text_obs:\n            task_start = obs.find('Your task is to: ')\n            if task_start != -1:\n                self.tasks.append(obs[task_start + len('Your task is to: '):].strip())\n            else:\n                raise ValueError(\"Task description not found in text observation.\")\n",
+      "change": "byte-exact; the stripped text after the marker is the task description (Q28 instruction)"
+    },
+    "memory_slot": {
+      "file": "skillopt/envs/alfworld/rollout.py",
+      "file_sha256": "eaacb4e895e4b399801b0496ee4cd4de51820a484bfa856e3804f5d47e298a20",
+      "lines": [
+        52,
+        57
+      ],
+      "excerpt": "    return (\n        \"\\n\\n## Skill Knowledge\\n\"\n        \"Below is a skill document with learned strategies. \"\n        \"Use these guidelines to inform your decisions:\\n\\n\"\n        f\"{skill_content}\\n\"\n    )\n",
+      "change": "Q21: the memory text is supplied whole by the method, so SkillOpt's '## Skill Knowledge' header (the three string lines before f\"{skill_content}\\n\") is removed; f\"{skill_content}\\n\" is kept as '{memory}\\n'. An empty or whitespace-only memory injects nothing (line 50-51)."
+    },
+    "memory_joiner": {
+      "file": "skillopt/envs/alfworld/rollout.py",
+      "file_sha256": "eaacb4e895e4b399801b0496ee4cd4de51820a484bfa856e3804f5d47e298a20",
+      "lines": [
+        216,
+        220
+      ],
+      "excerpt": "        for i in active_indices:\n            prompt = obs[\"text\"][i]\n            if skill_prompt:\n                # Inject skill before the action instruction\n                prompt = skill_prompt + \"\\n\" + prompt\n",
+      "change": "byte-exact: prompt = skill_prompt + \"\\n\" + prompt"
+    },
+    "fallbacks": {
+      "file": "skillopt/envs/alfworld/rollout.py",
+      "file_sha256": "eaacb4e895e4b399801b0496ee4cd4de51820a484bfa856e3804f5d47e298a20",
+      "lines": [
+        238,
+        245
+      ],
+      "excerpt": "                response = (response or \"\").strip()\n                if not response:\n                    return idx, \"<think>empty model response</think><action>look</action>\"\n                if _extract_action(response) is None:\n                    return idx, \"<think>missing action tag</think><action>look</action>\"\n                return idx, response\n            except Exception:\n                return idx, \"<think>error</think><action>look</action>\"\n",
+      "change": "lines 238-243 kept (empty response / missing action tag -> 'look', counted as a format error). Lines 244-245 (a call that raised -> '<think>error</think><action>look</action>') apply to MODEL failures without a reply only (a single attempt that used the whole deadline, an upstream moderation refusal): agent/rollout.py plays fallback_call_error and the episode goes on (H8: model failures are scored normally; F9: an actor timeout is a model failure). Infrastructure errors are retried by the gateway instead (H4.1) and never become a scored 'look'. A reply that arrived is parsed as SkillOpt parses any reply, whatever its finish_reason."
+    },
+    "action_tag_pattern": {
+      "file": "skillopt/envs/alfworld/rollout.py",
+      "file_sha256": "eaacb4e895e4b399801b0496ee4cd4de51820a484bfa856e3804f5d47e298a20",
+      "lines": [
+        38,
+        40
+      ],
+      "excerpt": "def _extract_action(model_response: str) -> str | None:\n    match = re.search(r\"<action>(.*?)</action>\", model_response, re.DOTALL)\n    return match.group(1).strip() if match else None\n",
+      "change": "byte-exact regex of _extract_action (re.DOTALL, case-sensitive)"
+    },
+    "projection": {
+      "file": "skillopt/envs/alfworld/vendor/alfworld_projection.py",
+      "file_sha256": "b4a6fe296a09fedea023c5f820b89e36acc39fe38de47f2542da01d270fed155",
+      "lines": [
+        8,
+        60
+      ],
+      "excerpt": "def alfworld_projection(actions: List[str], action_pools: List[List[str]]):\n    \"\"\"Process raw model outputs into valid ALFWorld actions.\n\n    Extracts text from ``<action>...</action>`` tags and validates that\n    the response also contains ``<think>...</think>`` tags.\n\n    Parameters\n    ----------\n    actions : list[str]\n        Raw model outputs, one per environment.\n    action_pools : list[list[str]]\n        Admissible action lists per environment (unused but kept for API compat).\n\n    Returns\n    -------\n    actions : list[str]\n        Cleaned action strings.\n    valids : list[int]\n        1 if the action was successfully parsed, 0 otherwise.\n    \"\"\"\n    valids = [0] * len(actions)\n\n    for i in range(len(actions)):\n        original_str = actions[i]\n        actions[i] = actions[i].lower()\n\n        start_tag = \"<action>\"\n        end_tag = \"</action>\"\n        start_idx = actions[i].find(start_tag)\n        end_idx = actions[i].find(end_tag)\n        try:\n            if start_idx == -1 or end_idx == -1:\n                actions[i] = actions[i][-30:]\n                continue\n\n            extracted_action = actions[i][start_idx + len(start_tag):end_idx].strip().lower()\n            actions[i] = extracted_action\n            valids[i] = 1\n\n        except Exception:\n            actions[i] = actions[i][-30:]\n\n        # Require <think>...</think>\n        think_start_idx = original_str.find(\"<think>\")\n        think_end_idx = original_str.find(\"</think>\")\n        if think_start_idx == -1 or think_end_idx == -1:\n            valids[i] = 0\n\n        # Reject responses containing Chinese characters\n        if re.search(r'[\\u4e00-\\u9fff]', original_str):\n            valids[i] = 0\n\n    return actions, valids\n",
+      "change": "vendored as evals/skill_bench/envs/vendor/alfworld_projection.py (reformatted only)"
+    },
+    "observation_message": {
+      "file": null,
+      "change": "skill_bench's own format for the method-visible user message (Q20: the environment's raw observation plus its admissible actions, one per line, 'help' excluded as in the actor prompt). It never reaches the actor."
+    }
+  }
+}

@@ -1,0 +1,30 @@
+# The supervisor of one tools/phase16.sh step as a systemd user unit. %i is the step:
+# pilot, dev, r1, r2 or r3. It runs tools/phase16.sh, which reads its launch config
+# (${XDG_CONFIG_HOME:-~/.config}/skill-bench/launch.env: the key file's path, never a key;
+# P16_BUDGET for r1-r3) and passes the step's options.
+#
+# A template: `evals/skill_bench/tools/phase16.sh install-unit` writes it, with the
+# checkout's path filled in, to ~/.config/systemd/user/skill-bench@.service. Then:
+#
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now skill-bench@r1 skill-bench@r2 skill-bench@r3
+#   sudo loginctl enable-linger "$USER"    # user units start at boot, without a login
+#
+# Restarted after a reboot or a crash (exit 70 included), never after an exit that needs
+# a person (2, 10-13) or a stop someone asked for (130: kill -TERM, systemctl --user
+# stop). KillMode=process signals the supervisor alone: it drains its workers itself.
+[Unit]
+Description=skill_bench supervisor, tools/phase16.sh step %i
+
+[Service]
+WorkingDirectory=@CHECKOUT@
+ExecStart=@CHECKOUT@/evals/skill_bench/tools/phase16.sh exec %i
+Restart=on-failure
+RestartSec=60
+RestartPreventExitStatus=0 2 10 11 12 13 130
+KillSignal=SIGTERM
+KillMode=process
+TimeoutStopSec=240
+
+[Install]
+WantedBy=default.target

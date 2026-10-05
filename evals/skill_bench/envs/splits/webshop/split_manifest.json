@@ -1,0 +1,92 @@
+{
+ "benchmark": "WebShop",
+ "status": "final",
+ "source_repo": "https://github.com/princeton-nlp/WebShop",
+ "source_commit": "64fa2a5c15c7daa698b9ac93f5bb5437b634c9bd",
+ "split_method": "Each split is random.Random(seed).shuffle of its goal range taken in order, skipping a goal whose instruction names more than one ASIN, whose ASIN or normalized instruction an earlier split holds, and in unique_asin splits one whose ASIN the split holds (tools/prepare_webshop.py)",
+ "draws": {
+  "test_p16": {
+   "seed": 42,
+   "first": 100,
+   "stop": 500,
+   "unique_asin": false
+  },
+  "val": {
+   "seed": 42,
+   "first": 500,
+   "stop": 1500,
+   "unique_asin": true
+  },
+  "pilot": {
+   "seed": 43,
+   "first": 500,
+   "stop": 1500,
+   "unique_asin": false
+  },
+  "train": {
+   "seed": 42,
+   "first": 1500,
+   "stop": 12087,
+   "unique_asin": true
+  },
+  "test": {
+   "seed": 44,
+   "first": 100,
+   "stop": 500,
+   "unique_asin": false
+  }
+ },
+ "draw_order": [
+  "test_p16",
+  "val",
+  "pilot",
+  "train",
+  "test"
+ ],
+ "counts": {
+  "train": 40,
+  "val": 20,
+  "test": 140,
+  "pilot": 50,
+  "test_p16": 140
+ },
+ "ambiguous_goals_skipped": 49,
+ "item_fields": [
+  "id",
+  "goal_index",
+  "asin",
+  "instruction",
+  "instruction_text",
+  "attributes",
+  "goal_options",
+  "price_upper",
+  "name",
+  "query",
+  "category",
+  "product_category",
+  "best_reward",
+  "options_available",
+  "gold_search_rank"
+ ],
+ "selection_changed_from_provisional": false,
+ "unsolvable": {
+  "train": 0,
+  "val": 0,
+  "test": 0,
+  "pilot": 0,
+  "test_p16": 0
+ },
+ "unsolvable_test_fraction": 0.0,
+ "unsolvable_test_flag": false,
+ "gold_not_found_by_search": {
+  "train": 21,
+  "val": 10,
+  "test": 76,
+  "pilot": 22,
+  "test_p16": 80
+ },
+ "notes": [
+  "Final: checked against the real goals of the server image (goal count, order equal to human_goals.json, seed 42 before SimServer), with every pinned goal field; the server refuses to serve when any differs.",
+  "best_reward is the reward of buying the gold product with the goal's options; gold_search_rank is its 0-based rank among the top 50 when the instruction is searched (null: not found). Items are not filtered."
+ ]
+}

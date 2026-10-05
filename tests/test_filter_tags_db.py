@@ -1,12 +1,13 @@
 """
 Database-level tests for filter_tags operator queries.
 
-Requires docker PG (port 5433), no running server needed.
+Requires Postgres, no running server needed.
 Tests write rows with various filter_tags shapes and query using
-$contains, $exists, $in operators via the RawMemoryManager against real PG.
+$contains, $exists, $in operators via the RawMemoryManager against real PG
+(Postgres JSON operators: the file is skipped without MIRIX_PG_URI).
 
-Run:
-    pytest tests/test_filter_tags_db.py -v -m integration
+Run through the fresh-database runner:
+    scripts/run_pg_integration_tests.sh tests/test_filter_tags_db.py
 """
 
 import asyncio
@@ -18,9 +19,15 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 
+from mirix.settings import settings  # noqa: E402
+
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.asyncio(loop_scope="module"),
+    pytest.mark.skipif(
+        not settings.mirix_pg_uri_no_default,
+        reason="Postgres JSON operators: run via scripts/run_pg_integration_tests.sh",
+    ),
 ]
 
 project_root = Path(__file__).parent.parent
@@ -48,8 +55,23 @@ def raw_memory_manager():
     return RawMemoryManager()
 
 
+@pytest_asyncio.fixture(scope="module", loop_scope="module")
+async def database(tmp_path_factory):
+    """A fresh, initialized MIRIX database (``db_isolation.isolated_database``):
+    the fresh Postgres of ``scripts/run_pg_integration_tests.sh``, or a throwaway
+    SQLite file without it — never the developer's ``~/.mirix``. A fresh
+    database has no tables until server startup creates them."""
+    from db_isolation import isolated_database
+    from mirix.server import server
+
+    await server.engine.dispose(close=False)  # this module's loop
+    async with isolated_database(tmp_path_factory.mktemp("filter-tags-db")) as engine:
+        yield engine
+    await server.engine.dispose()
+
+
 @pytest_asyncio.fixture(scope="module")
-async def test_actor():
+async def test_actor(database):
     from mirix.schemas.organization import Organization as PydanticOrganization
     from mirix.services.client_manager import ClientManager
     from mirix.services.organization_manager import OrganizationManager
