@@ -1,7 +1,6 @@
 """Owned child processes: spawn, health wait, stop, and crash-safe cleanup.
 
-Ported from ``skill_main_tables/owned_processes.py`` and ``server.py``. Every
-child runs in its own session (process group) and is recorded in a JSONL
+Every child runs in its own session (process group) and is recorded in a JSONL
 registry. :func:`cleanup_owned` later kills only groups that were registered and
 whose owner is proven gone:
 
@@ -524,7 +523,7 @@ def _registry_rows(registry: Path) -> dict[int, dict[str, Any]]:
         text = registry.read_text(encoding="utf-8", errors="replace")
     except FileNotFoundError:
         return active
-    for line in text.split("\n"):  # "\n" only: U+2028 stays inside a record (P15-G1)
+    for line in text.split("\n"):  # "\n" only: U+2028 stays inside a record
         if not line.strip():
             continue
         try:

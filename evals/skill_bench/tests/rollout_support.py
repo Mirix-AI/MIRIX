@@ -1,4 +1,4 @@
-"""Shared helpers for the phase-11 actor/rollout/trajectory tests (offline, fake upstream only)."""
+"""Shared helpers for the actor/rollout/trajectory tests (offline, fake upstream only)."""
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ from evals.skill_bench.tests.fakes import (
 
 LUNA = protocol.MODELS["luna"]
 RUN_ID = "cell-test-a1"
-SALT = b"phase-11-test-salt-0123456789abcdef"
+SALT = b"rollout-test-salt-0123456789abcdef"
 
 # ---------------------------------------------------------------------------
 # Gateway + actor

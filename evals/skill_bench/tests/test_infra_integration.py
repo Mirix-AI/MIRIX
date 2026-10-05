@@ -133,7 +133,7 @@ async def _table_rows(pg: ms.PostgresAdmin, database: str, query: str) -> set[st
 
 @pytest.mark.asyncio
 async def test_two_real_mirix_cells_running_at_once_cannot_see_each_other(pg, tmp_path):
-    """Plan 9.4 (W22 / W38): two live MIRIX servers, each only in its own database and HOME."""
+    """Two live MIRIX servers, each only in its own database and HOME."""
     suffix = secrets.token_hex(3)
     cells = [
         ms.CellServerSpec(

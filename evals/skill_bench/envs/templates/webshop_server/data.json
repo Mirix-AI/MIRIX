@@ -1,5 +1,5 @@
 {
-  "comment": "The product data the image downloads (SPEC D16): protocol.WEBSHOP_DATA, which a test keeps equal to this file. server.py fetch-data verifies each file's size and sha256.",
+  "comment": "The product data the image downloads: protocol.WEBSHOP_DATA, which a test keeps equal to this file. server.py fetch-data verifies each file's size and sha256.",
   "hf_repo": "YWZBrandon/webshop-data",
   "hf_revision": "ce990fff5aee388db2706f07820c578ab68e0453",
   "files": {

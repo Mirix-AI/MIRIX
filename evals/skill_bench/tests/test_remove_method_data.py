@@ -35,13 +35,13 @@ START = "2026-09-29T05:00:00+00:00"
 AT = "2026-09-29T06:00:00+00:00"
 END = "2026-09-29T08:00:00+00:00"
 #: The method the tests register as removed (the ``removed_method`` fixture).
-DC = REMOVED_METHOD
-DC_WEB = f"webshop-luna-{DC}"
-DC_ALF56 = f"alfworld-luna56-{DC}"
-DC_ALF = f"alfworld-luna-{DC}"
-DC_WEB56 = f"webshop-luna56-{DC}"
+REMOVED = REMOVED_METHOD
+REMOVED_WEB = f"webshop-luna-{REMOVED}"
+REMOVED_ALF56 = f"alfworld-luna56-{REMOVED}"
+REMOVED_ALF = f"alfworld-luna-{REMOVED}"
+REMOVED_WEB56 = f"webshop-luna56-{REMOVED}"
 #: A gateway run of a smoke cell no directory holds.
-ORPHAN = f"alfworld-luna56-{DC}-smoke-l2-t2-a01-deadbeef"
+ORPHAN = f"alfworld-luna56-{REMOVED}-smoke-l2-t2-a01-deadbeef"
 PROTECTED = ("_blobs", "_gateway", "_schedule", "_supervise")
 
 
@@ -61,7 +61,7 @@ def _timed_call(role: str, phase: str, cost: float, **kw: Any) -> dict[str, Any]
 
 @pytest.fixture
 def deletion_decided(removed_method: str, monkeypatch: pytest.MonkeyPatch) -> str:
-    """:data:`DC` removed from the study (``removed_method``) with its deletion decided
+    """:data:`REMOVED` removed from the study (``removed_method``) with its deletion decided
     (``DELETION_DECISIONS``), for one test."""
     monkeypatch.setattr(
         tool,
@@ -78,19 +78,19 @@ def _leftover_cells(runs: Path) -> dict[str, Path]:
     web = make_cell(
         runs,
         "webshop",
-        DC,
+        REMOVED,
         test=shop("w", [1.0, 0.0, 1.0, 0.0]),
         calls=[
             _call("actor", "learning", 0.02, item="l1"),
             _call("learner", "learning", 0.02, item="l1"),
             _call("actor", "test", 0.01, item="u1"),
         ],
-        snapshot={"method": DC, "notes": ""},
+        snapshot={"method": REMOVED, "notes": ""},
     )
     alf56 = make_cell(
         runs,
         "alfworld",
-        DC,
+        REMOVED,
         model_key="luna56",
         test=[_row("a1", 1.0)],
         calls=[
@@ -100,16 +100,16 @@ def _leftover_cells(runs: Path) -> dict[str, Path]:
     alf = make_cell(
         runs,
         "alfworld",
-        DC,
+        REMOVED,
         test=[],
         status="interrupted",
         calls=[_call("actor", "learning", 0.02, item="l1")],
     )
-    return {DC_WEB: web, DC_ALF56: alf56, DC_ALF: alf}
+    return {REMOVED_WEB: web, REMOVED_ALF56: alf56, REMOVED_ALF: alf}
 
 
 @pytest.fixture
-def dc_runs(tmp_path: Path, deletion_decided: str) -> Path:
+def removed_runs(tmp_path: Path, deletion_decided: str) -> Path:
     """A host's runs directory: study cells (WebShop, ALFWorld), the removed method's
     leftovers (three cells, a WebShop one of luna56, an orphan gateway run), the shared
     directories and a balance record covering every call."""
@@ -132,7 +132,7 @@ def dc_runs(tmp_path: Path, deletion_decided: str) -> Path:
     make_cell(
         runs,
         "webshop",
-        DC,
+        REMOVED,
         model_key="luna56",
         test=shop("w", [1.0]),
         calls=[
@@ -163,57 +163,59 @@ def dc_runs(tmp_path: Path, deletion_decided: str) -> Path:
     return runs
 
 
-DC_ENTRIES = sorted(
+REMOVED_ENTRIES = sorted(
     [
-        DC_ALF,
-        DC_WEB,
-        DC_ALF56,
-        DC_WEB56,
-        f"{DC_ALF}-a01",
-        f"{DC_WEB}-a01",
-        f"{DC_ALF56}-a01",
-        f"{DC_WEB56}-a01",
+        REMOVED_ALF,
+        REMOVED_WEB,
+        REMOVED_ALF56,
+        REMOVED_WEB56,
+        f"{REMOVED_ALF}-a01",
+        f"{REMOVED_WEB}-a01",
+        f"{REMOVED_ALF56}-a01",
+        f"{REMOVED_WEB56}-a01",
         ORPHAN,
     ]
 )
 
 
 def _run(runs: Path, *extra: str, capsys: Any = None) -> tuple[int, dict[str, Any]]:
-    code = tool.main(["--runs-dir", str(runs), "--method", DC, *extra])
+    code = tool.main(["--runs-dir", str(runs), "--method", REMOVED, *extra])
     printed = json.loads(capsys.readouterr().out) if capsys is not None else {}
     return code, printed
 
 
 def _manifest(runs: Path) -> tuple[Path, dict[str, Any]]:
-    (path,) = sorted((runs / tool.REMOVED_DIR / DC).glob("*/manifest.json"))
+    (path,) = sorted((runs / tool.REMOVED_DIR / REMOVED).glob("*/manifest.json"))
     return path, json.loads(path.read_text())
 
 
-def test_a_dry_run_writes_nothing_and_prints_the_plan(dc_runs, capsys):
-    before = _tree_digest(dc_runs)
-    code, printed = _run(dc_runs, capsys=capsys)
+def test_a_dry_run_writes_nothing_and_prints_the_plan(removed_runs, capsys):
+    before = _tree_digest(removed_runs)
+    code, printed = _run(removed_runs, capsys=capsys)
     assert code == tool.EXIT_OK and printed["dry_run"] is True
     assert printed["refusals"] == []
     plan = printed["plan"]
     assert sorted(c["cell_id"] for c in plan["cells"]) == sorted(
-        [DC_ALF, DC_WEB, DC_ALF56, DC_WEB56]
+        [REMOVED_ALF, REMOVED_WEB, REMOVED_ALF56, REMOVED_WEB56]
     )
-    assert {r["run_id"] for r in plan["gateway_runs"]} == set(DC_ENTRIES) - {
-        DC_ALF,
-        DC_WEB,
-        DC_ALF56,
-        DC_WEB56,
+    assert {r["run_id"] for r in plan["gateway_runs"]} == set(REMOVED_ENTRIES) - {
+        REMOVED_ALF,
+        REMOVED_WEB,
+        REMOVED_ALF56,
+        REMOVED_WEB56,
     }
     assert plan["totals"]["cost_total"] == pytest.approx(
         0.02 + 0.05 + 0.01 + 0.04 + 0.07
     )
-    assert _tree_digest(dc_runs) == before
-    assert not (dc_runs / tool.REMOVED_DIR).exists()
+    assert _tree_digest(removed_runs) == before
+    assert not (removed_runs / tool.REMOVED_DIR).exists()
 
 
-def test_it_deletes_exactly_the_method_cells_and_their_gateway_runs(dc_runs, capsys):
+def test_it_deletes_exactly_the_method_cells_and_their_gateway_runs(
+    removed_runs, capsys
+):
     kept = {
-        name: _tree_digest(dc_runs / name)
+        name: _tree_digest(removed_runs / name)
         for name in [
             *PROTECTED,
             "webshop-luna-none",
@@ -223,29 +225,29 @@ def test_it_deletes_exactly_the_method_cells_and_their_gateway_runs(dc_runs, cap
         ]
     }
     code, printed = _run(
-        dc_runs, "--yes", "--note", "delete the leftovers", capsys=capsys
+        removed_runs, "--yes", "--note", "delete the leftovers", capsys=capsys
     )
     assert code == tool.EXIT_OK and printed["state"] == tool.STATE_COMPLETE
-    assert sorted(printed["deleted"]) == DC_ENTRIES
-    for entry in DC_ENTRIES:
-        assert not (dc_runs / entry).exists(), entry
+    assert sorted(printed["deleted"]) == REMOVED_ENTRIES
+    for entry in REMOVED_ENTRIES:
+        assert not (removed_runs / entry).exists(), entry
     for name, digest in kept.items():
-        assert _tree_digest(dc_runs / name) == digest, name
-    path, manifest = _manifest(dc_runs)
+        assert _tree_digest(removed_runs / name) == digest, name
+    path, manifest = _manifest(removed_runs)
     assert manifest["state"] == tool.STATE_COMPLETE and manifest["completed_at"]
     assert manifest["note"] == "delete the leftovers"
     assert not (path.parent / tool.TRASH_DIR).exists()
-    index = json.loads((dc_runs / tool.INDEX_FILE).read_text())
+    index = json.loads((removed_runs / tool.INDEX_FILE).read_text())
     (entry,) = index["removals"]
     assert entry["state"] == tool.STATE_COMPLETE
-    assert entry["manifest"] == f"{DC}/{manifest['removal_id']}/manifest.json"
-    assert sorted(entry["entries"]) == DC_ENTRIES
+    assert entry["manifest"] == f"{REMOVED}/{manifest['removal_id']}/manifest.json"
+    assert sorted(entry["entries"]) == REMOVED_ENTRIES
     # The report no longer finds a cell there, and no hidden entry is one.
-    assert not [p for p in report.discover_cells(dc_runs) if DC in p.name]
+    assert not [p for p in report.discover_cells(removed_runs) if REMOVED in p.name]
 
 
 def test_the_manifest_is_written_before_anything_is_deleted(
-    dc_runs, capsys, monkeypatch
+    removed_runs, capsys, monkeypatch
 ):
     """Stopped at the first entry: the manifest, calls.jsonl and the index are on disk
     (state deleting) and nothing is deleted yet; the next run finishes that removal and
@@ -258,53 +260,56 @@ def test_the_manifest_is_written_before_anything_is_deleted(
         real(src, dst)
 
     monkeypatch.setattr(tool.os, "rename", refuse)
-    code, printed = _run(dc_runs, "--yes", capsys=capsys)
+    code, printed = _run(removed_runs, "--yes", capsys=capsys)
     assert code == tool.EXIT_FAILED and "run the tool again" in printed["error"]
-    path, manifest = _manifest(dc_runs)
+    path, manifest = _manifest(removed_runs)
     assert manifest["state"] == tool.STATE_DELETING
     calls = path.parent / tool.CALLS_FILE
     assert calls.is_file()
     assert hashlib.sha256(calls.read_bytes()).hexdigest() == manifest["calls_sha256"]
-    index = json.loads((dc_runs / tool.INDEX_FILE).read_text())
+    index = json.loads((removed_runs / tool.INDEX_FILE).read_text())
     assert [r["state"] for r in index["removals"]] == [tool.STATE_DELETING]
-    assert all((dc_runs / entry).exists() for entry in DC_ENTRIES)
+    assert all((removed_runs / entry).exists() for entry in REMOVED_ENTRIES)
     # Meanwhile the report counts every cell once, from disk.
-    data = report.build_report(dc_runs, frozen=FP)
+    data = report.build_report(removed_runs, frozen=FP)
     assert {c["on_disk"] for c in data["removed"]["cells"]} == {True}
     monkeypatch.setattr(tool.os, "rename", real)
-    code, printed = _run(dc_runs, "--yes", capsys=capsys)
+    code, printed = _run(removed_runs, "--yes", capsys=capsys)
     assert code == tool.EXIT_OK
     assert printed["finished_pending"] == [manifest["removal_id"]]
     assert printed["deleted"] == [] and "nothing" in printed["detail"]
-    path, finished = _manifest(dc_runs)
+    path, finished = _manifest(removed_runs)
     assert finished["removal_id"] == manifest["removal_id"]
     assert finished["state"] == tool.STATE_COMPLETE
-    assert not any((dc_runs / entry).exists() for entry in DC_ENTRIES)
+    assert not any((removed_runs / entry).exists() for entry in REMOVED_ENTRIES)
 
 
-def test_a_second_run_finds_nothing_and_exits_0(dc_runs, capsys):
-    assert _run(dc_runs, "--yes", capsys=capsys)[0] == tool.EXIT_OK
-    code, printed = _run(dc_runs, "--yes", capsys=capsys)
+def test_a_second_run_finds_nothing_and_exits_0(removed_runs, capsys):
+    assert _run(removed_runs, "--yes", capsys=capsys)[0] == tool.EXIT_OK
+    code, printed = _run(removed_runs, "--yes", capsys=capsys)
     assert code == tool.EXIT_OK and printed["deleted"] == []
-    assert len(list((dc_runs / tool.REMOVED_DIR / DC).glob("*/manifest.json"))) == 1
+    assert (
+        len(list((removed_runs / tool.REMOVED_DIR / REMOVED).glob("*/manifest.json")))
+        == 1
+    )
 
 
-def test_manifest_content(dc_runs, capsys):
+def test_manifest_content(removed_runs, capsys):
     loaded = {
         c.cell_id: c
-        for c in report.load_cells(dc_runs, split_mode=None)
-        if study.method_of(c) == DC
+        for c in report.load_cells(removed_runs, split_mode=None)
+        if study.method_of(c) == REMOVED
     }
     expected_costs = {cid: report.cell_costs(c) for cid, c in loaded.items()}
-    trees = {entry: tool._tree(dc_runs / entry) for entry in DC_ENTRIES}
-    assert _run(dc_runs, "--yes", capsys=capsys)[0] == tool.EXIT_OK
-    _, manifest = _manifest(dc_runs)
+    trees = {entry: tool._tree(removed_runs / entry) for entry in REMOVED_ENTRIES}
+    assert _run(removed_runs, "--yes", capsys=capsys)[0] == tool.EXIT_OK
+    _, manifest = _manifest(removed_runs)
     assert (manifest["schema"], manifest["kind"]) == (tool.SCHEMA, tool.KIND)
     assert (manifest["decision"], manifest["quote"]) == (
         "example decision",
         "delete it",
     )
-    assert manifest["reason"] == study.REMOVED_METHODS[DC].reason
+    assert manifest["reason"] == study.REMOVED_METHODS[REMOVED].reason
     assert manifest["host"]["hostname"] and manifest["created_at"]
     cells = {c["cell_id"]: c for c in manifest["cells"]}
     assert set(cells) == set(loaded)
@@ -313,22 +318,22 @@ def test_manifest_content(dc_runs, capsys):
         assert cell["not_counted"] == report.uncounted_costs(expected_costs[cell_id])
         assert cell["status"] == loaded[cell_id].status.get("status")
         assert cell["attempts"] == len(loaded[cell_id].attempts)
-    assert (cells[DC_ALF]["status"], cells[DC_ALF]["complete"]) == (
+    assert (cells[REMOVED_ALF]["status"], cells[REMOVED_ALF]["complete"]) == (
         "interrupted",
         False,
     )
-    assert cells[DC_WEB]["calls"]["calls"] == 3
-    assert cells[DC_WEB]["tokens"]["input_tokens_actual"] == 3 * 110
-    assert cells[DC_WEB]["gateway_runs"] == [f"{DC_WEB}-a01"]
+    assert cells[REMOVED_WEB]["calls"]["calls"] == 3
+    assert cells[REMOVED_WEB]["tokens"]["input_tokens_actual"] == 3 * 110
+    assert cells[REMOVED_WEB]["gateway_runs"] == [f"{REMOVED_WEB}-a01"]
     runs = {r["run_id"]: r for r in manifest["gateway_runs"]}
-    assert runs[ORPHAN]["cell_id"] == f"alfworld-luna56-{DC}-smoke-l2-t2"
+    assert runs[ORPHAN]["cell_id"] == f"alfworld-luna56-{REMOVED}-smoke-l2-t2"
     assert runs[ORPHAN]["cost_total"] == pytest.approx(0.07)
     deleted = {d["entry"]: d for d in manifest["deleted"]}
-    assert set(deleted) == set(DC_ENTRIES)
+    assert set(deleted) == set(REMOVED_ENTRIES)
     for entry, tree in trees.items():
         assert {k: deleted[entry][k] for k in tree} == tree
         assert deleted[entry]["path"] == entry
-    assert deleted[DC_WEB]["kind"] == tool.KIND_CELL
+    assert deleted[REMOVED_WEB]["kind"] == tool.KIND_CELL
     assert deleted[ORPHAN]["kind"] == tool.KIND_GATEWAY_RUN
     assert manifest["totals"]["calls"] == manifest["calls_rows"] == 7
     assert {k["path"] for k in manifest["kept"]} >= {"_blobs", "_gateway"}
@@ -350,23 +355,23 @@ def _report_view(data: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def test_the_report_is_identical_after_the_deletion(dc_runs, capsys):
+def test_the_report_is_identical_after_the_deletion(removed_runs, capsys):
     """Every number of the report is the same before and after the deletion: the
     matrix, the removed cells' costs (from the manifest), all cells' total and the spend
     window (the deleted ledgers' calls from calls.jsonl)."""
-    before = report.build_report(dc_runs, frozen=FP)
-    # In the window: 2 study calls and the timed DC ones (WebShop of luna56, the orphan
+    before = report.build_report(removed_runs, frozen=FP)
+    # In the window: 2 study calls and the removed method's timed ones (WebShop of luna56, the orphan
     # run); test_report's leftover cells' calls carry no time: outside it.
     spent = before["spend"][0]
     assert (spent["ledger_calls"], spent["calls_outside_window"]) == (4, 5)
-    assert _run(dc_runs, "--yes", capsys=capsys)[0] == tool.EXIT_OK
-    after = report.build_report(dc_runs, frozen=FP)
+    assert _run(removed_runs, "--yes", capsys=capsys)[0] == tool.EXIT_OK
+    after = report.build_report(removed_runs, frozen=FP)
     assert _report_view(after) == _report_view(before)
     assert after["costs"]["all_cells_total"] == before["costs"]["all_cells_total"]
     deleted = {c["cell_id"]: c for c in after["removed"]["cells"]}
     assert {c["on_disk"] for c in deleted.values()} == {False}
-    assert deleted[DC_WEB]["deleted"]["manifest"].startswith(
-        f"{tool.REMOVED_DIR}/{DC}/"
+    assert deleted[REMOVED_WEB]["deleted"]["manifest"].startswith(
+        f"{tool.REMOVED_DIR}/{REMOVED}/"
     )
     assert after["removed"]["deleted"]["cells"] == 4
     assert after["removed"]["deleted"]["cost_usd"] == pytest.approx(
@@ -377,7 +382,7 @@ def test_the_report_is_identical_after_the_deletion(dc_runs, capsys):
     assert "The data of 4 cell(s) was deleted" in md
     assert "deleted " in "\n".join(md.split("## Removed methods")[1].splitlines()[:30])
     # The spend of the deleted runs, for a ledger-based reader.
-    spent = tool.removed_spend(dc_runs)
+    spent = tool.removed_spend(removed_runs)
     assert spent["calls"] == 7 and spent["cost_usd"] == pytest.approx(0.19)
 
 
@@ -385,7 +390,7 @@ def test_two_hosts_keep_their_union_after_one_deletes(
     tmp_path, capsys, deletion_decided
 ):
     """Over a merged view of two hosts sharing one budget start, the per-host spend and
-    their union are the same after one host deleted its DC data and the view mirrored
+    their union are the same after one host deleted the removed method's data and the view mirrored
     the deletion (the manifest under _hosts/<host>/_removed)."""
     view = tmp_path / "view"
     shared = {"budget_usd": 50.0, "started_at": START, "start_usage_usd": 100.0}
@@ -408,17 +413,17 @@ def test_two_hosts_keep_their_union_after_one_deletes(
         {**shared, "spent_usd": 0.6, "usage": 100.6},
     )
     mirror = view / "_hosts" / "cloud"
-    dc = make_cell(
+    removed = make_cell(
         mirror,
         "alfworld",
-        DC,
+        REMOVED,
         test=[_row("a1", 1.0)],
         calls=[_timed_call("actor", "test", 0.05, item="u1")],
     )
-    for entry in (dc, mirror / f"{DC_ALF}-a01"):
+    for entry in (removed, mirror / f"{REMOVED_ALF}-a01"):
         (view / entry.name).symlink_to(os.path.relpath(entry, view))
     before = report.build_report(view, frozen=FP)
-    assert [c["cell_id"] for c in before["removed"]["cells"]] == [DC_ALF]
+    assert [c["cell_id"] for c in before["removed"]["cells"]] == [REMOVED_ALF]
     assert _run(mirror, "--yes", capsys=capsys)[0] == tool.EXIT_OK
     after = report.build_report(view, frozen=FP)
     assert _report_view(after) == _report_view(before)
@@ -431,32 +436,32 @@ def test_two_hosts_keep_their_union_after_one_deletes(
     "case",
     ["study_method", "merged_view", "mirror", "live", "symlink", "ledger_outside"],
 )
-def test_refusals_write_nothing(dc_runs, tmp_path, capsys, case):
-    method = DC
-    runs = dc_runs
+def test_refusals_write_nothing(removed_runs, tmp_path, capsys, case):
+    method = REMOVED
+    runs = removed_runs
     holder = None
     if case == "study_method":
         method = "awm"
     elif case == "merged_view":
-        (dc_runs / "_merged.json").write_text("{}")
+        (removed_runs / "_merged.json").write_text("{}")
     elif case == "mirror":
         view = tmp_path / "view"
         (view / "_hosts").mkdir(parents=True)
         (view / "_merged.json").write_text("{}")
         runs = view / "_hosts" / "cloud"
-        dc_runs.rename(runs)
+        removed_runs.rename(runs)
     elif case == "live":
-        holder = open(dc_runs / DC_WEB / "cell.lock", "a")  # noqa: SIM115
+        holder = open(removed_runs / REMOVED_WEB / "cell.lock", "a")  # noqa: SIM115
         fcntl.flock(holder.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
     elif case == "symlink":
         real = tmp_path / "elsewhere"
-        (dc_runs / DC_ALF).rename(real)
-        (dc_runs / DC_ALF).symlink_to(real)
+        (removed_runs / REMOVED_ALF).rename(real)
+        (removed_runs / REMOVED_ALF).symlink_to(real)
     elif case == "ledger_outside":
-        outside = tmp_path / "outside" / f"{DC_WEB}-a01"
+        outside = tmp_path / "outside" / f"{REMOVED_WEB}-a01"
         outside.parent.mkdir()
-        (dc_runs / f"{DC_WEB}-a01").rename(outside)
-        state = dc_runs / DC_WEB / "attempt-01" / "attempt.json"
+        (removed_runs / f"{REMOVED_WEB}-a01").rename(outside)
+        state = removed_runs / REMOVED_WEB / "attempt-01" / "attempt.json"
         data = json.loads(state.read_text())
         data["ledger"] = str(outside / "gateway.jsonl")
         write_json_atomic(state, data)
@@ -497,16 +502,18 @@ def test_removed_entries_from_index_parses_what_sync_runs_reads():
     assert tool.removed_entries_from_index("[1]") == frozenset()
 
 
-def test_manifests_are_read_once_per_removal_and_never_raise(dc_runs, tmp_path, capsys):
-    assert _run(dc_runs, "--yes", capsys=capsys)[0] == tool.EXIT_OK
+def test_manifests_are_read_once_per_removal_and_never_raise(
+    removed_runs, tmp_path, capsys
+):
+    assert _run(removed_runs, "--yes", capsys=capsys)[0] == tool.EXIT_OK
     view = tmp_path / "view"
     (view / "_hosts").mkdir(parents=True)
-    (view / "_hosts" / "cloud").symlink_to(dc_runs)
-    (view / "_hosts" / "copy").symlink_to(dc_runs)  # the same removal twice
+    (view / "_hosts" / "cloud").symlink_to(removed_runs)
+    (view / "_hosts" / "copy").symlink_to(removed_runs)  # the same removal twice
     (found,) = tool.load_manifests(view)
     assert found.problems == [] and found.runs_dir.name == "cloud"
     assert len(tool.manifest_calls(found)) == 7
-    broken = view / tool.REMOVED_DIR / DC / "r0"
+    broken = view / tool.REMOVED_DIR / REMOVED / "r0"
     broken.mkdir(parents=True)
     (broken / tool.MANIFEST_FILE).write_text("{torn")
     manifests = tool.load_manifests(view)
@@ -514,34 +521,34 @@ def test_manifests_are_read_once_per_removal_and_never_raise(dc_runs, tmp_path, 
 
 
 def test_a_manifest_and_a_live_cell_of_one_directory_count_once(
-    dc_runs, capsys, monkeypatch
+    removed_runs, capsys, monkeypatch
 ):
     """An interrupted deletion leaves a cell both on disk and in its manifest: the
     report reads it from disk, once."""
-    before = report.build_report(dc_runs, frozen=FP)
+    before = report.build_report(removed_runs, frozen=FP)
 
     def refuse(src: Any, dst: Any) -> None:
         raise OSError("stopped")
 
     monkeypatch.setattr(tool.os, "rename", refuse)
-    assert _run(dc_runs, "--yes", capsys=capsys)[0] == tool.EXIT_FAILED
-    during = report.build_report(dc_runs, frozen=FP)
+    assert _run(removed_runs, "--yes", capsys=capsys)[0] == tool.EXIT_FAILED
+    during = report.build_report(removed_runs, frozen=FP)
     assert _report_view(during) == _report_view(before)
     assert len(during["removed"]["cells"]) == 4
 
 
-def test_an_unreadable_manifest_is_a_warning_not_silence(dc_runs, capsys):
+def test_an_unreadable_manifest_is_a_warning_not_silence(removed_runs, capsys):
     """A manifest the report cannot read is named in a warning (its money unknown);
     a calls.jsonl that differs from its manifest is named too, its rows still counted."""
-    assert _run(dc_runs, "--yes", capsys=capsys)[0] == tool.EXIT_OK
-    path, manifest = _manifest(dc_runs)
+    assert _run(removed_runs, "--yes", capsys=capsys)[0] == tool.EXIT_OK
+    path, manifest = _manifest(removed_runs)
     calls = path.parent / tool.CALLS_FILE
     calls.write_text(
         calls.read_text()
         + json.dumps({"event": "call", "cost_total": 1.0, "run_id": "x"})
         + "\n"
     )
-    data = report.build_report(dc_runs, frozen=FP)
+    data = report.build_report(removed_runs, frozen=FP)
     (mismatch,) = [
         w for w in data["warnings"] if w["check"] == "removed_manifest_mismatch"
     ]
@@ -554,7 +561,7 @@ def test_an_unreadable_manifest_is_a_warning_not_silence(dc_runs, capsys):
         data["spend"][0]["calls_outside_window"],
     ) == (4, 6)
     path.write_text("{torn")
-    data = report.build_report(dc_runs, frozen=FP)
+    data = report.build_report(removed_runs, frozen=FP)
     (unreadable,) = [
         w for w in data["warnings"] if w["check"] == "removed_manifest_unreadable"
     ]
@@ -566,7 +573,7 @@ def test_an_unreadable_manifest_is_a_warning_not_silence(dc_runs, capsys):
 
 
 def _write_manifest(base: Path, removal_id: str, data: Mapping[str, Any]) -> Path:
-    path = base / tool.REMOVED_DIR / DC / removal_id / tool.MANIFEST_FILE
+    path = base / tool.REMOVED_DIR / REMOVED / removal_id / tool.MANIFEST_FILE
     path.parent.mkdir(parents=True)
     path.write_text(json.dumps(data))
     return path
@@ -596,19 +603,21 @@ def test_a_manifest_the_tool_did_not_write_is_read_by_its_fields(tmp_path):
     assert only.path == good and only.problems == []
 
 
-def test_a_manifest_row_without_its_costs_is_a_warning_not_a_crash(dc_runs, capsys):
+def test_a_manifest_row_without_its_costs_is_a_warning_not_a_crash(
+    removed_runs, capsys
+):
     """A manifest row that cannot stand in for its cell (its costs lost) is left out of
     the removed block and named in a warning; the manifest's other rows are listed and
     its calls still count. The learning summary does the same."""
-    assert _run(dc_runs, "--yes", capsys=capsys)[0] == tool.EXIT_OK
-    intact = report.build_report(dc_runs, frozen=FP)
+    assert _run(removed_runs, "--yes", capsys=capsys)[0] == tool.EXIT_OK
+    intact = report.build_report(removed_runs, frozen=FP)
     gone = sorted(c["cell_id"] for c in intact["removed"]["cells"] if not c["on_disk"])
-    path, manifest = _manifest(dc_runs)
+    path, manifest = _manifest(removed_runs)
     broken = manifest["cells"][0]
     del broken["costs"]
     path.write_text(json.dumps(manifest))
     assert tool.cell_row_problem(broken) == f"{broken['cell_id']}: no costs.total_cost"
-    data = report.build_report(dc_runs, frozen=FP)
+    data = report.build_report(removed_runs, frozen=FP)
     (warning,) = [
         w for w in data["warnings"] if w["check"] == "removed_manifest_unreadable"
     ]
@@ -619,7 +628,7 @@ def test_a_manifest_row_without_its_costs_is_a_warning_not_a_crash(dc_runs, caps
     assert "- **Warning (removed_manifest_unreadable):**" in report.render_markdown(
         data
     )
-    summary = summarize_learning.summarize(dc_runs, split_mode=None)
+    summary = summarize_learning.summarize(removed_runs, split_mode=None)
     assert broken["cell_id"] not in [c["cell_id"] for c in summary["removed"]]
     assert summary["removed_manifest_problems"] == [
         f"{path}: {broken['cell_id']}: no costs.total_cost"

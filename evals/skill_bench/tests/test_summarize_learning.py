@@ -890,12 +890,12 @@ def test_the_ledgers_of_a_copied_runs_directory_are_found(tmp_path, capsys):
 # --- removed methods (study.REMOVED_METHODS) ----------------------------------------------------
 
 #: The method the tests register as removed (the ``removed_method`` fixture).
-DC = REMOVED_METHOD
+REMOVED = REMOVED_METHOD
 
 
 @pytest.fixture
 def deletion_decided(removed_method: str, monkeypatch: pytest.MonkeyPatch) -> str:
-    """:data:`DC` removed from the study with its deletion decided
+    """:data:`REMOVED` removed from the study with its deletion decided
     (``remove_method_data.DELETION_DECISIONS``), for one test."""
     monkeypatch.setattr(
         remove_method_data,
@@ -911,21 +911,21 @@ def _leftovers(runs: Path) -> list[str]:
     make_cell(
         runs,
         "webshop",
-        DC,
+        REMOVED,
         test=TEST,
-        snapshot={"method": DC, "notes": ""},
+        snapshot={"method": REMOVED, "notes": ""},
         calls=[_call("learner", "learning", 0.04)],
     )
     root = make_cell(
         runs,
         "alfworld",
-        DC,
+        REMOVED,
         test=[],
         status="interrupted",
         calls=[_call("actor", "learning", 0.01, item="u1")],
     )
     (root / "attempt-01" / "snapshots" / "frozen.json").unlink()
-    return [f"alfworld-luna-{DC}", f"webshop-luna-{DC}"]
+    return [f"alfworld-luna-{REMOVED}", f"webshop-luna-{REMOVED}"]
 
 
 def test_a_removed_methods_cells_are_listed_not_summarized(
@@ -948,13 +948,13 @@ def test_a_removed_methods_cells_are_listed_not_summarized(
     )
     assert [c["cell_id"] for c in summary["removed"]] == removed_ids
     by_id = {c["cell_id"]: c for c in summary["removed"]}
-    decision = study.REMOVED_METHODS[DC].decision
-    assert by_id[f"webshop-luna-{DC}"] == {
-        "cell_id": f"webshop-luna-{DC}",
-        "cell_dir": f"webshop-luna-{DC}",
+    decision = study.REMOVED_METHODS[REMOVED].decision
+    assert by_id[f"webshop-luna-{REMOVED}"] == {
+        "cell_id": f"webshop-luna-{REMOVED}",
+        "cell_dir": f"webshop-luna-{REMOVED}",
         "benchmark": "webshop",
         "model_key": "luna",
-        "method": DC,
+        "method": REMOVED,
         "split_mode": "protocol",
         "status": "complete",
         "complete": True,
@@ -970,16 +970,16 @@ def test_a_removed_methods_cells_are_listed_not_summarized(
         "on_disk": True,
         "deleted": None,
     }
-    assert by_id[f"alfworld-luna-{DC}"]["status"] == "interrupted"
+    assert by_id[f"alfworld-luna-{REMOVED}"]["status"] == "interrupted"
     removed_uncounted = (
         summary["removed_unknown_cost_calls"],
         summary["removed_unfinished_calls"],
     )
     assert removed_uncounted == (0, 0)
     assert summary["removed_methods"] == {
-        DC: {
+        REMOVED: {
             "decision": decision,
-            "reason": study.REMOVED_METHODS[DC].reason,
+            "reason": study.REMOVED_METHODS[REMOVED].reason,
             "cells": removed_ids,
         }
     }
@@ -991,10 +991,15 @@ def test_a_removed_methods_cells_are_listed_not_summarized(
     assert S.main(["--runs-dir", str(runs)]) == S.EXIT_OK
     out = capsys.readouterr().out
     assert (
-        f"removed from the study, set aside (not summarized): {DC}, {decision}: "
+        f"removed from the study, set aside (not summarized): {REMOVED}, {decision}: "
     ) in out
-    assert f"  webshop-luna-{DC}  [complete; attempt 1 complete] cost $0.0400" in out
-    assert f"  alfworld-luna-{DC}  [interrupted; attempt 1 testing] cost $0.0100" in out
+    assert (
+        f"  webshop-luna-{REMOVED}  [complete; attempt 1 complete] cost $0.0400" in out
+    )
+    assert (
+        f"  alfworld-luna-{REMOVED}  [interrupted; attempt 1 testing] cost $0.0100"
+        in out
+    )
     assert (
         "2 cells, total cost $0.0600; 2 cell(s) of removed methods set aside, $0.0500 "
         "more ($0.1100 with them); every learning method learned something"
@@ -1032,7 +1037,7 @@ def test_deleted_removed_cells_are_listed_from_their_manifest_at_the_same_cost(
     cell(runs, "awm")
     removed_ids = _leftovers(runs)
     before = S.summarize(runs)
-    code, out = remove_method_data.run(runs, DC, yes=True, argv=["test"])
+    code, out = remove_method_data.run(runs, REMOVED, yes=True, argv=["test"])
     assert code == remove_method_data.EXIT_OK, out
     assert not any((runs / cell_id).exists() for cell_id in removed_ids)
     after = S.summarize(runs)
@@ -1070,7 +1075,7 @@ def test_deleted_removed_cells_are_listed_from_their_manifest_at_the_same_cost(
     assert S.main(["--runs-dir", str(runs)]) == S.EXIT_OK
     text = capsys.readouterr().out
     assert (
-        f"  webshop-luna-{DC}  [complete; attempt 1 complete] cost $0.0400; data "
+        f"  webshop-luna-{REMOVED}  [complete; attempt 1 complete] cost $0.0400; data "
         "deleted "
     ) in text
     assert f"(removal {manifest.removal_id}; cost from its manifest)" in text
@@ -1088,7 +1093,7 @@ def test_a_cell_its_manifest_lists_but_still_on_disk_is_listed_once(
     before = S.summarize(runs)
     copy = tmp_path / "copy"
     shutil.copytree(runs, copy)
-    code, out = remove_method_data.run(copy, DC, yes=True, argv=["test"])
+    code, out = remove_method_data.run(copy, REMOVED, yes=True, argv=["test"])
     assert code == remove_method_data.EXIT_OK, out
     shutil.copytree(copy / "_removed", runs / "_removed")
     during = S.summarize(runs)
@@ -1101,7 +1106,7 @@ def test_an_unreadable_removal_manifest_is_named(tmp_path, capsys, deletion_deci
     runs = tmp_path / "runs"
     cell(runs, "awm")
     _leftovers(runs)
-    code, out = remove_method_data.run(runs, DC, yes=True, argv=["test"])
+    code, out = remove_method_data.run(runs, REMOVED, yes=True, argv=["test"])
     assert code == remove_method_data.EXIT_OK, out
     (manifest,) = remove_method_data.load_manifests(runs)
     manifest.path.write_text("{torn", encoding="utf-8")
@@ -1174,7 +1179,7 @@ def test_the_all_cells_total_names_the_removed_cells_calls_of_unknown_cost(
     make_cell(
         runs,
         "webshop",
-        DC,
+        REMOVED,
         test=[],
         status="interrupted",
         calls=[
@@ -1211,7 +1216,7 @@ def test_a_removed_cell_whose_cell_json_names_no_method_is_listed_by_its_id(
     cell(runs, "awm")
     removed_ids = _leftovers(runs)
     before = S.summarize(runs)
-    manifest = runs / f"webshop-luna-{DC}" / "cell.json"
+    manifest = runs / f"webshop-luna-{REMOVED}" / "cell.json"
     record = json.loads(manifest.read_text())
     del record["cell"]["method"]
     manifest.write_text(json.dumps(record))

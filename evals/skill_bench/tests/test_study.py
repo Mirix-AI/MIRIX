@@ -20,7 +20,7 @@ REMOVED = REMOVED_METHOD
 def test_this_release_removes_no_method():
     assert dict(study.REMOVED_METHODS) == {}
     assert study.removed_methods_record() == {}
-    assert not study.is_removed("dynamic_cheatsheet")
+    assert not study.is_removed(REMOVED)
     with pytest.raises(TypeError):
         study.REMOVED_METHODS["x"] = study.Removal("d", "r")  # type: ignore[index]
 

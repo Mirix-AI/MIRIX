@@ -32,8 +32,12 @@ GATES = [
     "--memory-emergency-gb",
     "3",
 ]
-#: A synthetic USD budget for r1-r3.
+#: Synthetic USD budgets for r1-r3, the pilot and dev (the launcher has no default).
 BUDGET = "100"
+PILOT_BUDGET = "10"
+DEV_BUDGET = "50"
+#: The system's bash, found before a test narrows ``PATH``.
+BASH = shutil.which("bash") or "bash"
 
 
 def run(
@@ -47,7 +51,7 @@ def run(
         "TMUX_LOG": str(tmp_path / "tmux.log"),
     }
     return subprocess.run(
-        ["bash", str(script), *args],
+        [BASH, str(script), *args],
         env={**base, **env},
         capture_output=True,
         text=True,
@@ -57,6 +61,8 @@ def run(
 
 def printed(tmp_path: Path, step: str, *extra: str, **env: str) -> list[str]:
     env.setdefault("SKILL_BENCH_ENV_FILE", "/keys/skill-bench.env")
+    env.setdefault("P16_PILOT_BUDGET", PILOT_BUDGET)
+    env.setdefault("P16_DEV_BUDGET", DEV_BUDGET)
     done = run(tmp_path, "print", step, *extra, **env)
     assert done.returncode == 0, done.stderr
     return shlex.split(done.stdout)
@@ -92,9 +98,9 @@ def expected(step: str, *, budget: str, port: str, concurrency: str = "4") -> li
 
 def test_each_step_gets_its_options(tmp_path):
     assert printed(tmp_path, "pilot") == expected(
-        "pilot", budget="5", port="18544", concurrency="2"
+        "pilot", budget=PILOT_BUDGET, port="18544", concurrency="2"
     )
-    assert printed(tmp_path, "dev") == expected("dev", budget="60", port="18545")
+    assert printed(tmp_path, "dev") == expected("dev", budget=DEV_BUDGET, port="18545")
     for n in (1, 2, 3):
         assert printed(tmp_path, f"r{n}", P16_BUDGET=BUDGET) == expected(
             f"r{n}", budget=BUDGET, port=f"1854{n}"
@@ -217,7 +223,11 @@ def test_the_default_config_is_launch_env_under_the_config_home(tmp_path):
     ("args", "env", "message"),
     [
         (("print", "r1"), {"SKILL_BENCH_ENV_FILE": "/k"}, "set P16_BUDGET"),
-        (("print", "dev"), {}, "set SKILL_BENCH_ENV_FILE"),
+        (("print", "pilot"), {"SKILL_BENCH_ENV_FILE": "/k"}, "set P16_PILOT_BUDGET"),
+        (("print", "dev"), {"SKILL_BENCH_ENV_FILE": "/k"}, "set P16_DEV_BUDGET"),
+        (("exec", "pilot"), {"SKILL_BENCH_ENV_FILE": "/k"}, "set P16_PILOT_BUDGET"),
+        (("exec", "dev"), {"SKILL_BENCH_ENV_FILE": "/k"}, "set P16_DEV_BUDGET"),
+        (("print", "dev"), {"P16_DEV_BUDGET": DEV_BUDGET}, "set SKILL_BENCH_ENV_FILE"),
         (("print", "r4"), {"SKILL_BENCH_ENV_FILE": "/k"}, "unknown step 'r4'"),
         (("print", "dev", "r1"), {"SKILL_BENCH_ENV_FILE": "/k"}, "takes one step"),
         (("up",), {"SKILL_BENCH_ENV_FILE": "/k"}, "name the steps"),
@@ -237,7 +247,14 @@ def test_the_usage_is_the_header_only(tmp_path):
     lines = done.stderr.splitlines()
     assert lines[0].startswith("# The supervisors of the phase16 studies' steps")
     assert all(line.startswith("#") for line in lines)
-    for word in ("install-unit", "P16_BENCHMARKS", "P16_PORT_BASE", "launch.env"):
+    for word in (
+        "install-unit",
+        "P16_BENCHMARKS",
+        "P16_PORT_BASE",
+        "P16_PILOT_BUDGET",
+        "P16_DEV_BUDGET",
+        "launch.env",
+    ):
         assert word in done.stderr, word
     assert "set -u" not in done.stderr
 
@@ -477,7 +494,13 @@ def test_one_budget_at_a_time(tmp_path):
     budget start: r2 and r3 start beside r1. P16_ALLOW_OVERLAP=1 starts it anyway."""
     log = fake_tmux(tmp_path)
     runs = tmp_path / "runs"
-    env = {"SKILL_BENCH_ENV_FILE": "/k", "P16_BUDGET": BUDGET, "P16_RUNS": str(runs)}
+    env = {
+        "SKILL_BENCH_ENV_FILE": "/k",
+        "P16_BUDGET": BUDGET,
+        "P16_PILOT_BUDGET": PILOT_BUDGET,
+        "P16_DEV_BUDGET": DEV_BUDGET,
+        "P16_RUNS": str(runs),
+    }
     dev = hold(runs, "dev")
     try:
         for args in (("up", "r1", "r2", "r3"), ("up", "pilot"), ("exec", "r1")):
@@ -640,3 +663,152 @@ def test_p16_benchmarks_narrows_the_replicates(tmp_path):
     done = run(tmp_path, "up", "r2", P16_PYTHON=str(python), PY_LOG=str(log), **env)
     assert done.returncode == 0, done.stderr
     assert tmux_log.read_text().splitlines()[-1].startswith("new-session -d -s p16-r2 ")
+
+
+def test_status_needs_no_budget_or_key_file(tmp_path):
+    """``status`` only reads: ``supervise --status`` of each step (default: all five),
+    with no budget and no key file set."""
+    python = fake_python(tmp_path)
+    log = tmp_path / "py.log"
+    runs = tmp_path / "runs"
+    env = {"P16_PYTHON": str(python), "PY_LOG": str(log), "P16_RUNS": str(runs)}
+    for args, steps in (
+        ((), ("pilot", "dev", "r1", "r2", "r3")),
+        (("dev", "r2"), ("dev", "r2")),
+    ):
+        log.unlink(missing_ok=True)
+        done = run(tmp_path, "status", *args, **env)
+        assert done.returncode == 0, done.stderr
+        assert done.stdout.splitlines() == [
+            f"== {step} ({runs}/phase16-{step})" for step in steps
+        ]
+        calls = [line.split("|", 1)[1] for line in log.read_text().splitlines()]
+        assert calls == [
+            "-m evals.skill_bench.tools.supervise --status --runs-dir "
+            f"{runs}/phase16-{step}"
+            for step in steps
+        ]
+    done = run(tmp_path, "status", "r4", **env)
+    assert done.returncode == 2 and "unknown step 'r4'" in done.stderr
+
+
+def test_up_needs_the_budget_of_each_step_it_starts(tmp_path):
+    """No USD default: ``up`` refuses a step without its budget before any tmux call. A
+    step whose supervisor runs starts nothing, so it needs none."""
+    log = fake_tmux(tmp_path)
+    runs = tmp_path / "runs"
+    env = {"SKILL_BENCH_ENV_FILE": "/k", "P16_RUNS": str(runs)}
+    for step, name in (
+        ("pilot", "P16_PILOT_BUDGET"),
+        ("dev", "P16_DEV_BUDGET"),
+        ("r1", "P16_BUDGET"),
+    ):
+        done = run(tmp_path, "up", step, **env)
+        assert done.returncode == 2, (step, done.stdout, done.stderr)
+        assert done.stderr.startswith(f"phase16.sh: set {name}, the USD budget for ")
+        assert done.stdout == ""
+    assert not log.exists()
+    dev = hold(runs, "dev")
+    try:
+        done = run(tmp_path, "up", "dev", **env)
+        assert done.returncode == 0, done.stderr
+        assert (
+            done.stdout
+            == f"dev: a supervisor holds {runs}/phase16-dev; left as it is\n"
+        )
+    finally:
+        dev.close()
+
+
+def test_recover_brings_back_postgres_and_webshop_without_a_budget(tmp_path):
+    """``recover`` brings back the compose Postgres and the WebShop server whatever is
+    set; starting a step's supervisor then needs its budget, as ``up`` does."""
+    tmux_log = fake_tmux(tmp_path)
+    python = fake_python(tmp_path)
+    py_log = tmp_path / "py.log"
+    docker_log = tmp_path / "docker.log"
+    docker = tmp_path / "bin" / "docker"
+    docker.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$DOCKER_LOG"\nexit 0\n')
+    docker.chmod(0o755)
+    done = run(
+        tmp_path,
+        "recover",
+        "dev",
+        SKILL_BENCH_ENV_FILE="/k",
+        P16_PYTHON=str(python),
+        P16_RUNS=str(tmp_path / "runs"),
+        PY_LOG=str(py_log),
+        DOCKER_LOG=str(docker_log),
+    )
+    assert done.returncode == 2
+    assert "phase16.sh: set P16_DEV_BUDGET, the USD budget for dev" in done.stderr
+    assert docker_log.read_text().splitlines() == [
+        "compose -f evals/skill_bench/infra/compose.yaml up -d"
+    ]
+    calls = [line.split("|", 1)[1] for line in py_log.read_text().splitlines()]
+    assert calls[0] == "-m evals.skill_bench.envs.webshop --start --wait-s 1800"
+    assert not tmux_log.exists()
+
+
+def test_up_and_recover_refuse_without_tmux(tmp_path):
+    """Without tmux, ``up`` exits 2 and says what to do instead, before any start and
+    without claiming one; ``recover`` refuses before Postgres and WebShop."""
+    bin_dir = tmp_path / "bin-without-tmux"
+    bin_dir.mkdir()
+    for tool in ("dirname", "tr"):
+        found = shutil.which(tool)
+        assert found, tool
+        (bin_dir / tool).symlink_to(found)
+    docker_log = tmp_path / "docker.log"
+    docker = bin_dir / "docker"
+    docker.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$DOCKER_LOG"\nexit 0\n')
+    docker.chmod(0o755)
+    python = fake_python(tmp_path)
+    py_log = tmp_path / "py.log"
+    env = {
+        "PATH": str(bin_dir),
+        "SKILL_BENCH_ENV_FILE": "/k",
+        "P16_BUDGET": BUDGET,
+        "P16_RUNS": str(tmp_path / "runs"),
+        "P16_PYTHON": str(python),
+        "PY_LOG": str(py_log),
+        "DOCKER_LOG": str(docker_log),
+    }
+    for command in ("up", "recover"):
+        done = run(tmp_path, command, "r1", **env)
+        assert done.returncode == 2, (command, done.stdout, done.stderr)
+        assert done.stderr.startswith(
+            "phase16.sh: tmux is not installed (not on PATH)"
+        ), done.stderr
+        assert "phase16.sh exec STEP" in done.stderr
+        assert "command not found" not in done.stderr
+        assert done.stdout == ""
+    assert not docker_log.exists()
+    assert "envs.webshop" not in (py_log.read_text() if py_log.exists() else "")
+
+
+def test_up_stops_when_tmux_cannot_start_a_session(tmp_path):
+    """A session tmux could not start is an error (exit 2), never reported as started."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    tmux = bin_dir / "tmux"
+    tmux.write_text(
+        '#!/bin/sh\n[ "$1" = new-session ] && exit 1\n[ "$1" = has-session ] && exit 1\n'
+        "exit 0\n"
+    )
+    tmux.chmod(0o755)
+    done = run(
+        tmp_path,
+        "up",
+        "r1",
+        "r2",
+        SKILL_BENCH_ENV_FILE="/k",
+        P16_BUDGET=BUDGET,
+        P16_RUNS=str(tmp_path / "runs"),
+    )
+    assert done.returncode == 2
+    assert done.stdout == ""
+    assert done.stderr == (
+        "phase16.sh: r1: tmux could not start the session p16-r1 (exit 1); its "
+        "supervisor is not running\n"
+    )

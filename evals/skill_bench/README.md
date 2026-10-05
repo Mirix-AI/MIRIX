@@ -23,16 +23,25 @@ This release contains code only: no run records and no results. For how MIRIX's 
 
 All commands below run from the root of your checkout, written `<checkout>`, with the virtual environment at `<checkout>/.venv`.
 
+The order of the work is:
+1. install, fetch the data and start the services (§3, §4);
+2. configure the key and the launcher (§5);
+3. run the offline checks (§6);
+4. run smoke cells to estimate the cost (§7, §8.1);
+5. set the budget, run the study's preflight and start the replicates (§8);
+6. audit, report and aggregate (§10).
+
 ## 2. Requirements
 
 | Requirement | Why |
 |---|---|
-| **x86_64 Linux** | The WebShop server image is built for `linux/amd64` only (`envs/webshop.py`, `build_argv`; the Dockerfile sets an amd64 Java path). macOS can run ALFWorld cells only. |
+| **x86_64 Linux** | The WebShop server image is built for `linux/amd64` only (`envs/webshop.py`, `build_argv`; the Dockerfile sets an amd64 Java path). **macOS can run ALFWorld cells only:** pass `--benchmark alfworld` to preflight and to smoke runs there. The study includes WebShop, so its preflight (`--study phase16`) cannot report ready on macOS. |
 | **Docker Engine with the Compose plugin** (`docker compose`) | Runs Postgres and the WebShop server. The user who runs the harness must be able to use `docker` without `sudo`: MIRIX checkpoints run `pg_dump` inside the Postgres container with `docker exec`. |
 | **Python 3.11** | The harness and MIRIX. `pyproject.toml` allows 3.10 or newer; the constraints file `evals/skill_bench/requirements-lock.txt` was resolved with Python 3.11.13. |
-| **uv** (recommended), or pip | Installs the environment from the constraints file (§3) |
+| **uv** (recommended), or pip | Installs the environment with the constraints file (§3) |
+| **make and a C++ compiler** | `fast-downward-textworld`, a dependency of `textworld`, builds from source during the install. On Debian or Ubuntu install `build-essential`; on macOS the Xcode command-line tools. `cmake` comes from PyPI. |
 | **git** | Cloning; every attempt records the commit it ran |
-| **tmux** | `tools/phase16.sh up` starts each replicate in its own tmux session. Without tmux, use `phase16.sh exec` in the foreground (§8.1). |
+| **tmux** | `tools/phase16.sh up` starts each replicate in its own tmux session, and refuses to start without tmux. Without tmux, use `phase16.sh exec` in the foreground (§8.3). |
 | **An OpenRouter API key** | Preferably a key used for nothing else. The harness's budgets count **all** spend on the key since the budget started, whoever spent it (`--budget` in `infra/gateway.py`). |
 | **Network access** | OpenRouter during runs. For setup: PyPI, GitHub (the ALFWorld data release, the WebShop source), Hugging Face (the WebShop product data), Docker Hub (the Postgres and Python base images) and `snapshot.debian.org` (Java packages for the WebShop image). |
 
@@ -55,7 +64,7 @@ Estimated GB per cell (`CELL_MEMORY_GB`), by benchmark and method (RB = `reasoni
 The launcher runs up to 4 cells per replicate (`P16_CONCURRENCY`), so up to 12 cells at once, of which at most 6 are WebShop cells. Starting all 12 at once, all of them MIRIX cells, therefore needs about 12 × 1.4 GB + 24 GB (WebShop cap) + 8 GB (gate) ≈ 49 GB of available memory, plus the gateways, Postgres and the operating system. With less memory, the gate simply starts fewer cells at a time. The 24 GB figure is the WebShop container's cap; how much of it the server uses is not set by the code.
 
 **Disk.** The launch gate keeps `--min-free-disk-gb 15` free under the runs directory. Space is used by:
-- the ALFWorld game files (`$ALFWORLD_DATA`);
+- the ALFWorld game files (`$ALFWORLD_DATA`): a download of about 320 MB that unpacks to about 2 GB;
 - the WebShop image: about 5.7 GB of pinned product data (the file sizes in `WEBSHOP_DATA`), its Lucene index, Java and Python layers, and Docker's build cache;
 - the Postgres volume, with one database per MIRIX cell attempt;
 - the runs directories: trajectories, gateway ledgers, the latest two learning checkpoints per cell (a full database dump for MIRIX cells), and what learning resumes rolled back.
@@ -68,6 +77,7 @@ The code sets no total for these; leave room beyond the gate's 15 GB.
 git clone <repository-url> <checkout>
 cd <checkout>
 uv venv --python 3.11 .venv
+. .venv/bin/activate
 uv pip install --python .venv/bin/python -e '.[skill-bench]' -c evals/skill_bench/requirements-lock.txt
 ```
 
@@ -75,11 +85,14 @@ With plain pip instead of uv:
 
 ```bash
 python3.11 -m venv .venv
-.venv/bin/python -m pip install --upgrade pip
-.venv/bin/python -m pip install -e '.[skill-bench]' -c evals/skill_bench/requirements-lock.txt
+. .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e '.[skill-bench]' -c evals/skill_bench/requirements-lock.txt
 ```
 
-The `skill-bench` extra (`pyproject.toml`) adds ALFWorld, its game engine and the harness's other dependencies. The constraints file `evals/skill_bench/requirements-lock.txt` pins the packages of the environment to exact versions, resolved with Python 3.11.13. Among them are `alfworld==0.4.2` and `textworld==1.7.0`; the ALFWorld environment refuses any other installed version of the engine. The file lists one version per package and has no platform markers. Install with it, so that your environment matches the one the harness was tested with.
+**Activate the environment before installing.** `fast-downward-textworld` builds from source, and its build runs `python` from `PATH`. Without the active environment, the pip route fails with `No such file or directory: 'python'`. The build also needs make and a C++ compiler (§2).
+
+The `skill-bench` extra (`pyproject.toml`) adds ALFWorld, its game engine and the harness's other dependencies. The constraints file `evals/skill_bench/requirements-lock.txt`, resolved with Python 3.11.13, fixes the version of every package the install pulls in. Among them are `alfworld==0.4.2` and `textworld==1.7.0`; the ALFWorld environment refuses any other installed version of the engine. A constraints file only constrains versions and installs nothing by itself: packages it lists that the extra does not need, such as development tools, are not installed. It has no platform markers.
 
 **Tokenizer vocabulary.** The gateway, MIRIX and the tests count tokens with tiktoken's `o200k_base`, read from tiktoken's cache. Cache it once, in a directory that survives reboots:
 
@@ -89,10 +102,10 @@ export TIKTOKEN_CACHE_DIR="$HOME/.cache/tiktoken"
 .venv/bin/python -c "import tiktoken; tiktoken.get_encoding('o200k_base')"
 ```
 
-Set the same `TIKTOKEN_CACHE_DIR` in the launcher config (§5.2), so that the gateway and each cell's MIRIX server read the same cache. Without it, they fall back to tiktoken's cache in the system temp directory.
+Set the same `TIKTOKEN_CACHE_DIR` in the launcher config (§5.2) and in every shell that runs the tests (§6, §12), so that the gateway, each cell's MIRIX server and the tests read the same cache. Without it, they look in `DATA_GYM_CACHE_DIR` if that is set, else in tiktoken's cache in the system temp directory.
 
 Without the cached vocabulary:
-- every harness test is skipped, and the skip message gives the command above;
+- every harness test is skipped, and pytest still exits 0. The skip message names the caching command as `python -c "import tiktoken; …"`: run it with the environment's Python, as above;
 - the gateway falls back to estimating tokens from characters, and every cell refuses to run on it.
 
 On a host without internet access, copy the cache directory from a machine that has fetched it, and point `TIKTOKEN_CACHE_DIR` at the copy.
@@ -106,7 +119,7 @@ export ALFWORLD_DATA="$HOME/.cache/alfworld"   # the default if unset
 .venv/bin/alfworld-download
 ```
 
-`alfworld-download` writes to `$ALFWORLD_DATA`. Before playing a game, the harness checks the game files of every split it uses against `envs/splits/alfworld/gamefiles.sha256.json`, and it refuses a game whose files differ. The preflight check (§6) reports this as `data:alfworld`.
+`alfworld-download` writes to `$ALFWORLD_DATA`: about 320 MB to download, about 2 GB unpacked. Before playing a game, the harness checks the game files of every split it uses against `envs/splits/alfworld/gamefiles.sha256.json`, and it refuses a game whose files differ. The preflight check (§6) reports this as `data:alfworld`.
 
 ### 4.2 Postgres (MIRIX cells)
 
@@ -142,7 +155,7 @@ No Redis or Kafka is needed: every cell's MIRIX server runs with Redis disabled 
 # Start the server and wait up to 30 minutes until it is ready
 .venv/bin/python -m evals.skill_bench.envs.webshop --start --wait-s 1800
 
-# Check readiness at any time (prints /ready as JSON; exit 0 when ready)
+# Check readiness at any time
 .venv/bin/python -m evals.skill_bench.envs.webshop --status
 ```
 
@@ -154,15 +167,17 @@ The image build:
 
 The image tag is `skill-bench-webshop:<digest>`, where the digest is computed from the files of `envs/templates/webshop_server/`. A checkout whose server files differ therefore needs its own build.
 
-`--start` runs the container `skill-bench-webshop`, published on `127.0.0.1:18560`, with the restart policy `unless-stopped` and the committed split files mounted read-only. If the container is already running, it is left as it is. If it exists but has stopped, it is replaced.
+`--start` runs the container `skill-bench-webshop`, published on `127.0.0.1:18560`, with the restart policy `unless-stopped` and the committed split files mounted read-only. If a container of that name is already running, `--start` leaves it as it is, **even one started from another checkout's image** (on a shared host, say); preflight and the WebShop cells then refuse it. Replace it with `--stop` and then `--start`, after making sure no other checkout's WebShop cells still use it. A container that exists but has stopped is replaced.
 
-While loading the product set and the index, the server answers `loading`. When it is done it answers `ready`, or `failed` with a list of problems: before it serves, it checks every goal of the committed split files, the price table, the data and the index record. Use `--stop` to remove the container.
+`--wait-s` waits until the server answers `ready` and fails if it answers `failed` or the time runs out. While loading the product set and the index, the server answers `loading`. When it is done it answers `ready`, or `failed` with a list of problems: before it serves, it checks every goal of the committed split files, the price table, the data and the index record.
 
-`--start-prepare` and `--stop-prepare` start and remove a separate container that is used only to draw new WebShop split files (`tools/prepare_webshop.py`). The committed split files are final, so a reproduction does not need it.
+`--status` prints the server's `/ready` answer as JSON and exits 0 when the server is ready. With no server listening, it prints a Python traceback ending in `WebShopServerError: … ConnectError …` and exits 1. `--status` asks `127.0.0.1` on `--port` (default 18560); it does not read `SKILL_BENCH_WEBSHOP_URL`.
 
 The index record is written so that two builds from the same product files, upstream commit and packages produce the same bytes (`envs/templates/webshop_server/data_index.py`). Its sha256 is compared with `index_sha256` in `envs/splits/webshop/source.json`: a server whose build record differs from the committed one answers `failed`, and no WebShop cell starts on it.
 
-If you change `--port`, set `SKILL_BENCH_WEBSHOP_URL` (e.g. `http://127.0.0.1:<port>`) for the harness. Note that `phase16.sh recover` always starts the server on the default port.
+`--start-prepare` and `--stop-prepare` start and remove a separate container that is used only to draw new WebShop split files (`tools/prepare_webshop.py`). The committed split files are final, so a reproduction does not need it.
+
+If you change `--port`, set `SKILL_BENCH_WEBSHOP_URL` (e.g. `http://127.0.0.1:<port>`) for the harness, and pass the same `--port` to `--status`. Note that `phase16.sh recover` always starts the server on the default port.
 
 ## 5. Configuration
 
@@ -183,24 +198,29 @@ Every launcher command finds this file through `SKILL_BENCH_ENV_FILE` and passes
 
 ### 5.2 The launcher config file
 
-`tools/phase16.sh` sources `${P16_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/skill-bench/launch.env}` with bash, if the file exists. Every variable in it is exported to the supervisor, the scheduler, the gateway and the workers, apart from credential-like names, which the workers never receive. The file holds the key file's path, never the key. The systemd unit (§8.1) runs the launcher without your shell's environment, so keep the file at its default path if you use the unit.
+`tools/phase16.sh` sources `${P16_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/skill-bench/launch.env}` with bash, if the file exists. Every variable in it is exported to the supervisor, the scheduler, the gateway and the workers, apart from credential-like names, which the workers never receive. The file holds the key file's path, never the key. The systemd unit (§8.3) runs the launcher without your shell's environment, so keep the file at its default path if you use the unit.
+
+**The file wins over the environment.** The launcher starts from the environment it is given and then sources the file with every variable exported, so a variable the file sets replaces the same variable in the environment: `P16_BUDGET=7 evals/skill_bench/tools/phase16.sh up r1` still uses the file's `P16_BUDGET` if the file sets one. Change settings in the file, or point `P16_CONFIG` at another file. A variable the file leaves unset is taken from the environment.
+
+Write the file now, and leave `P16_BUDGET` commented out until you have estimated the cost (§8.1):
 
 ```bash
 CFG="${XDG_CONFIG_HOME:-$HOME/.config}/skill-bench"     # as in 5.1
 cat > "$CFG/launch.env" <<EOF
 # Sourced by evals/skill_bench/tools/phase16.sh; every variable is exported.
 SKILL_BENCH_ENV_FILE=$CFG/openrouter.env
-# Required for r1-r3: the USD the three replicates may spend together on this key.
-P16_BUDGET=
 ALFWORLD_DATA=$HOME/.cache/alfworld
 TIKTOKEN_CACHE_DIR=$HOME/.cache/tiktoken
+# Set after the cost estimate (README 8.1): the USD r1-r3 may spend together on this key.
+# P16_BUDGET=
 # Optional, see the table in 5.4:
+# P16_PILOT_BUDGET=
+# P16_DEV_BUDGET=
 # SKILL_BENCH_PG_PORT=55432
 # P16_CONCURRENCY=4
 # P16_NOTIFY_CMD=<a command to run on every alert>
 EOF
 chmod 600 "$CFG/launch.env"
-"${EDITOR:-vi}" "$CFG/launch.env"   # fill in P16_BUDGET (§8.5)
 ```
 
 To use these settings in your own shell, for example for preflight:
@@ -222,28 +242,31 @@ unset MIRIX_API_KEY   # the MIRIX method refuses to run while it is set
 
 ### 5.4 Environment variable reference
 
+Variables read by `tools/phase16.sh` can be set in the launcher config or in the environment; the config file wins (§5.2).
+
 | Variable | Read by | Default | Meaning |
 |---|---|---|---|
 | `SKILL_BENCH_ENV_FILE` | `tools/phase16.sh` | none (required) | Path of the key file; passed as `--env-file` |
 | `OPENROUTER_API_KEY` | `infra/gateway.py` (`load_api_key`), `tools/preflight.py` | none | Put it **in the key file**. It is read from the environment only when no `--env-file` is given. |
-| `P16_CONFIG` | `tools/phase16.sh` | `${XDG_CONFIG_HOME:-$HOME/.config}/skill-bench/launch.env` | The launcher config file |
+| `P16_CONFIG` | `tools/phase16.sh` (from the environment) | `${XDG_CONFIG_HOME:-$HOME/.config}/skill-bench/launch.env` | The launcher config file |
 | `P16_BUDGET` | `tools/phase16.sh` | none (required for r1–r3) | Total USD budget of r1–r3 together, counted on the key's usage from one shared start |
-| `P16_CONCURRENCY` | `tools/phase16.sh` | `4` | `--concurrency` of `dev` and r1–r3: cells per replicate (1–24) |
+| `P16_PILOT_BUDGET`, `P16_DEV_BUDGET` | `tools/phase16.sh` | none (required for `pilot` and `dev`) | USD budgets of the optional `pilot` and `dev` steps |
+| `P16_CONCURRENCY` | `tools/phase16.sh` | `4` | `--concurrency` of `dev` and r1–r3: cells per replicate (1–24). The pilot always runs with `--concurrency 2`. |
 | `P16_GATES` | `tools/phase16.sh` | `--min-free-memory-gb 8 --min-free-disk-gb 15 --memory-emergency-gb 3` | The scheduler's resource gates |
 | `P16_PORT_BASE` | `tools/phase16.sh` | `18540` | Gateway ports: r1, r2 and r3 use base + 1, + 2 and + 3; `pilot` base + 4; `dev` base + 5 |
 | `P16_NOTIFY_CMD` | `tools/phase16.sh` → `supervise.py --notify-cmd` | none | Command run on every alert. It is split with `shlex`, never run through a shell, and receives the alert text in `$SKILL_BENCH_ALERT`. |
 | `P16_PYTHON` | `tools/phase16.sh` | `.venv/bin/python` in the checkout | Interpreter |
 | `P16_RUNS` | `tools/phase16.sh` | `evals/skill_bench/runs` | Parent of the `phase16-<step>` runs directories |
 | `P16_WEBSHOP_WAIT_S` | `tools/phase16.sh recover` | `1800` | How long `recover` waits for the WebShop server |
-| `P16_PILOT_BUDGET`, `P16_DEV_BUDGET` | `tools/phase16.sh` | set in `phase16.sh` | Budgets of the optional `pilot` and `dev` steps |
 | `P16_ALLOW_OVERLAP` | `tools/phase16.sh` | unset | `1` starts a step while a step with another budget runs. Both then count each other's spend. |
-| `P16_METHODS`, `P16_BENCHMARKS` | `tools/phase16.sh` | unset (the whole study) | Narrow r1–r3 to some methods or benchmarks. Leave them unset to reproduce the study. A later launch that selects more cells than an earlier one in the same runs directory is refused. |
+| `P16_METHODS`, `P16_BENCHMARKS` | `tools/phase16.sh` | unset (the whole study) | Narrow r1–r3 to some methods or benchmarks. Leave them unset to reproduce the study. A later launch that selects more cells than an earlier one in the same runs directory is refused (§9). |
 | `ALFWORLD_DATA` | `envs/alfworld.py`, `alfworld-download`; exported by `phase16.sh` | `$HOME/.cache/alfworld` | ALFWorld game files |
-| `TIKTOKEN_CACHE_DIR` | tiktoken, `infra/mirix_server.py` (`tiktoken_cache_dir`), the gateway, the tests | tiktoken's temp-directory cache | Where the `o200k_base` vocabulary is cached |
+| `TIKTOKEN_CACHE_DIR` | tiktoken, `infra/mirix_server.py` (`tiktoken_cache_dir`), the gateway, the tests | see `DATA_GYM_CACHE_DIR` | Where the `o200k_base` vocabulary is cached |
+| `DATA_GYM_CACHE_DIR` | tiktoken, `infra/mirix_server.py` (`tiktoken_cache_dir`) | tiktoken's temp-directory cache | The tokenizer cache when `TIKTOKEN_CACHE_DIR` is unset |
 | `SKILL_BENCH_PG_PORT` | `infra/compose.yaml`, `infra/mirix_server.py` (`PostgresAdmin`) | `55432` | Host port of the compose Postgres |
 | `SKILL_BENCH_SUBNET` | `infra/compose.yaml` | a private `/24` | Docker network subnet of the compose project |
 | `SKILL_BENCH_PG_CONTAINER` | `infra/mirix_server.py` (`postgres_container`) | the container found by the compose labels | Postgres container that MIRIX checkpoints run `pg_dump` in |
-| `SKILL_BENCH_WEBSHOP_URL` | `envs/webshop.py` | `http://127.0.0.1:18560` | WebShop server address |
+| `SKILL_BENCH_WEBSHOP_URL` | `envs/webshop.py` (cells and preflight; not `--status`) | `http://127.0.0.1:18560` | WebShop server address |
 | `SKILL_BENCH_HOST_DIR` | `host_registry.py` | `$HOME/.cache/skill_bench/host` | Directory that all schedulers of a host share. It must be the same for every replicate. |
 | `SKILL_BENCH_ALERT` | set by `supervise.py` | — | Alert text passed to `--notify-cmd` |
 | `MIRIX_API_KEY` | `methods/mirix.py` | must be unset | If set, the MIRIX client would authenticate as another tenant, so the method refuses to run |
@@ -253,12 +276,15 @@ Each cell's MIRIX server receives none of your `MIRIX_*` variables. It runs with
 
 ## 6. Checks before spending
 
-**1. Unit tests.** They need no model, key or network, but they do need the cached tokenizer vocabulary:
+**1. Unit tests.** They need no model, key or network, but they do need the cached tokenizer vocabulary. Name its cache explicitly, since a new shell does not have it:
 
 ```bash
+export TIKTOKEN_CACHE_DIR="$HOME/.cache/tiktoken"   # where §3 cached the vocabulary
 env -u OPENROUTER_API_KEY -u OPENAI_API_KEY -u ANTHROPIC_API_KEY -u GEMINI_API_KEY -u GOOGLE_API_KEY \
   .venv/bin/python -m pytest -m "not integration" evals/skill_bench/tests
 ```
+
+Read pytest's summary line: it must report passed tests. If the vocabulary is not in the cache, every harness test is skipped and pytest still exits 0.
 
 **2. The study's cells.** This command writes nothing:
 
@@ -267,37 +293,40 @@ env -u OPENROUTER_API_KEY -u OPENAI_API_KEY -u ANTHROPIC_API_KEY -u GEMINI_API_K
   --runs-dir evals/skill_bench/runs/phase16-r1 --dry-run
 ```
 
-It prints 16 lines, one per cell: `alfworld-luna-mirix`, `alfworld-luna56-mirix`, … `webshop-luna56-none`.
+It prints 16 JSON lines, one per cell, from `{"cell": "alfworld-luna-mirix", "plan": "queued", "status": null}` to `{"cell": "webshop-luna56-none", "plan": "queued", "status": null}`.
 
-**3. Preflight.** No model is called. The only requests that leave the machine read the key's balance from OpenRouter, which is free, and the models' public metadata. Preflight checks:
+**3. Preflight.** Run `tools/preflight.py` before every paid run: before the smoke cells (§7), and before the study once its budget is set (§8.2). No model is called. The only requests that leave the machine read the key's balance from OpenRouter, which is free, and the models' public metadata. Preflight checks:
 - the key file, the balance and the budget record of the runs directory;
-- that `config/models.json` still matches OpenRouter's metadata for the models;
-- the commit and code it would run, and the host;
+- that `config/models.json` still matches OpenRouter's metadata for the models, and the provider routing policy (`provider_policy`; none is set in this release);
+- the commit and code it would run, the host, and consistency checks of the tree;
 - free memory and disk, against the launch gates;
 - each benchmark's data and environment: the ALFWorld game files and engine versions, and a ready WebShop server built from this checkout with the committed split files;
 - for MIRIX cells: no `.env` visible to MIRIX, no `MIRIX_API_KEY`, the compose Postgres with its template database, and MIRIX's retry and timeout settings.
 
-```bash
-set -a; . "${XDG_CONFIG_HOME:-$HOME/.config}/skill-bench/launch.env"; set +a
-.venv/bin/python -m evals.skill_bench.tools.preflight \
-  --env-file "$SKILL_BENCH_ENV_FILE" \
-  --study phase16 \
-  --runs-dir evals/skill_bench/runs/phase16-r1 \
-  --budget "$P16_BUDGET" \
-  --min-free-memory-gb 8 --min-free-disk-gb 15
-```
-
-Each check prints one line: `ok`, `warn`, `skip` or `FAIL`. Preflight must end with the line `preflight: ready (no check failed)` and exit status 0 before you launch. Warnings and skips do not block; a `warn` on the `code` line means tracked files differ from the commit, so commit or discard those changes first. The `balance` check requires the key's remaining balance to cover the gateway's pause floor (10 USD by default) plus `--budget`. `--offline` skips every network check.
+Each check prints one line: `ok`, `warn`, `skip` or `FAIL`. Preflight must end with the line `preflight: ready (no check failed)` and exit status 0 before you launch. Warnings and skips do not block; a `warn` on the `code` line means tracked files differ from the commit, so commit or discard those changes first. The `balance` check requires the key's remaining balance to cover the gateway's pause floor (10 USD by default) plus `--budget`. The disk check reads the runs directory or, while it does not exist yet, its parent: create `evals/skill_bench/runs` first on a fresh clone, or the `resources` line warns `unreadable: disk_usage`. `--offline` skips every network check.
 
 ## 7. A smoke run
 
 A smoke cell learns on the first N training items and tests on the first N **validation** items, never on the test split. Its id ends in `-smoke-l<N>-t<N>`. Run smoke cells in their own runs directory, and never while the replicates run: every budget counts all spend on the key.
 
+First set the smoke budget and run preflight for the smoke cells. On macOS, name only `--benchmark alfworld`: the WebShop check cannot pass there.
+
 ```bash
 set -a; . "${XDG_CONFIG_HOME:-$HOME/.config}/skill-bench/launch.env"; set +a
 SMOKE=evals/skill_bench/runs/smoke
 SMOKE_BUDGET_USD=        # fill in: the most this smoke directory may spend
+mkdir -p "$SMOKE"
 
+.venv/bin/python -m evals.skill_bench.tools.preflight \
+  --env-file "$SKILL_BENCH_ENV_FILE" \
+  --benchmark alfworld webshop --method none reasoningbank awm mirix \
+  --split-mode smoke \
+  --runs-dir "$SMOKE" --budget "$SMOKE_BUDGET_USD"
+```
+
+Then run one cell:
+
+```bash
 .venv/bin/python -m evals.skill_bench.run \
   --benchmark alfworld --model luna --method mirix \
   --split-mode smoke --n-train 2 --n-test 2 \
@@ -315,14 +344,14 @@ Without `--gateway-url`, `run.py` launches its own gateway on a free port and st
 | 1 | `crashed` | Run the same command again |
 | 2 | `test_incomplete` | Run again: only the pending test items run |
 | 3 | `learning_failed` | A harness failure stopped learning. Look at `attempt-NN/failures.jsonl`, then rerun with `--force-resume` (from the checkpoint) or `--new-attempt` (from scratch). |
-| 4 | `refused` or `violation` | Read the message. The cell needs a person. |
+| 4 | `refused` or `violation` | Read the message. The cell needs a person (§9). |
 | 5 | `busy` | Another `run.py` holds the cell |
 | 6 | `budget_paused` | The gateway is paused (balance or budget) |
 | 7 | `infra_unavailable` | Gateway, Postgres or the WebShop server was unreachable. Run again later. |
 | 8 | `learning_interrupted` | Run again: learning resumes from the latest checkpoint |
 | 130 | `interrupted` | Stopped by a signal. Run again to resume. |
 
-Several smoke cells can run behind one gateway with the scheduler. Here is every method on both benchmarks with `luna`:
+Several smoke cells can run behind one gateway with the scheduler. Here is every method on both benchmarks with `luna` (on macOS, `--benchmark alfworld` only):
 
 ```bash
 .venv/bin/python -m evals.skill_bench.schedule --runs-dir "$SMOKE" \
@@ -345,7 +374,36 @@ Inspect the smoke cells offline:
 
 ## 8. Running the study
 
-### 8.1 Start the three replicates
+### 8.1 Estimating cost
+
+The repository holds no cost figures. Estimate the cost from your own smoke cells:
+
+1. **Run smoke cells** (§7) for each benchmark × model × method you want to price. For MIRIX, use at least as many training items as MIRIX's trigger threshold (`SKILL_TRIGGER_SESSION_THRESHOLD` in `mirix/constants.py`, 5). With fewer, MIRIX learns only in the final flush, never in a regular learning run. The `dev` step (§8.6) gives a closer estimate, on the whole training and validation splits.
+2. **Read the cost section** of `report.py --split-mode smoke` (`## Cost` in `_report/report.md`). It gives each cell's cost by role and phase, with the learning side (setup and learning) apart from the test phase.
+3. **Compute per-item costs:** the learning cost ÷ N training items, and the test cost ÷ N test items.
+4. **Extrapolate** with the split sizes in `SPLIT_SIZES`. ALFWorld has 39 training and 134 test items; WebShop has 40 and 140. `none` cells have no learning side. Sum the 16 cells, then multiply by 3 replicates.
+5. **Add a margin.** Smoke cells test on validation items. MIRIX's learning cost per item grows with its skill bank. WebShop requests grow within an episode, because the actor sees the whole episode. The budget is also enforced only from OpenRouter's usage reading, so calls in flight can pass it slightly.
+
+Then set the budget in the launcher config: uncomment `P16_BUDGET=` in `launch.env` and fill in the amount. The key must hold this budget plus the 10 USD pause floor; the preflight `balance` check verifies it.
+
+### 8.2 Preflight for the study
+
+On the x86_64 Linux host that will run the study (on macOS, `data:webshop` fails and preflight cannot report ready):
+
+```bash
+set -a; . "${XDG_CONFIG_HOME:-$HOME/.config}/skill-bench/launch.env"; set +a
+mkdir -p evals/skill_bench/runs
+.venv/bin/python -m evals.skill_bench.tools.preflight \
+  --env-file "$SKILL_BENCH_ENV_FILE" \
+  --study phase16 \
+  --runs-dir evals/skill_bench/runs/phase16-r1 \
+  --budget "$P16_BUDGET" \
+  --min-free-memory-gb 8 --min-free-disk-gb 15
+```
+
+It must end with `preflight: ready (no check failed)` (§6).
+
+### 8.3 Start the three replicates
 
 Run all three replicates from one unmodified checkout. Leave `P16_METHODS` and `P16_BENCHMARKS` unset, so each replicate runs all 16 cells.
 
@@ -356,7 +414,7 @@ evals/skill_bench/tools/phase16.sh status r1 r2 r3
 tmux attach -t p16-r1          # watch a supervisor; detach with Ctrl-b d
 ```
 
-`up` starts one supervisor per replicate, each in its own tmux session `p16-<step>`. A step whose supervisor is already running is left alone. To see the exact supervisor command line without starting anything:
+`up` starts one supervisor per replicate, each in its own tmux session `p16-<step>`, and refuses with an error when `tmux` is not installed. A step whose supervisor is already running is left alone. To see the exact supervisor command line without starting anything:
 
 ```bash
 evals/skill_bench/tools/phase16.sh print r1
@@ -373,7 +431,7 @@ The launcher's commands (`STEP` is `pilot`, `dev`, `r1`, `r2` or `r3`):
 | `recover STEP... [-- EXTRA...]` | Starts the compose Postgres and the WebShop server, then runs `up` (§9) |
 | `install-unit` | Writes the systemd user unit for this checkout (below) |
 
-The launcher reads its config (§5.2) on every command. Every command that acts on a step (`status` without steps acts on all five) needs `SKILL_BENCH_ENV_FILE`, and the replicate steps also need `P16_BUDGET`.
+The launcher reads its config (§5.2) on every command. Every command that acts on a step needs `SKILL_BENCH_ENV_FILE` and that step's budget: `P16_BUDGET` for r1–r3, `P16_PILOT_BUDGET` for `pilot`, `P16_DEV_BUDGET` for `dev`. `status` without steps acts on all five, so name the steps you run (`status r1 r2 r3`).
 
 Each replicate's supervisor runs with these settings:
 
@@ -405,7 +463,7 @@ Each instance `skill-bench@STEP` runs `phase16.sh exec STEP`. Once enabled, it s
 
 Use either tmux or systemd for a step, not both. A second supervisor on the same runs directory exits with code 13.
 
-### 8.2 How cells are scheduled and resumed
+### 8.4 How cells are scheduled and resumed
 
 The process chain is: supervisor → `schedule.py --auto-resume` → one `run.py` worker per cell → a MIRIX server for MIRIX cells.
 
@@ -413,16 +471,16 @@ The process chain is: supervisor → `schedule.py --auto-resume` → one `run.py
 - **Learning.** Training items run one at a time, in a fixed seeded order. After setup and after every item, a learning checkpoint is written. An interruption (a crash, a signal, a reboot, an outage) leaves the attempt `learning_interrupted`. The next launch resumes from the latest checkpoint, on the same host.
 - **Test.** Test items run 4 at a time per cell. An interrupted test phase re-runs only the items without a scored result.
 - **Automatic resume.** The scheduler re-queues interrupted cells by itself. The back-off doubles with each resume that made no progress (1, 2, 4, 8, 16, then 30 minutes). After 5 such resumes in a row (2 for `crashed`) or 20 in all, the cell waits for a person.
-- **Cells that need a person** never start automatically. `phase16.sh status` lists them on its `attention:` line. These are `refused` and `violation` cells, learning stopped by a harness failure, and resume caps reached.
+- **Cells that need a person** never start automatically. `phase16.sh status` lists them on its `attention:` line. These are `refused` and `violation` cells, learning stopped by a harness failure, and resume caps reached. §9 explains how to release each.
 - **Pauses.** No cell is launched while the gateway is paused:
   - a low balance, the key's daily limit, an upstream 402 or an unknown budget is waited out;
   - a spent budget makes the scheduler stop once nothing runs (supervisor exit 10).
 
-### 8.3 Concurrency knobs
+### 8.5 Concurrency knobs
 
 | Knob | Set with | Default | Effect |
 |---|---|---|---|
-| Cells per replicate | `P16_CONCURRENCY` | 4 | `--concurrency` of each scheduler (1–24) |
+| Cells per replicate | `P16_CONCURRENCY` | 4 | `--concurrency` of each scheduler (1–24); the pilot always runs 2 |
 | Test items per cell | fixed in `phase16.sh` | 4 | `--test-concurrency` |
 | WebShop cells | `-- --benchmark-concurrency webshop=N`, `-- --host-benchmark-concurrency webshop=N` | 4 per scheduler, 6 per host | One server, with one global lock, serves every replicate |
 | Memory and disk gates | `P16_GATES` | see §5.4 | Launch gate and memory emergency |
@@ -431,29 +489,16 @@ The process chain is: supervisor → `schedule.py --auto-resume` → one `run.py
 
 Options after `--` go to the supervisors of that launch only, for example `phase16.sh up r1 -- --host-benchmark-concurrency webshop=4`. Repeat them on every later `up` or `recover`.
 
-### 8.4 Optional steps
+### 8.6 Optional steps
 
-Each optional step has its own budget, so it cannot run at the same time as r1–r3 (unless `P16_ALLOW_OVERLAP=1`):
+Each optional step has its own budget, so it cannot run at the same time as r1–r3 (unless `P16_ALLOW_OVERLAP=1`). Set its budget in the launcher config first: a step refuses to start without it.
 
-- `phase16.sh up pilot` runs the `phase16-pilot` study: the no-memory method on WebShop's 50-item pilot split, for both models.
-- `phase16.sh up dev` runs the `phase16-dev` study: all 16 cells, learning on the whole training split and testing on the whole validation split, never the test split.
-
-### 8.5 Estimating cost
-
-The repository holds no cost figures. Estimate the cost from your own smoke cells:
-
-1. **Run smoke cells** (§7) for each benchmark × model × method you want to price. For MIRIX, use at least as many training items as MIRIX's trigger threshold (`SKILL_TRIGGER_SESSION_THRESHOLD` in `mirix/constants.py`, 5). With fewer, MIRIX learns only in the final flush, never in a regular learning run. The `dev` step (§8.4) gives a closer estimate, on the whole training and validation splits.
-2. **Read the cost section** of `report.py --split-mode smoke` (`## Cost` in `_report/report.md`). It gives each cell's cost by role and phase, with the learning side (setup and learning) apart from the test phase.
-3. **Compute per-item costs:** the learning cost ÷ N training items, and the test cost ÷ N test items.
-4. **Extrapolate** with the split sizes in `SPLIT_SIZES`. ALFWorld has 39 training and 134 test items; WebShop has 40 and 140. `none` cells have no learning side. Sum the 16 cells, then multiply by 3 replicates.
-5. **Add a margin.** Smoke cells test on validation items. MIRIX's learning cost per item grows with its skill bank. WebShop requests grow within an episode, because the actor sees the whole episode. The budget is also enforced only from OpenRouter's usage reading, so calls in flight can pass it slightly.
-
-Set `P16_BUDGET` to the result. The key must hold this budget plus the 10 USD pause floor; the preflight `balance` check verifies it.
+- `phase16.sh up pilot` (budget `P16_PILOT_BUDGET`) runs the `phase16-pilot` study: the no-memory method on WebShop's 50-item pilot split, for both models, always with `--concurrency 2`.
+- `phase16.sh up dev` (budget `P16_DEV_BUDGET`) runs the `phase16-dev` study: all 16 cells, learning on the whole training split and testing on the whole validation split, never the test split.
 
 ## 9. Monitoring and recovery
 
 ```bash
-evals/skill_bench/tools/phase16.sh status            # every step
 evals/skill_bench/tools/phase16.sh status r1 r2 r3
 ```
 
@@ -475,9 +520,10 @@ Files in each runs directory:
 | `_supervise/events.jsonl` | Supervisor events: starts, exits, restarts, alerts, notices |
 | `_supervise/ALERT` | The current alert text. The newest alert that needs a person is on the first line. |
 | `_supervise/scheduler.log` | The scheduler's log |
+| `_supervise/one_off.json` | The one-off options already handed to a scheduler of this runs directory |
 | `_schedule/state.json`, `_schedule/events.jsonl` | Scheduler queue, workers and pause, and its event log |
 | `_schedule/resources.jsonl` | Host resource samples |
-| `<cell_id>/status.json` | Each cell's status |
+| `<cell_id>/status.json` | Each cell's status, with a `detail` line for a refusal or failure |
 | `<cell_id>/attempt-NN/failures.jsonl` | Every failure of an attempt, with its kind and recovery |
 
 **Supervisor exit codes** (`tools/supervise.py`):
@@ -508,16 +554,45 @@ Interrupted learning phases resume from their latest checkpoint, and interrupted
 
 **Stopping a supervisor:** press Ctrl-C in its tmux pane, or run `tmux send-keys -t p16-r1 C-c`. The supervisor stops the scheduler, sends `SIGTERM` to its workers, waits for them, and exits 130. Every cell stays resumable.
 
-**Releasing a cell that needs a person.** After you have looked at the cell's `status.json` and `failures.jsonl`, stop that replicate's supervisor and relaunch it with a one-off scheduler option after `--`:
+### 9.1 Releasing a cell that needs a person
+
+First read the cell's `status.json` (its `detail`) and `attempt-NN/failures.jsonl`. Then:
+
+| The cell | What to do |
+|---|---|
+| Learning stopped by a harness failure, to learn again from scratch | Stop the replicate's supervisor, then `phase16.sh up r1 -- --rerun-harness-failures CELL`: the cell gets one new attempt |
+| Learning stopped by a harness failure, to resume from its latest checkpoint | Run the cell once by hand with `--force-resume` (below). The scheduler only offers a new attempt. |
+| Held back by its resume caps | Stop the replicate's supervisor, then `phase16.sh up r1 -- --reset-resume CELL` |
+| `refused` | Fix the cause that `status.json` names, then run the cell once by hand (below), adding any option the message asks for |
+| `violation` | Run the cell by hand as a new attempt: `--new-attempt --note "<why>"` (below) |
+
+The scheduler never launches a `refused` or `violation` cell, whatever option it is given; such a cell leaves that state only through a run of `run.py` by hand.
+
+**Running a cell by hand.** Keep the replicate's supervisor running, so that its gateway serves on the replicate's port (`P16_PORT_BASE` + 1, 2 or 3), and attach `run.py` to it in the replicate's runs directory. The scheduler sees the cell's lock taken and treats the run as a live worker. A MIRIX cell must resume on the gateway its attempt was set up with, which this is.
 
 ```bash
-# Learning stopped by a harness failure: start a new attempt from scratch
-evals/skill_bench/tools/phase16.sh up r1 -- --rerun-harness-failures alfworld-luna-awm
-# A cell held back by its resume caps: clear its counters
-evals/skill_bench/tools/phase16.sh up r1 -- --reset-resume webshop-luna56-mirix
+set -a; . "${XDG_CONFIG_HOME:-$HOME/.config}/skill-bench/launch.env"; set +a
+.venv/bin/python -m evals.skill_bench.run \
+  --benchmark alfworld --model luna --method awm \
+  --out evals/skill_bench/runs/phase16-r1/alfworld-luna-awm \
+  --gateway-url http://127.0.0.1:18541 \
+  --gateway-runs-dir evals/skill_bench/runs/phase16-r1 \
+  --force-resume                  # or: --new-attempt --note "<why>", or nothing for a refused cell
 ```
 
-The supervisor records each one-off option in `_supervise/one_off.json` and applies it only once.
+**One-off options are applied once.** `--reset-resume`, `--rerun-harness-failures` and `--widen-selection` (and the scheduler's other one-off options) go to the next scheduler the supervisor starts, and the supervisor records each in `_supervise/one_off.json`. The same option with the same cells is never applied again in that runs directory, whatever later command line carries it: the supervisor leaves it out and raises an alert. To apply it once more on purpose, for example a second `--reset-resume` of the same cell, add `--one-off-again ID` with an ID not used before:
+
+```bash
+evals/skill_bench/tools/phase16.sh up r1 -- --reset-resume webshop-luna56-mirix --one-off-again second-reset
+```
+
+**A wider selection.** The cells a runs directory was launched with are recorded in `_schedule/selection.json`. A later launch that selects cells no earlier launch selected, for example one without the `P16_METHODS` an earlier launch had, is refused (supervisor exit 2). If the wider selection is intended, say why once:
+
+```bash
+evals/skill_bench/tools/phase16.sh up r1 -- --widen-selection "<one line: why>"
+```
+
+A narrower selection always starts.
 
 ## 10. Producing results
 
@@ -526,7 +601,7 @@ Everything in this section runs offline: it reads the runs directories and calls
 ```bash
 cd <checkout>
 for r in r1 r2 r3; do
-  ALFWORLD_DATA="$HOME/.cache/alfworld" .venv/bin/python -m evals.skill_bench.audit \
+  ALFWORLD_DATA="${ALFWORLD_DATA:-$HOME/.cache/alfworld}" .venv/bin/python -m evals.skill_bench.audit \
     --runs-dir "evals/skill_bench/runs/phase16-$r"
   .venv/bin/python -m evals.skill_bench.report \
     --runs-dir "evals/skill_bench/runs/phase16-$r"
@@ -550,21 +625,34 @@ Each cell directory also holds its own records: `results.jsonl` (one scored row 
 
 ## 11. Troubleshooting
 
+**The install fails with `No such file or directory: 'python'`, or a compiler error.** Activate the environment before installing (`. .venv/bin/activate`), and install make and a C++ compiler (§2, §3).
+
 **The WebShop server is not ready.**
-- Run `.venv/bin/python -m evals.skill_bench.envs.webshop --status`. It shows one of these states:
+- Run `.venv/bin/python -m evals.skill_bench.envs.webshop --status`:
   - `loading`: wait. After a start or a crash, the server reloads the product set and the index.
-  - `failed`: read its `problems`. A server that runs an image built from other server files, or that differs from the committed split files, fails here. Rebuild with `--build` from this checkout, then `--stop` and `--start --wait-s 1800`.
-  - unreachable: the container is not running (`docker ps -a --filter name=skill-bench-webshop`). Start it with `--start`.
+  - `failed`: read its `problems`. A server that runs an image built from other server files, or that differs from the committed split files, fails here. Rebuild with `--build` from this checkout, then replace the container: `--stop`, then `--start --wait-s 1800`.
+  - a Python traceback ending in `WebShopServerError: … ConnectError …` (exit 1): nothing listens on the port. Check the container (`docker ps -a --filter name=skill-bench-webshop`) and start it with `--start`.
+- **On a shared host**, `--start` leaves a running container as it is, even one started from another checkout's image, and preflight then fails on `data:webshop`. Replace it with `--stop` and `--start`, once no other checkout's WebShop cells use it.
 - Meanwhile, WebShop cells wait in the scheduler's gate and the other cells go on.
+
+**Preflight fails on `data:webshop` on macOS.** Expected: the WebShop server runs on x86_64 Linux only. Run ALFWorld-only preflight and smoke cells there (`--benchmark alfworld`).
+
+**Preflight warns `resources … unreadable: disk_usage`.** The runs directory and its parent do not exist yet: `mkdir -p evals/skill_bench/runs`.
 
 **Preflight reports `key` or `balance` as FAIL.**
 - `key`: `--env-file` must name a file with the line `OPENROUTER_API_KEY=…`.
 - `balance`: the key's remaining balance, or its limit, must cover 10 USD plus `--budget`. Top up, or raise the key's limit.
 
-**The run pauses.** Run `phase16.sh status` and read the `pause:` line:
+**A setting from the environment is ignored.** The launcher config file wins over the environment (§5.2). Change the value in the file.
+
+**`phase16.sh up` refuses because tmux is missing.** Install tmux, or run each step in the foreground with `phase16.sh exec STEP` (§8.3).
+
+**The run pauses.** Run `phase16.sh status r1 r2 r3` and read the `pause:` line:
 - `balance_below_floor`, `upstream_402` or `budget_unknown` lift by themselves, once there is money or a usage reading again;
 - `budget_spent` ends the supervisor with exit 10 (§9);
 - `budget_invalid` (exit 11) means the key in use is not the one the budget started on.
+
+**A one-off option seems to do nothing.** It was applied before in this runs directory and is left out (an alert says so). Add `--one-off-again ID` with a new ID (§9.1).
 
 **A model is unavailable on OpenRouter.**
 - `.venv/bin/python -m evals.skill_bench.tools.fetch_models --check` compares the committed `config/models.json` with OpenRouter's public metadata, without a key and without writing anything. It exits 1 on a difference.
@@ -586,13 +674,20 @@ Each cell directory also holds its own records: `results.jsonl` (one scored row 
 
 Tests live in `tests/` (MIRIX) and `evals/skill_bench/tests/` (the harness). `pytest.ini` runs both by default and deselects integration tests (`-m "not integration"`). The harness's `conftest.py` removes provider keys while harness tests run, and all model traffic goes to a fake upstream (`evals/skill_bench/tests/fakes.py`).
 
+Name the tokenizer cache and the ALFWorld data before HOME changes, and read each run's summary line: it must report passed tests. While the vocabulary is not in the cache, every harness test is skipped and pytest still exits 0.
+
 ```bash
-# Harness unit tests (no network, no key; needs the cached o200k_base vocabulary)
+export TIKTOKEN_CACHE_DIR="$HOME/.cache/tiktoken"           # where §3 cached the vocabulary
+export ALFWORLD_DATA="${ALFWORLD_DATA:-$HOME/.cache/alfworld}"
+
+# Harness unit tests (no network, no key)
 env -u OPENROUTER_API_KEY -u OPENAI_API_KEY -u ANTHROPIC_API_KEY -u GEMINI_API_KEY -u GOOGLE_API_KEY \
   .venv/bin/python -m pytest -m "not integration" evals/skill_bench/tests
 
-# MIRIX's unit tests and the harness's in one process
+# MIRIX's unit tests and the harness's in one process. MIRIX's suite writes under
+# ~/.mirix (its SQLite database among others), so give it a throw-away HOME.
 env -u OPENROUTER_API_KEY -u OPENAI_API_KEY -u ANTHROPIC_API_KEY -u GEMINI_API_KEY -u GOOGLE_API_KEY \
+  HOME="$(mktemp -d)" \
   .venv/bin/python -m pytest -m "not integration" tests evals/skill_bench/tests
 
 # Integration tests: real Postgres and real MIRIX servers, no model calls.
@@ -605,6 +700,7 @@ env -u OPENROUTER_API_KEY -u OPENAI_API_KEY -u ANTHROPIC_API_KEY -u GEMINI_API_K
 Some tests skip when their inputs are missing:
 - tests on real ALFWorld games need `$ALFWORLD_DATA`;
 - the byte-level comparison tests need `SKILLOPT_DIR`, `VERL_AGENT_DIR` and `WEBSHOP_UPSTREAM_DIR` (§5.4);
-- every harness test skips, with the caching command, while the tokenizer vocabulary is not cached.
+- MIRIX tests that need a provider key skip while the keys are unset;
+- every harness test skips while the tokenizer vocabulary is not cached.
 
 `evals/skill_bench/tests/test_phase16_launcher.py` runs `tools/phase16.sh` and the unit template under bash with a fake `tmux`. It needs no tmux, Docker or key.

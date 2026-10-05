@@ -16,7 +16,7 @@ pipelines and ignore it).
 
 The framing words (the intro, the section titles and the placeholder descriptions) are
 harness code that describes what the rendering code fills in; they are recorded with the
-harness code fingerprint of every invocation (X29). The template text inside the
+harness code fingerprint of every invocation. The template text inside the
 sections is the fingerprinted protocol text itself. No file is added under
 ``envs/templates``, so the fingerprinted templates stay byte-identical.
 
@@ -25,7 +25,7 @@ says every prompt is fingerprinted; the exception is recorded, not moved). So th
 change of it between cells or replicates cannot pass unseen, every attempt records the
 text's digest (:func:`context_record`, ``attempt.json`` ``agent_context``), and
 ``tools/aggregate_replicates.py`` flags a cell whose replicates carried different texts
-(``mixed_agent_context``) and makes D9 not decidable over them.
+(``mixed_agent_context``).
 """
 
 from __future__ import annotations

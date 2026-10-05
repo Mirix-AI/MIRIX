@@ -286,12 +286,12 @@ WEBSHOP_ASSET_SHA256: Mapping[str, str] = {
     "envs/templates/webshop/rollout_turn.md": "e393035378c2544ba16d83b32fd606c2bfdeb4090874d54439494016b29b844f",
     "envs/templates/webshop/rollout_with_history.md": "e433317451d83c183cef41a13a6765d2c77331464c060d0c3e1dcb492f6c3428",
     "envs/templates/webshop_server/Dockerfile": "11cc8f59b65319cc553e5617b014032ab5a6df28eed8b1717c1b5b5d28d4f035",
-    "envs/templates/webshop_server/data.json": "cd930c461eca8309f3d7282dc3ec36566358c1a86f6b1fb700fbc5786e3bcbc3",
+    "envs/templates/webshop_server/data.json": "b2d2a90cf0add8a5c5da92ad1d9eb1e57de6a3353689aab2033489f29b24b1ca",
     "envs/templates/webshop_server/data_index.py": "b71f3384bff83478d72196fe6846c2c7d93d035878da39dfa8b48f2c0db55302",
     "envs/templates/webshop_server/requirements.in": "1ae9cbd88d15b315ae36994a9789703ae19dde589e6c32e590658a6e7ddc5fef",
     "envs/templates/webshop_server/requirements.txt": "65995322e9eb9a5b1bb0b384c254d07bf9626d7fd4c4a81dbafda87fbbc5e148",
-    "envs/templates/webshop_server/server.py": "9bed5f75ee32de3bfd86d7c94d3adf2a0a732962e55354b7b4337f341831c974",
-    "envs/vendor/webshop_projection.py": "bbf2c8cc88a4a11dd68e7ebb618890102814bdfab95c10f712a9b96ed1c8420c",
+    "envs/templates/webshop_server/server.py": "fe9bbd1cc2d7595260370da19bb59bc37e5555462cc1851b4e604bfcd9d4ffbb",
+    "envs/vendor/webshop_projection.py": "2a2eded1a4db414954f9e0dc8b353410aadd840ffc47b8cea955fa1c2a41f81e",
 }
 # END WEBSHOP_ASSET_SHA256
 
@@ -354,7 +354,7 @@ FROZEN_ASSET_SHA256: Mapping[str, str] = {
     "envs/splits/alfworld/test.json": "34fc9439b0555e9bea76e2a7d1947953250e5a0cd9363d75ea64c2605ac0c33e",
     "envs/splits/alfworld/train.json": "76dc1f738fafc9c3c0dae606eb9434b1e1a34b814874e4d791242f9ec90e6378",
     "envs/splits/alfworld/val.json": "1533c56bd98577314a2ed12daffb9be4c1e1de2b052b61d0093b865b753da3f9",
-    "envs/templates/alfworld/config_tw.yaml": "18b4493584a09e57c0a5417534d794d4ccfd493a71c7f4e5713ea72a775a4045",
+    "envs/templates/alfworld/config_tw.yaml": "f32e8244351d896ec9073aa68474d8adee3ef41ee27a920fef601fba04643725",
     "envs/templates/alfworld/format.json": "a5661df432088348e29888704ac254a3f7e6272e19568e561bbf346268c7e5fc",
     "envs/templates/alfworld/rollout_no_history.md": "fcf6fe7a561729ccc4581697f5c8ad5986c150e56e32d761bad944b2fc9da614",
     "envs/templates/alfworld/rollout_with_history.md": "7b17c85e102f3e49400df99bd3f333337827df9441abd873926a566ad9858027",

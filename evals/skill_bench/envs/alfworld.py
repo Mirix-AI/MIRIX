@@ -42,10 +42,9 @@ TextWorld is synchronous, so every game call runs in a worker thread
 (:class:`ProcessBackend`): TextWorld's parsers are module globals, so two games in one
 process cannot load concurrently.
 
-Removed on purpose (the old harness's B1-B6): no retrieval query built
-from the gold task type, no "Episode result" line, no sentinel sessions, no
-hard-coded ``context_window`` / ``top_k``, no SIGALRM deadlines, no streaming early
-return. Memory methods receive raw messages only.
+Left out on purpose: no retrieval query built from the gold task type, no "Episode
+result" line, no sentinel sessions, no hard-coded ``context_window`` / ``top_k``, no
+SIGALRM deadlines, no streaming early return. Memory methods receive raw messages only.
 """
 
 from __future__ import annotations
@@ -326,7 +325,7 @@ def parse_response(t: AlfWorldTemplates, raw: str | None) -> ParsedResponse:
 
 
 # ---------------------------------------------------------------------------
-# Split manifests, data paths, seeds (ports of evals/alfworld/data.py and SkillOpt)
+# Split manifests, data paths, seeds (as in SkillOpt)
 # ---------------------------------------------------------------------------
 
 
@@ -361,7 +360,7 @@ def default_data_root() -> Path:
 
 
 def resolve_gamefile(gamefile: str, data_root: str | os.PathLike[str]) -> Path:
-    """Manifest paths are relative to ``$ALFWORLD_DATA`` (``evals/alfworld/data.py``)."""
+    """Manifest paths are relative to ``$ALFWORLD_DATA``."""
     path = Path(os.path.expandvars(os.path.expanduser(gamefile)))
     if not path.is_absolute():
         path = Path(os.path.expandvars(os.path.expanduser(os.fspath(data_root)))) / path
@@ -381,8 +380,7 @@ def game_seed(gamefile: str) -> int:
     """Per-game TextWorld seed: ``SEED + int(sha256(gamefile)[:7], 16)``.
 
     ``gamefile`` is the manifest path (relative to ``$ALFWORLD_DATA``), so the seed does
-    not depend on the machine, the split order, the batch or the method. Ported from
-    the old harness (``evals/skill_main_tables/alfworld_common.py:117-123``).
+    not depend on the machine, the split order, the batch or the method.
     """
     return protocol.SEED + int(
         hashlib.sha256(gamefile.encode("utf-8")).hexdigest()[:7], 16

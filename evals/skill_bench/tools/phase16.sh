@@ -36,17 +36,21 @@
 # anyway, knowing that each will count the other's spend. Spend on the key outside these
 # steps (a cell run by hand, say) counts against them all alike.
 #
-# Settings come from the environment, after the launch config
-# ${P16_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/skill-bench/launch.env} is read when it
-# exists (the systemd unit and a cron line read the same file; it holds the key file's
-# path, never a key):
-#   SKILL_BENCH_ENV_FILE   the key file, outside the checkout (required)
+# Settings come from the environment and from the launch config
+# ${P16_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/skill-bench/launch.env} when it exists.
+# The file is read after the environment, so a setting in both takes the file's value
+# (the systemd unit and a cron line read the same file; it holds the key file's path,
+# never a key). A step's budget and the key file are needed only where that step's
+# supervisor is printed or started (print, exec, and up or recover for each step they
+# start); status needs neither, and recover brings back Postgres and WebShop without them:
+#   SKILL_BENCH_ENV_FILE   the key file, outside the checkout (required there)
 #   P16_BUDGET             r1-r3: the USD budget for r1-r3 (required there)
+#   P16_PILOT_BUDGET       pilot: the USD budget for the pilot (required there)
+#   P16_DEV_BUDGET         dev: the USD budget for dev (required there)
 #   P16_METHODS            r1-r3: the methods of this launch, e.g. "none reasoningbank
 #                          awm" (default: the study's four)
 #   P16_BENCHMARKS         r1-r3: the benchmarks of this launch, e.g. "alfworld" (default:
 #                          the study's, ALFWorld and WebShop)
-#   P16_PILOT_BUDGET (5)   P16_DEV_BUDGET (60)
 #   P16_CONCURRENCY        dev, r1-r3: --concurrency (4; 3 eases a loaded host)
 #   P16_NOTIFY_CMD         a --notify-cmd for every supervisor (optional)
 #   P16_GATES              default: --min-free-memory-gb 8 --min-free-disk-gb 15
@@ -114,9 +118,11 @@ step_args() {
   esac
   case $step in
     pilot)
-      study=phase16-pilot budget=${P16_PILOT_BUDGET:-5} port=$((10#$base + 4)) concurrency=2 ;;
+      study=phase16-pilot budget=${P16_PILOT_BUDGET:-} port=$((10#$base + 4)) concurrency=2
+      [ -n "$budget" ] || die "set P16_PILOT_BUDGET, the USD budget for the pilot" ;;
     dev)
-      study=phase16-dev budget=${P16_DEV_BUDGET:-60} port=$((10#$base + 5)) concurrency=${P16_CONCURRENCY:-4} ;;
+      study=phase16-dev budget=${P16_DEV_BUDGET:-} port=$((10#$base + 5)) concurrency=${P16_CONCURRENCY:-4}
+      [ -n "$budget" ] || die "set P16_DEV_BUDGET, the USD budget for dev" ;;
     r1 | r2 | r3)
       study=phase16 budget=${P16_BUDGET:-} port=$((10#$base + ${step#r})) concurrency=${P16_CONCURRENCY:-4}
       [ -n "$budget" ] || die "set P16_BUDGET, the USD budget for r1-r3"
@@ -186,6 +192,12 @@ one_budget_per_launch() {
   done
 }
 
+# Refuse up and recover without tmux, which holds each supervisor's session.
+need_tmux() {
+  command -v tmux >/dev/null 2>&1 ||
+    die "tmux is not installed (not on PATH), and up starts each supervisor in a tmux session: install tmux, or run the step with phase16.sh exec STEP (in the foreground, or as the systemd unit skill-bench@STEP)"
+}
+
 # STEP... [-- EXTRA...] into STEP_LIST and EXTRA.
 split_args() {
   STEP_LIST=()
@@ -205,26 +217,32 @@ up() {
   local step session command
   [ ${#STEP_LIST[@]} -gt 0 ] || die "name the steps to start (one or more of: $STEPS)"
   for step in "${STEP_LIST[@]}"; do
-    step_args "$step"
+    runs_of "$step" >/dev/null || exit 2
   done
   one_budget_per_launch "${STEP_LIST[@]}"
   read_held
   for step in "${STEP_LIST[@]}"; do
     one_budget_at_a_time "$step"
   done
+  # The settings (a budget among them) of every step this launch starts, before any start.
   for step in "${STEP_LIST[@]}"; do
-    step_args "$step"
+    held "$step" || step_args "$step"
+  done
+  need_tmux
+  for step in "${STEP_LIST[@]}"; do
     if held "$step"; then
-      echo "$step: a supervisor holds $RUNS; left as it is"
+      echo "$step: a supervisor holds $(runs_of "$step"); left as it is"
       continue
     fi
+    step_args "$step"
     session=p16-$step
     if tmux has-session -t "=$session" 2>/dev/null; then
       tmux kill-session -t "=$session"  # its supervisor exited (no lock held)
     fi
     command=$(printf '%q ' "$here/phase16.sh" exec "$step" -- ${EXTRA[@]+"${EXTRA[@]}"})
     command=${command% }
-    tmux new-session -d -s "$session" "$command; echo \"supervise exited with \$?\"; exec bash"
+    tmux new-session -d -s "$session" "$command; echo \"supervise exited with \$?\"; exec bash" ||
+      die "$step: tmux could not start the session $session (exit $?); its supervisor is not running"
     echo "$step: started its supervisor in tmux session $session"
   done
 }
@@ -275,7 +293,7 @@ case $command in
   status)
     code=0
     for step in ${*:-$STEPS}; do
-      step_args "$step"
+      RUNS=$(runs_of "$step") || exit 2
       echo "== $step ($RUNS)"
       "$PYTHON" -m evals.skill_bench.tools.supervise --status --runs-dir "$RUNS" || code=1
     done
@@ -284,6 +302,7 @@ case $command in
   recover)
     split_args "$@"
     [ ${#STEP_LIST[@]} -gt 0 ] || die "name the steps to start (one or more of: $STEPS)"
+    need_tmux
     docker compose -f evals/skill_bench/infra/compose.yaml up -d ||
       echo "phase16.sh: the compose Postgres did not start; the MIRIX cells wait" >&2
     "$PYTHON" -m evals.skill_bench.envs.webshop --start --wait-s "${P16_WEBSHOP_WAIT_S:-1800}" ||

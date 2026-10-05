@@ -73,7 +73,7 @@ That is 2 × 2 × 4 = 16 cells per replicate. The benchmarks, splits, step caps,
 | `envs/` | Shared contract (`base.py`), `alfworld.py`, `webshop.py`, `agent_context.py`, plus `templates/`, `splits/` and `vendor/` |
 | `methods/` | Method contract (`base.py`), the adapters `none.py`, `reasoningbank.py`, `awm.py` and `mirix.py`, the shared judge (`judge.py`), and their prompts and templates |
 | `infra/` | `gateway.py`, `mirix_server.py`, `compose.yaml` and `init.sql` (Postgres), `resources.py`, `failures.py`, `processes.py`, `tokens.py`, the systemd user unit template `skill-bench@.service.in` |
-| `tools/` | `supervise.py`, `phase16.sh`, `preflight.py`, `aggregate_replicates.py`, `fetch_models.py`, `summarize_learning.py`, `prepare_webshop.py`, and `sync_runs.py` (merges runs directories from several hosts into one read-only view) |
+| `tools/` | `supervise.py`, `phase16.sh`, `preflight.py`, `aggregate_replicates.py`, `fetch_models.py`, `summarize_learning.py`, `prepare_webshop.py`, `sync_runs.py` (merges runs directories from several hosts into one read-only view) and `remove_method_data.py` (deletes the records of a method dropped from the study, after recording what they cost) |
 | `config/models.json` | OpenRouter metadata of the models: context window, maximum output, pricing |
 | `tests/` | Harness tests. All model traffic goes to a fake upstream (`tests/fakes.py`). |
 | `runs/`, `data/` | Run output and downloaded data. Git ignores both (`.gitignore`). |
@@ -747,11 +747,13 @@ flowchart TB
 **`tools/phase16.sh`** is the launcher. Its commands are `print`, `exec`, `up`, `status`, `recover` and `install-unit`. It starts one supervisor per step (`pilot`, `dev`, `r1`, `r2`, `r3`) with fixed options:
 - runs directory `runs/phase16-<step>`;
 - gateway port `P16_PORT_BASE` (default 18540) + 1 to + 3 for the replicates, + 4 for the pilot, + 5 for dev;
+- `--concurrency` from `P16_CONCURRENCY` (default 4), except the pilot, which always runs 2;
 - `--test-concurrency 4` and `--balance-floor 10`;
 - the memory and disk gates;
+- the step's budget, which must be set: `P16_BUDGET` for the replicates, `P16_PILOT_BUDGET` and `P16_DEV_BUDGET` for the other two;
 - for r2 and r3, the budget start of r1.
 
-Settings come from a config file (`${P16_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/skill-bench/launch.env}`, sourced with every variable exported) and the environment. The launcher refuses to run steps with different budgets at the same time, because a key-based budget counts every spend on the key. `phase16.sh install-unit` fills the checkout's path into the template `infra/skill-bench@.service.in` and writes the systemd user unit `skill-bench@.service`. Each instance runs `phase16.sh exec <step>`; the unit restarts the supervisor after a crash, never after an exit that needs a person or a requested stop (see the README).
+`up` runs each supervisor in a tmux session `p16-<step>` and refuses to start without tmux; `exec` runs one in the foreground. Settings come from the environment and then a config file (`${P16_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/skill-bench/launch.env}`), sourced with every variable exported, so a value in the file replaces the same variable from the environment. The launcher refuses to run steps with different budgets at the same time, because a key-based budget counts every spend on the key. `phase16.sh install-unit` fills the checkout's path into the template `infra/skill-bench@.service.in` and writes the systemd user unit `skill-bench@.service`. Each instance runs `phase16.sh exec <step>`; the unit restarts the supervisor after a crash, never after an exit that needs a person or a requested stop (see the README).
 
 ### 4.10 Audit checks
 

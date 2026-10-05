@@ -2,7 +2,7 @@
 
 Register each method implemented in ``methods/`` in :data:`CONTRACT_METHODS` (a
 zero-argument factory). The registry test fails for an implemented method that is
-missing, so no phase-12 method escapes the checks below: the whole-cell exercise on
+missing, so no method escapes the checks below: the whole-cell exercise on
 both benchmarks (with the empty assistant turn and every other Q20 message
 shape) and the real ALFWorld rollout whose model call gets no reply. The method's
 own model calls reach a real gateway over the fake upstream, which answers every

@@ -35,7 +35,9 @@ webarena/pipeline.py and webarena/agents/legacy/agent.py from
 https://github.com/zorazrw/agent-workflow-memory at commit
 8c0ff8cd11d648c8fceb99e4e42f37e3b75381b1, licensed under the Apache License, Version 2.0
 (awm/originals/agent-workflow-memory-8c0ff8c/LICENSE). awm/originals/paper_2409.07429_*.txt
-quote appendix A.1 and section 2.3 of "Agent Workflow Memory" (arXiv 2409.07429). They are
+quote appendix A.1 and section 2.3 of "Agent Workflow Memory" (arXiv 2409.07429), which
+arXiv distributes under the Creative Commons Attribution-ShareAlike 4.0 International
+License (CC BY-SA 4.0, https://creativecommons.org/licenses/by-sa/4.0/). They are
 kept unmodified as the reference the AWM baseline is tested against. awm/instruction.md,
 awm/output_format.md and the texts in awm/format.json are derived from them (see
 awm/format.json for the provenance and the documented substitutions).

@@ -85,16 +85,16 @@ The five H10 invariants and the H9 results check, each with the checks that esta
     such a string if it received it;
   - a test item's own specific gold answer is not in its test-phase injection or the
     frozen memory unless a learning input held the same text (``answer_in_method_output``;
-    numbers also in ``digit_form``, so ``256865`` holds ``256,865``); telling text answers
+    numbers also in ``digit_form``, so ``123456`` holds ``123,456``); telling text answers
     (``text_answer_tier``: two words outside :data:`COMMON_ANSWER_WORDS`, such as
-    ``scissors menthol fresh``, searched without the common words around them,
+    ``blue widget polish``, searched without the common words around them,
     ``text_answer_needle``) are searched too: a violation in the item's own injection; in
     the memory a warning, and a violation once the memory holds those of more than
     ``memory_text_answers_allowed`` test items; a one-word text answer is a warning in
     the injection. In the memory a specific answer is a violation only when
     ``strong_in_memory`` (5+ digits; a short number with a word that makes it a code or
     an address; or a path/key/address mark); a name marked only by its punctuation
-    (``r.j. reynolds``) and a short number in a telling phrase are counted as text
+    (``a.b. zedson``) and a short number in a telling phrase are counted as text
     answers are, other short ones are warnings;
   - the agent context (the actor's prompt template, ``envs/agent_context.py``) is
     harness-written text: the label searches above cover it. It is one text for every
@@ -1484,7 +1484,7 @@ def specific_answer(needle: str) -> bool:
 
 def strong_answer(needle: str) -> bool:
     """A specific answer too long to sit in a shared memory by coincidence: identifier-like,
-    or at least 6 characters with a digit (``256,368``, not ``1944``)."""
+    or at least 6 characters with a digit (``123,456``, not ``1999``)."""
     return identifier_like(needle) or (
         len(needle) >= 6 and any(ch.isdigit() for ch in needle)
     )
@@ -1547,12 +1547,12 @@ def text_answer_tier(needle: str) -> str | None:
     it turns up in what a method produced (``specific_answer`` covers the rest).
 
     * ``strong``: at least 8 characters and two distinct content words (words of 3+
-      letters outside :data:`COMMON_ANSWER_WORDS`): ``scissors menthol fresh``,
-      ``perkin elmer corp``. No template writes such a phrase by chance;
+      letters outside :data:`COMMON_ANSWER_WORDS`): ``blue widget polish``,
+      ``acme widgets corp``. No template writes such a phrase by chance;
     * ``weak``: two or more words, or at least 8 characters, with one content word:
-      ``nashville``, ``university of maine``. A single word may sit in a template;
-    * None: shorter, or made of common words only (``yes``, ``four weeks``, ``final
-      approval``): not scanned.
+      ``exampleville``, ``university of zedland``. A single word may sit in a template;
+    * None: shorter, or made of common words only (``yes``, ``two weeks``, ``draft
+      report``): not scanned.
     """
     if not needle or any(ch.isdigit() for ch in needle) or specific_answer(needle):
         return None
@@ -1573,7 +1573,7 @@ def _content_word(word: str) -> bool:
 def word_text(text: str) -> str:
     """``text`` as its lower-case letter words joined by single spaces: the form text
     answers are compared in, so punctuation, case and line breaks cannot hide one
-    (``Scissors-Menthol  Fresh`` holds ``scissors menthol fresh``)."""
+    (``Blue-Widget  Polish`` holds ``blue widget polish``)."""
     return " ".join(_ANSWER_WORD.findall(text.lower()))
 
 
@@ -1598,10 +1598,10 @@ def text_answer_needle(needle: str) -> tuple[str, str] | None:
 
     The words before the first and after the last content word (an article, a title, a
     common noun such as ``company``) are dropped, so they can neither hide the answer
-    nor explain it away: ``the coca-cola company`` is searched as ``coca cola``, which
-    ``Coca-Cola Company`` holds. Only a core of two words or more that keeps the whole
+    nor explain it away: ``the acme-widget company`` is searched as ``acme widget``, which
+    ``Acme-Widget Company`` holds. Only a core of two words or more that keeps the whole
     answer's tier replaces it; otherwise the whole answer is searched (``university of
-    maine``, not ``maine``; ``washington university``, not ``washington``: one word says
+    zedland``, not ``zedland``; ``quuxton university``, not ``quuxton``: one word says
     less than the phrase)."""
     tier = text_answer_tier(needle)
     if tier is None:
@@ -1616,14 +1616,14 @@ def text_answer_needle(needle: str) -> tuple[str, str] | None:
 
 _CURRENCY = re.compile(r"[$\u00a2-\u00a5\u20a0-\u20bf]")
 #: A thousands separator: a comma, space or apostrophe between a digit and a group of
-#: exactly three digits (``256,865``, ``256 865``, ``1'000``).
+#: exactly three digits (``123,456``, ``123 456``, ``1'000``).
 _GROUP_SEPARATOR = re.compile(r"(?<=\d)[,'\u2019\s](?=\d{3}(?!\d))")
 
 
 def digit_form(text: str) -> str:
     """A normalised text without currency signs and thousands separators: the second form
-    numeric gold answers are compared in, so ``256865``, ``256 865`` and ``$256,865``
-    all hold ``256,865``, and ``500.00`` holds ``$500.00``.
+    numeric gold answers are compared in, so ``123456``, ``123 456`` and ``$123,456``
+    all hold ``123,456``, and ``100.00`` holds ``$100.00``.
 
     Decimal points are kept, and only a separator followed by exactly three digits goes:
     ``12,34`` and ``2019 2020`` stay apart. ``3 100`` does become ``3100``. Such a
@@ -1639,14 +1639,14 @@ def digit_form(text: str) -> str:
 #: ...
 MEMORY_ANSWER_DIGITS = 5
 #: ... or, without a digit, one of these marks: a path, key, query or address
-#: (``robotics/analytical chemist``, ``jdoe@example.com``). ``.``, ``&``, ``,``, ``-`` and
-#: spaces mark names (``r.j. reynolds``, ``johnson & johnson``), which are not.
+#: (``widgets/senior tester``, ``jdoe@example.com``). ``.``, ``&``, ``,``, ``-`` and
+#: spaces mark names (``a.b. zedson``, ``zedson & sons``), which are not.
 _MEMORY_IDENTIFIER_MARKS = frozenset("/:_=?@")
 #: Words that make a short number a generic label or amount in the memory (``step 2``,
-#: ``schedule 11``, ``1/16 tsp.``), besides :data:`COMMON_ANSWER_WORDS` (which holds the
-#: month names: ``december 7``), and the common units and count nouns (``100 dollars``,
+#: ``schedule 11``, ``1/4 tsp.``), besides :data:`COMMON_ANSWER_WORDS` (which holds the
+#: month names: ``june 1``), and the common units and count nouns (``100 dollars``,
 #: ``25 people``, ``1,250 tons``). A short number with any other word is a
-#: code or an address (``ma 1253 ag``, ``1455 broad street``): no memory holds it by
+#: code or an address (``zq 1234 xy``, ``1234 zed street``): no memory holds it by
 #: coincidence.
 MEMORY_LABEL_WORDS = frozenset(
     """
@@ -1667,13 +1667,13 @@ MEMORY_LABEL_WORDS = frozenset(
     degree degrees point points percentage pts unit units bn mn
     """.split()
 )
-#: A zero fraction (``500.00``): the same amount as without it.
+#: A zero fraction (``100.00``): the same amount as without it.
 _ZERO_FRACTION = re.compile(r"(?<=\d)\.0+(?!\d)")
 
 
 def answer_digits(needle: str) -> int:
     """The digits of a normalised gold answer as numbers are compared (``digit_form``),
-    without a zero fraction: ``$1,000`` and ``$500.00`` have 4 and 3, ``256,865`` 6."""
+    without a zero fraction: ``$1,000`` and ``$100.00`` have 4 and 3, ``123,456`` 6."""
     return sum(ch.isdigit() for ch in _ZERO_FRACTION.sub("", digit_form(needle)))
 
 
@@ -1682,15 +1682,15 @@ def strong_in_memory(needle: str) -> bool:
     coincidence, so it is a violation there:
 
     * with a digit: at least :data:`MEMORY_ANSWER_DIGITS` digits (``answer_digits``):
-      ``256,865``, ``(555) 253 3012``, ``march 27, 1979``; or, with fewer, a code or an
+      ``123,456``, ``(000) 123 4567``, ``january 1, 2000``; or, with fewer, a code or an
       address of 6+ characters: a word no label, unit or common word explains
       (:data:`MEMORY_LABEL_WORDS`, :data:`COMMON_ANSWER_WORDS`) next to the number
-      (``ma 1253 ag``, ``5954 b``, ``1455 broad street``). ``$1,000``, ``$ 1795``,
-      ``$500.00``, ``1/16 tsp.``, ``5 to 6 glasses``, ``step 2``, ``page 14``,
-      ``december 7`` are not: one memory serves every test item, and a number of four
+      (``zq 1234 xy``, ``1234 q``, ``1234 zed street``). ``$1,000``, ``$ 1234``,
+      ``$100.00``, ``1/4 tsp.``, ``2 to 3 cups``, ``step 2``, ``page 14``,
+      ``june 1`` are not: one memory serves every test item, and a number of four
       digits or fewer, alone or with a label, a unit or a month, is what any memory may
       write. Nor is a short
-      number in a telling phrase (``american cheese production by states, 1952``):
+      number in a telling phrase (``annual widget output by region, 1999``):
       that is counted with the text answers (``counted_in_memory``);
     * without one: a path, key, query or address mark (:data:`_MEMORY_IDENTIFIER_MARKS`).
 
@@ -1713,9 +1713,9 @@ def strong_in_memory(needle: str) -> bool:
 def counted_in_memory(needle: str) -> bool:
     """A specific gold answer below ``strong_in_memory`` that the frozen memory's count
     rule (``memory_text_answers_allowed``) judges with the strong text answers: a name
-    specific only through its punctuation (``r.j. reynolds``, ``pathmark stores inc.``:
+    specific only through its punctuation (``a.b. zedson``, ``zedmart stores inc.``:
     documents of one source share names), or a short number in a telling
-    phrase (``american cheese production by states, 1952``, whose words alone are a
+    phrase (``annual widget output by region, 1999``, whose words alone are a
     strong text answer). Other short ones (``$1,000``, ``step 2``) are warnings."""
     if not specific_answer(needle) or strong_in_memory(needle):
         return False
@@ -4853,24 +4853,24 @@ class CellAuditor:
           produced it for that item alone, so it must have read the scorer's records. A
           violation for a specific answer (``specific_answer``: identifier-like, or 4+
           characters with a digit) and for a telling text answer (``text_answer_tier``
-          ``strong``: 8+ characters, two content words, such as ``scissors menthol
-          fresh``); a warning for a text answer with one content word (``nashville``),
+          ``strong``: 8+ characters, two content words, such as ``blue widget
+          polish``); a warning for a text answer with one content word (``exampleville``),
           which a template may hold;
         * in the frozen memory: a violation when a specific answer is one no memory holds
-          by coincidence (``strong_in_memory``: 5+ digits, such as ``256,865``, or a path,
+          by coincidence (``strong_in_memory``: 5+ digits, such as ``123,456``, or a path,
           key or address mark); a warning when it is short (a year, ``$1,000``, ``step
           2``: one memory serves every test item). A strong text answer is a warning while
           the memory holds those of only a few test items (documents of one source share
           names: a memory learned from the learning pages may name the organisation a
           test page names) and a violation once it holds those of more than
           :func:`memory_text_answers_allowed` test items: no coincidence explains that
-          many. Names specific only through their punctuation (``r.j. reynolds``) and
+          many. Names specific only through their punctuation (``a.b. zedson``) and
           short numbers in a telling phrase are counted with them
           (``counted_in_memory``). Weak text answers are not searched in the memory.
 
         Text answers are compared as word sequences (``word_text``) without the common
-        words around them (``text_answer_needle``: ``the coca-cola company`` as ``coca
-        cola``), numeric ones also in ``digit_form`` (``256865`` holds ``256,865``), so
+        words around them (``text_answer_needle``: ``the acme-widget company`` as ``acme
+        widget``), numeric ones also in ``digit_form`` (``123456`` holds ``123,456``), so
         case, punctuation, line breaks, separators and an article can neither hide one
         nor explain one away.
         """

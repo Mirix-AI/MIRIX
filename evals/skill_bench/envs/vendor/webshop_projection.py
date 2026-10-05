@@ -12,7 +12,7 @@
 #
 # skill_bench calls it only on a response that holds an <action>...</action> pair: the
 # fallback of line "actions[i] = actions[i][-20:]" (a reply without the tags sends its last
-# 20 characters to the environment) is never reached (envs/webshop.py, SPEC D10).
+# 20 characters to the environment) is never reached (envs/webshop.py).
 
 import re
 

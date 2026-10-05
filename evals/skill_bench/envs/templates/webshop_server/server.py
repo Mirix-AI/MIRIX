@@ -1,4 +1,4 @@
-"""WebShop text-environment server for skill_bench (SPEC 2026-10-02: D4, D10, D11, D16-D18).
+"""WebShop text-environment server for skill_bench.
 
 Runs inside the image built from this directory (``Dockerfile``: python 3.9, openjdk 11,
 upstream princeton-nlp/WebShop at a pinned commit, the full product set and its Lucene
@@ -8,7 +8,7 @@ side is ``evals/skill_bench/envs/webshop.py``; it talks to this server over loop
 
 What this wrapper adds to upstream (whose code it runs unchanged):
 
-* **Determinism (D4).** ``random`` is seeded with the protocol seed immediately before
+* **Determinism.** ``random`` is seeded with the protocol seed immediately before
   ``SimServer()`` is built, because upstream draws product prices (``engine.py:180-192``,
   inside ``load_products``) and each goal's price limit (``goal.py:39``) from the global
   random state. In ``serve`` mode the server then compares every goal of the frozen
@@ -25,16 +25,16 @@ What this wrapper adds to upstream (whose code it runs unchanged):
   action the shop does not accept: the session is restored to what it was before the
   action, the page stays, and the reply names the error (``shop_error``; counted on
   ``/ready``). Any other error (memory, I/O, the JVM) is the server's: a 500.
-* **Session isolation (D18).** Each episode has its own session prefix (a uuid the harness
+* **Session isolation.** Each episode has its own session prefix (a uuid the harness
   sends); upstream keys sessions by ``prefix + goal index``, so two cells playing one goal
   never share state. Deleting an episode removes every upstream session of its prefix,
   the one ``WebAgentTextEnv()``'s constructor opens with a random goal included, and
   sessions idle longer than ``--session-idle-s`` are dropped.
-* **Refused special searches (D10, critic B1).** A ``search[...]`` whose first word is
+* **Refused special searches.** A ``search[...]`` whose first word is
   ``<x>`` (upstream's ``<r>``, ``<a>``, ``<c>``, ``<q>``: an unseeded random sample, a
   crash, scans by the goal's hidden query or category) never reaches upstream: the page
   stays as it is, like any action upstream does not accept.
-* **No done page (D11).** After Buy Now the reply carries the reward and no observation:
+* **No done page.** After Buy Now the reply carries the reward and no observation:
   the rendered done page keeps hidden goal fields (upstream's text mode keeps
   ``display:none`` text), so it never leaves this process.
 * **Readiness.** ``GET /ready`` answers 503 ``loading`` until the product set, the index
@@ -114,7 +114,7 @@ MANIFEST_FIELDS = (
 SPLIT_FILES = ("train.json", "val.json", "test.json", "pilot.json")
 #: upstream ``engine.parse_action`` (``engine.py:117-128``).
 ACTION_PATTERN = re.compile(r"(.+)\[(.+)\]")
-#: A search whose first word matches this is refused (SPEC D10).
+#: A search whose first word matches this is refused.
 SPECIAL_SEARCH = re.compile(r"<[a-z]>")
 SESSION_PREFIX = re.compile(r"[0-9a-f]{32}-")
 MAX_BODY_BYTES = 1 << 20
@@ -165,7 +165,7 @@ def sha256_bytes(data: bytes) -> str:
 
 
 def price_table_sha256(prices: Mapping[str, Any]) -> str:
-    """sha256 of the whole product price table (ASIN -> price) as canonical JSON (D4)."""
+    """sha256 of the whole product price table (ASIN -> price) as canonical JSON."""
     return sha256_bytes(canonical_json({str(k): v for k, v in prices.items()}))
 
 
@@ -233,7 +233,7 @@ def verify_manifest(
     build: Optional[Mapping[str, Any]] = None,
 ) -> Tuple[Dict[str, Any], List[str]]:
     """``(info, problems)``: the frozen manifest at ``manifest_dir`` against the goals and
-    price table this process built and the image's build record ``build`` (D4, D16).
+    price table this process built and the image's build record ``build``.
     ``problems`` empty: every pinned field of every item, the goal count, the seed, the
     price table and the image's upstream commit, data and index hashes are the frozen
     ones."""
@@ -307,7 +307,7 @@ def goal_record(index: int, goal: Mapping[str, Any]) -> Dict[str, Any]:
 
 class UpstreamBackend:
     """Upstream's ``SimServer`` with the full product set and human goals, built after
-    ``random.seed(seed)`` (D4). Built, and every method called, on the service's upstream
+    ``random.seed(seed)``. Built, and every method called, on the service's upstream
     thread under its lock (:class:`UpstreamWorker`)."""
 
     def __init__(self, data_dir: Path, seed: int) -> None:
@@ -324,7 +324,7 @@ class UpstreamBackend:
         self._engine = engine
         self._goal = goal_module
         self._env_class = WebAgentTextEnv
-        random.seed(seed)  # D4: immediately before SimServer() draws prices and goals
+        random.seed(seed)  # immediately before SimServer() draws prices and goals
         self.sim = SimServer(
             "http://127.0.0.1:3000",
             str(data_dir / "items_shuffle.json"),
@@ -383,7 +383,7 @@ class UpstreamBackend:
             session.update(saved)
 
     def best_reward(self, goal: Mapping[str, Any]) -> Dict[str, Any]:
-        """The reward of buying the gold product with the goal's options (D20)."""
+        """The reward of buying the gold product with the goal's options."""
         product = self.sim.product_item_dict[goal["asin"]]
         wanted = goal.get("goal_options") or []
         # Upstream's get_reward takes a goal's options as a list or a dict (goal.py:241).
@@ -675,7 +675,7 @@ class Service:
                 raise ServiceError(HTTPStatus.CONFLICT, "the episode is over")
             episode.last_used = self.clock()
             env = episode.env
-            if refused_search(action):  # D10: never reaches upstream
+            if refused_search(action):  # never reaches upstream
                 return unchanged(env, None)
             clickables = env.get_available_actions()["clickables"]
             accepted = accepted_action(action, clickables)
@@ -691,7 +691,7 @@ class Service:
                 self._record_action_error(episode, action, error)
                 return unchanged(env, error)
             if done:
-                # D11: the done page keeps hidden goal fields; only the reward leaves.
+                # The done page keeps hidden goal fields; only the reward leaves.
                 episode.done = True
                 return {
                     "observation": None,
@@ -885,7 +885,7 @@ def start_http(service: Service, host: str, port: int) -> ThreadingHTTPServer:
 
 
 def check_install(import_upstream: bool = True) -> Dict[str, Any]:
-    """D14 / D15: the spaCy model and the fuzzy backend upstream's reward runs with; and
+    """The spaCy model and the fuzzy backend upstream's reward runs with; and
     (``import_upstream``) every upstream module the server imports, so a package missing
     from the allowlist, or one the pinned setuptools no longer serves, fails the image
     build rather than the server's first start."""
@@ -897,13 +897,13 @@ def check_install(import_upstream: bool = True) -> Dict[str, Any]:
 
     problems = []
     if importlib.util.find_spec("Levenshtein") is not None:
-        problems.append("python-Levenshtein is installed (D15 pins difflib)")
+        problems.append("python-Levenshtein is installed (difflib is pinned)")
     if getattr(fuzz.SequenceMatcher, "__module__", None) != "difflib":
         problems.append("thefuzz does not use difflib")
     model = spacy.load("en_core_web_sm")
     version = model.meta.get("version")
     if version != "3.3.0":
-        problems.append(f"en_core_web_sm {version} is installed (D14 pins 3.3.0)")
+        problems.append(f"en_core_web_sm {version} is installed (3.3.0 is pinned)")
     if import_upstream:
         sys.path.insert(0, str(WEBSHOP_DIR))
         try:
@@ -952,7 +952,7 @@ def build_record(
     pins_path: Path = DATA_PINS,
     index_record: Path = data_index.INDEX_RECORD,
 ) -> Dict[str, Any]:
-    """``build.json`` (D16, D17): the upstream commit, the sha256 of each pinned product
+    """``build.json``: the upstream commit, the sha256 of each pinned product
     file as the image holds it, the sha256 of the index record ``data_index.py
     build-index`` wrote (a deterministic description of the index, not of its files),
     the install check and what no pin fixes (:func:`environment_record`, the build

@@ -35,7 +35,7 @@ Third-party material in evals/skill_bench/envs
    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
    SOFTWARE.
 
-2. SkillRL (https://github.com/NTU-LANTERN/SkillRL), Apache License 2.0, as vendored by
+2. SkillRL (https://github.com/aiming-lab/SkillRL), Apache License 2.0, as vendored by
    SkillOpt 79124b3 under skillopt/envs/alfworld/vendor/.
 
    - envs/vendor/alfworld_projection.py   (from agent_system/environments/env_package/alfworld/

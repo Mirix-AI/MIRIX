@@ -2619,10 +2619,10 @@ def _skips(data: Mapping[str, Any]) -> dict[tuple[str, str], str | None]:
 
 #: The method conftest's ``removed_method`` fixture records as removed from the study;
 #: its cells stay on disk.
-DC = REMOVED_METHOD
-DC_WEB = f"webshop-luna-{DC}"
-DC_ALF56 = f"alfworld-luna56-{DC}"
-DC_ALF = f"alfworld-luna-{DC}"
+REMOVED = REMOVED_METHOD
+REMOVED_WEB = f"webshop-luna-{REMOVED}"
+REMOVED_ALF56 = f"alfworld-luna56-{REMOVED}"
+REMOVED_ALF = f"alfworld-luna-{REMOVED}"
 #: Every section a removed method's cell must not appear in.
 STUDY_SECTIONS = (
     "Caveats",
@@ -2643,19 +2643,19 @@ def _leftover_cells(runs: Path) -> dict[str, Path]:
     web = make_cell(
         runs,
         "webshop",
-        DC,
+        REMOVED,
         test=shop("w", [1.0, 0.0, 1.0, 0.0]),
         calls=[
             _call("actor", "learning", 0.02, item="l1"),
             _call("learner", "learning", 0.02, item="l1"),
             _call("actor", "test", 0.01, item="u1"),
         ],
-        snapshot={"method": DC, "notes": ""},
+        snapshot={"method": REMOVED, "notes": ""},
     )
     alf56 = make_cell(
         runs,
         "alfworld",
-        DC,
+        REMOVED,
         model_key="luna56",
         test=[_row("a1", 1.0)],
         calls=[_call("actor", "test", 0.01, item="u1", model=LUNA56)],
@@ -2663,12 +2663,12 @@ def _leftover_cells(runs: Path) -> dict[str, Path]:
     alf = make_cell(
         runs,
         "alfworld",
-        DC,
+        REMOVED,
         test=[],
         status="interrupted",
         calls=[_call("actor", "learning", 0.02, item="l1")],
     )
-    return {DC_WEB: web, DC_ALF56: alf56, DC_ALF: alf}
+    return {REMOVED_WEB: web, REMOVED_ALF56: alf56, REMOVED_ALF: alf}
 
 
 def test_the_cells_of_a_removed_method_are_set_aside_but_their_money_counts(
@@ -2700,62 +2700,73 @@ def test_the_cells_of_a_removed_method_are_set_aside_but_their_money_counts(
     # The removed cells' money: apart from the matrix total, and in all cells' total.
     removed_costs = data["costs"]["removed"]
     assert removed_costs["total"] == pytest.approx(0.08)
-    assert removed_costs["by_method"] == {DC: pytest.approx(0.08)}
+    assert removed_costs["by_method"] == {REMOVED: pytest.approx(0.08)}
     assert removed_costs["by_benchmark"] == {
         "alfworld": pytest.approx(0.03),
         "webshop": pytest.approx(0.05),
     }
-    assert removed_costs["incomplete"] == {DC_ALF: pytest.approx(0.02)}
+    assert removed_costs["incomplete"] == {REMOVED_ALF: pytest.approx(0.02)}
     assert data["costs"]["all_cells_total"] == pytest.approx(
         before["costs"]["total"] + 0.08
     )
     removed = data["removed"]
     assert removed["methods"] == {
-        DC: {
-            "decision": study.REMOVED_METHODS[DC].decision,
-            "reason": study.REMOVED_METHODS[DC].reason,
-            "cells": [DC_ALF, DC_ALF56, DC_WEB],
+        REMOVED: {
+            "decision": study.REMOVED_METHODS[REMOVED].decision,
+            "reason": study.REMOVED_METHODS[REMOVED].reason,
+            "cells": [REMOVED_ALF, REMOVED_ALF56, REMOVED_WEB],
         }
     }
     listed = {c["cell_id"]: c for c in removed["cells"]}
-    assert [c["cell_id"] for c in removed["cells"]] == [DC_ALF, DC_ALF56, DC_WEB]
+    assert [c["cell_id"] for c in removed["cells"]] == [
+        REMOVED_ALF,
+        REMOVED_ALF56,
+        REMOVED_WEB,
+    ]
     assert {c: (e["status"], e["complete"]) for c, e in listed.items()} == {
-        DC_ALF: ("interrupted", False),
-        DC_ALF56: ("complete", True),
-        DC_WEB: ("complete", True),
+        REMOVED_ALF: ("interrupted", False),
+        REMOVED_ALF56: ("complete", True),
+        REMOVED_WEB: ("complete", True),
     }
-    assert listed[DC_WEB]["costs"]["total_cost"] == pytest.approx(0.05)
-    assert listed[DC_WEB]["costs"]["learning"]["by_role"]["learner"]["cost"] == (
+    assert listed[REMOVED_WEB]["costs"]["total_cost"] == pytest.approx(0.05)
+    assert listed[REMOVED_WEB]["costs"]["learning"]["by_role"]["learner"]["cost"] == (
         pytest.approx(0.02)
     )
-    assert listed[DC_ALF]["cell_dir"] == DC_ALF and listed[DC_ALF]["not_counted"] == "-"
+    assert (
+        listed[REMOVED_ALF]["cell_dir"] == REMOVED_ALF
+        and listed[REMOVED_ALF]["not_counted"] == "-"
+    )
     assert removed["cost_usd"] == pytest.approx(0.08)
     # Location independent: a merged view and the runs directory report one block.
     assert str(runs) not in json.dumps(removed) + json.dumps(data["costs"])
 
     md = report.render_markdown(data)
     for title in STUDY_SECTIONS:
-        assert DC not in "\n".join(_section(md, title)), title
+        assert REMOVED not in "\n".join(_section(md, title)), title
     assert not [
-        line for line in _section(md, "Cost") if line.startswith("| `") and DC in line
+        line
+        for line in _section(md, "Cost")
+        if line.startswith("| `") and REMOVED in line
     ]
     header = md.split("## Caveats")[0]
     assert (
-        f"- **Removed methods:** `{DC}` ({study.REMOVED_METHODS[DC].decision}; 3 "
+        f"- **Removed methods:** `{REMOVED}` ({study.REMOVED_METHODS[REMOVED].decision}; 3 "
         "cell(s)). Their cells are set aside"
     ) in header
     assert "their ledgers' $0.0800 is counted apart from the matrix total" in header
     section = _section(md, "Removed methods")
-    assert f"- `{DC}`, {study.REMOVED_METHODS[DC].decision}: " in "\n".join(section)
-    assert study.REMOVED_METHODS[DC].reason in "\n".join(section)
+    assert f"- `{REMOVED}`, {study.REMOVED_METHODS[REMOVED].decision}: " in "\n".join(
+        section
+    )
+    assert study.REMOVED_METHODS[REMOVED].reason in "\n".join(section)
     rows = [line for line in section if line.startswith("| `")]
     # The last column: the data is on disk (tools/remove_method_data.py not run).
     assert rows == [
-        f"| `{DC_ALF}` | interrupted | no | 1 | 1 | $0.0200 | $0.0000 | $0.0000 | "
+        f"| `{REMOVED_ALF}` | interrupted | no | 1 | 1 | $0.0200 | $0.0000 | $0.0000 | "
         "$0.0200 | - | yes |",
-        f"| `{DC_ALF56}` | complete | yes | 1 | 1 | $0.0000 | $0.0100 | $0.0000 | "
+        f"| `{REMOVED_ALF56}` | complete | yes | 1 | 1 | $0.0000 | $0.0100 | $0.0000 | "
         "$0.0100 | - | yes |",
-        f"| `{DC_WEB}` | complete | yes | 1 | 1 | $0.0400 | $0.0100 | $0.0000 | "
+        f"| `{REMOVED_WEB}` | complete | yes | 1 | 1 | $0.0400 | $0.0100 | $0.0000 | "
         "$0.0500 | - | yes |",
     ]
     assert {c["on_disk"] for c in removed["cells"]} == {True}
@@ -2766,8 +2777,8 @@ def test_the_cells_of_a_removed_method_are_set_aside_but_their_money_counts(
     assert f"Matrix total {report._usd(matrix)}" in cost
     assert (
         "**Removed methods' cells** (see 'Removed methods'): their ledgers recorded "
-        f"$0.0800 more, not in the matrix total ({DC} $0.0800; 1 of the cells not "
-        f"complete: `{DC_ALF}` $0.0200; of which $0.0000 in invalidated attempts). "
+        f"$0.0800 more, not in the matrix total ({REMOVED} $0.0800; 1 of the cells not "
+        f"complete: `{REMOVED_ALF}` $0.0200; of which $0.0000 in invalidated attempts). "
         f"**All cells: {report._usd(matrix + 0.08)}**"
     ) in cost
     # Rendered from report.json (sorted keys) the same.
@@ -2779,7 +2790,7 @@ def test_a_runs_directory_without_removed_cells_renders_as_before(runs, removed_
     report renders exactly as a report.json without them does."""
     data = json.loads(json.dumps(report.build_report(runs, frozen=FP)))
     assert data["removed"]["cells"] == [] and data["removed"]["cost_usd"] == 0.0
-    assert data["removed"]["methods"][DC]["cells"] == []
+    assert data["removed"]["methods"][REMOVED]["cells"] == []
     assert data["costs"]["removed"]["total"] == 0.0
     assert data["costs"]["all_cells_total"] == data["costs"]["total"]
     md = report.render_markdown(data)
@@ -2805,13 +2816,13 @@ def test_a_report_json_written_before_the_removal_renders_as_written(
     awm = next(c for c in data["cells"] if c["cell_id"] == "webshop-luna-awm")
     # A schema-2 cell row names no directory.
     stored = {k: v for k, v in awm.items() if k != "cell_dir"}
-    data["cells"].append({**stored, "cell_id": DC_WEB, "method": DC})
+    data["cells"].append({**stored, "cell_id": REMOVED_WEB, "method": REMOVED})
     row = next(r for r in data["comparisons"] if r["method"] == "awm" and "b" in r)
-    data["comparisons"].append({**row, "method": DC})
+    data["comparisons"].append({**row, "method": REMOVED})
     md = report.render_markdown(data)
-    assert f"| `{DC_WEB}` | complete |" in "\n".join(_section(md, "Cells"))
-    assert f"| webshop-luna | {DC} | 4 | 0.500 | 0.812 | 0.500 |" in md
-    assert f"| webshop-luna | {DC} | success_rate | 4 |" in md
+    assert f"| `{REMOVED_WEB}` | complete |" in "\n".join(_section(md, "Cells"))
+    assert f"| webshop-luna | {REMOVED} | 4 | 0.500 | 0.812 | 0.500 |" in md
+    assert f"| webshop-luna | {REMOVED} | success_rate | 4 |" in md
     assert "## Removed methods" not in md and "Removed methods:" not in md
     assert "All cells" not in md
 
@@ -2832,9 +2843,9 @@ def test_a_removed_cell_never_changes_the_exit_status(
     code, printed = run(argv)
     assert code == 0
     # No audit yet: every complete cell of the study is unaudited, and only those.
-    assert DC not in json.dumps(printed["not_audited"])
+    assert REMOVED not in json.dumps(printed["not_audited"])
     assert len(printed["not_audited"]) == 5
-    assert printed["removed"] == [DC_ALF, DC_ALF56, DC_WEB]
+    assert printed["removed"] == [REMOVED_ALF, REMOVED_ALF56, REMOVED_WEB]
     assert printed["cells"] == 6 and printed["complete"] == 5
     # --require-audit: the study's complete cells passed; the removed ones did not.
     study_cells = [
@@ -2848,20 +2859,20 @@ def test_a_removed_cell_never_changes_the_exit_status(
         runs,
         [_audit_entry(runs, c) for c in study_cells]
         + [
-            _audit_entry(runs, DC_WEB, violations=7),
-            _audit_entry(runs, DC_ALF56, audited=False, reason="testing"),
+            _audit_entry(runs, REMOVED_WEB, violations=7),
+            _audit_entry(runs, REMOVED_ALF56, audited=False, reason="testing"),
         ],
     )
     code, printed = run([*argv, "--require-audit"])
     assert (code, printed["not_audited"]) == (0, [])
     data = json.loads((tmp_path / "o" / "report.json").read_text())
-    assert DC not in json.dumps(data["audit"]["cells_not_passed"])
+    assert REMOVED not in json.dumps(data["audit"]["cells_not_passed"])
     # Only removed cells: nothing of the study to report.
     only = tmp_path / "only"
     _leftover_cells(only)
     code, printed = run(["--runs-dir", str(only), "--out", str(tmp_path / "p")])
     assert (code, printed["cells"], printed["complete"]) == (2, 0, 0)
-    assert printed["removed"] == [DC_ALF, DC_ALF56, DC_WEB]
+    assert printed["removed"] == [REMOVED_ALF, REMOVED_ALF56, REMOVED_WEB]
 
 
 def test_two_directories_of_one_removed_cell_are_no_error(runs, removed_method):
@@ -2870,23 +2881,30 @@ def test_two_directories_of_one_removed_cell_are_no_error(runs, removed_method):
     old = make_cell(
         runs,
         "webshop",
-        DC,
+        REMOVED,
         test=shop("w", [1.0]),
         calls=[_call("actor", "test", 0.03, item="u1")],
-        directory=f"{DC_WEB}.old",
+        directory=f"{REMOVED_WEB}.old",
     )
-    run_id = f"{DC_WEB}-a01-0dd0dd01"  # the old directory's instance: its own run
-    (runs / f"{DC_WEB}-a01").rename(runs / run_id)
+    run_id = f"{REMOVED_WEB}-a01-0dd0dd01"  # the old directory's instance: its own run
+    (runs / f"{REMOVED_WEB}-a01").rename(runs / run_id)
     _set_state(old, run_id=run_id, ledger=str(runs / run_id / "gateway.jsonl"))
     _leftover_cells(runs)
     data = report.build_report(runs, frozen=FP)
     assert data["errors"] == []
     entries = [(c["cell_id"], c["cell_dir"]) for c in data["removed"]["cells"]]
-    assert (DC_WEB, DC_WEB) in entries and (DC_WEB, f"{DC_WEB}.old") in entries
-    assert data["removed"]["methods"][DC]["cells"] == [DC_ALF, DC_ALF56, DC_WEB]
+    assert (REMOVED_WEB, REMOVED_WEB) in entries and (
+        REMOVED_WEB,
+        f"{REMOVED_WEB}.old",
+    ) in entries
+    assert data["removed"]["methods"][REMOVED]["cells"] == [
+        REMOVED_ALF,
+        REMOVED_ALF56,
+        REMOVED_WEB,
+    ]
     assert data["costs"]["removed"]["total"] == pytest.approx(0.11)
     md = report.render_markdown(data)
-    assert f"| `{DC_WEB}` (directory `{DC_WEB}.old`) | complete |" in md
+    assert f"| `{REMOVED_WEB}` (directory `{REMOVED_WEB}.old`) | complete |" in md
     assert "**Error:**" not in md
 
 
@@ -2906,7 +2924,7 @@ def test_the_spend_windows_count_the_removed_cells_ledgers(tmp_path, removed_met
     make_cell(
         runs,
         "alfworld",
-        DC,
+        REMOVED,
         test=[_row("a1", 0.0)],
         calls=[_timed(_call("learner", "learning", 0.20), at, latency_s=1.0)],
     )
@@ -2932,10 +2950,11 @@ def test_the_spend_windows_count_the_removed_cells_ledgers(tmp_path, removed_met
     # directory, as a second host's), with that directory's balance record.
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
-    run_id = f"alfworld-luna-{DC}-a01"
+    run_id = f"alfworld-luna-{REMOVED}-a01"
     (runs / run_id).rename(elsewhere / run_id)
     _set_state(
-        runs / f"alfworld-luna-{DC}", ledger=str(elsewhere / run_id / "gateway.jsonl")
+        runs / f"alfworld-luna-{REMOVED}",
+        ledger=str(elsewhere / run_id / "gateway.jsonl"),
     )
     _write_balance(elsewhere, rows)
     data = report.build_report(runs, frozen=FP)
@@ -2950,8 +2969,8 @@ def test_comparisons_never_pair_a_removed_methods_cell(runs, removed_method):
     output) pair the study's methods only."""
     _leftover_cells(runs)
     cells = report.load_cells(runs)
-    assert DC in {c.method for c in cells}
-    assert not [r for r in report.comparisons(cells) if r["method"] == DC]
+    assert REMOVED in {c.method for c in cells}
+    assert not [r for r in report.comparisons(cells) if r["method"] == REMOVED]
 
 
 def test_the_removed_cells_calls_of_unknown_cost_are_named_in_the_cost_section(
@@ -2965,7 +2984,7 @@ def test_the_removed_cells_calls_of_unknown_cost_are_named_in_the_cost_section(
     make_cell(
         runs,
         "alfworld",
-        DC,
+        REMOVED,
         test=[],
         status="interrupted",
         calls=[
@@ -2987,7 +3006,7 @@ def test_the_removed_cells_calls_of_unknown_cost_are_named_in_the_cost_section(
     md = report.render_markdown(data)
     cost = "\n".join(_section(md, "Cost"))
     assert "**Cost not in the totals:** " in cost
-    assert f"`{DC_ALF}` (removed method) {not_counted}" in cost
+    assert f"`{REMOVED_ALF}` (removed method) {not_counted}" in cost
     assert (
         "of which $0.0000 in invalidated attempts; not counting their 2 cut-off "
         "and 1 unfinished call(s) of unknown cost, named under 'Cost not in the "
@@ -3010,7 +3029,7 @@ def test_a_removed_cell_whose_cell_json_names_no_method_is_set_aside_by_its_id(
     set aside and listed as when the method was there."""
     cells = _leftover_cells(runs)
     before = report.build_report(runs, frozen=FP)
-    manifest = cells[DC_WEB] / "cell.json"
+    manifest = cells[REMOVED_WEB] / "cell.json"
     record = json.loads(manifest.read_text())
     del record["cell"]["method"]
     manifest.write_text(json.dumps(record))
@@ -3018,7 +3037,9 @@ def test_a_removed_cell_whose_cell_json_names_no_method_is_set_aside_by_its_id(
     for key in ("removed", "cells", "comparisons", "errors"):
         assert data[key] == before[key], key
     assert data["costs"] == before["costs"]
-    assert {c["cell_id"]: c["method"] for c in data["removed"]["cells"]}[DC_WEB] == DC
+    assert {c["cell_id"]: c["method"] for c in data["removed"]["cells"]}[
+        REMOVED_WEB
+    ] == REMOVED
 
 
 # --- record, don't block (schema 3) -------------------------------------------------------

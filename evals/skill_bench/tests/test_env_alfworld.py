@@ -197,7 +197,7 @@ def make_env(games: Games, tmp_path: Path, **kwargs: Any) -> alf.AlfWorldEnv:
 async def play(
     env: alf.AlfWorldEnv, task: Task, responses: Sequence[str], memory: str = ""
 ) -> SimpleNamespace:
-    """Run one episode like the phase-11 rollout will: render, call, step."""
+    """Run one episode as the rollout does: render, call, step."""
     prompts: list[list[dict[str, Any]]] = []
     steps: list[StepResult] = []
     async with env.episode(task) as episode:

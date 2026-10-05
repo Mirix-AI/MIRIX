@@ -496,7 +496,10 @@ def test_signal_group_reports_a_group_that_is_gone():
     assert not signal_group(child.pid, signal.SIGTERM)
 
 
-STUBBORN = f"{sys.executable} -c 'import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); print(1, flush=True); time.sleep(60)'"
+#: ``exec``: the signalled process is Python itself under every ``/bin/sh``. A shell that
+#: forks the command of ``sh -c`` instead (Ubuntu's dash here) would die of the SIGTERM
+#: itself while its Python child ignores it.
+STUBBORN = f"exec {sys.executable} -c 'import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); print(1, flush=True); time.sleep(60)'"
 
 
 def test_stop_orphaned_terms_first_and_leaves_owned_or_used_children(tmp_path):

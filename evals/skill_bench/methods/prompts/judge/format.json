@@ -1,5 +1,5 @@
 {
-  "comment": "Frozen text and limits of the shared judge J (spec H7.8, Q22). system.md is the ReasoningBank paper's Figure 10 system instruction with only its three web task types rewritten into the two classes of H7.8 ('substitution'); tests diff it against the verbatim original in originals/. user.md and the formats below are the RB repo's text-evaluation input (autoeval/prompts.py build_text_eval_prompt, autoeval/evaluator.py eval_text) at commit ed80611, without the later strict-judging paragraph. Code (methods/judge.py) contains no model-visible literal.",
+  "comment": "Frozen text and limits of the shared judge J. system.md is the ReasoningBank paper's Figure 10 system instruction with only its three web task types rewritten into two task classes ('substitution'); tests diff it against the verbatim original in originals/. user.md and the formats below are the RB repo's text-evaluation input (autoeval/prompts.py build_text_eval_prompt, autoeval/evaluator.py eval_text) at commit ed80611, without the later strict-judging paragraph. Code (methods/judge.py) contains no model-visible literal.",
   "provenance": {
     "paper": {
       "id": "arXiv 2509.25140 (ReasoningBank: Scaling Agent Self-Evolving with Reasoning Memory)",
@@ -27,7 +27,7 @@
           "sha256": "eb7937314b157e0f93ad732a67afb726c79a577bbf0e9314ef0196e44d8890f7"
         }
       },
-      "system_prompt": "prompts.py build_text_eval_prompt system_msg: Figure 10's text plus a '*Strictness rules*' paragraph added later; J follows the paper and leaves that paragraph out (spec Q22).",
+      "system_prompt": "prompts.py build_text_eval_prompt system_msg: Figure 10's text plus a '*Strictness rules*' paragraph added later; J follows the paper and leaves that paragraph out.",
       "user_prompt": "prompts.py build_text_eval_prompt 'prompt' f-string (user.md; {last_actions} -> {actions}, {cap} -> {observations})",
       "action_history": "evaluator.py eval_text: '{idx+1}: <think>{think}</think>\\n   <action>{act}</action>\\n', or '{idx+1}: <action>{act}</action>\\n' without a think",
       "observations": "evaluator.py eval_text: the last 5 captions, joined by '\\n\\n---\\n\\n', each headed '[Page state {i+1}/{len(last_caps)}]'",
@@ -35,8 +35,8 @@
     }
   },
   "substitution": {
-    "rule": "spec H7.8 / Q22: the three web task types become two classes, (1) answering or looking up information: the final response must contain the requested information, an error counts as failure, the actions must suffice to obtain the answer; (2) changing the state or taking an action: judge from the actions and the final observations whether the goal state is reached. The rest of the system instruction is Figure 10 verbatim.",
-    "dropped": "the web examples (products, reviews, map routes, top-searched items in a shop), 'Site navigation' and 'Content modification' as separate types, and 'or explicitly state that the information is not available' (every task in the three benchmarks has an answer; the H7.8 class omits it)",
+    "rule": "The three web task types become two classes, (1) answering or looking up information: the final response must contain the requested information, an error counts as failure, the actions must suffice to obtain the answer; (2) changing the state or taking an action: judge from the actions and the final observations whether the goal state is reached. The rest of the system instruction is Figure 10 verbatim.",
+    "dropped": "the web examples (products, reviews, map routes, top-searched items in a shop), 'Site navigation' and 'Content modification' as separate types, and 'or explicitly state that the information is not available' (every task in the benchmarks has an answer; the answering class omits it)",
     "original": "There are three types of tasks:  \n1.Information seeking: The user wants to obtain certain information from the webpage, such as the information of a product, reviews, map info, comparison of map routes, etc. The bot's response must contain the information the user wants, or explicitly state that the information is not available. Otherwise, e.g. the bot encounters an exception and respond with the error content, the task is considered a failure. Besides, be careful about the sufficiency of the agent's actions. For example, when asked to list the top-searched items in a shop, the agent should order the items by the number of searches, and then return the top items. If the ordering action is missing, the task is likely to fail.  \n2. Site navigation: The user wants to navigate to a specific page. Carefully examine the bot's action history and the final state of the webpage to determine whether the bot successfully completes the task. No need to consider the bot's response.  \n3.Content modification: The user wants to modify the content of a webpage or configuration. Carefully examine the bot's action history and the final state of the webpage to determine whether the bot successfully completes the task. No need to consider the bot's response. \n",
     "replacement": "There are two types of tasks:\n1. Answering or looking up information: The user wants to obtain certain information, such as a value, a fact or the result of a calculation. The bot's response must contain the information the user wants. Otherwise, e.g. the bot encounters an exception and respond with the error content, the task is considered a failure. Besides, be careful about the sufficiency of the agent's actions: the actions must be enough to obtain the answer. If a necessary action is missing, the task is likely to fail.\n2. Changing the state or taking an action: The user wants the agent to change the state of the environment or to carry out an action. Carefully examine the bot's action history and the final state to determine whether the bot successfully completes the task, that is, whether the goal state is reached. No need to consider the bot's response.\n\n"
   },
@@ -47,7 +47,7 @@
   "action_without_think": "{n}: {actions}\n",
   "action_item": "<action>{action}</action>",
   "action_joiner": "\n   ",
-  "action_history_rule": "The action history numbers only the assistant turns that carry an action, as RB's evaluator does: autoeval/evaluate_trajectory.py extract_think_and_action skips a step whose action is empty ('if not action: # skip empty action steps') before the steps are numbered. A turn's action is the body of its <action> tag, or the <answer> element of a final answer (methods/judge.py episode_turns). A turn without an action (no reply, or output without an <action> tag) is left out and counted (the verdict's skipped_turns). The RB and AWM learners read the same turns (X1, X7).",
+  "action_history_rule": "The action history numbers only the assistant turns that carry an action, as RB's evaluator does: autoeval/evaluate_trajectory.py extract_think_and_action skips a step whose action is empty ('if not action: # skip empty action steps') before the steps are numbered. A turn's action is the body of its <action> tag, or the <answer> element of a final answer (methods/judge.py episode_turns). A turn without an action (no reply, or output without an <action> tag) is left out and counted (the verdict's skipped_turns). The RB and AWM learners read the same turns.",
   "tool_call": "{name}({arguments})",
   "observation": "[Page state {i}/{n}]\n{text}",
   "observation_joiner": "\n\n---\n\n",
@@ -56,5 +56,5 @@
   "min_truncated_chars": 200,
   "truncation_marker": "\n[... {omitted:,} of {total:,} characters omitted ...]\n",
   "image_placeholder": "[image]",
-  "limits_note": "observation_max_chars: RB's evaluate_trajectory.py keeps the first 40,000 characters of each page state (MAX_OBS_CHARS); J keeps the head and the tail of each observation (spec H7.3/H7.8) within the same 40,000 and marks the cut. min_truncated_chars bounds the extra cuts J makes only when a judge input would exceed the model's input budget."
+  "limits_note": "observation_max_chars: RB's evaluate_trajectory.py keeps the first 40,000 characters of each page state (MAX_OBS_CHARS); J keeps the head and the tail of each observation within the same 40,000 and marks the cut. min_truncated_chars bounds the extra cuts J makes only when a judge input would exceed the model's input budget."
 }

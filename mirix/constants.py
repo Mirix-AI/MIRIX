@@ -603,10 +603,8 @@ def _skill_target_instructions_chars(raw: Optional[str], cap: int) -> int:
 # asks the curator to condense the skill or split out a separate kind of task
 # in a later change. A retrieved skill is injected whole, and find-and-replace
 # patches only ever add text: without a target short of the hard cap, skills
-# grow to it. Half the cap: in logged learning runs skills of 1.4k-4.4k
-# characters helped the agents that received them, and harm co-occurred only
-# with skills of 5.9k-12k (confounded with other causes), so the target flags
-# that range and leaves room to condense before the hard cap.
+# grow to it. Half the cap, so a skill is flagged well before it reaches the
+# hard cap and there is room to condense it first.
 SKILL_TARGET_INSTRUCTIONS_CHARS = _skill_target_instructions_chars(
     os.getenv("MIRIX_SKILL_TARGET_INSTRUCTIONS_CHARS"), SKILL_MAX_INSTRUCTIONS_CHARS
 )

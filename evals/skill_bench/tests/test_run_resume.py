@@ -356,7 +356,9 @@ async def test_a_resume_under_other_code_is_recorded_while_other_hosts_and_forma
     write_json_atomic(paths.attempt(1).state, state)
 
     here = run.host_info()
-    other = {**here, "hostname": "another-host", "machine": "x86_64"}
+    # Another machine id and name: same_host compares the machine ids (with the system and
+    # architecture) when both records have one, so another hostname alone is not enough.
+    other = {**here, "hostname": "another-host", "machine_id": "d" * 32}
     monkeypatch.setattr(run, "host_info", lambda: other)
     refused = await runner(tmp_path, url, factory=storing([])).run()
     assert refused.status == "refused" and "another-host" in refused.detail
