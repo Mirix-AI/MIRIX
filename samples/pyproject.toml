@@ -52,7 +52,7 @@ dependencies = [
     "humps",
     "composio",
     "colorama",
-    "anthropic",
+    "anthropic>=0.94.0,<1.0.0",  # the httpx-based SDK (see ../pyproject.toml)
     "httpx_sse",
     "rapidfuzz",
     "rank-bm25",

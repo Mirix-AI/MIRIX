@@ -8,9 +8,10 @@
 --                     backfill-free migration never silently drops skill-building
 --                     on pre-existing task data.
 --
--- The column is nullable with no default: existing rows keep NULL, and the
--- distiller gate (list_sealed_undistilled_sessions) excludes only rows
--- EXPLICITLY tagged 'conversation'. No row rewrite, no backfill required.
+-- The column is nullable with no default: existing rows keep NULL, and skill
+-- learning (the pending-session selection over conversation_session) excludes
+-- only sessions EXPLICITLY tagged 'conversation'. No row rewrite, no backfill
+-- required.
 
 -- Idempotent: safe to re-run.
 BEGIN;
@@ -20,8 +21,7 @@ ALTER TABLE conversation_message
 
 COMMIT;
 
--- Index the routing tag so the distiller's sealed-session enumeration can filter
--- on it cheaply. CREATE INDEX CONCURRENTLY cannot run inside a transaction, so
+-- Index the routing tag so tag-filtered reads of the store stay cheap. CREATE INDEX CONCURRENTLY cannot run inside a transaction, so
 -- run this line OUTSIDE a transaction block (not via psql -1):
 --
 --   CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_conversation_message_session_tag

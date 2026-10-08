@@ -108,6 +108,23 @@ class UserManager:
 
     @enforce_types
     async def delete_user_by_id(self, user_id: str):
+        """Soft delete a user and its records (see :meth:`_soft_delete_user`),
+        then DELETE its retrieval log rows (the raw query texts go with
+        the user's data; nothing may list them afterwards). A retrieval in
+        flight meanwhile writes no row (``erasing_retrieval_logs``, and the
+        log skips a deleted user)."""
+        from mirix.services.retrieval_log_manager import (
+            RetrievalLogManager,
+            erasing_retrieval_logs,
+        )
+
+        async with erasing_retrieval_logs(user_id):
+            await self._soft_delete_user(user_id)
+            await RetrievalLogManager(session_maker=self.session_maker).delete_by_user_id(
+                user_id
+            )
+
+    async def _soft_delete_user(self, user_id: str):
         """
         Soft delete a user and cascade soft delete to all associated records using memory managers.
 
@@ -214,6 +231,34 @@ class UserManager:
                 logger.warning("Failed to update cache for user %s: %s", user_id, e)
 
     async def delete_memories_by_user_id(self, user_id: str):
+        """Hard delete a user's memories (see :meth:`_purge_user_memories`).
+
+        The purge runs with the user's skill learning quiesced: the user's
+        queued/running learning runs are failed and stopped first, and the
+        user's procedural dream guard is held throughout, so an in-flight run
+        can never write experiences, skills or a checkpoint back after the
+        purge (``skill_learning_trigger.quiesce_learning_for_erasure``).
+        """
+        from mirix.services.skill_learning_trigger import quiesce_learning_for_erasure
+
+        extra_owners = []
+        async with self.session_maker() as session:
+            user_org = (
+                await session.execute(
+                    select(UserModel.organization_id).where(UserModel.id == user_id)
+                )
+            ).scalar_one_or_none()
+        if user_org is not None:
+            extra_owners.append((user_id, user_org))
+        from mirix.services.retrieval_log_manager import erasing_retrieval_logs
+
+        async with quiesce_learning_for_erasure(
+            user_id=user_id, extra_owners=extra_owners
+        ), erasing_retrieval_logs(user_id):
+            # A retrieval in flight writes no log row after this purge.
+            await self._purge_user_memories(user_id)
+
+    async def _purge_user_memories(self, user_id: str):
         """
         Hard delete memories, messages, and blocks for a user using memory managers' bulk delete.
 
@@ -229,8 +274,15 @@ class UserManager:
            - KnowledgeVaultManager.delete_by_user_id()
            - MessageManager.delete_by_user_id()
            - BlockManager.delete_by_user_id()
-           - ConversationMessageManager.delete_by_user_id()  (verbatim session transcripts)
+           - ConversationMessageManager.delete_by_user_id()  (verbatim session transcripts
+                                                              and the images they referenced)
            - SkillExperienceManager.delete_by_user_id()      (experiences distilled from them)
+           - SkillSessionFeedbackManager.delete_by_user_id() (feedback on the skills
+                                                              served in their sessions)
+           - image_store.delete_user_image_files()           (the user's remaining images:
+                                                              the meta agent's copies, whose
+                                                              messages were deleted above)
+           - RetrievalLogManager.delete_by_user_id()         (the user's retrieval log rows)
         2. Each manager handles:
            - Bulk database deletion
            - Redis cache cleanup
@@ -300,6 +352,30 @@ class UserManager:
             experience_count = await skill_experience_manager.delete_by_user_id(user_id=user_id)
             logger.debug("Bulk deleted %d skill experiences", experience_count)
 
+            # The served skills' feedback quotes the user's transcripts too.
+            from mirix.services.skill_session_feedback import SkillSessionFeedbackManager
+
+            feedback_count = await SkillSessionFeedbackManager(
+                session_maker=self.session_maker
+            ).delete_by_user_id(user_id)
+            logger.debug("Bulk deleted %d skill feedback rows", feedback_count)
+
+            # Images attributed to the user: the conversation store's were
+            # released with its turns; what remains are the meta agent's copies,
+            # unreferenced now that the user's messages are gone.
+            from mirix.services.image_store import delete_user_image_files
+
+            image_count = await delete_user_image_files(user_id)
+            logger.debug("Bulk deleted %d image files", image_count)
+
+            # The user's retrieval log rows hold their raw queries.
+            from mirix.services.retrieval_log_manager import RetrievalLogManager
+
+            retrieval_log_count = await RetrievalLogManager(
+                session_maker=self.session_maker
+            ).delete_by_user_id(user_id)
+            logger.debug("Bulk deleted %d retrieval log rows", retrieval_log_count)
+
             # Clear message_ids from ALL agents in PostgreSQL (messages are user-scoped, agents are client-scoped)
             # IMPORTANT: Keep the first message (system message) as agents need it to function
             # We need to clear message_ids from all agents that might have cached this user's messages
@@ -344,7 +420,7 @@ class UserManager:
             logger.info(
                 "Bulk deleted all memories for user %s: "
                 "%d episodic, %d semantic, %d procedural, %d resource, %d knowledge_vault, %d messages, %d blocks, "
-                "%d conversation turns, %d skill experiences "
+                "%d conversation turns, %d skill experiences, %d images "
                 "(user record preserved)",
                 user_id,
                 episodic_count,
@@ -356,6 +432,7 @@ class UserManager:
                 block_count,
                 conversation_count,
                 experience_count,
+                image_count,
             )
         except Exception as e:
             logger.error("Failed to bulk delete memories for user %s: %s", user_id, e)

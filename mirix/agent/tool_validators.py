@@ -42,7 +42,16 @@ def validate_tool_args(function_name: str, function_args: dict) -> Optional[str]
     """
     validator = _VALIDATORS.get(function_name)
     if validator:
-        return validator(function_name, function_args)
+        try:
+            return validator(function_name, function_args)
+        except Exception as exc:  # noqa: BLE001 — malformed arguments (e.g. null)
+            # A validator tripping over a malformed argument (a null, a number
+            # where text belongs) is itself an invalid-arguments answer: the
+            # model gets an error tool result, the step goes on.
+            return (
+                f"Validation error: invalid arguments for {function_name} "
+                f"({type(exc).__name__}: {exc})."
+            )
     return None
 
 
@@ -227,9 +236,23 @@ def validate_skill_create(function_name: str, args: dict) -> Optional[str]:
     return None
 
 
+def _given(value) -> bool:
+    """Whether a skill_edit argument was given: a strict tool schema makes
+    every parameter required, so the model sends "" for the ones it does not
+    use — the same rule as the tool's."""
+    return value is not None and not (isinstance(value, str) and value == "")
+
+
 @register_validator("skill_edit")
 def validate_skill_edit(function_name: str, args: dict) -> Optional[str]:
-    """Validate skill_edit arguments."""
+    """Validate skill_edit arguments.
+
+    The same rules as the tool (``memory_tools.skill_edit``): an empty
+    ``old_text`` or ``value`` counts as not given. A text field is patched
+    (``old_text`` and ``new_text``, ``value`` empty; ``new_text=""`` deletes
+    the found text) or replaced whole (``value``, the others empty); both or
+    neither is refused. The other fields need ``value``.
+    """
     from mirix.schemas.procedural_memory import (
         SKILL_ENTRY_TYPES,
         SKILL_MAX_DESCRIPTION_LEN,
@@ -247,21 +270,46 @@ def validate_skill_edit(function_name: str, args: dict) -> Optional[str]:
         return f"Validation error: 'field' must be one of: {', '.join(sorted(valid_fields))}."
     text_fields = {"name", "description", "instructions"}
     if field in text_fields:
-        if not args.get("old_text"):
-            return f"Validation error: 'old_text' is required for text field '{field}'."
-        if args.get("new_text") is None:
-            return f"Validation error: 'new_text' is required for text field '{field}'."
-        new_text = args.get("new_text") or ""
         caps = {
             "name": SKILL_MAX_NAME_LEN,
             "description": SKILL_MAX_DESCRIPTION_LEN,
             "instructions": SKILL_MAX_INSTRUCTIONS_LEN,
         }
+        old_text = args.get("old_text")
+        value = args.get("value")
+        if _given(old_text) and _given(value):
+            return (
+                "Validation error: give either a patch (old_text and new_text, with "
+                "value empty) or a whole new field (value, with old_text and "
+                "new_text empty), not both."
+            )
+        if _given(value):
+            # A whole-field rewrite of a text field (no size gate).
+            if not isinstance(value, str):
+                return f"Validation error: 'value' for text field '{field}' must be a string."
+            if len(value) > caps[field]:
+                return f"Validation error: 'value' for field '{field}' exceeds max length {caps[field]}."
+            return None
+        if not _given(old_text):
+            return (
+                f"Validation error: for a patch of text field '{field}' give "
+                "'old_text' (the text to find) and 'new_text', with 'value' empty; "
+                "to replace the whole field give 'value', with 'old_text' and "
+                "'new_text' empty."
+            )
+        if not str(old_text).strip():
+            return (
+                f"Validation error: 'old_text' for a patch of text field '{field}' "
+                "must not be only whitespace."
+            )
+        if args.get("new_text") is None:
+            return f"Validation error: 'new_text' is required for a patch of text field '{field}'."
+        new_text = args.get("new_text") or ""
         if len(new_text) > caps[field]:
             return f"Validation error: 'new_text' for field '{field}' exceeds max length {caps[field]}."
     else:
         value = args.get("value")
-        if value is None:
+        if not _given(value):
             return f"Validation error: 'value' is required for field '{field}'."
         if field == "entry_type" and value not in SKILL_ENTRY_TYPES:
             return (
@@ -272,9 +320,11 @@ def validate_skill_edit(function_name: str, args: dict) -> Optional[str]:
 
 @register_validator("skill_delete")
 def validate_skill_delete(function_name: str, args: dict) -> Optional[str]:
-    """Validate skill_delete arguments."""
-    if not args.get("skill_id", "").strip():
+    """Validate skill_delete arguments (a deletion always names its reason)."""
+    if not str(args.get("skill_id") or "").strip():
         return "Validation error: 'skill_id' cannot be empty."
+    if not str(args.get("reason") or "").strip():
+        return "Validation error: 'reason' is required: say why the skill must be deleted."
     return None
 
 

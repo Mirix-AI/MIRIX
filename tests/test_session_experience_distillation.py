@@ -1,13 +1,16 @@
 """Tests for general per-session experience distillation (DB-free).
 
 Layered for the general Experience Distiller: no benchmark oracle and no
-success/failure label.
+external success/failure label (the distiller states each session's outcome
+itself, from the transcript alone: tests/test_distiller_outcome.py).
 
 1. JSON-array parse robustness — bare array, fenced ```json, prose-wrapped,
-   single-object fallback, empty `[]`, garbage -> [].
+   single-object fallback, empty `[]`, garbage -> [] (lenient) / None (strict:
+   an unusable answer is never "no experiences").
 2. Parsed-experience -> SkillExperience mapping (_persist_experiences via a stub
    manager, no DB): importance/credibility clamping, evidence normalization,
-   bad-type / empty-title skips, length caps, status='pending'.
+   bad-type / empty-title skips, head + tail caps (title 1,024, content and
+   evidence 65,536; no silent 512-char quote cut), status='pending'.
 3. Prioritization ordering invariant — importance*credibility is the priority
    the curator payload is built around.
 4. Single session yields MULTIPLE mixed worth_learning + worth_avoiding from one
@@ -29,9 +32,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from mirix.helpers.json_parsing import parse_distiller_json_array
+from mirix.helpers.json_parsing import (
+    parse_distiller_json_array,
+    parse_json_array_or_none,
+)
 from mirix.schemas.skill_experience import (
     SKILL_EXPERIENCE_MAX_CONTENT_LEN,
+    SKILL_EXPERIENCE_MAX_EVIDENCE_LEN,
     SKILL_EXPERIENCE_MAX_TITLE_LEN,
 )
 from mirix.services.session_experience_distiller import SessionExperienceDistiller
@@ -81,6 +88,29 @@ class TestParseDistillerJsonArray:
         assert parse_distiller_json_array("not json at all") == []
         assert parse_distiller_json_array("") == []
         assert parse_distiller_json_array(None) == []
+
+
+class TestStrictJsonArray:
+    """The distiller's parser tells an explicit ``[]`` from an unusable answer."""
+
+    def test_explicit_empty_array_is_empty(self):
+        assert parse_json_array_or_none("[]") == []
+        assert parse_json_array_or_none("```json\n[ ]\n```") == []
+
+    @pytest.mark.parametrize(
+        "raw",
+        [None, "", "   ", "No experiences here.", '[{"title": "cut off', "[1, 2]"],
+    )
+    def test_unusable_answers_are_none(self, raw):
+        assert parse_json_array_or_none(raw) is None
+
+    def test_recoverable_shapes_still_parse(self):
+        assert parse_json_array_or_none('Sure: [{"title": "a"}]') == [{"title": "a"}]
+        assert parse_json_array_or_none('{"title": "solo"}') == [{"title": "solo"}]
+        # An array of scalars before the real one is skipped, not taken as [].
+        assert parse_json_array_or_none('scores [1, 2]; [{"title": "b"}]') == [
+            {"title": "b"}
+        ]
 
 
 # ===================== Parsed-experience -> SkillExperience mapping =========
@@ -245,8 +275,66 @@ class TestPersistMapping:
             parsed=parsed,
         )
         assert len(out) == 1
-        assert len(mgr.created[0].title) <= SKILL_EXPERIENCE_MAX_TITLE_LEN
-        assert len(mgr.created[0].content) <= SKILL_EXPERIENCE_MAX_CONTENT_LEN
+        title, content = mgr.created[0].title, mgr.created[0].content
+        assert len(title) <= SKILL_EXPERIENCE_MAX_TITLE_LEN
+        assert len(content) <= SKILL_EXPERIENCE_MAX_CONTENT_LEN
+        # Head + tail around an explicit marker, never a silent cut.
+        assert title.startswith("T") and title.endswith("T")
+        assert "…[truncated " in title and "…[truncated " in content
+
+    def test_caps_are_the_m4_3_values(self):
+        assert SKILL_EXPERIENCE_MAX_TITLE_LEN == 1024
+        assert SKILL_EXPERIENCE_MAX_CONTENT_LEN == 65536
+        assert SKILL_EXPERIENCE_MAX_EVIDENCE_LEN == 65536
+
+    async def test_fields_within_the_caps_are_kept_whole(self):
+        mgr = _RecordingManager()
+        d = _distiller_with(mgr)
+        meta, user, actor = _meta_user_actor()
+        quote = "q" * 5000  # the old code cut every quote to 512 chars
+        parsed = [
+            {
+                "experience_type": "worth_learning",
+                "title": "T" * 1000,
+                "content": "C" * 60000,
+                "evidence": {"quote": quote, "signal_type": "tool_error"},
+            }
+        ]
+        await d._persist_experiences(
+            meta_agent_state=meta, user=user, actor=actor, session_id="s", parsed=parsed
+        )
+        rec = mgr.created[0]
+        assert rec.title == "T" * 1000 and rec.content == "C" * 60000
+        assert json.loads(rec.evidence)["quote"] == quote
+
+    async def test_an_oversize_quote_keeps_valid_json_within_the_cap(self):
+        mgr = _RecordingManager()
+        d = _distiller_with(mgr)
+        meta, user, actor = _meta_user_actor()
+        quote = 'say "hi"\n' * 20000  # escaping makes the JSON longer
+        metrics = {"fields_truncated": 0, "field_chars_truncated": 0}
+        payloads = d._experience_payloads(
+            meta_agent_state=meta,
+            user=user,
+            actor=actor,
+            session_id="s",
+            parsed=[
+                {
+                    "experience_type": "worth_avoiding",
+                    "title": "t",
+                    "evidence": {"quote": quote, "signal_type": "user_critique"},
+                }
+            ],
+            metrics=metrics,
+        )
+        evidence = payloads[0]["evidence"]
+        assert len(evidence) <= SKILL_EXPERIENCE_MAX_EVIDENCE_LEN
+        parsed = json.loads(evidence)
+        assert parsed["signal_type"] == "user_critique"
+        assert "…[truncated " in parsed["quote"]
+        assert parsed["quote"].startswith('say "hi"')
+        assert metrics["fields_truncated"] == 1
+        assert metrics["field_chars_truncated"] > 0
 
     async def test_evidence_normalized_when_missing_or_bad(self):
         mgr = _RecordingManager()
@@ -380,22 +468,23 @@ class TestSingleSessionMultipleMixed:
     async def test_one_session_yields_multiple_mixed_kinds(self):
         mgr = _RecordingManager()
         fake = _FakeLLMClient(MIXED_REPLY)
-        d = SessionExperienceDistiller(llm_client=fake, experience_manager=mgr)
+        conv = _RecordingConversationManager(
+            turns_by_session={
+                "sess-x": [
+                    _conv_turn("user", "...", session_id="sess-x"),
+                    _conv_turn("assistant", "...", session_id="sess-x"),
+                ]
+            }
+        )
+        d = SessionExperienceDistiller(
+            llm_client=fake, experience_manager=mgr, conversation_manager=conv
+        )
         meta, user, actor = _meta_user_actor()
 
-        parsed = await d._call_llm(
-            agent_id=meta.id,
-            session_id="sess-x",
-            transcript="user: ...\nassistant: ...",
-            skills_block="(none)",
+        out, processed = await d.distill_sessions(
+            meta_agent_state=meta, user=user, actor=actor, session_ids=["sess-x"]
         )
-        out = await d._persist_experiences(
-            meta_agent_state=meta,
-            user=user,
-            actor=actor,
-            session_id="sess-x",
-            parsed=parsed,
-        )
+        assert processed == ["sess-x"]
         assert fake.calls == 1
         types = sorted(r.experience_type for r in out)
         # ONE session -> MULTIPLE experiences, a MIX of both kinds.
@@ -407,55 +496,49 @@ class TestSingleSessionMultipleMixed:
 # ===================== Prioritization ordering (priority = imp*cred) ========
 
 
-class TestPriorityOrdering:
-    """The importance*credibility DESC ordering is the load-bearing priority.
+class TestCurationOrder:
+    """The curator takes experiences in the order the manager hands them —
+    oldest first, ``(created_at, id)`` (the DB-backed proof is
+    test_skill_experience.py::TestDistillThenCurate) — and its batch planner and
+    payload builder PRESERVE that order: neither re-sorts by priority nor by
+    title."""
 
-    The DB-backed proof that the MANAGER emits this ordering lives in
-    test_skill_experience.py::TestCreateAndList::test_list_ordered_by_priority_desc
-    (against the real SQL `ORDER BY importance*credibility DESC`). Here we assert
-    the downstream guarantee the CURATOR relies on: build_experience_payload
-    PRESERVES the order it is handed (so the highest-priority experience leads
-    the prompt). This is non-tautological — it pins real curator behavior.
-    """
-
-    def test_payload_preserves_handed_priority_order(self):
+    def test_the_batch_payload_preserves_the_handed_order(self):
         import json as _json
 
-        from mirix.services.skill_experience_curator import build_experience_payload
+        from mirix.services.context_budget import TokenCounter
+        from mirix.services.skill_experience_curator import (
+            build_batch_payload,
+            plan_batches,
+        )
 
-        # Hand the payload builder experiences already in priority order (as the
-        # manager would). The first block in the rendered prompt must be the
-        # highest-priority one, the last the lowest. The titles are deliberately
-        # chosen so the handed (priority) order is the REVERSE of lexical order
-        # (Zeta > Mu > Alpha by priority, but Alpha < Mu < Zeta lexically) — so a
-        # builder that accidentally sorted by title would FLIP them and fail.
-        ordered = [
+        # The handed (oldest-first) order is neither the priority order
+        # (Alpha > Zeta > Mu by importance*credibility) nor the lexical one.
+        handed = [
             SimpleNamespace(
-                experience_type="worth_avoiding",
-                title="Zeta",  # highest priority
+                id=f"sexp-{i}",
+                experience_type=etype,
+                title=title,
                 content="c",
-                importance=0.8,
-                credibility=0.9,
+                importance=imp,
+                credibility=cred,
                 evidence=_json.dumps({"quote": "", "signal_type": "inferred"}),
-            ),
-            SimpleNamespace(
-                experience_type="worth_learning",
-                title="Mu",  # middle priority
-                content="c",
-                importance=0.5,
-                credibility=0.6,
-                evidence=_json.dumps({"quote": "", "signal_type": "inferred"}),
-            ),
-            SimpleNamespace(
-                experience_type="worth_avoiding",
-                title="Alpha",  # lowest priority
-                content="c",
-                importance=0.9,
-                credibility=0.1,
-                evidence=_json.dumps({"quote": "", "signal_type": "inferred"}),
-            ),
+                curation_attempts=0,
+                influenced_skill_ids=None,
+            )
+            for i, (title, etype, imp, cred) in enumerate(
+                [
+                    ("Zeta", "worth_avoiding", 0.8, 0.5),
+                    ("Mu", "worth_learning", 0.5, 0.6),
+                    ("Alpha", "worth_avoiding", 0.9, 0.9),
+                ]
+            )
         ]
-        payload = build_experience_payload(ordered)
+        [batch] = plan_batches(handed, capacity_tokens=100_000, counter=TokenCounter())
+        assert batch.experience_ids == ["sexp-0", "sexp-1", "sexp-2"]
+        payload = build_batch_payload(
+            batch.blocks, batch_index=0, batch_count=1, budget=3, deletes_left=1
+        )
         assert payload.index("Zeta") < payload.index("Mu") < payload.index("Alpha")
 
 
@@ -487,10 +570,16 @@ class TestNoBenchmarkVocabulary:
         text = self._prompt_text().lower()
         assert "no external grader" in text or "no external" in text
 
-    def test_prompt_does_not_label_session_success_or_failure(self):
+    def test_prompt_has_the_distiller_state_the_outcome_itself(self):
+        # There is no external label: the distiller itself states, from the
+        # transcript alone, whether the session succeeded, failed or is
+        # unclear — before its lessons (tests/test_distiller_outcome.py).
         text = self._prompt_text().lower()
-        # The prompt must instruct NOT to label the whole session success/failure.
-        assert "do not label" in text and "success or a failure" in text
+        assert "do not label" not in text
+        assert "from the transcript alone" in text
+        assert text.index("step 1 — the session's outcome") < text.index(
+            "step 3 — the experiences"
+        )
 
     def test_prompt_uses_our_experience_kinds(self):
         text = self._prompt_text()
@@ -533,38 +622,62 @@ class _RecordingConversationManager:
     canned turns for a session; everything else is a no-op the distiller needs.
     """
 
-    def __init__(self, turns_by_session=None, sealed=None):
+    def __init__(self, turns_by_session=None):
         self._turns_by_session = turns_by_session or {}
-        self._sealed = sealed or []
         self.list_turns_calls = []
-        self.sealed_calls = []
+        self.list_turns_kwargs = []
 
     async def list_turns_for_session(
-        self, *, session_id, user_id, organization_id, actor
+        self,
+        *,
+        session_id,
+        user_id,
+        organization_id,
+        actor,
+        watermark=None,
+        undistilled_only=False,
     ):
         self.list_turns_calls.append(session_id)
+        self.list_turns_kwargs.append(
+            {"watermark": watermark, "undistilled_only": undistilled_only}
+        )
         return list(self._turns_by_session.get(session_id, []))
 
-    async def list_sealed_undistilled_sessions(
-        self, *, user_id, organization_id, actor, limit
-    ):
-        self.sealed_calls.append({"limit": limit})
-        return list(self._sealed[:limit])
+
+def _render(turns) -> str:
+    """The whole-session user message the distiller sends, as text."""
+    from mirix.services.context_budget import TokenCounter
+    from mirix.services.distill_transcript import TranscriptPlanner, build_messages
+
+    counter = TokenCounter()
+    messages, unavailable = build_messages(turns, counter=counter)
+    planner = TranscriptPlanner(
+        messages,
+        agent_id="agent-meta-1",
+        session_id="sess-1",
+        counter=counter,
+        images_unavailable=unavailable,
+    )
+    return planner.whole_chunk().text()
+
+
+def _transcript_lines(text: str):
+    body = text.split("session_transcript (chronological):\n", 1)[1]
+    body = body.rsplit("\n\nDistill the transferable", 1)[0]
+    return [line for line in body.splitlines() if line.strip()]
 
 
 class TestRenderTranscriptFromConversationStore:
-    """_render_transcript operates on ConversationMessage rows with REAL roles
-    and plain-text content — no scaffolding shapes, no tool-call flattening."""
+    """The distiller renders ConversationMessage rows with REAL roles as
+    ``role: text`` lines — no scaffolding shapes, no character caps."""
 
     def test_real_roles_are_preserved(self):
         turns = [
             _conv_turn("user", "Q: which HTTP status means 'Not Found'?"),
             _conv_turn("assistant", "404"),
         ]
-        out = SessionExperienceDistiller._render_transcript(turns)
-        lines = [ln for ln in out.splitlines() if ln.strip()]
         # Exactly the two real turns, with their real roles — not [USER]/[ASSISTANT].
-        assert lines == [
+        assert _transcript_lines(_render(turns)) == [
             "user: Q: which HTTP status means 'Not Found'?",
             "assistant: 404",
         ]
@@ -579,49 +692,51 @@ class TestRenderTranscriptFromConversationStore:
                 "[System Message] As the meta memory manager, analyze the content.",
             ),
         ]
-        out = SessionExperienceDistiller._render_transcript(turns)
-        assert "As the meta memory manager" in out
+        assert "As the meta memory manager" in _render(turns)
 
     def test_empty_content_turn_is_dropped(self):
         turns = [_conv_turn("user", ""), _conv_turn("assistant", "real answer")]
-        out = SessionExperienceDistiller._render_transcript(turns)
-        assert out == "assistant: real answer"
+        assert _transcript_lines(_render(turns)) == ["assistant: real answer"]
 
-    def test_oversized_turn_is_capped_with_marker(self):
-        from mirix.services import session_experience_distiller as sed
+    def test_a_long_turn_is_not_cut(self):
+        # The old 8,000-char per-turn cap is gone.
+        huge = "x" * 50_000
+        lines = _transcript_lines(_render([_conv_turn("tool", huge)]))
+        assert lines == ["tool: " + huge]
 
-        huge = "x" * (sed._MAX_MESSAGE_CHARS + 500)
-        out = SessionExperienceDistiller._render_transcript([_conv_turn("tool", huge)])
-        line = out.splitlines()[0]
-        assert line.endswith("…[truncated]")
-        assert len(line) <= len("tool: ") + sed._MAX_MESSAGE_CHARS + len(
-            " …[truncated]"
-        )
-
-    def test_overlong_transcript_keeps_head_and_tail_elides_middle(self):
-        # Head (task framing) and tail (final verdict) must survive; only the
-        # middle is elided, and the result stays within the transcript budget.
-        from mirix.services import session_experience_distiller as sed
-
-        per_turn = sed._MAX_MESSAGE_CHARS - 100  # below the per-turn cap
-        n = (sed._MAX_TRANSCRIPT_CHARS // per_turn) + 3
+    def test_a_long_session_is_not_elided(self):
+        # The old 80,000-char head + tail elision is gone: a session that
+        # fits the context budget is sent whole.
         turns = [
-            _conv_turn("user", f"turn-{i:04d} " + "y" * per_turn) for i in range(n)
+            _conv_turn("user", f"turn-{i:04d} " + "y" * 7_900) for i in range(40)
         ]
-        out = SessionExperienceDistiller._render_transcript(turns)
-        assert "…[elided middle of session]…" in out
-        assert "turn-0000" in out
-        assert f"turn-{n - 1:04d}" in out
-        assert len(out) <= sed._MAX_TRANSCRIPT_CHARS + len(
-            "\n…[elided middle of session]…\n"
-        )
+        text = _render(turns)
+        assert "elided" not in text and "truncated" not in text
+        assert all(f"turn-{i:04d}" in text for i in range(40))
 
-    def test_transcript_within_budget_is_untouched(self):
-        out = SessionExperienceDistiller._render_transcript(
-            [_conv_turn("user", "short"), _conv_turn("assistant", "also short")]
+    def test_header_metadata_precedes_the_transcript(self):
+        text = _render(
+            [
+                _conv_turn("user", "deploy"),
+                _conv_turn("assistant", "[tool_call] kubectl(apply)"),
+                _conv_turn("tool", "[kubectl] error: forbidden"),
+                _conv_turn("assistant", "fixed the RBAC and retried"),
+            ]
         )
-        assert "…[elided middle of session]…" not in out
-        assert "…[truncated]" not in out
+        header = text.split("session_transcript", 1)[0]
+        assert "agent_id: agent-meta-1" in header and "session_id: sess-1" in header
+        assert "4 message(s)" in header and "2 round(s)" in header
+        assert "tools used: kubectl" in header and "tool errors: 1" in header
+
+    def test_truncation_constants_are_deleted(self):
+        import mirix.constants as constants
+        from mirix.services import session_experience_distiller as sed
+
+        for name in ("DISTILLER_MAX_TRANSCRIPT_CHARS", "DISTILLER_MAX_MESSAGE_CHARS"):
+            assert not hasattr(constants, name)
+        assert not hasattr(sed, "_MAX_TRANSCRIPT_CHARS")
+        assert not hasattr(sed, "_MAX_MESSAGE_CHARS")
+        assert not hasattr(SessionExperienceDistiller, "_render_transcript")
 
     def test_scaffolding_heuristic_is_deleted(self):
         # The fragile string heuristic must be GONE — correctness is structural.
@@ -671,12 +786,8 @@ class TestDistillerReadsConversationStoreNotMetaMessages:
         )
         meta, user, actor = _meta_user_actor()
 
-        out = await d._distill_one(
-            meta_agent_state=meta,
-            user=user,
-            actor=actor,
-            session_id="sess-x",
-            skills_block="(none)",
+        out, _ = await d.distill_sessions(
+            meta_agent_state=meta, user=user, actor=actor, session_ids=["sess-x"]
         )
         # The transcript was fetched from the Conversation Message Store…
         assert conv.list_turns_calls == ["sess-x"]
@@ -693,31 +804,119 @@ class TestDistillerReadsConversationStoreNotMetaMessages:
             conversation_manager=conv,
         )
         meta, user, actor = _meta_user_actor()
-        out = await d._distill_one(
-            meta_agent_state=meta,
-            user=user,
-            actor=actor,
-            session_id="empty",
-            skills_block="(none)",
+        out, processed = await d.distill_sessions(
+            meta_agent_state=meta, user=user, actor=actor, session_ids=["empty"]
         )
-        assert out == []
+        assert out == [] and processed == ["empty"]
         # No turns → no LLM call (the source store is the only thing consulted).
         assert conv.list_turns_calls == ["empty"]
         assert fake.calls == 0
 
-    async def test_enumerate_sealed_sessions_delegates_to_store(self):
-        conv = _RecordingConversationManager(sealed=["s1", "s2", "s3"])
-        d = SessionExperienceDistiller(conversation_manager=conv)
-        _, user, actor = _meta_user_actor()
-        out = await d.enumerate_sealed_sessions(
-            user_id=user.id,
-            organization_id=actor.organization_id,
-            actor=actor,
-            limit=5,
+    async def test_reads_only_undistilled_rows_up_to_the_watermark(self):
+        """A run reads a session's not-yet-distilled rows at or before its
+        claim-time watermark, and reports per-session metrics."""
+        import datetime as dt
+
+        conv = _RecordingConversationManager(
+            turns_by_session={
+                "s1": [
+                    _conv_turn("user", "try again", session_id="s1"),
+                    _conv_turn("assistant", "fixed it", session_id="s1"),
+                ],
+                "s2": [],
+            }
         )
-        # Enumeration comes from the store's sealed-session query, oldest-first.
-        assert out == ["s1", "s2", "s3"]
-        assert conv.sealed_calls == [{"limit": 5}]
+        d = SessionExperienceDistiller(
+            llm_client=_FakeLLMClient(MIXED_REPLY),
+            experience_manager=_RecordingManager(),
+            conversation_manager=conv,
+        )
+        meta, user, actor = _meta_user_actor()
+        wm = dt.datetime(2026, 9, 1, 12, 0, tzinfo=dt.timezone.utc)
+        metrics = {}
+        experiences, processed = await d.distill_sessions(
+            meta_agent_state=meta,
+            user=user,
+            actor=actor,
+            session_ids=["s1", "s2"],
+            session_watermarks={"s1": wm},
+            metrics=metrics,
+        )
+        by_session = dict(zip(conv.list_turns_calls, conv.list_turns_kwargs))
+        assert by_session["s1"] == {"watermark": wm, "undistilled_only": True}
+        assert by_session["s2"] == {"watermark": None, "undistilled_only": True}
+        assert processed == ["s1", "s2"]
+        assert len(experiences) == 3
+        assert {k: metrics["s1"][k] for k in ("session_id", "messages", "status", "experiences")} == {
+            "session_id": "s1",
+            "messages": 2,
+            "status": "ok",
+            "experiences": 3,
+        }
+        assert metrics["s2"]["messages"] == 0 and metrics["s2"]["status"] == "ok"
+        assert metrics["s2"]["llm_calls"] == 0
+
+    async def test_failed_session_is_reported_in_metrics_and_not_processed(self):
+        conv = _RecordingConversationManager(
+            turns_by_session={"bad": [_conv_turn("user", "hello", session_id="bad")]}
+        )
+
+        class _Boom:
+            calls = 0
+
+            async def send_llm_request(self, messages):
+                raise RuntimeError("provider down")
+
+        d = SessionExperienceDistiller(
+            llm_client=_Boom(),
+            experience_manager=_RecordingManager(),
+            conversation_manager=conv,
+        )
+        meta, user, actor = _meta_user_actor()
+        metrics = {}
+        experiences, processed = await d.distill_sessions(
+            meta_agent_state=meta,
+            user=user,
+            actor=actor,
+            session_ids=["bad"],
+            metrics=metrics,
+        )
+        assert experiences == [] and processed == []
+        assert metrics["bad"]["status"] == "failed"
+        assert "provider down" in metrics["bad"]["error"]
+        assert "config_deferral" not in metrics["bad"]
+
+    async def test_a_distiller_without_an_llm_names_its_configuration_deferral(self):
+        """A session deferred because the distiller has no LLM client
+        or config is deferred the same way on every run. Its metrics name that
+        configuration (``config_deferral``), so a reader tells it from a
+        misconfigured deployment's 401/403/404 (``failure_kind`` config too),
+        which a fix of the deployment ends."""
+        from mirix.services.session_experience_distiller import (
+            DISTILL_CONFIGURATION_DEFERRALS,
+            DISTILL_DEFERRAL_NO_LLM_CLIENT,
+        )
+
+        conv = _RecordingConversationManager(
+            turns_by_session={"s": [_conv_turn("user", "hello", session_id="s")]}
+        )
+        d = SessionExperienceDistiller(
+            experience_manager=_RecordingManager(), conversation_manager=conv
+        )
+        meta, user, actor = _meta_user_actor()
+        metrics = {}
+        experiences, processed = await d.distill_sessions(
+            meta_agent_state=meta,
+            user=user,
+            actor=actor,
+            session_ids=["s"],
+            metrics=metrics,
+        )
+        assert experiences == [] and processed == []
+        entry = metrics["s"]
+        assert (entry["status"], entry["failure_kind"]) == ("deferred", "config")
+        assert entry["config_deferral"] == DISTILL_DEFERRAL_NO_LLM_CLIENT
+        assert DISTILL_DEFERRAL_NO_LLM_CLIENT in DISTILL_CONFIGURATION_DEFERRALS
 
 
 class TestDistillerSourceIsConversationStore:
@@ -729,6 +928,14 @@ class TestDistillerSourceIsConversationStore:
         assert "list_turns_for_session" in src
         # Must NOT read the meta agent's message thread for distillation.
         assert "list_messages_for_agent" not in src
+
+    def test_session_enumeration_is_gone(self):
+        # Which sessions are distilled is the learning run's claim; the
+        # distiller no longer enumerates "sealed" sessions itself.
+        assert not hasattr(SessionExperienceDistiller, "enumerate_sealed_sessions")
+        src = inspect.getsource(inspect.getmodule(SessionExperienceDistiller))
+        assert "list_sealed_undistilled_sessions" not in src
+        assert "sealed" not in src.lower()
 
     def test_distiller_constructor_injects_conversation_manager(self):
         sig = inspect.signature(SessionExperienceDistiller.__init__)
@@ -744,3 +951,41 @@ class TestDistillerSourceIsConversationStore:
         assert "list_messages_for_agent" not in src
         # …and it DOES use the Conversation Message Store.
         assert "ConversationMessageManager" in src
+
+
+@pytest.mark.asyncio
+async def test_distillation_concurrency_is_capped():
+    """A run claims every pending session, so the per-session fan-out
+    is bounded by MIRIX_DISTILLER_MAX_CONCURRENCY."""
+    import asyncio
+
+    state = {"live": 0, "peak": 0}
+
+    class _SlowLLM:
+        async def send_llm_request(self, messages):
+            state["live"] += 1
+            state["peak"] = max(state["peak"], state["live"])
+            await asyncio.sleep(0.01)
+            state["live"] -= 1
+            return _FakeResponse("[]")
+
+    conv = _RecordingConversationManager(
+        turns_by_session={
+            f"s{i}": [_conv_turn("user", "hi", session_id=f"s{i}")] for i in range(9)
+        }
+    )
+    d = SessionExperienceDistiller(
+        llm_client=_SlowLLM(),
+        experience_manager=_RecordingManager(),
+        conversation_manager=conv,
+        max_concurrency=2,
+    )
+    meta, user, actor = _meta_user_actor()
+    _, processed = await d.distill_sessions(
+        meta_agent_state=meta,
+        user=user,
+        actor=actor,
+        session_ids=[f"s{i}" for i in range(9)],
+    )
+    assert len(processed) == 9
+    assert state["peak"] == 2

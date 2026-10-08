@@ -18,7 +18,7 @@ jinja2
 humps
 composio
 colorama
-anthropic
+anthropic>=0.94.0,<1.0.0
 httpx_sse
 rapidfuzz
 rank-bm25

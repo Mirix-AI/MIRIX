@@ -7,9 +7,18 @@ worth repeating) or `worth_avoiding` (a pitfall to avoid), scored by
 `importance` and `credibility` in [0,1]. There is no external oracle: both are
 derived purely from the conversation content.
 
-Records start `pending`; an evolution run flips them to `consumed` (recording
-its run id in `consumed_by` + the skills it influenced in `influenced_skill_ids`),
-or later evidence flips them to `superseded`.
+Records start `pending`; a curator batch flips them to `consumed` (recording
+its batch id in `consumed_by` + the skills the batch changed in
+`influenced_skill_ids`) and records what became of each one
+(`disposition`): `used` when a skill write cited it (`cited_skill_ids`), `covered`,
+`not_worth`, `deferred`, or `unaddressed` when it was closed out after its
+third attempt. Consumed experiences that are `deferred` or `not_worth` form the
+experience pool of their (organization, user, meta agent) and write scope
+(`pool_scope`) until they are retired (`pool_retired_at`): a later batch shows
+the most similar of them again as earlier lessons. A new experience that
+recurred a lesson still in the pool is merged into it (retired `merged` as it
+enters), so one lesson is one pool row. `superseded` stays reserved
+for pending lessons that later evidence replaced; the curator never uses it.
 
 Inherited (do NOT redeclare):
   - id, created_at, updated_at, is_deleted  -- SqlalchemyBase + meta mixin
@@ -23,11 +32,14 @@ never needs a DB migration.
 """
 
 import uuid
+from datetime import datetime
 from typing import TYPE_CHECKING, List, Optional
 
-from sqlalchemy import JSON, Float, Index, String, Text
+from sqlalchemy import JSON, DateTime, Float, Index, Integer, String, Text, text
 from sqlalchemy.orm import Mapped, declared_attr, mapped_column, relationship
 
+from mirix.constants import MAX_EMBEDDING_DIM
+from mirix.orm.custom_columns import CommonVector
 from mirix.orm.mixins import AgentMixin, OrganizationMixin, UserMixin
 from mirix.orm.sqlalchemy_base import SqlalchemyBase
 from mirix.schemas.skill_experience import (
@@ -94,7 +106,10 @@ class SkillExperience(SqlalchemyBase, OrganizationMixin, UserMixin, AgentMixin):
         Text,
         nullable=False,
         default="",
-        doc="JSON string of the in-conversation signal: {quote, signal_type}.",
+        doc="JSON string of the in-conversation signal: {quote, signal_type}, "
+        "plus the session's outcome {session_outcome, outcome_evidence} when the "
+        "distiller stated it (kept here, not in columns of its own, so older "
+        "rows and databases need no migration).",
     )
     status: Mapped[str] = mapped_column(
         String,
@@ -111,6 +126,100 @@ class SkillExperience(SqlalchemyBase, OrganizationMixin, UserMixin, AgentMixin):
         default=None,
         doc="Skill ids this experience influenced post-evolution (lineage).",
     )
+    curation_attempts: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default=text("0"),
+        doc="Curator batches that ended (context_limit / step_cap, or a "
+        "non-infrastructure curator failure) without addressing this experience; "
+        "after 3 it is closed out as consumed/unaddressed.",
+    )
+
+    # --- The experience pool ---------------------------------------------- #
+    disposition: Mapped[Optional[str]] = mapped_column(
+        String,
+        nullable=True,
+        doc="What became of it once consumed: used | covered | not_worth | "
+        "deferred | unaddressed (validated in Pydantic). NULL while pending, and "
+        "for experiences consumed before the pool existed.",
+    )
+    cited_skill_ids: Mapped[Optional[List[str]]] = mapped_column(
+        JSON,
+        nullable=True,
+        default=None,
+        doc="Skills whose committed write cited this experience (per-experience "
+        "lineage; influenced_skill_ids stays the batch's).",
+    )
+    pool_scope: Mapped[Optional[str]] = mapped_column(
+        String,
+        nullable=True,
+        doc="The curator's write scope when the experience entered the pool; "
+        "only batches of the same scope see it.",
+    )
+    # The similarity vector of title + content, zero-padded to
+    # MAX_EMBEDDING_DIM like procedural_memory.retrieval_embedding. Deferred:
+    # listing and settling experiences never ship it (and to_pydantic never
+    # touches it, which would lazy-load on an async session).
+    if settings.mirix_pg_uri_no_default:
+        from pgvector.sqlalchemy import Vector
+
+        pool_embedding = mapped_column(
+            Vector(MAX_EMBEDDING_DIM), nullable=True, deferred=True
+        )
+    else:
+        pool_embedding = mapped_column(CommonVector, nullable=True, deferred=True)
+    pool_embedding_model: Mapped[Optional[str]] = mapped_column(
+        String,
+        nullable=True,
+        doc="The embedding model pool_embedding came from, with its dimension "
+        "(``model@dim``): a vector of another model or width is embedded again, "
+        "never compared.",
+    )
+    pool_embedding_failures: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default=text("0"),
+        doc="Finished batches in which this pool experience's own embedding "
+        "failed while the batch's new experiences embedded; it is retired "
+        "(unembeddable) at MIRIX_SKILL_EXPERIENCE_POOL_EMBED_MAX_FAILURES.",
+    )
+    recurrence_count: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=1,
+        server_default=text("1"),
+        doc="Times the same lesson came up (the experience itself counts once).",
+    )
+    ignored_pushes: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default=text("0"),
+        doc="Decay counter: +1 per batch that showed it and neither cited nor "
+        "covered it (+2 when listed not worth); reset when it recurs.",
+    )
+    pushed_count: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default=text("0"),
+        doc="Finished batches that showed it as an earlier lesson.",
+    )
+    last_pushed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True, doc="When a batch last showed it."
+    )
+    pool_retired_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True, doc="When it left the pool."
+    )
+    pool_retire_reason: Mapped[Optional[str]] = mapped_column(
+        String,
+        nullable=True,
+        doc="Why it left the pool: used | covered | ignored | merged (a new "
+        "experience that recurred a lesson still in the pool, which counts it) | "
+        "unembeddable.",
+    )
 
     # Indexes mirror the procedural_memory pg/sqlite guard pattern: an explicit
     # `is not None` filter (not `filter(None, ...)`) because an un-attached
@@ -123,6 +232,12 @@ class SkillExperience(SqlalchemyBase, OrganizationMixin, UserMixin, AgentMixin):
                 "ix_skill_experience_agent_status",
                 "agent_id",
                 "status",
+            ),
+            # The experience pool's scan: agent + disposition.
+            Index(
+                "ix_skill_experience_agent_disposition",
+                "agent_id",
+                "disposition",
             ),
             (
                 Index("ix_skill_experience_organization_id", "organization_id")

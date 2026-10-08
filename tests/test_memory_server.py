@@ -4,8 +4,19 @@ Memory System Server-Side Tests for Mirix
 Tests memory operations using AsyncServer directly (no network, fast).
 Automatically initializes users and agents on first run.
 
-Prerequisites:
-    export GEMINI_API_KEY=your_api_key_here
+Modes:
+    (default)                                 # offline: every model and
+        # embedding call goes to tests/fakes/fake_llm_server.py (any other
+        # host is refused), with a fresh organization, user, client and meta
+        # agent; `pytest tests/test_memory_server.py` needs no key at all.
+    MIRIX_TEST_REAL_LLM=1 + GEMINI_API_KEY    # real Gemini calls (PAID): only
+        # on this explicit opt-in, so a key that a .env file supplies (MIRIX
+        # loads one on import) never starts paid calls on its own;
+        # skipped without a key. MIRIX_TEST_FAKE_LLM=1 forces the fake mode.
+
+Either mode runs on a fresh database of the run's own (db_isolation's
+isolated_database: a new SQLite file, or a throwaway Postgres the PG runner
+created), never on the database $HOME or a .env's MIRIX_PG_* points at.
 
 Test Coverage:
 - Direct memory operations via AsyncServer managers
@@ -22,6 +33,7 @@ import os
 import sys
 import threading
 import time
+import uuid
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -43,17 +55,67 @@ from mirix.schemas.agent import AgentType
 from mirix.schemas.client import Client
 from mirix.server.server import AsyncServer
 
-# Skip all tests if no API key; use one event loop per module so fixtures and tests share it.
+# The offline fake LLM server unless real (paid) Gemini calls are asked for
+# explicitly with MIRIX_TEST_REAL_LLM=1; MIRIX_TEST_FAKE_LLM=1
+# forces the fake.
+REAL_LLM = (
+    os.getenv("MIRIX_TEST_REAL_LLM") == "1" and os.getenv("MIRIX_TEST_FAKE_LLM") != "1"
+)
+FAKE_LLM = not REAL_LLM
+# In fake mode every run gets its own organization, user and client: a meta
+# agent left by an earlier run would point at that run's (dead) fake server.
+_RUN_TAG = uuid.uuid4().hex[:8] if FAKE_LLM else ""
+
+# Real mode needs a key; one event loop per module so fixtures and tests share it.
 pytestmark = [
-    pytest.mark.skipif(not os.getenv("GEMINI_API_KEY"), reason="GEMINI_API_KEY not set"),
+    pytest.mark.skipif(
+        REAL_LLM and not os.getenv("GEMINI_API_KEY"),
+        reason="MIRIX_TEST_REAL_LLM=1 needs GEMINI_API_KEY (paid Gemini calls)",
+    ),
     pytest.mark.asyncio(loop_scope="module"),
 ]
 
 
+def _demo_id(name: str) -> str:
+    return f"{name}-fake-{_RUN_TAG}" if FAKE_LLM else name
+
+
 @pytest.fixture(scope="module")
-def server():
-    """Create server instance for all tests."""
-    return AsyncServer()
+def fake_llm():
+    """The offline OpenAI-compatible fake serving every model and embedding
+    call in fake mode (the default); None otherwise. In fake mode
+    any connection or DNS lookup beyond loopback fails loudly, so no model
+    provider can be reached, whatever keys the environment holds."""
+    if not FAKE_LLM:
+        yield None
+        return
+    from db_isolation import block_non_loopback_network
+    from fakes.fake_llm_server import FakeLLMServer
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setenv("NO_PROXY", "127.0.0.1,localhost")
+        patch.setenv("no_proxy", "127.0.0.1,localhost")
+        block_non_loopback_network(patch)
+        with FakeLLMServer() as fake:
+            yield fake
+
+
+@pytest_asyncio.fixture(scope="module", loop_scope="module")
+async def server(fake_llm, tmp_path_factory):
+    """Create server instance for all tests, started like the REST server's
+    lifespan starts it: the tables (idempotent; a database needing migration
+    scripts fails here, naming them), then the default organization, admin
+    user, default client and base tools a meta agent needs.
+
+    Both modes run on a fresh SQLite database of their own (or a throwaway
+    Postgres the PG runner created for the run), never on the database $HOME
+    points at nor on a developer's configured Postgres."""
+    from db_isolation import isolated_database
+
+    async with isolated_database(tmp_path_factory.mktemp("memory_server")):
+        server = AsyncServer()
+        await server.ensure_defaults()
+        yield server
 
 
 @pytest_asyncio.fixture(scope="module", loop_scope="module")
@@ -62,8 +124,8 @@ async def user(server):
     from mirix.schemas.organization import Organization, OrganizationCreate
     from mirix.schemas.user import User as PydanticUser
 
-    org_id = "demo-org"
-    user_id = "demo-user"
+    org_id = _demo_id("demo-org")
+    user_id = _demo_id("demo-user")
 
     # Try to get existing user
     try:
@@ -98,7 +160,7 @@ async def user(server):
 @pytest_asyncio.fixture(scope="module", loop_scope="module")
 async def client(server, user):
     """Get or create the demo client (represents client application)."""
-    client_id = "demo-client-app"
+    client_id = _demo_id("demo-client-app")
 
     # Try to get existing client
     try:
@@ -124,7 +186,7 @@ async def client(server, user):
 
 
 @pytest_asyncio.fixture(scope="module", loop_scope="module")
-async def meta_agent(server, client):
+async def meta_agent(server, client, fake_llm):
     """Get or create meta agent with all sub-agents."""
     from mirix import EmbeddingConfig, LLMConfig
     from mirix.schemas.agent import CreateMetaAgent
@@ -150,6 +212,23 @@ async def meta_agent(server, client):
         "llm_config": LLMConfig(**config["llm_config"]),
         "embedding_config": EmbeddingConfig(**config["embedding_config"]),
     }
+    if fake_llm is not None:
+        # Same agents and prompts; the model and the embeddings are the
+        # fake's (OpenAI-compatible chat and /embeddings).
+        create_params["llm_config"] = LLMConfig(
+            model="fake-chat-model",
+            model_endpoint_type="openai",
+            model_endpoint=fake_llm.base_url,
+            context_window=128000,
+            api_key="sk-fake-memory-server",
+        )
+        create_params["embedding_config"] = EmbeddingConfig(
+            embedding_model="text-embedding-3-small",
+            embedding_endpoint_type="openai",
+            embedding_endpoint=fake_llm.base_url,
+            embedding_dim=1536,
+            api_key="sk-fake-memory-server",
+        )
 
     # Flatten meta_agent_config fields into create_params
     if "meta_agent_config" in config and config["meta_agent_config"]:
@@ -243,38 +322,55 @@ class TestDirectEpisodicMemory:
         print(f"[OK] Embedding search found {len(results)} events")
 
 
+DEPLOY_INSTRUCTIONS = "\n".join(
+    [
+        "1. Run all tests",
+        "2. Create release branch",
+        "3. Build production artifacts",
+        "4. Deploy to staging",
+        "5. Verify staging deployment",
+        "6. Deploy to production",
+    ]
+)
+
+
+async def insert_deploy_skill(server, client, user, meta_agent):
+    """A deploy skill in the skill schema (name, description,
+    instructions, triggers). Its name is unique: the demo user's database
+    persists between runs, and a user's skill names are unique per scope."""
+    procedural_agent = await get_sub_agent(server, client, meta_agent, AgentType.procedural_memory_agent)
+    return await server.procedural_memory_manager.insert_procedure(
+        agent_state=procedural_agent,
+        agent_id=meta_agent.id,
+        name=f"deploy-to-production-{uuid.uuid4().hex[:8]}",
+        description="Deploy the application to production after staging checks.",
+        instructions=DEPLOY_INSTRUCTIONS,
+        triggers=["deploy the app to production", "ship a release"],
+        entry_type="workflow",
+        actor=client,
+        organization_id=user.organization_id,
+        user_id=user.id,
+    )
+
+
 class TestDirectProceduralMemory:
     """Test direct procedural memory operations using managers."""
 
     async def test_insert_procedure(self, server, client, user, meta_agent):
-        """Test inserting a procedure directly."""
-        procedural_agent = await get_sub_agent(server, client, meta_agent, AgentType.procedural_memory_agent)
-
-        procedure = await server.procedural_memory_manager.insert_procedure(
-            agent_state=procedural_agent,
-            agent_id=meta_agent.id,
-            entry_type="process",
-            summary="Deploy application to production",
-            steps=[
-                "Run all tests",
-                "Create release branch",
-                "Build production artifacts",
-                "Deploy to staging",
-                "Verify staging deployment",
-                "Deploy to production",
-            ],
-            actor=client,
-            organization_id=user.organization_id,
-            user_id=user.id,
-        )
+        """Test inserting a skill directly."""
+        procedure = await insert_deploy_skill(server, client, user, meta_agent)
 
         assert procedure is not None
         assert procedure.id is not None
-        assert len(procedure.steps) == 6
+        assert procedure.name.startswith("deploy-to-production-")
+        assert procedure.instructions == DEPLOY_INSTRUCTIONS
+        assert len(procedure.instructions.splitlines()) == 6
+        assert procedure.triggers == ["deploy the app to production", "ship a release"]
         print(f"[OK] Inserted procedure: {procedure.id}")
 
     async def test_search_procedures(self, server, client, user, meta_agent):
-        """Test searching procedures."""
+        """Test searching skills (the retrieval vector: name, triggers, description)."""
+        await insert_deploy_skill(server, client, user, meta_agent)
         procedural_agent = await get_sub_agent(server, client, meta_agent, AgentType.procedural_memory_agent)
 
         results = await server.procedural_memory_manager.list_procedures(
@@ -282,7 +378,7 @@ class TestDirectProceduralMemory:
             user=user,
             query="deploy",
             search_method="embedding",
-            search_field="summary",
+            search_field="description",
             limit=10,
         )
 
@@ -504,30 +600,17 @@ class TestSearchMethodComparison:
         procedural_agent = await get_sub_agent(server, client, meta_agent, AgentType.procedural_memory_agent)
 
         # Ensure test data exists
-        await server.procedural_memory_manager.insert_procedure(
-            agent_state=procedural_agent,
-            agent_id=meta_agent.id,
-            entry_type="process",
-            summary="Deploy application to production",
-            steps=[
-                "Run all tests",
-                "Create release branch",
-                "Build production artifacts",
-                "Deploy to staging",
-                "Verify staging deployment",
-                "Deploy to production",
-            ],
-            actor=client,
-            organization_id=user.organization_id,
-            user_id=user.id,
-        )
+        await insert_deploy_skill(server, client, user, meta_agent)
 
-        # Test different fields: summary, steps
+        # Fields of the skill schema: description (embedding via the retrieval
+        # vector, bm25) and instructions (keyword search only: an
+        # embedding search on it runs as bm25); "" is the hybrid skill ranking.
         test_cases = [
-            ("deploy", "summary", "bm25"),
-            ("deploy", "summary", "embedding"),
-            ("production", "steps", "bm25"),
-            ("production", "steps", "embedding"),
+            ("deploy", "description", "bm25"),
+            ("deploy", "description", "embedding"),
+            ("production", "instructions", "bm25"),
+            ("production", "instructions", "embedding"),
+            ("deploy", "", "hybrid"),
         ]
 
         for query, field, method in test_cases:
@@ -700,7 +783,11 @@ class TestSearchMethodComparison:
 
 class TestMetaMemoryParallelism:
     async def test_trigger_memory_update_runs_in_parallel(self, server, client, user, meta_agent, monkeypatch):
-        """Ensure meta memory updates dispatch memory agents concurrently."""
+        """Ensure meta memory updates dispatch memory agents concurrently.
+
+        Episodic and semantic: procedural memory has exactly one producer, the
+        skill learning runs, so trigger_memory_update filters "procedural" out
+        of its dispatch (it is asked for below and must not run)."""
 
         from mirix.functions.function_sets.memory_tools import trigger_memory_update
         from mirix.schemas.enums import MessageRole
@@ -714,10 +801,13 @@ class TestMetaMemoryParallelism:
         )
         target_types = {
             AgentType.episodic_memory_agent.value,
+            AgentType.semantic_memory_agent.value,
             AgentType.procedural_memory_agent.value,
         }
         relevant_agents = [agent for agent in child_agents if agent.agent_type in target_types]
-        assert len(relevant_agents) == len(target_types), "Expected episodic and procedural memory agents to be present"
+        assert len(relevant_agents) == len(target_types), (
+            "Expected episodic, semantic and procedural memory agents to be present"
+        )
 
         tracker = {"start_times": {}, "thread_ids": {}}
         lock = threading.Lock()
@@ -734,6 +824,7 @@ class TestMetaMemoryParallelism:
                 await asyncio.sleep(1)
 
         monkeypatch.setattr("mirix.agent.EpisodicMemoryAgent", MockMemoryAgent)
+        monkeypatch.setattr("mirix.agent.SemanticMemoryAgent", MockMemoryAgent)
         monkeypatch.setattr("mirix.agent.ProceduralMemoryAgent", MockMemoryAgent)
         monkeypatch.setattr("mirix.functions.function_sets.memory_tools.os.cpu_count", lambda: 8)
 
@@ -759,17 +850,33 @@ class TestMetaMemoryParallelism:
         result = await trigger_memory_update(
             stub_meta_agent,
             user_message=user_message,
-            memory_types=["episodic", "procedural"],
+            memory_types=["episodic", "semantic", "procedural"],
         )
 
         assert result is not None
 
         start_times = tracker["start_times"]
-        assert set(start_times.keys()) == {"episodic", "procedural"}
-        gap = abs(start_times["episodic"] - start_times["procedural"])
+        # "procedural" was filtered out: skill learning runs are its only producer.
+        assert set(start_times.keys()) == {"episodic", "semantic"}
+        gap = abs(start_times["episodic"] - start_times["semantic"])
 
         # Both updates ran; gap < 0.45s indicates concurrent execution (asyncio uses one thread).
         assert gap < 0.45, f"Expected parallel execution, gap was {gap:.3f}s"
+
+
+class TestFakeLLMMode:
+    @pytest.mark.skipif(not FAKE_LLM, reason="only in fake mode (not with MIRIX_TEST_REAL_LLM=1)")
+    async def test_every_embedding_went_to_the_fake(self, fake_llm, meta_agent):
+        """Fake mode proves itself: the embeddings the tests above needed
+        were served by the fake (no provider was called), and the meta agent
+        and its sub-agents are configured for it."""
+        assert fake_llm.embedding_requests(), "no embedding reached the fake"
+        assert all(
+            r.headers.get("authorization") == "Bearer sk-fake-memory-server"
+            for r in fake_llm.embedding_requests()
+        )
+        assert meta_agent.embedding_config.embedding_endpoint == fake_llm.base_url
+        assert meta_agent.llm_config.model_endpoint == fake_llm.base_url
 
 
 if __name__ == "__main__":

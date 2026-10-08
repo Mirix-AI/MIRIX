@@ -55,7 +55,10 @@ dependencies = [
     "humps",
     "composio",
     "colorama",
-    "anthropic",
+    # The Anthropic client speaks the httpx-based SDK (0.x): anthropic 1.x moved to
+    # httpx2 and dropped arguments MIRIX sends (e.g. temperature). Kept in step
+    # with uv.lock.
+    "anthropic>=0.94.0,<1.0.0",
     "httpx_sse",
     "rapidfuzz",
     "rank-bm25",
@@ -110,6 +113,13 @@ voice = [
 full = [
     "SpeechRecognition",
     "pydub",
+]
+# evals/skill_bench (label-free skill-learning benchmark harness).
+skill-bench = [
+    "alfworld==0.4.2",
+    "textworld==1.7.0",  # game engine of alfworld 0.4.2 (protocol.ALFWORLD_PACKAGES)
+    "tiktoken>=0.8.0",
+    "pytest-asyncio>=0.23.0",
 ]
 
 [project.urls]
@@ -208,7 +218,8 @@ module = [
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+# pytest.ini takes precedence over this table; keep the two testpaths in step.
+testpaths = ["tests", "evals/skill_bench/tests"]
 python_files = ["test_*.py", "*_test.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]

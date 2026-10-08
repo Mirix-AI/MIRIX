@@ -1,20 +1,24 @@
-"""Unit tests for the EverOS-aligned procedural HYBRID retrieval path.
+"""Unit tests for the ORG-WIDE procedural HYBRID path (``list_procedures_by_org``,
+``/memory/search_all_users``).
 
-Covers the two pieces most prone to silent divergence from EverOS/everalgo:
+Per-user hybrid retrieval is the skill ranking (``retrieve_skills``: true
+BM25 over every candidate, cosine, RRF; tests/test_skill_retrieval.py). The
+org-wide search still fuses two recalled lanes; these tests cover the pieces
+most prone to silent divergence from EverOS/everalgo:
 
   1. `_rrf_fuse` — the Reciprocal Rank Fusion math. Must be rank-based (raw
      lane scores discarded), 1-based, unweighted, k=60, dedup-by-id, and the
      cross-lane-agreement property (an item ranked in BOTH lanes outranks an
      item that tops only one lane).
-  2. `_hybrid_search_for_user` orchestration — runs exactly the bm25 + embedding
+  2. `_hybrid_search_for_org` orchestration — runs exactly the bm25 + embedding
      lanes, over-fetches `limit * SKILL_HYBRID_RECALL_MULTIPLIER` per lane,
      applies the similarity_threshold quality floor to the DENSE lane only, and
      falls the dense lane's search_field back to "description" when the caller's
      field is not embeddable.
 
 Both are exercised WITHOUT a database: `_rrf_fuse` is pure, and the
-orchestration test monkeypatches the recursive `list_procedures` lane calls, so
-the manager's session_maker is never touched.
+orchestration test monkeypatches the recursive `list_procedures_by_org` lane
+calls, so the manager's session_maker is never touched.
 """
 
 from types import SimpleNamespace
@@ -95,17 +99,17 @@ class TestHybridOrchestration:
         mgr = ProceduralMemoryManager()
         calls = []
 
-        async def fake_list_procedures(**kwargs):
+        async def fake_list_procedures_by_org(**kwargs):
             calls.append(kwargs)
             if kwargs["search_method"] == "bm25":
                 return [_item("a"), _item("b")]
             return [_item("b"), _item("c")]  # embedding lane
 
-        monkeypatch.setattr(mgr, "list_procedures", fake_list_procedures)
+        monkeypatch.setattr(mgr, "list_procedures_by_org", fake_list_procedures_by_org)
 
-        out = await mgr._hybrid_search_for_user(
+        out = await mgr._hybrid_search_for_org(
             agent_state=None,
-            user=None,
+            organization_id="org-1",
             query="fix dates",
             embedded_text=None,
             search_field="description",
@@ -133,15 +137,15 @@ class TestHybridOrchestration:
         mgr = ProceduralMemoryManager()
         by_method = {}
 
-        async def fake_list_procedures(**kwargs):
+        async def fake_list_procedures_by_org(**kwargs):
             by_method[kwargs["search_method"]] = kwargs
             return []
 
-        monkeypatch.setattr(mgr, "list_procedures", fake_list_procedures)
+        monkeypatch.setattr(mgr, "list_procedures_by_org", fake_list_procedures_by_org)
 
-        await mgr._hybrid_search_for_user(
+        await mgr._hybrid_search_for_org(
             agent_state=None,
-            user=None,
+            organization_id="org-1",
             query="q",
             embedded_text=None,
             search_field="description",
@@ -163,16 +167,16 @@ class TestHybridOrchestration:
         mgr = ProceduralMemoryManager()
         by_method = {}
 
-        async def fake_list_procedures(**kwargs):
+        async def fake_list_procedures_by_org(**kwargs):
             by_method[kwargs["search_method"]] = kwargs
             return []
 
-        monkeypatch.setattr(mgr, "list_procedures", fake_list_procedures)
+        monkeypatch.setattr(mgr, "list_procedures_by_org", fake_list_procedures_by_org)
 
         # "entry_type" is searchable lexically but has no embedding column.
-        await mgr._hybrid_search_for_user(
+        await mgr._hybrid_search_for_org(
             agent_state=None,
-            user=None,
+            organization_id="org-1",
             query="q",
             embedded_text=None,
             search_field="entry_type",

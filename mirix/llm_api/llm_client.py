@@ -49,9 +49,12 @@ class LLMClient:
                     llm_config=llm_config,
                 )
             case "openrouter":
-                from mirix.llm_api.openrouter_client import OpenRouterClient
+                # OpenRouter speaks the OpenAI chat-completions protocol (this
+                # used to import a module that never existed). The client
+                # resolves OpenRouter's key and default base URL itself.
+                from mirix.llm_api.openai_client import OpenAIClient
 
-                return OpenRouterClient(
+                return OpenAIClient(
                     llm_config=llm_config,
                 )
             case _:

@@ -1,0 +1,43 @@
+Third-party text under evals/skill_bench/methods/prompts/
+
+judge/originals/reasoning-bank-ed80611/prompts.py.txt and evaluator.py.txt are verbatim
+copies of WebArena/autoeval/prompts.py and WebArena/autoeval/evaluator.py from
+https://github.com/google-research/reasoning-bank at commit
+ed80611788292ea739f1effd31f16c53823b8a0d, Copyright 2026 Google LLC / The Google Research
+Authors, licensed under the Apache License, Version 2.0
+(judge/originals/reasoning-bank-ed80611/LICENSE). They are kept unmodified as the
+reference the judge prompt is tested against.
+
+judge/originals/paper_2509.25140_figure10_*.txt quote Figure 10 of "ReasoningBank: Scaling
+Agent Self-Evolving with Reasoning Memory" (arXiv 2509.25140) for the same purpose.
+
+judge/system.md and judge/user.md are derived from these texts (see judge/format.json for
+the provenance and the one documented substitution).
+
+reasoningbank/originals/reasoning-bank-ed80611/ holds verbatim copies of
+WebArena/prompts/memory_instruction.py, WebArena/induce_memory.py,
+WebArena/memory_management.py, WebArena/run.py, WebArena/agents/legacy/agent.py and
+third_party/src/minisweagent/memory/instruction.py from
+https://github.com/google-research/reasoning-bank at commit
+ed80611788292ea739f1effd31f16c53823b8a0d, Copyright 2026 Google LLC / The Google Research
+Authors, licensed under the Apache License, Version 2.0
+(reasoningbank/originals/reasoning-bank-ed80611/LICENSE).
+reasoningbank/originals/paper_2509.25140_*.txt quote Figure 9 and appendix A.2 of the
+ReasoningBank paper (arXiv 2509.25140); paper_2509.25140_figure9_spans.txt lists the fonts
+of Figure 9's text spans. They are kept unmodified as the reference the ReasoningBank
+baseline is tested against. reasoningbank/success_system.md, failure_system.md and the
+texts in reasoningbank/format.json are derived from them (see reasoningbank/format.json for
+the provenance and the documented substitutions).
+
+awm/originals/agent-workflow-memory-8c0ff8c/ holds verbatim copies of
+webarena/prompt/instruction.txt, webarena/prompt/one_shot.txt, webarena/induce_prompt.py,
+webarena/pipeline.py and webarena/agents/legacy/agent.py from
+https://github.com/zorazrw/agent-workflow-memory at commit
+8c0ff8cd11d648c8fceb99e4e42f37e3b75381b1, licensed under the Apache License, Version 2.0
+(awm/originals/agent-workflow-memory-8c0ff8c/LICENSE). awm/originals/paper_2409.07429_*.txt
+quote appendix A.1 and section 2.3 of "Agent Workflow Memory" (arXiv 2409.07429), which
+arXiv distributes under the Creative Commons Attribution-ShareAlike 4.0 International
+License (CC BY-SA 4.0, https://creativecommons.org/licenses/by-sa/4.0/). They are
+kept unmodified as the reference the AWM baseline is tested against. awm/instruction.md,
+awm/output_format.md and the texts in awm/format.json are derived from them (see
+awm/format.json for the provenance and the documented substitutions).

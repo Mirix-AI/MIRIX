@@ -1,0 +1,52 @@
+# Text spans of Figure 9 (page 21) of arXiv 2509.25140, extracted with PyMuPDF 1.26.5
+# pdf sha256 d9e08c61ab714304a6a88e014f552597d9ac654c4cb23dc63a5d53248715da13
+# one line per PDF text line: x y then [font]text for each span; panels: left x<300 (success), right x>=300 (failure)
+success 154 254 [Avenir-Heavy]System Instruction
+success 65 266 [Avenir-Book]You are an expert in web navigation. You will be given a user query, the corresponding trajectory 
+success 65 272 [Avenir-Book]that represents [Avenir-Heavy]how an agent [Avenir-Heavy]successfully accomplished the task[Avenir-Book].  
+success 65 282 [Avenir-Book]## Guidelines  
+success 65 288 [Avenir-Book]You need to extract and summarize useful insights in the format of memory items [Avenir-Heavy]based on the 
+success 65 295 [Avenir-Heavy]agent's successful trajectory[Avenir-Book].  
+success 65 301 [Avenir-Book]The goal of summarized memory items is to be helpful and generalizable for future similar tasks.  
+success 65 311 [Avenir-Book]## Important notes  
+success 65 317 [Avenir-Book]-[Avenir-Book] You must first [Avenir-Heavy]think why the trajectory is successful[Avenir-Book], and then summarize the insights.  
+success 65 323 [Avenir-Book]-[Avenir-Book] You can extract [Avenir-BookOblique]at most 3 [Avenir-Book] memory items from the trajectory.  
+success 65 330 [Avenir-Book]-[Avenir-Book] You must not repeat similar or overlapping items.  
+success 65 336 [Avenir-Book]-[Avenir-Book] Do not mention specific websites, queries, or string contents, but rather focus on the 
+success 70 343 [Avenir-Book]generalizable insights.  
+success 65 353 [Avenir-Book]## Output Format  
+success 65 359 [Avenir-Book]Your output must strictly follow the Markdown format shown below:  
+success 65 366 [Avenir-Book]```  
+success 65 372 [Avenir-Book]# Memory Item i  
+success 65 378 [Avenir-Book]## Title <the title of the memory item>  
+success 65 385 [Avenir-Book]## Description <one sentence summary of the memory item>  
+success 65 391 [Avenir-Book]## Content <1-3 sentences describing the insights learned to successfully accomplishing the 
+success 65 397 [Avenir-Book]task> ```
+success 160 410 [Avenir-Heavy]Input Prompt
+success 65 419 [Avenir-Heavy]Query:[Avenir-Book] <user query> 
+success 65 429 [Avenir-Heavy]Trajectory: [Avenir-Book]<trajectory that completes the query>
+failure 396 254 [Avenir-Heavy]System Instruction
+failure 308 263 [Avenir-Book]You are an expert in web navigation. You will be given a user query, the corresponding trajectory 
+failure 308 269 [Avenir-Book]that represents [Avenir-Heavy]how an agent [Avenir-Heavy]attempted to resolve the task but failed[Avenir-Book].  
+failure 308 280 [Avenir-Book]## Guidelines  
+failure 308 286 [Avenir-Book]You need to extract and summarize useful insights in the format of memory items [Avenir-Heavy]based on the 
+failure 308 292 [Avenir-Heavy]agent's failed trajectory[Avenir-Book].  
+failure 308 298 [Avenir-Book]The goal of summarized memory items is to be helpful and generalizable for future similar tasks.  
+failure 308 309 [Avenir-Book]## Important notes  
+failure 308 314 [Avenir-Book]-[Avenir-Book] You must [Avenir-Heavy]first reflect and think why the trajectory failed[Avenir-Book], and then summarize what lessons 
+failure 313 321 [Avenir-Book]you have learned or strategies to prevent the failure in the future. 
+failure 308 327 [Avenir-Book]-[Avenir-Book] You can extract [Avenir-BookOblique]at most 3 [Avenir-Book] memory items from the trajectory.  
+failure 308 333 [Avenir-Book]-[Avenir-Book] You must not repeat similar or overlapping items.  
+failure 308 339 [Avenir-Book]-[Avenir-Book] Do not mention specific websites, queries, or string contents, but rather focus on the 
+failure 313 346 [Avenir-Book]generalizable insights.  
+failure 308 357 [Avenir-Book]## Output Format  
+failure 308 363 [Avenir-Book]Your output must strictly follow the Markdown format shown below:  
+failure 308 369 [Avenir-Book]```  
+failure 308 376 [Avenir-Book]# Memory Item i  
+failure 308 382 [Avenir-Book]## Title <the title of the memory item>  
+failure 308 388 [Avenir-Book]## Description <one sentence summary of the memory item>  
+failure 308 395 [Avenir-Book]## Content <1-3 sentences describing the insights learned to successfully accomplishing the 
+failure 308 401 [Avenir-Book]task> ```
+failure 402 410 [Avenir-Heavy]Input Prompt
+failure 307 419 [Avenir-Heavy]Query:[Avenir-Book] <user query> 
+failure 307 429 [Avenir-Heavy]Trajectory: [Avenir-Book]<trajectory that completes the query>

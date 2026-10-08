@@ -1,0 +1,60 @@
+{
+  "comment": "Frozen text and limits of the shared judge J. system.md is the ReasoningBank paper's Figure 10 system instruction with only its three web task types rewritten into two task classes ('substitution'); tests diff it against the verbatim original in originals/. user.md and the formats below are the RB repo's text-evaluation input (autoeval/prompts.py build_text_eval_prompt, autoeval/evaluator.py eval_text) at commit ed80611, without the later strict-judging paragraph. Code (methods/judge.py) contains no model-visible literal.",
+  "provenance": {
+    "paper": {
+      "id": "arXiv 2509.25140 (ReasoningBank: Scaling Agent Self-Evolving with Reasoning Memory)",
+      "figure": "Figure 10, 'System instructions for obtaining binary signals indicating success or failures of the current trajectory' (appendix A.1)",
+      "pdf_sha256": "d9e08c61ab714304a6a88e014f552597d9ac654c4cb23dc63a5d53248715da13",
+      "system_original": "originals/paper_2509.25140_figure10_system.txt",
+      "system_original_sha256": "05090208674c2cafe12ede9ceb08fb85f56b44c2673595e047ad1b7470730665",
+      "input_original": "originals/paper_2509.25140_figure10_input.txt",
+      "input_original_sha256": "a8104638c978473a8c4f0a04117c22184737d68bf3057bb17dac9a7fdd9f1278",
+      "note": "The originals are the PDF's text layer verbatim (lines 1057-1062 and 1063-1067 of its text extraction): the layer flattens the figure's line breaks into double spaces, drops the space in '1.Information' and '3.Content' and keeps the 'fi' ligature. Tests compare whitespace-normalised text. system.md takes its line breaks from the RB repo copy of the same text."
+    },
+    "repo": {
+      "url": "https://github.com/google-research/reasoning-bank",
+      "commit": "ed80611788292ea739f1effd31f16c53823b8a0d",
+      "license": "Apache-2.0 (originals/reasoning-bank-ed80611/LICENSE)",
+      "files": {
+        "originals/reasoning-bank-ed80611/prompts.py.txt": {
+          "source": "WebArena/autoeval/prompts.py",
+          "git_blob": "49d1023568837fb0c9625eaefdf8d35b118bc14a",
+          "sha256": "c53b8fba62f0080d57a8980b10d2e6e223d342a70f1db75e3409683149506c10"
+        },
+        "originals/reasoning-bank-ed80611/evaluator.py.txt": {
+          "source": "WebArena/autoeval/evaluator.py",
+          "git_blob": "3aa8f5e67f4fbbe159033365c1fcfa0adb68f902",
+          "sha256": "eb7937314b157e0f93ad732a67afb726c79a577bbf0e9314ef0196e44d8890f7"
+        }
+      },
+      "system_prompt": "prompts.py build_text_eval_prompt system_msg: Figure 10's text plus a '*Strictness rules*' paragraph added later; J follows the paper and leaves that paragraph out.",
+      "user_prompt": "prompts.py build_text_eval_prompt 'prompt' f-string (user.md; {last_actions} -> {actions}, {cap} -> {observations})",
+      "action_history": "evaluator.py eval_text: '{idx+1}: <think>{think}</think>\\n   <action>{act}</action>\\n', or '{idx+1}: <action>{act}</action>\\n' without a think",
+      "observations": "evaluator.py eval_text: the last 5 captions, joined by '\\n\\n---\\n\\n', each headed '[Page state {i+1}/{len(last_caps)}]'",
+      "no_response": "The template's own default 'N/A' (paper Figure 10 and prompts.py). evaluator.py eval_text passes the string 'None' for an empty response, which the template then prints; J follows the template."
+    }
+  },
+  "substitution": {
+    "rule": "The three web task types become two classes, (1) answering or looking up information: the final response must contain the requested information, an error counts as failure, the actions must suffice to obtain the answer; (2) changing the state or taking an action: judge from the actions and the final observations whether the goal state is reached. The rest of the system instruction is Figure 10 verbatim.",
+    "dropped": "the web examples (products, reviews, map routes, top-searched items in a shop), 'Site navigation' and 'Content modification' as separate types, and 'or explicitly state that the information is not available' (every task in the benchmarks has an answer; the answering class omits it)",
+    "original": "There are three types of tasks:  \n1.Information seeking: The user wants to obtain certain information from the webpage, such as the information of a product, reviews, map info, comparison of map routes, etc. The bot's response must contain the information the user wants, or explicitly state that the information is not available. Otherwise, e.g. the bot encounters an exception and respond with the error content, the task is considered a failure. Besides, be careful about the sufficiency of the agent's actions. For example, when asked to list the top-searched items in a shop, the agent should order the items by the number of searches, and then return the top items. If the ordering action is missing, the task is likely to fail.  \n2. Site navigation: The user wants to navigate to a specific page. Carefully examine the bot's action history and the final state of the webpage to determine whether the bot successfully completes the task. No need to consider the bot's response.  \n3.Content modification: The user wants to modify the content of a webpage or configuration. Carefully examine the bot's action history and the final state of the webpage to determine whether the bot successfully completes the task. No need to consider the bot's response. \n",
+    "replacement": "There are two types of tasks:\n1. Answering or looking up information: The user wants to obtain certain information, such as a value, a fact or the result of a calculation. The bot's response must contain the information the user wants. Otherwise, e.g. the bot encounters an exception and respond with the error content, the task is considered a failure. Besides, be careful about the sufficiency of the agent's actions: the actions must be enough to obtain the answer. If a necessary action is missing, the task is likely to fail.\n2. Changing the state or taking an action: The user wants the agent to change the state of the environment or to carry out an action. Carefully examine the bot's action history and the final state to determine whether the bot successfully completes the task, that is, whether the goal state is reached. No need to consider the bot's response.\n\n"
+  },
+  "system_file": "system.md",
+  "user_file": "user.md",
+  "no_response": "N/A",
+  "action_with_think": "{n}: <think>{think}</think>\n   {actions}\n",
+  "action_without_think": "{n}: {actions}\n",
+  "action_item": "<action>{action}</action>",
+  "action_joiner": "\n   ",
+  "action_history_rule": "The action history numbers only the assistant turns that carry an action, as RB's evaluator does: autoeval/evaluate_trajectory.py extract_think_and_action skips a step whose action is empty ('if not action: # skip empty action steps') before the steps are numbered. A turn's action is the body of its <action> tag, or the <answer> element of a final answer (methods/judge.py episode_turns). A turn without an action (no reply, or output without an <action> tag) is left out and counted (the verdict's skipped_turns). The RB and AWM learners read the same turns.",
+  "tool_call": "{name}({arguments})",
+  "observation": "[Page state {i}/{n}]\n{text}",
+  "observation_joiner": "\n\n---\n\n",
+  "max_observations": 5,
+  "observation_max_chars": 40000,
+  "min_truncated_chars": 200,
+  "truncation_marker": "\n[... {omitted:,} of {total:,} characters omitted ...]\n",
+  "image_placeholder": "[image]",
+  "limits_note": "observation_max_chars: RB's evaluate_trajectory.py keeps the first 40,000 characters of each page state (MAX_OBS_CHARS); J keeps the head and the tail of each observation within the same 40,000 and marks the cut. min_truncated_chars bounds the extra cuts J makes only when a judge input would exceed the model's input budget."
+}

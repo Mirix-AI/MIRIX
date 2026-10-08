@@ -1,0 +1,222 @@
+{
+  "schema_version": 1,
+  "fetched_at": "2026-10-03T09:32:06+00:00",
+  "sources": {
+    "chat": "https://openrouter.ai/api/v1/models",
+    "embeddings": "https://openrouter.ai/api/v1/embeddings/models"
+  },
+  "f9_rules": {
+    "token_encoding": "o200k_base",
+    "window80": "floor(context_length * 4/5)",
+    "max_out80": "floor(max_completion_tokens * 4/5)",
+    "planning_reserve": "min(max_out80, floor(context_length * 1/10))",
+    "distill_chunk_input_cap": "window80 - planning_reserve",
+    "input_ceiling": "min(window80, top_provider.context_length)",
+    "f9_output_cap": "min(max_out80, window80 - input_tokens)",
+    "provider_output_cap": "top_provider.context_length - ceil(input_tokens * (1 + 1/10)) - 1",
+    "output_cap": "min(f9_output_cap, provider_output_cap)",
+    "gateway_input_budget": "largest input_tokens with output_cap >= 1024"
+  },
+  "models": {
+    "openai/gpt-6-luna": {
+      "kind": "chat",
+      "source_url": "https://openrouter.ai/api/v1/models",
+      "fetched_at": "2026-09-29T03:37:30+00:00",
+      "name": "OpenAI: GPT-6 Luna",
+      "canonical_slug": "openai/gpt-6-luna-20260922",
+      "context_length": 1050000,
+      "top_provider": {
+        "context_length": 1050000,
+        "max_completion_tokens": 128000,
+        "is_moderated": true
+      },
+      "pricing": {
+        "prompt": "0.0000001",
+        "completion": "0.0000005",
+        "web_search": "0.01",
+        "input_cache_read": "0.00000001",
+        "input_cache_write": "0.000000125",
+        "overrides": [
+          {
+            "min_prompt_tokens": 272000,
+            "prompt": "0.0000002",
+            "completion": "0.00000075",
+            "input_cache_read": "0.00000002",
+            "input_cache_write": "0.00000025"
+          }
+        ]
+      },
+      "supported_parameters": [
+        "include_reasoning",
+        "max_completion_tokens",
+        "max_tokens",
+        "reasoning",
+        "reasoning_effort",
+        "response_format",
+        "seed",
+        "structured_outputs",
+        "tool_choice",
+        "tools"
+      ],
+      "default_parameters": {
+        "temperature": null,
+        "top_p": null,
+        "top_k": null,
+        "frequency_penalty": null,
+        "presence_penalty": null,
+        "repetition_penalty": null
+      },
+      "reasoning": {
+        "mandatory": false,
+        "default_enabled": true,
+        "supported_efforts": [
+          "max",
+          "xhigh",
+          "high",
+          "medium",
+          "low",
+          "none"
+        ],
+        "default_effort": "medium"
+      },
+      "max_completion_tokens": 128000,
+      "input_modalities": [
+        "file",
+        "image",
+        "text"
+      ],
+      "output_modalities": [
+        "text"
+      ],
+      "raw_sha256": "d1668d002fc09c5c6c96efd0e688d6a0c6bd9ad8ea4c5a4da2ae342aff0d659b",
+      "alias": "luna",
+      "f9": {
+        "window80": 840000,
+        "max_out80": 102400,
+        "planning_reserve": 102400,
+        "distill_chunk_input_cap": 737600,
+        "input_ceiling": 840000,
+        "gateway_input_budget": 838976
+      }
+    },
+    "openai/gpt-5.6-luna": {
+      "kind": "chat",
+      "source_url": "https://openrouter.ai/api/v1/models",
+      "fetched_at": "2026-10-03T09:32:06+00:00",
+      "name": "OpenAI: GPT-5.6 Luna",
+      "canonical_slug": "openai/gpt-5.6-luna-20260709",
+      "context_length": 1050000,
+      "top_provider": {
+        "context_length": 1050000,
+        "max_completion_tokens": 128000,
+        "is_moderated": true
+      },
+      "pricing": {
+        "prompt": "0.0000002",
+        "completion": "0.0000012",
+        "web_search": "0.01",
+        "input_cache_read": "0.00000002",
+        "input_cache_write": "0.00000025",
+        "overrides": [
+          {
+            "min_prompt_tokens": 272000,
+            "prompt": "0.0000004",
+            "completion": "0.0000018",
+            "input_cache_read": "0.00000004",
+            "input_cache_write": "0.0000005"
+          }
+        ]
+      },
+      "supported_parameters": [
+        "include_reasoning",
+        "max_completion_tokens",
+        "max_tokens",
+        "reasoning",
+        "reasoning_effort",
+        "response_format",
+        "seed",
+        "structured_outputs",
+        "tool_choice",
+        "tools",
+        "verbosity"
+      ],
+      "default_parameters": {
+        "temperature": null,
+        "top_p": null,
+        "top_k": null,
+        "frequency_penalty": null,
+        "presence_penalty": null,
+        "repetition_penalty": null
+      },
+      "reasoning": {
+        "mandatory": false,
+        "default_enabled": true,
+        "supported_efforts": [
+          "max",
+          "xhigh",
+          "high",
+          "medium",
+          "low",
+          "none"
+        ],
+        "default_effort": "medium"
+      },
+      "max_completion_tokens": 128000,
+      "input_modalities": [
+        "file",
+        "image",
+        "text"
+      ],
+      "output_modalities": [
+        "text"
+      ],
+      "raw_sha256": "294076a948ec618bc36657c18c4ab79791b4fcdc70d69e3eb5d93fa2c19baa23",
+      "alias": "luna56",
+      "f9": {
+        "window80": 840000,
+        "max_out80": 102400,
+        "planning_reserve": 102400,
+        "distill_chunk_input_cap": 737600,
+        "input_ceiling": 840000,
+        "gateway_input_budget": 838976
+      }
+    },
+    "google/gemini-embedding-001": {
+      "kind": "embedding",
+      "source_url": "https://openrouter.ai/api/v1/embeddings/models",
+      "fetched_at": "2026-09-29T03:37:30+00:00",
+      "name": "Google: Gemini Embedding 001",
+      "canonical_slug": "google/gemini-embedding-001",
+      "context_length": 20000,
+      "top_provider": {
+        "context_length": 20000,
+        "max_completion_tokens": null,
+        "is_moderated": false
+      },
+      "pricing": {
+        "prompt": "0.00000015",
+        "completion": "0",
+        "image": "0",
+        "audio": "0"
+      },
+      "supported_parameters": [],
+      "default_parameters": {
+        "temperature": null,
+        "top_p": null,
+        "frequency_penalty": null
+      },
+      "reasoning": null,
+      "max_completion_tokens": null,
+      "input_modalities": [
+        "text"
+      ],
+      "output_modalities": [
+        "embeddings"
+      ],
+      "raw_sha256": "aa95a06d230e7f28eab20e5588fa784963fc2eb95ec6895ef140fbcdb0ccd8e5",
+      "alias": "embedding",
+      "f9": null
+    }
+  },
+  "notes": []
+}

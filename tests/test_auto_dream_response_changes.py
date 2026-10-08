@@ -77,6 +77,26 @@ def test_existing_caller_without_new_fields_unaffected():
     assert resp.changes == {}
 
 
+def test_run_ids_default_empty_and_round_trip():
+    resp = AutoDreamResponse(
+        start_date=None,
+        end_date=None,
+        processed={},
+        last_dream_at=_now(),
+        dry_run=False,
+    )
+    assert resp.run_ids == []
+    populated = AutoDreamResponse.model_validate(
+        {**resp.model_dump(), "run_ids": ["slrun-1"]}
+    )
+    assert populated.model_dump()["run_ids"] == ["slrun-1"]
+
+
+def test_auto_dream_request_wait_defaults_to_true():
+    assert AutoDreamRequest(mode="procedural").wait is True
+    assert AutoDreamRequest(mode="procedural", wait=False).wait is False
+
+
 def test_auto_dream_request_accepts_meta_agent_id():
     req = AutoDreamRequest(mode="procedural", meta_agent_id="agent-meta-1")
     assert req.meta_agent_id == "agent-meta-1"
@@ -132,13 +152,14 @@ async def test_auto_dream_handler_uses_explicit_meta_agent(monkeypatch):
     monkeypatch.setattr(auto_dream_manager, "AutoDreamManager", FakeAutoDreamManager)
 
     resp = await rest_api.auto_dream_handler(
-        AutoDreamRequest(mode="procedural", meta_agent_id="agent-meta-2"),
+        AutoDreamRequest(mode="procedural", meta_agent_id="agent-meta-2", wait=False),
         user_id="user-1",
         authorization="Bearer test",
         http_request=None,
     )
 
     assert resp == {"ok": True}
+    assert captured["request"].wait is False
     assert captured["meta_agent_state"] is explicit_meta
     assert captured["user"] is user
     assert captured["actor"] is client
@@ -182,3 +203,117 @@ async def test_auto_dream_handler_rejects_non_meta_agent(monkeypatch):
 
     assert exc_info.value.status_code == 400
     assert "not a meta_memory_agent" in exc_info.value.detail
+
+
+@pytest.mark.asyncio
+async def test_the_dream_checkpoint_belongs_to_the_dreaming_user(monkeypatch):
+    """``create_episodic_memory`` stamps its own ``user_id`` / ``client_id``
+    arguments over the event's (falling back to the ADMIN user), so the
+    checkpoint must pass them: otherwise it lands in the admin user's memory
+    and ``get_last_dream_time(user)`` never finds it (found by the offline
+    end-to-end test, tests/test_skill_learning_e2e_pg.py)."""
+    import mirix.services.episodic_memory_manager as episodic_module
+    from mirix.services.auto_dream_manager import AutoDreamManager
+
+    created = []
+
+    class RecordingEpisodicManager:
+        async def create_episodic_memory(self, **kwargs):
+            created.append(kwargs)
+            return kwargs["episodic_memory"]
+
+    monkeypatch.setattr(
+        episodic_module, "EpisodicMemoryManager", RecordingEpisodicManager
+    )
+    user = SimpleNamespace(id="user-dreamer")
+    actor = SimpleNamespace(id="client-7", organization_id="org-7")
+    await AutoDreamManager().write_checkpoint(user, actor, None, _now())
+
+    [call] = created
+    assert call["user_id"] == "user-dreamer" and call["client_id"] == "client-7"
+    event = call["episodic_memory"]
+    assert event.user_id == "user-dreamer" and event.organization_id == "org-7"
+    assert event.event_type == "auto_dream_checkpoint"
+
+
+@pytest.mark.asyncio
+async def test_checkpoints_never_crowd_real_events_out_of_the_dream_window(
+    monkeypatch, tmp_path
+):
+    """One checkpoint per learning run lands in the user's episodic
+    memory; the episodic dream's window of newest events leaves them out in
+    the query, so hundreds of checkpoints never hide the real events."""
+    import uuid
+    from contextlib import asynccontextmanager
+
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    import mirix.orm  # noqa: F401 -- register every ORM class
+    import mirix.server.server as server_module
+    import mirix.services.auto_dream_manager as adm
+    from mirix.orm.base import Base
+    from mirix.orm.episodic_memory import EpisodicEvent as EventORM
+    from mirix.orm.organization import Organization as OrganizationORM
+    from mirix.orm.user import User as UserORM
+    from mirix.schemas.user import User as PydanticUser
+
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'dream.db'}")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    local = async_sessionmaker(engine, expire_on_commit=False)
+
+    @asynccontextmanager
+    async def sm():
+        async with local() as session:
+            yield session
+
+    monkeypatch.setattr(server_module, "db_context", sm)
+    monkeypatch.setattr(adm, "_EPISODIC_DREAM_WINDOW", 5)
+    org, uid = "org-dream", "user-dream"
+    base = dt.datetime(2026, 9, 1, tzinfo=dt.timezone.utc)
+    try:
+        async with sm() as db:
+            db.add(OrganizationORM(id=org, name=org))
+            db.add(
+                UserORM(
+                    id=uid,
+                    name=uid,
+                    organization_id=org,
+                    status="active",
+                    timezone="UTC",
+                )
+            )
+            await db.commit()
+
+        def event(i, event_type):
+            return EventORM(
+                id=f"ep_{uuid.uuid4().hex[:12]}",
+                organization_id=org,
+                user_id=uid,
+                occurred_at=base + dt.timedelta(minutes=i),
+                actor="user",
+                event_type=event_type,
+                summary=f"{event_type} {i}",
+                details="d",
+                filter_tags={},
+            )
+
+        async with sm() as db:
+            db.add_all([event(i, "activity") for i in range(3)])  # the oldest
+            db.add(event(3, "conversation"))
+            # Ten newer checkpoints: twice the (patched) window.
+            db.add_all([event(10 + i, adm._CHECKPOINT_EVENT_TYPE) for i in range(10)])
+            await db.commit()
+
+        user = PydanticUser(id=uid, name=uid, organization_id=org, timezone="UTC")
+        events = await adm.AutoDreamManager()._fetch_episodic(
+            user, None, base, base + dt.timedelta(days=1)
+        )
+        assert [e.summary for e in events] == [
+            "conversation 3",
+            "activity 2",
+            "activity 1",
+            "activity 0",
+        ]
+    finally:
+        await engine.dispose()

@@ -1,0 +1,92 @@
+{
+  "comment": "Frozen text and limits of the Agent Workflow Memory baseline, online mode. instruction.md is the WebArena pipeline's prompt/instruction.txt with only the two de-domaining substitutions; output_format.md replaces the WebArena one-shot example (prompt/one_shot.txt). Tests diff both against the verbatim originals in originals/. Code (methods/awm.py) contains no model-visible literal.",
+  "provenance": {
+    "repo": {
+      "url": "https://github.com/zorazrw/agent-workflow-memory",
+      "commit": "8c0ff8cd11d648c8fceb99e4e42f37e3b75381b1",
+      "license": "Apache-2.0 (originals/agent-workflow-memory-8c0ff8c/LICENSE)",
+      "files": {
+        "originals/agent-workflow-memory-8c0ff8c/instruction.txt": {
+          "source": "webarena/prompt/instruction.txt",
+          "git_blob": "91b86d6f82daf4ef94dee0c1c6797db87304caf8",
+          "sha256": "e05a424931cba5ea442c37f1c9a23d18f3e6c4b959646383eadc662a6d2a3ce9"
+        },
+        "originals/agent-workflow-memory-8c0ff8c/one_shot.txt": {
+          "source": "webarena/prompt/one_shot.txt",
+          "git_blob": "dd4a2f01ea5c7989dd9386d3c25dd3048471df8f",
+          "sha256": "256e1d5c96ebef4a152915df393e3381bf0a9221e62307eb17df0c84006414ca"
+        },
+        "originals/agent-workflow-memory-8c0ff8c/induce_prompt.py.txt": {
+          "source": "webarena/induce_prompt.py",
+          "git_blob": "05277f2b578f4794523661c52e15bdb5c2f0cd11",
+          "sha256": "2ccbb8b74dd5a446b2b25922473e2aa531d0893ce7b7c3d778bca3e6ef34227b"
+        },
+        "originals/agent-workflow-memory-8c0ff8c/pipeline.py.txt": {
+          "source": "webarena/pipeline.py",
+          "git_blob": "53fcb78a0888a77628686c9c317da581ed645c18",
+          "sha256": "c9fc1dc7d9970c50b04f47933cb22c0977038aa6e3d054ff55c74e5b417083c0"
+        },
+        "originals/agent-workflow-memory-8c0ff8c/agent.py.txt": {
+          "source": "webarena/agents/legacy/agent.py",
+          "git_blob": "0eab9d80dc4833e9b6789c78b2c91bf4c69e58fe",
+          "sha256": "0cd844f94881850aba8fd1956837e8e7e2f87e3168629596674593859b1da424"
+        }
+      }
+    },
+    "paper": {
+      "id": "arXiv 2409.07429 (Agent Workflow Memory)",
+      "pdf_sha256": "ddc6f6fedec48c88ae743b43a464f7eb4aecaab05acd18c29cfb657ab445ebe4",
+      "text_extraction_sha256": "37834ac32c121ec86daf7116ecbac184bb995515f54b37ccdcdb16aab3f31017",
+      "originals": {
+        "originals/paper_2409.07429_appendix_a1.txt": {
+          "what": "Appendix A.1, the model prompt (lines 835-844 of the text extraction). Its wording is an earlier form of instruction.txt; this method uses instruction.txt's own text.",
+          "sha256": "cbc8ceade140d7627863e649342c9df2091e5fd990bdd0636137aabe306fde41"
+        },
+        "originals/paper_2409.07429_section_2_3_online.txt": {
+          "what": "Section 2.3, AWM online (lines 256-272): the LM evaluator judges each test trajectory and workflows are induced from the ones judged successful. The paper adds the new workflows; the WebArena pipeline re-induces from all successes and overwrites, which this method follows.",
+          "sha256": "2b4bca8d70beb9b491e0174172ab653a7cf04c8adc1adc13efcd8fa9ae5b111f"
+        }
+      }
+    }
+  },
+  "instruction_file": "instruction.md",
+  "substitutions": [
+    {
+      "original": "Given a list of web navigation tasks",
+      "replacement": "Given a list of tasks solved by an agent",
+      "rule": "'web navigation tasks' -> 'tasks solved by an agent'"
+    },
+    {
+      "original": "(input text, button strings)",
+      "replacement": "(input text, file or object names)",
+      "rule": "'(input text, button strings)' -> '(input text, file or object names)'"
+    }
+  ],
+  "output_format_file": "output_format.md",
+  "output_format_rule": "The WebArena one-shot example (one_shot.txt: three shopping-site tasks, then the workflows induced from them) is replaced by a description of the output format it demonstrates, and the workflow format is the one this prompt asks for. output_format.md describes exactly the layout of one_shot.txt's '## Summary Workflows' part: a 'Workflow i: <description>' line, then steps of '<think>' / reasoning / '</think>' / '<action>' / action / '</action>' lines, an empty line between steps and between workflows. It adds nothing else: the instruction's own sentences (sub-routines, at least two steps, variable names, invariant elements) are unchanged. Tests check the layout against one_shot.txt.",
+  "prompt_source": "induce_prompt.py:78-99 and :178-179: one user message (no system message), '\\n\\n'.join([INSTRUCTION, ONE_SHOT, format_examples(examples)]) with format_examples = '\\n\\n'.join(['## Concrete Examples'] + ['Query: {query}\\nActions:\\n{trajectory}' for each example] + ['## Summary Workflows']). The model's reply is the workflow text.",
+  "part_joiner": "\n\n",
+  "examples_header": "## Concrete Examples",
+  "example": "Query: {query}\nActions:\n{trajectory}",
+  "workflows_header": "## Summary Workflows",
+  "dropped_helper_lines": "\n\nclick('id') # input string id value for all actions\n\nselect_option('id', 'value') # for dropdown menu",
+  "dropped_helper_lines_rule": "induce_prompt.py:153 appends these WebArena action-syntax hints to every induced workflow text; this method drops the web-specific helper lines, so the stored workflow is the model's reply alone.",
+  "step": "<think>\n{think}\n</think>\n<action>\n{action}\n</action>",
+  "step_source": "induce_prompt.py:66-71 format_trajectory: '<think>\\n{t}\\n</think>\\n<action>\\n{acts}\\n</action>' with a step's actions joined by a newline, steps joined by an empty line.",
+  "action_joiner": "\n",
+  "observation": "<observation>\n{text}\n</observation>",
+  "observation_joiner": "\n",
+  "step_joiner": "\n\n",
+  "observations_note": "AWM's code gives the inducer only the reasoning and the actions; here each step is followed by the environment's raw output after it, and the environment's output before the first model turn opens the trajectory, each observation as its own <observation> block, head and tail kept (the same per-observation cap as J). A step whose turn has no action is skipped with its observations, as extract_think_and_action skips steps without a valid action (induce_prompt.py:46-64). A turn is read the way the environment reads it (methods/judge.py episode_turns): the environment plays its fallback action for a turn without an <action> tag (ALFWorld's 'look'), so those turns are skipped. J's action history applies the same rule, so J and the learners read the same steps. The think/action split and the rendering of tool calls are J's (methods/judge.py split_turn / content_text).",
+  "observation_max_chars": 40000,
+  "min_truncated_chars": 200,
+  "selection_rule": "AWM samples one success per intent_template_id (induce_prompt.py:126-148), annotation metadata that is not available here. Instead the most recent successes that fit the input budget are used, in the order they were learned, and the oldest are dropped and counted. The budget is the model's input budget with the planning reserve left for the reply (J's input_budget) and max_request_bytes; the binding limit recorded per induction is the first one exceeded in that order (tokens, bytes). If even the newest success alone does not fit, its texts are cut, head and tail, until it does.",
+  "max_request_bytes": 29000000,
+  "max_request_bytes_rule": "The request (model and messages as the gateway receives them) is at most 29,000,000 bytes, the same for every model so that the AWM method is identical across models. It leaves a margin below the payload limits of the providers behind OpenRouter, which refuse a larger request (HTTP 413). The same drop-the-oldest rule applies; the binding limit and request_bytes are recorded per induction.",
+  "max_request_images": 50,
+  "max_request_images_rule": "Not applied: no environment sends image parts, so the selection checks only the token and byte limits (methods/awm.py LIMITS).",
+  "refused_retry_divisor": 2,
+  "refused_retry_rule": "Rule harness-stop-learning: an induction request the provider refuses as a payload (HTTP 413, or an upstream HTTP 400, whose message, often only 'Provider returned error', is not read) is sent once more with its input token and byte budgets divided by refused_retry_divisor (the refused request's own measures), which drops the oldest successes first (the selection rule; a single example has its texts cut). Refused again, or refused with a no-endpoint 404 (not retried: a smaller request cannot find an endpoint), the previous workflow is kept and the induction counts as induction_rejected; the retry counts as induction_retries and the refused request is recorded with the induction (retry). The same refusal on 3 consecutive inductions stops the learning phase for a person (upstream_refusal_streak).",
+  "injection_source": "agents/legacy/agent.py:116-117: the workflow file's text is appended to the system prompt as is, with no header. Here the same text goes, unchanged, into the SkillOpt skill slot. One workflow text per benchmark cell; ALFWorld is not split by task type.",
+  "induction_rule": "pipeline.py:18-40 induces after every task from all successes so far and overwrites the workflow file (induce_prompt.py:160-161). Here an induction runs only when J adds a success to the pool (re-inducing an unchanged pool only repeats the call); J's failures are discarded. A reply with text replaces the workflow (a truncated one too, counted as a model failure); a call without a reply or with empty text keeps the previous workflow and is counted. A request the provider refuses is handled by refused_retry_rule."
+}

@@ -1,0 +1,349 @@
+{
+ "_source": "GET https://openrouter.ai/api/v1/models/z-ai/glm-5.3-flash/endpoints (public, no key), 2026-09-29; fields trimmed",
+ "data": {
+  "id": "z-ai/glm-5.3-flash",
+  "name": "Z.ai: GLM 5.3 Flash",
+  "endpoints": [
+   {
+    "name": "OpenInference | z-ai/glm-5.3-flash-20260826",
+    "model_id": "z-ai/glm-5.3-flash",
+    "provider_name": "OpenInference",
+    "tag": "open-inference/fp4",
+    "quantization": "fp4",
+    "status": -5,
+    "uptime_last_30m": 41.83650103045569,
+    "context_length": 1048576
+   },
+   {
+    "name": "Relace | z-ai/glm-5.3-flash-20260826",
+    "model_id": "z-ai/glm-5.3-flash",
+    "provider_name": "Relace",
+    "tag": "relace",
+    "quantization": "unknown",
+    "status": 0,
+    "uptime_last_30m": 99.9432515056657,
+    "context_length": 1048576
+   },
+   {
+    "name": "InferenceNet | z-ai/glm-5.3-flash-20260826",
+    "model_id": "z-ai/glm-5.3-flash",
+    "provider_name": "InferenceNet",
+    "tag": "inference-net/fp4",
+    "quantization": "fp4",
+    "status": 0,
+    "uptime_last_30m": 99.94174003107197,
+    "context_length": 1048576
+   },
+   {
+    "name": "Sail Research | z-ai/glm-5.3-flash-20260826",
+    "model_id": "z-ai/glm-5.3-flash",
+    "provider_name": "Sail Research",
+    "tag": "sail-research/us",
+    "quantization": "fp8",
+    "status": 0,
+    "uptime_last_30m": 99.64439453490547,
+    "context_length": 1048576
+   },
+   {
+    "name": "Sail Research | z-ai/glm-5.3-flash-20260826",
+    "model_id": "z-ai/glm-5.3-flash",
+    "provider_name": "Sail Research",
+    "tag": "sail-research/fp8",
+    "quantization": "fp8",
+    "status": 0,
+    "uptime_last_30m": 99.6946810220151,
+    "context_length": 1048576
+   },
+   {
+    "name": "DeepInfra | z-ai/glm-5.3-flash-20260826",
+    "model_id": "z-ai/glm-5.3-flash",
+    "provider_name": "DeepInfra",
+    "tag": "deepinfra/fp4",
+    "quantization": "fp4",
+    "status": 0,
+    "uptime_last_30m": 99.62340470046726,
+    "context_length": 1048576
+   },
+   {
+    "name": "Novita | z-ai/glm-5.3-flash-20260826",
+    "model_id": "z-ai/glm-5.3-flash",
+    "provider_name": "Novita",
+    "tag": "novita/fp8",
+    "quantization": "fp8",
+    "status": 0,
+    "uptime_last_30m": 99.45583074810558,
+    "context_length": 1048576
+   },
+   {
+    "name": "GMICloud | z-ai/glm-5.3-flash-20260826",
+    "model_id": "z-ai/glm-5.3-flash",
+    "provider_name": "GMICloud",
+    "tag": "gmicloud/fp8",
+    "quantization": "fp8",
+    "status": 0,
+    "uptime_last_30m": 99.80706441080439,
+    "context_length": 1048576
+   },
+   {
+    "name": "AtlasCloud | z-ai/glm-5.3-flash-20260826",
+    "model_id": "z-ai/glm-5.3-flash",
+    "provider_name": "AtlasCloud",
+    "tag": "atlas-cloud/fp8",
+    "quantization": "fp8",
+    "status": 0,
+    "uptime_last_30m": 97.59771986970685,
+    "context_length": 1048576
+   },
+   {
+    "name": "Decart | z-ai/glm-5.3-flash-20260826",
+    "model_id": "z-ai/glm-5.3-flash",
+    "provider_name": "Decart",
+    "tag": "decart/fp4",
+    "quantization": "fp4",
+    "status": 0,
+    "uptime_last_30m": 97.93004996431121,
+    "context_length": 1048576
+   },
+   {
+    "name": "StreamLake | z-ai/glm-5.3-flash-20260826",
+    "model_id": "z-ai/glm-5.3-flash",
+    "provider_name": "StreamLake",
+    "tag": "streamlake/fp8",
+    "quantization": "fp8",
+    "status": 0,
+    "uptime_last_30m": 97.61660686827268,
+    "context_length": 1024000
+   },
+   {
+    "name": "Phala | z-ai/glm-5.3-flash-20260826",
+    "model_id": "z-ai/glm-5.3-flash",
+    "provider_name": "Phala",
+    "tag": "phala/fp8",
+    "quantization": "fp8",
+    "status": 0,
+    "uptime_last_30m": 99.14663632484711,
+    "context_length": 1048576
+   },
+   {
+    "name": "Io Net | z-ai/glm-5.3-flash-20260826",
+    "model_id": "z-ai/glm-5.3-flash",
+    "provider_name": "Io Net",
+    "tag": "io-net/fp8",
+    "quantization": "fp8",
+    "status": 0,
+    "uptime_last_30m": 98.75156054931335,
+    "context_length": 262144
+   },
+   {
+    "name": "Inceptron | z-ai/glm-5.3-flash-20260826",
+    "model_id": "z-ai/glm-5.3-flash",
+    "provider_name": "Inceptron",
+    "tag": "inceptron/fp8",
+    "quantization": "fp8",
+    "status": 0,
+    "uptime_last_30m": 97.65238879736408,
+    "context_length": 1048576
+   },
+   {
+    "name": "Modal | z-ai/glm-5.3-flash-20260826",
+    "model_id": "z-ai/glm-5.3-flash",
+    "provider_name": "Modal",
+    "tag": "modal/nvfp4",
+    "quantization": "nvfp4",
+    "status": 0,
+    "uptime_last_30m": 98.6359601999346,
+    "context_length": 1048576
+   },
+   {
+    "name": "BaseTen | z-ai/glm-5.3-flash-20260826",
+    "model_id": "z-ai/glm-5.3-flash",
+    "provider_name": "BaseTen",
+    "tag": "baseten/fp8",
+    "quantization": "fp8",
+    "status": 0,
+    "uptime_last_30m": 99.43502824858757,
+    "context_length": 1048576
+   },
+   {
+    "name": "Near AI | z-ai/glm-5.3-flash-20260826",
+    "model_id": "z-ai/glm-5.3-flash",
+    "provider_name": "Near AI",
+    "tag": "near-ai/fp8",
+    "quantization": "fp8",
+    "status": 0,
+    "uptime_last_30m": 99.45495351074062,
+    "context_length": 1048576
+   },
+   {
+    "name": "Crusoe | z-ai/glm-5.3-flash-20260826",
+    "model_id": "z-ai/glm-5.3-flash",
+    "provider_name": "Crusoe",
+    "tag": "crusoe/fp4",
+    "quantization": "fp4",
+    "status": 0,
+    "uptime_last_30m": 99.92639842983317,
+    "context_length": 1048576
+   },
+   {
+    "name": "CoreWeave | z-ai/glm-5.3-flash-20260826",
+    "model_id": "z-ai/glm-5.3-flash",
+    "provider_name": "CoreWeave",
+    "tag": "coreweave/nvfp4",
+    "quantization": "nvfp4",
+    "status": 0,
+    "uptime_last_30m": 99.92077639136463,
+    "context_length": 1048576
+   },
+   {
+    "name": "Fireworks | z-ai/glm-5.3-flash-20260826",
+    "model_id": "z-ai/glm-5.3-flash",
+    "provider_name": "Fireworks",
+    "tag": "fireworks",
+    "quantization": "unknown",
+    "status": 0,
+    "uptime_last_30m": 99.61739673615992,
+    "context_length": 1048576
+   },
+   {
+    "name": "Friendli | z-ai/glm-5.3-flash-20260826",
+    "model_id": "z-ai/glm-5.3-flash",
+    "provider_name": "Friendli",
+    "tag": "friendli",
+    "quantization": "unknown",
+    "status": 0,
+    "uptime_last_30m": 97.3265519040167,
+    "context_length": 1048576
+   },
+   {
+    "name": "SiliconFlow | z-ai/glm-5.3-flash-20260826",
+    "model_id": "z-ai/glm-5.3-flash",
+    "provider_name": "SiliconFlow",
+    "tag": "siliconflow/fp8",
+    "quantization": "fp8",
+    "status": 0,
+    "uptime_last_30m": 98.47856154910097,
+    "context_length": 1048576
+   },
+   {
+    "name": "DigitalOcean | z-ai/glm-5.3-flash-20260826",
+    "model_id": "z-ai/glm-5.3-flash",
+    "provider_name": "DigitalOcean",
+    "tag": "digitalocean",
+    "quantization": "unknown",
+    "status": 0,
+    "uptime_last_30m": 99.97277133366008,
+    "context_length": 1048576
+   },
+   {
+    "name": "Together | z-ai/glm-5.3-flash-20260826",
+    "model_id": "z-ai/glm-5.3-flash",
+    "provider_name": "Together",
+    "tag": "together",
+    "quantization": "unknown",
+    "status": 0,
+    "uptime_last_30m": 99.7852658465329,
+    "context_length": 1048575
+   },
+   {
+    "name": "Reka | z-ai/glm-5.3-flash-20260826",
+    "model_id": "z-ai/glm-5.3-flash",
+    "provider_name": "Reka",
+    "tag": "reka",
+    "quantization": "unknown",
+    "status": 0,
+    "uptime_last_30m": 99.9736564805058,
+    "context_length": 262144
+   },
+   {
+    "name": "Parasail | z-ai/glm-5.3-flash-20260826",
+    "model_id": "z-ai/glm-5.3-flash",
+    "provider_name": "Parasail",
+    "tag": "parasail/fp8",
+    "quantization": "fp8",
+    "status": 0,
+    "uptime_last_30m": 99.0976530302373,
+    "context_length": 1048576
+   },
+   {
+    "name": "BaseTen | z-ai/glm-5.3-flash-20260826",
+    "model_id": "z-ai/glm-5.3-flash",
+    "provider_name": "BaseTen",
+    "tag": "baseten/fp8",
+    "quantization": "fp8",
+    "status": 0,
+    "uptime_last_30m": 99.37438665358195,
+    "context_length": 1048576
+   },
+   {
+    "name": "Venice | z-ai/glm-5.3-flash-20260826",
+    "model_id": "z-ai/glm-5.3-flash",
+    "provider_name": "Venice",
+    "tag": "venice",
+    "quantization": "unknown",
+    "status": 0,
+    "uptime_last_30m": 99.1586032814472,
+    "context_length": 1048576
+   },
+   {
+    "name": "Z.AI | z-ai/glm-5.3-flash-20260826",
+    "model_id": "z-ai/glm-5.3-flash",
+    "provider_name": "Z.AI",
+    "tag": "z-ai/fp8",
+    "quantization": "fp8",
+    "status": 0,
+    "uptime_last_30m": 98.57195166605639,
+    "context_length": 1048576
+   },
+   {
+    "name": "Morph | z-ai/glm-5.3-flash-20260826",
+    "model_id": "z-ai/glm-5.3-flash",
+    "provider_name": "Morph",
+    "tag": "morph/fp8",
+    "quantization": "fp8",
+    "status": 0,
+    "uptime_last_30m": null,
+    "context_length": 1048576
+   },
+   {
+    "name": "NextBit | z-ai/glm-5.3-flash-20260826",
+    "model_id": "z-ai/glm-5.3-flash",
+    "provider_name": "NextBit",
+    "tag": "nextbit/fp8",
+    "quantization": "fp8",
+    "status": 0,
+    "uptime_last_30m": 99.58924570575056,
+    "context_length": 1048576
+   },
+   {
+    "name": "Fireworks | z-ai/glm-5.3-flash-20260826",
+    "model_id": "z-ai/glm-5.3-flash",
+    "provider_name": "Fireworks",
+    "tag": "fireworks/us",
+    "quantization": "unknown",
+    "status": 0,
+    "uptime_last_30m": 99.95329285380663,
+    "context_length": 1048576
+   },
+   {
+    "name": "Cloudflare | z-ai/glm-5.3-flash-20260826",
+    "model_id": "z-ai/glm-5.3-flash",
+    "provider_name": "Cloudflare",
+    "tag": "cloudflare",
+    "quantization": "unknown",
+    "status": 0,
+    "uptime_last_30m": 98.61111111111111,
+    "context_length": 1310720
+   },
+   {
+    "name": "Wafer | z-ai/glm-5.3-flash-20260826",
+    "model_id": "z-ai/glm-5.3-flash",
+    "provider_name": "Wafer",
+    "tag": "wafer",
+    "quantization": "unknown",
+    "status": 0,
+    "uptime_last_30m": 99.96529585285442,
+    "context_length": 1048576
+   }
+  ]
+ }
+}

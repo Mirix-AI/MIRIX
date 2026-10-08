@@ -1,0 +1,38 @@
+{
+ "benchmark": "WebShop",
+ "status": "final",
+ "source_repo": "https://github.com/princeton-nlp/WebShop",
+ "source_commit": "64fa2a5c15c7daa698b9ac93f5bb5437b634c9bd",
+ "split_method": "Fixed released task manifests; consume the listed tasks in file order and verify SHA-256. Reproduction does not resample tasks.",
+ "counts": {
+  "train": 40,
+  "val": 20,
+  "test": 140
+ },
+ "files": {
+  "train.json": "5d25c75fd9c89408d7783155ff2c9e63a292ec7bcce39cac997ec620cca2452c",
+  "val.json": "51fd28e7fe63d1834bd4912d49bb3dc7b4bce032ba5bc0ce54934ac77556325e",
+  "test.json": "fdc01f7d661efd0283901b81be3feef1504f824a7ac76db415840934c5cf797c"
+ },
+ "item_fields": [
+  "id",
+  "goal_index",
+  "asin",
+  "instruction",
+  "instruction_text",
+  "attributes",
+  "goal_options",
+  "price_upper",
+  "name",
+  "query",
+  "category",
+  "product_category",
+  "best_reward",
+  "options_available",
+  "gold_search_rank"
+ ],
+ "notes": [
+  "Task membership, order and fields are defined by train.json, val.json and test.json.",
+  "The server validates goal fields and the pinned source data before serving episodes."
+ ]
+}

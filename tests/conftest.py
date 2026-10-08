@@ -11,6 +11,10 @@ from typing import Optional
 
 import pytest
 
+# Register the offline OpenAI-compatible fake (fixture `fake_llm_server`) for
+# every test module; see tests/fakes/fake_llm_server.py.
+from fakes.fake_llm_server import fake_llm_server  # noqa: F401
+
 from mirix.schemas.client import Client as PydanticClient
 from mirix.schemas.organization import Organization as PydanticOrganization
 from mirix.security.api_keys import generate_api_key
@@ -62,6 +66,35 @@ async def _create_client_and_key(
         )
     api_key = await _issue_key(client_id, org_id, client_mgr)
     return {"api_key": api_key, "org_id": org_id, "client_id": client_id}
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _no_tokenizer_download(tmp_path_factory):
+    """The test suite never downloads the o200k_base vocabulary: counting code
+    may start a (background) load of it (mirix.services.context_budget), which
+    then fails at once — an empty cache directory, no download — and counts
+    use the deterministic 3-chars-per-token estimate as before. A test that
+    needs the vocabulary patches ``tiktoken`` itself or points
+    ``TIKTOKEN_CACHE_DIR`` at a local cache."""
+    import tiktoken.load
+
+    def no_download(path, *args, **kwargs):
+        raise OSError(f"unit tests never download the tokenizer vocabulary ({path})")
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(tiktoken.load, "read_file", no_download)
+        patch.setenv("TIKTOKEN_CACHE_DIR", str(tmp_path_factory.mktemp("tiktoken")))
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _fresh_tiktoken_registry(monkeypatch):
+    """tiktoken keeps every encoding it loaded in a process-wide registry: an
+    encoding one test loaded (from a local cache) must not turn another
+    test's lazy load into a success — counts stay deterministic per test."""
+    import tiktoken.registry
+
+    monkeypatch.setattr(tiktoken.registry, "ENCODINGS", {})
 
 
 @pytest.fixture(scope="session")

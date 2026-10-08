@@ -1,0 +1,6 @@
+Below are some memory items that I accumulated from past interaction from the environment
+that may be helpful to solve the task. You can use it when you feel it’s relevant. In each step,
+please first explicitly discuss if you want to use each memory item or not, and then take action.
+Memory Consolidation. After finishing each new query, the trajectory is processed by the extraction
+pipeline to produce new memory items, which are appended into the memory pool. We adopt a
+minimal consolidation strategy: newly generated items are directly added without additional pruning.

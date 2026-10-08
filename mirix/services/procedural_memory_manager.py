@@ -1,17 +1,33 @@
+import asyncio
+import datetime as dt
 import json
 import re
 import string
-from typing import Any, Dict, List, Optional
+import uuid
+from dataclasses import dataclass, field
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Awaitable,
+    Callable,
+    Dict,
+    List,
+    Mapping,
+    Optional,
+    Sequence,
+    Tuple,
+)
 
 import numpy as np
 from rank_bm25 import BM25Okapi
 from rapidfuzz import fuzz
-from sqlalchemy import delete, func, select, text
-
+from sqlalchemy import delete, func, or_, select, text
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import lazyload
 
 from mirix.constants import (
     BUILD_EMBEDDINGS_FOR_MEMORY,
+    DEFAULT_ORG_ID,
     MAX_EMBEDDING_DIM,
     SKILL_HYBRID_RECALL_MULTIPLIER,
     SKILL_HYBRID_RRF_K,
@@ -19,7 +35,10 @@ from mirix.constants import (
 from mirix.embeddings import embedding_model
 from mirix.log import get_logger
 from mirix.orm.errors import NoResultFound, UniqueConstraintViolationError
-from mirix.orm.procedural_memory import ProceduralMemoryItem
+from mirix.orm.procedural_memory import UNIQUE_LIVE_NAME_INDEX, ProceduralMemoryItem
+from mirix.orm.skill_experience import SkillExperience as SkillExperienceModel
+from mirix.orm.skill_object import SkillObject as SkillObjectModel
+from mirix.orm.skill_version import SkillVersion as SkillVersionModel
 from mirix.schemas.agent import AgentState
 from mirix.schemas.client import Client as PydanticClient
 from mirix.schemas.procedural_memory import (
@@ -27,11 +46,19 @@ from mirix.schemas.procedural_memory import (
 )
 from mirix.schemas.procedural_memory import (
     ProceduralMemoryItemUpdate,
+    skill_nul_problem,
 )
+from mirix.schemas.skill_version import SKILL_VERSIONED_FIELDS
+from mirix.schemas.skill_version import SkillVersion as PydanticSkillVersion
 from mirix.schemas.user import User as PydanticUser
-from mirix.services.utils import build_query, update_timezone
+from mirix.services import skill_history as history
+from mirix.services.retry_policy import retry_call
+from mirix.services.utils import build_query, localize_timestamps, update_timezone
 from mirix.settings import settings
 from mirix.utils import enforce_types
+
+if TYPE_CHECKING:
+    from mirix.services.skill_retrieval import SkillRetrievalResult
 
 logger = get_logger(__name__)
 
@@ -39,16 +66,13 @@ logger = get_logger(__name__)
 def _pad_to_max(vec):
     """Pad a raw embedding to MAX_EMBEDDING_DIM with trailing zeros.
 
-    The CREATE path pads via the PydanticProceduralMemoryItem.pad_embeddings
-    field_validator, and the vector-search query path pads explicitly
-    (see the ``search_method == "embedding"`` branch). The UPDATE path
-    recomputes embeddings into a plain dict that bypasses the schema
-    validator, so it must pad here too — otherwise a raw (e.g. 3072-dim)
-    vector is written straight onto the Vector(4096) column and SQLAlchemy's
-    compare_values raises "operands could not be broadcast together with
-    shapes (4096,) (N,)" on the next UPDATE. Zero-padding is cosine-preserving
-    (the appended dims contribute nothing to dot product or norms), so stored
-    and query vectors stay consistent at MAX_EMBEDDING_DIM.
+    Every write path pads here (and the query path pads the query vector), so
+    stored and query vectors are always MAX_EMBEDDING_DIM wide: a raw (e.g.
+    3072-dim) vector written onto the Vector(4096) column would make
+    SQLAlchemy's compare_values raise "operands could not be broadcast together
+    with shapes (4096,) (N,)" on the next UPDATE. Zero-padding is
+    cosine-preserving (the appended dims contribute nothing to dot product or
+    norms).
     """
     if vec is None:
         return None
@@ -68,10 +92,278 @@ _SEARCHABLE_TEXT_FIELDS: Dict[str, str] = {
     "name": "name",
 }
 
+# A skill has ONE vector, `retrieval_embedding`: the embedding of
+# its retrieval text (name + triggers + description, see
+# skill_history.skill_retrieval_text). Embedding searches on "description" (the
+# default field) use it.
+_RETRIEVAL_EMBEDDING_COLUMN = "retrieval_embedding"
 _EMBEDDING_FIELDS: Dict[str, str] = {
-    "description": "description_embedding",
-    "instructions": "instructions_embedding",
+    "description": _RETRIEVAL_EMBEDDING_COLUMN,
 }
+
+# Fields that no longer carry a vector: an embedding (or hybrid) search on
+# them is served by full-text keyword search on that same field instead.
+_FULLTEXT_FALLBACK_FIELDS = frozenset({"instructions"})
+
+# The search fields whose ranked search is the skill's retrieval text (name,
+# triggers, description): /memory/search sends "null" for "no field",
+# the manager's default is "".
+RETRIEVAL_TEXT_SEARCH_FIELDS = frozenset({"", "null", "description"})
+
+
+def effective_procedural_search_method(search_method: str, search_field: str) -> str:
+    """The search method a procedural search actually runs.
+
+    `instructions` has no vector any more, so an "embedding" or "hybrid"
+    search on it runs as "bm25" full-text search on `instructions`. Every other
+    combination is unchanged. The REST layer reports this value back to the
+    caller.
+    """
+    if (
+        search_method in ("embedding", "hybrid")
+        and search_field in _FULLTEXT_FALLBACK_FIELDS
+    ):
+        return "bm25"
+    return search_method
+
+
+def uses_skill_ranking(search_method: str, search_field: str) -> bool:
+    """Whether a procedural search is the skill ranking (:meth:`ProceduralMemoryManager.retrieve_skills`):
+    every "hybrid" search, and a "bm25" or "embedding" search over the
+    retrieval text. The other combinations (a field-specific keyword search,
+    string or fuzzy matching) keep :meth:`ProceduralMemoryManager.list_procedures`'
+    per-field behavior."""
+    if search_method == "hybrid":
+        return search_field not in _FULLTEXT_FALLBACK_FIELDS
+    return search_method in ("bm25", "embedding") and (
+        search_field in RETRIEVAL_TEXT_SEARCH_FIELDS
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Skill writes: every change goes through apply_skill_change                   #
+# --------------------------------------------------------------------------- #
+
+# Who made a change (skill_version.actor_kind).
+ACTOR_CURATOR = "curator"  # a skill tool inside a skill learning (curator) run
+ACTOR_AGENT = "agent"  # a skill tool outside a learning run (in-flow agent)
+ACTOR_API = "api"  # a REST / client call (restore, delete)
+ACTOR_SYSTEM = "system"  # bulk erasure, lazily written baselines
+ACTOR_BACKFILL = "backfill"  # scripts/backfill_skill_baseline_versions.py
+
+# Row columns an edit may set besides the seven versioned fields. Never id,
+# organization_id, user_id, client_id or the audit timestamps: a skill cannot
+# be moved to another tenant or owner by an edit.
+_EDITABLE_META_FIELDS = frozenset(
+    {"version", "agent_id", "embedding_config", _RETRIEVAL_EMBEDDING_COLUMN}
+)
+_REQUIRED_CREATE_FIELDS = ("name", "entry_type", "description", "instructions")
+
+# Prepare/commit attempts when a concurrent change made the precomputed
+# retrieval vector (or the claimed name) stale; the last attempt stores a NULL
+# vector instead of failing (re-embedded later).
+_MAX_PLAN_ATTEMPTS = 3
+
+# The fields of a skill's retrieval text (skill_history.skill_retrieval_text).
+_RETRIEVAL_TEXT_FIELDS = ("name", "triggers", "description")
+
+# ProceduralMemoryManager.reembed_skill outcomes.
+REEMBED_FILLED = "filled"
+REEMBED_PRESENT = "present"
+REEMBED_GONE = "gone"
+REEMBED_CHANGED = "changed"
+REEMBED_NO_CONFIG = "no_config"
+REEMBED_FAILED = "failed"
+REEMBED_DISABLED = "disabled"
+
+# Skills being re-embedded in this process right now, with the future of the
+# outcome: a second pass reaching one of them (the startup pass and a learning
+# run's end-of-run pass meet right after the retrieval-field migration, when
+# every vector is NULL) awaits that outcome instead of paying for the same
+# embedding again. Process-wide on purpose: each pass
+# builds its own manager.
+_REEMBED_IN_FLIGHT: Dict[str, "asyncio.Future[Optional[str]]"] = {}
+
+
+class SkillFieldInvalid(ValueError):
+    """A skill write whose fields cannot be stored (a NUL character, U+0000),
+    refused before anything is read, embedded or written."""
+
+
+class SkillNameConflictError(UniqueConstraintViolationError):
+    """Another live skill of the same (organization, user) has this name.
+
+    ``holder_id`` is that skill's id when it is known. The message never names
+    it: the holder may be in a scope the caller cannot read, and its id is all
+    a by-id call needs."""
+
+    def __init__(self, message: str, *, holder_id: Optional[str] = None):
+        super().__init__(message)
+        self.holder_id = holder_id
+
+
+class SkillChangedMeanwhile(Exception):
+    """An edit's ``expected_fields`` no longer match the skill: another writer
+    changed those fields after the caller read the skill and computed its edit
+    from them. Nothing was written."""
+
+    def __init__(self, skill_id: str, fields: Sequence[str]):
+        self.skill_id = skill_id
+        self.fields = list(fields)
+        super().__init__(
+            f"Skill {skill_id} changed meanwhile ({', '.join(self.fields)}); "
+            "nothing was written."
+        )
+
+
+class _PurgeReachedUnlockedOrgs(Exception):
+    """A purge's locked re-read reached organizations it had not locked."""
+
+    def __init__(self, organization_ids: set):
+        super().__init__(sorted(organization_ids))
+        self.organization_ids = set(organization_ids)
+
+
+# Rounds of a purge whose organization set grew under the lock.
+_MAX_PURGE_LOCK_ROUNDS = 5
+
+
+class _StalePlan(Exception):
+    """The skill changed between the out-of-transaction preparation (retrieval
+    vector, claimed name) and the locked commit; prepare again."""
+
+
+@dataclass
+class SkillChangeResult:
+    """What :meth:`ProceduralMemoryManager.apply_skill_change` did."""
+
+    skill: PydanticProceduralMemoryItem
+    #: The version this change wrote; None when the content did not change.
+    version: Optional[PydanticSkillVersion] = None
+    #: The baseline written first because the skill had no history yet.
+    baseline: Optional[PydanticSkillVersion] = None
+
+    @property
+    def changed(self) -> bool:
+        return self.version is not None
+
+
+@dataclass
+class _ChangePlan:
+    change_type: str
+    skill_id: str
+    organization_id: str  # the skill's organization (objects/versions/locks)
+    lock_user_id: Optional[str]  # the skill owner (name-lock key)
+    access_org_id: Optional[str]  # row filter: organization (None = none)
+    access_user_id: Optional[str]  # row filter: owner (None = none)
+    access_scopes: Optional[List[str]] = None  # row filter: filter_tags.scope
+    fields: Dict[str, Any] = field(default_factory=dict)
+    create_content: Optional[Dict[str, Any]] = None
+    restore_version_no: Optional[int] = None
+    claimed_name: Optional[str] = None
+    explicit_embedding: bool = False
+    embedding: Optional[List[float]] = None
+    embedded_text: Optional[str] = None
+    embedding_config: Any = None
+    allow_stale_embedding: bool = False
+    # edit: the values the caller computed the edit from (optimistic check).
+    expected_fields: Optional[Dict[str, Any]] = None
+    # edit: bump the row's version string (patch + 1) under the row lock.
+    bump_version: bool = False
+    # The id of the version this plan writes, fixed before its first commit:
+    # a repeat of the transaction finds it when an ambiguous COMMIT did go
+    # through, and reports that success instead of acting twice.
+    version_id: str = field(default_factory=lambda: f"skver-{uuid.uuid4()}")
+
+
+def _utcnow() -> dt.datetime:
+    return dt.datetime.now(dt.timezone.utc)
+
+
+def _resolve_org(*candidates: Optional[str]) -> str:
+    for candidate in candidates:
+        if candidate:
+            return candidate
+    return DEFAULT_ORG_ID
+
+
+def _bump_patch(version: Optional[str]) -> str:
+    try:
+        parts = (version or "0.1.0").split(".")
+        parts[-1] = str(int(parts[-1]) + 1)
+        return ".".join(parts)
+    except (ValueError, IndexError):
+        return "0.1.1"
+
+
+def _version_schema(row: Optional[SkillVersionModel]) -> Optional[PydanticSkillVersion]:
+    return None if row is None else PydanticSkillVersion.model_validate(row)
+
+
+def _tags_in_scopes(tags: Any, scopes: Optional[Sequence[str]]) -> bool:
+    """Whether ``filter_tags`` has a ``scope`` that is one of ``scopes``
+    (None = no restriction; ``[]`` matches nothing), like the SQL filter."""
+    if scopes is None:
+        return True
+    scope = tags.get("scope") if isinstance(tags, dict) else None
+    return scope is not None and str(scope) in {str(s) for s in scopes}
+
+
+def _in_scopes(item: Any, scopes: Optional[Sequence[str]]) -> bool:
+    """Whether a skill row's ``filter_tags.scope`` is one of ``scopes``."""
+    return _tags_in_scopes(getattr(item, "filter_tags", None), scopes)
+
+
+def _row_values(row: Any, keys: Sequence[str]) -> Dict[str, Any]:
+    """A skill row's current values of ``keys`` (versioned or row fields)."""
+    content = history.content_of(row)
+    return {
+        key: content[key] if key in SKILL_VERSIONED_FIELDS else getattr(row, key, None)
+        for key in keys
+    }
+
+
+def _fields_differ(current: Mapping[str, Any], expected: Mapping[str, Any]) -> List[str]:
+    """The fields of ``expected`` whose value ``current`` no longer holds —
+    versioned fields compared by their canonical bytes (what the history
+    hashes), the others by equality."""
+    differ = []
+    for key, value in expected.items():
+        now = current.get(key)
+        if key in SKILL_VERSIONED_FIELDS:
+            same = history.canonical_bytes(key, now) == history.canonical_bytes(
+                key, value
+            )
+        else:
+            same = now == value
+        if not same:
+            differ.append(key)
+    return differ
+
+
+def _check_target_scope(plan: "_ChangePlan", target: Mapping[str, Any]) -> None:
+    """A change confined to ``plan.access_scopes`` may not give the
+    skill content of another scope: a restored version of another scope is
+    not found (like the history endpoints report it); an edit that moves the
+    skill out is invalid."""
+    if _tags_in_scopes(target.get("filter_tags"), plan.access_scopes):
+        return
+    if plan.change_type == history.CHANGE_RESTORE:
+        raise history.SkillVersionNotFound(
+            f"Skill {plan.skill_id} has no version {plan.restore_version_no}."
+        )
+    raise ValueError("an edit cannot move a skill out of the caller's scopes")
+
+
+def _is_live_name_violation(exc: BaseException) -> bool:
+    message = str(getattr(exc, "orig", exc))
+    # The partial unique index, or the pre-K12 full constraint on databases
+    # that have not run scripts/migrate_skill_retrieval_fields.sql yet.
+    return UNIQUE_LIVE_NAME_INDEX in message or (
+        "uq_procedural_memory_org_user_name" in message
+    ) or (
+        "UNIQUE constraint failed: procedural_memory.organization_id" in message
+    )
 
 
 def _resolve_text_column(search_field: str):
@@ -128,10 +420,15 @@ def _rrf_fuse(
 class ProceduralMemoryManager:
     """Manager class to handle business logic related to Procedural Memory Items."""
 
-    def __init__(self):
-        from mirix.server.server import db_context
+    def __init__(self, session_maker=None, sleep=None):
+        """``session_maker`` defaults to the server's ``db_context``; ``sleep``
+        (default ``asyncio.sleep``) is the wait between embedding retries."""
+        if session_maker is None:
+            from mirix.server.server import db_context
 
-        self.session_maker = db_context
+            session_maker = db_context
+        self.session_maker = session_maker
+        self._sleep = sleep or asyncio.sleep
 
     def _clean_text_for_search(self, text: str) -> str:
         """
@@ -351,13 +648,12 @@ class ProceduralMemoryManager:
         if not tsquery_parts:
             return []
 
-        # Use AND logic for multiple terms to find more relevant documents
-        # but fallback to OR if AND produces no results
-        if len(tsquery_parts) > 1:
-            tsquery_string_and = " & ".join(tsquery_parts)  # AND logic for precision
-            tsquery_string_or = " | ".join(tsquery_parts)  # OR logic for recall
-        else:
-            tsquery_string_and = tsquery_string_or = tsquery_parts[0]
+        # One OR query, ranked by ts_rank_cd. (The old "AND first, OR when AND
+        # finds fewer than 10" pass is gone: skill RETRIEVAL ranks
+        # with true BM25 in retrieve_skills; this per-field keyword search
+        # serves the remaining field-specific searches, e.g. the
+        # instructions search.)
+        tsquery_string = " | ".join(tsquery_parts)
 
         # Determine which field to search based on search_field
         if search_field == "description":
@@ -389,7 +685,7 @@ class ProceduralMemoryManager:
             "is_deleted = false",
         ]
         query_params = {
-            "tsquery": tsquery_string_and,
+            "tsquery": tsquery_string,
             "user_id": user.id,
             "limit_val": limit or 50,
         }
@@ -411,7 +707,7 @@ class ProceduralMemoryManager:
                 SELECT id, {rank_sql} as rank_score
                 FROM procedural_memory
                 WHERE {where_clause}
-                ORDER BY rank_score DESC, created_at DESC
+                ORDER BY rank_score DESC, created_at DESC, id
                 LIMIT :limit_val
                 """
             )
@@ -431,21 +727,15 @@ class ProceduralMemoryManager:
                 if item_id in items_by_id
             ]
 
-        # Try AND query first for more precise results.
         try:
-            procedures = await _fetch_ordered_items(tsquery_string_and)
-            if len(procedures) >= min(limit or 10, 10):
-                return [procedure.to_pydantic() for procedure in procedures]
-        except Exception as e:
-            logger.error("PostgreSQL AND query error: %s", e)
-
-        # If AND query fails or returns too few results, try OR query.
-        try:
-            procedures = await _fetch_ordered_items(tsquery_string_or)
+            procedures = await _fetch_ordered_items(tsquery_string)
             return [procedure.to_pydantic() for procedure in procedures]
         except Exception as e:
             # If there's an error with the tsquery, fall back to simpler search
+            # (after a rollback: Postgres refuses every further statement of
+            # an aborted transaction).
             logger.error("PostgreSQL full-text search error: %s", e)
+            await session.rollback()
             # Fall back to simple ILIKE search on a whitelisted field
             fallback_column = (
                 _resolve_text_column(search_field) or ProceduralMemoryItem.description
@@ -480,43 +770,22 @@ class ProceduralMemoryManager:
         user: PydanticUser,
         timezone_str: str,
         actor: Optional[PydanticClient] = None,
+        scopes: Optional[List[str]] = None,
     ) -> Optional[PydanticProceduralMemoryItem]:
-        """Fetch a procedural memory item by ID (with cache - Redis or IPS Cache).
+        """Fetch a live (not soft-deleted) skill by ID, straight from the
+        database — procedural memory has no cache.
 
         Access control (see ``delete_procedure_by_id`` for the same pattern):
 
         * ``actor`` → organization scope via ``apply_access_predicate``.
         * ``user``  → explicit post-load ``user_id`` equality check.
+        * ``scopes`` → the skill's ``filter_tags.scope`` must be one of them
+          (None = no scope restriction, ``[]`` = nothing).
 
         Passing only ``user`` is not enough, because ``SqlalchemyBase.read``
-        only runs the access predicate when ``actor`` is truthy. The cache
-        hit path is gated the same way so a stale cache entry for another
-        user cannot leak via this endpoint either.
+        only runs the access predicate when ``actor`` is truthy. A skill
+        outside any of them is :class:`NoResultFound` (existence never leaks).
         """
-        cache_provider = None
-        try:
-            from mirix.database.cache_provider import get_cache_provider
-
-            cache_provider = get_cache_provider()
-
-            if cache_provider:
-                cache_key = f"{cache_provider.PROCEDURAL_PREFIX}{item_id}"
-                cached_data = await cache_provider.get_json(cache_key)
-                if cached_data:
-                    # Cache is keyed by id only, so re-check ownership before
-                    # returning — otherwise a same-org attacker could fetch
-                    # someone else's cached skill.
-                    if cached_data.get("user_id") != user.id:
-                        raise NoResultFound(
-                            f"Procedural memory item with id {item_id} not found."
-                        )
-                    logger.debug("Cache HIT for procedural memory %s", item_id)
-                    return PydanticProceduralMemoryItem(**cached_data)
-        except NoResultFound:
-            raise
-        except Exception as e:
-            logger.warning("Cache read failed for procedural memory %s: %s", item_id, e)
-
         async with self.session_maker() as session:
             try:
                 item = await ProceduralMemoryItem.read(
@@ -527,26 +796,222 @@ class ProceduralMemoryManager:
                     f"Procedural memory item with id {item_id} not found."
                 )
 
-            if getattr(item, "user_id", None) != user.id:
+            if getattr(item, "user_id", None) != user.id or not _in_scopes(
+                item, scopes
+            ):
                 raise NoResultFound(
                     f"Procedural memory item with id {item_id} not found."
                 )
 
-            pydantic_item = item.to_pydantic()
+            return item.to_pydantic()
 
-            try:
-                if cache_provider:
-                    from mirix.settings import settings
+    async def get_live_skill_by_name(
+        self,
+        *,
+        user: PydanticUser,
+        name: str,
+        scopes: Optional[List[str]] = None,
+    ) -> Optional[PydanticProceduralMemoryItem]:
+        """The user's live skill named exactly ``name`` (in ``scopes`` when
+        given), or None."""
+        stmt = (
+            select(ProceduralMemoryItem)
+            .where(
+                ProceduralMemoryItem.organization_id
+                == _resolve_org(user.organization_id),
+                ProceduralMemoryItem.user_id == user.id,
+                ProceduralMemoryItem.name == name,
+                ~ProceduralMemoryItem.is_deleted,
+            )
+            .options(lazyload("*"))
+            .limit(1)
+        )
+        if scopes is not None:
+            from mirix.database.filter_tags_query import apply_filter_tags_sqlalchemy
 
-                    cache_key = f"{cache_provider.PROCEDURAL_PREFIX}{item_id}"
-                    data = pydantic_item.model_dump(mode="json")
-                    await cache_provider.set_json(
-                        cache_key, data, ttl=settings.redis_ttl_default
+            stmt = apply_filter_tags_sqlalchemy(
+                stmt, ProceduralMemoryItem, None, scopes=list(scopes)
+            )
+        async with self.session_maker() as session:
+            row = (await session.execute(stmt)).scalar_one_or_none()
+            return row.to_pydantic() if row is not None else None
+
+    async def list_skills_page(
+        self,
+        *,
+        user: PydanticUser,
+        scopes: Optional[List[str]] = None,
+        query: str = "",
+        offset: int = 0,
+        limit: int = 50,
+    ) -> Tuple[List[PydanticProceduralMemoryItem], int]:
+        """One page of the user's live skills, sorted by name.
+
+        ``query`` (optional) keeps the skills whose name, description or
+        triggers contain every whitespace-separated term (case-insensitive).
+        Returns ``(skills, total)`` where ``total`` counts every matching
+        skill, so a caller can page through all of them with ``offset``.
+        """
+        from sqlalchemy import String, and_, cast
+
+        from mirix.database.filter_tags_query import apply_filter_tags_sqlalchemy
+
+        base = select(ProceduralMemoryItem).where(
+            ProceduralMemoryItem.organization_id == _resolve_org(user.organization_id),
+            ProceduralMemoryItem.user_id == user.id,
+            ~ProceduralMemoryItem.is_deleted,
+        )
+        if scopes is not None:
+            base = apply_filter_tags_sqlalchemy(
+                base, ProceduralMemoryItem, None, scopes=list(scopes)
+            )
+        terms = [t for t in (query or "").lower().split() if t]
+        if terms:
+            base = base.where(
+                and_(
+                    *[
+                        or_(
+                            func.lower(ProceduralMemoryItem.name).contains(
+                                term, autoescape=True
+                            ),
+                            func.lower(ProceduralMemoryItem.description).contains(
+                                term, autoescape=True
+                            ),
+                            func.lower(
+                                cast(ProceduralMemoryItem.triggers, String)
+                            ).contains(term, autoescape=True),
+                        )
+                        for term in terms
+                    ]
+                )
+            )
+        offset = max(0, int(offset or 0))
+        limit = max(1, int(limit))
+        async with self.session_maker() as session:
+            total = (
+                await session.execute(
+                    select(func.count()).select_from(base.subquery())
+                )
+            ).scalar_one()
+            rows = (
+                await session.execute(
+                    base.options(lazyload("*"))
+                    .order_by(ProceduralMemoryItem.name, ProceduralMemoryItem.id)
+                    .offset(offset)
+                    .limit(limit)
+                )
+            ).scalars().all()
+            return [row.to_pydantic() for row in rows], int(total or 0)
+
+    async def list_live_skill_names(
+        self,
+        *,
+        user: PydanticUser,
+        scopes: Optional[List[str]] = None,
+    ) -> List[Tuple[str, str]]:
+        """``[(id, name)]`` of the user's live skills (in ``scopes`` when
+        given), sorted by name — how a curator batch finds the skills its
+        experiences name. A transient database failure is retried."""
+        from mirix.database.filter_tags_query import apply_filter_tags_sqlalchemy
+        from mirix.services.retry_policy import retry_call
+
+        stmt = select(ProceduralMemoryItem.id, ProceduralMemoryItem.name).where(
+            ProceduralMemoryItem.organization_id == _resolve_org(user.organization_id),
+            ProceduralMemoryItem.user_id == user.id,
+            ~ProceduralMemoryItem.is_deleted,
+        )
+        if scopes is not None:
+            stmt = apply_filter_tags_sqlalchemy(
+                stmt, ProceduralMemoryItem, None, scopes=list(scopes)
+            )
+        stmt = stmt.order_by(ProceduralMemoryItem.name, ProceduralMemoryItem.id)
+
+        async def _once():
+            async with self.session_maker() as session:
+                return [
+                    (str(row[0]), str(row[1] or ""))
+                    for row in (await session.execute(stmt)).all()
+                ]
+
+        return await retry_call(_once, stage="skill_names_read")
+
+    async def get_skill_labels(
+        self,
+        *,
+        user: PydanticUser,
+        skill_ids: Sequence[str],
+        scopes: Optional[List[str]] = None,
+    ) -> Dict[str, Dict[str, Any]]:
+        """``{skill_id: {"name", "version", "is_deleted",
+        "instructions_changed_at"}}`` for the user's skills among
+        ``skill_ids`` (deleted ones included) — how a curator batch names the
+        skills an earlier attempt already changed. ``instructions_changed_at``
+        is when a curator batch last created the skill or changed its
+        instructions (a version with a ``run_id`` whose instructions differ
+        from its parent's), None when none did: a retried batch's free
+        retrieval-text follow-up counts that change. With ``scopes``
+        only skills in those scopes are named."""
+        ids = [sid for sid in dict.fromkeys(skill_ids or []) if sid]
+        if not ids:
+            return {}
+        stmt = select(
+            ProceduralMemoryItem.id,
+            ProceduralMemoryItem.name,
+            ProceduralMemoryItem.version,
+            ProceduralMemoryItem.is_deleted,
+        ).where(
+            ProceduralMemoryItem.id.in_(ids),
+            ProceduralMemoryItem.organization_id == _resolve_org(user.organization_id),
+            ProceduralMemoryItem.user_id == user.id,
+        )
+        if scopes is not None:
+            from mirix.database.filter_tags_query import apply_filter_tags_sqlalchemy
+
+            stmt = apply_filter_tags_sqlalchemy(
+                stmt, ProceduralMemoryItem, None, scopes=list(scopes)
+            )
+        async with self.session_maker() as session:
+            rows = (await session.execute(stmt)).all()
+            found = [row[0] for row in rows]
+            changed: Dict[str, Any] = {}
+            if found:
+                from sqlalchemy.orm import aliased
+
+                parent = aliased(SkillVersionModel)
+                versions = (
+                    await session.execute(
+                        select(
+                            SkillVersionModel.skill_id,
+                            SkillVersionModel.created_at,
+                            SkillVersionModel.instructions_sha256,
+                            parent.instructions_sha256,
+                        )
+                        .outerjoin(
+                            parent, parent.id == SkillVersionModel.parent_version_id
+                        )
+                        .where(
+                            SkillVersionModel.skill_id.in_(found),
+                            SkillVersionModel.run_id.is_not(None),
+                            SkillVersionModel.change_type.in_(
+                                (history.CHANGE_CREATE, history.CHANGE_EDIT)
+                            ),
+                        )
                     )
-            except Exception as e:
-                logger.warning("Failed to populate cache: %s", e)
-
-            return pydantic_item
+                ).all()
+                for skill_id, created_at, sha, parent_sha in versions:
+                    if created_at is None or sha == parent_sha:
+                        continue
+                    if skill_id not in changed or created_at > changed[skill_id]:
+                        changed[skill_id] = created_at
+        return {
+            row[0]: {
+                "name": row[1],
+                "version": row[2],
+                "is_deleted": bool(row[3]),
+                "instructions_changed_at": changed.get(row[0]),
+            }
+            for row in rows
+        }
 
     @update_timezone
     @enforce_types
@@ -568,13 +1033,889 @@ class ProceduralMemoryManager:
                 ).desc()
             )
 
-            # Filter by user_id for multi-user support
-            query = query.where(ProceduralMemoryItem.user_id == user.id)
+            # Filter by user_id for multi-user support; never a soft-deleted
+            # skill.
+            query = query.where(ProceduralMemoryItem.user_id == user.id).where(
+                ~ProceduralMemoryItem.is_deleted
+            )
 
             result = await session.execute(query.limit(1))
             item = result.scalar_one_or_none()
 
             return [item.to_pydantic()] if item else None
+
+    # ------------------------------------------------------------------ #
+    # The one write path: apply_skill_change                               #
+    # ------------------------------------------------------------------ #
+
+    async def apply_skill_change(
+        self,
+        change_type: str,
+        *,
+        actor: Optional[PydanticClient],
+        user_id: Optional[str],
+        skill_id: Optional[str] = None,
+        fields: Optional[Dict[str, Any]] = None,
+        version_no: Optional[int] = None,
+        agent_state: Optional[AgentState] = None,
+        organization_id: Optional[str] = None,
+        run_id: Optional[str] = None,
+        actor_kind: Optional[str] = None,
+        reason: Optional[str] = None,
+        consume_experience_ids: Optional[Sequence[str]] = None,
+        scopes: Optional[Sequence[str]] = None,
+        write_guard: Optional[Callable[[Any], Awaitable[None]]] = None,
+        lineage_experience_ids: Optional[Sequence[str]] = None,
+        expected_fields: Optional[Mapping[str, Any]] = None,
+        bump_version: bool = False,
+        cited_experience_ids: Optional[Sequence[str]] = None,
+    ) -> SkillChangeResult:
+        """Create, edit, soft-delete or restore a skill, with its history.
+
+        Every path that changes a skill goes through here:
+
+        1. OUTSIDE any transaction, read the skill, work out its new content
+           and — when its retrieval text (name, triggers, description)
+           changes — compute the new retrieval vector (embedding failures are
+           retried with backoff, then leave the vector NULL for
+           re-embedding).
+        2. In ONE transaction: the writer's locks (Postgres: shared org
+           advisory lock, then the (org, user, name) advisory lock when a name
+           is claimed; SQLite: the database write lock), ``SELECT ... FOR
+           UPDATE`` of the skill row, a ``baseline`` version first if the skill
+           has no history yet, the content-addressed objects (``INSERT ... ON
+           CONFLICT DO UPDATE SET last_referenced_at``), the new version
+           (``version_no = max + 1``), the skill row itself and — when
+           ``consume_experience_ids`` is given — those pending experiences
+           marked consumed. A failure anywhere rolls all of it back; a
+           transient database failure repeats the whole transaction.
+
+        ``change_type``:
+
+        * ``create`` — ``fields`` holds the new skill (the four text fields are
+          required; ``id``, ``agent_id``, ``client_id``, ``filter_tags``,
+          ``version``, ``organization_id``, ``embedding_config`` and an
+          explicit ``retrieval_embedding`` are optional). The owner is
+          ``user_id``.
+        * ``edit`` — ``fields`` holds the changed versioned fields and/or
+          ``version``, ``agent_id``, ``embedding_config``,
+          ``retrieval_embedding``. Content identical to the current one writes
+          no version (``result.version is None``).
+        * ``delete`` — soft delete: ``is_deleted`` and a ``delete``
+          version carrying ``reason``; the name becomes free for a new skill
+          (partial unique index).
+        * ``restore`` — content of version ``version_no``; un-deletes a
+          deleted skill. Raises :class:`SkillNameConflictError` when another
+          live skill of the owner holds the name.
+
+        Access: ``actor`` limits the skill to its organization and ``user_id``
+        to its owner; both None is reserved for system-initiated bulk work
+        (erasure). ``scopes`` additionally limits an existing skill to those
+        ``filter_tags.scope`` values (a caller confined to a scope cannot
+        change another scope's skill by id). A skill outside them is
+        :class:`NoResultFound`; for a ``restore`` the target version must be of
+        one of them too (otherwise :class:`SkillVersionNotFound`), and an
+        ``edit`` cannot move the skill out of them.
+
+        A read-modify-write (a skill tool's patch, computed from a skill it
+        read before this call): ``expected_fields`` holds the values the edit
+        was computed from, and the change is refused with
+        :class:`SkillChangedMeanwhile` — nothing written — when the LOCKED row
+        holds anything else, so a concurrent change is never silently
+        overwritten. ``bump_version`` sets the row's version string to the
+        locked row's one plus a patch (not a string computed from the stale
+        read) when the edit writes a version.
+
+        A transient database failure repeats the transaction; when the
+        failure hid a COMMIT that did go through, the repeat finds the version
+        it wrote (its id is fixed before the first attempt) and returns that
+        result: a create is not reported as a duplicate and a delete not as
+        "not found".
+
+        Skill learning (the curator): ``write_guard(db)`` runs inside
+        the transaction, right after the locks — the curator passes a check
+        that locks its learning run and requires it to be still active, so a
+        run that lost its lease (or was erased, or cancelled) cannot change a
+        skill any more; whatever it raises rolls the change back.
+        ``lineage_experience_ids`` stamps the skill on those experiences of the
+        owner (``influenced_skill_ids``) in the same transaction when a version
+        is written. ``cited_experience_ids`` stamps the skill on those
+        experiences of the owner (``cited_skill_ids``), in the same
+        transaction, when a version is written: the experiences the change
+        itself cites, not the whole batch.
+        """
+        if change_type not in (
+            history.CHANGE_CREATE,
+            history.CHANGE_EDIT,
+            history.CHANGE_DELETE,
+            history.CHANGE_RESTORE,
+        ):
+            raise ValueError(f"unknown skill change type {change_type!r}")
+        if change_type != history.CHANGE_CREATE and not skill_id:
+            raise ValueError(f"a {change_type} needs the skill_id")
+        if change_type == history.CHANGE_RESTORE and version_no is None:
+            raise ValueError("a restore needs the version_no to restore")
+        if change_type == history.CHANGE_CREATE and not user_id:
+            raise ValueError("a create needs the owning user_id")
+        if expected_fields is not None and change_type != history.CHANGE_EDIT:
+            raise ValueError("expected_fields is only for an edit")
+        fields = dict(fields or {})
+        if change_type in (history.CHANGE_CREATE, history.CHANGE_EDIT):
+            # Before any read, embedding or transaction.
+            problem = skill_nul_problem(fields)
+            if problem:
+                raise SkillFieldInvalid(problem)
+
+        for attempt in range(_MAX_PLAN_ATTEMPTS):
+            plan = await self._prepare_change(
+                change_type,
+                actor=actor,
+                user_id=user_id,
+                skill_id=skill_id,
+                fields=fields,
+                version_no=version_no,
+                agent_state=agent_state,
+                organization_id=organization_id,
+                allow_stale_embedding=attempt == _MAX_PLAN_ATTEMPTS - 1,
+                scopes=list(scopes) if scopes is not None else None,
+                expected_fields=(
+                    dict(expected_fields) if expected_fields is not None else None
+                ),
+                bump_version=bump_version,
+            )
+
+            async def _commit(plan=plan):
+                return await self._commit_change(
+                    plan,
+                    actor=actor,
+                    run_id=run_id,
+                    actor_kind=actor_kind,
+                    reason=reason,
+                    consume_experience_ids=consume_experience_ids,
+                    write_guard=write_guard,
+                    lineage_experience_ids=lineage_experience_ids,
+                    cited_experience_ids=cited_experience_ids,
+                )
+
+            try:
+                return await retry_call(_commit, stage="skill_write")
+            except _StalePlan:
+                logger.info(
+                    "Skill %s changed while its %s was being prepared; preparing again",
+                    plan.skill_id,
+                    change_type,
+                )
+                continue
+        raise RuntimeError("unreachable: the last plan attempt accepts a stale vector")
+
+    # -- step 1: outside the transaction ---------------------------------- #
+
+    async def _prepare_change(
+        self,
+        change_type: str,
+        *,
+        actor: Optional[PydanticClient],
+        user_id: Optional[str],
+        skill_id: Optional[str],
+        fields: Dict[str, Any],
+        version_no: Optional[int],
+        agent_state: Optional[AgentState],
+        organization_id: Optional[str],
+        allow_stale_embedding: bool,
+        scopes: Optional[List[str]] = None,
+        expected_fields: Optional[Dict[str, Any]] = None,
+        bump_version: bool = False,
+    ) -> _ChangePlan:
+        access_org = organization_id or (
+            _resolve_org(actor.organization_id) if actor is not None else None
+        )
+        agent_config = getattr(agent_state, "embedding_config", None)
+        explicit = fields.get(_RETRIEVAL_EMBEDDING_COLUMN) is not None
+
+        if change_type == history.CHANGE_CREATE:
+            missing = [f for f in _REQUIRED_CREATE_FIELDS if fields.get(f) is None]
+            if missing:
+                raise ValueError(
+                    f"Required field(s) {missing} missing from procedural memory data"
+                )
+            content = {f: fields.get(f) for f in SKILL_VERSIONED_FIELDS}
+            if content["triggers"] is None:
+                content["triggers"] = []
+            if content["examples"] is None:
+                content["examples"] = []
+            new_id = fields.get("id") or skill_id
+            if not new_id:
+                from mirix.utils import generate_unique_short_id_async
+
+                new_id = await generate_unique_short_id_async(
+                    self.session_maker, ProceduralMemoryItem, "proc"
+                )
+            skill_org = _resolve_org(
+                fields.get("organization_id"), organization_id,
+                getattr(actor, "organization_id", None),
+            )
+            plan = _ChangePlan(
+                change_type=change_type,
+                skill_id=new_id,
+                organization_id=skill_org,
+                lock_user_id=user_id,
+                access_org_id=None,
+                access_user_id=user_id,
+                fields=fields,
+                create_content=content,
+                claimed_name=content["name"],
+                allow_stale_embedding=allow_stale_embedding,
+            )
+            if explicit:
+                plan.explicit_embedding = True
+                plan.embedding = _pad_to_max(fields[_RETRIEVAL_EMBEDDING_COLUMN])
+                plan.embedding_config = fields.get("embedding_config")
+            else:
+                config = agent_config or fields.get("embedding_config")
+                plan.embedded_text = history.skill_retrieval_text(content)
+                plan.embedding = await self._embed(plan.embedded_text, config)
+                # Kept even when the call failed: a NULL vector is re-embedded
+                # later with the row's own config.
+                plan.embedding_config = config
+            return plan
+
+        row = await self._read_skill_row(
+            skill_id,
+            organization_id=access_org,
+            user_id=user_id,
+            include_deleted=change_type == history.CHANGE_RESTORE,
+            scopes=scopes,
+        )
+        before = history.content_of(row)
+        plan = _ChangePlan(
+            change_type=change_type,
+            skill_id=row.id,
+            organization_id=_resolve_org(row.organization_id),
+            lock_user_id=row.user_id,
+            access_org_id=access_org,
+            access_user_id=user_id,
+            access_scopes=scopes,
+            fields=fields,
+            restore_version_no=version_no,
+            allow_stale_embedding=allow_stale_embedding,
+            expected_fields=expected_fields,
+            bump_version=bump_version,
+        )
+        if change_type == history.CHANGE_DELETE:
+            return plan
+        if expected_fields is not None:
+            # Early out (the locked row is checked again in the commit).
+            differ = _fields_differ(_row_values(row, list(expected_fields)), expected_fields)
+            if differ:
+                raise SkillChangedMeanwhile(row.id, differ)
+
+        # The name this change may claim is locked whether or not it differs
+        # from the row's name right now: a concurrent rename or delete cannot
+        # then leave the transaction holding the wrong name's lock.
+        if change_type == history.CHANGE_EDIT:
+            target = {
+                f: (fields[f] if f in fields else before[f])
+                for f in SKILL_VERSIONED_FIELDS
+            }
+            if "name" in fields:
+                plan.claimed_name = fields["name"]
+        else:  # restore
+            async with self.session_maker() as db:
+                version = await history.get_version(db, row.id, version_no)
+                target, _ = await history.version_content(
+                    db, organization_id=plan.organization_id, version=version
+                )
+            plan.claimed_name = target["name"]
+        _check_target_scope(plan, target)
+
+        if explicit:
+            plan.explicit_embedding = True
+            plan.embedding = _pad_to_max(fields[_RETRIEVAL_EMBEDDING_COLUMN])
+            plan.embedding_config = fields.get("embedding_config")
+            return plan
+        target_text = history.skill_retrieval_text(target)
+        if target_text != history.skill_retrieval_text(before):
+            # Name, triggers or description changed -> a new vector. With
+            # no agent_state, the row's own embedding_config is used.
+            config = agent_config or row.embedding_config
+            plan.embedded_text = target_text
+            plan.embedding = await self._embed(target_text, config)
+            plan.embedding_config = config
+        elif row.retrieval_embedding is None:
+            # A skill left without a vector (an embedding outage when it was
+            # written) gets one from any edit or restore that touches
+            # it — not only from the startup / end-of-run re-embedding pass.
+            config = agent_config or row.embedding_config
+            if config is not None:
+                plan.embedded_text = target_text
+                plan.embedding = await self._embed(target_text, config)
+                plan.embedding_config = config
+        return plan
+
+    async def _embed(self, text_value: str, config) -> Optional[List[float]]:
+        """The padded retrieval vector of ``text_value``, or None.
+
+        None when embeddings are off or there is no embedding config, and when
+        the embedding call still fails after its backoff retries — the skill
+        is then stored without a vector (kept out of vector ranking until it is
+        re-embedded) instead of failing the write.
+        """
+        if not BUILD_EMBEDDINGS_FOR_MEMORY or config is None:
+            return None
+
+        async def _call():
+            model = await embedding_model(config)
+            return await model.get_text_embedding(text_value)
+
+        try:
+            vector = await retry_call(
+                _call, operation="embedding", stage="skill_embedding", sleep=self._sleep
+            )
+        except Exception as exc:  # noqa: BLE001 — store without a vector
+            logger.warning(
+                "Skill retrieval embedding failed after retries (%s: %s); "
+                "storing the skill without a vector",
+                type(exc).__name__,
+                exc,
+            )
+            return None
+        return _pad_to_max(vector)
+
+    async def _read_skill_row(
+        self,
+        skill_id: str,
+        *,
+        organization_id: Optional[str],
+        user_id: Optional[str],
+        include_deleted: bool,
+        scopes: Optional[List[str]] = None,
+    ) -> ProceduralMemoryItem:
+        async with self.session_maker() as db:
+            row = (
+                await db.execute(
+                    self._skill_row_query(
+                        skill_id,
+                        organization_id=organization_id,
+                        user_id=user_id,
+                        include_deleted=include_deleted,
+                        scopes=scopes,
+                    )
+                )
+            ).scalar_one_or_none()
+        if row is None:
+            raise NoResultFound(f"Procedural memory item with id {skill_id} not found.")
+        return row
+
+    @staticmethod
+    def _skill_row_query(
+        skill_id: str,
+        *,
+        organization_id: Optional[str],
+        user_id: Optional[str],
+        include_deleted: bool,
+        scopes: Optional[List[str]] = None,
+    ):
+        stmt = (
+            select(ProceduralMemoryItem)
+            .where(ProceduralMemoryItem.id == skill_id)
+            .options(lazyload("*"))
+        )
+        if organization_id is not None:
+            stmt = stmt.where(ProceduralMemoryItem.organization_id == organization_id)
+        if user_id is not None:
+            stmt = stmt.where(ProceduralMemoryItem.user_id == user_id)
+        if not include_deleted:
+            stmt = stmt.where(~ProceduralMemoryItem.is_deleted)
+        if scopes is not None:
+            from mirix.database.filter_tags_query import apply_filter_tags_sqlalchemy
+
+            stmt = apply_filter_tags_sqlalchemy(
+                stmt, ProceduralMemoryItem, None, scopes=list(scopes)
+            )
+        return stmt
+
+    # -- step 2: the transaction ------------------------------------------- #
+
+    async def _commit_change(
+        self,
+        plan: _ChangePlan,
+        *,
+        actor: Optional[PydanticClient],
+        run_id: Optional[str],
+        actor_kind: Optional[str],
+        reason: Optional[str],
+        consume_experience_ids: Optional[Sequence[str]],
+        write_guard: Optional[Callable[[Any], Awaitable[None]]] = None,
+        lineage_experience_ids: Optional[Sequence[str]] = None,
+        cited_experience_ids: Optional[Sequence[str]] = None,
+    ) -> SkillChangeResult:
+        now = _utcnow()
+        actor_id = getattr(actor, "id", None)
+        name_keys = (
+            [
+                history.name_lock_key(
+                    plan.organization_id, plan.lock_user_id, plan.claimed_name
+                )
+            ]
+            if plan.claimed_name is not None
+            else []
+        )
+        try:
+            async with self.session_maker() as db:
+                async with db.begin():
+                    await history.lock_for_write(
+                        db, organization_ids=[plan.organization_id], name_keys=name_keys
+                    )
+                    done = await self._committed_earlier(db, plan)
+                    if done is not None:
+                        return done
+                    if write_guard is not None:
+                        # e.g. "my learning run is still active", checked under
+                        # a lock in THIS transaction (see apply_skill_change).
+                        await write_guard(db)
+                    if plan.change_type == history.CHANGE_CREATE:
+                        result = await self._commit_create(
+                            db, plan, now=now, actor_id=actor_id, run_id=run_id,
+                            actor_kind=actor_kind, reason=reason,
+                        )
+                    else:
+                        result = await self._commit_existing(
+                            db, plan, now=now, actor_id=actor_id, run_id=run_id,
+                            actor_kind=actor_kind, reason=reason,
+                        )
+                    if lineage_experience_ids and result.version is not None:
+                        await self._stamp_lineage(
+                            db,
+                            ids=lineage_experience_ids,
+                            owner_user_id=result.skill.user_id,
+                            skill_id=result.skill.id,
+                            now=now,
+                        )
+                    if cited_experience_ids and result.version is not None:
+                        await self._stamp_citations(
+                            db,
+                            ids=cited_experience_ids,
+                            owner_user_id=result.skill.user_id,
+                            skill_id=result.skill.id,
+                            now=now,
+                        )
+                    if consume_experience_ids and result.version is not None:
+                        await self._consume_experiences(
+                            db,
+                            ids=consume_experience_ids,
+                            owner_user_id=result.skill.user_id,
+                            consumed_by=run_id or result.version.id,
+                            skill_id=result.skill.id,
+                            now=now,
+                        )
+                return result
+        except IntegrityError as exc:
+            if _is_live_name_violation(exc):
+                raise SkillNameConflictError(
+                    f"Skill with name '{plan.claimed_name}' already exists for this user."
+                ) from exc
+            raise
+
+    async def _committed_earlier(
+        self, db, plan: _ChangePlan
+    ) -> Optional[SkillChangeResult]:
+        """The result of ``plan`` when an earlier attempt of its transaction
+        already committed — the version it writes exists (a transient
+        error on COMMIT is ambiguous, and the transaction is repeated); None
+        otherwise. Runs under the writer's locks."""
+        version = (
+            await db.execute(
+                select(SkillVersionModel).where(SkillVersionModel.id == plan.version_id)
+            )
+        ).scalar_one_or_none()
+        if version is None:
+            return None
+        row = (
+            await db.execute(
+                self._skill_row_query(
+                    version.skill_id,
+                    organization_id=None,
+                    user_id=None,
+                    include_deleted=True,
+                )
+            )
+        ).scalar_one()
+        logger.info(
+            "Skill %s: the %s (version %s) had already been committed by an "
+            "earlier attempt of its transaction",
+            row.id,
+            plan.change_type,
+            version.version_no,
+        )
+        return SkillChangeResult(skill=row.to_pydantic(), version=_version_schema(version))
+
+    async def _check_name_free(
+        self, db, *, plan: _ChangePlan, name: str, skill_id: Optional[str]
+    ) -> None:
+        stmt = select(ProceduralMemoryItem.id).where(
+            ProceduralMemoryItem.organization_id == plan.organization_id,
+            ProceduralMemoryItem.user_id == plan.lock_user_id,
+            ProceduralMemoryItem.name == name,
+            ~ProceduralMemoryItem.is_deleted,
+        )
+        if skill_id is not None:
+            stmt = stmt.where(ProceduralMemoryItem.id != skill_id)
+        taken = (await db.execute(stmt.limit(1))).scalar_one_or_none()
+        if taken is not None:
+            raise SkillNameConflictError(
+                f"Skill with name '{name}' already exists for this user.",
+                holder_id=taken,
+            )
+
+    async def _commit_create(
+        self, db, plan: _ChangePlan, *, now, actor_id, run_id, actor_kind, reason
+    ) -> SkillChangeResult:
+        content = plan.create_content
+        actor_client_id = actor_id  # the creating client, unless given
+        await self._check_name_free(db, plan=plan, name=content["name"], skill_id=None)
+        data = plan.fields
+        row = ProceduralMemoryItem(
+            id=plan.skill_id,
+            organization_id=plan.organization_id,
+            user_id=plan.lock_user_id,
+            agent_id=data.get("agent_id"),
+            client_id=data.get("client_id") or actor_client_id,
+            version=data.get("version") or "0.1.0",
+            last_modify={"timestamp": now.isoformat(), "operation": "created"},
+            embedding_config=plan.embedding_config,
+            retrieval_embedding=plan.embedding,
+            created_at=now,
+            updated_at=now,
+            is_deleted=False,
+            **content,
+        )
+        if actor_id:
+            row._created_by_id = actor_id
+            row._last_updated_by_id = actor_id
+        db.add(row)
+        await db.flush()
+        encoded = history.encode_content(content)
+        await history.upsert_objects(
+            db, organization_id=plan.organization_id, encoded=encoded, now=now
+        )
+        version = await history.insert_version(
+            db,
+            skill_id=row.id,
+            organization_id=plan.organization_id,
+            user_id=row.user_id,
+            version_no=1,
+            parent_version_id=None,
+            change_type=history.CHANGE_CREATE,
+            hashes=history.hashes_of(encoded),
+            now=now,
+            run_id=run_id,
+            actor_kind=actor_kind,
+            reason=reason,
+            actor_id=actor_id,
+            version_id=plan.version_id,
+        )
+        return SkillChangeResult(skill=row.to_pydantic(), version=_version_schema(version))
+
+    async def _commit_existing(
+        self, db, plan: _ChangePlan, *, now, actor_id, run_id, actor_kind, reason
+    ) -> SkillChangeResult:
+        change_type = plan.change_type
+        row = (
+            await db.execute(
+                self._skill_row_query(
+                    plan.skill_id,
+                    organization_id=plan.access_org_id,
+                    user_id=plan.access_user_id,
+                    include_deleted=change_type == history.CHANGE_RESTORE,
+                    scopes=plan.access_scopes,
+                ).with_for_update()
+            )
+        ).scalar_one_or_none()
+        if row is None:
+            raise NoResultFound(
+                f"Procedural memory item with id {plan.skill_id} not found."
+            )
+        before = history.content_of(row)
+        if plan.expected_fields is not None:
+            differ = _fields_differ(
+                _row_values(row, list(plan.expected_fields)), plan.expected_fields
+            )
+            if differ:
+                raise SkillChangedMeanwhile(row.id, differ)
+        before_encoded = history.encode_content(before)
+        before_hashes = history.hashes_of(before_encoded)
+
+        # A skill without history gets its baseline first.
+        latest = await history.latest_version(db, row.id)
+        baseline = None
+        if latest is None:
+            await history.upsert_objects(
+                db, organization_id=plan.organization_id, encoded=before_encoded, now=now
+            )
+            baseline = await history.insert_version(
+                db,
+                skill_id=row.id,
+                organization_id=plan.organization_id,
+                user_id=row.user_id,
+                version_no=1,
+                parent_version_id=None,
+                change_type=history.CHANGE_BASELINE,
+                hashes=before_hashes,
+                now=now,
+                actor_kind=ACTOR_SYSTEM,
+                actor_id=actor_id,
+            )
+            latest = baseline
+
+        if change_type == history.CHANGE_EDIT:
+            target = {
+                f: (plan.fields[f] if f in plan.fields else before[f])
+                for f in SKILL_VERSIONED_FIELDS
+            }
+        elif change_type == history.CHANGE_DELETE:
+            target = dict(before)
+        else:
+            version = await history.get_version(db, row.id, plan.restore_version_no)
+            target, _ = await history.version_content(
+                db, organization_id=plan.organization_id, version=version
+            )
+        if change_type != history.CHANGE_DELETE:
+            _check_target_scope(plan, target)
+
+        # Claiming a name: renaming, or bringing a deleted skill back.
+        claims_name = (
+            change_type in (history.CHANGE_EDIT, history.CHANGE_RESTORE)
+            and (target["name"] != row.name or row.is_deleted)
+        )
+        if claims_name:
+            if target["name"] != plan.claimed_name:
+                raise _StalePlan()  # we hold another name's lock
+            await self._check_name_free(
+                db, plan=plan, name=target["name"], skill_id=row.id
+            )
+
+        # The retrieval vector, computed outside the transaction for the text
+        # the prepare step saw; stale if the locked row says otherwise.
+        new_vector_needed = False
+        if not plan.explicit_embedding and change_type != history.CHANGE_DELETE:
+            target_text = history.skill_retrieval_text(target)
+            if target_text != history.skill_retrieval_text(before):
+                new_vector_needed = True
+                if plan.embedded_text != target_text:
+                    if not plan.allow_stale_embedding:
+                        raise _StalePlan()
+                    plan.embedding = None  # re-embedded later
+                    plan.embedded_text = target_text
+            elif (
+                row.retrieval_embedding is None
+                and plan.embedding is not None
+                and plan.embedded_text == target_text
+            ):
+                # Fill a missing vector computed for exactly this text (the
+                # prepare step saw the vector missing).
+                new_vector_needed = True
+
+        encoded = history.encode_content(target)
+        hashes = history.hashes_of(encoded)
+        content_changed = hashes != before_hashes
+        state_change = change_type == history.CHANGE_DELETE or (
+            change_type == history.CHANGE_RESTORE and row.is_deleted
+        )
+
+        version = None
+        if content_changed or state_change:
+            await history.upsert_objects(
+                db, organization_id=plan.organization_id, encoded=encoded, now=now
+            )
+            version_reason = reason
+            if change_type == history.CHANGE_RESTORE and version_reason is None:
+                version_reason = f"restored version {plan.restore_version_no}"
+            version = await history.insert_version(
+                db,
+                skill_id=row.id,
+                organization_id=plan.organization_id,
+                user_id=row.user_id,
+                version_no=latest.version_no + 1,
+                parent_version_id=latest.id,
+                change_type=change_type,
+                hashes=hashes,
+                now=now,
+                run_id=run_id,
+                actor_kind=actor_kind,
+                reason=version_reason,
+                actor_id=actor_id,
+                version_id=plan.version_id,
+            )
+
+        meta_changed = False
+        if change_type == history.CHANGE_EDIT:
+            for key in _EDITABLE_META_FIELDS - {_RETRIEVAL_EMBEDDING_COLUMN}:
+                if key in plan.fields and getattr(row, key) != plan.fields[key]:
+                    setattr(row, key, plan.fields[key])
+                    meta_changed = True
+        if plan.explicit_embedding:
+            # The vector is derived from the retrieval text, not part of the
+            # skill: set on its own (e.g. re-embedding a skill left without
+            # one) it leaves the row's modification stamp alone.
+            row.retrieval_embedding = plan.embedding
+            if (
+                plan.embedding_config is not None
+                and row.embedding_config != plan.embedding_config
+            ):
+                row.embedding_config = plan.embedding_config
+                meta_changed = True
+        elif new_vector_needed:
+            row.retrieval_embedding = plan.embedding
+            if plan.embedding_config is not None:
+                row.embedding_config = plan.embedding_config
+
+        if version is None and not meta_changed:
+            return SkillChangeResult(
+                skill=row.to_pydantic(), baseline=_version_schema(baseline)
+            )
+
+        if content_changed:
+            for key in SKILL_VERSIONED_FIELDS:
+                setattr(row, key, target[key])
+        if (
+            plan.bump_version
+            and change_type == history.CHANGE_EDIT
+            and version is not None
+            and "version" not in plan.fields
+        ):
+            row.version = _bump_patch(row.version)
+        operation = {
+            history.CHANGE_EDIT: "updated",
+            history.CHANGE_DELETE: "deleted",
+            history.CHANGE_RESTORE: "restored",
+        }[change_type]
+        last_modify: Dict[str, Any] = {"timestamp": now.isoformat(), "operation": operation}
+        if change_type == history.CHANGE_DELETE:
+            row.is_deleted = True
+            if reason:
+                last_modify["reason"] = reason
+        elif change_type == history.CHANGE_RESTORE:
+            row.is_deleted = False
+            row.version = _bump_patch(row.version)
+            last_modify["restored_version_no"] = plan.restore_version_no
+        row.last_modify = last_modify
+        row.updated_at = now
+        if actor_id:
+            row._last_updated_by_id = actor_id
+        await db.flush()
+        return SkillChangeResult(
+            skill=row.to_pydantic(),
+            version=_version_schema(version),
+            baseline=_version_schema(baseline),
+        )
+
+    async def _consume_experiences(
+        self,
+        db,
+        *,
+        ids: Sequence[str],
+        owner_user_id: str,
+        consumed_by: str,
+        skill_id: str,
+        now: dt.datetime,
+    ) -> int:
+        """Mark the owner's still-pending experiences consumed, in the write's
+        transaction. Other owners' ids are never touched."""
+        rows = (
+            await db.execute(
+                select(SkillExperienceModel).where(
+                    SkillExperienceModel.id.in_(list(ids)),
+                    SkillExperienceModel.user_id == owner_user_id,
+                    SkillExperienceModel.status == "pending",
+                    ~SkillExperienceModel.is_deleted,
+                )
+            )
+        ).scalars().all()
+        for row in rows:
+            row.status = "consumed"
+            row.consumed_by = consumed_by
+            lineage = list(row.influenced_skill_ids or [])
+            if skill_id not in lineage:
+                lineage.append(skill_id)
+            row.influenced_skill_ids = lineage
+            row.updated_at = now
+        await db.flush()
+        return len(rows)
+
+    async def _stamp_lineage(
+        self,
+        db,
+        *,
+        ids: Sequence[str],
+        owner_user_id: str,
+        skill_id: str,
+        now: dt.datetime,
+    ) -> int:
+        """Add ``skill_id`` to ``influenced_skill_ids`` of the owner's
+        experiences ``ids`` (any status), in the write's transaction: the
+        lineage of a curator batch, kept even when the batch never finishes so
+        a later attempt on the same experiences sees what was already changed.
+        Other owners' ids are never touched."""
+        rows = (
+            await db.execute(
+                select(SkillExperienceModel).where(
+                    SkillExperienceModel.id.in_(list(ids)),
+                    SkillExperienceModel.user_id == owner_user_id,
+                    ~SkillExperienceModel.is_deleted,
+                )
+            )
+        ).scalars().all()
+        stamped = 0
+        for row in rows:
+            lineage = list(row.influenced_skill_ids or [])
+            if skill_id in lineage:
+                continue
+            lineage.append(skill_id)
+            row.influenced_skill_ids = lineage
+            row.updated_at = now
+            stamped += 1
+        await db.flush()
+        return stamped
+
+    async def _stamp_citations(
+        self,
+        db,
+        *,
+        ids: Sequence[str],
+        owner_user_id: str,
+        skill_id: str,
+        now: dt.datetime,
+    ) -> int:
+        """Add ``skill_id`` to ``cited_skill_ids`` of the owner's experiences
+        ``ids`` (any status: a consumed pool experience too), in the write's
+        transaction: the per-experience lineage of the change —
+        the experiences it came from, not the whole batch. The skill tools
+        pass only ids the batch showed (the owner's, of its agent and scope);
+        other owners' ids are never touched."""
+        rows = (
+            await db.execute(
+                select(SkillExperienceModel).where(
+                    SkillExperienceModel.id.in_(list(ids)),
+                    SkillExperienceModel.user_id == owner_user_id,
+                    ~SkillExperienceModel.is_deleted,
+                )
+            )
+        ).scalars().all()
+        stamped = 0
+        for row in rows:
+            cited = list(row.cited_skill_ids or [])
+            if skill_id in cited:
+                continue
+            cited.append(skill_id)
+            row.cited_skill_ids = cited
+            row.updated_at = now
+            stamped += 1
+        await db.flush()
+        return stamped
+
+    # ------------------------------------------------------------------ #
+    # Write entry points — all of them go through apply_skill_change      #
+    # ------------------------------------------------------------------ #
 
     @enforce_types
     async def create_item(
@@ -584,58 +1925,36 @@ class ProceduralMemoryManager:
         client_id: Optional[str] = None,
         user_id: Optional[str] = None,
         use_cache: bool = True,
+        agent_state: Optional[AgentState] = None,
+        run_id: Optional[str] = None,
+        actor_kind: Optional[str] = None,
     ) -> PydanticProceduralMemoryItem:
-        """Create a new procedural memory item.
+        """Create a new skill (version 1, ``create``) via :meth:`apply_skill_change`.
 
         Args:
-            item_data: The procedural memory data to create
-            actor: Client performing the operation (for audit trail)
-            client_id: Client application identifier (defaults to actor.id)
-            user_id: End-user identifier (optional)
-            use_cache: If True, cache in Redis. If False, skip caching.
+            item_data: The skill to create. An explicit ``retrieval_embedding``
+                is stored as given; otherwise the retrieval text is embedded
+                (``agent_state``'s embedding config, else ``item_data``'s).
+            actor: Client performing the operation (audit trail, organization).
+            client_id: Client application identifier (defaults to actor.id).
+            user_id: The owning user (defaults to ``item_data.user_id``).
+            use_cache: Ignored — procedural memory is never cached.
         """
-
-        # Backward compatibility
-        if client_id is None:
-            client_id = actor.id
-
-        # Ensure ID is set before model_dump
-        if not item_data.id:
-            from mirix.utils import generate_unique_short_id_async
-
-            item_data.id = await generate_unique_short_id_async(
-                self.session_maker, ProceduralMemoryItem, "proc"
-            )
-
-        data_dict = item_data.model_dump()
-
-        # Validate required fields
-        required_fields = ["entry_type", "name"]
-        for field in required_fields:
-            if field not in data_dict:
-                raise ValueError(
-                    f"Required field '{field}' missing from procedural memory data"
-                )
-
-        # Set client_id and user_id on the memory
-        data_dict["client_id"] = client_id
-        data_dict["user_id"] = user_id
-
-        logger.debug("create_item: client_id=%s, user_id=%s", client_id, user_id)
-
-        async with self.session_maker() as session:
-            item = ProceduralMemoryItem(**data_dict)
-            try:
-                await item.create_with_redis(session, actor=actor, use_cache=use_cache)
-            except IntegrityError as exc:
-                # uq_procedural_memory_org_user_name — surface a domain-level
-                # duplicate error so callers don't need to parse SQLSTATE.
-                if "uq_procedural_memory_org_user_name" in str(exc.orig):
-                    raise UniqueConstraintViolationError(
-                        f"Skill with name '{data_dict.get('name')}' already exists for this user."
-                    ) from exc
-                raise
-            return item.to_pydantic()
+        del use_cache
+        data = item_data.model_dump()
+        data["client_id"] = client_id if client_id is not None else actor.id
+        owner = user_id or data.get("user_id")
+        logger.debug("create_item: client_id=%s, user_id=%s", data["client_id"], owner)
+        result = await self.apply_skill_change(
+            history.CHANGE_CREATE,
+            actor=actor,
+            user_id=owner,
+            fields=data,
+            agent_state=agent_state,
+            run_id=run_id,
+            actor_kind=actor_kind or ACTOR_API,
+        )
+        return result.skill
 
     @enforce_types
     async def update_item(
@@ -644,165 +1963,575 @@ class ProceduralMemoryManager:
         user: PydanticUser,
         actor: PydanticClient,
         agent_state: Optional[AgentState] = None,
+        run_id: Optional[str] = None,
+        actor_kind: Optional[str] = None,
+        reason: Optional[str] = None,
     ) -> PydanticProceduralMemoryItem:
-        """Update an existing procedural memory item.
+        """Edit a live skill via :meth:`apply_skill_change` (an ``edit`` version).
 
-        When description/instructions change and agent_state is provided with
-        embedding_config, the corresponding embeddings are recomputed so that
-        vector search does not serve stale vectors against fresh text. Callers
-        that cannot supply agent_state can pre-compute embeddings themselves
-        and put them on item_update directly.
+        When ``name``, ``triggers`` or ``description`` change, the retrieval
+        vector is recomputed with ``agent_state``'s embedding config, or
+        the skill's own when there is no agent_state. An explicit
+        ``retrieval_embedding`` on ``item_update`` is stored as given.
+        ``organization_id`` on the update is ignored: an edit never moves a
+        skill to another tenant. Access: the actor's organization and ``user``
+        must own the skill.
         """
-        update_data = item_update.model_dump(exclude_unset=True)
-
-        # Recompute embeddings for text fields that changed, when we have a
-        # config and the caller didn't already supply embeddings explicitly.
-        if BUILD_EMBEDDINGS_FOR_MEMORY and agent_state is not None:
-            embedding_config = agent_state.embedding_config
-            embed_model = None
-            if (
-                "description" in update_data
-                and "description_embedding" not in update_data
-            ):
-                embed_model = await embedding_model(embedding_config)
-                update_data["description_embedding"] = _pad_to_max(
-                    await embed_model.get_text_embedding(
-                        update_data["description"] or ""
-                    )
-                )
-            if (
-                "instructions" in update_data
-                and "instructions_embedding" not in update_data
-            ):
-                if embed_model is None:
-                    embed_model = await embedding_model(embedding_config)
-                update_data["instructions_embedding"] = _pad_to_max(
-                    await embed_model.get_text_embedding(
-                        update_data["instructions"] or ""
-                    )
-                )
-            if embed_model is not None and "embedding_config" not in update_data:
-                update_data["embedding_config"] = embedding_config
-
-        async with self.session_maker() as session:
-            # Same two-step auth as delete_procedure_by_id/get_item_by_id:
-            # actor enables org-scope via apply_access_predicate, and the
-            # explicit user_id check guarantees per-user ownership even
-            # when the base read does not filter on user.
-            try:
-                item = await ProceduralMemoryItem.read(
-                    db_session=session, identifier=item_update.id, actor=actor
-                )
-            except NoResultFound:
-                raise NoResultFound(
-                    f"Procedural memory item with id {item_update.id} not found."
-                )
-
-            if getattr(item, "user_id", None) != user.id:
-                raise NoResultFound(
-                    f"Procedural memory item with id {item_update.id} not found."
-                )
-
-            for k, v in update_data.items():
-                if k not in [
-                    "id",
-                    "updated_at",
-                ]:  # Exclude updated_at - handled by update() method
-                    setattr(item, k, v)
-            # updated_at is automatically set to current UTC time by item.update()
-            await item.update_with_redis(
-                session, actor=actor
-            )  # Updates Redis JSON cache
-            return item.to_pydantic()
+        data = item_update.model_dump(exclude_unset=True)
+        fields = {
+            key: value
+            for key, value in data.items()
+            if key in SKILL_VERSIONED_FIELDS or key in _EDITABLE_META_FIELDS
+        }
+        # An explicit None is "not given" for every column that cannot hold it
+        # (only filter_tags may be cleared).
+        for key in list(fields):
+            if fields[key] is None and key != "filter_tags":
+                del fields[key]
+        result = await self.apply_skill_change(
+            history.CHANGE_EDIT,
+            actor=actor,
+            user_id=user.id,
+            skill_id=item_update.id,
+            fields=fields,
+            agent_state=agent_state,
+            run_id=run_id,
+            actor_kind=actor_kind or ACTOR_API,
+            reason=reason,
+        )
+        return result.skill
 
     @enforce_types
     async def create_many_items(
         self,
         items: List[PydanticProceduralMemoryItem],
         user: PydanticUser,
+        actor: Optional[PydanticClient] = None,
     ) -> List[PydanticProceduralMemoryItem]:
-        """Create multiple procedural memory items."""
-        return [await self.create_item(i, user) for i in items]
+        """Create several skills, each a ``create`` through
+        :meth:`apply_skill_change` (one transaction per skill). ``actor`` is
+        the creating client (its id becomes ``client_id``); the legacy call
+        shape ``(items, user)`` — which used to pass the user as the actor and
+        fail type checking — creates them without a client."""
+        created = []
+        for item in items:
+            data = item.model_dump()
+            if actor is not None and not data.get("client_id"):
+                data["client_id"] = actor.id
+            result = await self.apply_skill_change(
+                history.CHANGE_CREATE,
+                actor=actor,
+                user_id=item.user_id or user.id,
+                fields=data,
+                organization_id=item.organization_id or user.organization_id,
+                actor_kind=ACTOR_API,
+            )
+            created.append(result.skill)
+        return created
+
+    async def restore_skill(
+        self,
+        skill_id: str,
+        version_no: int,
+        *,
+        actor: PydanticClient,
+        user_id: str,
+        agent_state: Optional[AgentState] = None,
+        run_id: Optional[str] = None,
+        actor_kind: Optional[str] = None,
+        reason: Optional[str] = None,
+        scopes: Optional[Sequence[str]] = None,
+    ) -> SkillChangeResult:
+        """Restore a skill to version ``version_no`` (a ``restore`` version);
+        un-deletes a soft-deleted skill. :class:`SkillNameConflictError` when
+        another live skill of the user has the restored name;
+        :class:`~mirix.services.skill_history.SkillVersionNotFound` /
+        :class:`NoResultFound` when the version / skill does not exist — or,
+        with ``scopes``, when the skill or the version is of another scope
+        (checked on the locked row)."""
+        return await self.apply_skill_change(
+            history.CHANGE_RESTORE,
+            actor=actor,
+            user_id=user_id,
+            skill_id=skill_id,
+            version_no=version_no,
+            agent_state=agent_state,
+            run_id=run_id,
+            actor_kind=actor_kind or ACTOR_API,
+            reason=reason,
+            scopes=scopes,
+        )
+
+    # ------------------------------------------------------------------ #
+    # History reads                                                       #
+    # ------------------------------------------------------------------ #
+
+    async def get_skill_history(
+        self,
+        skill_id: str,
+        *,
+        organization_id: Optional[str],
+        user_id: Optional[str],
+    ) -> Dict[str, Any]:
+        """A skill (live or soft-deleted) and all its versions, oldest first.
+
+        Returns ``{skill, is_deleted, deleted_at, delete_reason, versions}``;
+        each version carries ``changed_fields`` (versus its parent).
+        :class:`NoResultFound` outside the organization / owner.
+        """
+        async with self.session_maker() as db:
+            row = (
+                await db.execute(
+                    self._skill_row_query(
+                        skill_id,
+                        organization_id=organization_id,
+                        user_id=user_id,
+                        include_deleted=True,
+                    )
+                )
+            ).scalar_one_or_none()
+            if row is None:
+                raise NoResultFound(
+                    f"Procedural memory item with id {skill_id} not found."
+                )
+            versions = await history.list_versions(db, row.id)
+        by_id = {v.id: v for v in versions}
+        entries = []
+        for version in versions:
+            parent = by_id.get(version.parent_version_id)
+            entry = PydanticSkillVersion.model_validate(version).model_dump(mode="json")
+            entry["changed_fields"] = history.changed_fields(
+                history.version_hashes(parent) if parent is not None else None,
+                history.version_hashes(version),
+            )
+            entries.append(entry)
+        deleted_at = delete_reason = None
+        if row.is_deleted:
+            deletes = [v for v in versions if v.change_type == history.CHANGE_DELETE]
+            if deletes:
+                deleted_at = deletes[-1].created_at
+                delete_reason = deletes[-1].reason
+        return {
+            "skill": row.to_pydantic(),
+            "is_deleted": bool(row.is_deleted),
+            "deleted_at": deleted_at,
+            "delete_reason": delete_reason,
+            "versions": entries,
+        }
+
+    async def get_skill_version(
+        self,
+        skill_id: str,
+        version_no: int,
+        *,
+        organization_id: Optional[str],
+        user_id: Optional[str],
+    ) -> Dict[str, Any]:
+        """Version ``version_no`` of a skill rebuilt from its objects:
+        ``{version, content, canonical}`` — ``canonical`` holds each field's
+        canonical bytes (what the sha256 keys cover)."""
+        async with self.session_maker() as db:
+            row = (
+                await db.execute(
+                    self._skill_row_query(
+                        skill_id,
+                        organization_id=organization_id,
+                        user_id=user_id,
+                        include_deleted=True,
+                    )
+                )
+            ).scalar_one_or_none()
+            if row is None:
+                raise NoResultFound(
+                    f"Procedural memory item with id {skill_id} not found."
+                )
+            version = await history.get_version(db, row.id, version_no)
+            content, raws = await history.version_content(
+                db, organization_id=_resolve_org(row.organization_id), version=version
+            )
+        return {
+            "version": PydanticSkillVersion.model_validate(version),
+            "content": content,
+            "canonical": raws,
+        }
+
+    async def get_served_skill_texts(
+        self,
+        *,
+        organization_id: Optional[str],
+        user_id: str,
+        served: Mapping[str, Optional[int]],
+        scopes: Optional[List[str]],
+        unversioned: Sequence[str] = (),
+    ) -> Dict[str, Dict[str, Any]]:
+        """The text each skill had in the version it was served at:
+        ``{skill_id: {"name", "description", "instructions", "triggers",
+        "examples", "version_no", "version_status", "exact", "is_deleted"}}``
+        for the user's skills among ``served`` (``skill_id -> version_no``),
+        deleted ones included, in ``scopes`` (None: any scope; [] none). A
+        skill of another owner or scope is left out.
+
+        ``version_status`` (:data:`distill_session_context.VERSION_STATUSES`):
+
+        * ``exact`` — the served version, rebuilt from history. A skill in
+          ``unversioned`` (served while it had no history, so logged with no
+          version) that has a history now was served with its ``baseline``
+          version 1 — the text its first recorded change saved (every change
+          of a skill records a version) — so that is its served version;
+        * ``unversioned`` — a skill in ``unversioned`` that still has no
+          history: unchanged since, its current text is the text served;
+        * ``unrebuilt`` — the served version does not rebuild
+          (``version_no`` still names it): its current text;
+        * ``unknown`` — no version was logged (a row written before versions
+          were): its current text.
+
+        ``exact`` is True when the text given is the text served."""
+        from mirix.services.distill_session_context import (
+            VERSION_EXACT,
+            VERSION_UNKNOWN,
+            VERSION_UNREBUILT,
+            VERSION_UNVERSIONED,
+        )
+
+        found: Dict[str, Dict[str, Any]] = {}
+        if not served:
+            return found
+        before_history = set(unversioned or ())
+        async with self.session_maker() as db:
+            for skill_id, version_no in served.items():
+                row = (
+                    await db.execute(
+                        self._skill_row_query(
+                            skill_id,
+                            organization_id=organization_id,
+                            user_id=user_id,
+                            include_deleted=True,
+                            scopes=scopes,
+                        )
+                    )
+                ).scalar_one_or_none()
+                if row is None:
+                    continue
+                content: Dict[str, Any] = history.content_of(row)
+                status, shown = VERSION_UNKNOWN, None
+                wanted: Optional[int] = None
+                if version_no is not None:
+                    status, shown = VERSION_UNREBUILT, int(version_no)
+                    wanted = shown
+                elif skill_id in before_history:
+                    if await history.latest_version(db, row.id) is None:
+                        status = VERSION_UNVERSIONED
+                    else:
+                        wanted = 1  # its baseline, if version 1 is one
+                if wanted is not None:
+                    try:
+                        version = await history.get_version(db, row.id, wanted)
+                        if version_no is None and (
+                            version.change_type != history.CHANGE_BASELINE
+                        ):
+                            raise history.SkillVersionNotFound(
+                                f"Skill {row.id} has no baseline version."
+                            )
+                        content, _raws = await history.version_content(
+                            db,
+                            organization_id=_resolve_org(row.organization_id),
+                            version=version,
+                        )
+                        status, shown = VERSION_EXACT, wanted
+                    except (history.SkillVersionNotFound, history.SkillObjectCorrupt):
+                        logger.warning(
+                            "Skill %s: served version %s does not rebuild; its "
+                            "current text is shown instead",
+                            row.id,
+                            wanted,
+                        )
+                found[row.id] = {
+                    "name": content.get("name") or row.name,
+                    "description": content.get("description") or "",
+                    "instructions": content.get("instructions") or "",
+                    "triggers": list(content.get("triggers") or []),
+                    "examples": list(content.get("examples") or []),
+                    "version_no": shown,
+                    "version_status": status,
+                    "exact": status in (VERSION_EXACT, VERSION_UNVERSIONED),
+                    "is_deleted": bool(row.is_deleted),
+                }
+        return found
+
+    # ------------------------------------------------------------------ #
+    # Baselines (scripts/backfill_skill_baseline_versions.py)             #
+    # ------------------------------------------------------------------ #
+
+    async def ensure_baseline_version(
+        self, skill_id: str, *, actor_kind: str = ACTOR_BACKFILL
+    ) -> Optional[PydanticSkillVersion]:
+        """Write the ``baseline`` version of a skill that has no history yet
+        (live or soft-deleted); None when it already has one or is gone.
+        Idempotent: runs under the same locks as every write."""
+
+        async def _once():
+            async with self.session_maker() as db:
+                async with db.begin():
+                    org = (
+                        await db.execute(
+                            select(ProceduralMemoryItem.organization_id).where(
+                                ProceduralMemoryItem.id == skill_id
+                            )
+                        )
+                    ).first()
+                    if org is None:
+                        return None
+                    organization_id = _resolve_org(org[0])
+                    await history.lock_for_write(db, organization_ids=[organization_id])
+                    row = (
+                        await db.execute(
+                            self._skill_row_query(
+                                skill_id,
+                                organization_id=None,
+                                user_id=None,
+                                include_deleted=True,
+                            ).with_for_update()
+                        )
+                    ).scalar_one_or_none()
+                    if row is None or await history.latest_version(db, row.id):
+                        return None
+                    now = _utcnow()
+                    encoded = history.encode_content(history.content_of(row))
+                    await history.upsert_objects(
+                        db, organization_id=organization_id, encoded=encoded, now=now
+                    )
+                    version = await history.insert_version(
+                        db,
+                        skill_id=row.id,
+                        organization_id=organization_id,
+                        user_id=row.user_id,
+                        version_no=1,
+                        parent_version_id=None,
+                        change_type=history.CHANGE_BASELINE,
+                        hashes=history.hashes_of(encoded),
+                        now=now,
+                        actor_kind=actor_kind,
+                    )
+                    return _version_schema(version)
+
+        return await retry_call(_once, stage="skill_baseline")
+
+    # ------------------------------------------------------------------ #
+    # Missing retrieval vectors (startup task, re-embed script)            #
+    # ------------------------------------------------------------------ #
+
+    async def list_skill_ids_missing_retrieval_embedding(
+        self,
+        *,
+        organization_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        after_id: Optional[str] = None,
+        limit: int = 100,
+    ) -> List[str]:
+        """Ids of the live skills whose ``retrieval_embedding`` IS NULL (after
+        the migration, or an embedding call that failed for good), in id
+        order after ``after_id`` — of one organization and / or one user when
+        given: pages for :meth:`reembed_skill`. Until re-embedded such a skill
+        fails every vector gate."""
+        stmt = select(ProceduralMemoryItem.id).where(
+            ProceduralMemoryItem.retrieval_embedding.is_(None),
+            ~ProceduralMemoryItem.is_deleted,
+        )
+        if organization_id is not None:
+            stmt = stmt.where(ProceduralMemoryItem.organization_id == organization_id)
+        if user_id is not None:
+            stmt = stmt.where(ProceduralMemoryItem.user_id == user_id)
+        if after_id is not None:
+            stmt = stmt.where(ProceduralMemoryItem.id > after_id)
+        stmt = stmt.order_by(ProceduralMemoryItem.id).limit(max(1, int(limit)))
+        async with self.session_maker() as db:
+            return [str(skill_id) for skill_id in (await db.execute(stmt)).scalars()]
+
+    async def reembed_skill(self, skill_id: str) -> str:
+        """Compute the retrieval vector of a live skill that has none.
+
+        The vector of the skill's retrieval text (name, triggers,
+        description), with the row's OWN ``embedding_config`` (there is no
+        agent here), written through :meth:`apply_skill_change` as an explicit
+        vector under the optimistic check that the retrieval text is still the
+        one embedded — a concurrent change wins and brings its own vector. No
+        version is written (a vector is not part of the history) and the
+        row's modification stamp is left alone. Safe to repeat. Returns what
+        happened: ``filled``; ``present`` (it has a vector now); ``gone``
+        (deleted meanwhile); ``changed`` (its retrieval text changed
+        meanwhile); ``no_config`` (the row has no embedding config);
+        ``failed`` (the embedding call failed after its retries; retried on a
+        later pass); ``disabled`` (``BUILD_EMBEDDINGS_FOR_MEMORY`` is off).
+
+        One call per skill at a time in this process: while another pass is
+        re-embedding the same skill, this one awaits and returns that outcome
+        (no second provider call); if that pass is cancelled or fails
+        unexpectedly, this one does the work itself.
+        """
+        if not BUILD_EMBEDDINGS_FOR_MEMORY:
+            return REEMBED_DISABLED
+        loop = asyncio.get_running_loop()
+        while True:
+            running = _REEMBED_IN_FLIGHT.get(skill_id)
+            if running is None or running.get_loop() is not loop:
+                break
+            # shield: cancelling THIS caller must not cancel the other pass.
+            shared = await asyncio.shield(running)
+            if shared is not None:
+                return shared
+            # The other pass was cancelled or failed: take the skill over.
+        future: "asyncio.Future[Optional[str]]" = loop.create_future()
+        _REEMBED_IN_FLIGHT[skill_id] = future
+        outcome: Optional[str] = None
+        try:
+            outcome = await self._reembed_skill_once(skill_id)
+            return outcome
+        finally:
+            # None tells a waiter to do the work itself (this call raised or
+            # was cancelled).
+            if not future.done():
+                future.set_result(outcome)
+            if _REEMBED_IN_FLIGHT.get(skill_id) is future:
+                del _REEMBED_IN_FLIGHT[skill_id]
+
+    async def _reembed_skill_once(self, skill_id: str) -> str:
+        """:meth:`reembed_skill`'s work, for the one caller in flight."""
+        try:
+            row = await self._read_skill_row(
+                skill_id, organization_id=None, user_id=None, include_deleted=False
+            )
+        except NoResultFound:
+            return REEMBED_GONE
+        if row.retrieval_embedding is not None:
+            return REEMBED_PRESENT
+        if row.embedding_config is None:
+            return REEMBED_NO_CONFIG
+        expected = _row_values(row, list(_RETRIEVAL_TEXT_FIELDS))
+        vector = await self._embed(history.skill_retrieval_text(expected), row.embedding_config)
+        if vector is None:
+            return REEMBED_FAILED
+        try:
+            await self.apply_skill_change(
+                history.CHANGE_EDIT,
+                actor=None,
+                user_id=None,
+                skill_id=skill_id,
+                fields={_RETRIEVAL_EMBEDDING_COLUMN: vector},
+                expected_fields=expected,
+                actor_kind=ACTOR_SYSTEM,
+            )
+        except SkillChangedMeanwhile:
+            return REEMBED_CHANGED
+        except NoResultFound:
+            return REEMBED_GONE
+        return REEMBED_FILLED
 
     async def get_total_number_of_items(self, user: PydanticUser) -> int:
         """Get the total number of items in the procedural memory for the user."""
         async with self.session_maker() as session:
+            # Soft-deleted skills are not counted.
             query = select(func.count(ProceduralMemoryItem.id)).where(
-                ProceduralMemoryItem.user_id == user.id
+                ProceduralMemoryItem.user_id == user.id,
+                ~ProceduralMemoryItem.is_deleted,
             )
             result = await session.execute(query)
             return result.scalar_one()
 
-    async def _hybrid_search_for_user(
+    async def _embed_query(self, query: str, config) -> Optional[List[float]]:
+        """The padded query vector for skill retrieval, or None when embeddings
+        are off or there is no embedding config. A failure after the
+        embedding retries raises: the ranking then falls back to BM25."""
+        if not BUILD_EMBEDDINGS_FOR_MEMORY or config is None:
+            return None
+
+        async def _call():
+            model = await embedding_model(config)
+            return await model.get_text_embedding(query)
+
+        vector = await retry_call(
+            _call,
+            operation="embedding",
+            stage="skill_retrieval_embedding",
+            sleep=self._sleep,
+        )
+        return _pad_to_max(vector)
+
+    async def retrieve_skills(
         self,
-        *,
-        agent_state: AgentState,
-        user: PydanticUser,
         query: str,
-        embedded_text: Optional[List[float]],
-        search_field: str,
-        limit: Optional[int],
-        timezone_str: Optional[str],
-        filter_tags: Optional[dict],
-        scopes: Optional[List[str]],
-        use_cache: bool,
-        similarity_threshold: Optional[float],
-    ) -> List[PydanticProceduralMemoryItem]:
-        """EverOS-aligned hybrid retrieval for :meth:`list_procedures`.
+        user: PydanticUser,
+        scopes: Optional[Sequence[str]],
+        limit: Optional[int] = None,
+        apply_gate: bool = False,
+        *,
+        agent_state: Optional[AgentState] = None,
+        embedding_config=None,
+        query_embedding: Optional[Sequence[float]] = None,
+        filter_tags: Optional[Mapping[str, Any]] = None,
+        method: str = "hybrid",
+        max_cosine_distance: Optional[float] = None,
+        timezone_str: Optional[str] = None,
+    ) -> "SkillRetrievalResult":
+        """Rank ``user``'s live skills in ``scopes`` for ``query``.
 
-        Reuses the EXISTING bm25 (lexical) and embedding (dense) branches as two
-        independent lanes — so all backend dispatch (PG ts_rank_cd, SQLite
-        BM25Okapi, Redis KNN, pgvector cosine) is inherited, not reimplemented —
-        then fuses them with RRF (see :func:`_rrf_fuse`).
+        Candidates straight from the database, true BM25 over
+        ``retrieval_tsv`` (Postgres) or Python tokens (SQLite) with N, df and
+        avgdl over all candidates, cosine on ``retrieval_embedding``, RRF
+        (k = 60), the similarity gate when ``apply_gate`` (``/memory/retrieve/
+        conversation``; never ``/memory/search``), then the first
+        ``limit`` (default 10, possibly none). See
+        :func:`mirix.services.skill_retrieval.retrieve_skills` for every
+        argument.
 
-        The lanes run SEQUENTIALLY, not via ``asyncio.gather``. Each recursive
-        call opens its own short-lived session, so gathering would require two
-        simultaneous pooled connections on what can be a hot path (or, if forced
-        onto one session, would violate SQLAlchemy's "one operation per
-        AsyncSession at a time" rule and raise). The dense lane's latency is
-        dominated by the embedding API round-trip, not the indexed DB query, so
-        overlapping the two buys almost nothing; sequential is async-native and
-        uses a single pooled connection at a time.
+        The query is embedded with ``embedding_config`` (default: the
+        ``agent_state``'s), unless ``query_embedding`` is given; when that
+        fails the ranking is BM25 alone, ungated
+        (``diagnostics.embedding_status == "failed"``). ``timezone_str``
+        converts the returned skills' timestamps like :meth:`list_procedures`.
+        A gated ranking uses the gate of that embedding config's model
+        (:func:`~mirix.services.skill_retrieval.skill_retrieval_gate`: its
+        calibration, or the defaults as ``uncalibrated``), recorded in the
+        diagnostics' gate trace.
+
+        Returns a :class:`~mirix.services.skill_retrieval.SkillRetrievalResult`:
+        the skills with their ``retrieval_scores`` ``{bm25, cosine, rrf}``, and
+        the diagnostics the retrieval log records.
         """
-        effective_limit = limit or 50
-        recall_limit = max(
-            effective_limit * SKILL_HYBRID_RECALL_MULTIPLIER, effective_limit
-        )
-        # Lexical lane — no similarity_threshold (a dense-only quality floor).
-        sparse = await self.list_procedures(
-            agent_state=agent_state,
-            user=user,
-            query=query,
-            search_field=search_field,
-            search_method="bm25",
-            limit=recall_limit,
-            timezone_str=timezone_str,
+        from mirix.services import skill_retrieval
+
+        config = embedding_config
+        if config is None and agent_state is not None:
+            config = agent_state.embedding_config
+
+        async def embed(text_value: str) -> Optional[List[float]]:
+            return await self._embed_query(text_value, config)
+
+        gate: Dict[str, Any] = {}
+        model = getattr(config, "embedding_model", None) if config is not None else None
+        if apply_gate and model:
+            settings = skill_retrieval.skill_retrieval_gate(model)
+            gate = {
+                "min_similarity": settings.min_similarity,
+                "relative_ratio": settings.relative_ratio,
+                "gate_calibration": settings.source,
+            }
+
+        result = await skill_retrieval.retrieve_skills(
+            query,
+            user,
+            scopes,
+            limit,
+            apply_gate,
+            session_maker=self.session_maker,
+            embed_query=embed,
+            query_embedding=query_embedding,
             filter_tags=filter_tags,
-            scopes=scopes,
-            use_cache=use_cache,
+            method=method,
+            max_cosine_distance=max_cosine_distance,
+            **gate,
         )
-        # Dense lane — embedding search needs a valid embedding column, so fall
-        # back to "description" when search_field is blank/non-embeddable.
-        dense_field = (
-            search_field if search_field in _EMBEDDING_FIELDS else "description"
-        )
-        dense = await self.list_procedures(
-            agent_state=agent_state,
-            user=user,
-            query=query,
-            embedded_text=embedded_text,
-            search_field=dense_field,
-            search_method="embedding",
-            limit=recall_limit,
-            timezone_str=timezone_str,
-            filter_tags=filter_tags,
-            scopes=scopes,
-            use_cache=use_cache,
-            similarity_threshold=similarity_threshold,
-        )
-        return _rrf_fuse(
-            [sparse, dense], k=SKILL_HYBRID_RRF_K, limit=effective_limit
-        )
+        localize_timestamps(result.items, timezone_str)
+        return result
 
     async def _hybrid_search_for_org(
         self,
@@ -886,11 +2615,13 @@ class ProceduralMemoryManager:
             embedded_text: Pre-computed embedding for semantic search
             search_field: Field to search in ('description', 'instructions', 'entry_type')
             search_method: Search method to use:
-                - 'hybrid': **RECOMMENDED for skill retrieval** - EverOS-aligned
-                               fusion of the 'bm25' and 'embedding' lanes via
-                               Reciprocal Rank Fusion (rank-based, k=60). Best
-                               recall/precision for skill lookup; self-embeds the
-                               query, so no embedded_text need be supplied.
+                - 'hybrid': **RECOMMENDED for skill retrieval** - the skill
+                               ranking (:meth:`retrieve_skills`, ungated): true
+                               BM25 over the retrieval text (name, triggers,
+                               description) and cosine on the retrieval vector,
+                               fused with Reciprocal Rank Fusion (k=60).
+                               Self-embeds the query, so no embedded_text need
+                               be supplied; on `instructions` it runs as 'bm25'.
                 - 'embedding': Vector similarity search using embeddings
                 - 'string_match': Simple string containment search
                 - 'bm25': PostgreSQL native full-text search (ts_rank_cd) when using PostgreSQL,
@@ -898,7 +2629,7 @@ class ProceduralMemoryManager:
                 - 'fuzzy_match': Fuzzy string matching (legacy, kept for compatibility)
             limit: Maximum number of results to return
             timezone_str: Timezone string for timestamp conversion
-            use_cache: If True, try Redis cache first. If False, skip cache and query PostgreSQL directly.
+            use_cache: Ignored — procedural memory is read from the database only.
 
         Returns:
             List of procedural memory items matching the search criteria
@@ -924,155 +2655,30 @@ class ProceduralMemoryManager:
         # PG column or the DIM=4096 Redis index unpadded.
         embedded_text = _pad_to_max(embedded_text)
 
+        # `instructions` has no vector; an embedding search on it runs as
+        # full-text search on `instructions` (see effective_procedural_search_method).
+        search_method = effective_procedural_search_method(search_method, search_field)
+
         # Extract organization_id from user for multi-tenant isolation
         organization_id = user.organization_id
 
-        # Hybrid retrieval (EverOS-aligned BM25 + embedding fused via RRF) is
-        # intercepted at the TOP — before the cache and PG/session branches — so
-        # it always routes through the two-lane fusion and is never partially
-        # served by a single-method cache path. Each lane (a recursive call)
-        # still uses the cache for its own bm25/embedding sub-query. Empty
-        # queries fall through to the recent-items path, where method is moot.
+        # Hybrid retrieval is the M7.3 ranking over the retrieval text (BM25 +
+        # cosine fused with RRF, never gated here; `instructions` was rerouted
+        # to keyword search above). Empty queries fall through to the
+        # recent-items path, where the method is moot.
         if search_method == "hybrid" and not is_empty_query:
-            return await self._hybrid_search_for_user(
+            ranked = await self.retrieve_skills(
+                query,
+                user,
+                scopes,
+                limit or 50,
+                apply_gate=False,
                 agent_state=agent_state,
-                user=user,
-                query=query,
-                embedded_text=embedded_text,
-                search_field=search_field,
-                limit=limit,
-                timezone_str=timezone_str,
+                query_embedding=embedded_text,
                 filter_tags=filter_tags,
-                scopes=scopes,
-                use_cache=use_cache,
-                similarity_threshold=similarity_threshold,
+                max_cosine_distance=similarity_threshold,
             )
-
-        # Try Redis Search first (if cache enabled and Redis is available)
-        from mirix.database.redis_client import get_redis_client
-
-        redis_client = get_redis_client()
-
-        if use_cache and redis_client:
-            try:
-                # Case 1: No query - get recent items (regardless of search_method)
-                if is_empty_query:
-                    logger.debug(
-                        "Searching cache for recent procedural items with filter_tags=%s",
-                        filter_tags,
-                    )
-                    results = await redis_client.search_recent(
-                        index_name=redis_client.PROCEDURAL_INDEX,
-                        limit=limit or 50,
-                        user_id=user.id,
-                        organization_id=organization_id,
-                        filter_tags=filter_tags,
-                        scopes=scopes,
-                    )
-                    logger.debug(
-                        "Cache search returned %d results",
-                        len(results) if results else 0,
-                    )
-                    if results:
-                        logger.debug(
-                            "Cache HIT: returned %d procedural items", len(results)
-                        )
-                        # Clean Redis-specific fields before Pydantic validation
-                        results = redis_client.clean_redis_fields(results)
-                        return [
-                            PydanticProceduralMemoryItem(**item) for item in results
-                        ]
-                    # If no results, fall through to PostgreSQL (don't return empty list)
-
-                # Case 2: Vector similarity search
-                elif search_method == "embedding":
-                    if embedded_text is None:
-                        import numpy as np
-
-                        from mirix.constants import MAX_EMBEDDING_DIM
-                        from mirix.embeddings import embedding_model
-
-                        embed_model = await embedding_model(
-                            agent_state.embedding_config
-                        )
-                        embedded_text = await embed_model.get_text_embedding(query)
-                        embedded_text = np.array(embedded_text)
-                        embedded_text = np.pad(
-                            embedded_text,
-                            (0, MAX_EMBEDDING_DIM - embedded_text.shape[0]),
-                            mode="constant",
-                        ).tolist()
-
-                    vector_field = (
-                        f"{search_field}_embedding"
-                        if search_field
-                        else "description_embedding"
-                    )
-
-                    results = await redis_client.search_vector(
-                        index_name=redis_client.PROCEDURAL_INDEX,
-                        embedding=embedded_text,
-                        vector_field=vector_field,
-                        limit=limit or 50,
-                        user_id=user.id,
-                        organization_id=organization_id,
-                        filter_tags=filter_tags,
-                        scopes=scopes,
-                    )
-                    if results:
-                        logger.debug(
-                            "Cache vector search HIT: found %d procedural items",
-                            len(results),
-                        )
-                        # Clean Redis-specific fields before Pydantic validation
-                        results = redis_client.clean_redis_fields(results)
-                        return [
-                            PydanticProceduralMemoryItem(**item) for item in results
-                        ]
-
-                elif search_method in ["bm25", "string_match"]:
-                    fields = (
-                        [search_field]
-                        if search_field
-                        else ["description", "instructions"]
-                    )
-
-                    results = await redis_client.search_text(
-                        index_name=redis_client.PROCEDURAL_INDEX,
-                        query=query,
-                        search_fields=fields,
-                        limit=limit or 50,
-                        user_id=user.id,
-                        organization_id=organization_id,
-                        filter_tags=filter_tags,
-                        scopes=scopes,
-                    )
-                    if results:
-                        logger.debug(
-                            "Cache text search HIT: found %d procedural items",
-                            len(results),
-                        )
-                        # Clean Redis-specific fields before Pydantic validation
-                        results = redis_client.clean_redis_fields(results)
-                        return [
-                            PydanticProceduralMemoryItem(**item) for item in results
-                        ]
-
-            except Exception as e:
-                logger.warning(
-                    "Cache search failed for procedural memory, falling back to PostgreSQL: %s",
-                    e,
-                )
-
-        # Log when bypassing cache or Redis unavailable
-        if not use_cache:
-            logger.debug(
-                "Bypassing cache (use_cache=False), querying PostgreSQL directly for procedural memory"
-            )
-        elif not redis_client:
-            logger.debug(
-                "Cache unavailable, querying PostgreSQL directly for procedural memory"
-            )
+            return ranked.items
 
         async with self.session_maker() as session:
             if query == "":
@@ -1322,344 +2928,316 @@ class ProceduralMemoryManager:
         filter_tags: Optional[dict] = None,
         use_cache: bool = True,
         user_id: Optional[str] = None,
+        run_id: Optional[str] = None,
+        actor_kind: Optional[str] = None,
     ) -> PydanticProceduralMemoryItem:
-        try:
-            # Conditionally calculate embeddings based on BUILD_EMBEDDINGS_FOR_MEMORY flag
-            if BUILD_EMBEDDINGS_FOR_MEMORY:
-                # TODO: need to check if we need to chunk the text
-                embed_model = await embedding_model(agent_state.embedding_config)
-                description_embedding = await embed_model.get_text_embedding(
-                    description
-                )
-                instructions_embedding = await embed_model.get_text_embedding(
-                    instructions
-                )
-                embedding_config = agent_state.embedding_config
-            else:
-                description_embedding = None
-                instructions_embedding = None
-                embedding_config = None
+        """Create a skill from its fields (the skill tools' create path).
 
-            # Set client_id from actor, user_id with fallback to DEFAULT_USER_ID
-            from mirix.services.user_manager import UserManager
-
-            client_id = actor.id  # Always derive from actor
-            if user_id is None:
-                user_id = UserManager.ADMIN_USER_ID
-
-            procedure = await self.create_item(
-                item_data=PydanticProceduralMemoryItem(
-                    name=name,
-                    entry_type=entry_type,
-                    description=description,
-                    instructions=instructions,
-                    triggers=triggers or [],
-                    examples=examples or [],
-                    version=version,
-                    user_id=user_id,
-                    agent_id=agent_id,
-                    organization_id=organization_id,
-                    description_embedding=description_embedding,
-                    instructions_embedding=instructions_embedding,
-                    embedding_config=embedding_config,
-                    filter_tags=filter_tags,
-                ),
-                actor=actor,
-                client_id=client_id,
-                user_id=user_id,
-                use_cache=use_cache,
-            )
-            return procedure
-
-        except Exception as e:
-            raise e
-
-    async def delete_procedure_by_id(
-        self,
-        procedure_id: str,
-        actor: PydanticClient,
-        user: Optional[PydanticUser] = None,
-    ) -> None:
-        """Delete a procedural memory item by ID (removes from cache).
-
-        Ownership is enforced on three axes so no code path gets weaker checks
-        than another:
-
-        * ``actor`` → organization-scope via ``apply_access_predicate`` (the
-          base ``read`` only runs access checks when ``actor`` is truthy).
-        * ``user`` → explicit ``user_id`` equality check after the row is
-          loaded. Relying on ``AccessType.USER`` alone is not enough because
-          callers historically passed only ``user`` without ``actor``, which
-          silently disables all access filtering in ``SqlalchemyBase.read``.
-          The post-load check is the belt-and-braces version.
+        The retrieval vector (name + triggers + description) is computed
+        with ``agent_state``'s embedding config by :meth:`apply_skill_change`.
+        ``user_id`` defaults to the admin user; ``client_id`` is the actor's.
+        ``use_cache`` is ignored.
         """
-        async with self.session_maker() as session:
-            try:
-                item = await ProceduralMemoryItem.read(
-                    db_session=session,
-                    identifier=procedure_id,
-                    actor=actor,
-                )
-            except NoResultFound:
-                raise NoResultFound(
-                    f"Procedural memory item with id {procedure_id} not found."
-                )
+        del use_cache
+        from mirix.services.user_manager import UserManager
 
-            if user is not None and getattr(item, "user_id", None) != user.id:
-                # Hide the record entirely — a distinct "forbidden" response
-                # would leak existence of skills that belong to other users
-                # under the same org.
-                raise NoResultFound(
-                    f"Procedural memory item with id {procedure_id} not found."
-                )
-
-            # Remove from cache
-            from mirix.database.cache_provider import get_cache_provider
-
-            cache_provider = get_cache_provider()
-            if cache_provider:
-                cache_key = f"{cache_provider.PROCEDURAL_PREFIX}{procedure_id}"
-                await cache_provider.delete(cache_key)
-            await item.hard_delete(session)
+        if user_id is None:
+            user_id = UserManager.ADMIN_USER_ID
+        result = await self.apply_skill_change(
+            history.CHANGE_CREATE,
+            actor=actor,
+            user_id=user_id,
+            fields={
+                "name": name,
+                "entry_type": entry_type,
+                "description": description,
+                "instructions": instructions,
+                "triggers": triggers or [],
+                "examples": examples or [],
+                "version": version,
+                "agent_id": agent_id,
+                "client_id": actor.id,
+                "organization_id": organization_id,
+                "filter_tags": filter_tags,
+            },
+            agent_state=agent_state,
+            run_id=run_id,
+            actor_kind=actor_kind or ACTOR_AGENT,
+        )
+        return result.skill
 
     async def soft_delete_procedure_by_id(
         self,
         procedure_id: str,
         actor: PydanticClient,
         user: Optional[PydanticUser] = None,
+        reason: Optional[str] = None,
+        run_id: Optional[str] = None,
+        actor_kind: Optional[str] = None,
+    ) -> SkillChangeResult:
+        """Soft-delete a skill: ``is_deleted`` plus a ``delete`` version
+        carrying ``reason``, via :meth:`apply_skill_change`. It leaves retrieval
+        and every read, its name becomes free again, and it can be
+        restored from its history. Access: the actor's organization, and
+        ``user`` (when given) must own it."""
+        return await self.apply_skill_change(
+            history.CHANGE_DELETE,
+            actor=actor,
+            user_id=user.id if user is not None else None,
+            skill_id=procedure_id,
+            run_id=run_id,
+            actor_kind=actor_kind or ACTOR_API,
+            reason=reason,
+        )
+
+    # ------------------------------------------------------------------ #
+    # Hard delete = erasure: the skill, its whole history, and the        #
+    # objects no other version references, in one transaction under the   #
+    # EXCLUSIVE org lock.                                                  #
+    # ------------------------------------------------------------------ #
+
+    async def delete_procedure_by_id(
+        self,
+        procedure_id: str,
+        actor: PydanticClient,
+        user: Optional[PydanticUser] = None,
+        user_id: Optional[str] = None,
+        scopes: Optional[Sequence[str]] = None,
     ) -> None:
-        """Soft-delete a skill: flag ``is_deleted=True`` so it is excluded from
-        retrieval (`read`/`list_procedures` filter `~is_deleted`) WITHOUT
-        destroying the row. This is the curator's PREFERRED delete (C4, P1-4):
-        it is reversible (un-set the flag) and keeps the skill auditable, unlike
-        the hard ``delete_procedure_by_id`` which removes it entirely.
+        """Erase a skill (live or soft-deleted) with its whole version history:
+        the skill row, every version, and the objects no other version
+        of the organization references — one transaction, under the exclusive
+        org advisory lock the object collector needs.
 
-        Same three-axis ownership enforcement as ``delete_procedure_by_id``.
+        Ownership: ``actor`` → the skill must be in its organization;
+        ``user`` / ``user_id`` → the skill must belong to that user; ``scopes``
+        → its ``filter_tags.scope`` must be one of them (checked in the
+        purge transaction itself). A skill outside any of them is
+        :class:`NoResultFound` (existence is never leaked).
         """
-        async with self.session_maker() as session:
-            try:
-                item = await ProceduralMemoryItem.read(
-                    db_session=session,
-                    identifier=procedure_id,
-                    actor=actor,
-                )
-            except NoResultFound:
-                raise NoResultFound(
-                    f"Procedural memory item with id {procedure_id} not found."
-                )
-
-            if user is not None and getattr(item, "user_id", None) != user.id:
-                raise NoResultFound(
-                    f"Procedural memory item with id {procedure_id} not found."
-                )
-
-            # Evict the cache so the soft-deleted skill stops being served.
-            from mirix.database.cache_provider import get_cache_provider
-
-            cache_provider = get_cache_provider()
-            if cache_provider:
-                cache_key = f"{cache_provider.PROCEDURAL_PREFIX}{procedure_id}"
-                await cache_provider.delete(cache_key)
-
-            item.is_deleted = True
-            session.add(item)
-            await session.commit()
+        org = _resolve_org(actor.organization_id)
+        owner = user.id if user is not None else user_id
+        deleted = await self._purge_skills(
+            filters=[
+                ProceduralMemoryItem.id == procedure_id,
+                ProceduralMemoryItem.organization_id == org,
+                *([ProceduralMemoryItem.user_id == owner] if owner is not None else []),
+            ],
+            scopes=scopes,
+        )
+        if not deleted:
+            raise NoResultFound(
+                f"Procedural memory item with id {procedure_id} not found."
+            )
 
     @enforce_types
     async def delete_by_client_id(self, actor: PydanticClient) -> int:
+        """Erase every skill a client created, with their histories.
+
+        Returns the number of skills deleted.
         """
-        Bulk delete all procedural memory records for a client (removes from Redis cache).
-        Optimized with single DB query and batch Redis deletion.
-
-        Args:
-            actor: Client whose memories to delete (uses actor.id as client_id)
-
-        Returns:
-            Number of records deleted
-        """
-        from mirix.database.redis_client import get_redis_client
-
-        async with self.session_maker() as session:
-            # Get IDs for Redis cleanup (only fetch IDs, not full objects)
-            result = await session.execute(
-                select(ProceduralMemoryItem.id).where(
-                    ProceduralMemoryItem.client_id == actor.id
-                )
-            )
-            item_ids = [row[0] for row in result.all()]
-
-            count = len(item_ids)
-            if count == 0:
-                return 0
-
-            # Bulk delete in single query
-            await session.execute(
-                delete(ProceduralMemoryItem).where(
-                    ProceduralMemoryItem.client_id == actor.id
-                )
-            )
-
-            await session.commit()
-
-        # Batch delete from Redis cache (outside of session context)
-        redis_client = get_redis_client()
-        if redis_client and item_ids:
-            redis_keys = [
-                f"{redis_client.PROCEDURAL_PREFIX}{item_id}" for item_id in item_ids
-            ]
-
-            # Delete in batches to avoid command size limits
-            BATCH_SIZE = 1000
-            for i in range(0, len(redis_keys), BATCH_SIZE):
-                batch = redis_keys[i : i + BATCH_SIZE]
-                await redis_client.client.delete(*batch)
-
-        return count
-
-    async def soft_delete_by_client_id(self, actor: PydanticClient) -> int:
-        """
-        Bulk soft delete all procedural memory records for a client (updates Redis cache).
-
-        Args:
-            actor: Client whose memories to soft delete (uses actor.id as client_id)
-
-        Returns:
-            Number of records soft deleted
-        """
-        from mirix.database.redis_client import get_redis_client
-
-        async with self.session_maker() as session:
-            # Query all non-deleted records for this client (use actor.id)
-            result = await session.execute(
-                select(ProceduralMemoryItem).where(
-                    ProceduralMemoryItem.client_id == actor.id,
-                    ProceduralMemoryItem.is_deleted == False,
-                )
-            )
-            items = result.scalars().all()
-
-            count = len(items)
-            if count == 0:
-                return 0
-
-            # Extract IDs BEFORE committing (to avoid detached instance errors)
-            item_ids = [item.id for item in items]
-
-            # Soft delete from database (set is_deleted = True directly, don't call item.delete())
-            for item in items:
-                item.is_deleted = True
-                item.set_updated_at()
-
-            await session.commit()
-
-        # Invalidate Redis cache (procedural keys are JSON type, not hash; delete to avoid WRONGTYPE)
-        redis_client = get_redis_client()
-        if redis_client:
-            for item_id in item_ids:
-                redis_key = f"{redis_client.PROCEDURAL_PREFIX}{item_id}"
-                try:
-                    await redis_client.delete(redis_key)
-                except Exception:
-                    pass
-
-        return count
-
-    async def soft_delete_by_user_id(self, user_id: str) -> int:
-        """
-        Bulk soft delete all procedural memory records for a user (updates Redis cache).
-
-        Args:
-            user_id: ID of the user whose memories to soft delete
-
-        Returns:
-            Number of records soft deleted
-        """
-        from mirix.database.redis_client import get_redis_client
-
-        async with self.session_maker() as session:
-            # Query all non-deleted records for this user
-            result = await session.execute(
-                select(ProceduralMemoryItem).where(
-                    ProceduralMemoryItem.user_id == user_id,
-                    ProceduralMemoryItem.is_deleted == False,
-                )
-            )
-            items = result.scalars().all()
-
-            count = len(items)
-            if count == 0:
-                return 0
-
-            # Extract IDs BEFORE committing (to avoid detached instance errors)
-            item_ids = [item.id for item in items]
-
-            # Soft delete from database (set is_deleted = True directly, don't call item.delete())
-            for item in items:
-                item.is_deleted = True
-                item.set_updated_at()
-
-            await session.commit()
-
-        # Invalidate Redis cache (procedural keys are JSON type, not hash; delete to avoid WRONGTYPE)
-        redis_client = get_redis_client()
-        if redis_client:
-            for item_id in item_ids:
-                redis_key = f"{redis_client.PROCEDURAL_PREFIX}{item_id}"
-                try:
-                    await redis_client.delete(redis_key)
-                except Exception:
-                    pass
-
-        return count
+        return await self._purge_skills(
+            filters=[ProceduralMemoryItem.client_id == actor.id]
+        )
 
     async def delete_by_user_id(self, user_id: str) -> int:
+        """Erase every skill of a user and the user's whole skill history.
+
+        Returns the number of skills deleted.
         """
-        Bulk hard delete all procedural memory records for a user (removes from Redis cache).
-        Optimized with single DB query and batch Redis deletion.
+        return await self._purge_skills(
+            filters=[ProceduralMemoryItem.user_id == user_id],
+            version_user_id=user_id,
+        )
 
-        Args:
-            user_id: ID of the user whose memories to delete
+    async def _purge_skills(
+        self,
+        *,
+        filters: List[Any],
+        version_user_id: Optional[str] = None,
+        scopes: Optional[Sequence[str]] = None,
+    ) -> int:
+        """Hard-delete the skills matching ``filters`` (and ``scopes``)
+        and, with ``version_user_id``, every version of that user, plus the
+        objects left unreferenced. Returns the number of skill rows deleted.
 
-        Returns:
-            Number of records deleted
+        The organizations to lock come from a first, unlocked read; the rows
+        and versions are then read again under their exclusive locks. When the
+        second read reaches an organization the first did not (a skill written
+        meanwhile in another organization), the transaction is rolled back
+        and repeated with that organization locked too: objects are never
+        collected in an organization whose exclusive lock is not held.
         """
-        from mirix.database.redis_client import get_redis_client
 
-        async with self.session_maker() as session:
-            # Get IDs for Redis cleanup (only fetch IDs, not full objects)
-            result = await session.execute(
-                select(ProceduralMemoryItem.id).where(
-                    ProceduralMemoryItem.user_id == user_id
+        def _targets():
+            stmt = select(
+                ProceduralMemoryItem.id, ProceduralMemoryItem.organization_id
+            ).where(*filters)
+            if scopes is not None:
+                from mirix.database.filter_tags_query import (
+                    apply_filter_tags_sqlalchemy,
+                )
+
+                stmt = apply_filter_tags_sqlalchemy(
+                    stmt, ProceduralMemoryItem, None, scopes=list(scopes)
+                )
+            return stmt
+
+        async def _attempt(extra_orgs: set) -> int:
+            async with self.session_maker() as db:
+                async with db.begin():
+                    rows = (await db.execute(_targets())).all()
+                    orgs = {_resolve_org(org) for _, org in rows} | extra_orgs
+                    if version_user_id is not None:
+                        orgs |= {
+                            _resolve_org(org)
+                            for (org,) in (
+                                await db.execute(
+                                    select(SkillVersionModel.organization_id)
+                                    .where(SkillVersionModel.user_id == version_user_id)
+                                    .distinct()
+                                )
+                            ).all()
+                        }
+                    if not rows and not orgs:
+                        return 0
+                    await history.lock_for_purge(db, organization_ids=orgs)
+                    # Re-read under the lock: the set may have changed.
+                    rows = (await db.execute(_targets())).all()
+                    skill_ids = sorted({skill_id for skill_id, _ in rows})
+                    version_filter = []
+                    if skill_ids:
+                        version_filter.append(SkillVersionModel.skill_id.in_(skill_ids))
+                    if version_user_id is not None:
+                        version_filter.append(SkillVersionModel.user_id == version_user_id)
+                    candidates: Dict[str, set] = {}
+                    versions = []
+                    if version_filter:
+                        versions = (
+                            await db.execute(
+                                select(SkillVersionModel).where(or_(*version_filter))
+                            )
+                        ).scalars().all()
+                        for version in versions:
+                            candidates.setdefault(
+                                _resolve_org(version.organization_id), set()
+                            ).update(history.version_hashes(version).values())
+                    unlocked = (
+                        {_resolve_org(org) for _, org in rows} | set(candidates)
+                    ) - orgs
+                    if unlocked:
+                        raise _PurgeReachedUnlockedOrgs(unlocked)
+                    if versions:
+                        # Explicit, not only through ON DELETE CASCADE: the
+                        # filter also reaches a user's versions whatever skill
+                        # row they hang off, and a database whose foreign key
+                        # lacks the cascade still ends up without history.
+                        await db.execute(
+                            delete(SkillVersionModel)
+                            .where(or_(*version_filter))
+                            .execution_options(synchronize_session=False)
+                        )
+                    if skill_ids:
+                        await db.execute(
+                            delete(ProceduralMemoryItem)
+                            .where(ProceduralMemoryItem.id.in_(skill_ids))
+                            .execution_options(synchronize_session=False)
+                        )
+                    for organization_id, shas in sorted(candidates.items()):
+                        await history.purge_unreferenced_objects(
+                            db, organization_id=organization_id, candidates=shas
+                        )
+                    return len(skill_ids)
+
+        async def _once() -> int:
+            extra: set = set()
+            for _ in range(_MAX_PURGE_LOCK_ROUNDS):
+                try:
+                    return await _attempt(extra)
+                except _PurgeReachedUnlockedOrgs as grew:
+                    logger.info(
+                        "Skill purge reached organization(s) %s it had not "
+                        "locked; repeating with them locked",
+                        sorted(grew.organization_ids),
+                    )
+                    extra |= grew.organization_ids
+            raise RuntimeError(
+                "skill purge: the set of organizations kept growing under the lock"
+            )
+
+        return await retry_call(_once, stage="skill_purge")
+
+    async def purge_organization_history(self, db, organization_id: str) -> None:
+        """In ``db``'s open transaction: delete every skill version and object
+        of an organization, under its exclusive org lock — the organization
+        itself is about to be deleted (its skills go with it)."""
+        await history.lock_for_purge(db, organization_ids=[organization_id])
+        skill_ids = select(ProceduralMemoryItem.id).where(
+            ProceduralMemoryItem.organization_id == organization_id
+        )
+        await db.execute(
+            delete(SkillVersionModel)
+            .where(
+                or_(
+                    SkillVersionModel.organization_id == organization_id,
+                    SkillVersionModel.skill_id.in_(skill_ids),
                 )
             )
-            item_ids = [row[0] for row in result.all()]
+            .execution_options(synchronize_session=False)
+        )
+        await db.execute(
+            delete(SkillObjectModel)
+            .where(SkillObjectModel.organization_id == organization_id)
+            .execution_options(synchronize_session=False)
+        )
 
-            count = len(item_ids)
-            if count == 0:
-                return 0
+    # ------------------------------------------------------------------ #
+    # Bulk soft deletes (user / client soft deletion)                     #
+    # ------------------------------------------------------------------ #
 
-            # Bulk delete in single query
-            await session.execute(
-                delete(ProceduralMemoryItem).where(
-                    ProceduralMemoryItem.user_id == user_id
+    async def soft_delete_by_client_id(self, actor: PydanticClient) -> int:
+        """Soft-delete every live skill a client created — each one a ``delete``
+        change through :meth:`apply_skill_change`. Returns how many."""
+        return await self._soft_delete_all(
+            filters=[ProceduralMemoryItem.client_id == actor.id],
+            actor=actor,
+            reason="client deleted",
+        )
+
+    async def soft_delete_by_user_id(self, user_id: str) -> int:
+        """Soft-delete every live skill of a user — each one a ``delete``
+        change through :meth:`apply_skill_change`. Returns how many."""
+        return await self._soft_delete_all(
+            filters=[ProceduralMemoryItem.user_id == user_id],
+            actor=None,
+            reason="user deleted",
+        )
+
+    async def _soft_delete_all(
+        self, *, filters: List[Any], actor: Optional[PydanticClient], reason: str
+    ) -> int:
+        async with self.session_maker() as db:
+            skill_ids = (
+                await db.execute(
+                    select(ProceduralMemoryItem.id)
+                    .where(*filters, ~ProceduralMemoryItem.is_deleted)
+                    .order_by(ProceduralMemoryItem.id)
                 )
-            )
-
-            await session.commit()
-
-        # Batch delete from Redis cache (outside of session context)
-        redis_client = get_redis_client()
-        if redis_client and item_ids:
-            redis_keys = [
-                f"{redis_client.PROCEDURAL_PREFIX}{item_id}" for item_id in item_ids
-            ]
-
-            # Delete in batches to avoid command size limits
-            BATCH_SIZE = 1000
-            for i in range(0, len(redis_keys), BATCH_SIZE):
-                batch = redis_keys[i : i + BATCH_SIZE]
-                await redis_client.client.delete(*batch)
-
+            ).scalars().all()
+        count = 0
+        for skill_id in skill_ids:
+            try:
+                await self.apply_skill_change(
+                    history.CHANGE_DELETE,
+                    actor=None,
+                    user_id=None,
+                    skill_id=skill_id,
+                    actor_kind=ACTOR_SYSTEM,
+                    reason=reason,
+                )
+            except NoResultFound:
+                continue  # deleted meanwhile
+            count += 1
         return count
 
     @update_timezone
@@ -1687,9 +3265,10 @@ class ProceduralMemoryManager:
         # reaches the Vector(4096) PG column or DIM=4096 Redis index unpadded.
         embedded_text = _pad_to_max(embedded_text)
 
-        # Hybrid retrieval (EverOS-aligned) intercepted at the TOP — before the
-        # cache block, whose `else` branch would otherwise feed "hybrid" to
-        # search_text_by_org as if it were a text method. See
+        # An embedding search on `instructions` runs as full-text search.
+        search_method = effective_procedural_search_method(search_method, search_field)
+
+        # Hybrid retrieval (EverOS-aligned) intercepted at the TOP. See
         # _hybrid_search_for_org. Empty queries fall through to recent-items.
         if search_method == "hybrid" and query and query.strip():
             return await self._hybrid_search_for_org(
@@ -1705,90 +3284,6 @@ class ProceduralMemoryManager:
                 use_cache=use_cache,
                 similarity_threshold=similarity_threshold,
             )
-
-        from mirix.database.redis_client import get_redis_client
-
-        redis_client = get_redis_client()
-
-        if use_cache and redis_client:
-            try:
-                if not query or query == "":
-                    results = await redis_client.search_recent_by_org(
-                        index_name=redis_client.PROCEDURAL_INDEX,
-                        limit=limit or 50,
-                        organization_id=organization_id,
-                        sort_by="created_at_ts",
-                        filter_tags=filter_tags,
-                        scopes=scopes,
-                    )
-                    if results:
-                        logger.debug(
-                            "Cache: %d procedural memories for org %s",
-                            len(results),
-                            organization_id,
-                        )
-                        results = redis_client.clean_redis_fields(results)
-                        return [
-                            PydanticProceduralMemoryItem(**item) for item in results
-                        ]
-
-                elif search_method == "embedding":
-                    if embedded_text is None:
-                        import numpy as np
-
-                        from mirix.constants import MAX_EMBEDDING_DIM
-                        from mirix.embeddings import embedding_model
-
-                        embedded_text = await (
-                            await embedding_model(agent_state.embedding_config)
-                        ).get_text_embedding(query)
-                        embedded_text = np.array(embedded_text)
-                        embedded_text = np.pad(
-                            embedded_text,
-                            (0, MAX_EMBEDDING_DIM - embedded_text.shape[0]),
-                            mode="constant",
-                        ).tolist()
-
-                    vector_field = (
-                        f"{search_field}_embedding"
-                        if search_field
-                        else "description_embedding"
-                    )
-                    results = await redis_client.search_vector_by_org(
-                        index_name=redis_client.PROCEDURAL_INDEX,
-                        embedding=embedded_text,
-                        vector_field=vector_field,
-                        limit=limit or 50,
-                        organization_id=organization_id,
-                        filter_tags=filter_tags,
-                        scopes=scopes,
-                    )
-                    if results:
-                        logger.debug("Cache vector: %d results", len(results))
-                        results = redis_client.clean_redis_fields(results)
-                        return [
-                            PydanticProceduralMemoryItem(**item) for item in results
-                        ]
-
-                else:
-                    results = await redis_client.search_text_by_org(
-                        index_name=redis_client.PROCEDURAL_INDEX,
-                        query_text=query,
-                        search_field=search_field or "description",
-                        search_method=search_method,
-                        limit=limit or 50,
-                        organization_id=organization_id,
-                        filter_tags=filter_tags,
-                        scopes=scopes,
-                    )
-                    if results:
-                        logger.debug("Cache text: %d results", len(results))
-                        results = redis_client.clean_redis_fields(results)
-                        return [
-                            PydanticProceduralMemoryItem(**item) for item in results
-                        ]
-            except Exception as e:
-                logger.warning("Cache search failed: %s", e)
 
         async with self.session_maker() as session:
             base_query = (
@@ -1821,8 +3316,6 @@ class ProceduralMemoryManager:
             if search_method == "embedding":
                 embedding_config = agent_state.embedding_config
                 if embedded_text is None:
-                    from mirix.embeddings import embedding_model
-
                     # Pad to MAX_EMBEDDING_DIM so a raw (e.g. 3072-dim) query
                     # vector matches the Vector(4096) column. (Caller-supplied
                     # embeddings are already padded at function entry above.)
@@ -1832,13 +3325,9 @@ class ProceduralMemoryManager:
                         ).get_text_embedding(query)
                     )
 
-                # Determine which embedding field to search
-                if search_field == "description":
-                    embedding_field = ProceduralMemoryItem.description_embedding
-                elif search_field == "instructions":
-                    embedding_field = ProceduralMemoryItem.instructions_embedding
-                else:
-                    embedding_field = ProceduralMemoryItem.description_embedding
+                # The single retrieval vector (instructions searches were
+                # already rerouted to full-text at the top).
+                embedding_field = ProceduralMemoryItem.retrieval_embedding
 
                 embedding_query_field = embedding_field.cosine_distance(
                     embedded_text

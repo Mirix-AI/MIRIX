@@ -1,0 +1,21 @@
+{
+  "comment": "How the MIRIX method sets up MIRIX for one cell. Only the fields listed here are sent; every other MIRIX setting keeps MIRIX's default. The cell fills in the rest: llm_config.model (the cell's model), model_endpoint (gateway role 'mirix'), context_window and max_output_tokens (config/models.json), embedding_config.embedding_endpoint (gateway role 'embedding'), embedding_model (protocol.EMBEDDING_MODEL) and api_key (the gateway's local credential, never a provider key). Each cell has its own MIRIX database, so the ids can be the same in every cell.",
+  "organization": {"org_id": "skill-bench-org", "name": "skill-bench"},
+  "client": {
+    "client_id": "skill-bench-client",
+    "name": "skill-bench",
+    "write_scope": "skill_bench",
+    "read_scopes": ["skill_bench"],
+    "status": "active"
+  },
+  "user": {"user_id": "skill-bench-user", "name": "skill-bench-user"},
+  "llm_config": {"model_endpoint_type": "openai"},
+  "embedding_config": {"embedding_endpoint_type": "openrouter", "embedding_dim": 3072},
+  "embedding_dim_note": "gemini-embedding-001 returns 3,072 dimensions (its native size); MIRIX pads every vector to 4,096 itself (MAX_EMBEDDING_DIM).",
+  "session_tag": "task",
+  "memory_types": ["procedural"],
+  "retrieve_limit": 10,
+  "retrieve_limit_note": "MirixClient.retrieve_with_conversation's default limit (mirix/client/remote_client.py), which the method's retrieval call leaves unchanged.",
+  "flush_close_open_sessions": false,
+  "flush_note": "The method's finalize calls flush_skills() with its defaults; after_task has already closed every learning session."
+}

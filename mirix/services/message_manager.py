@@ -9,6 +9,11 @@ from mirix.schemas.client import Client as PydanticClient
 from mirix.schemas.enums import MessageRole
 from mirix.schemas.message import Message as PydanticMessage
 from mirix.schemas.message import MessageUpdate
+from mirix.services.image_store import (
+    message_image_ids,
+    release_message_images,
+    unlink_image_paths,
+)
 from mirix.services.utils import update_timezone
 from mirix.utils import enforce_types
 
@@ -193,9 +198,13 @@ class MessageManager:
                 if cache_provider:
                     cache_key = f"{cache_provider.MESSAGE_PREFIX}{message_id}"
                     await cache_provider.delete(cache_key)
+                image_ids = message_image_ids([msg.content])
                 await msg.hard_delete(session, actor=actor)
             except NoResultFound:
                 raise ValueError(f"Message with id {message_id} not found.")
+            released = await release_message_images(session, file_ids=image_ids)
+            await session.commit()
+        await unlink_image_paths(released, session_maker=self.session_maker)
 
     @enforce_types
     async def delete_by_client_id(self, actor: PydanticClient) -> int:
@@ -215,12 +224,13 @@ class MessageManager:
 
         async with self.session_maker() as session:
             # Get IDs for non-system messages only (preserve system messages)
-            stmt = select(MessageModel.id).where(
+            stmt = select(MessageModel.id, MessageModel.content).where(
                 MessageModel.client_id == actor.id,
                 MessageModel.role != MessageRole.system,
             )
             result = await session.execute(stmt)
-            message_ids = [row[0] for row in result.all()]
+            fetched = result.all()
+            message_ids = [row[0] for row in fetched]
 
             count = len(message_ids)
             if count == 0:
@@ -235,7 +245,14 @@ class MessageManager:
                     MessageModel.role != MessageRole.system,
                 )
             )
+            # The images these messages carried (the meta agent's copies of
+            # conversation images) go with them unless another message still
+            # references them.
+            released = await release_message_images(
+                session, file_ids=message_image_ids(row[1] for row in fetched)
+            )
             await session.commit()
+        await unlink_image_paths(released, session_maker=self.session_maker)
 
         # Batch delete from Redis cache (outside of session context)
         redis_client = get_redis_client()
@@ -364,12 +381,13 @@ class MessageManager:
 
         async with self.session_maker() as session:
             # Get IDs for non-system messages only (preserve system messages)
-            stmt = select(MessageModel.id).where(
+            stmt = select(MessageModel.id, MessageModel.content).where(
                 MessageModel.user_id == user_id,
                 MessageModel.role != MessageRole.system,
             )
             result = await session.execute(stmt)
-            message_ids = [row[0] for row in result.all()]
+            fetched = result.all()
+            message_ids = [row[0] for row in fetched]
 
             count = len(message_ids)
             if count == 0:
@@ -382,7 +400,13 @@ class MessageManager:
                     MessageModel.role != MessageRole.system,
                 )
             )
+            # Their images too — including legacy files rows that carry no
+            # user_id — unless another message still references them.
+            released = await release_message_images(
+                session, file_ids=message_image_ids(row[1] for row in fetched)
+            )
             await session.commit()
+        await unlink_image_paths(released, session_maker=self.session_maker)
 
         # Batch delete from Redis cache (outside of session context)
         redis_client = get_redis_client()
@@ -664,6 +688,7 @@ class MessageManager:
 
             redis_client = get_redis_client()
 
+            image_ids = message_image_ids(msg.content for msg in detached_messages)
             for msg in detached_messages:
                 # Remove from Redis cache
                 if redis_client:
@@ -672,8 +697,12 @@ class MessageManager:
                 await msg.hard_delete(session, actor=actor)
                 deleted_count += 1
 
+            # The images only the deleted messages referenced (e.g. the meta
+            # agent's copies of conversation images) go with them.
+            released = await release_message_images(session, file_ids=image_ids)
             await session.commit()
-            return deleted_count
+        await unlink_image_paths(released, session_maker=self.session_maker)
+        return deleted_count
 
     @enforce_types
     async def cleanup_all_detached_messages(self, actor: PydanticClient) -> Dict[str, int]:
@@ -703,6 +732,7 @@ class MessageManager:
 
             cleanup_results = {}
             total_deleted = 0
+            image_ids: List[str] = []
 
             for agent in agents:
                 # Get current message_ids for this agent
@@ -724,6 +754,9 @@ class MessageManager:
 
                 redis_client = get_redis_client()
 
+                image_ids.extend(
+                    message_image_ids(msg.content for msg in detached_messages)
+                )
                 for msg in detached_messages:
                     # Remove from Redis cache
                     if redis_client:
@@ -735,6 +768,8 @@ class MessageManager:
                 cleanup_results[agent.id] = deleted_count
                 total_deleted += deleted_count
 
+            released = await release_message_images(session, file_ids=image_ids)
             await session.commit()
             cleanup_results["total"] = total_deleted
-            return cleanup_results
+        await unlink_image_paths(released, session_maker=self.session_maker)
+        return cleanup_results

@@ -1,0 +1,379 @@
+{
+ "_comment": "Subset of the public OpenRouter metadata used to generate config/models.json: openai/gpt-6-luna, z-ai/glm-5.3-flash and google/gemini-embedding-001 as fetched 2026-09-29T03:37:30+00:00; openai/gpt-5.6-luna (luna56, 2026-10-03) as fetched 2026-10-03T09:32:06+00:00, added by fetch_models --keep-frozen, which kept the other records.",
+ "chat": {
+  "data": [
+   {
+    "id": "openai/gpt-6-luna",
+    "canonical_slug": "openai/gpt-6-luna-20260922",
+    "hugging_face_id": null,
+    "name": "OpenAI: GPT-6 Luna",
+    "created": 1790100786,
+    "description": "GPT-6 Luna is the fast, cost-efficient model in OpenAI's GPT-6 series, positioned below GPT-6 Sol. It is suited for high-volume and latency-sensitive workloads such as chat, classification, and lightweight agentic...",
+    "context_length": 1050000,
+    "architecture": {
+     "modality": "text+image+file->text",
+     "input_modalities": [
+      "file",
+      "image",
+      "text"
+     ],
+     "output_modalities": [
+      "text"
+     ],
+     "tokenizer": "GPT",
+     "instruct_type": null
+    },
+    "pricing": {
+     "prompt": "0.0000001",
+     "completion": "0.0000005",
+     "web_search": "0.01",
+     "input_cache_read": "0.00000001",
+     "input_cache_write": "0.000000125",
+     "overrides": [
+      {
+       "min_prompt_tokens": 272000,
+       "prompt": "0.0000002",
+       "completion": "0.00000075",
+       "input_cache_read": "0.00000002",
+       "input_cache_write": "0.00000025"
+      }
+     ]
+    },
+    "top_provider": {
+     "context_length": 1050000,
+     "max_completion_tokens": 128000,
+     "is_moderated": true
+    },
+    "per_request_limits": null,
+    "supported_parameters": [
+     "include_reasoning",
+     "max_completion_tokens",
+     "max_tokens",
+     "reasoning",
+     "reasoning_effort",
+     "response_format",
+     "seed",
+     "structured_outputs",
+     "tool_choice",
+     "tools"
+    ],
+    "default_parameters": {
+     "temperature": null,
+     "top_p": null,
+     "top_k": null,
+     "frequency_penalty": null,
+     "presence_penalty": null,
+     "repetition_penalty": null
+    },
+    "supported_voices": null,
+    "knowledge_cutoff": null,
+    "expiration_date": null,
+    "links": {
+     "details": "/api/v1/models/openai/gpt-6-luna-20260922/endpoints"
+    },
+    "benchmarks": {
+     "design_arena": [],
+     "artificial_analysis": {
+      "intelligence_index": 37.3,
+      "coding_index": null,
+      "agentic_index": null
+     }
+    },
+    "reasoning": {
+     "mandatory": false,
+     "default_enabled": true,
+     "supported_efforts": [
+      "max",
+      "xhigh",
+      "high",
+      "medium",
+      "low",
+      "none"
+     ],
+     "default_effort": "medium"
+    }
+   },
+   {
+    "id": "openai/gpt-5.6-luna",
+    "canonical_slug": "openai/gpt-5.6-luna-20260709",
+    "hugging_face_id": null,
+    "name": "OpenAI: GPT-5.6 Luna",
+    "created": 1783590864,
+    "description": "GPT-5.6 Luna is a fast, cost-efficient model in OpenAI's GPT-5.6 series. It is suited for high-volume, latency-sensitive tasks such as chat, classification, and lightweight agentic workflows, providing capable reasoning for...",
+    "context_length": 1050000,
+    "architecture": {
+     "modality": "text+image+file->text",
+     "input_modalities": [
+      "file",
+      "image",
+      "text"
+     ],
+     "output_modalities": [
+      "text"
+     ],
+     "tokenizer": "GPT",
+     "instruct_type": null
+    },
+    "pricing": {
+     "prompt": "0.0000002",
+     "completion": "0.0000012",
+     "web_search": "0.01",
+     "input_cache_read": "0.00000002",
+     "input_cache_write": "0.00000025",
+     "overrides": [
+      {
+       "min_prompt_tokens": 272000,
+       "prompt": "0.0000004",
+       "completion": "0.0000018",
+       "input_cache_read": "0.00000004",
+       "input_cache_write": "0.0000005"
+      }
+     ]
+    },
+    "top_provider": {
+     "context_length": 1050000,
+     "max_completion_tokens": 128000,
+     "is_moderated": true
+    },
+    "per_request_limits": null,
+    "supported_parameters": [
+     "include_reasoning",
+     "max_completion_tokens",
+     "max_tokens",
+     "reasoning",
+     "reasoning_effort",
+     "response_format",
+     "seed",
+     "structured_outputs",
+     "tool_choice",
+     "tools",
+     "verbosity"
+    ],
+    "default_parameters": {
+     "temperature": null,
+     "top_p": null,
+     "top_k": null,
+     "frequency_penalty": null,
+     "presence_penalty": null,
+     "repetition_penalty": null
+    },
+    "supported_voices": null,
+    "knowledge_cutoff": "2026-02-16",
+    "expiration_date": null,
+    "links": {
+     "details": "/api/v1/models/openai/gpt-5.6-luna-20260709/endpoints"
+    },
+    "benchmarks": {
+     "design_arena": [],
+     "artificial_analysis": {
+      "intelligence_index": 37.3,
+      "coding_index": 71.4,
+      "agentic_index": 42.1
+     }
+    },
+    "reasoning": {
+     "mandatory": false,
+     "default_enabled": true,
+     "supported_efforts": [
+      "max",
+      "xhigh",
+      "high",
+      "medium",
+      "low",
+      "none"
+     ],
+     "default_effort": "medium"
+    }
+   },
+   {
+    "id": "z-ai/glm-5.3-flash",
+    "canonical_slug": "z-ai/glm-5.3-flash-20260826",
+    "hugging_face_id": "zai-org/GLM-5.3-Flash",
+    "name": "Z.ai: GLM 5.3 Flash",
+    "created": 1787752741,
+    "description": "GLM-5.3-Flash is a native multimodal model from Z.ai. It is suited for efficient coding and long-horizon agent tasks. Its hybrid sparse and linear attention architecture maintains accurate long-context behavior while...",
+    "context_length": 1310720,
+    "architecture": {
+     "modality": "text+image+video->text",
+     "input_modalities": [
+      "text",
+      "image",
+      "video"
+     ],
+     "output_modalities": [
+      "text"
+     ],
+     "tokenizer": "Other",
+     "instruct_type": null
+    },
+    "pricing": {
+     "prompt": "0.00000015",
+     "completion": "0.0000005",
+     "input_cache_read": "0.00000003"
+    },
+    "top_provider": {
+     "context_length": 1048575,
+     "max_completion_tokens": 943717,
+     "is_moderated": false
+    },
+    "per_request_limits": null,
+    "supported_parameters": [
+     "frequency_penalty",
+     "include_reasoning",
+     "logit_bias",
+     "logprobs",
+     "max_tokens",
+     "min_p",
+     "parallel_tool_calls",
+     "presence_penalty",
+     "reasoning",
+     "reasoning_effort",
+     "repetition_penalty",
+     "response_format",
+     "seed",
+     "stop",
+     "structured_outputs",
+     "temperature",
+     "tool_choice",
+     "tools",
+     "top_k",
+     "top_logprobs",
+     "top_p"
+    ],
+    "default_parameters": {
+     "temperature": 1,
+     "top_p": 0.95
+    },
+    "supported_voices": null,
+    "knowledge_cutoff": null,
+    "expiration_date": null,
+    "links": {
+     "details": "/api/v1/models/z-ai/glm-5.3-flash-20260826/endpoints"
+    },
+    "benchmarks": {
+     "design_arena": [
+      {
+       "arena": "models",
+       "category": "3d",
+       "elo": 1336,
+       "win_rate": 56.9,
+       "rank": 11
+      },
+      {
+       "arena": "models",
+       "category": "asciiart",
+       "elo": 1274,
+       "win_rate": 54.5,
+       "rank": 13
+      },
+      {
+       "arena": "models",
+       "category": "codecategories",
+       "elo": 1292,
+       "win_rate": 49.5,
+       "rank": 16
+      },
+      {
+       "arena": "models",
+       "category": "dataviz",
+       "elo": 1272,
+       "win_rate": 50.4,
+       "rank": 22
+      },
+      {
+       "arena": "models",
+       "category": "gamedev",
+       "elo": 1294,
+       "win_rate": 47.4,
+       "rank": 17
+      },
+      {
+       "arena": "models",
+       "category": "svg",
+       "elo": 1286,
+       "win_rate": 57.1,
+       "rank": 9
+      },
+      {
+       "arena": "models",
+       "category": "uicomponent",
+       "elo": 1329,
+       "win_rate": 55,
+       "rank": 9
+      },
+      {
+       "arena": "models",
+       "category": "website",
+       "elo": 1280,
+       "win_rate": 48.5,
+       "rank": 22
+      }
+     ],
+     "artificial_analysis": {
+      "intelligence_index": 41.8,
+      "coding_index": 71.5,
+      "agentic_index": 50.9
+     }
+    },
+    "reasoning": {
+     "mandatory": true,
+     "default_enabled": true,
+     "supported_efforts": [
+      "max",
+      "high",
+      "low"
+     ],
+     "default_effort": "max"
+    }
+   }
+  ]
+ },
+ "embeddings": {
+  "data": [
+   {
+    "id": "google/gemini-embedding-001",
+    "canonical_slug": "google/gemini-embedding-001",
+    "hugging_face_id": "",
+    "name": "Google: Gemini Embedding 001",
+    "created": 1761943410,
+    "description": "gemini-embedding-001 provides a unified cutting edge experience across domains, including science, legal, finance, and coding. This embedding model has consistently held a top spot on the Massive Text Embedding Benchmark...",
+    "context_length": 20000,
+    "architecture": {
+     "modality": "text->embeddings",
+     "input_modalities": [
+      "text"
+     ],
+     "output_modalities": [
+      "embeddings"
+     ],
+     "tokenizer": "Gemini",
+     "instruct_type": null
+    },
+    "pricing": {
+     "prompt": "0.00000015",
+     "completion": "0",
+     "image": "0",
+     "audio": "0"
+    },
+    "top_provider": {
+     "context_length": 20000,
+     "max_completion_tokens": null,
+     "is_moderated": false
+    },
+    "per_request_limits": null,
+    "supported_parameters": [],
+    "default_parameters": {
+     "temperature": null,
+     "top_p": null,
+     "frequency_penalty": null
+    },
+    "supported_voices": null,
+    "knowledge_cutoff": null,
+    "expiration_date": null,
+    "links": {
+     "details": "/api/v1/models/google/gemini-embedding-001/endpoints"
+    }
+   }
+  ]
+ }
+}

@@ -4,7 +4,6 @@ from typing import List, Optional, Union
 
 import httpx
 
-from mirix.local_llm.utils import count_tokens
 from mirix.schemas.message import Message
 from mirix.schemas.openai.chat_completion_request import ChatCompletionRequest, Tool
 from mirix.schemas.openai.chat_completion_response import (
@@ -19,7 +18,13 @@ from mirix.schemas.openai.chat_completion_response import (
     ToolCall,
     UsageStatistics,
 )
-from mirix.utils import get_tool_call_id, get_utc_time, json_dumps, smart_urljoin
+from mirix.utils import (
+    count_tokens,
+    get_tool_call_id,
+    get_utc_time,
+    json_dumps,
+    smart_urljoin,
+)
 
 BASE_URL = "https://api.cohere.ai/v1"
 

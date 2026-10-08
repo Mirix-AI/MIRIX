@@ -1,0 +1,67 @@
+# Vendored from SkillRL (Apache-2.0 License)
+# Original: agent_system/environments/env_package/alfworld/projection.py
+#
+# Copied from SkillOpt 79124b3, skillopt/envs/alfworld/vendor/alfworld_projection.py
+# (sha256 b4a6fe296a09fedea023c5f820b89e36acc39fe38de47f2542da01d270fed155).
+# Modified by skill_bench: reformatted with ruff (quote style, line breaks) and type
+# hints use built-in generics. The logic is unchanged; tests compare it with the
+# original on a corpus of responses. See NOTICE in this directory.
+
+import re
+
+
+def alfworld_projection(actions: list[str], action_pools: list[list[str]]):
+    """Process raw model outputs into valid ALFWorld actions.
+
+    Extracts text from ``<action>...</action>`` tags and validates that
+    the response also contains ``<think>...</think>`` tags.
+
+    Parameters
+    ----------
+    actions : list[str]
+        Raw model outputs, one per environment.
+    action_pools : list[list[str]]
+        Admissible action lists per environment (unused but kept for API compat).
+
+    Returns
+    -------
+    actions : list[str]
+        Cleaned action strings.
+    valids : list[int]
+        1 if the action was successfully parsed, 0 otherwise.
+    """
+    valids = [0] * len(actions)
+
+    for i in range(len(actions)):
+        original_str = actions[i]
+        actions[i] = actions[i].lower()
+
+        start_tag = "<action>"
+        end_tag = "</action>"
+        start_idx = actions[i].find(start_tag)
+        end_idx = actions[i].find(end_tag)
+        try:
+            if start_idx == -1 or end_idx == -1:
+                actions[i] = actions[i][-30:]
+                continue
+
+            extracted_action = (
+                actions[i][start_idx + len(start_tag) : end_idx].strip().lower()
+            )
+            actions[i] = extracted_action
+            valids[i] = 1
+
+        except Exception:
+            actions[i] = actions[i][-30:]
+
+        # Require <think>...</think>
+        think_start_idx = original_str.find("<think>")
+        think_end_idx = original_str.find("</think>")
+        if think_start_idx == -1 or think_end_idx == -1:
+            valids[i] = 0
+
+        # Reject responses containing Chinese characters
+        if re.search(r"[一-鿿]", original_str):
+            valids[i] = 0
+
+    return actions, valids

@@ -1,5 +1,7 @@
 
+import asyncio
 import base64
+import logging
 import os
 from typing import List, Optional
 
@@ -17,11 +19,17 @@ from mirix.errors import (
     LLMPermissionDeniedError,
     LLMRateLimitError,
     LLMServerError,
+    LLMTimeoutError,
     LLMUnprocessableEntityError,
 )
-from mirix.llm_api.helpers import convert_to_structured_output
+from mirix.llm_api.helpers import (
+    convert_to_structured_output,
+    llm_transport_options,
+    recording_sdk_class,
+)
 from mirix.llm_api.llm_client_base import LLMClientBase
 from mirix.log import get_logger
+from mirix.observability.context import outbound_session_headers
 from mirix.schemas.llm_config import LLMConfig
 from mirix.schemas.message import Message as PydanticMessage
 from mirix.schemas.openai.chat_completion_request import (
@@ -37,10 +45,36 @@ from mirix.schemas.openai.chat_completion_request import (
     cast_message_to_subtype,
 )
 from mirix.schemas.openai.chat_completion_response import ChatCompletionResponse
+from mirix.services.context_budget import output_cap_for_request
 from mirix.services.provider_manager import ProviderManager
+from mirix.services.retry_policy import is_connect_timeout
 from mirix.settings import model_settings
 
 logger = get_logger(__name__)
+
+# The OpenAI-compatible endpoint of OpenRouter (model_endpoint_type "openrouter").
+OPENROUTER_DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
+
+# Tools whose schema cannot be made strict (e.g. skill_create's free-form
+# ``examples`` objects) are sent non-strict: an expected condition, logged
+# once per tool name per process instead of a WARNING on every
+# request.
+_NON_STRICT_TOOLS_LOGGED: set = set()
+
+
+def _log_non_strict_tool(name: Optional[str], error: Exception) -> None:
+    """Note that ``name`` is sent non-strict: at INFO the first time in this
+    process, at DEBUG afterwards."""
+    key = name or "?"
+    level = logging.DEBUG if key in _NON_STRICT_TOOLS_LOGGED else logging.INFO
+    _NON_STRICT_TOOLS_LOGGED.add(key)
+    logger.log(
+        level,
+        "Tool %s is sent without strict structured output: its schema cannot be "
+        "made strict (%s); the tool validates its own arguments",
+        key,
+        error,
+    )
 
 
 def encode_image(image_path: str) -> str:
@@ -66,20 +100,46 @@ def encode_image(image_path: str) -> str:
         return f"data:{mime_type};base64,{base64_string}"
 
 
+def _session_headers() -> dict:
+    """``{"extra_headers": ...}`` with the served conversation session
+    (``MIRIX_LLM_SESSION_HEADER``, off by default), or ``{}``: the call is then
+    exactly as before."""
+    headers = outbound_session_headers()
+    return {"extra_headers": headers} if headers else {}
+
+
 class OpenAIClient(LLMClientBase):
-    async def _prepare_client_kwargs(self) -> dict:
+    async def _resolve_api_key(self) -> str:
         # Check for custom API key in LLMConfig first (for custom models)
         custom_api_key = getattr(self.llm_config, "api_key", None)
         if custom_api_key:
-            api_key = custom_api_key
+            return custom_api_key
+        if self.llm_config.model_endpoint_type == "openrouter":
+            # OpenRouter's own key: an OpenAI key is never sent to a third party.
+            api_key = model_settings.openrouter_api_key or os.environ.get(
+                "OPENROUTER_API_KEY"
+            )
         else:
             # Check for database-stored API key first, fall back to model_settings and environment
             override_key = await ProviderManager().get_openai_override_key()
             api_key = override_key or model_settings.openai_api_key or os.environ.get("OPENAI_API_KEY")
-            # supposedly the openai python client requires a dummy API key
-            api_key = api_key or "DUMMY_API_KEY"
+        # supposedly the openai python client requires a dummy API key
+        return api_key or "DUMMY_API_KEY"
 
-        kwargs = {"api_key": api_key, "base_url": self.llm_config.model_endpoint}
+    def _base_url(self) -> Optional[str]:
+        if self.llm_config.model_endpoint:
+            return self.llm_config.model_endpoint
+        if self.llm_config.model_endpoint_type == "openrouter":
+            return OPENROUTER_DEFAULT_BASE_URL
+        return None
+
+    async def _prepare_client_kwargs(self) -> dict:
+        kwargs = {
+            "api_key": await self._resolve_api_key(),
+            "base_url": self._base_url(),
+            # Explicit, never the SDK's defaults.
+            **llm_transport_options(openai),
+        }
 
         headers = {}
         # Add auth provider headers
@@ -174,13 +234,25 @@ class OpenAIClient(LLMClientBase):
                     structured_output_version = convert_to_structured_output(tool.function.model_dump())
                     tool.function = FunctionSchema(**structured_output_version)
                 except ValueError as e:
-                    logger.warning(f"Failed to convert tool function to structured output, tool={tool}, error={e}")
+                    # Left non-strict, as sent before; expected for a tool with
+                    # free-form object parameters (not a failure).
+                    _log_non_strict_tool(getattr(tool.function, "name", None), e)
 
         else:
             # When there are no tools, delete tool_choice entirely from the request
             delattr(data, "tool_choice")
 
-        return data.model_dump(exclude_unset=True)
+        request = data.model_dump(exclude_unset=True)
+        if request.get("tools") and llm_config.parallel_tool_calls is not None:
+            # Only when configured: some OpenAI-compatible endpoints reject the key.
+            request["parallel_tool_calls"] = bool(llm_config.parallel_tool_calls)
+        if llm_config.max_output_tokens:
+            # The output cap follows THIS request's estimated
+            # input; ContextBudgetExceeded (raised before sending) if < 1,024.
+            request["max_completion_tokens"] = await output_cap_for_request(
+                request, llm_config
+            )
+        return request
 
     async def fill_image_content_in_messages(self, openai_message_list):
         """
@@ -241,7 +313,8 @@ class OpenAIClient(LLMClientBase):
                                 {
                                     "type": "image_url",
                                     "image_url": {
-                                        "url": encode_image(file.file_path),
+                                        # Off the event loop (request path).
+                                        "url": await asyncio.to_thread(encode_image, file.file_path),
                                         "detail": m["detail"],
                                     },
                                 }
@@ -261,7 +334,7 @@ class OpenAIClient(LLMClientBase):
                         message_content.append(
                             {
                                 "type": "image_url",
-                                "image_url": {"url": encode_image(local_path)},
+                                "image_url": {"url": await asyncio.to_thread(encode_image, local_path)},
                             }
                         )
                     else:
@@ -307,8 +380,13 @@ class OpenAIClient(LLMClientBase):
                 "OpenAI Request - Custom headers will be included in request (count: %s)",
                 len(client_kwargs["default_headers"]),
             )
-        client = AsyncOpenAI(**client_kwargs)
-        response: ChatCompletion = await client.chat.completions.create(**request_data)
+        # One SDK client per request, closed with it: a client left for the
+        # garbage collector closes its pooled sockets behind the event loop's
+        # back, and a new connection reusing such a descriptor can then hang.
+        async with recording_sdk_class(AsyncOpenAI)(**client_kwargs) as client:
+            response: ChatCompletion = await client.chat.completions.create(
+                **request_data, **_session_headers()
+            )
         if not response.object:
             response.object = "chat.completion"
         return response.model_dump()
@@ -332,9 +410,9 @@ class OpenAIClient(LLMClientBase):
         Performs underlying asynchronous streaming request to OpenAI and returns the async stream iterator.
         """
         client_kwargs = await self._prepare_client_kwargs()
-        client = AsyncOpenAI(**client_kwargs)
+        client = recording_sdk_class(AsyncOpenAI)(**client_kwargs)
         response_stream: AsyncStream[ChatCompletionChunk] = await client.chat.completions.create(
-            **request_data, stream=True
+            **request_data, stream=True, **_session_headers()
         )
         return response_stream
 
@@ -342,6 +420,18 @@ class OpenAIClient(LLMClientBase):
         """
         Maps OpenAI-specific errors to common LLMError types.
         """
+        if isinstance(e, openai.APITimeoutError) and not is_connect_timeout(
+            e.__cause__
+        ):
+            # The call itself timed out (retried once, then counted); a
+            # connect timeout stays a connection (infrastructure) error below.
+            logger.warning("[OpenAI] Request timed out: %s", e)
+            return LLMTimeoutError(
+                message=f"OpenAI request timed out: {str(e)}",
+                code=ErrorCode.DEPENDENCY_TIMEOUT,
+                details={"cause": str(e.__cause__) if e.__cause__ else None},
+            )
+
         if isinstance(e, openai.APIConnectionError):
             logger.warning("[OpenAI] API connection error: %s", e)
             return LLMConnectionError(

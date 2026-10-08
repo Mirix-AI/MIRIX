@@ -1,0 +1,39 @@
+# WebShop server requirement allowlist: the packages upstream's web_agent_site imports
+# (pinned to upstream requirements.txt's versions, Werkzeug < 3 and pydantic < 2 per
+# upstream issues #28, #52, #53), never upstream's requirements.txt itself (it lists the
+# unrelated PyPI packages env and train and unpinned gradio and gdown). No
+# python-Levenshtein: thefuzz runs on difflib. en_core_web_sm 3.3.0 is upstream goal.py's
+# model. requirements.txt is this file resolved with hashes for cp39 manylinux x86_64:
+#   uv pip compile requirements.in --python-version 3.9 \
+#     --python-platform x86_64-manylinux_2_31 --generate-hashes --emit-index-url \
+#     --index-url https://pypi.org/simple \
+#     --extra-index-url https://download.pytorch.org/whl/cpu \
+#     --index-strategy unsafe-best-match --no-header -o requirements.txt
+beautifulsoup4==4.11.1
+cleantext==1.1.4
+Flask==2.1.2
+Werkzeug==2.1.2
+gym==0.24.0
+numpy==1.22.4
+pandas==1.4.2
+pyserini==0.17.0
+faiss-cpu==1.7.2
+rank-bm25==0.2.2
+rich==12.4.4
+selenium==4.2.0
+spacy==3.3.0
+thefuzz==0.19.0
+torch==1.11.0+cpu
+tqdm==4.64.0
+transformers==4.19.2
+scikit-learn==1.1.1
+PyYAML==6.0
+requests==2.27.1
+pydantic<1.9
+# typing_extensions 4.6 and later break pydantic 1.8 (spaCy 3.3.0 needs pydantic < 1.9):
+# with them, importing spaCy raises "TypeError: issubclass() arg 1 must be a class" and the
+# image's install check fails; 4.5.0 works.
+typing-extensions<4.6
+en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.3.0/en_core_web_sm-3.3.0-py3-none-any.whl
+setuptools==82.0.1
+wheel==0.45.1

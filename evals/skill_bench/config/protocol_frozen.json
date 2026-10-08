@@ -1,0 +1,272 @@
+{
+  "constants": {
+    "alfworld_max_steps": 50,
+    "alfworld_packages": {
+      "alfworld": "0.4.2",
+      "textworld": "1.7.0"
+    },
+    "benchmarks": [
+      "alfworld",
+      "webshop"
+    ],
+    "bootstrap_resamples": 10000,
+    "call_deadline_s": 600.0,
+    "chat_forwarded_fields": [
+      "model",
+      "messages",
+      "tools",
+      "tool_choice",
+      "response_format",
+      "stop",
+      "parallel_tool_calls",
+      "user",
+      "functions",
+      "function_call"
+    ],
+    "ci_level": 0.95,
+    "client_timeout_s": 630.0,
+    "dropped_sampling_params": [
+      "temperature",
+      "top_p"
+    ],
+    "embedding_model": "google/gemini-embedding-001",
+    "frozen_asset_sha256": {
+      "envs/splits/alfworld/gamefiles.sha256.json": "e70b1c463c985ead072e50ddc7ffa58546cefc1a99089153dc624ac5f2a9b4f1",
+      "envs/splits/alfworld/split_manifest.json": "9a6e0e267e5ac24a53a70c312ee62c20b85afc30c8635c138b164ec91bca3978",
+      "envs/splits/alfworld/test.json": "34fc9439b0555e9bea76e2a7d1947953250e5a0cd9363d75ea64c2605ac0c33e",
+      "envs/splits/alfworld/train.json": "76dc1f738fafc9c3c0dae606eb9434b1e1a34b814874e4d791242f9ec90e6378",
+      "envs/splits/alfworld/val.json": "1533c56bd98577314a2ed12daffb9be4c1e1de2b052b61d0093b865b753da3f9",
+      "envs/splits/webshop/source.json": "5d1a3f0987386f2e094a3ca3aa4d52488c19501ee539c81d0290a16ae091883f",
+      "envs/splits/webshop/split_manifest.json": "8a95047feb15e5127ddd348a489bb7461c0fe43d02e52dae5367b69e5db9da8b",
+      "envs/splits/webshop/test.json": "fdc01f7d661efd0283901b81be3feef1504f824a7ac76db415840934c5cf797c",
+      "envs/splits/webshop/train.json": "5d25c75fd9c89408d7783155ff2c9e63a292ec7bcce39cac997ec620cca2452c",
+      "envs/splits/webshop/val.json": "51fd28e7fe63d1834bd4912d49bb3dc7b4bce032ba5bc0ce54934ac77556325e",
+      "envs/templates/alfworld/config_tw.yaml": "f32e8244351d896ec9073aa68474d8adee3ef41ee27a920fef601fba04643725",
+      "envs/templates/alfworld/format.json": "a5661df432088348e29888704ac254a3f7e6272e19568e561bbf346268c7e5fc",
+      "envs/templates/alfworld/rollout_no_history.md": "fcf6fe7a561729ccc4581697f5c8ad5986c150e56e32d761bad944b2fc9da614",
+      "envs/templates/alfworld/rollout_with_history.md": "7b17c85e102f3e49400df99bd3f333337827df9441abd873926a566ad9858027",
+      "envs/templates/webshop/format.json": "c22b1bf781389e533128d04bc8b658dfe4e815573e846d8dfeff52bd7a4344a0",
+      "envs/templates/webshop/rollout_no_history.md": "2f43c909547409ee09280e57d37514ef3bd63ce53e06d1c41c554d6abaf7ba26",
+      "envs/templates/webshop/rollout_turn.md": "e393035378c2544ba16d83b32fd606c2bfdeb4090874d54439494016b29b844f",
+      "envs/templates/webshop/rollout_with_history.md": "e433317451d83c183cef41a13a6765d2c77331464c060d0c3e1dcb492f6c3428",
+      "envs/templates/webshop_server/Dockerfile": "11cc8f59b65319cc553e5617b014032ab5a6df28eed8b1717c1b5b5d28d4f035",
+      "envs/templates/webshop_server/data.json": "b2d2a90cf0add8a5c5da92ad1d9eb1e57de6a3353689aab2033489f29b24b1ca",
+      "envs/templates/webshop_server/data_index.py": "b71f3384bff83478d72196fe6846c2c7d93d035878da39dfa8b48f2c0db55302",
+      "envs/templates/webshop_server/requirements.in": "1ae9cbd88d15b315ae36994a9789703ae19dde589e6c32e590658a6e7ddc5fef",
+      "envs/templates/webshop_server/requirements.txt": "65995322e9eb9a5b1bb0b384c254d07bf9626d7fd4c4a81dbafda87fbbc5e148",
+      "envs/templates/webshop_server/server.py": "2be95578e43dc3951b6716f6b7cee56bd8b61d769aedd113f6d79cf87b68229d",
+      "envs/vendor/alfworld_projection.py": "8fe960e5316a4078a7101d2a3d5d3b2fcd867346f8214a27fec025a76cfb5f31",
+      "envs/vendor/webshop_projection.py": "2a2eded1a4db414954f9e0dc8b353410aadd840ffc47b8cea955fa1c2a41f81e"
+    },
+    "gateway_backoff_base_s": 1.0,
+    "gateway_backoff_cap_s": 60.0,
+    "gateway_max_retries": 5,
+    "large_payload_chars": 50000,
+    "learning_curve_window": 10,
+    "methods": [
+      "none",
+      "mirix",
+      "reasoningbank",
+      "awm"
+    ],
+    "min_output_tokens": 1024,
+    "mirix_constants_contract": {
+      "SESSION_IDLE_TIMEOUT_SECONDS": "MIRIX_SESSION_IDLE_TIMEOUT_SECONDS"
+    },
+    "mirix_server_env": {
+      "MIRIX_EMBEDDING_TIMEOUT_SECONDS": "630",
+      "MIRIX_LLM_MAX_RETRIES": "0",
+      "MIRIX_LLM_TIMEOUT_SECONDS": "630",
+      "MIRIX_REDIS_ENABLED": "false",
+      "MIRIX_SESSION_IDLE_TIMEOUT_SECONDS": "315360000"
+    },
+    "mirix_settings_contract": {
+      "embedding_timeout_seconds": "MIRIX_EMBEDDING_TIMEOUT_SECONDS",
+      "llm_max_retries": "MIRIX_LLM_MAX_RETRIES",
+      "llm_timeout_seconds": "MIRIX_LLM_TIMEOUT_SECONDS"
+    },
+    "model_timeout_max_overhead_fraction": "1/4",
+    "model_timeout_max_overhead_s": 5.0,
+    "models": {
+      "luna": "openai/gpt-6-luna",
+      "luna56": "openai/gpt-5.6-luna"
+    },
+    "opaque_uid": {
+      "hex_chars": 20,
+      "prefix": "t"
+    },
+    "output_factor": "4/5",
+    "planning_reserve_window_factor": "1/10",
+    "protocol_id": "skill-bench-P1",
+    "provider_policy": {},
+    "provider_slug_names": {},
+    "reasoning_effort": "medium",
+    "roles": [
+      "actor",
+      "learner",
+      "judge",
+      "mirix",
+      "embedding"
+    ],
+    "schedule_concurrency_range": [
+      1,
+      24
+    ],
+    "seed": 42,
+    "skillopt_commit": "79124b3",
+    "split_sizes": {
+      "alfworld": {
+        "test": 134,
+        "train": 39,
+        "val": 18
+      },
+      "webshop": {
+        "test": 140,
+        "train": 40,
+        "val": 20
+      }
+    },
+    "token_encoding": "o200k_base",
+    "token_estimate": {
+      "fallback_chars_per_token": 3,
+      "message_overhead_tokens": 3,
+      "reply_priming_tokens": 3,
+      "tool_call_overhead_tokens": 3
+    },
+    "tokenizer_margin": "1/10",
+    "webshop_data": {
+      "files": {
+        "items_human_ins.json": {
+          "sha256": "cf78667548a71786e1d9049c24b802e48e1084ad4bb021cae56ce1f6d96954a3",
+          "size": 5137548
+        },
+        "items_ins_v2.json": {
+          "sha256": "1d36af476bdb8f82a5da62bd8acdabe54cd8de2fa84010d37da5c4890feb447e",
+          "size": 186295270
+        },
+        "items_shuffle.json": {
+          "sha256": "2ef591d65df3af89e972ab72468eb82cbf124d876552d9f3678667edd620a6c8",
+          "size": 5479720229
+        }
+      },
+      "hf_repo": "YWZBrandon/webshop-data",
+      "hf_revision": "ce990fff5aee388db2706f07820c578ab68e0453",
+      "human_goals": {
+        "path": "baseline_models/data/human_goals.json",
+        "sha256": "b68746ed66cd31fdc5f70eb3f5831a46b38163563b57a66ddcab8fd60ee0cbdc"
+      }
+    },
+    "webshop_diagnostic_steps": 15,
+    "webshop_goal_count": 12087,
+    "webshop_max_steps": 15,
+    "webshop_server": {
+      "base_image": "python:3.9-bullseye@sha256:3dcaf39bbe2d6d8031a4a7ce68a20f2d494419aca18ec064f9e82e146e97a0ed",
+      "container_port": 8000,
+      "cpus": 2,
+      "fuzzy_backend": "difflib",
+      "human_goals": true,
+      "index_threads": 1,
+      "java": "openjdk-11-jdk-headless",
+      "memory": "24g",
+      "num_products": null,
+      "observation_mode": "text",
+      "pyserini": "0.17.0",
+      "seed": 42,
+      "session_idle_s": 3600,
+      "spacy_model": "en_core_web_sm==3.3.0",
+      "upstream_commit": "64fa2a5c15c7daa698b9ac93f5bb5437b634c9bd",
+      "upstream_repo": "https://github.com/princeton-nlp/WebShop"
+    },
+    "window_factor": "4/5"
+  },
+  "constants_sha256": "1c46d963f17d827f7d5ddd3bd5007607676e3f703a156e9ca58960a8a1949d85",
+  "files": {
+    "config/models.json": "d892ea77eeb794cd954731ebd3e62480c9d2c9ebcfe9b7317346f50320db2f44",
+    "envs/splits/alfworld/gamefiles.sha256.json": "e70b1c463c985ead072e50ddc7ffa58546cefc1a99089153dc624ac5f2a9b4f1",
+    "envs/splits/alfworld/split_manifest.json": "9a6e0e267e5ac24a53a70c312ee62c20b85afc30c8635c138b164ec91bca3978",
+    "envs/splits/alfworld/test.json": "34fc9439b0555e9bea76e2a7d1947953250e5a0cd9363d75ea64c2605ac0c33e",
+    "envs/splits/alfworld/train.json": "76dc1f738fafc9c3c0dae606eb9434b1e1a34b814874e4d791242f9ec90e6378",
+    "envs/splits/alfworld/val.json": "1533c56bd98577314a2ed12daffb9be4c1e1de2b052b61d0093b865b753da3f9",
+    "envs/splits/webshop/source.json": "5d1a3f0987386f2e094a3ca3aa4d52488c19501ee539c81d0290a16ae091883f",
+    "envs/splits/webshop/split_manifest.json": "8a95047feb15e5127ddd348a489bb7461c0fe43d02e52dae5367b69e5db9da8b",
+    "envs/splits/webshop/test.json": "fdc01f7d661efd0283901b81be3feef1504f824a7ac76db415840934c5cf797c",
+    "envs/splits/webshop/train.json": "5d25c75fd9c89408d7783155ff2c9e63a292ec7bcce39cac997ec620cca2452c",
+    "envs/splits/webshop/val.json": "51fd28e7fe63d1834bd4912d49bb3dc7b4bce032ba5bc0ce54934ac77556325e",
+    "envs/templates/alfworld/config_tw.yaml": "f32e8244351d896ec9073aa68474d8adee3ef41ee27a920fef601fba04643725",
+    "envs/templates/alfworld/format.json": "a5661df432088348e29888704ac254a3f7e6272e19568e561bbf346268c7e5fc",
+    "envs/templates/alfworld/rollout_no_history.md": "fcf6fe7a561729ccc4581697f5c8ad5986c150e56e32d761bad944b2fc9da614",
+    "envs/templates/alfworld/rollout_with_history.md": "7b17c85e102f3e49400df99bd3f333337827df9441abd873926a566ad9858027",
+    "envs/templates/webshop/format.json": "c22b1bf781389e533128d04bc8b658dfe4e815573e846d8dfeff52bd7a4344a0",
+    "envs/templates/webshop/rollout_no_history.md": "2f43c909547409ee09280e57d37514ef3bd63ce53e06d1c41c554d6abaf7ba26",
+    "envs/templates/webshop/rollout_turn.md": "e393035378c2544ba16d83b32fd606c2bfdeb4090874d54439494016b29b844f",
+    "envs/templates/webshop/rollout_with_history.md": "e433317451d83c183cef41a13a6765d2c77331464c060d0c3e1dcb492f6c3428",
+    "envs/templates/webshop_server/Dockerfile": "11cc8f59b65319cc553e5617b014032ab5a6df28eed8b1717c1b5b5d28d4f035",
+    "envs/templates/webshop_server/data.json": "b2d2a90cf0add8a5c5da92ad1d9eb1e57de6a3353689aab2033489f29b24b1ca",
+    "envs/templates/webshop_server/data_index.py": "b71f3384bff83478d72196fe6846c2c7d93d035878da39dfa8b48f2c0db55302",
+    "envs/templates/webshop_server/requirements.in": "1ae9cbd88d15b315ae36994a9789703ae19dde589e6c32e590658a6e7ddc5fef",
+    "envs/templates/webshop_server/requirements.txt": "65995322e9eb9a5b1bb0b384c254d07bf9626d7fd4c4a81dbafda87fbbc5e148",
+    "envs/templates/webshop_server/server.py": "2be95578e43dc3951b6716f6b7cee56bd8b61d769aedd113f6d79cf87b68229d",
+    "envs/vendor/LICENSE-APACHE-2.0.txt": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+    "envs/vendor/NOTICE": "92e863aef9c1c00dec6aceab8a93050025f08ab5781b8152f1221ec7c5ab24a7",
+    "envs/vendor/__init__.py": "a7188e7d52a63d1702de2a7602ab517e1d7418be8d261823e37f0d5af1a9c8d6",
+    "envs/vendor/alfworld_projection.py": "8fe960e5316a4078a7101d2a3d5d3b2fcd867346f8214a27fec025a76cfb5f31",
+    "envs/vendor/webshop_projection.py": "2a2eded1a4db414954f9e0dc8b353410aadd840ffc47b8cea955fa1c2a41f81e",
+    "methods/prompts/NOTICE": "8f3a526973ef03c2bcdcafe37844ac6c424b6c226563fe6f3df302a2e702612f",
+    "methods/prompts/awm/format.json": "e1eb9b95eaf492156672f6b9081ed7f2caad47e3c6aae6c2773040495cf75bc4",
+    "methods/prompts/awm/instruction.md": "a2173ae2a5e4952fcd44ed83d32d1364dcd5d82c7462fddc983f59b38de81d14",
+    "methods/prompts/awm/originals/agent-workflow-memory-8c0ff8c/LICENSE": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+    "methods/prompts/awm/originals/agent-workflow-memory-8c0ff8c/agent.py.txt": "0cd844f94881850aba8fd1956837e8e7e2f87e3168629596674593859b1da424",
+    "methods/prompts/awm/originals/agent-workflow-memory-8c0ff8c/induce_prompt.py.txt": "2ccbb8b74dd5a446b2b25922473e2aa531d0893ce7b7c3d778bca3e6ef34227b",
+    "methods/prompts/awm/originals/agent-workflow-memory-8c0ff8c/instruction.txt": "e05a424931cba5ea442c37f1c9a23d18f3e6c4b959646383eadc662a6d2a3ce9",
+    "methods/prompts/awm/originals/agent-workflow-memory-8c0ff8c/one_shot.txt": "256e1d5c96ebef4a152915df393e3381bf0a9221e62307eb17df0c84006414ca",
+    "methods/prompts/awm/originals/agent-workflow-memory-8c0ff8c/pipeline.py.txt": "c9fc1dc7d9970c50b04f47933cb22c0977038aa6e3d054ff55c74e5b417083c0",
+    "methods/prompts/awm/originals/paper_2409.07429_appendix_a1.txt": "cbc8ceade140d7627863e649342c9df2091e5fd990bdd0636137aabe306fde41",
+    "methods/prompts/awm/originals/paper_2409.07429_section_2_3_online.txt": "2b4bca8d70beb9b491e0174172ab653a7cf04c8adc1adc13efcd8fa9ae5b111f",
+    "methods/prompts/awm/output_format.md": "7c7970f82fd5b61cf71939a63238a77b3ced0467e96f3dbd4953fecb84734986",
+    "methods/prompts/judge/format.json": "f8500ae014d9e5c26ee5c3919111b50352864a21b462cb0f0a85667ba5cd44a2",
+    "methods/prompts/judge/originals/paper_2509.25140_figure10_input.txt": "a8104638c978473a8c4f0a04117c22184737d68bf3057bb17dac9a7fdd9f1278",
+    "methods/prompts/judge/originals/paper_2509.25140_figure10_system.txt": "05090208674c2cafe12ede9ceb08fb85f56b44c2673595e047ad1b7470730665",
+    "methods/prompts/judge/originals/reasoning-bank-ed80611/LICENSE": "58d1e17ffe5109a7ae296caafcadfdbe6a7d176f0bc4ab01e12a689b0499d8bd",
+    "methods/prompts/judge/originals/reasoning-bank-ed80611/evaluator.py.txt": "eb7937314b157e0f93ad732a67afb726c79a577bbf0e9314ef0196e44d8890f7",
+    "methods/prompts/judge/originals/reasoning-bank-ed80611/prompts.py.txt": "c53b8fba62f0080d57a8980b10d2e6e223d342a70f1db75e3409683149506c10",
+    "methods/prompts/judge/system.md": "30f03c89a9e20d5cbb6ac9ad4d21183833aea1b475fc55d885919969b1a53c75",
+    "methods/prompts/judge/user.md": "9a00602a3646ec06c3c432ff663f4768bc4ce2ac8616dfee9bd6b35acc50e2bb",
+    "methods/prompts/reasoningbank/failure_system.md": "d1553b21f169e39ea7e1827b59f2544336bb48a7f56a6cf089fc478706a989df",
+    "methods/prompts/reasoningbank/format.json": "22164a35bd66ca2d54c147b36f680ad220ed64fed73d1c6a16b7dd8ced221aeb",
+    "methods/prompts/reasoningbank/originals/paper_2509.25140_appendix_a2_extraction_retrieval.txt": "8424ca0e4cb95a0dc33d2fe14efe353a22b2ea128720a22efe076096b33d63e7",
+    "methods/prompts/reasoningbank/originals/paper_2509.25140_appendix_a2_injection_consolidation.txt": "a68c0e19e9a4bf6256ad148f4a3a611ddd56414688a93bc28f15804afd622118",
+    "methods/prompts/reasoningbank/originals/paper_2509.25140_figure9_failure_system.txt": "4e79222563216a450c6b67d5f716ba265bb68c57e6a85c6680f9d0be7c114a5b",
+    "methods/prompts/reasoningbank/originals/paper_2509.25140_figure9_input.txt": "b30f706c7ad89984e105e5830625662d980521d555c4743a54ded64a88011205",
+    "methods/prompts/reasoningbank/originals/paper_2509.25140_figure9_spans.txt": "e64be21cf44bea51347e3b91cb7ffa720e3513b767c7af369174f4a581bac367",
+    "methods/prompts/reasoningbank/originals/paper_2509.25140_figure9_success_system.txt": "09bd1fd3d1637eb8eba71937726d7a142942f287969834111005e17bfe07fe34",
+    "methods/prompts/reasoningbank/originals/reasoning-bank-ed80611/LICENSE": "58d1e17ffe5109a7ae296caafcadfdbe6a7d176f0bc4ab01e12a689b0499d8bd",
+    "methods/prompts/reasoningbank/originals/reasoning-bank-ed80611/agent.py.txt": "00ab439e7245ad4ac41aed75bfbd2a1a6db8be9efc01ac526360606e098d9a99",
+    "methods/prompts/reasoningbank/originals/reasoning-bank-ed80611/induce_memory.py.txt": "97d7da3fe5bd3e37d05e4aa07c050b1154334951cc2cad20619774ae77e0912c",
+    "methods/prompts/reasoningbank/originals/reasoning-bank-ed80611/memory_instruction.py.txt": "073d354bc84a24ba8a2c697133b5d832fe89ca67a53705fb0af419528f7b11ee",
+    "methods/prompts/reasoningbank/originals/reasoning-bank-ed80611/memory_management.py.txt": "35b8b800180024f3446c4a295fe9d7c19d4aa2cddd0b2f2a44b6680e4d6bc4f9",
+    "methods/prompts/reasoningbank/originals/reasoning-bank-ed80611/run.py.txt": "f9edcac62cc612f48db9859c60f71b7479aa126beda802437dd82d81030817b3",
+    "methods/prompts/reasoningbank/originals/reasoning-bank-ed80611/swebench_instruction.py.txt": "08e11fbeac1ba9e20d1dafb20728be24194b56bdfea33f05f6a1220ae2cc9bae",
+    "methods/prompts/reasoningbank/success_system.md": "68a60676b33b5d728bd7d71fc252e229734174848087b9dc479bfa7293f921ad",
+    "methods/templates/mirix/setup.json": "c3b20d199dc4ded2db8444aa0ddb57a326a4f8acdf251d51896162f932eea576"
+  },
+  "fingerprint": "e2ad0798c280d5f4723db0819d0c9f1655f5879ecb77d494ba6fb91ca9b5474f",
+  "frozen_at": "2026-10-08T06:08:28+00:00",
+  "git": {
+    "branch": "skill-bench-public-repro",
+    "commit": "62ac26940a6e2c6515071a1cd795dfc34f9de650",
+    "dirty": true,
+    "untracked": 0
+  },
+  "history": [],
+  "how_to_refreeze": "python -m evals.skill_bench.tools.freeze_protocol --reason '<why>'",
+  "model_slugs": {
+    "d892ea77eeb794cd954731ebd3e62480c9d2c9ebcfe9b7317346f50320db2f44": {
+      "google/gemini-embedding-001": "google/gemini-embedding-001",
+      "openai/gpt-5.6-luna": "openai/gpt-5.6-luna-20260709",
+      "openai/gpt-6-luna": "openai/gpt-6-luna-20260922"
+    }
+  },
+  "protocol_id": "skill-bench-P1",
+  "reason": "Released protocol with fixed task manifests and checksums",
+  "schema": 1
+}

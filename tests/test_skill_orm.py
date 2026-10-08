@@ -22,12 +22,19 @@ class TestProceduralMemoryORM:
             "version",
             "description",
             "instructions",
-            "description_embedding",
-            "instructions_embedding",
+            "retrieval_embedding",
         ]:
             assert expected in cols, f"Missing expected column: {expected}"
 
     def test_no_old_columns(self):
         cols = self._column_names()
-        for removed in ["summary", "steps", "summary_embedding", "steps_embedding"]:
+        for removed in [
+            "summary",
+            "steps",
+            "summary_embedding",
+            "steps_embedding",
+            # One retrieval vector replaced the per-field vectors.
+            "description_embedding",
+            "instructions_embedding",
+        ]:
             assert removed not in cols, f"Old column still present: {removed}"

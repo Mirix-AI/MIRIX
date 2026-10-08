@@ -2610,7 +2610,7 @@ requires-dist = [
     { name = "aiogoogle" },
     { name = "aiokafka", specifier = ">=0.13.0,<0.14.0" },
     { name = "aiosqlite" },
-    { name = "anthropic" },
+    { name = "anthropic", specifier = ">=0.94.0,<1.0.0" },
     { name = "anyio", specifier = ">=4.7.0" },
     { name = "asyncddgs" },
     { name = "asyncpg" },

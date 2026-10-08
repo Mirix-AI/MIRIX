@@ -1,0 +1,45 @@
+# Isolated Postgres for skill_bench cells. Loopback only; local credentials.
+# Each cell attempt gets its own database cloned from skill_bench_template
+# (see init.sql and infra/mirix_server.py:ensure_cell_database). No Redis:
+# every MIRIX cell runs with MIRIX_REDIS_ENABLED=false.
+#
+#   docker compose -f evals/skill_bench/infra/compose.yaml up -d
+#   docker compose -f evals/skill_bench/infra/compose.yaml ps      # wait for "healthy"
+#
+# Port override: SKILL_BENCH_PG_PORT (read by PostgresAdmin as well).
+name: mirix-skill-bench
+services:
+  postgres:
+    # pg16, pinned by digest (the image the benchmark was built and tested with).
+    image: pgvector/pgvector:pg16@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b
+    # Each MIRIX server pools up to 80 + 30 connections (MIRIX defaults pg_pool_size +
+    # pg_max_overflow). Several schedulers may share one host, each running several cells
+    # at once: 18 MIRIX servers (for example three schedulers of six cells each) would be
+    # 1,980 connections at most. Changing it recreates the container on the next `up -d`
+    # (the data volume stays): do it while no MIRIX cell runs.
+    command: ["postgres", "-c", "max_connections=2000", "-c", "shared_buffers=512MB"]
+    environment:
+      POSTGRES_USER: skill_bench
+      POSTGRES_PASSWORD: skill_bench_local
+      POSTGRES_DB: skill_bench
+    ports:
+      - "127.0.0.1:${SKILL_BENCH_PG_PORT:-55432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/01-skill-bench.sql:ro
+    healthcheck:
+      # Healthy only after init.sql has built the template (never connects to the template itself,
+      # which would block CREATE DATABASE ... TEMPLATE).
+      test: ["CMD-SHELL", "psql -U skill_bench -d skill_bench -tAc \"SELECT 1 FROM pg_database WHERE datname = 'skill_bench_template' AND datistemplate\" | grep -q 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+volumes:
+  pgdata:
+networks:
+  default:
+    # Explicit subnet: Docker's default address pools can be exhausted on a busy host.
+    ipam:
+      config:
+        - subnet: "${SKILL_BENCH_SUBNET:-10.238.91.0/24}"
