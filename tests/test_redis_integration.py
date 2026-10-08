@@ -1053,51 +1053,42 @@ class TestSemanticMemoryManagerRedis:
 
 
 # ============================================================================
-# PROCEDURAL MEMORY TESTS (JSON-based with 2 embeddings!)
+# PROCEDURAL MEMORY TESTS (never cached)
 # ============================================================================
 
 
 class TestProceduralMemoryManagerRedis:
-    """Test Procedural Memory Manager with Redis JSON caching (2 embeddings)."""
+    """Procedural memory does not use Redis at all: skills live in the
+    database only, so a skill write leaves no Redis document behind."""
 
-    async def test_procedural_create_with_embeddings(
+    async def test_procedural_create_is_not_cached(
         self, procedural_manager, test_client, test_user, test_agent, redis_client
     ):
-        """Test procedural memory with 2 embeddings (32KB total) caches to Redis JSON."""
-        # Create mock embeddings (each is 16KB)
         from mirix.schemas.procedural_memory import ProceduralMemoryItem
-
-        mock_embedding = [0.3] * 4096
 
         item_data = ProceduralMemoryItem(
             id=generate_test_id("procedural"),
-            entry_type="process",
-            summary="How to deploy an application",
-            steps=["Build the application", "Test the application", "Deploy to production"],
-            summary_embedding=mock_embedding,
-            steps_embedding=mock_embedding,
+            name=f"deploy-{generate_test_id('skill')}",
+            entry_type="workflow",
+            description="How to deploy an application",
+            instructions="Build, test, then deploy to production.",
+            retrieval_embedding=[0.3] * 4096,
             organization_id=test_user.organization_id,
             user_id=test_user.id,
             agent_id=test_agent.id,
         )
 
-        # Create item
-        created_item = await procedural_manager.create_item(item_data, test_client, user_id=test_user.id)
+        created_item = await procedural_manager.create_item(
+            item_data, test_client, user_id=test_user.id
+        )
 
-        # Verify both embeddings are in Redis JSON
         redis_key = f"{redis_client.PROCEDURAL_PREFIX}{created_item.id}"
-        cached_data = await redis_client.get_json(redis_key)
+        assert await redis_client.get_json(redis_key) is None
 
-        assert cached_data is not None
-        assert "summary_embedding" in cached_data
-        assert "steps_embedding" in cached_data
-        assert len(cached_data["summary_embedding"]) == 4096
-        assert len(cached_data["steps_embedding"]) == 4096
-
-        logger.info("✅ Cached procedural memory with 32KB of embeddings (2 × 16KB)")
-
-        # Cleanup
-        await procedural_manager.delete_procedure_by_id(created_item.id, test_client)
+        # Cleanup (erases the skill with its history)
+        await procedural_manager.delete_procedure_by_id(
+            created_item.id, test_client, user_id=test_user.id
+        )
 
 
 # ============================================================================

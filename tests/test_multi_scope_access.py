@@ -32,6 +32,28 @@ from mirix.services.user_manager import UserManager
 # Use one event loop per module so async fixtures and tests share it.
 pytestmark = [pytest.mark.asyncio(loop_scope="module")]
 
+
+@pytest_asyncio.fixture(scope="module", loop_scope="module", autouse=True)
+async def _schema():
+    """Create the schema the managers need (what server startup does).
+
+    Without it a fresh database (e.g. an isolated HOME) has no tables and every
+    test here errored before exercising the scope model. create_all only
+    creates missing tables. The global engine's pooled connections belong to
+    the loop that opened them, so they are released at the end.
+
+    It refuses (skips the module) when the global engine is the developer's
+    REAL ``~/.mirix`` SQLite database — a unit run without an isolated HOME
+    must not run DDL or write test rows there (``db_isolation``'s guard).
+    """
+    from db_isolation import create_schema_unless_real
+
+    from mirix.server import server
+
+    await create_schema_unless_real(server.engine)
+    yield
+    await server.engine.dispose()
+
 # =============================================================================
 # Test Fixtures
 # =============================================================================

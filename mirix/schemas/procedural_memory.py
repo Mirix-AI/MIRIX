@@ -1,7 +1,7 @@
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
-from pydantic import Field, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 from mirix.client.utils import get_utc_time
 from mirix.constants import MAX_EMBEDDING_DIM
@@ -21,6 +21,21 @@ SKILL_MAX_DESCRIPTION_LEN = 1024
 SKILL_MAX_INSTRUCTIONS_LEN = 65_536
 SKILL_MAX_TRIGGER_LEN = 512
 SKILL_MAX_EXAMPLES_COUNT = 50
+
+
+def _pad_embedding(embedding: Optional[List[float]]) -> Optional[List[float]]:
+    """Zero-pad a vector to MAX_EMBEDDING_DIM (cosine-preserving); None/[] pass through."""
+    import numpy as np
+
+    if embedding and len(embedding) != MAX_EMBEDDING_DIM:
+        np_embedding = np.array(embedding)
+        padded_embedding = np.pad(
+            np_embedding,
+            (0, MAX_EMBEDDING_DIM - np_embedding.shape[0]),
+            mode="constant",
+        )
+        return padded_embedding.tolist()
+    return embedding
 
 
 def _validate_entry_type(value: Optional[str]) -> Optional[str]:
@@ -65,6 +80,51 @@ def _validate_triggers(triggers: Optional[List[str]]) -> Optional[List[str]]:
     return triggers
 
 
+def _holds_nul(value: Any) -> bool:
+    """Whether ``value`` — a string, or a list / dict of them, keys included —
+    holds U+0000."""
+    if isinstance(value, str):
+        return "\x00" in value
+    if isinstance(value, dict):
+        return any(_holds_nul(k) or _holds_nul(v) for k, v in value.items())
+    if isinstance(value, (list, tuple)):
+        return any(_holds_nul(item) for item in value)
+    return False
+
+
+def skill_nul_problem(fields: Mapping[str, Any]) -> Optional[str]:
+    """A message naming the first skill field that holds a NUL character
+    (U+0000), or None.
+
+    Postgres cannot store U+0000 in text or JSONB, and the keyword index
+    decodes the triggers through JSONB, so such a write failed deep in the
+    database (SQLSTATE 22P05 "unsupported Unicode escape sequence", after
+    the retrieval vector was paid for) — or, on SQLite, stored a skill no
+    Postgres could take. It is refused before anything else instead.
+    Checked on writes only: reads must never fail on a
+    legacy row."""
+    for field in ("name", "description", "instructions"):
+        if _holds_nul(fields.get(field)):
+            return f"'{field}' contains a NUL character (U+0000), which a skill cannot store."
+    triggers = fields.get("triggers")
+    if isinstance(triggers, (list, tuple)):
+        for i, trigger in enumerate(triggers):
+            if _holds_nul(trigger):
+                return (
+                    f"'triggers[{i}]' contains a NUL character (U+0000), which a "
+                    "skill cannot store."
+                )
+    examples = fields.get("examples")
+    if isinstance(examples, (list, tuple)):
+        for i, example in enumerate(examples):
+            if _holds_nul(example):
+                return (
+                    f"'examples[{i}]' contains a NUL character (U+0000), which a "
+                    "skill cannot store."
+                )
+    return None
+
+
 def _validate_examples(examples: Optional[List[dict]]) -> Optional[List[dict]]:
     if examples is None:
         return examples
@@ -78,6 +138,36 @@ def _validate_examples(examples: Optional[List[dict]]) -> Optional[List[dict]]:
     return examples
 
 
+# The shape of one example as the skill tools take it: its docstring is the
+# item description the model reads in the tool schema, and a strict schema can
+# enforce the two fields.
+class SkillExampleForLLM(BaseModel):
+    """One input/output example of the skill."""
+
+    input: str = Field(..., description="The situation or request.")
+    output: str = Field(..., description="What was done or answered.")
+
+
+# One citation of a skill change as the skill tools take it: the cited
+# experience and a quote of the text the change adds that applies it. The
+# quote is checked against that text; a citation whose quote is missing or not
+# there does not count.
+class SkillCitationForLLM(BaseModel):
+    """One experience or earlier lesson this change applies, with a quote of the new text that applies it."""
+
+    id: str = Field(
+        ..., description="The id of the experience or earlier lesson, as the batch shows it."
+    )
+    quote: str = Field(
+        ...,
+        description=(
+            "A phrase of at least 12 letters copied exactly from the text this "
+            "change adds or changes that applies the lesson (not the skill's "
+            "name, nor text it already had); empty for a deletion."
+        ),
+    )
+
+
 class ProceduralMemoryItemBase(MirixBase):
     """
     Base schema for storing procedural knowledge as reusable skills.
@@ -85,7 +175,9 @@ class ProceduralMemoryItemBase(MirixBase):
 
     __id_prefix__ = "proc_item"
     name: str = Field(
-        ..., max_length=SKILL_MAX_NAME_LEN, description="Short skill identifier (e.g., 'deploy-production')"
+        ...,
+        max_length=SKILL_MAX_NAME_LEN,
+        description="Short skill identifier: lowercase words joined by hyphens that name the task and its approach",
     )
     entry_type: str = Field(..., description="Category (one of: 'workflow', 'guide', 'script')")
     description: str = Field(
@@ -136,8 +228,11 @@ class ProceduralMemoryItem(ProceduralMemoryItemBase):
     )
     organization_id: str = Field(..., description="The unique identifier of the organization")
     version: str = Field(default="0.1.0", description="Semantic version of this skill")
-    description_embedding: Optional[List[float]] = Field(None, description="The embedding of the description")
-    instructions_embedding: Optional[List[float]] = Field(None, description="The embedding of the instructions")
+    retrieval_embedding: Optional[List[float]] = Field(
+        None,
+        description="The skill's single retrieval vector (padded to MAX_EMBEDDING_DIM); "
+        "instructions carry no vector",
+    )
     embedding_config: Optional[EmbeddingConfig] = Field(
         None, description="The embedding configuration used by the skill"
     )
@@ -151,21 +246,11 @@ class ProceduralMemoryItem(ProceduralMemoryItemBase):
         ],
     )
 
-    @field_validator("description_embedding", "instructions_embedding")
+    @field_validator("retrieval_embedding")
     @classmethod
-    def pad_embeddings(cls, embedding: List[float]) -> List[float]:
+    def pad_embeddings(cls, embedding: Optional[List[float]]) -> Optional[List[float]]:
         """Pad embeddings to `MAX_EMBEDDING_SIZE`. This is necessary to ensure all stored embeddings are the same size."""
-        import numpy as np
-
-        if embedding and len(embedding) != MAX_EMBEDDING_DIM:
-            np_embedding = np.array(embedding)
-            padded_embedding = np.pad(
-                np_embedding,
-                (0, MAX_EMBEDDING_DIM - np_embedding.shape[0]),
-                mode="constant",
-            )
-            return padded_embedding.tolist()
-        return embedding
+        return _pad_embedding(embedding)
 
 
 class ProceduralMemoryItemUpdate(MirixBase):
@@ -205,13 +290,12 @@ class ProceduralMemoryItemUpdate(MirixBase):
         None,
         description="Last modification info including timestamp and operation type",
     )
-    instructions_embedding: Optional[List[float]] = Field(None, description="The embedding of the instructions")
-    description_embedding: Optional[List[float]] = Field(None, description="The embedding of the description")
+    retrieval_embedding: Optional[List[float]] = Field(None, description="The skill's single retrieval vector")
     embedding_config: Optional[EmbeddingConfig] = Field(
         None, description="The embedding configuration used by the skill"
     )
 
-    @field_validator("description_embedding", "instructions_embedding")
+    @field_validator("retrieval_embedding")
     @classmethod
     def pad_embeddings(cls, embedding: Optional[List[float]]) -> Optional[List[float]]:
         """Pad embeddings to `MAX_EMBEDDING_DIM` so REST-supplied vectors on the
@@ -219,17 +303,7 @@ class ProceduralMemoryItemUpdate(MirixBase):
         (the CREATE schema pads identically). Without this a raw provider
         vector (e.g. 3072-dim) would mismatch the Vector(4096) column and break
         SQLAlchemy compare_values on the next UPDATE."""
-        import numpy as np
-
-        if embedding and len(embedding) != MAX_EMBEDDING_DIM:
-            np_embedding = np.array(embedding)
-            padded_embedding = np.pad(
-                np_embedding,
-                (0, MAX_EMBEDDING_DIM - np_embedding.shape[0]),
-                mode="constant",
-            )
-            return padded_embedding.tolist()
-        return embedding
+        return _pad_embedding(embedding)
 
     filter_tags: Optional[Dict[str, Any]] = Field(
         None, description="Custom filter tags for filtering and categorization"

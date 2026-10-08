@@ -15,10 +15,11 @@ role-collapsed form the meta agent receives — correctness comes from structure
 (which table we read) rather than from fragile string conventions.
 
 Only turns that arrived with a `session_id` land here (`session_id` is NOT
-NULL): this store holds session'd conversation turns and nothing else. A
-session's order is defined by `MIN(created_at)` over its turns; `distilled_at`
-marks a session that a rolling distill round has already consumed so the barrier
-advances and history is never reprocessed.
+NULL): this store holds session'd conversation turns and nothing else. The
+session's lifecycle (open / ended / reopened) lives in `conversation_session`.
+`distilled_at` is tracked PER ROW: it marks a turn a skill learning run has
+already learned from, so history is never reprocessed while a reopened
+session's new turns stay pending.
 
 Inherited (do NOT redeclare):
   - id, created_at, updated_at, is_deleted  -- SqlalchemyBase + meta mixin
@@ -33,9 +34,9 @@ the `sexp-`/`proc-` convention on sibling tables.
 
 import uuid
 from datetime import datetime
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
-from sqlalchemy import CheckConstraint, DateTime, Index, String, Text
+from sqlalchemy import JSON, CheckConstraint, DateTime, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, declared_attr, mapped_column, relationship
 
 from mirix.orm.mixins import OrganizationMixin, UserMixin
@@ -90,25 +91,42 @@ class ConversationMessage(SqlalchemyBase, OrganizationMixin, UserMixin):
         DateTime(timezone=True),
         nullable=True,
         default=None,
-        doc="Set when this session's turns were consumed by a distill round. "
-        "NULL = not yet distilled; the rolling barrier reads only NULL sessions.",
+        doc="Set when a skill learning run learned from this turn (per row). "
+        "NULL = not yet distilled; a run reads and marks only NULL rows at or "
+        "before its claim-time watermark.",
     )
     session_tag: Mapped[Optional[str]] = mapped_column(
         String,
         nullable=True,
         default=None,
         index=True,
-        doc="Adaptive routing tag for this session: 'task' | 'conversation' | NULL. "
-        "The procedural distiller excludes sessions explicitly tagged "
-        "'conversation' (LOCOMO-style dialogue never becomes a skill); 'task' and "
-        "untagged (NULL, legacy) sessions remain eligible so the gate fails OPEN "
-        "and never silently drops task skill-building.",
+        doc="Adaptive routing tag for this session: 'task' | 'conversation' | NULL, "
+        "copied from conversation_session.session_tag (fixed by the session's "
+        "first write). Skill learning never uses sessions tagged 'conversation' "
+        "(a chat dialogue never becomes a skill); 'task' and untagged "
+        "(NULL, legacy) sessions are eligible.",
+    )
+    content_parts: Mapped[Optional[List[Dict[str, Any]]]] = mapped_column(
+        JSON,
+        nullable=True,
+        default=None,
+        doc="Ordered text parts and image references, written ONLY for messages "
+        "that carry an image; `content` then holds a `[image: file-...]` "
+        "placeholder text instead of base64. NULL for text-only messages, whose "
+        "text lives in `content` alone (never stored twice).",
+    )
+    original_text_length: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        nullable=True,
+        default=None,
+        doc="Text length before the storage cap truncated this message; "
+        "NULL when the message was stored untruncated.",
     )
 
     # Indexes mirror the skill_experience pg/sqlite guard pattern: an explicit
     # `is not None` filter (not `filter(None, ...)`) because an un-attached Index
     # is falsy until bound. The composite index backs the primary access pattern
-    # — "list/seal/order this (org, user)'s sessions by first-appearance time".
+    # — "this (org, user, session)'s turns in order" (reads, watermarks, marks).
     __table_args__ = tuple(
         item
         for item in [

@@ -165,13 +165,26 @@ class ClientManager:
             return api_key.to_pydantic()
 
     @enforce_types
-    async def delete_client_api_key(self, api_key_id: str) -> None:
-        """Permanently delete an API key from the database."""
+    async def delete_client_api_key(
+        self, api_key_id: str, client_id: Optional[str] = None
+    ) -> None:
+        """Permanently delete an API key from the database.
+
+        ``AsyncSession.delete`` is a coroutine: without the ``await`` the DELETE
+        was never flushed, the commit was a no-op and a "deleted" key kept
+        authenticating. With ``client_id`` the key must belong to that client
+        (``NoResultFound`` otherwise), so a key cannot be deleted through
+        another client's ``/clients/{client_id}/api-keys/{id}`` path.
+        """
         async with self.session_maker() as session:
             api_key = await ClientApiKeyModel.read(
                 db_session=session, identifier=api_key_id
             )
-            session.delete(api_key)
+            if client_id is not None and api_key.client_id != client_id:
+                raise NoResultFound(
+                    f"API key {api_key_id} not found for client {client_id}"
+                )
+            await session.delete(api_key)
             await session.commit()
 
     @enforce_types
@@ -390,6 +403,36 @@ class ClientManager:
             )
 
     async def delete_memories_by_client_id(self, client_id: str):
+        """Hard delete a client's memories (see :meth:`_purge_client_memories`).
+
+        The purge runs with the client's skill learning quiesced: the
+        queued/running learning runs of the client's meta agents are failed and
+        stopped first, and their owners' procedural dream guards are held
+        throughout, so an in-flight run can never write data back after the
+        purge (``skill_learning_trigger.quiesce_learning_for_erasure``).
+        """
+        from mirix.orm.agent import Agent as AgentModel
+        from mirix.services.skill_learning_trigger import quiesce_learning_for_erasure
+
+        async with self.session_maker() as session:
+            agent_ids = [
+                row[0]
+                for row in (
+                    await session.execute(
+                        select(AgentModel.id).where(AgentModel._created_by_id == client_id)
+                    )
+                ).all()
+            ]
+        from mirix.services.retrieval_log_manager import erasing_retrieval_logs
+
+        # A retrieval by the client in flight writes no log row after the
+        # purge deleted the client's rows.
+        async with quiesce_learning_for_erasure(
+            agent_ids=agent_ids
+        ), erasing_retrieval_logs(client_id=client_id):
+            await self._purge_client_memories(client_id)
+
+    async def _purge_client_memories(self, client_id: str):
         """
         Hard delete memories, messages, and blocks for a client using memory managers' bulk delete.
 
@@ -406,6 +449,8 @@ class ClientManager:
            - MessageManager.delete_by_client_id()
            - ConversationMessageManager.delete_by_client_id()  (verbatim session transcripts)
            - SkillExperienceManager.delete_by_client_id()      (experiences distilled from them)
+           - SkillSessionFeedbackManager.delete_by_client_id() (feedback on served skills)
+           - RetrievalLogManager.delete_by_client_id()         (the client's retrieval log rows)
         2. Delete blocks (via _created_by_id)
         3. Each manager handles:
            - Bulk database deletion
@@ -478,6 +523,23 @@ class ClientManager:
 
             experience_count = await skill_experience_manager.delete_by_client_id(actor=client)
             logger.debug("Bulk deleted %d skill experiences", experience_count)
+
+            # The served skills' feedback its learning runs wrote.
+            from mirix.services.skill_session_feedback import SkillSessionFeedbackManager
+
+            feedback_count = await SkillSessionFeedbackManager(
+                session_maker=self.session_maker
+            ).delete_by_client_id(client)
+            logger.debug("Bulk deleted %d skill feedback rows", feedback_count)
+
+            # The retrieval log rows of the client's retrievals hold their raw
+            # queries.
+            from mirix.services.retrieval_log_manager import RetrievalLogManager
+
+            retrieval_log_count = await RetrievalLogManager(
+                session_maker=self.session_maker
+            ).delete_by_client_id(client_id)
+            logger.debug("Bulk deleted %d retrieval log rows", retrieval_log_count)
 
             # Delete blocks created by this client (using bulk operations)
             block_count = 0

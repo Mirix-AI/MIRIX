@@ -1,10 +1,10 @@
-"""Unit tests for the session-based procedural-memory trigger.
+"""Unit tests for the skill-learning trigger's cursor row and claim surface.
 
 Covers:
 - Pydantic schema validation for AgentTriggerState and its trigger_type rules.
 - ORM shape: table name, columns, unique constraint, index.
-- Manager surface: exposes the expected async methods.
-- memory_tools.trigger_memory_update wires to the new manager/threshold.
+- Manager surface: the claim contract; the old sealing machinery is gone.
+- memory_tools.trigger_memory_update no longer triggers skill learning.
 - Constants: SKILL_TRIGGER_SESSION_THRESHOLD is defined and env-overridable.
 - Migration SQL creates the expected table.
 
@@ -177,153 +177,163 @@ class TestAgentTriggerStateORM:
 
 
 class TestAgentTriggerStateManagerSurface:
-    """Ensure the manager exposes the contract memory_tools depends on.
-
-    Wire-level correctness (UPSERT etc.) needs a real DB and is covered by
-    integration tests; here we just guard the public shape.
-    """
+    """The trigger-claim contract the ingestion seam, close endpoint, sweeper
+    and flush depend on. Behavior is covered DB-backed in
+    tests/test_skill_learning_lifecycle.py (SQLite) and
+    tests/test_agent_trigger_state_integration.py (Postgres)."""
 
     def test_exposes_async_methods(self):
-        # The manager methods are decorated by @enforce_types, whose wrapper
-        # is sync; unwrap to inspect the underlying async def.
         mgr = AgentTriggerStateManager
-        for name in (
-            "count_sealed_undistilled_sessions",
-            "check_and_claim_fire",
-        ):
+        for name in ("count_pending_sessions", "check_and_claim_fire"):
             assert hasattr(mgr, name), f"manager missing {name}"
-            method = getattr(mgr, name)
-            unwrapped = inspect.unwrap(method)
-            assert inspect.iscoroutinefunction(unwrapped), (
-                f"{name} must be async under its decorators"
-            )
+            unwrapped = inspect.unwrap(getattr(mgr, name))
+            assert inspect.iscoroutinefunction(unwrapped), f"{name} must be async"
 
     def test_check_and_claim_fire_signature(self):
-        sig = inspect.signature(AgentTriggerStateManager.check_and_claim_fire)
-        params = sig.parameters
+        params = inspect.signature(AgentTriggerStateManager.check_and_claim_fire).parameters
         for name in (
             "agent_id",
             "user_id",
-            "trigger_type",
-            "threshold",
             "organization_id",
-            "current_session_id",
+            "trigger",
+            "threshold",
+            "force",
+            "allow_empty",
+            "limit",
+            "trigger_type",
         ):
             assert name in params, f"check_and_claim_fire missing kwarg {name}"
 
     def test_claim_result_shape(self):
-        # ClaimFireResult is the contract with memory_tools: if a field
-        # renames silently, the fire-path branches will read stale data.
+        # just_installed is gone: the first check of a scope evaluates the
+        # threshold like any other.
         fields = {f.name for f in __import__("dataclasses").fields(ClaimFireResult)}
-        assert fields == {"fired", "sessions_since", "just_installed", "state"}
-
-    def test_count_signature_accepts_expected_kwargs(self):
-        # The cadence now counts SEALED, not-yet-distilled sessions in the
-        # Conversation Message Store, scoped per (user, org). The old
-        # cursor/watermark kwargs (since, tied_session_ids, exclude_session_id)
-        # are gone — distilled_at is the durable dedup, not a timestamp window.
-        sig = inspect.signature(
-            AgentTriggerStateManager.count_sealed_undistilled_sessions
-        )
-        params = sig.parameters
-        for name in ("user_id", "organization_id"):
-            assert name in params, (
-                f"count_sealed_undistilled_sessions missing kwarg {name}"
-            )
-        for gone in ("since", "tied_session_ids", "exclude_session_id", "agent_id"):
-            assert gone not in params, (
-                f"obsolete windowing kwarg {gone} should be gone"
-            )
+        assert fields == {
+            "fired",
+            "run_id",
+            "session_ids",
+            "pending_count",
+            "pending_experiences",  # What a flush found for the curator
+            "state",
+        }
 
     def test_uses_select_for_update(self):
-        # The whole point of check_and_claim_fire is serializing two workers
-        # on the same cursor row — regress-guard against the lock hint being
-        # dropped during refactors.
-        src = inspect.getsource(AgentTriggerStateManager.check_and_claim_fire)
-        assert ".with_for_update(" in src, (
-            "check_and_claim_fire must lock the cursor row with SELECT FOR UPDATE"
-        )
+        # Concurrent checks of one scope serialize on the cursor row, and the
+        # claimed session rows are locked against a concurrent write.
+        src = inspect.getsource(AgentTriggerStateManager._claim_once)
+        assert ".with_for_update(" in src
+        assert "for_update=True" in src
 
-    def test_excludes_soft_deleted_turns(self):
-        # Conversation turns carry an is_deleted flag from the common mixins.
-        # Leaving them in the count lets a user's wiped conversation keep
-        # firing procedural extraction — mirror the manager's filter.
-        agg_src = inspect.getsource(
-            AgentTriggerStateManager._aggregate_sealed_undistilled
-        )
-        assert "ConversationMessageModel.is_deleted.is_(False)" in agg_src, (
-            "aggregate must exclude soft-deleted conversation turns"
-        )
+    def test_sealing_machinery_is_gone(self):
+        # No "a newer session seals the older one" rule anywhere.
+        import mirix.services.agent_trigger_state_manager as module
 
-    def test_seals_by_min_created_at_and_dedups_by_max_distilled_at(self):
-        # Sealing/order uses MIN(created_at) per session (first-appearance order,
-        # immutable once the first turn lands). Dedup uses MAX(distilled_at) IS
-        # NULL — a session counts iff none of its turns has been distilled.
-        agg_src = inspect.getsource(
-            AgentTriggerStateManager._aggregate_sealed_undistilled
-        )
-        assert "func.min(ConversationMessageModel.created_at)" in agg_src
-        assert "func.max(ConversationMessageModel.distilled_at)" in agg_src
-        # created_at must NOT be aggregated with MAX (that would misorder sealing).
-        assert "func.max(ConversationMessageModel.created_at)" not in agg_src
-        # The open head (newest MIN) is dropped structurally so an in-progress
-        # session is never counted — sealing is not a HAVING timestamp window.
-        assert "grouped[:-1]" in agg_src
-
-    def test_sealed_set_from_single_group_by_query(self):
-        # The sealed-undistilled set comes from ONE GROUP BY session_id aggregate
-        # (order + distilled marker together), never separate queries.
-        agg_src = inspect.getsource(
-            AgentTriggerStateManager._aggregate_sealed_undistilled
-        )
-        assert "group_by(ConversationMessageModel.session_id)" in agg_src, (
-            "sealed set must be derived from one GROUP BY query"
-        )
-        # No leftover machinery from the old message-table windowing scheme.
-        mgr_src = inspect.getsource(AgentTriggerStateManager)
-        assert "_tied_session_ids_at" not in mgr_src
-        assert "_aggregate_window" not in mgr_src
-
-    def test_dedup_is_distilled_at_not_timestamp_tiebreaker(self):
-        # The old MIN>cursor + tied-session tie-breaker windowing is gone.
-        # Dedup is now durable: a session drops out of the sealed-undistilled
-        # set once its turns are stamped distilled_at, so there is no timestamp
-        # watermark to tie-break and no risk of double-firing a session.
-        agg_src = inspect.getsource(
-            AgentTriggerStateManager._aggregate_sealed_undistilled
-        )
-        # A session is undistilled iff MAX(distilled_at) IS NULL.
-        assert "grp.last_distilled is None" in agg_src
-        # No resurrected watermark / tie-breaker machinery.
+        src = inspect.getsource(module)
         for gone in (
-            "per_session_min > since",
-            "session_id.notin_(tied_session_ids)",
-            "per_session_min == since",
-            ".having(",
+            "_aggregate_sealed_undistilled",
+            "count_sealed_undistilled_sessions",
+            "grouped[:-1]",
+            "just_installed",
+            "sealed",
         ):
-            assert gone not in agg_src, f"obsolete windowing fragment {gone!r} present"
+            assert gone not in src, f"obsolete sealing fragment {gone!r} present"
 
-    def test_fire_records_batch_for_diagnostics_only(self):
-        # On fire, the cursor records the oldest `threshold` sealed sessions it
-        # claimed — for diagnostics ONLY. It must NOT be subtracted from future
-        # counts (distilled_at is the real dedup; subtracting would strand a
-        # session that failed to distill from its own retry).
-        src = inspect.getsource(AgentTriggerStateManager.check_and_claim_fire)
-        assert "last_fired_tied_session_ids = fired_batch" in src
-        assert "fired_batch = all_sealed[:threshold]" in src
-        # The fire counts the full sealed set, not a tied-subtracted remainder.
-        assert "count = len(all_sealed)" in src
+    def test_claim_excludes_all_live_runs_and_records_watermarks(self):
+        src = inspect.getsource(AgentTriggerStateManager._claim_once)
+        assert "exclude_claimed=True" in src
+        assert "session_watermarks" in src
+        assert "create_run" in src
+
+
+class TestClaimRetry:
+    """A claim transaction that hits a transient database conflict (deadlock,
+    serialization failure, SQLite lock) is retried from scratch."""
+
+    @staticmethod
+    def _db_error(message):
+        from sqlalchemy.exc import DBAPIError
+
+        return DBAPIError("SELECT 1", {}, Exception(message))
+
+    @staticmethod
+    def _manager():
+        from contextlib import asynccontextmanager
+
+        class _NoLock:
+            @asynccontextmanager
+            async def acquire(self, key):
+                yield
+
+        mgr = AgentTriggerStateManager(session_maker=object(), scope_locks=_NoLock())
+
+        async def no_cursor(**kwargs):
+            return None
+
+        mgr._ensure_cursor = no_cursor
+        return mgr
+
+    @pytest.mark.asyncio
+    async def test_transient_conflict_is_retried(self, monkeypatch):
+        import mirix.services.agent_trigger_state_manager as module
+
+        monkeypatch.setattr(module.asyncio, "sleep", _instant_sleep)
+        mgr = self._manager()
+        attempts = []
+
+        async def flaky(**kwargs):
+            attempts.append(1)
+            if len(attempts) < 3:
+                raise self._db_error("deadlock detected")
+            return ClaimFireResult(fired=True, run_id="slrun-1")
+
+        mgr._claim_once = flaky
+        claim = await mgr.check_and_claim_fire(agent_id="a", user_id="u", organization_id="o")
+        assert claim.run_id == "slrun-1" and len(attempts) == 3
+
+    @pytest.mark.asyncio
+    async def test_other_errors_are_not_retried(self):
+        mgr = self._manager()
+        attempts = []
+
+        async def broken(**kwargs):
+            attempts.append(1)
+            raise self._db_error("relation does not exist")
+
+        mgr._claim_once = broken
+        with pytest.raises(Exception):
+            await mgr.check_and_claim_fire(agent_id="a", user_id="u", organization_id="o")
+        assert len(attempts) == 1
+
+    @pytest.mark.asyncio
+    async def test_retries_are_bounded(self, monkeypatch):
+        import mirix.services.agent_trigger_state_manager as module
+
+        monkeypatch.setattr(module.asyncio, "sleep", _instant_sleep)
+        mgr = self._manager()
+        attempts = []
+
+        async def always_locked(**kwargs):
+            attempts.append(1)
+            raise self._db_error("database is locked")
+
+        mgr._claim_once = always_locked
+        with pytest.raises(Exception):
+            await mgr.check_and_claim_fire(agent_id="a", user_id="u", organization_id="o")
+        assert len(attempts) == module._CLAIM_ATTEMPTS
+
+
+async def _instant_sleep(seconds):
+    return None
 
 
 # ----------------------------- memory_tools wiring -----------------------
 
 
 class TestMemoryToolsWiring:
-    """Guard the integration point inside trigger_memory_update.
-
-    We inspect source text so the test stays DB-free. If the wiring ever
-    shifts to a different symbol, these assertions will flag it.
-    """
+    """The skill-learning trigger no longer lives in the meta agent's
+    ``trigger_memory_update`` tool: it runs deterministically after
+    task writes, explicit closes and in the sweeper. Conversation dispatch is
+    unchanged."""
 
     @staticmethod
     def _source() -> str:
@@ -331,37 +341,34 @@ class TestMemoryToolsWiring:
 
         return inspect.getsource(memory_tools.trigger_memory_update)
 
-    def test_uses_session_threshold(self):
+    def test_no_trigger_in_the_tool(self):
         src = self._source()
-        assert "SKILL_TRIGGER_SESSION_THRESHOLD" in src
-        # The old per-chunk message-count heuristic must be gone.
-        assert "SKILL_TRIGGER_MESSAGE_THRESHOLD" not in src
-        assert "[USER]" not in src and "[ASSISTANT]" not in src
+        for gone in (
+            "check_and_claim_fire",
+            "AgentTriggerStateManager",
+            "SKILL_TRIGGER_SESSION_THRESHOLD",
+            "_schedule_experience_auto_dream",
+            "_current_step_session_id",
+        ):
+            assert gone not in src, f"task-session trigger remnant {gone!r} present"
 
-    def test_uses_new_manager_and_trigger_type(self):
-        src = self._source()
-        assert "AgentTriggerStateManager" in src
-        assert "TRIGGER_TYPE_PROCEDURAL_SKILL" in src
+    def test_fire_and_forget_scheduler_is_gone(self):
+        from mirix.functions.function_sets import memory_tools
 
-    def test_uses_atomic_check_and_claim_fire(self):
-        # The fire path must go through the single atomic entry point — not
-        # a separate read-then-write, which reintroduces the double-fire race.
-        src = self._source()
-        assert "check_and_claim_fire" in src
-        assert "record_fire" not in src
-        assert "count_distinct_sessions_since" not in src
+        # The unreferenced asyncio.create_task scheduler is deleted; runs
+        # are scheduled with a retained reference by skill_learning_trigger.
+        assert not hasattr(memory_tools, "_schedule_experience_auto_dream")
+        assert "asyncio.create_task(_run_dream" not in inspect.getsource(memory_tools)
 
-    def test_reads_current_session_id_from_agent(self):
-        # The fire event must record the session in progress so the next
-        # count excludes it (no double counting of the open session).
+    def test_procedural_still_filtered_and_no_task_branch(self):
+        # Task sessions never reach the meta agent (the add path stores them in
+        # the conversation store only; the queue worker drops any that is
+        # queued), so the tool has no per-tag branch left — only the procedural
+        # filter.
         src = self._source()
-        assert "_current_step_session_id" in src
-
-    def test_skips_when_no_user(self):
-        # Counter is keyed per-user; without a user we must not bookkeep a
-        # fire event, or users would share a single cursor unexpectedly.
-        src = self._source()
-        assert "Skipping session-based procedural trigger" in src
+        assert 'mt != "procedural"' in src
+        assert "SESSION_TAG_TASK" not in src
+        assert "session_tag" not in src
 
 
 # ----------------------------- Constants ---------------------------------

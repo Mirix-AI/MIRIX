@@ -1,5 +1,4 @@
 import asyncio
-import base64
 import contextvars
 import copy
 import difflib
@@ -12,7 +11,6 @@ import pickle
 import platform
 import random
 import re
-import shutil
 import string
 import sys
 import uuid
@@ -38,7 +36,6 @@ from urllib.parse import urljoin, urlparse
 
 import demjson3 as demjson
 import pytz
-import httpx
 import tiktoken
 from pathvalidate import sanitize_filename as pathvalidate_sanitize_filename
 
@@ -71,7 +68,6 @@ if TYPE_CHECKING:
 
 
 _FILE_MANAGER: Optional["FileManager"] = None
-_DEFAULT_IMAGES_DIR: Optional[Path] = None
 
 logger = get_logger(__name__)
 
@@ -1443,26 +1439,123 @@ def num_tokens_from_messages(messages: List[dict], model: str = "gpt-4") -> int:
     return num_tokens
 
 
-def convert_timezone_to_utc(timestamp_str, timezone):
+def to_naive_utc(value: Optional[datetime]) -> Optional[datetime]:
+    """``value`` as a naive UTC datetime, the form MIRIX's ``DateTime`` columns
+    (e.g. ``episodic_memory.occurred_at``) store: an aware value is converted
+    to UTC and loses its tzinfo; a naive value is taken as UTC already and
+    returned unchanged; None stays None. Apply it to every bound a query
+    compares with such a column (an aware bound would otherwise be bound as
+    its wall-clock time, or fail a Python comparison with a stored value)."""
+    if value is None or value.tzinfo is None:
+        return value
+    return value.astimezone(timezone.utc).replace(tzinfo=None)
+
+
+def user_timezone(timezone_str: Optional[str]):
+    """The pytz zone of a MIRIX user timezone string: ``"Region (UTC+hh:mm)"``
+    (the form MIRIX stores, e.g. its default ``"UTC (UTC+00:00)"``, which
+    ``pytz.timezone`` itself rejects) or a bare zone name. UTC when the
+    string is empty or names no known zone."""
+    region = (timezone_str or "").split(" (")[0].strip()
+    if not region:
+        return pytz.utc
     try:
-        timestamp = datetime.strptime(timestamp_str, "%Y-%m-%d %H:%M:%S.%f")
-    except ValueError:
-        timestamp = datetime.strptime(timestamp_str, "%Y-%m-%d %H:%M:%S")
+        return pytz.timezone(region)
+    except pytz.UnknownTimeZoneError:
+        return pytz.utc
 
-    # timezone is something like "Asia/Shanghai (UTC+08:00)"
-    # Extract the timezone region name, e.g., "Asia/Shanghai" from "Asia/Shanghai (UTC+08:00)"
-    tz_region = timezone.split(" (")[0]
 
-    # Get the timezone object using pytz
-    local_tz = pytz.timezone(tz_region)
+_DATETIME_ARG_FORMATS = "'YYYY-MM-DD HH:MM:SS' (optionally with .ffffff), ISO 8601 (e.g. '2025-09-01T13:00:00Z' or '2025-09-01T13:00:00+08:00'), or a date 'YYYY-MM-DD'"
 
-    # Localize the naive datetime object to the provided timezone
-    localized_timestamp = local_tz.localize(timestamp)
 
-    # Convert the localized datetime to UTC
-    utc_timestamp = localized_timestamp.astimezone(pytz.utc)
+def parse_datetime_arg(
+    text, timezone_str: Optional[str] = None, *, end_of_day: bool = False
+) -> datetime:
+    """A time a model or a caller gave as text, as naive UTC.
 
-    return utc_timestamp
+    Accepts ``%Y-%m-%d %H:%M:%S[.%f]`` and ISO 8601 (``T``, ``Z``, ``±HH:MM``),
+    after stripping whitespace and surrounding quotes. A value without an
+    offset is local time of ``timezone_str`` (e.g. ``"Asia/Shanghai
+    (UTC+08:00)"``; UTC when None); an explicit offset wins. A bare date is
+    the start of that day, or its last microsecond with ``end_of_day``. A
+    value whose UTC time falls outside the datetime range (an "all time"
+    sentinel such as ``"0001-01-01 00:00:00"`` in a zone east of UTC) is that
+    end of the range, ``datetime.min`` or ``datetime.max``.
+    Anything else raises ValueError naming the accepted forms and the value.
+    """
+    raw = text
+    value = str(text if text is not None else "").strip().strip("\"'").strip()
+    parsed: Optional[datetime] = None
+    date_only = False
+    for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S"):
+        try:
+            parsed = datetime.strptime(value, fmt)
+            break
+        except ValueError:
+            continue
+    if parsed is None and re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+        parsed = datetime.strptime(value, "%Y-%m-%d")
+        date_only = True
+    if parsed is None:
+        iso = _canonical_iso(value)
+        if iso is not None:
+            try:
+                parsed = datetime.fromisoformat(iso)
+            except ValueError:
+                parsed = None
+    if parsed is None:
+        raise ValueError(f"Invalid time {raw!r}: use {_DATETIME_ARG_FORMATS}.")
+    if date_only and end_of_day:
+        parsed = parsed.replace(hour=23, minute=59, second=59, microsecond=999999)
+    try:
+        if parsed.tzinfo is None:
+            # MIRIX's "Region (UTC+hh:mm)" form or a zone name; UTC when unknown
+            # ("UTC+8", "Beijing (UTC+08:00)"), never an UnknownTimeZoneError.
+            parsed = user_timezone(timezone_str).localize(parsed)
+        return to_naive_utc(parsed)
+    except OverflowError:
+        # Its UTC time is past the datetime range: a model's "all time" sentinel
+        # ("0001-01-01 00:00:00", "9999-12-31 23:59:59") shifted by its zone's
+        # offset. An offset is under a day, so the value is next to the end it
+        # crossed; it is that end and bounds nothing, as it meant (rest_api's
+        # request date parser does the same).
+        wall = parsed.replace(tzinfo=None)
+        return (
+            datetime.min if wall - datetime.min < datetime.max - wall else datetime.max
+        )
+
+
+_ISO_DATETIME = re.compile(
+    r"(\d{4}-\d{2}-\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?(?:[.,](\d+))?"
+    r"\s*(?:(Z|z)|([+-])(\d{2})(?::?(\d{2}))?)?"
+)
+
+
+def _canonical_iso(value: str) -> Optional[str]:
+    """An ISO 8601 date-time in the one form every supported Python's
+    ``datetime.fromisoformat`` reads (3.10 included):
+    ``YYYY-MM-DDTHH:MM:SS[.ffffff][+HH:MM]``. It takes a fraction of any
+    length (cut or padded to microseconds), ``Z``, and an offset as ``+HH``,
+    ``+HHMM`` or ``+HH:MM``. None when ``value`` is none of these."""
+    match = _ISO_DATETIME.fullmatch(value)
+    if match is None:
+        return None
+    date, hour, minute, second, fraction, zulu, sign, off_h, off_m = match.groups()
+    text = f"{date}T{hour}:{minute}:{second or '00'}"
+    if fraction:
+        text += "." + fraction[:6].ljust(6, "0")
+    if zulu:
+        text += "+00:00"
+    elif sign:
+        text += f"{sign}{off_h}:{off_m or '00'}"
+    return text
+
+
+def convert_timezone_to_utc(timestamp_str, timezone):
+    """``timestamp_str`` (local time of ``timezone``, e.g. ``"Asia/Shanghai
+    (UTC+08:00)"``, unless it carries its own offset) as an AWARE UTC
+    datetime. Parses every form :func:`parse_datetime_arg` accepts."""
+    return pytz.utc.localize(parse_datetime_arg(timestamp_str, timezone))
 
 
 def log_telemetry(logger: Logger, event: str, **kwargs):
@@ -1546,129 +1639,47 @@ def _get_file_manager_instance() -> "FileManager":
     return _FILE_MANAGER
 
 
-def _get_images_directory() -> Path:
-    """Return the configured images directory, ensuring it exists."""
-    global _DEFAULT_IMAGES_DIR
-    if _DEFAULT_IMAGES_DIR is None:
-        from mirix.settings import settings
-
-        images_dir = settings.images_dir or (Path.home() / ".mirix" / "images")
-        images_dir = Path(images_dir)
-        images_dir.mkdir(parents=True, exist_ok=True)
-        _DEFAULT_IMAGES_DIR = images_dir
-    return _DEFAULT_IMAGES_DIR
+def _local_file_path(file_uri: str) -> Path:
+    return Path(file_uri[7:] if file_uri.startswith("file://") else file_uri)
 
 
-def _generate_file_hash(content: bytes) -> str:
-    """Generate a deterministic short hash for file contents."""
-    return hashlib.sha256(content).hexdigest()[:16]
+def _read_local_file(path: Path) -> bytes:
+    if not path.exists():
+        raise FileNotFoundError(f"Source file not found: {path}")
+    return path.read_bytes()
 
 
-def _save_image_from_base64(
-    base64_data: str,
-    file_manager: "FileManager",
-    org_id: str,
-    images_dir: Path,
-    detail: str = "auto",
-) -> FileMetadata:
-    """Save an image from base64 data and return FileMetadata."""
-    del detail  # detail currently unused but kept for signature parity
-    try:
-        if base64_data.startswith("data:"):
-            header, encoded = base64_data.split(",", 1)
-            mime_type = header.split(":")[1].split(";")[0]
-            file_extension = mime_type.split("/")[-1]
-        else:
-            encoded = base64_data
-            file_extension = "jpg"
-
-        image_data = base64.b64decode(encoded)
-
-        file_hash = _generate_file_hash(image_data)
-        file_name = f"image_{file_hash}.{file_extension}"
-        file_path = images_dir / file_name
-
-        if not file_path.exists():
-            with open(file_path, "wb") as f:
-                f.write(image_data)
-
-        return file_manager.create_file_metadata_from_path(file_path=str(file_path), organization_id=org_id)
-
-    except Exception as e:
-        raise ValueError(f"Failed to save base64 image: {str(e)}") from e
-
-
-async def _save_image_from_url(
-    url: str,
-    file_manager: "FileManager",
-    org_id: str,
-    images_dir: Path,
-    detail: str = "auto",
-) -> FileMetadata:
-    """Download and save an image from URL and return FileMetadata."""
-    del detail  # detail currently unused but kept for signature parity
-    try:
-        async with httpx.AsyncClient() as client:
-            response = await client.get(url, timeout=30)
-        response.raise_for_status()
-
-        content_type = response.headers.get("content-type", "image/jpeg")
-        file_extension = content_type.split("/")[-1]
-        if file_extension not in ["jpg", "jpeg", "png", "gif", "webp"]:
-            file_extension = "jpg"
-
-        image_data = response.content
-
-        file_hash = _generate_file_hash(image_data)
-        file_name = f"image_{file_hash}.{file_extension}"
-        file_path = images_dir / file_name
-
-        if not file_path.exists():
-            with open(file_path, "wb") as f:
-                f.write(image_data)
-
-        return file_manager.create_file_metadata_from_path(file_path=str(file_path), organization_id=org_id)
-
-    except Exception as e:
-        raise ValueError(f"Failed to download and save image from URL {url}: {str(e)}") from e
-
-
-def _save_image_from_file_uri(
+async def _save_image_from_file_uri(
     file_uri: str,
     file_manager: "FileManager",
     org_id: str,
-    images_dir: Path,
-) -> FileMetadata:
-    """Copy an image from file URI and return FileMetadata."""
+    user_id: Optional[str] = None,
+    images_dir: Optional[Path] = None,
+) -> str:
+    """Copy a local image into the image store; return its file id."""
+    from mirix.services.image_store import inspect_image_bytes, store_image_part
+
     try:
-        if file_uri.startswith("file://"):
-            source_path = file_uri[7:]
-        else:
-            source_path = file_uri
-
-        source_path = Path(source_path)
-
-        if not source_path.exists():
-            raise FileNotFoundError(f"Source file not found: {source_path}")
-
-        with open(source_path, "rb") as f:
-            image_data = f.read()
-
-        file_hash = _generate_file_hash(image_data)
-        file_extension = source_path.suffix.lstrip(".") or "jpg"
-        file_name = f"image_{file_hash}.{file_extension}"
-        file_path = images_dir / file_name
-
-        if not file_path.exists():
-            shutil.copy2(source_path, file_path)
-
-        return file_manager.create_file_metadata_from_path(file_path=str(file_path), organization_id=org_id)
-
+        raw = await asyncio.to_thread(_read_local_file, _local_file_path(file_uri))
+        prepared = await asyncio.to_thread(inspect_image_bytes, raw, _determine_file_type(file_uri))
+        ref = await store_image_part(
+            prepared,
+            organization_id=org_id,
+            user_id=user_id,
+            file_manager=file_manager,
+            images_dir=images_dir,
+        )
+        return ref["file_id"]
     except Exception as e:
         raise ValueError(f"Failed to copy image from file URI {file_uri}: {str(e)}") from e
 
 
-def _save_image_from_google_cloud_uri(cloud_uri: str, file_manager: "FileManager", org_id: str) -> FileMetadata:
+async def _save_image_from_google_cloud_uri(
+    cloud_uri: str,
+    file_manager: "FileManager",
+    org_id: str,
+    user_id: Optional[str] = None,
+) -> FileMetadata:
     """Create FileMetadata from Google Cloud URI without downloading the image."""
     parsed_uri = urlparse(cloud_uri)
     file_id = os.path.basename(parsed_uri.path) or "google_cloud_file"
@@ -1677,21 +1688,14 @@ def _save_image_from_google_cloud_uri(cloud_uri: str, file_manager: "FileManager
     if not os.path.splitext(file_name)[1]:
         file_name += ".jpg"
 
-    file_extension = os.path.splitext(file_name)[1].lower()
-    file_type_map = {
-        ".jpg": "image/jpeg",
-        ".jpeg": "image/jpeg",
-        ".png": "image/png",
-        ".gif": "image/gif",
-        ".webp": "image/webp",
-        ".bmp": "image/bmp",
-        ".svg": "image/svg+xml",
-    }
-    file_type = file_type_map.get(file_extension, "image/jpeg")
+    file_type = _determine_file_type(file_name)
+    if not file_type.startswith("image/"):
+        file_type = "image/jpeg"
 
-    return file_manager.create_file_metadata(
+    return await file_manager.create_file_metadata(
         FileMetadata(
             organization_id=org_id,
+            user_id=user_id,
             file_name=file_name,
             file_path=None,
             source_url=None,
@@ -1704,16 +1708,34 @@ def _save_image_from_google_cloud_uri(cloud_uri: str, file_manager: "FileManager
     )
 
 
-def _save_file_from_path(file_path: str, file_manager: "FileManager", org_id: str) -> FileMetadata:
-    """Save a file from local path and return FileMetadata."""
+def _local_file_metadata(file_path: str, org_id: str, user_id: Optional[str]) -> FileMetadata:
+    """FileMetadata for an existing local file (stat calls; run in a thread)."""
+    path = Path(file_path)
+    if not path.exists():
+        raise FileNotFoundError(f"File not found: {file_path}")
+    stats = path.stat()
+    return FileMetadata(
+        organization_id=org_id,
+        user_id=user_id,
+        file_name=path.name,
+        file_path=str(path),
+        file_type=_determine_file_type(str(path)),
+        file_size=stats.st_size,
+        file_creation_date=datetime.fromtimestamp(stats.st_ctime).isoformat(),
+        file_last_modified_date=datetime.fromtimestamp(stats.st_mtime).isoformat(),
+    )
+
+
+async def _save_file_from_path(
+    file_path: str,
+    file_manager: "FileManager",
+    org_id: str,
+    user_id: Optional[str] = None,
+) -> FileMetadata:
+    """Record a local (non-image) file by path and return its FileMetadata."""
     try:
-        file_path_obj = Path(file_path)
-
-        if not file_path_obj.exists():
-            raise FileNotFoundError(f"File not found: {file_path}")
-
-        return file_manager.create_file_metadata_from_path(file_path=str(file_path_obj), organization_id=org_id)
-
+        metadata = await asyncio.to_thread(_local_file_metadata, file_path, org_id, user_id)
+        return await file_manager.create_file_metadata(metadata)
     except Exception as e:
         raise ValueError(f"Failed to save file from path {file_path}: {str(e)}") from e
 
@@ -1753,179 +1775,128 @@ def _determine_file_type(file_path: str) -> str:
     return file_type_map.get(file_extension, "application/octet-stream")
 
 
-def _create_file_metadata_from_url(
-    url: str, file_manager: "FileManager", org_id: str, detail: str = "auto"
-) -> FileMetadata:
-    """Create FileMetadata from URL without downloading the image."""
-    del detail  # detail currently unused but kept for signature parity
-    try:
-        parsed_url = urlparse(url)
-        file_name = os.path.basename(parsed_url.path) or "remote_image"
-
-        if not os.path.splitext(file_name)[1]:
-            file_name += ".jpg"
-
-        file_extension = os.path.splitext(file_name)[1].lower()
-        file_type_map = {
-            ".jpg": "image/jpeg",
-            ".jpeg": "image/jpeg",
-            ".png": "image/png",
-            ".gif": "image/gif",
-            ".webp": "image/webp",
-            ".bmp": "image/bmp",
-            ".svg": "image/svg+xml",
-        }
-        file_type = file_type_map.get(file_extension, "image/jpeg")
-
-        return file_manager.create_file_metadata(
-            FileMetadata(
-                organization_id=org_id,
-                file_name=file_name,
-                file_path=None,
-                source_url=url,
-                file_type=file_type,
-                file_size=None,
-                file_creation_date=None,
-                file_last_modified_date=None,
-            )
-        )
-
-    except Exception as e:
-        raise ValueError(f"Failed to create file metadata from URL {url}: {str(e)}") from e
-
-
-def convert_message_to_mirix_message(
+async def convert_message_to_mirix_message(
     message: Union[str, List[dict]],
     role: str = "user",
     *,
     org_id: Optional[str] = None,
+    user_id: Optional[str] = None,
     file_manager: Optional["FileManager"] = None,
     images_dir: Optional[Path] = None,
 ) -> List[MessageCreate]:
+    """Convert a string or a list of content parts into one MessageCreate.
+
+    Parts that reference files or images are stored through the image store /
+    FileManager (awaited: these used to return un-awaited coroutines), so
+    ``org_id`` is required for them and ``user_id`` attributes the stored files.
+    All disk I/O runs in threads. Plain text parts need neither.
+    """
     if isinstance(message, str):
         content = [TextContent(text=message)]
-        input_messages = [MessageCreate(role=MessageRole(role), content=content)]
-    elif isinstance(message, list):
-        resolved_file_manager = file_manager
-        resolved_images_dir = None
-
-        if images_dir is not None:
-            resolved_images_dir = Path(images_dir)
-            resolved_images_dir.mkdir(parents=True, exist_ok=True)
-
-        def ensure_file_context(
-            needs_images_dir: bool = False,
-        ) -> tuple["FileManager", str, Optional[Path]]:
-            if org_id is None:
-                raise ValueError("org_id is required when converting messages containing file or image data.")
-
-            nonlocal resolved_file_manager, resolved_images_dir
-
-            if resolved_file_manager is None:
-                resolved_file_manager = _get_file_manager_instance()
-
-            images_root = resolved_images_dir
-            if needs_images_dir:
-                if images_root is None:
-                    images_root = _get_images_directory()
-                    resolved_images_dir = images_root
-
-            return resolved_file_manager, org_id, images_root
-
-        def convert_message(m):
-            if m["type"] == "text":
-                return TextContent(**m)
-            elif m["type"] == "image_url":
-                url = m["image_url"]["url"]
-                detail = m["image_url"].get("detail", "auto")
-
-                # Handle the image based on URL type
-                if url.startswith("data:"):
-                    fm, resolved_org_id, resolved_images_dir = ensure_file_context(needs_images_dir=True)
-                    file_metadata = _save_image_from_base64(url, fm, resolved_org_id, resolved_images_dir, detail)
-                else:
-                    fm, resolved_org_id, _ = ensure_file_context()
-                    file_metadata = _create_file_metadata_from_url(url, fm, resolved_org_id, detail)
-
-                return ImageContent(
-                    type=MessageContentType.image_url,
-                    image_id=file_metadata.id,
-                    detail=detail,
-                )
-
-            elif m["type"] == "image_data":
-                # Base64 image data (new format)
-                data = m["image_data"]["data"]
-                detail = m["image_data"].get("detail", "auto")
-
-                fm, resolved_org_id, resolved_images_dir = ensure_file_context(needs_images_dir=True)
-                file_metadata = _save_image_from_base64(data, fm, resolved_org_id, resolved_images_dir, detail)
-
-                return ImageContent(
-                    type=MessageContentType.image_url,
-                    image_id=file_metadata.id,
-                    detail=detail,
-                )
-            elif m["type"] == "file_uri":
-                # File URI (local file path)
-                file_path = m["file_uri"]
-
-                # Check if it's an image or other file type
-                file_type = _determine_file_type(file_path)
-
-                if file_type.startswith("image/"):
-                    # Handle as image
-                    fm, resolved_org_id, resolved_images_dir = ensure_file_context(needs_images_dir=True)
-                    file_metadata = _save_image_from_file_uri(file_path, fm, resolved_org_id, resolved_images_dir)
-                    return ImageContent(
-                        type=MessageContentType.image_url,
-                        image_id=file_metadata.id,
-                        detail="auto",
-                    )
-                else:
-                    # Handle as general file (e.g., PDF, DOC, etc.)
-                    fm, resolved_org_id, _ = ensure_file_context()
-                    file_metadata = _save_file_from_path(file_path, fm, resolved_org_id)
-                    return FileContent(type=MessageContentType.file_uri, file_id=file_metadata.id)
-
-            elif m["type"] == "google_cloud_file_uri":
-                # Google Cloud file URI
-                # Handle both the typo version and the correct version from the test file
-                file_uri = m.get("google_cloud_file_uri") or m.get("file_uri")
-
-                fm, resolved_org_id, _ = ensure_file_context()
-                file_metadata = _save_image_from_google_cloud_uri(file_uri, fm, resolved_org_id)
-                return CloudFileContent(
-                    type=MessageContentType.google_cloud_file_uri,
-                    cloud_file_uri=file_metadata.id,
-                )
-
-            elif m["type"] == "database_image_id":
-                return ImageContent(
-                    type=MessageContentType.image_url,
-                    image_id=m["image_id"],
-                    detail="auto",
-                )
-
-            elif m["type"] == "database_file_id":
-                return FileContent(
-                    type=MessageContentType.file_uri,
-                    file_id=m["file_id"],
-                )
-
-            elif m["type"] == "database_google_cloud_file_uri":
-                return CloudFileContent(
-                    type=MessageContentType.google_cloud_file_uri,
-                    cloud_file_uri=m["cloud_file_uri"],
-                )
-
-            else:
-                raise ValueError(f"Unknown message type: {m['type']}")
-
-        content = [convert_message(m) for m in message]
-        input_messages = [MessageCreate(role=MessageRole(role), content=content)]
-
-    else:
+        return [MessageCreate(role=MessageRole(role), content=content)]
+    if not isinstance(message, list):
         raise ValueError(f"Invalid message type: {type(message)}")
 
-    return input_messages
+    from mirix.services.conversation_content import (
+        ImagePart,
+        MessageParseError,
+        parse_image_data,
+        parse_image_url,
+    )
+    from mirix.services.image_store import store_image_part
+
+    resolved_file_manager = file_manager
+
+    def file_context() -> tuple["FileManager", str]:
+        nonlocal resolved_file_manager
+        if org_id is None:
+            raise ValueError("org_id is required when converting messages containing file or image data.")
+        if resolved_file_manager is None:
+            resolved_file_manager = _get_file_manager_instance()
+        return resolved_file_manager, org_id
+
+    async def store_image(part: ImagePart) -> ImageContent:
+        fm, resolved_org_id = file_context()
+        ref = await store_image_part(
+            part,
+            organization_id=resolved_org_id,
+            user_id=user_id,
+            file_manager=fm,
+            images_dir=images_dir,
+        )
+        return ImageContent(
+            type=MessageContentType.image_url,
+            image_id=ref["file_id"],
+            detail=part.detail or "auto",
+        )
+
+    async def convert_message(m):
+        if m["type"] == "text":
+            return TextContent(**m)
+        elif m["type"] == "image_url":
+            try:
+                part = parse_image_url(m.get("image_url"), "image_url")
+            except MessageParseError as e:
+                raise ValueError(str(e)) from e
+            return await store_image(part)
+
+        elif m["type"] == "image_data":
+            try:
+                part = parse_image_data(m.get("image_data"), "image_data")
+            except MessageParseError as e:
+                raise ValueError(str(e)) from e
+            return await store_image(part)
+
+        elif m["type"] == "file_uri":
+            # File URI (local file path)
+            file_path = m["file_uri"]
+
+            fm, resolved_org_id = file_context()
+            if _determine_file_type(file_path).startswith("image/"):
+                file_id = await _save_image_from_file_uri(
+                    file_path, fm, resolved_org_id, user_id=user_id, images_dir=images_dir
+                )
+                return ImageContent(
+                    type=MessageContentType.image_url,
+                    image_id=file_id,
+                    detail="auto",
+                )
+            # Handle as general file (e.g., PDF, DOC, etc.)
+            file_metadata = await _save_file_from_path(file_path, fm, resolved_org_id, user_id=user_id)
+            return FileContent(type=MessageContentType.file_uri, file_id=file_metadata.id)
+
+        elif m["type"] == "google_cloud_file_uri":
+            # Handle both the typo version and the correct version from the test file
+            file_uri = m.get("google_cloud_file_uri") or m.get("file_uri")
+
+            fm, resolved_org_id = file_context()
+            file_metadata = await _save_image_from_google_cloud_uri(file_uri, fm, resolved_org_id, user_id=user_id)
+            return CloudFileContent(
+                type=MessageContentType.google_cloud_file_uri,
+                cloud_file_uri=file_metadata.id,
+            )
+
+        elif m["type"] == "database_image_id":
+            return ImageContent(
+                type=MessageContentType.image_url,
+                image_id=m["image_id"],
+                detail="auto",
+            )
+
+        elif m["type"] == "database_file_id":
+            return FileContent(
+                type=MessageContentType.file_uri,
+                file_id=m["file_id"],
+            )
+
+        elif m["type"] == "database_google_cloud_file_uri":
+            return CloudFileContent(
+                type=MessageContentType.google_cloud_file_uri,
+                cloud_file_uri=m["cloud_file_uri"],
+            )
+
+        else:
+            raise ValueError(f"Unknown message type: {m['type']}")
+
+    content = [await convert_message(m) for m in message]
+    return [MessageCreate(role=MessageRole(role), content=content)]

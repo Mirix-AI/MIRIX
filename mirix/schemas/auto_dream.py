@@ -1,5 +1,5 @@
 import datetime as dt
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -30,9 +30,18 @@ class AutoDreamRequest(BaseModel):
     last_n_sessions: Optional[int] = Field(
         None,
         description=(
-            "For mode='procedural' (general session-experience distillation): how "
-            "many of the meta agent's most-recent retained sessions to distill. "
-            "Defaults to MESSAGE_RETAIN_LAST_N_SESSIONS."
+            "For mode='procedural': claim at most this many pending sessions "
+            "(oldest first) into the learning run. Default (or <= 0): every "
+            "pending session of the meta agent's scope (flush semantics)."
+        ),
+    )
+    wait: bool = Field(
+        True,
+        description=(
+            "Every non-dry auto_dream run is recorded as a learning run (any "
+            "mode). true (default) runs it synchronously and returns its "
+            "result; false queues it in the background and returns its id in "
+            "run_ids at once (poll GET /memory/learning_runs/{id})."
         ),
     )
 
@@ -64,3 +73,6 @@ class AutoDreamResponse(BaseModel):
     # existing caller (and non-procedural modes) working unchanged.
     skills_changed: int = 0
     changes: Dict[str, list] = Field(default_factory=dict)
+    # The recorded runs (skill_learning_run ids) this call created or ran —
+    # every mode; empty only for dry runs.
+    run_ids: List[str] = Field(default_factory=list)

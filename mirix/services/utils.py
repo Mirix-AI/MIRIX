@@ -1,4 +1,4 @@
-from functools import wraps
+from functools import lru_cache, wraps
 from typing import List, Optional
 
 import numpy as np
@@ -9,9 +9,12 @@ from mirix.constants import (
     MAX_EMBEDDING_DIM,
 )
 from mirix.embeddings import embedding_model
+from mirix.log import get_logger
 from mirix.orm.sqlite_functions import adapt_array
 from mirix.schemas.embedding_config import EmbeddingConfig
 from mirix.settings import settings
+
+logger = get_logger(__name__)
 
 
 async def build_query(
@@ -120,34 +123,70 @@ def update_timezone(func):
             or (getattr(kwargs.get("actor"), "timezone", "UTC") if kwargs.get("actor") else None)
         )
         results = await func(*args, **kwargs)
-        if results is None or not timezone_str:
-            return results
-        for result in results:
-            if hasattr(result, "occurred_at"):
-                if result.occurred_at.tzinfo is None:
-                    result.occurred_at = pytz.utc.localize(result.occurred_at)
-                target_tz = pytz.timezone(timezone_str.split(" (")[0])
-                result.occurred_at = result.occurred_at.astimezone(target_tz)
-            if hasattr(result, "created_at"):
-                if result.created_at.tzinfo is None:
-                    result.created_at = pytz.utc.localize(result.created_at)
-                target_tz = pytz.timezone(timezone_str.split(" (")[0])
-                result.created_at = result.created_at.astimezone(target_tz)
-            if hasattr(result, "updated_at") and result.updated_at is not None:
-                if result.updated_at.tzinfo is None:
-                    result.updated_at = pytz.utc.localize(result.updated_at)
-                target_tz = pytz.timezone(timezone_str.split(" (")[0])
-                result.updated_at = result.updated_at.astimezone(target_tz)
-            if hasattr(result, "last_modify") and result.last_modify and "timestamp" in result.last_modify:
-                timestamp = result.last_modify["timestamp"]
-                if isinstance(timestamp, str):
-                    from datetime import datetime
-
-                    timestamp = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
-                if timestamp.tzinfo is None:
-                    timestamp = pytz.utc.localize(timestamp)
-                target_tz = pytz.timezone(timezone_str.split(" (")[0])
-                result.last_modify["timestamp"] = timestamp.astimezone(target_tz)
-        return results
+        return localize_timestamps(results, timezone_str)
 
     return wrapper
+
+
+@lru_cache(maxsize=256)
+def display_timezone(timezone_str: str):
+    """The pytz zone a user's timestamps are shown in: the region of MIRIX's
+    ``"Region (UTC+hh:mm)"`` form (``"Asia/Shanghai (UTC+08:00)"``) or a bare
+    zone name. A string pytz cannot name ("Beijing (UTC+08:00)", "UTC+8")
+    is UTC, logged once per string: the same fallback as
+    :func:`mirix.utils.parse_datetime_arg` (so a time range the user gave is
+    read and answered on the same clock), never an ``UnknownTimeZoneError``
+    that fails the read."""
+    region = str(timezone_str).split(" (")[0].strip()
+    try:
+        return pytz.timezone(region)
+    except pytz.UnknownTimeZoneError:
+        logger.warning(
+            "Unknown user timezone %r: its timestamps are shown in UTC", timezone_str
+        )
+        return pytz.utc
+
+
+def _in_zone(value, zone):
+    """``value`` (naive UTC, or aware) in ``zone``; in UTC (or as it is) when
+    that would pass the end of the datetime range (a bound stored as
+    ``datetime.min`` / ``max``, :func:`mirix.utils.parse_datetime_arg`), never
+    an OverflowError that fails the read."""
+    if value.tzinfo is None:
+        value = pytz.utc.localize(value)
+    for target in (zone, pytz.utc):
+        try:
+            return value.astimezone(target)
+        except OverflowError:
+            continue
+    return value
+
+
+def localize_timestamps(results, timezone_str: Optional[str]):
+    """Convert the datetime fields of ``results`` (occurred_at, created_at,
+    updated_at, last_modify.timestamp) to ``timezone_str`` in place, as
+    :func:`update_timezone` does for a method's return value; returns them.
+    A timezone pytz cannot name is UTC (:func:`display_timezone`), and so is a
+    time the zone's offset would carry past the datetime range."""
+    if results is None or not timezone_str:
+        return results
+    target_tz = display_timezone(timezone_str)
+    for result in results:
+        if hasattr(result, "occurred_at"):
+            result.occurred_at = _in_zone(result.occurred_at, target_tz)
+        if hasattr(result, "created_at"):
+            result.created_at = _in_zone(result.created_at, target_tz)
+        if hasattr(result, "updated_at") and result.updated_at is not None:
+            result.updated_at = _in_zone(result.updated_at, target_tz)
+        if (
+            hasattr(result, "last_modify")
+            and result.last_modify
+            and "timestamp" in result.last_modify
+        ):
+            timestamp = result.last_modify["timestamp"]
+            if isinstance(timestamp, str):
+                from datetime import datetime
+
+                timestamp = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+            result.last_modify["timestamp"] = _in_zone(timestamp, target_tz)
+    return results

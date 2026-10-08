@@ -1,313 +1,221 @@
-"""Tests for conversation-turn extraction into the Conversation Message Store.
+"""The conversation-store ingestion seam (`rest_api._ingest_session_turns`).
 
-The distiller's prompt has always treated tool errors/retries as strong
-learning signals (`signal_type: tool_error`), but the ingestion seam used to
-drop every non-user/assistant message — blinding the distiller to exactly that
-signal. These tests pin the repaired pipeline: tool results and assistant
-tool_calls survive extraction, content parts are flattened to clean text, and
-foreign roles are still dropped.
+The distiller's prompt treats tool errors/retries as strong learning signals,
+so the store keeps tool results and assistant tool_calls with their REAL roles.
+Turn extraction now goes through the one parser both consumers share
+(`mirix.services.conversation_content`, covered in test_conversation_content);
+these tests pin the seam around it:
+
+* the batch session_id and the real roles reach `record_turns` (this test
+  used to fail on every run: the request had no `session_tag` attribute and the
+  AttributeError was swallowed);
+* conversation sessions (non-strict): a store or parse failure degrades to a
+  missed session and never aborts the primary memory-add;
+* task sessions (strict): a store failure propagates, and any image already
+  stored for the failed write is discarded;
+* the storage cap and image refs are handed to `record_turns`.
 """
 
 from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 
-from mirix.server.rest_api import (
-    _extract_conversation_turns,
-    _ingest_session_turns,
-    _serialize_tool_calls,
-)
-
-
-class TestExtractConversationTurns:
-    def test_user_and_assistant_kept(self):
-        turns = _extract_conversation_turns(
-            [
-                {"role": "user", "content": "deploy the app"},
-                {"role": "assistant", "content": "done"},
-            ]
-        )
-        assert turns == [
-            {"role": "user", "content": "deploy the app"},
-            {"role": "assistant", "content": "done"},
-        ]
-
-    def test_tool_role_is_kept_with_name_prefix(self):
-        turns = _extract_conversation_turns(
-            [
-                {"role": "user", "content": "run the tests"},
-                {"role": "tool", "name": "run_tests", "content": "2 failed, 10 passed"},
-            ]
-        )
-        assert turns[1] == {
-            "role": "tool",
-            "content": "[run_tests] 2 failed, 10 passed",
-        }
-
-    def test_function_role_maps_to_tool(self):
-        """OpenAI's legacy 'function' role is the same concept as 'tool'."""
-        turns = _extract_conversation_turns(
-            [
-                {"role": "user", "content": "q"},
-                {"role": "function", "name": "search", "content": "no results"},
-            ]
-        )
-        assert turns[1]["role"] == "tool"
-        assert "no results" in turns[1]["content"]
-
-    def test_assistant_tool_calls_are_serialized(self):
-        """A pure tool-call assistant turn (empty content) must still yield a
-        turn — the call itself is the work-process signal."""
-        turns = _extract_conversation_turns(
-            [
-                {"role": "user", "content": "deploy"},
-                {
-                    "role": "assistant",
-                    "content": "",
-                    "tool_calls": [
-                        {
-                            "id": "call_1",
-                            "function": {
-                                "name": "kubectl_apply",
-                                "arguments": '{"file": "deploy.yaml"}',
-                            },
-                        }
-                    ],
-                },
-                {
-                    "role": "tool",
-                    "name": "kubectl_apply",
-                    "content": "error: forbidden",
-                },
-            ]
-        )
-        assert len(turns) == 3
-        assert turns[1]["role"] == "assistant"
-        assert 'kubectl_apply({"file": "deploy.yaml"})' in turns[1]["content"]
-        assert turns[2] == {
-            "role": "tool",
-            "content": "[kubectl_apply] error: forbidden",
-        }
-
-    def test_assistant_content_and_tool_calls_both_kept(self):
-        turns = _extract_conversation_turns(
-            [
-                {"role": "user", "content": "q"},
-                {
-                    "role": "assistant",
-                    "content": "let me check",
-                    "tool_calls": [{"name": "search", "arguments": "query"}],
-                },
-            ]
-        )
-        assert turns[1]["content"].startswith("let me check")
-        assert "[tool_call] search(query)" in turns[1]["content"]
-
-    def test_content_parts_flatten_to_text(self):
-        """The SDK's [{"type":"text","text":...}] parts must store clean text,
-        not dict reprs."""
-        turns = _extract_conversation_turns(
-            [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": "hello"},
-                        {"type": "text", "text": "world"},
-                    ],
-                },
-                {"role": "assistant", "content": "hi"},
-            ]
-        )
-        assert turns[0]["content"] == "hello\nworld"
-
-    def test_foreign_roles_are_dropped(self):
-        turns = _extract_conversation_turns(
-            [
-                {"role": "user", "content": "q"},
-                {"role": "system", "content": "scaffolding — not a learnable turn"},
-                {"role": "assistant", "content": "a"},
-            ]
-        )
-        assert [t["role"] for t in turns] == ["user", "assistant"]
-
-    def test_non_role_bearing_payload_yields_nothing(self):
-        assert (
-            _extract_conversation_turns([{"type": "text", "text": "screenshot"}]) == []
-        )
-        assert _extract_conversation_turns([]) == []
-
-    def test_oversized_turn_is_truncated_to_store_cap(self):
-        """One huge tool result must fail softly (truncate), not blow the whole
-        batch's Pydantic validation in record_turns."""
-        from mirix.schemas.conversation_message import (
-            CONVERSATION_MESSAGE_MAX_CONTENT_LEN,
-            ConversationMessageCreate,
-        )
-
-        huge = "x" * (CONVERSATION_MESSAGE_MAX_CONTENT_LEN + 1000)
-        turns = _extract_conversation_turns(
-            [
-                {"role": "user", "content": "q"},
-                {"role": "tool", "name": "dump", "content": huge},
-            ]
-        )
-        assert len(turns[1]["content"]) <= CONVERSATION_MESSAGE_MAX_CONTENT_LEN
-        assert turns[1]["content"].endswith("…[truncated]")
-        # And the truncated turn passes the store schema it will be validated by.
-        ConversationMessageCreate(
-            session_id="sess-1",
-            user_id="u",
-            organization_id="o",
-            role=turns[1]["role"],
-            content=turns[1]["content"],
-        )
-
-    def test_malformed_tool_calls_do_not_raise(self):
-        """Extraction must never abort the add path on odd shapes."""
-        turns = _extract_conversation_turns(
-            [
-                {"role": "user", "content": "q"},
-                {"role": "assistant", "content": None, "tool_calls": "not-a-list"},
-                {
-                    "role": "assistant",
-                    "content": "",
-                    "tool_calls": [42, {"function": "not-a-dict"}],
-                },
-                {"role": "tool", "content": {"weird": "dict"}},
-            ]
-        )
-        assert [t["role"] for t in turns] == ["user", "assistant", "assistant", "tool"]
+from mirix.server.rest_api import _ingest_session_turns
+from mirix.services import image_store
+from mirix.services.conversation_message_manager import ConversationMessageManager
 
 
-class TestSerializeToolCalls:
-    def test_openai_shape(self):
-        rendered = _serialize_tool_calls(
-            [{"function": {"name": "grep", "arguments": '{"q": "x"}'}}]
-        )
-        assert rendered == '[tool_call] grep({"q": "x"})'
+def _request(session_id, messages, *, tag=None):
+    return SimpleNamespace(
+        session_id=session_id,
+        messages=messages,
+        session_tag=tag,
+        meta_agent_id="agent-meta",
+    )
 
-    def test_flat_shape_and_dict_arguments(self):
-        rendered = _serialize_tool_calls(
-            [{"name": "read", "arguments": {"path": "a.py"}}]
-        )
-        assert rendered == '[tool_call] read({"path": "a.py"})'
 
-    def test_unrecognized_falls_back_to_str(self):
-        assert "[tool_call]" in _serialize_tool_calls(["opaque"])
+CLIENT = SimpleNamespace(id="client-1", organization_id="org-1")
+
+
+@pytest.fixture
+def recorder(monkeypatch):
+    calls = []
+
+    async def record(self, **kwargs):
+        calls.append(kwargs)
+        return []
+
+    monkeypatch.setattr(ConversationMessageManager, "record_turns", record)
+    return calls
 
 
 @pytest.mark.asyncio
-class TestIngestSessionTurnsIsolation:
-    """The store write is ADDITIVE: a store or extraction failure must degrade
-    to a missed session for skill distillation, never abort the primary
-    /memory/add(_sync) ingestion."""
-
-    @staticmethod
-    def _request(session_id, messages):
-        return SimpleNamespace(session_id=session_id, messages=messages)
-
-    @staticmethod
-    def _client():
-        return SimpleNamespace(organization_id="org-1")
-
-    async def test_record_turns_failure_does_not_propagate(self, monkeypatch):
-        from mirix.services.conversation_message_manager import (
-            ConversationMessageManager,
+class TestIngestSessionTurns:
+    async def test_session_id_stamped_and_turns_recorded(self, recorder):
+        """The batch session_id and the REAL roles reach the store."""
+        result = await _ingest_session_turns(
+            _request(
+                "sess-batch",
+                [
+                    {"role": "user", "content": "q"},
+                    {"role": "tool", "name": "grep", "content": "no match"},
+                    {"role": "assistant", "content": "a"},
+                ],
+                tag="conversation",
+            ),
+            CLIENT,
+            "user-1",
+            max_text_chars=1234,
         )
+        assert result is not None and result.stored_count == 0
+        [call] = recorder
+        assert call["session_id"] == "sess-batch"
+        assert call["user_id"] == "user-1"
+        assert call["organization_id"] == "org-1"
+        assert call["session_tag"] == "conversation"
+        assert call["agent_id"] == "agent-meta"
+        assert call["max_text_chars"] == 1234
+        assert call["turns"] == [
+            {"role": "user", "content": "q"},
+            {"role": "tool", "content": "[grep] no match"},
+            {"role": "assistant", "content": "a"},
+        ]
 
+    async def test_no_session_id_skips_the_store(self, recorder):
+        assert (
+            await _ingest_session_turns(
+                _request(None, [{"role": "user", "content": "q"}]), CLIENT, "u"
+            )
+            is None
+        )
+        assert recorder == []
+
+    async def test_only_foreign_roles_write_nothing(self, recorder):
+        result = await _ingest_session_turns(
+            _request("sess-sys", [{"role": "system", "content": "scaffolding"}]),
+            CLIENT,
+            "u",
+        )
+        assert result is None and recorder == []
+
+    async def test_store_failure_does_not_propagate_for_conversation_sessions(
+        self, monkeypatch
+    ):
         async def boom(self, **kwargs):
             raise RuntimeError("store down")
 
         monkeypatch.setattr(ConversationMessageManager, "record_turns", boom)
+        result = await _ingest_session_turns(
+            _request("sess-iso-1", [{"role": "user", "content": "q"}]), CLIENT, "user-1"
+        )
+        assert result is None
 
-        request = self._request(
-            "sess-iso-1",
+    async def test_parse_failure_does_not_propagate_for_conversation_sessions(
+        self, recorder
+    ):
+        result = await _ingest_session_turns(
+            _request(
+                "sess-iso-2", [{"role": "user", "content": [{"type": "input_audio"}]}]
+            ),
+            CLIENT,
+            "user-1",
+        )
+        assert result is None and recorder == []
+
+    async def test_store_failure_propagates_for_task_sessions(self, monkeypatch):
+        async def boom(self, **kwargs):
+            raise RuntimeError("store down")
+
+        monkeypatch.setattr(ConversationMessageManager, "record_turns", boom)
+        with pytest.raises(RuntimeError, match="store down"):
+            await _ingest_session_turns(
+                _request("sess-task", [{"role": "user", "content": "q"}], tag="task"),
+                CLIENT,
+                "user-1",
+                strict=True,
+            )
+
+    async def test_strict_parse_failure_is_a_422(self, recorder):
+        with pytest.raises(HTTPException) as exc:
+            await _ingest_session_turns(
+                _request(
+                    "sess-task",
+                    [{"role": "user", "content": [{"type": "input_audio"}]}],
+                    tag="task",
+                ),
+                CLIENT,
+                "user-1",
+                strict=True,
+            )
+        assert exc.value.status_code == 422
+
+    async def test_images_are_stored_first_and_discarded_when_the_write_fails(
+        self, monkeypatch
+    ):
+        stored, discarded = [], []
+
+        async def fake_store(
+            part, *, organization_id, user_id, file_manager=None, images_dir=None
+        ):
+            ref = {
+                "type": "image_ref",
+                "file_id": f"file-{len(stored)}",
+                "url": part.url,
+            }
+            stored.append((ref, organization_id, user_id))
+            return ref
+
+        async def fake_discard(refs, *, organization_id, session_maker=None):
+            discarded.append((list(refs), organization_id))
+
+        seen = []
+
+        async def record(self, **kwargs):
+            seen.append(kwargs["turns"])
+            raise RuntimeError("store down")
+
+        monkeypatch.setattr(image_store, "store_image_part", fake_store)
+        monkeypatch.setattr(image_store, "discard_image_refs", fake_discard)
+        monkeypatch.setattr(ConversationMessageManager, "record_turns", record)
+        request = _request(
+            "sess-img",
             [
-                {"role": "user", "content": "q"},
-                {"role": "assistant", "content": "a"},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "look"},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "https://x.test/1.png"},
+                        },
+                    ],
+                }
             ],
+            tag="task",
         )
-        # Must not raise — the primary memory add would proceed.
-        await _ingest_session_turns(request, [], self._client(), "user-1")
-
-    async def test_extraction_failure_does_not_propagate(self, monkeypatch):
-        """Extraction runs INSIDE the guard: a message whose content cannot be
-        rendered must not reach the store, and must not raise."""
-        from mirix.services.conversation_message_manager import (
-            ConversationMessageManager,
-        )
-
-        calls = []
-
-        async def recorder(self, **kwargs):
-            calls.append(kwargs)
-
-        monkeypatch.setattr(ConversationMessageManager, "record_turns", recorder)
-
-        class Unrenderable:
-            def __str__(self):
-                raise ValueError("unrenderable content part")
-
-        request = self._request(
-            "sess-iso-2", [{"role": "user", "content": [Unrenderable()]}]
-        )
-        await _ingest_session_turns(request, [], self._client(), "user-1")
-        assert calls == []
-
-    async def test_no_session_id_skips_store_entirely(self, monkeypatch):
-        from mirix.services.conversation_message_manager import (
-            ConversationMessageManager,
-        )
-
-        calls = []
-
-        async def recorder(self, **kwargs):
-            calls.append(kwargs)
-
-        monkeypatch.setattr(ConversationMessageManager, "record_turns", recorder)
-
-        input_msg = SimpleNamespace(session_id=None)
-        request = self._request(None, [{"role": "user", "content": "q"}])
-        await _ingest_session_turns(request, [input_msg], self._client(), "user-1")
-        assert calls == []
-        assert input_msg.session_id is None  # no stamping without a session
-
-    async def test_session_id_stamped_and_turns_recorded(self, monkeypatch):
-        from mirix.services.conversation_message_manager import (
-            ConversationMessageManager,
-        )
-
-        calls = []
-
-        async def recorder(self, **kwargs):
-            calls.append(kwargs)
-
-        monkeypatch.setattr(ConversationMessageManager, "record_turns", recorder)
-
-        unstamped = SimpleNamespace(session_id=None)
-        prestamped = SimpleNamespace(session_id="sess-own")
-        request = self._request(
-            "sess-batch",
-            [
-                {"role": "user", "content": "q"},
-                {"role": "tool", "name": "grep", "content": "no match"},
-                {"role": "assistant", "content": "a"},
-            ],
-        )
-        await _ingest_session_turns(
-            request, [unstamped, prestamped], self._client(), "user-1"
-        )
-        assert unstamped.session_id == "sess-batch"
-        assert prestamped.session_id == "sess-own"  # own id wins over the batch id
-        assert len(calls) == 1
-        assert calls[0]["session_id"] == "sess-batch"
-        assert calls[0]["user_id"] == "user-1"
-        assert calls[0]["organization_id"] == "org-1"
-        assert [t["role"] for t in calls[0]["turns"]] == ["user", "tool", "assistant"]
+        with pytest.raises(RuntimeError):
+            await _ingest_session_turns(request, CLIENT, "user-1", strict=True)
+        [turns] = seen
+        assert turns == [
+            {
+                "role": "user",
+                "content_parts": [
+                    {"type": "text", "text": "look"},
+                    {
+                        "type": "image_ref",
+                        "file_id": "file-0",
+                        "url": "https://x.test/1.png",
+                    },
+                ],
+            }
+        ]
+        assert stored[0][1:] == ("org-1", "user-1")
+        assert discarded == [([stored[0][0]], "org-1")]
 
 
 class TestToolTurnsRoundTripThroughSchema:
-    """The store schema must accept what extraction now produces."""
+    """The store schema must accept what extraction produces."""
 
     def test_tool_role_valid_in_schema(self):
         from mirix.schemas.conversation_message import ConversationMessageCreate
@@ -322,17 +230,19 @@ class TestToolTurnsRoundTripThroughSchema:
         assert msg.role == "tool"
 
     def test_distiller_renders_tool_turns(self):
-        from types import SimpleNamespace
+        from mirix.services.context_budget import TokenCounter
+        from mirix.services.distill_transcript import TranscriptPlanner, build_messages
 
-        from mirix.services.session_experience_distiller import (
-            SessionExperienceDistiller,
-        )
-
-        transcript = SessionExperienceDistiller._render_transcript(
+        counter = TokenCounter()
+        messages, _ = build_messages(
             [
                 SimpleNamespace(role="user", content="deploy"),
                 SimpleNamespace(role="tool", content="[kubectl] error: forbidden"),
                 SimpleNamespace(role="assistant", content="fixed the RBAC and retried"),
-            ]
+            ],
+            counter=counter,
         )
+        transcript = TranscriptPlanner(
+            messages, agent_id="a", session_id="s", counter=counter
+        ).whole_chunk().text()
         assert "tool: [kubectl] error: forbidden" in transcript

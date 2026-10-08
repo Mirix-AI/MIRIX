@@ -124,8 +124,8 @@ class TestProceduralMemoryItem:
         )
         assert item.version == "0.1.0"
 
-    def test_description_embedding_defaults_to_none(self):
-        """description_embedding should be Optional and default to None."""
+    def test_retrieval_embedding_defaults_to_none(self):
+        """retrieval_embedding should be Optional and default to None."""
         item = ProceduralMemoryItem(
             name="deploy-production",
             entry_type="workflow",
@@ -134,10 +134,12 @@ class TestProceduralMemoryItem:
             user_id="user-123",
             organization_id="org-456",
         )
-        assert item.description_embedding is None
+        assert item.retrieval_embedding is None
 
-    def test_instructions_embedding_defaults_to_none(self):
-        """instructions_embedding should be Optional and default to None."""
+    def test_retrieval_embedding_is_padded_to_max_dim(self):
+        """A raw provider vector is zero-padded to MAX_EMBEDDING_DIM on both schemas."""
+        from mirix.constants import MAX_EMBEDDING_DIM
+
         item = ProceduralMemoryItem(
             name="deploy-production",
             entry_type="workflow",
@@ -145,8 +147,22 @@ class TestProceduralMemoryItem:
             instructions="Step 1: build",
             user_id="user-123",
             organization_id="org-456",
+            retrieval_embedding=[0.5] * 3072,
         )
-        assert item.instructions_embedding is None
+        assert len(item.retrieval_embedding) == MAX_EMBEDDING_DIM
+        assert item.retrieval_embedding[3071] == 0.5
+        assert item.retrieval_embedding[3072] == 0.0
+        update = ProceduralMemoryItemUpdate(id="proc-1", retrieval_embedding=[0.5] * 3072)
+        assert len(update.retrieval_embedding) == MAX_EMBEDDING_DIM
+
+    @pytest.mark.parametrize("removed", ["description_embedding", "instructions_embedding"])
+    def test_per_field_embeddings_are_gone(self, removed):
+        """The per-field vectors were replaced by retrieval_embedding;
+        extra="forbid" rejects them on both schemas."""
+        assert removed not in ProceduralMemoryItem.model_fields
+        assert removed not in ProceduralMemoryItemUpdate.model_fields
+        with pytest.raises(ValidationError):
+            ProceduralMemoryItemUpdate(id="proc-1", **{removed: [0.1]})
 
     def test_version_can_be_set(self):
         """version can be explicitly provided."""

@@ -1,6 +1,6 @@
 import inspect
 import warnings
-from typing import Any, Dict, List, Optional, Type, Union, get_args, get_origin
+from typing import Any, Dict, List, Literal, Optional, Type, Union, get_args, get_origin
 
 from docstring_parser import parse
 from pydantic import BaseModel
@@ -35,6 +35,16 @@ def type_to_json_schema_type(py_type) -> dict:
 
         # Extract and map the inner type
         return type_to_json_schema_type(type_args[0])
+
+    # A Literal of strings: a string restricted to those values (a strict
+    # structured-output schema keeps the enum, llm_api.helpers).
+    if get_origin(py_type) is Literal:
+        values = get_args(py_type)
+        if not values or not all(isinstance(v, str) for v in values):
+            raise ValueError(
+                f"Only Literal types of strings are supported, got {py_type}"
+            )
+        return {"type": "string", "enum": list(values)}
 
     # Handle Union types (except Optional which is handled above)
     if get_origin(py_type) is Union:

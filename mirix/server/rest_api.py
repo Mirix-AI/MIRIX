@@ -6,11 +6,13 @@ allowing MirixClient instances to communicate with a cloud-hosted server.
 
 import asyncio
 import copy
+import dataclasses
 import functools
 import json
+import time
 import traceback
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Literal, Optional, Union
 
 import httpx
@@ -19,8 +21,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from mirix.helpers.message_helpers import prepare_input_message_create
-from mirix.llm_api.llm_client import LLMClient
 from mirix.log import get_logger
 from mirix.orm.errors import NoResultFound
 from mirix.schemas.agent import AgentState, AgentType, CreateAgent
@@ -61,7 +61,6 @@ from mirix.schemas.tool_rule import BaseToolRule
 from mirix.schemas.user import User
 from mirix.server.server import AsyncServer, ensure_tables_created
 from mirix.settings import model_settings, settings
-from mirix.utils import convert_message_to_mirix_message
 
 logger = get_logger(__name__)
 
@@ -82,8 +81,17 @@ def _isoformat_or_none(value) -> Optional[str]:
     return value.isoformat() if hasattr(value, "isoformat") else str(value)
 
 
-def _procedural_memory_response(item, *, include_user_id: bool = False) -> Dict[str, Any]:
-    """Serialize procedural memory as the public skill-shaped read model."""
+def _procedural_memory_response(
+    item,
+    *,
+    include_user_id: bool = False,
+    retrieval_scores: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Serialize procedural memory as the public skill-shaped read model.
+
+    ``retrieval_scores`` is ``{bm25, cosine, rrf}`` for a skill ranked by the
+    skill retrieval pipeline, None for a skill read any other way.
+    """
     response = {
         "memory_type": "procedural",
         "id": item.id,
@@ -96,10 +104,82 @@ def _procedural_memory_response(item, *, include_user_id: bool = False) -> Dict[
         "version": getattr(item, "version", None),
         "created_at": _isoformat_or_none(getattr(item, "created_at", None)),
         "updated_at": _isoformat_or_none(getattr(item, "updated_at", None)),
+        "retrieval_scores": dict(retrieval_scores) if retrieval_scores is not None else None,
     }
     if include_user_id:
         response["user_id"] = str(getattr(item, "user_id", ""))
     return response
+
+
+async def _search_procedural_memories(
+    manager,
+    *,
+    agent_state: AgentState,
+    user,
+    query: str,
+    search_method: str,
+    search_field: str,
+    limit: int,
+    timezone_str: Optional[str],
+    filter_tags: Optional[Dict[str, Any]],
+    scopes: Optional[List[str]],
+    similarity_threshold: Optional[float],
+    embedded_text: Optional[List[float]],
+) -> List[Dict[str, Any]]:
+    """The procedural part of ``/memory/search``.
+
+    A ranked search over the retrieval text — every ``hybrid`` search, and a
+    ``bm25`` or ``embedding`` one on the default field — is the skill ranking
+    WITHOUT the gate: true BM25 + cosine + RRF, the top ``limit`` whatever
+    their similarity, each with its ``retrieval_scores``. Field-specific
+    keyword searches (e.g. ``instructions``), string/fuzzy matching and
+    the empty query (the most recent skills) keep ``list_procedures``.
+    ``similarity_threshold`` (a cosine distance) keeps the skills at or above
+    it out of the vector lane.
+    """
+    from mirix.services.procedural_memory_manager import uses_skill_ranking
+
+    field = search_field if search_field != "null" else "description"
+    if query.strip() and uses_skill_ranking(search_method, field):
+        result = await manager.retrieve_skills(
+            query,
+            user,
+            scopes,
+            limit,
+            apply_gate=False,
+            agent_state=agent_state,
+            query_embedding=embedded_text,
+            filter_tags=filter_tags,
+            method=search_method,
+            max_cosine_distance=similarity_threshold,
+            timezone_str=timezone_str,
+        )
+        if result.diagnostics.embedding_status == "failed":
+            logger.warning(
+                "/memory/search: the procedural query vector failed (%s); "
+                "ranked by BM25 alone",
+                result.diagnostics.embedding_error,
+            )
+        return [
+            _procedural_memory_response(r.skill, retrieval_scores=r.scores.to_dict())
+            for r in result.skills
+        ]
+    items = await manager.list_procedures(
+        agent_state=agent_state,
+        user=user,
+        query=query,
+        embedded_text=(
+            embedded_text if search_method == "embedding" and query else None
+        ),
+        search_field=field,
+        search_method=search_method,
+        limit=limit,
+        timezone_str=timezone_str,
+        filter_tags=filter_tags,
+        scopes=scopes,
+        similarity_threshold=similarity_threshold,
+    )
+    return [_procedural_memory_response(x) for x in items]
 
 
 async def initialize():
@@ -111,6 +191,16 @@ async def initialize():
 
     # Create database tables (async engine) before initializing server
     await ensure_tables_created()
+
+    # Token counting: tiktoken downloads its o200k_base vocabulary
+    # synchronously on first use — load it here, off the event loop, into
+    # <MIRIX_DIR>/tiktoken. Offline, counting falls back to 3 chars/token.
+    from mirix.services.context_budget import (
+        TOKENIZER_PRELOAD_TIMEOUT_SECONDS,
+        preload_tokenizer,
+    )
+
+    await preload_tokenizer(timeout=TOKENIZER_PRELOAD_TIMEOUT_SECONDS)
 
     # Initialize Redis (async ping, create_indexes, log stats)
     try:
@@ -184,11 +274,113 @@ async def lifespan(app: FastAPI):
     """
     # Startup
     await initialize()
+    sweeper = await start_session_sweeper()
+    app.state.session_sweeper = sweeper
+    reembedder = start_skill_reembedder()
+    app.state.skill_reembedder = reembedder
+    log_purger = start_retrieval_log_purger()
+    app.state.retrieval_log_purger = log_purger
 
     yield  # Server runs here
 
     # Shutdown
+    await stop_retrieval_log_purger(log_purger)
+    await stop_skill_reembedder(reembedder)
+    await stop_session_sweeper(sweeper)
     await cleanup()
+
+
+def start_retrieval_log_purger():
+    """Start the retrieval log's retention purge in the background:
+    rows older than MIRIX_RETRIEVAL_LOG_RETENTION_DAYS (default 30; <= 0 keeps
+    them) are deleted at startup and every hour. None when it could not start."""
+    from mirix.services.retrieval_log_manager import RetrievalLogPurger
+
+    purger = RetrievalLogPurger()
+    try:
+        purger.start()
+    except Exception:  # noqa: BLE001 — never block startup on the purge
+        logger.exception("Could not start the retrieval log purge")
+        return None
+    return purger
+
+
+async def stop_retrieval_log_purger(purger) -> None:
+    """Cancel the retention purge (shutdown)."""
+    if purger is None:
+        return
+    try:
+        await purger.stop()
+    except Exception:  # noqa: BLE001
+        logger.exception("Error stopping the retrieval log purge")
+
+
+def start_skill_reembedder():
+    """Start the skill re-embedding pass in the background.
+
+    Skills whose ``retrieval_embedding`` IS NULL (after the retrieval-field
+    migration, or an embedding call that failed for good) are re-embedded
+    from their retrieval text, at most ``MIRIX_SKILL_REEMBED_CONCURRENCY`` at
+    a time; the server does not wait for it. None when it could not start.
+    """
+    from mirix.services.skill_retrieval_reembed import SkillRetrievalReembedder
+
+    reembedder = SkillRetrievalReembedder()
+    try:
+        reembedder.start()
+    except Exception:  # noqa: BLE001 — never block startup on the re-embedding
+        logger.exception("Could not start the skill re-embedding pass")
+        return None
+    return reembedder
+
+
+async def stop_skill_reembedder(reembedder) -> None:
+    """Cancel the re-embedding pass if it is still running (shutdown)."""
+    if reembedder is None:
+        return
+    try:
+        await reembedder.stop()
+    except Exception:  # noqa: BLE001
+        logger.exception("Error stopping the skill re-embedding pass")
+
+
+async def start_session_sweeper():
+    """Start the skill-learning session sweeper.
+
+    Every MIRIX_SESSION_SWEEP_INTERVAL_SECONDS (default 3600; <= 0 disables the
+    sweep) it reclaims learning runs whose lease expired, then runs the
+    skill-learning trigger check for every scope that has pending sessions —
+    the only way sessions that ended by idling get counted when their user
+    never returns. Lease recovery also runs on its own, at startup and every
+    half lease (MIRIX_LEARNING_RUN_LEASE_SECONDS / 2), whatever the sweep
+    interval, so a run orphaned by a crash releases its sessions about one
+    lease later.
+    """
+    from mirix.services.skill_learning_trigger import SessionSweeper
+
+    sweeper = SessionSweeper()
+    try:
+        sweeper.start()
+    except Exception:  # noqa: BLE001 — never block startup on the sweeper
+        logger.exception("Could not start the session sweeper")
+    return sweeper
+
+
+async def stop_session_sweeper(sweeper) -> None:
+    """Cancel the sweeper and any in-flight learning runs (shutdown)."""
+    from mirix.services.skill_learning_trigger import cancel_background_learning_runs
+
+    if sweeper is not None:
+        try:
+            await sweeper.stop()
+        except Exception:  # noqa: BLE001
+            logger.exception("Error stopping the session sweeper")
+    try:
+        cancelled = await cancel_background_learning_runs()
+        if cancelled:
+            logger.info("Cancelled %d in-flight skill learning run(s)", cancelled)
+    except Exception:  # noqa: BLE001
+        logger.exception("Error cancelling in-flight skill learning runs")
 
 
 # Create API router for reusable routes
@@ -420,136 +612,31 @@ async def extract_topics_and_temporal_info(
     messages: List[Dict[str, Any]], llm_config: LLMConfig
 ) -> tuple[Optional[str], Optional[str]]:
     """
-    Extract topics AND temporal expressions from a list of messages using LLM.
+    Extract topics AND a temporal expression from OpenAI-style messages.
 
-    This function analyzes messages to extract both semantic topics and temporal
-    expressions (like "today", "yesterday", "last week") for more accurate memory retrieval.
-
-    Args:
-        messages: List of message dictionaries (OpenAI format)
-        llm_config: LLM configuration to use for extraction
+    Kept for callers of the old helper: the work is
+    :func:`mirix.services.topic_extraction.extract_topics` — ``content`` may be a
+    string, a list of parts (images included, sent WITH the text) or None,
+    the prompt is generic, and the input is cut to the model's budget.
 
     Returns:
-        Tuple of (topics, temporal_expression) where both can be None
-        - topics: String with topics separated by ';'
-        - temporal_expression: String with temporal phrase or None if not found
+        ``(topics, temporal_expression)``: topics separated by ';' and the time
+        phrase; ``(None, None)`` when the messages are unusable or extraction
+        failed.
     """
+    from mirix.services.conversation_content import MessageParseError
+    from mirix.services.topic_extraction import (
+        extract_topics,
+        normalize_retrieval_messages,
+    )
+
     try:
-        if isinstance(messages, list) and "role" in messages[0].keys():
-            # Convert from OpenAI format to internal format
-            new_messages = []
-            for msg in messages:
-                role = msg["role"]
-                prefix = (
-                    "[USER]"
-                    if role == "user"
-                    else "[TOOL]" if role in ("tool", "function") else "[ASSISTANT]"
-                )
-                new_messages.extend([{"type": "text", "text": prefix + " " + part} for part in msg["content"]])
-            messages = new_messages
-
-        temporary_messages = convert_message_to_mirix_message(messages)
-        temporary_messages = [
-            prepare_input_message_create(
-                msg,
-                agent_id="topic_extraction",
-                wrap_user_message=False,
-                wrap_system_message=True,
-            )
-            for msg in temporary_messages
-        ]
-
-        # Add instruction message for topic and temporal extraction
-        temporary_messages.append(
-            prepare_input_message_create(
-                MessageCreate(
-                    role=MessageRole.user,
-                    content="The above are the inputs from the user. Please extract:\n"
-                    '1. Topic(s): Brief description of what the user is focusing on. If multiple topics, separate with ";"\n'
-                    '2. Temporal expression: Any time-related phrases like "today", "yesterday", "last week", "this month", etc.\n'
-                    "Call the function `update_topic_and_time` with both extracted values. If no temporal expression is found, leave it empty.",
-                ),
-                agent_id="topic_extraction",
-                wrap_user_message=False,
-                wrap_system_message=True,
-            )
-        )
-
-        # Prepend system message
-        temporary_messages = [
-            prepare_input_message_create(
-                MessageCreate(
-                    role=MessageRole.system,
-                    content="You are a helpful assistant that extracts topics and temporal information from the user's input.",
-                ),
-                agent_id="topic_extraction",
-                wrap_user_message=False,
-                wrap_system_message=True,
-            ),
-        ] + temporary_messages
-
-        # Define the function for topic and temporal extraction
-        functions = [
-            {
-                "name": "update_topic_and_time",
-                "description": "Update the topic and temporal information of the conversation/content",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "topic": {
-                            "type": "string",
-                            "description": 'The topic(s) of the conversation. If multiple topics, separate with ";".',
-                        },
-                        "temporal_expression": {
-                            "type": "string",
-                            "description": 'Any temporal/time-related expression found in the input (e.g., "today", "yesterday", "last week", "this month"). Leave empty if no temporal expression found.',
-                        },
-                    },
-                    "required": ["topic"],  # temporal_expression is optional
-                },
-            }
-        ]
-
-        # Use LLMClient to extract topics and temporal info (native async)
-        llm_client = LLMClient.create(llm_config=llm_config)
-
-        if llm_client:
-            response = await llm_client.send_llm_request(
-                messages=temporary_messages,
-                tools=functions,
-                stream=False,
-                force_tool_call="update_topic_and_time",
-            )
-
-            # Extract topics and temporal expression from the response
-            for choice in response.choices:
-                if (
-                    hasattr(choice.message, "tool_calls")
-                    and choice.message.tool_calls is not None
-                    and len(choice.message.tool_calls) > 0
-                ):
-                    try:
-                        function_args = json.loads(
-                            choice.message.tool_calls[0].function.arguments
-                        )
-                        topics = function_args.get("topic")
-                        temporal_expr = function_args.get("temporal_expression", "")
-                        # Clean up empty strings
-                        temporal_expr = temporal_expr.strip() if temporal_expr else None
-                        logger.debug(
-                            "Extracted topics: %s, temporal: %s", topics, temporal_expr
-                        )
-                        return topics, temporal_expr
-                    except (json.JSONDecodeError, KeyError) as parse_error:
-                        logger.warning(
-                            "Failed to parse extraction response: %s", parse_error
-                        )
-                        continue
-
-    except Exception as e:
-        logger.error("Error in extracting topics and temporal info: %s", e)
-
-    return None, None
+        parsed = normalize_retrieval_messages(messages)
+    except MessageParseError as exc:
+        logger.warning("Topic extraction skipped: %s", exc)
+        return None, None
+    outcome = await extract_topics(parsed, llm_config)
+    return outcome.topics, outcome.temporal_expression
 
 
 async def extract_topics_from_messages(
@@ -574,20 +661,38 @@ async def extract_topics_from_messages(
 
 def _flatten_messages_to_plain_text(messages: List[Dict[str, Any]]) -> str:
     """
-    Flatten OpenAI-style message payloads into a simple conversation transcript.
-    """
-    transcript_parts: List[str] = []
+    Flatten OpenAI-style message payloads into a simple conversation transcript:
+    one ``ROLE: text`` line per message with text (images left out). This is
+    the query when topic extraction fails.
 
-    for msg in messages:
-        role = msg.get("role", "user")
+    ``content`` may be a string, a list of parts or None; an assistant's
+    ``tool_calls`` and a tool result's tool name are kept, as the extractor
+    sees them. A payload the message parser rejects is flattened leniently
+    (its text parts only).
+    """
+    from mirix.services.conversation_content import MessageParseError, parse_messages
+    from mirix.services.topic_extraction import plain_text
+
+    try:
+        return plain_text(parse_messages(messages))
+    except MessageParseError:
+        pass
+
+    transcript_parts: List[str] = []
+    for msg in messages or []:
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role") or "user"
         content = msg.get("content", "")
+        if "role" not in msg and msg.get("type") == "text":
+            content = [msg]
 
         parts: List[str] = []
         if isinstance(content, list):
             for chunk in content:
                 if isinstance(chunk, dict):
                     text = chunk.get("text")
-                    if text:
+                    if isinstance(text, str) and text.strip():
                         parts.append(text.strip())
                 elif isinstance(chunk, str):
                     parts.append(chunk.strip())
@@ -596,16 +701,21 @@ def _flatten_messages_to_plain_text(messages: List[Dict[str, Any]]) -> str:
 
         combined = " ".join(filter(None, parts)).strip()
         if combined:
-            transcript_parts.append(f"{role.upper()}: {combined}")
+            transcript_parts.append(f"{str(role).upper()}: {combined}")
 
     return "\n".join(transcript_parts)
 
 
 async def extract_topics_with_local_model(
-    messages: List[Dict[str, Any]], model_name: str
+    messages: List[Dict[str, Any]],
+    model_name: str,
+    conversation: Optional[str] = None,
 ) -> Optional[str]:
     """
     Extract topics using a locally hosted Ollama model via the /api/chat endpoint.
+
+    ``conversation`` is the text to send (the caller cuts it to the local
+    model's budget); by default the messages flattened to text.
 
     Reference: https://github.com/ollama/ollama/blob/main/docs/api.md#chat
     Uses native async HTTP (httpx).
@@ -619,28 +729,27 @@ async def extract_topics_with_local_model(
         )
         return None
 
-    conversation = _flatten_messages_to_plain_text(messages)
+    if conversation is None:
+        conversation = _flatten_messages_to_plain_text(messages)
     if not conversation:
         logger.debug("No text content found in messages for local topic extraction")
         return None
+
+    from mirix.services.topic_extraction import (
+        CONVERSATION_HEADER,
+        LOCAL_MODEL_INSTRUCTION,
+        LOCAL_MODEL_SYSTEM_PROMPT,
+    )
 
     payload = {
         "model": model_name,
         "stream": False,
         "messages": [
-            {
-                "role": "system",
-                "content": (
-                    "You are a helpful assistant that extracts the topic from the user's input. "
-                    "Return a concise list of topics separated by ';' and nothing else."
-                ),
-            },
+            {"role": "system", "content": LOCAL_MODEL_SYSTEM_PROMPT},
             {
                 "role": "user",
                 "content": (
-                    "Conversation transcript:\n"
-                    f"{conversation}\n\n"
-                    "Respond ONLY with the topic(s) separated by ';'."
+                    f"{CONVERSATION_HEADER}{conversation}\n\n{LOCAL_MODEL_INSTRUCTION}"
                 ),
             },
         ],
@@ -1892,6 +2001,20 @@ class CreateApiKeyResponse(BaseModel):
     created_at: Optional[datetime]
 
 
+def _require_own_client(authorization: Optional[str], client_id: str) -> dict:
+    """The dashboard JWT's payload, when it is the path's client's own token.
+
+    The api-key endpoints act on the client named in the path, which the
+    caller chooses: a token of another client (of any organization) must not
+    mint, list or revoke that client's keys. Such a call is a 404, like an
+    unknown client — whether the client exists is not revealed.
+    """
+    payload = get_current_admin(authorization)
+    if payload.get("sub") != client_id:
+        raise HTTPException(status_code=404, detail=f"Client {client_id} not found")
+    return payload
+
+
 @router.post("/clients/{client_id}/api-keys", response_model=CreateApiKeyResponse)
 async def create_client_api_key(
     client_id: str,
@@ -1904,13 +2027,15 @@ async def create_client_api_key(
     **Requires JWT authentication (dashboard only).**
 
     The raw API key is only returned once at creation time. Store it securely.
-    Subsequent requests will only show the key ID, not the raw key.
+    Subsequent requests will only show the key ID, not the raw key. Only the
+    client itself (its own dashboard token) can create its keys; any other
+    token gets a 404.
 
     Returns:
         CreateApiKeyResponse with the raw API key (only shown once)
     """
-    # Require admin JWT authentication
-    get_current_admin(authorization)
+    # Require the client's own dashboard JWT.
+    _require_own_client(authorization, client_id)
 
     from mirix.security.api_keys import generate_api_key
 
@@ -1965,10 +2090,12 @@ async def list_client_api_keys(
     **Requires JWT authentication (dashboard only).**
 
     Note: The raw API key values are never returned after creation.
-    Only metadata (id, name, status, created_at) is shown.
+    Only metadata (id, name, status, created_at) is shown. Only the client
+    itself (its own dashboard token) can list its keys; any other token gets
+    a 404.
     """
-    # Require admin JWT authentication
-    get_current_admin(authorization)
+    # Require the client's own dashboard JWT.
+    _require_own_client(authorization, client_id)
 
     server = get_server()
 
@@ -2003,10 +2130,12 @@ async def delete_client_api_key(
     **Requires JWT authentication (dashboard only).**
 
     This permanently removes the API key from the database.
-    Any applications using this key will immediately stop working.
+    Any applications using this key will immediately stop working. Only the
+    client itself (its own dashboard token) can delete its keys; any other
+    token gets a 404.
     """
-    # Require admin JWT authentication
-    get_current_admin(authorization)
+    # Require the client's own dashboard JWT.
+    _require_own_client(authorization, client_id)
 
     server = get_server()
 
@@ -2016,7 +2145,10 @@ async def delete_client_api_key(
         raise HTTPException(status_code=404, detail=f"Client {client_id} not found")
 
     try:
-        await server.client_manager.delete_client_api_key(api_key_id)
+        # Scoped to the path's client: another client's key id is a 404.
+        await server.client_manager.delete_client_api_key(
+            api_key_id, client_id=client_id
+        )
         return {
             "message": f"API key {api_key_id} deleted successfully",
             "id": api_key_id,
@@ -2127,7 +2259,8 @@ class AddMemoryRequest(BaseModel):
 
     user_id: Optional[str] = None  # Optional - uses admin user if not provided
     meta_agent_id: str
-    messages: List[Dict[str, Any]]
+    # Non-empty: an empty list is a 422, not an IndexError (500).
+    messages: List[Dict[str, Any]] = Field(..., min_length=1)
     chaining: bool = True
     verbose: bool = False
     filter_tags: Optional[Dict[str, Any]] = None
@@ -2145,6 +2278,11 @@ class AddMemoryRequest(BaseModel):
     occurred_at: Optional[str] = (
         None  # Optional ISO 8601 timestamp string for episodic memory
     )
+    # Optional: how the agent's prompt was built — its prompt
+    # template or setup, as the client describes it. Stored on the session
+    # (not a turn; the latest one given wins) and shown to the skill
+    # distiller beside the session's transcript. Needs a session_id.
+    agent_context: Optional[str] = None
 
     @field_validator("session_id")
     @classmethod
@@ -2165,8 +2303,20 @@ class AddMemoryRequest(BaseModel):
         return v
 
     @model_validator(mode="after")
+    def _check_agent_context_has_a_session(self) -> "AddMemoryRequest":
+        if (
+            self.agent_context is not None
+            and self.agent_context.strip()
+            and self.session_id is None
+        ):
+            raise ValueError(
+                "agent_context needs a session_id: it is stored with the session"
+            )
+        return self
+
+    @model_validator(mode="after")
     def _check_session_id_agrees_with_filter_tags(self) -> "AddMemoryRequest":
-        # Codex review I1: if both the top-level session_id and filter_tags.session_id are
+        # If both the top-level session_id and filter_tags.session_id are
         # provided, they must match. Otherwise message-scope and memory-scope silently diverge.
         if self.session_id is not None and isinstance(self.filter_tags, dict):
             tag_sid = self.filter_tags.get("session_id")
@@ -2178,165 +2328,445 @@ class AddMemoryRequest(BaseModel):
         return self
 
 
-def _serialize_tool_calls(tool_calls: Any) -> str:
-    """Render an assistant message's tool_calls into a compact text form.
+class SessionIngestResult(BaseModel):
+    """What the session ingestion did (returned into the add responses)."""
 
-    Accepts the OpenAI shape (`[{"function": {"name", "arguments"}, ...}]`) as
-    well as simpler `[{"name", "arguments"}]` dicts; anything unrecognized falls
-    back to `str()`. The distiller only needs to SEE which tool was called with
-    what arguments — a readable line beats a lossless JSON blob.
+    effective_tag: Optional[str] = None
+    warnings: List[str] = Field(default_factory=list)
+    learning_run_id: Optional[str] = None
+    stored_count: int = 0
+
+
+def _parse_add_messages(messages: Any):
+    """Parse a memory-add payload once for both consumers; 422 on a bad shape."""
+    from mirix.services.conversation_content import MessageParseError, parse_messages
+
+    try:
+        return parse_messages(messages)
+    except MessageParseError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+async def _prepare_payload_images(parsed) -> None:
+    """Decode every inline image before anything is written; 422 if one is bad."""
+    from mirix.services.conversation_content import MessageParseError, iter_images
+    from mirix.services.image_store import prepare_images
+
+    try:
+        await prepare_images(iter_images(parsed))
+    except MessageParseError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+async def _check_file_references(parsed, organization_id: str, user_id: str) -> None:
+    """422 unless the caller may use every ``files`` row the payload references.
+
+    ``database_image_id`` / ``database_file_id`` / ``database_google_cloud_file_uri``
+    parts point at an existing ``files`` row by id; the model clients later read
+    that row's bytes into the caller's memory extraction. The row must belong to
+    the caller's organization and to this user (a legacy row without a user is
+    organization-wide). Missing and foreign ids get the same answer, so the
+    check reveals nothing about other tenants' files. Runs before anything is
+    written.
     """
-    if not isinstance(tool_calls, list):
-        return str(tool_calls)
-    lines = []
-    for call in tool_calls:
-        if isinstance(call, dict):
-            function = call.get("function") if isinstance(call.get("function"), dict) else call
-            name = function.get("name") or call.get("name") or "unknown_tool"
-            arguments = function.get("arguments", call.get("arguments", ""))
-            if not isinstance(arguments, str):
-                import json as _json
+    from sqlalchemy import select
 
-                try:
-                    arguments = _json.dumps(arguments, ensure_ascii=False)
-                except (TypeError, ValueError):
-                    arguments = str(arguments)
-            lines.append(f"[tool_call] {name}({arguments})")
-        else:
-            lines.append(f"[tool_call] {call}")
-    return "\n".join(lines)
+    from mirix.orm.file import FileMetadata as FileModel
+    from mirix.server.server import db_context
+    from mirix.services.conversation_content import referenced_file_ids
+
+    file_ids = referenced_file_ids(parsed)
+    if not file_ids:
+        return
+    async with db_context() as session:
+        rows = (
+            await session.execute(
+                select(FileModel.id, FileModel.organization_id, FileModel.user_id).where(
+                    FileModel.id.in_(file_ids)
+                )
+            )
+        ).all()
+    accessible = {
+        file_id
+        for file_id, org_id, owner in rows
+        if org_id == organization_id and owner in (None, user_id)
+    }
+    for file_id in file_ids:
+        if file_id not in accessible:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"a content part references file {file_id!r}, which does not "
+                    "exist or is not accessible to this caller"
+                ),
+            )
 
 
-def _extract_conversation_turns(messages: List[Dict[str, Any]]) -> List[Dict[str, str]]:
-    """Extract clean per-role turns for the Conversation Message Store.
-
-    Reads the REAL roles from the raw add-memory payload (the same shape the
-    role-collapse branch consumes) and preserves them as
-    'user'/'assistant'/'tool' — NOT the [USER]/[ASSISTANT] role-collapsed blob
-    the meta agent receives. The store is the single source of truth for skill
-    distillation, so it keeps the true turn structure. Tool activity is kept
-    deliberately: work-process lessons (a tool error, a retry, the fix that
-    worked) live in tool calls and tool results, and dropping them would blind
-    the distiller to exactly that signal.
-
-    Only role-bearing payloads (`[{"role": ..., "content": ...}, ...]`) yield
-    turns; anything else (e.g. screenshot/content-only payloads) yields [] and
-    nothing is written. `content` may be a string or a list of string parts; a
-    list is joined with newlines to match how the collapse branch treats parts.
-
-    Mapping:
-    - role 'user'/'assistant' → kept as-is; an assistant message that ALSO
-      carries `tool_calls` gets them serialized and appended to its content
-      (an assistant turn that is pure tool_calls with empty content still
-      yields a turn).
-    - role 'tool'/'function' → stored as a 'tool' turn (tool results). A
-      `name`/`tool_name` field, when present, is prefixed for readability.
-    - any other role is dropped — not a learnable conversation turn.
-    """
-    if not (
-        isinstance(messages, list)
-        and messages
-        and isinstance(messages[0], dict)
-        and "role" in messages[0]
-    ):
-        return []
-
-    from mirix.schemas.conversation_message import (
-        CONVERSATION_MESSAGE_MAX_CONTENT_LEN,
+def _session_conflict(session_id: str) -> HTTPException:
+    return HTTPException(
+        status_code=409,
+        detail=(
+            f"session {session_id!r} belongs to another meta agent for this user; "
+            "nothing was stored (use a different session_id)"
+        ),
     )
 
-    # Truncate at the STORE's per-row cap so one oversized turn (typically a
-    # huge tool result) fails softly instead of failing the whole batch's
-    # Pydantic validation in record_turns — which would drop every turn of
-    # the request. Leave room for the truncation marker.
-    _marker = " …[truncated]"
-    _content_cap = CONVERSATION_MESSAGE_MAX_CONTENT_LEN - len(_marker)
 
-    def _cap(text: str) -> str:
-        if len(text) > CONVERSATION_MESSAGE_MAX_CONTENT_LEN:
-            return text[:_content_cap] + _marker
-        return text
+async def _predict_session_tag(request, organization_id: str, user_id: str) -> str:
+    """The tag this write will be processed under.
 
-    def _part_text(part: Any) -> str:
-        # Standard SDK shape: {"type": "text", "text": "..."} — store the text,
-        # not the dict repr. Anything else falls back to str().
-        if isinstance(part, dict) and isinstance(part.get("text"), str):
-            return part["text"]
-        return str(part)
+    An existing session keeps the tag its first write fixed, whatever this
+    request says (a mismatch only produces a warning from the store write). A
+    new session — or a request without a session_id — takes the requested tag,
+    or DEFAULT_SESSION_TAG. The store write reports the tag it actually applied
+    (`SessionIngestResult.effective_tag`), which then wins for routing.
+    """
+    from mirix.constants import DEFAULT_SESSION_TAG
+    from mirix.services.conversation_session_manager import ConversationSessionManager
 
-    turns: List[Dict[str, str]] = []
-    for msg in messages:
-        role = msg.get("role")
-        content = msg.get("content", "")
-        if isinstance(content, list):
-            content = "\n".join(_part_text(part) for part in content)
-        elif content is None:
-            content = ""
-        elif not isinstance(content, str):
-            content = str(content)
-
-        if role in ("user", "assistant"):
-            if role == "assistant" and msg.get("tool_calls"):
-                serialized = _serialize_tool_calls(msg["tool_calls"])
-                content = f"{content}\n{serialized}".strip() if content else serialized
-            turns.append({"role": role, "content": _cap(content)})
-        elif role in ("tool", "function"):
-            tool_name = msg.get("name") or msg.get("tool_name")
-            if tool_name:
-                content = f"[{tool_name}] {content}"
-            turns.append({"role": "tool", "content": _cap(content)})
-    return turns
+    requested = getattr(request, "session_tag", None)
+    if request.session_id is not None:
+        sessions = ConversationSessionManager()
+        existing = await sessions.get_session(
+            organization_id=organization_id,
+            user_id=user_id,
+            session_id=request.session_id,
+        )
+        meta_agent_id = getattr(request, "meta_agent_id", None)
+        if (
+            existing is not None
+            and existing.agent_id is not None
+            and meta_agent_id is not None
+            and existing.agent_id != meta_agent_id
+            and await sessions.agent_is_live(existing.agent_id)
+        ):
+            # Another (live) meta agent's session: neither its tag nor its
+            # store may be used by this write. A session whose meta agent
+            # was deleted is orphaned; the store write decides whether this
+            # writer may adopt it.
+            raise _session_conflict(request.session_id)
+        if existing is not None and existing.session_tag:
+            return existing.session_tag
+    return requested or DEFAULT_SESSION_TAG
 
 
-async def _ingest_session_turns(request, input_messages, client, user_id: str) -> None:
-    """Shared /memory/add + /memory/add_sync session ingestion seam.
+async def _ensure_user_exists(server, client, user_id: str):
+    """create_or_get_user for the add endpoints — BEFORE any write of the user's data.
 
-    Stamps the batch-level session_id onto every message that didn't carry its
-    own, then persists the external turns (REAL user/assistant roles) into the
-    Conversation Message Store — the single source of truth for procedural
-    (skill) distillation. Without a session_id nothing is written, so no
-    procedural memory is produced; the other five components still extract via
-    the unchanged meta dispatch.
+    The conversation store and the image `files` rows reference `users` by
+    foreign key, so a first-contact user of a direct REST caller must exist
+    before the store write; the SDK has always created it first.
+    """
+    from mirix.schemas.user import User as PydanticUser
+    from mirix.services.conversation_message_manager import owner_org
 
-    The store write is ADDITIVE: isolated in its own try/except so a store
-    failure (DB error, validation, etc.) is logged but never aborts the primary
-    memory ingestion. Worst case is a missed session for skill distillation,
-    not a dropped memory-add.
+    # Tenant guard: an existing user of ANOTHER organization is a 404 —
+    # a client never writes sessions, learning runs or skills for another
+    # tenant's user.
+    existing = await _tenant_user_for_write(server, user_id, client)
+    if existing is not None:
+        return existing
+    try:
+        return await server.user_manager.create_user(
+            pydantic_user=PydanticUser(
+                id=user_id,
+                name=user_id,
+                organization_id=owner_org(client),
+                timezone=getattr(server.user_manager, "DEFAULT_TIME_ZONE", "UTC"),
+                status="active",
+                is_deleted=False,
+                is_admin=False,
+            )
+        )
+    except Exception as create_error:
+        # A concurrent first write may have created the user meanwhile.
+        existing = await _tenant_user_for_write(server, user_id, client)
+        if existing is None:
+            raise HTTPException(
+                status_code=409,
+                detail=f"User {user_id!r} does not exist and could not be created",
+            ) from create_error
+        return existing
+
+
+async def _ingest_session_turns(
+    request,
+    client,
+    user_id: str,
+    *,
+    parsed=None,
+    strict: bool = False,
+    max_text_chars: Optional[int] = None,
+) -> Optional[SessionIngestResult]:
+    """Shared /memory/add + /memory/add_sync conversation-store write.
+
+    Persists the request's turns (REAL user/assistant/tool roles, images as
+    `content_parts` image refs) into the Conversation Message Store,
+    the single source of truth for procedural (skill) distillation, together
+    with the session's lifecycle row (created, or reopened if it had ended).
+    Without a session_id nothing is written.
+
+    The session's first write fixes its tag; a request naming a different tag
+    keeps the stored one and gets a warning. After a write to a learnable
+    (task) session the skill-learning trigger check runs for the session's
+    scope; it fires only once enough task sessions have ended.
+
+    `strict` is the task-session contract: the store is the ONLY place a
+    task session goes, so a storage error propagates to the caller. For a
+    conversation session the store write is additive — a failure is logged and
+    the meta-agent ingestion proceeds (worst case: one session missing from the
+    store). Images stored for a write that then fails are discarded. The
+    caller must have created the user already. Returns None when nothing
+    was recorded — or, when the request's agent_context could not be stored
+    for want of a turn to store, a result with no turn and a warning saying so.
     """
     if request.session_id is None:
-        return
+        return None
 
-    for msg_create in input_messages:
-        if msg_create.session_id is None:
-            msg_create.session_id = request.session_id
-
+    from mirix.constants import SESSION_TAG_TASK
+    from mirix.services.conversation_content import store_turn_drafts
     from mirix.services.conversation_message_manager import (
         ConversationMessageManager,
         owner_org,
     )
+    from mirix.services.conversation_session_manager import SessionOwnershipConflict
+    from mirix.services.image_store import discard_image_refs, store_image_part
 
-    # Extraction runs INSIDE the guard too: a malformed message shape (odd
-    # tool_calls, exotic content) must degrade to a missed session, never
-    # abort the primary memory ingestion.
+    requested_tag = getattr(request, "session_tag", None)
+    meta_agent_id = getattr(request, "meta_agent_id", None)
+    organization_id = owner_org(client)
+
+    stored_refs: List[Dict[str, Any]] = []
     try:
-        conversation_turns = _extract_conversation_turns(request.messages)
-        if not conversation_turns:
-            return
-        from mirix.constants import DEFAULT_SESSION_TAG
+        if parsed is None:
+            parsed = _parse_add_messages(request.messages)
+        drafts = store_turn_drafts(parsed)
+        if not drafts:
+            if (getattr(request, "agent_context", None) or "").strip():
+                # An agent context is stored with the session's turns;
+                # with none to store, the caller is told it was not stored.
+                from mirix.services.conversation_message_manager import (
+                    AGENT_CONTEXT_NOT_STORED_WARNING,
+                )
 
-        await ConversationMessageManager().record_turns(
+                logger.warning("%s", AGENT_CONTEXT_NOT_STORED_WARNING)
+                return SessionIngestResult(warnings=[AGENT_CONTEXT_NOT_STORED_WARNING])
+            return None
+        turns = []
+        for draft in drafts:
+            refs = {}
+            for image in draft.images:
+                ref = await store_image_part(
+                    image, organization_id=organization_id, user_id=user_id
+                )
+                stored_refs.append(ref)
+                refs[id(image)] = ref
+            turns.append(draft.to_turn(refs))
+        recorded = await ConversationMessageManager().record_turns(
             session_id=request.session_id,
             user_id=user_id,
-            organization_id=owner_org(client),
-            turns=conversation_turns,
+            organization_id=organization_id,
+            turns=turns,
             actor=client,
-            session_tag=request.session_tag or DEFAULT_SESSION_TAG,
+            session_tag=requested_tag,
+            agent_id=meta_agent_id,
+            max_text_chars=max_text_chars,
+            agent_context=getattr(request, "agent_context", None),
         )
+    except SessionOwnershipConflict as exc:
+        # Never "additive": the write names another meta agent's session.
+        await discard_image_refs(stored_refs, organization_id=organization_id)
+        raise _session_conflict(request.session_id) from exc
     except Exception:
+        await discard_image_refs(stored_refs, organization_id=organization_id)
+        if strict:
+            raise
         logger.exception(
             "Failed to record conversation turns to the store for "
             "session_id=%s; memory ingestion will still proceed",
             request.session_id,
+        )
+        return None
+
+    session_row = getattr(recorded, "session", None)
+    result = SessionIngestResult(
+        effective_tag=getattr(recorded, "effective_tag", None),
+        warnings=list(getattr(recorded, "warnings", None) or []),
+        stored_count=len(recorded),
+    )
+    for warning in result.warnings:
+        logger.warning("%s", warning)
+
+    if session_row is not None and result.effective_tag in (SESSION_TAG_TASK, None):
+        from mirix.services.skill_learning_trigger import trigger_skill_learning
+
+        try:
+            claim = await trigger_skill_learning(
+                organization_id=organization_id,
+                user_id=user_id,
+                agent_id=session_row.agent_id,
+                trigger="threshold",
+                actor=client,
+                current_session_id=request.session_id,
+            )
+            if claim.fired:
+                result.learning_run_id = claim.run_id
+        except Exception:
+            # The write succeeded; the sweeper repeats the check later.
+            logger.exception(
+                "Skill-learning trigger check failed after writing session %s",
+                request.session_id,
+            )
+    return result
+
+
+def _resolved_session_tag(
+    request, ingest: Optional[SessionIngestResult], predicted: Optional[str] = None
+) -> str:
+    """The tag routing sees: the one the store write applied, else the prediction."""
+    from mirix.constants import DEFAULT_SESSION_TAG
+
+    if ingest is not None and ingest.effective_tag:
+        return ingest.effective_tag
+    if predicted:
+        return predicted
+    return getattr(request, "session_tag", None) or DEFAULT_SESSION_TAG
+
+
+@dataclasses.dataclass
+class _AddPlan:
+    """Outcome of the shared add pipeline, before the meta-agent dispatch."""
+
+    effective_tag: str
+    parsed: Any
+    user: Any = None
+    ingest: Optional[SessionIngestResult] = None
+    stored_response: Optional[Dict[str, Any]] = None
+
+
+async def _run_add_pipeline(server, request: "AddMemoryRequest", client, meta_agent, user_id: str) -> _AddPlan:
+    """Everything /memory/add and /memory/add_sync share, in order:
+
+    1. parse the payload once (422 on a bad shape, and on parts that
+       name a file on the server), decode its inline images (422 if one is not
+       a supported image or is too large) and check the caller owns every
+       stored file the payload references (422) — nothing is written yet, so
+       nothing later in the request can still 422;
+    2. resolve the session tag — 409 if the session belongs to another
+       meta agent; a task session needs a session_id (422) and at least one
+       user/assistant/tool turn (422);
+    3. create_or_get_user — before any write of the user's data;
+    4. write the conversation store (task: errors propagate; conversation:
+       additive) with the meta agent's storage cap, then the trigger check.
+
+    A task session ends here with a "stored" response: it never reaches
+    `send_messages` or the queue. Anything else continues to the meta agent.
+    """
+    from mirix.constants import SESSION_TAG_TASK
+    from mirix.services.conversation_content import meta_agent_char_cap, store_turn_drafts
+    from mirix.services.conversation_message_manager import owner_org
+
+    parsed = _parse_add_messages(request.messages)
+    await _prepare_payload_images(parsed)
+    await _check_file_references(parsed, owner_org(client), user_id)
+
+    predicted = await _predict_session_tag(request, owner_org(client), user_id)
+    is_task = predicted == SESSION_TAG_TASK
+    if is_task:
+        if request.session_id is None:
+            raise HTTPException(
+                status_code=422,
+                detail="session_tag 'task' requires a session_id: task sessions are "
+                "stored in the conversation store for skill learning only",
+            )
+        if not store_turn_drafts(parsed):
+            raise HTTPException(
+                status_code=422,
+                detail="a task session needs at least one user, assistant or tool "
+                "message (role-bearing messages)",
+            )
+
+    user = await _ensure_user_exists(server, client, user_id)
+
+    ingest = await _ingest_session_turns(
+        request,
+        client,
+        user_id,
+        parsed=parsed,
+        strict=is_task,
+        max_text_chars=meta_agent_char_cap(meta_agent),
+    )
+    effective = _resolved_session_tag(request, ingest, predicted)
+    plan = _AddPlan(effective_tag=effective, parsed=parsed, user=user, ingest=ingest)
+    if effective == SESSION_TAG_TASK:
+        if ingest is None:  # unreachable: a task write either stores or raises
+            raise HTTPException(status_code=500, detail="task session was not stored")
+        plan.stored_response = {
+            "success": True,
+            "message": "Stored in the session conversation store for skill learning",
+            "status": "stored",
+            "agent_id": meta_agent.id,
+            "session_id": request.session_id,
+            "message_count": ingest.stored_count,
+            "warnings": ingest.warnings,
+            "learning_run_id": ingest.learning_run_id,
+        }
+    return plan
+
+
+async def _meta_input_messages(
+    plan: _AddPlan, request: "AddMemoryRequest", client, user_id: str, stored_refs: list
+):
+    """The meta agent's input (its own image copies are appended to ``stored_refs``).
+
+    Everything that could make a payload unacceptable was checked before the
+    store write (``_run_add_pipeline``), so a failure here is a server error;
+    the image copies stored before it are discarded by the builder.
+    """
+    from mirix.services.conversation_content import build_meta_input_messages
+    from mirix.services.conversation_message_manager import owner_org
+
+    return await build_meta_input_messages(
+        plan.parsed,
+        organization_id=owner_org(client),
+        user_id=user_id,
+        session_id=request.session_id,
+        stored_refs=stored_refs,
+    )
+
+
+def _require_meta_memory_agent(meta_agent) -> None:
+    """The add endpoints feed a META memory agent: its id becomes the session's
+    learning scope, so any other agent type is refused (400)."""
+    if getattr(meta_agent, "agent_type", None) != AgentType.meta_memory_agent:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Agent {getattr(meta_agent, 'id', None)} is "
+                f"{getattr(meta_agent, 'agent_type', None)}, not a meta_memory_agent."
+            ),
+        )
+
+
+def _meta_filter_tags(request: "AddMemoryRequest", client, plan: _AddPlan) -> Dict[str, Any]:
+    """filter_tags for the meta agent: the request's, plus session id/tag and scope."""
+    filter_tags = dict(request.filter_tags) if request.filter_tags is not None else {}
+    # Mirror session_id into filter_tags so extracted memories inherit it too.
+    # The model_validator on AddMemoryRequest has already ensured agreement if both were set.
+    if request.session_id is not None:
+        filter_tags["session_id"] = request.session_id
+    # The resolved session_tag (the one the session's first write fixed) rides
+    # along for extracted-memory provenance.
+    filter_tags["session_tag"] = plan.effective_tag
+    # Memories are written with the client's write_scope.
+    filter_tags["scope"] = client.write_scope
+    return filter_tags
+
+
+def _require_write_scope(client) -> None:
+    if client.write_scope is None:
+        raise HTTPException(
+            status_code=403, detail="Client has no write_scope - cannot create memories"
         )
 
 
@@ -2350,8 +2780,10 @@ async def add_memory(
     """
     Add conversation turns to memory (async via queue).
 
-    Messages are queued for asynchronous processing by queue workers.
-    Processing happens in the background, allowing for fast API response times.
+    A `task` session is stored in the session conversation store for
+    skill learning only and returns `status: "stored"` — it is never queued for
+    the meta memory agent. Everything else is queued for asynchronous
+    processing by queue workers, allowing for fast API response times.
     """
     server = get_server()
     client_id, org_id = await get_client_and_org(x_client_id, x_org_id)
@@ -2387,59 +2819,7 @@ async def add_memory(
         user_id = ClientAuthManager.get_admin_user_id_for_client(client.id)
         logger.debug("No user_id provided, using admin user: %s", user_id)
 
-    message = request.messages
-
-    if isinstance(message, list) and "role" in message[0].keys():
-        # This means the input is in the format of [{"role": "user", "content": [{"type": "text", "text": "..."}]}, {"role": "assistant", "content": [{"type": "text", "text": "..."}]}]
-        # OR the simpler format: [{"role": "user", "content": "Hello world"}]
-
-        # We need to convert the message to the format in "content"
-        new_message = []
-        for msg in message:
-            role = msg["role"]
-            prefix = (
-                "[USER]"
-                if role == "user"
-                else "[TOOL]" if role in ("tool", "function") else "[ASSISTANT]"
-            )
-
-            # Handle both string and list content
-            content = msg["content"]
-            if isinstance(content, str):
-                # Content is a string - convert to proper format
-                new_message.append({"type": "text", "text": prefix + " " + content})
-            elif isinstance(content, list):
-                # Content is already a list - extend as before
-                new_message.extend([{"type": "text", "text": prefix + " " + part} for part in content])
-            else:
-                raise ValueError(f"Invalid content type: {type(content)}")
-        message = new_message
-
-    input_messages = convert_message_to_mirix_message(message)
-
-    # Session ingestion (session_id stamping + Conversation Message Store write,
-    # independent of the meta dispatch below) — see _ingest_session_turns.
-    await _ingest_session_turns(request, input_messages, client, user_id)
-
-    # Add client scope to filter_tags (create if not provided)
-    if request.filter_tags is not None:
-        # Create a copy to avoid modifying the original request
-        filter_tags = dict(request.filter_tags)
-    else:
-        # Create new filter_tags if not provided
-        filter_tags = {}
-
-    # Mirror session_id into filter_tags so extracted memories inherit it too.
-    # The model_validator on AddMemoryRequest has already ensured agreement if both were set.
-    if request.session_id is not None:
-        filter_tags["session_id"] = request.session_id
-
-    # Stamp the resolved session_tag so downstream routing (trigger_memory_update)
-    # and extracted-memory provenance always see it, with or without a session_id.
-    from mirix.constants import DEFAULT_SESSION_TAG
-
-    filter_tags["session_tag"] = request.session_tag or DEFAULT_SESSION_TAG
-
+    # Request-shape checks come before anything is written.
     if request.block_filter_tags is not None and not isinstance(
         request.block_filter_tags, dict
     ):
@@ -2453,31 +2833,43 @@ async def add_memory(
             status_code=400,
             detail="block_filter_tags_update_mode must be 'merge' or 'replace'",
         )
+    _require_write_scope(client)
+    _require_meta_memory_agent(meta_agent)
 
-    # Add or update the "scope" key with the client's write_scope for memory creation
-    # Memories are written with the client's write_scope
-    if client.write_scope is None:
-        raise HTTPException(
-            status_code=403, detail="Client has no write_scope - cannot create memories"
-        )
-    filter_tags["scope"] = client.write_scope
+    plan = await _run_add_pipeline(server, request, client, meta_agent, user_id)
+    if plan.stored_response is not None:
+        return plan.stored_response
+
+    meta_refs: list = []
+    input_messages = await _meta_input_messages(
+        plan, request, client, user_id, meta_refs
+    )
+    filter_tags = _meta_filter_tags(request, client, plan)
 
     # Queue for async processing instead of synchronous execution
     # Note: actor is Client for org-level access control
     #       user_id represents the actual end-user (or admin user if not provided)
-    await put_messages(
-        actor=client,
-        agent_id=meta_agent.id,
-        input_messages=input_messages,
-        chaining=request.chaining,
-        user_id=user_id,  # End-user for data filtering (or admin user)
-        verbose=request.verbose,
-        filter_tags=filter_tags,
-        block_filter_tags=request.block_filter_tags,
-        block_filter_tags_update_mode=request.block_filter_tags_update_mode,
-        use_cache=request.use_cache,
-        occurred_at=request.occurred_at,  # Optional timestamp for episodic memory
-    )
+    try:
+        await put_messages(
+            actor=client,
+            agent_id=meta_agent.id,
+            input_messages=input_messages,
+            chaining=request.chaining,
+            user_id=user_id,  # End-user for data filtering (or admin user)
+            verbose=request.verbose,
+            filter_tags=filter_tags,
+            block_filter_tags=request.block_filter_tags,
+            block_filter_tags_update_mode=request.block_filter_tags_update_mode,
+            use_cache=request.use_cache,
+            occurred_at=request.occurred_at,  # Optional timestamp for episodic memory
+        )
+    except BaseException:
+        # Never queued: nothing will ever reference the meta agent's copies.
+        from mirix.services.conversation_message_manager import owner_org
+        from mirix.services.image_store import discard_image_refs
+
+        await discard_image_refs(meta_refs, organization_id=owner_org(client))
+        raise
 
     logger.debug("Memory queued for processing: %s", meta_agent.id)
 
@@ -2487,6 +2879,8 @@ async def add_memory(
         "status": "queued",
         "agent_id": meta_agent.id,
         "message_count": len(input_messages),
+        "warnings": plan.ingest.warnings if plan.ingest else [],
+        "learning_run_id": plan.ingest.learning_run_id if plan.ingest else None,
     }
 
 
@@ -2500,8 +2894,10 @@ async def add_memory_sync(
     """
     Add conversation turns to memory (synchronous processing).
 
-    Processes messages immediately by running the agent directly, blocking
-    until all memory extraction is complete before returning.
+    A `task` session is stored in the session conversation store for
+    skill learning only and returns `status: "stored"` without running the meta
+    memory agent. Everything else is processed immediately by running the agent
+    directly, blocking until all memory extraction is complete.
     """
     server = get_server()
     client_id, org_id = await get_client_and_org(x_client_id, x_org_id)
@@ -2524,79 +2920,25 @@ async def add_memory_sync(
 
         user_id = ClientAuthManager.get_admin_user_id_for_client(client.id)
 
-    message = request.messages
+    _require_write_scope(client)
+    _require_meta_memory_agent(meta_agent)
 
-    if isinstance(message, list) and "role" in message[0].keys():
-        new_message = []
-        for msg in message:
-            role = msg["role"]
-            prefix = (
-                "[USER]"
-                if role == "user"
-                else "[TOOL]" if role in ("tool", "function") else "[ASSISTANT]"
-            )
-            content = msg["content"]
-            if isinstance(content, str):
-                new_message.append({"type": "text", "text": prefix + " " + content})
-            elif isinstance(content, list):
-                new_message.extend([{"type": "text", "text": prefix + " " + part} for part in content])
-            else:
-                raise ValueError(f"Invalid content type: {type(content)}")
-        message = new_message
+    plan = await _run_add_pipeline(server, request, client, meta_agent, user_id)
+    if plan.stored_response is not None:
+        return plan.stored_response
 
-    input_messages = convert_message_to_mirix_message(message)
-
-    # Session ingestion (session_id stamping + Conversation Message Store write) —
-    # shared with /memory/add; see _ingest_session_turns.
-    await _ingest_session_turns(request, input_messages, client, user_id)
-
-    if request.filter_tags is not None:
-        filter_tags = dict(request.filter_tags)
-    else:
-        filter_tags = {}
-
-    # The AddMemoryRequest model_validator already ensured agreement if both were set.
-    if request.session_id is not None:
-        filter_tags["session_id"] = request.session_id
-
-    # Stamp the resolved session_tag so downstream routing (trigger_memory_update)
-    # and extracted-memory provenance always see it, with or without a session_id.
-    from mirix.constants import DEFAULT_SESSION_TAG
-
-    filter_tags["session_tag"] = request.session_tag or DEFAULT_SESSION_TAG
-
-    if client.write_scope is None:
-        raise HTTPException(
-            status_code=403, detail="Client has no write_scope - cannot create memories"
-        )
-    filter_tags["scope"] = client.write_scope
-
-    from mirix.services.user_manager import UserManager
-
-    user_manager = UserManager()
-    try:
-        user = await user_manager.get_user_by_id(user_id)
-    except Exception:
-        from mirix.schemas.user import User as PydanticUser
-
-        user = await user_manager.create_user(
-            pydantic_user=PydanticUser(
-                id=user_id,
-                name=user_id,
-                organization_id=client.organization_id,
-                timezone=user_manager.DEFAULT_TIME_ZONE,
-                status="active",
-                is_deleted=False,
-                is_admin=False,
-            )
-        )
+    # The meta agent's image copies stay even if the agent run below fails:
+    # it may already have saved the input message that references them (they
+    # are released with that message by the message cleanup).
+    input_messages = await _meta_input_messages(plan, request, client, user_id, [])
+    filter_tags = _meta_filter_tags(request, client, plan)
 
     await server.send_messages(
         actor=client,
         agent_id=meta_agent.id,
         input_messages=input_messages,
         chaining=request.chaining,
-        user=user,
+        user=plan.user,
         verbose=request.verbose,
         filter_tags=filter_tags,
         block_filter_tags=request.block_filter_tags,
@@ -2613,6 +2955,8 @@ async def add_memory_sync(
         "status": "processed",
         "agent_id": meta_agent.id,
         "message_count": len(input_messages),
+        "warnings": plan.ingest.warnings if plan.ingest else [],
+        "learning_run_id": plan.ingest.learning_run_id if plan.ingest else None,
     }
 
 
@@ -2620,8 +2964,11 @@ class RetrieveMemoryRequest(BaseModel):
     """Request model for retrieving memory."""
 
     user_id: Optional[str] = None  # Optional - uses admin user if not provided
+    # OpenAI-style messages; each content may be a string, a list of parts
+    # (text, images) or null. Empty -> 422.
     messages: List[Dict[str, Any]]
-    limit: int = 10  # Maximum number of items to retrieve per memory type
+    # Maximum number of items to retrieve per memory type.
+    limit: int = Field(10, ge=0)
     local_model_for_retrieval: Optional[str] = (
         None  # Optional local Ollama model for topic extraction
     )
@@ -2636,6 +2983,129 @@ class RetrieveMemoryRequest(BaseModel):
     end_date: Optional[str] = (
         None  # e.g., "2025-11-19T23:59:59" or "2025-11-19T23:59:59+00:00"
     )
+    # The memory types to retrieve (None = all of them). With
+    # ["procedural"] only the skills are searched, with the similarity gate.
+    memory_types: Optional[List[str]] = None
+    # The caller's session (same rules as AddMemoryRequest's); it
+    # is recorded on the retrieval log row.
+    session_id: Optional[str] = None
+
+    @field_validator("session_id")
+    @classmethod
+    def _check_session_id(cls, v: Optional[str]) -> Optional[str]:
+        return _validate_session_id(v)
+
+    @field_validator("memory_types")
+    @classmethod
+    def _check_memory_types(cls, v: Optional[List[str]]) -> Optional[List[str]]:
+        from mirix.schemas.retrieval_log import RETRIEVAL_MEMORY_TYPE_ORDER
+
+        if v is None:
+            return None
+        if not v:
+            raise ValueError(
+                "memory_types must name at least one memory type; omit it to "
+                "retrieve all of them"
+            )
+        unknown = [t for t in v if t not in RETRIEVAL_MEMORY_TYPE_ORDER]
+        if unknown:
+            raise ValueError(
+                f"unknown memory_types {unknown}; allowed: "
+                f"{list(RETRIEVAL_MEMORY_TYPE_ORDER)}"
+            )
+        return list(dict.fromkeys(v))
+
+
+# Memory types whose retrieval uses the query (core blocks are returned whole).
+_QUERY_MEMORY_TYPES = ("episodic", "semantic", "resource", "procedural", "knowledge_vault")
+
+
+def _error_text(exc: BaseException) -> str:
+    """An error as the retrieval response and log report it.
+
+    A SQLAlchemy error's ``str()`` carries the SQL statement and its bind
+    parameters (the query, user ids, vectors): only its type, the driver
+    error's type and the first line of the driver's message are reported;
+    the full text stays in the server log."""
+    try:
+        from sqlalchemy.exc import SQLAlchemyError, StatementError
+    except ImportError:  # pragma: no cover - SQLAlchemy is a hard dependency
+        SQLAlchemyError = StatementError = ()  # type: ignore[assignment]
+    if isinstance(exc, SQLAlchemyError):
+        orig = getattr(exc, "orig", None) if isinstance(exc, StatementError) else None
+        if orig is not None:
+            first_line = (str(orig).strip().splitlines() or [""])[0]
+            return f"{type(exc).__name__} ({type(orig).__name__}): {first_line}"[:300]
+        return f"{type(exc).__name__}: database error (see the server log)"
+    return f"{type(exc).__name__}: {exc}"[:500]
+
+
+def _query_without_nul(text: Optional[str]) -> str:
+    """A search query with every U+0000 as U+FFFD, as MIRIX stores text.
+
+    Postgres rejects U+0000 in a text parameter (``to_tsquery``, ``ILIKE`` …),
+    so a query that carries one — the raw text of a conversation whose tool
+    printed a NUL, used as the query when topic extraction fails, or a
+    caller's query — failed every search, and failed the same way on every
+    retry. The conversation store and the meta agent's input write U+0000 as
+    U+FFFD too (``conversation_content.replace_nul``), and a Postgres column
+    cannot hold it at all, so the query still matches what MIRIX stored; the
+    replacement keeps the query's length."""
+    from mirix.services.conversation_content import replace_nul
+
+    cleaned, count = replace_nul(text or "")
+    if count:
+        logger.debug(
+            "Replaced %d NUL character(s) (U+0000) with U+FFFD in a search query",
+            count,
+        )
+    return cleaned
+
+
+def _empty_memories(memory_types: List[str]) -> Dict[str, Any]:
+    """What a retrieval returns for each requested type when it finds nothing."""
+    empty: Dict[str, Any] = {}
+    for memory_type in memory_types:
+        if memory_type == "episodic":
+            empty[memory_type] = {"total_count": 0, "recent": [], "relevant": []}
+        elif memory_type == "core":
+            empty[memory_type] = {"total_count": 0, "scopes": {}}
+        else:
+            empty[memory_type] = {"total_count": 0, "items": []}
+    return empty
+
+
+def _retrieval_agent(agents: List[AgentState]) -> AgentState:
+    """The agent whose configs a retrieval uses (the query's embedding, topic
+    extraction): the client's meta memory agent — the skills are embedded
+    with its (curator's) embedding config — else its first agent."""
+    for agent in agents:
+        if agent.agent_type == AgentType.meta_memory_agent:
+            return agent
+    return agents[0]
+
+
+def _all_requested_types_failed(
+    memory_types: List[str], errors: Dict[str, str]
+) -> Optional[str]:
+    """The error of a retrieval none of whose requested types could be
+    searched (their results are empty because they FAILED, not because
+    nothing matched), else None."""
+    if memory_types and all(t in errors for t in memory_types):
+        return "every requested memory type failed: " + "; ".join(
+            f"{t}: {errors[t]}" for t in memory_types
+        )
+    return None
+
+
+def _episodic_item(event) -> Dict[str, Any]:
+    return {
+        "id": event.id,
+        "timestamp": event.occurred_at.isoformat() if event.occurred_at else None,
+        "summary": event.summary,
+        "details": event.details,
+        "retrieval_scores": None,
+    }
 
 
 async def retrieve_memories_by_keywords(
@@ -2649,30 +3119,79 @@ async def retrieve_memories_by_keywords(
     use_cache: bool = True,
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
+    *,
+    memory_types: Optional[List[str]] = None,
+    user: Optional[User] = None,
+    trace: Optional[Dict[str, Any]] = None,
+    errors: Optional[Dict[str, str]] = None,
+    apply_skill_gate: bool = True,
+    keyword_query: Optional[str] = None,
 ) -> dict:
     """
-    Helper function to retrieve memories based on keywords using BM25 search.
+    Retrieve memories for ``key_words``, per memory type.
+
+    Procedural memory is ranked by the skill retrieval pipeline
+    (``ProceduralMemoryManager.retrieve_skills``: BM25 over the retrieval text,
+    cosine, RRF, and — with ``apply_skill_gate``, the retrieval endpoints — the
+    similarity gate, so it may return no skill). The other memory types
+    keep their BM25 search. Only the types in ``memory_types`` (None =
+    all) are retrieved: no other memory manager is called.
 
     Args:
         server: The Mirix server instance
         client: The authenticated client application (for authorization)
         user_id: The end-user ID whose memories to retrieve
-        agent_state: Agent state (used for configuration)
-        key_words: Keywords to search for (empty string returns recent items)
+        agent_state: Agent state (its embedding config embeds the skill query)
+        key_words: Keywords to search for (empty string returns recent items;
+            no skill)
         limit: Maximum number of items to retrieve per memory type
         filter_tags: Tag-based filtering (user_id + filter_tags = complete filter)
         use_cache: Control Redis cache behavior
         start_date: Optional start datetime for filtering episodic memories by occurred_at (inclusive)
         end_date: Optional end datetime for filtering episodic memories by occurred_at (inclusive)
+        memory_types: The memory types to retrieve (None = all).
+        user: The user (fetched here when not given).
+        trace: Filled with each type's retrieval trace (the retrieval log's
+            ``per_type``): for procedural memory the ranking diagnostics
+            (every candidate's scores and ranks, the gate, the returned ids,
+            the skills without a vector), for the others the method, field and
+            returned ids.
+        errors: Filled with ``{memory_type: error}`` for each type whose
+            retrieval failed (its result is then empty).
+        apply_skill_gate: Apply the similarity gate to skills.
+        keyword_query: The query of the keyword-searched types (episodic,
+            semantic, resource, knowledge vault) when it differs from the
+            skills' (default ``key_words``): after a failed extraction the
+            skills rank the long raw text, the others a short cut of it.
 
     Returns:
-        Dictionary containing all memory types with their items
+        Dictionary containing the requested memory types with their items;
+        every item carries ``retrieval_scores`` ({bm25, cosine, rrf} for a
+        ranked skill, None otherwise).
     """
+    from mirix import constants as mirix_constants
+    from mirix.schemas.retrieval_log import RETRIEVAL_MEMORY_TYPE_ORDER
+
+    wanted = set(memory_types or RETRIEVAL_MEMORY_TYPE_ORDER)
     scopes = client.read_scopes
     search_method = "bm25"
+    # No U+0000 reaches a search (Postgres rejects it in any text
+    # parameter): the topics, the fallback's raw text and its keyword cut.
+    key_words = _query_without_nul(key_words)
+    skill_query = key_words
+    if keyword_query is not None:
+        key_words = _query_without_nul(keyword_query)
+    keyword_method = "bm25" if key_words else "recent"
+
+    def failed(memory_type: str, exc: BaseException) -> None:
+        logger.exception("Error retrieving %s memories: %s", memory_type, exc)
+        if trace is not None:
+            trace[memory_type] = {"error": _error_text(exc)}
+        if errors is not None:
+            errors[memory_type] = _error_text(exc)
 
     # Log temporal filtering for monitoring
-    if start_date or end_date:
+    if (start_date or end_date) and "episodic" in wanted:
         logger.info(
             "Temporal filtering enabled for episodic memories: start=%s, end=%s",
             start_date.isoformat() if start_date else None,
@@ -2680,34 +3199,74 @@ async def retrieve_memories_by_keywords(
         )
 
     # Get timezone from user record (if exists)
-    try:
-        user = await server.user_manager.get_user_by_id(user_id)
-        timezone_str = user.timezone
-    except:
-        timezone_str = "UTC"
-    memories = {}
+    if user is None:
+        try:
+            user = await server.user_manager.get_user_by_id(user_id)
+        except Exception:  # noqa: BLE001 — every type below then fails alone
+            logger.warning("User %s not found for memory retrieval", user_id)
+    timezone_str = getattr(user, "timezone", None) or "UTC"
+    memories: Dict[str, Any] = {}
 
     # Get episodic memories (recent + relevant) with optional temporal filtering
-    try:
-        episodic_manager = server.episodic_memory_manager
+    if "episodic" in wanted:
+        try:
+            episodic_manager = server.episodic_memory_manager
 
-        # Get recent episodic memories with temporal filter
-        recent_episodic = await episodic_manager.list_episodic_memory(
-            agent_state=agent_state,  # Not accessed during BM25 search
-            user=user,
-            limit=limit,
-            timezone_str=timezone_str,
-            filter_tags=filter_tags,
-            scopes=scopes,
-            use_cache=use_cache,
-            start_date=start_date,
-            end_date=end_date,
-        )
+            # Get recent episodic memories with temporal filter
+            recent_episodic = await episodic_manager.list_episodic_memory(
+                agent_state=agent_state,  # Not accessed during BM25 search
+                user=user,
+                limit=limit,
+                timezone_str=timezone_str,
+                filter_tags=filter_tags,
+                scopes=scopes,
+                use_cache=use_cache,
+                start_date=start_date,
+                end_date=end_date,
+            )
 
-        # Get relevant episodic memories based on keywords with temporal filter
-        relevant_episodic = []
-        if key_words:
-            relevant_episodic = await episodic_manager.list_episodic_memory(
+            # Get relevant episodic memories based on keywords with temporal filter
+            relevant_episodic = []
+            if key_words:
+                relevant_episodic = await episodic_manager.list_episodic_memory(
+                    agent_state=agent_state,  # Not accessed during BM25 search
+                    user=user,
+                    query=key_words,
+                    search_field="details",
+                    search_method=search_method,
+                    limit=limit,
+                    timezone_str=timezone_str,
+                    filter_tags=filter_tags,
+                    scopes=scopes,
+                    start_date=start_date,
+                    end_date=end_date,
+                )
+
+            memories["episodic"] = {
+                "total_count": await episodic_manager.get_total_number_of_items(
+                    user=user
+                ),
+                "recent": [_episodic_item(event) for event in recent_episodic],
+                "relevant": [_episodic_item(event) for event in relevant_episodic],
+            }
+            if trace is not None:
+                trace["episodic"] = {
+                    "method": keyword_method,
+                    "search_field": "details",
+                    "limit": limit,
+                    "recent_ids": [event.id for event in recent_episodic],
+                    "returned_ids": [event.id for event in relevant_episodic],
+                }
+        except Exception as e:
+            failed("episodic", e)
+            memories["episodic"] = {"total_count": 0, "recent": [], "relevant": []}
+
+    # Get semantic memories
+    if "semantic" in wanted:
+        try:
+            semantic_manager = server.semantic_memory_manager
+
+            semantic_items = await semantic_manager.list_semantic_items(
                 agent_state=agent_state,  # Not accessed during BM25 search
                 user=user,
                 query=key_words,
@@ -2717,195 +3276,491 @@ async def retrieve_memories_by_keywords(
                 timezone_str=timezone_str,
                 filter_tags=filter_tags,
                 scopes=scopes,
-                start_date=start_date,
-                end_date=end_date,
+                use_cache=use_cache,
             )
 
-        memories["episodic"] = {
-            "total_count": await episodic_manager.get_total_number_of_items(user=user),
-            "recent": [
-                {
-                    "id": event.id,
-                    "timestamp": (
-                        event.occurred_at.isoformat() if event.occurred_at else None
-                    ),
-                    "summary": event.summary,
-                    "details": event.details,
+            memories["semantic"] = {
+                "total_count": await semantic_manager.get_total_number_of_items(
+                    user=user
+                ),
+                "items": [
+                    {
+                        "id": item.id,
+                        "name": item.name,
+                        "summary": item.summary,
+                        "details": item.details,
+                        "retrieval_scores": None,
+                    }
+                    for item in semantic_items
+                ],
+            }
+            if trace is not None:
+                trace["semantic"] = {
+                    "method": keyword_method,
+                    "search_field": "details",
+                    "limit": limit,
+                    "returned_ids": [item.id for item in semantic_items],
                 }
-                for event in recent_episodic
-            ],
-            "relevant": [
-                {
-                    "id": event.id,
-                    "timestamp": (
-                        event.occurred_at.isoformat() if event.occurred_at else None
-                    ),
-                    "summary": event.summary,
-                    "details": event.details,
-                }
-                for event in relevant_episodic
-            ],
-        }
-    except Exception as e:
-        logger.error("Error retrieving episodic memories: %s", e)
-        memories["episodic"] = {"total_count": 0, "recent": [], "relevant": []}
-
-    # Get semantic memories
-    try:
-        semantic_manager = server.semantic_memory_manager
-
-        semantic_items = await semantic_manager.list_semantic_items(
-            agent_state=agent_state,  # Not accessed during BM25 search
-            user=user,
-            query=key_words,
-            search_field="details",
-            search_method=search_method,
-            limit=limit,
-            timezone_str=timezone_str,
-            filter_tags=filter_tags,
-            scopes=scopes,
-            use_cache=use_cache,
-        )
-
-        memories["semantic"] = {
-            "total_count": await semantic_manager.get_total_number_of_items(user=user),
-            "items": [
-                {
-                    "id": item.id,
-                    "name": item.name,
-                    "summary": item.summary,
-                    "details": item.details,
-                }
-                for item in semantic_items
-            ],
-        }
-    except Exception as e:
-        logger.error("Error retrieving semantic memories: %s", e)
-        memories["semantic"] = {"total_count": 0, "items": []}
+        except Exception as e:
+            failed("semantic", e)
+            memories["semantic"] = {"total_count": 0, "items": []}
 
     # Get resource memories
-    try:
-        resource_manager = server.resource_memory_manager
+    if "resource" in wanted:
+        try:
+            resource_manager = server.resource_memory_manager
 
-        resources = await resource_manager.list_resources(
-            agent_state=agent_state,  # Not accessed during BM25 search
-            user=user,
-            query=key_words,
-            search_field="summary",
-            search_method=search_method,
-            limit=limit,
-            timezone_str=timezone_str,
-            filter_tags=filter_tags,
-            scopes=scopes,
-            use_cache=use_cache,
-        )
-
-        memories["resource"] = {
-            "total_count": await resource_manager.get_total_number_of_items(user=user),
-            "items": [
-                {
-                    "id": resource.id,
-                    "title": resource.title,
-                    "summary": resource.summary,
-                    "resource_type": resource.resource_type,
-                }
-                for resource in resources
-            ],
-        }
-    except Exception as e:
-        logger.error("Error retrieving resource memories: %s", e)
-        memories["resource"] = {"total_count": 0, "items": []}
-
-    # Get procedural memories
-    try:
-        procedural_manager = server.procedural_memory_manager
-
-        procedures = await procedural_manager.list_procedures(
-            agent_state=agent_state,  # Not accessed during BM25 search
-            user=user,
-            query=key_words,
-            search_field="description",
-            search_method=search_method,
-            limit=limit,
-            timezone_str=timezone_str,
-            filter_tags=filter_tags,
-            scopes=scopes,
-            use_cache=use_cache,
-        )
-
-        memories["procedural"] = {
-            "total_count": await procedural_manager.get_total_number_of_items(
-                user=user
-            ),
-            "items": [_procedural_memory_response(procedure) for procedure in procedures],
-        }
-    except Exception as e:
-        logger.error("Error retrieving procedural memories: %s", e)
-        memories["procedural"] = {"total_count": 0, "items": []}
-
-    # Get knowledge vault items
-    try:
-        knowledge_vault_manager = server.knowledge_vault_manager
-
-        knowledge_items = await knowledge_vault_manager.list_knowledge(
-            agent_state=agent_state,  # Not accessed during BM25 search
-            user=user,
-            query=key_words,
-            search_field="caption",
-            search_method=search_method,
-            limit=limit,
-            timezone_str=timezone_str,
-        )
-
-        memories["knowledge_vault"] = {
-            "total_count": await knowledge_vault_manager.get_total_number_of_items(
-                user=user
-            ),
-            "items": [
-                {
-                    "id": item.id,
-                    "caption": item.caption,
-                }
-                for item in knowledge_items
-            ],
-        }
-    except Exception as e:
-        logger.error("Error retrieving knowledge vault items: %s", e)
-        memories["knowledge_vault"] = {"total_count": 0, "items": []}
-
-    # Get core memory blocks (filtered by client's read_scopes, grouped by scope)
-    try:
-        block_manager = server.block_manager
-
-        blocks = await block_manager.get_blocks(
-            user=user,
-            any_scopes=client.read_scopes,
-            auto_create_from_default=False,
-        )
-
-        # Group blocks by scope
-        scopes_dict: Dict[str, list] = {}
-        for block in blocks:
-            scope = (block.filter_tags or {}).get("scope", "default")
-            if scope not in scopes_dict:
-                scopes_dict[scope] = []
-            scopes_dict[scope].append(
-                {
-                    "id": block.id,
-                    "label": block.label,
-                    "value": block.value,
-                }
+            resources = await resource_manager.list_resources(
+                agent_state=agent_state,  # Not accessed during BM25 search
+                user=user,
+                query=key_words,
+                search_field="summary",
+                search_method=search_method,
+                limit=limit,
+                timezone_str=timezone_str,
+                filter_tags=filter_tags,
+                scopes=scopes,
+                use_cache=use_cache,
             )
 
-        memories["core"] = {
-            "total_count": len(blocks),
-            "scopes": {scope: {"items": items} for scope, items in scopes_dict.items()},
-        }
-    except Exception as e:
-        logger.error("Error retrieving core memory blocks: %s", e)
-        memories["core"] = {"total_count": 0, "scopes": {}}
+            memories["resource"] = {
+                "total_count": await resource_manager.get_total_number_of_items(
+                    user=user
+                ),
+                "items": [
+                    {
+                        "id": resource.id,
+                        "title": resource.title,
+                        "summary": resource.summary,
+                        "resource_type": resource.resource_type,
+                        "retrieval_scores": None,
+                    }
+                    for resource in resources
+                ],
+            }
+            if trace is not None:
+                trace["resource"] = {
+                    "method": keyword_method,
+                    "search_field": "summary",
+                    "limit": limit,
+                    "returned_ids": [resource.id for resource in resources],
+                }
+        except Exception as e:
+            failed("resource", e)
+            memories["resource"] = {"total_count": 0, "items": []}
+
+    # Get procedural memories: the skill ranking, gated when injected.
+    if "procedural" in wanted:
+        try:
+            procedural_manager = server.procedural_memory_manager
+
+            ranked = await procedural_manager.retrieve_skills(
+                skill_query,
+                user,
+                scopes,
+                limit,
+                apply_gate=apply_skill_gate,
+                agent_state=agent_state,
+                filter_tags=filter_tags or None,
+                timezone_str=timezone_str,
+            )
+
+            memories["procedural"] = {
+                "total_count": await procedural_manager.get_total_number_of_items(
+                    user=user
+                ),
+                "items": [
+                    _procedural_memory_response(
+                        r.skill, retrieval_scores=r.scores.to_dict()
+                    )
+                    for r in ranked.skills
+                ],
+            }
+            if trace is not None:
+                # Bounded: the returned skills and the next few in
+                # fused order, with the counts of what was left out.
+                trace["procedural"] = await asyncio.to_thread(
+                    ranked.diagnostics.to_dict,
+                    max_candidates=mirix_constants.RETRIEVAL_LOG_TRACE_CANDIDATES,
+                )
+        except Exception as e:
+            failed("procedural", e)
+            memories["procedural"] = {"total_count": 0, "items": []}
+
+    # Get knowledge vault items
+    if "knowledge_vault" in wanted:
+        try:
+            knowledge_vault_manager = server.knowledge_vault_manager
+
+            # Scoped like every other type: a client never reads a vault
+            # entry of a scope it cannot read (nor one outside filter_tags).
+            knowledge_items = await knowledge_vault_manager.list_knowledge(
+                agent_state=agent_state,  # Not accessed during BM25 search
+                user=user,
+                query=key_words,
+                search_field="caption",
+                search_method=search_method,
+                limit=limit,
+                timezone_str=timezone_str,
+                filter_tags=filter_tags,
+                scopes=scopes,
+                use_cache=use_cache,
+            )
+
+            memories["knowledge_vault"] = {
+                "total_count": await knowledge_vault_manager.get_total_number_of_items(
+                    user=user
+                ),
+                "items": [
+                    {
+                        "id": item.id,
+                        "caption": item.caption,
+                        "retrieval_scores": None,
+                    }
+                    for item in knowledge_items
+                ],
+            }
+            if trace is not None:
+                trace["knowledge_vault"] = {
+                    "method": keyword_method,
+                    "search_field": "caption",
+                    "limit": limit,
+                    "returned_ids": [item.id for item in knowledge_items],
+                }
+        except Exception as e:
+            failed("knowledge_vault", e)
+            memories["knowledge_vault"] = {"total_count": 0, "items": []}
+
+    # Get core memory blocks (filtered by client's read_scopes, grouped by scope)
+    if "core" in wanted:
+        try:
+            block_manager = server.block_manager
+
+            blocks = await block_manager.get_blocks(
+                user=user,
+                any_scopes=client.read_scopes,
+                auto_create_from_default=False,
+            )
+
+            # Group blocks by scope
+            scopes_dict: Dict[str, list] = {}
+            for block in blocks:
+                scope = (block.filter_tags or {}).get("scope", "default")
+                if scope not in scopes_dict:
+                    scopes_dict[scope] = []
+                scopes_dict[scope].append(
+                    {
+                        "id": block.id,
+                        "label": block.label,
+                        "value": block.value,
+                        "retrieval_scores": None,
+                    }
+                )
+
+            memories["core"] = {
+                "total_count": len(blocks),
+                "scopes": {
+                    scope: {"items": items} for scope, items in scopes_dict.items()
+                },
+            }
+            if trace is not None:
+                trace["core"] = {
+                    "method": "all_blocks",
+                    "returned_ids": [block.id for block in blocks],
+                }
+        except Exception as e:
+            failed("core", e)
+            memories["core"] = {"total_count": 0, "scopes": {}}
 
     return memories
+
+
+async def _retrieval_user(
+    server: AsyncServer, user_id: str, client: Client
+) -> Optional[User]:
+    """The user whose memories are read, or None when the client's
+    organization has no such user.
+
+    A read for a user that does not exist (yet) finds nothing: the retrieval
+    and search endpoints answer ``success: true`` with no memories — and no
+    retrieval log row, no topic-extraction call — as they did before the
+    tenant guard (an integration's first retrieval for a new user usually
+    comes before its first ``add``, which creates the user).
+
+    Tenant guard: a user of another organization is exactly the same None —
+    a client never reads (or logs a query against) another tenant's memories,
+    and a read is no user-id existence oracle.
+    """
+    from mirix.constants import DEFAULT_ORG_ID
+    from mirix.services.conversation_message_manager import owner_org
+
+    try:
+        user = await server.user_manager.get_user_by_id(user_id)
+    except (NoResultFound, LookupError):
+        return None
+    if user is None or (user.organization_id or DEFAULT_ORG_ID) != owner_org(client):
+        return None
+    return user
+
+
+async def _tenant_user_for_write(
+    server: AsyncServer, user_id: str, client: Client
+) -> Optional[User]:
+    """For an endpoint that WRITES for ``user_id``: the user when it exists
+    in the client's organization, None when it does not exist at all; 404
+    when it belongs to another organization — a client never writes
+    sessions, learning runs or skills for another tenant's user."""
+    from mirix.constants import DEFAULT_ORG_ID
+    from mirix.services.conversation_message_manager import owner_org
+
+    try:
+        user = await server.user_manager.get_user_by_id(user_id)
+    except (NoResultFound, LookupError):
+        return None
+    if user is None:
+        return None
+    if (user.organization_id or DEFAULT_ORG_ID) != owner_org(client):
+        raise HTTPException(status_code=404, detail=f"User {user_id} not found")
+    return user
+
+
+async def _extract_retrieval_topics(
+    parsed, request: RetrieveMemoryRequest, llm_config: LLMConfig, memory_types
+):
+    """Topic extraction for a conversation retrieval.
+
+    ``skipped`` when no requested memory type searches by query (core only);
+    the local model first when one is named (text only, falling back to the
+    configured LLM); otherwise the configured LLM with text and images.
+    """
+    from mirix import constants as mirix_constants
+    from mirix.services.conversation_content import iter_images
+    from mirix.services.topic_extraction import (
+        EXTRACTION_STATUS_OK,
+        EXTRACTION_STATUS_SKIPPED,
+        TopicExtraction,
+        extract_topics,
+        fallback_query,
+        fallback_query_text,
+    )
+
+    if not any(t in _QUERY_MEMORY_TYPES for t in memory_types):
+        return TopicExtraction(
+            topics=None, temporal_expression=None, status=EXTRACTION_STATUS_SKIPPED
+        )
+    local_note: Dict[str, Any] = {}
+    if request.local_model_for_retrieval:
+        if iter_images(parsed):
+            # Extraction sees the images; a local text-only model cannot.
+            logger.info(
+                "Local topic extraction skipped for model %s: the conversation "
+                "has images; using the configured LLM",
+                request.local_model_for_retrieval,
+            )
+            local_note = {
+                "local_model": request.local_model_for_retrieval,
+                "local_model_skipped": "images",
+            }
+        else:
+            # The local model's input keeps its head and tail.
+            conversation, cut = fallback_query(
+                fallback_query_text(parsed, labeled=True),
+                mirix_constants.RETRIEVAL_LOCAL_EXTRACTION_MAX_CHARS,
+            )
+            topics = await extract_topics_with_local_model(
+                messages=request.messages,
+                model_name=request.local_model_for_retrieval,
+                conversation=conversation,
+            )
+            # Note: Local model extraction doesn't support temporal extraction yet
+            if topics:
+                return TopicExtraction(
+                    topics=topics,
+                    temporal_expression=None,
+                    status=EXTRACTION_STATUS_OK,
+                    usage={
+                        "model": request.local_model_for_retrieval,
+                        "calls": 1,
+                        "local": True,
+                    },
+                    input_stats={"text_chars_cut": cut} if cut else {},
+                )
+            logger.warning(
+                "Local topic extraction failed for model %s, falling back to default LLM",
+                request.local_model_for_retrieval,
+            )
+            local_note = {
+                "local_model": request.local_model_for_retrieval,
+                "local_model_failed": True,
+            }
+    extraction = await extract_topics(parsed, llm_config)
+    if local_note:
+        extraction.input_stats = {**extraction.input_stats, **local_note}
+    return extraction
+
+
+def _request_datetime(value: str) -> datetime:
+    """A request's ISO 8601 date or time as naive UTC, the form the episodic
+    ``occurred_at`` column stores: a value with an offset (``Z``
+    included) is converted to UTC before its tzinfo is dropped; one without
+    is taken as UTC, as before. A value whose UTC time falls outside the
+    datetime range (a min / max sentinel with an offset, e.g.
+    ``0001-01-01T00:00:00+01:00``) is that end of the range: it bounds
+    nothing, as it meant. ValueError when it is not ISO 8601."""
+    from mirix.utils import to_naive_utc
+
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    try:
+        return to_naive_utc(parsed)
+    except OverflowError:
+        offset = parsed.utcoffset()
+        # UTC = local - offset: a positive offset overflows below the range.
+        return (
+            datetime.min
+            if offset is not None and offset > timedelta(0)
+            else datetime.max
+        )
+
+
+def _wall_clock_to_naive_utc(value: datetime, zone) -> datetime:
+    """``value``'s wall-clock time in ``zone`` (a pytz zone) as naive UTC:
+    localized again, so each bound gets its own day's UTC offset (a window
+    across a daylight saving change keeps local midnights)."""
+    from mirix.utils import to_naive_utc
+
+    return to_naive_utc(zone.localize(value.replace(tzinfo=None)))
+
+
+def _retrieval_date_range(
+    request_start: Optional[str],
+    request_end: Optional[str],
+    temporal_expr: Optional[str],
+    user: Optional[User],
+    now: Optional[datetime] = None,
+) -> tuple[Optional[datetime], Optional[datetime]]:
+    """The episodic date range of a conversation retrieval, as naive UTC.
+
+    Explicit request dates win over the extracted temporal expression (an
+    invalid one is logged and leaves its bound open). A temporal expression
+    is resolved in the user's time zone (``user.timezone``: MIRIX's
+    ``"Region (UTC+hh:mm)"`` form or a zone name; UTC when missing or
+    unknown) at ``now`` (default: the current time), and its bounds are
+    converted to UTC. An expression naming an absolute date gives no
+    range (``parse_temporal_expression``).
+    """
+    from datetime import timezone as dt_timezone
+
+    from mirix.utils import user_timezone
+
+    start_date: Optional[datetime] = None
+    end_date: Optional[datetime] = None
+    if request_start or request_end:
+        # Use explicit date range from request
+        try:
+            if request_start:
+                start_date = _request_datetime(request_start)
+            if request_end:
+                end_date = _request_datetime(request_end)
+            logger.debug("Using explicit date range: %s to %s", start_date, end_date)
+        except ValueError as e:
+            logger.warning("Invalid date format in request: %s", e)
+    elif temporal_expr:
+        # Parse LLM-extracted temporal expression
+        from mirix.temporal.temporal_parser import parse_temporal_expression
+
+        # "today" is the user's today: the current time in the user's zone.
+        zone = user_timezone(getattr(user, "timezone", None))
+        current = now or datetime.now(dt_timezone.utc)
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=dt_timezone.utc)
+        reference_time = current.astimezone(zone)
+
+        try:
+            temporal_range = parse_temporal_expression(temporal_expr, reference_time)
+            if temporal_range:
+                if temporal_range.start is not None:
+                    start_date = _wall_clock_to_naive_utc(temporal_range.start, zone)
+                if temporal_range.end is not None:
+                    end_date = _wall_clock_to_naive_utc(temporal_range.end, zone)
+        except (OverflowError, ValueError) as e:
+            # "last 1000000 days" reaches past the datetime range: no filter
+            # is the safe degrade, never an error of the request.
+            logger.warning(
+                "Temporal expression %r gives no date range: %s", temporal_expr, e
+            )
+            return None, None
+        if temporal_range:
+            logger.info(
+                "Parsed temporal expression '%s' in time zone %s to range: %s to %s "
+                "(naive UTC, as occurred_at stores it)",
+                temporal_expr,
+                zone.zone,
+                start_date,
+                end_date,
+            )
+    return start_date, end_date
+
+
+async def _write_retrieval_log(
+    server: AsyncServer,
+    *,
+    organization_id: str,
+    user_id: str,
+    client_id: Optional[str],
+    session_id: Optional[str],
+    memory_types: List[str],
+    query_text: Optional[str],
+    extraction,
+    trace: Dict[str, Any],
+    latency_ms: int,
+    recorder,
+    chunk_counter,
+    fallback_query_truncated_chars: int = 0,
+    started_monotonic: Optional[float] = None,
+) -> Optional[str]:
+    """Write the retrieval's log row; its id, or None when the log
+    is off (``MIRIX_RETRIEVAL_LOG_ENABLED=false``), the user's data was
+    erased while the retrieval ran (``started_monotonic``: its start on
+    ``time.monotonic()``), or the write failed (the retrieval itself is still
+    answered)."""
+    from mirix.services.retrieval_log_manager import (
+        RetrievalLogManager,
+        retrieval_log_enabled,
+    )
+
+    if not retrieval_log_enabled():
+        return None
+    entry = extraction.log_entry()
+    if fallback_query_truncated_chars:
+        entry["fallback_query_truncated_chars"] = fallback_query_truncated_chars
+    procedural = trace.get("procedural") if isinstance(trace, dict) else None
+    embedding_status = (
+        procedural.get("embedding_status")
+        if isinstance(procedural, dict) and "embedding_status" in procedural
+        else ("skipped" if "procedural" not in memory_types else None)
+    )
+    manager = getattr(server, "retrieval_log_manager", None) or RetrievalLogManager()
+    try:
+        return await manager.create_log(
+            organization_id=organization_id,
+            user_id=user_id,
+            client_id=client_id,
+            session_id=session_id,
+            memory_types=memory_types,
+            query_text=query_text,
+            extracted_topics=extraction.topics,
+            extraction_status=extraction.status,
+            embedding_status=embedding_status,
+            per_type=trace,
+            llm_usage={"topic_extraction": entry},
+            latency_ms=latency_ms,
+            retry_events=recorder.events,
+            embedding_chunked_calls=chunk_counter.chunked_calls,
+            started_monotonic=started_monotonic,
+        )
+    except Exception:  # noqa: BLE001 — the log must not fail the retrieval
+        logger.exception("Could not write the retrieval log row")
+        return None
 
 
 @router.post("/memory/retrieve/conversation")
@@ -2917,12 +3772,53 @@ async def retrieve_memory_with_conversation(
 ):
     """
     Retrieve relevant memories based on conversation context.
-    Extracts topics from the conversation messages and uses them to retrieve relevant memories.
-    """
 
+    1. The messages are parsed (``content``: string, list of parts or null;
+       images kept) — no text and no image is a 422.
+    2. An LLM extracts the topics and a temporal expression from the text AND
+       the images, within the model's input budget (head and tail kept,
+       images whole). If that fails, the conversation's own text is the
+       query (``extraction_status: "fallback"``).
+    3. Each requested memory type (``memory_types``, default all) is searched;
+       skills with the skill retrieval pipeline and its similarity gate, so possibly none.
+       Skills rank the task-level part of the topics (``procedural_query``:
+       the goal and the operations) when the extraction gave one; the
+       other types search all the topics.
+    4. One retrieval log row records the whole retrieval; its id is returned
+       as ``retrieval_id`` (null when the log is disabled).
+
+    Every returned item carries ``retrieval_scores`` ({bm25, cosine, rrf} for
+    a skill, null for the other types). A type whose search failed is listed
+    in ``errors`` (its result is empty); when EVERY requested type failed the
+    answer is ``success: false`` with ``error`` — never mistaken for "nothing
+    matched". A user the client's organization does not have finds nothing:
+    ``success: true``, empty memories, no log row.
+    """
+    from mirix import constants as mirix_constants
+    from mirix.embedding_guard import EmbeddingChunkCounter, counting_embedding_chunks
+    from mirix.observability.context import conversation_session_scope
+    from mirix.schemas.retrieval_log import RETRIEVAL_MEMORY_TYPE_ORDER
+    from mirix.services.conversation_content import MessageParseError, iter_images
+    from mirix.services.conversation_message_manager import owner_org
+    from mirix.services.image_store import prepare_images
+    from mirix.services.retry_policy import RetryEventRecorder, recording_retries
+    from mirix.services.topic_extraction import (
+        EXTRACTION_STATUS_FALLBACK,
+        EXTRACTION_STATUS_OK,
+        EXTRACTION_STATUS_SKIPPED,
+        fallback_query,
+        fallback_query_text,
+        normalize_retrieval_messages,
+        plain_text,
+    )
+
+    started = time.perf_counter()
+    started_mono = time.monotonic()  # the erasure guard's clock (retrieval log)
     server = get_server()
     client_id, org_id = await get_client_and_org(x_client_id, x_org_id)
     client = await server.client_manager.get_client_by_id(client_id)
+    if client is None:
+        raise HTTPException(status_code=404, detail=f"Client {client_id} not found")
 
     # If user_id is not provided, use the admin user for this client
     user_id = request.user_id
@@ -2933,6 +3829,17 @@ async def retrieve_memory_with_conversation(
         logger.debug("No user_id provided, using admin user: %s", user_id)
 
     filter_tags = dict(request.filter_tags) if request.filter_tags is not None else {}
+    memory_types = list(request.memory_types or RETRIEVAL_MEMORY_TYPE_ORDER)
+    organization_id = owner_org(client)
+
+    # Parse the messages (string, parts or null content), decode
+    # and check the inline images, and check any stored file they reference.
+    try:
+        parsed = normalize_retrieval_messages(request.messages)
+        await prepare_images(iter_images(parsed))
+    except MessageParseError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    await _check_file_references(parsed, organization_id, user_id)
 
     # Get all agents for this client (automatically filtered by client via apply_access_predicate)
     all_agents = await server.agent_manager.list_agents(actor=client, limit=1000)
@@ -2944,125 +3851,120 @@ async def retrieve_memory_with_conversation(
             "topics": None,
             "memories": {},
         }
+    agent_state = _retrieval_agent(all_agents)
+    user = await _retrieval_user(server, user_id, client)
+    if user is None:
+        # Nothing to find (and no user to log the query against).
+        return {
+            "success": True,
+            "retrieval_id": None,
+            "topics": None,
+            "procedural_query": None,
+            "temporal_expression": None,
+            "extraction_status": EXTRACTION_STATUS_SKIPPED,
+            "date_range": None,
+            "memories": _empty_memories(memory_types),
+            "errors": {},
+        }
 
-    # Extract topics from the conversation
-    # TODO: Consider allowing custom model selection in the future
-    llm_config = all_agents[0].llm_config
-
-    # Check if messages have actual content before calling LLM
-    has_content = False
-    for msg in request.messages:
-        if isinstance(msg, dict) and "content" in msg:
-            for content_item in msg.get("content", []):
-                if (
-                    isinstance(content_item, dict)
-                    and content_item.get("text", "").strip()
-                ):
-                    has_content = True
-                    break
-            if has_content:
-                break
-
-    topics: Optional[str] = None
-    temporal_expr: Optional[str] = None
-
-    if has_content:
-        # Prefer local model for topic extraction when explicitly requested
-        if request.local_model_for_retrieval:
-            topics = await extract_topics_with_local_model(
-                messages=request.messages,
-                model_name=request.local_model_for_retrieval,
+    recorder = RetryEventRecorder()
+    chunk_counter = EmbeddingChunkCounter()
+    trace: Dict[str, Any] = {}
+    errors: Dict[str, str] = {}
+    query_text = plain_text(parsed)
+    fallback_cut = 0
+    keyword_query: Optional[str] = None
+    # The topic extraction and the query embedding serve the request's session
+    # (sent as MIRIX_LLM_SESSION_HEADER when that is set; off by default).
+    with (
+        conversation_session_scope(request.session_id),
+        recording_retries(recorder, stage="retrieval"),
+        counting_embedding_chunks(chunk_counter),
+    ):
+        extraction = await _extract_retrieval_topics(
+            parsed, request, agent_state.llm_config, memory_types
+        )
+        if extraction.status == EXTRACTION_STATUS_OK:
+            # Skills rank the task-level part of the topics (goal and
+            # operations: a skill's retrieval text describes a kind of task);
+            # the keyword-searched types search all of them (the instance's
+            # entities and values are what a fact or an event matches).
+            key_words = extraction.procedural_query or extraction.topics or ""
+            if extraction.topics and extraction.topics != key_words:
+                keyword_query = extraction.topics
+        elif extraction.status == EXTRACTION_STATUS_FALLBACK:
+            # Extraction failed -> the conversation's own text, without
+            # the role labels (they would be search terms). Skills rank the
+            # long text (BM25 on its first terms, the cosine on all of it);
+            # the keyword-searched types get a short head-and-tail cut.
+            raw_query = fallback_query_text(parsed)
+            key_words, fallback_cut = fallback_query(
+                raw_query, mirix_constants.RETRIEVAL_FALLBACK_QUERY_MAX_CHARS
             )
-            # Note: Local model extraction doesn't support temporal extraction yet
-            if topics is None:
-                logger.warning(
-                    "Local topic extraction failed for model %s, falling back to default LLM",
-                    request.local_model_for_retrieval,
-                )
-
-        if topics is None:
-            # NEW: Extract both topics and temporal expression
-            topics, temporal_expr = await extract_topics_and_temporal_info(
-                request.messages, llm_config
+            keyword_query, _ = fallback_query(
+                raw_query, mirix_constants.RETRIEVAL_FALLBACK_KEYWORD_QUERY_MAX_CHARS
             )
+        else:
+            key_words = ""
+        logger.debug(
+            "Retrieval query (%s): %s", extraction.status, key_words[:200]
+        )
 
-        logger.debug("Extracted topics: %s, temporal: %s", topics, temporal_expr)
-        key_words = topics if topics else ""
-    else:
-        # No content - skip LLM call and retrieve recent items
-        logger.debug("No content in messages - retrieving recent items")
-        key_words = ""
+        start_date, end_date = _retrieval_date_range(
+            request.start_date,
+            request.end_date,
+            extraction.temporal_expression,
+            user,
+        )
 
-    # NEW: Parse temporal expression to date range
-    start_date: Optional[datetime] = None
-    end_date: Optional[datetime] = None
+        # Retrieve memories with temporal filtering
+        memories = await retrieve_memories_by_keywords(
+            server=server,
+            client=client,
+            user_id=user_id,
+            agent_state=agent_state,
+            key_words=key_words,
+            limit=request.limit,
+            filter_tags=filter_tags,
+            use_cache=request.use_cache,
+            start_date=start_date,
+            end_date=end_date,
+            memory_types=memory_types,
+            user=user,
+            trace=trace,
+            errors=errors,
+            apply_skill_gate=True,
+            keyword_query=keyword_query,
+        )
 
-    # Priority: explicit request parameters > LLM-extracted temporal expression
-    if request.start_date or request.end_date:
-        # Use explicit date range from request
-        try:
-            if request.start_date:
-                start_date = datetime.fromisoformat(
-                    request.start_date.replace("Z", "+00:00")
-                )
-            if request.end_date:
-                end_date = datetime.fromisoformat(
-                    request.end_date.replace("Z", "+00:00")
-                )
-            logger.debug("Using explicit date range: %s to %s", start_date, end_date)
-        except ValueError as e:
-            logger.warning("Invalid date format in request: %s", e)
-    elif temporal_expr:
-        # Parse LLM-extracted temporal expression
-        from mirix.temporal.temporal_parser import parse_temporal_expression
-
-        # Get user's timezone for accurate "today" interpretation
-        try:
-            user = await server.user_manager.get_user_by_id(user_id)
-            import pytz
-
-            user_tz = pytz.timezone(user.timezone)
-            reference_time = datetime.now(user_tz)
-        except Exception:
-            # Fallback to UTC if user timezone not available
-            reference_time = datetime.now()
-
-        temporal_range = parse_temporal_expression(temporal_expr, reference_time)
-        if temporal_range:
-            start_date = temporal_range.start
-            end_date = temporal_range.end
-            # Strip timezone info to match database (which stores naive datetimes)
-            if start_date and start_date.tzinfo:
-                start_date = start_date.replace(tzinfo=None)
-            if end_date and end_date.tzinfo:
-                end_date = end_date.replace(tzinfo=None)
-            logger.info(
-                "Parsed temporal expression '%s' to range: %s to %s (timezone-naive for DB comparison)",
-                temporal_expr,
-                start_date,
-                end_date,
-            )
-
-    # Retrieve memories with temporal filtering
-    memories = await retrieve_memories_by_keywords(
-        server=server,
-        client=client,
-        user_id=user_id,
-        agent_state=all_agents[0],
-        key_words=key_words,
-        limit=request.limit,
-        filter_tags=filter_tags,
-        use_cache=request.use_cache,
-        start_date=start_date,
-        end_date=end_date,
+    retrieval_id = await _write_retrieval_log(
+        server,
+        organization_id=organization_id,
+        user_id=user.id,
+        client_id=client.id,
+        session_id=request.session_id,
+        memory_types=memory_types,
+        query_text=query_text,
+        extraction=extraction,
+        trace=trace,
+        latency_ms=int((time.perf_counter() - started) * 1000),
+        recorder=recorder,
+        chunk_counter=chunk_counter,
+        fallback_query_truncated_chars=fallback_cut,
+        started_monotonic=started_mono,
     )
 
+    failure = _all_requested_types_failed(memory_types, errors)
     return {
-        "success": True,
-        "topics": topics,
-        "temporal_expression": temporal_expr,  # NEW: Return extracted temporal info
+        "success": failure is None,
+        **({"error": failure} if failure else {}),
+        "retrieval_id": retrieval_id,
+        "topics": extraction.topics,
+        "procedural_query": extraction.procedural_query,
+        "temporal_expression": extraction.temporal_expression,
+        "extraction_status": extraction.status,
         "date_range": (
-            {  # NEW: Return applied date range
+            {
                 "start": start_date.isoformat() if start_date else None,
                 "end": end_date.isoformat() if end_date else None,
             }
@@ -3070,6 +3972,7 @@ async def retrieve_memory_with_conversation(
             else None
         ),
         "memories": memories,
+        "errors": errors,
     }
 
 
@@ -3078,14 +3981,18 @@ async def retrieve_memory_with_conversation(
 async def retrieve_memory_with_topic(
     user_id: Optional[str] = None,
     topic: str = "",
-    limit: int = 10,
+    limit: int = Query(10, ge=0),
     filter_tags: Optional[str] = None,
     use_cache: bool = True,
     x_client_id: Optional[str] = Header(None),
     x_org_id: Optional[str] = Header(None),
 ):
     """
-    Retrieve relevant memories based on a topic using BM25 search.
+    Retrieve relevant memories based on a topic (the topic is the query; no
+    extraction). Skills are ranked by the skill retrieval pipeline with its gate; the
+    other types by BM25. One retrieval log row is written (``retrieval_id``).
+    Every type failing is ``success: false`` with ``error``; a user the
+    client's organization does not have finds nothing (``success: true``).
 
     Args:
         user_id: The user ID to retrieve memories for (uses admin user if not provided)
@@ -3094,9 +4001,22 @@ async def retrieve_memory_with_topic(
         filter_tags: Optional JSON string of tags to filter memories (default: None)
         use_cache: Whether to use cached results (default: True)
     """
+    from mirix.embedding_guard import EmbeddingChunkCounter, counting_embedding_chunks
+    from mirix.schemas.retrieval_log import RETRIEVAL_MEMORY_TYPE_ORDER
+    from mirix.services.conversation_message_manager import owner_org
+    from mirix.services.retry_policy import RetryEventRecorder, recording_retries
+    from mirix.services.topic_extraction import (
+        EXTRACTION_STATUS_SKIPPED,
+        TopicExtraction,
+    )
+
+    started = time.perf_counter()
+    started_mono = time.monotonic()  # the erasure guard's clock (retrieval log)
     server = get_server()
     client_id, org_id = await get_client_and_org(x_client_id, x_org_id)
     client = await server.client_manager.get_client_by_id(client_id)
+    if client is None:
+        raise HTTPException(status_code=404, detail=f"Client {client_id} not found")
 
     # If user_id is not provided, use the admin user for this client
     if not user_id:
@@ -3131,23 +4051,67 @@ async def retrieve_memory_with_topic(
             "topic": topic,
             "memories": {},
         }
+    memory_types = list(RETRIEVAL_MEMORY_TYPE_ORDER)
+    user = await _retrieval_user(server, user_id, client)
+    if user is None:
+        return {
+            "success": True,
+            "retrieval_id": None,
+            "topic": topic,
+            "memories": _empty_memories(memory_types),
+            "errors": {},
+        }
 
-    # Retrieve memories using the helper function
-    memories = await retrieve_memories_by_keywords(
-        server=server,
-        client=client,
-        user_id=user_id,
-        agent_state=all_agents[0],
-        key_words=topic,
-        limit=limit,
-        filter_tags=parsed_filter_tags,
-        use_cache=use_cache,
+    recorder = RetryEventRecorder()
+    chunk_counter = EmbeddingChunkCounter()
+    trace: Dict[str, Any] = {}
+    errors: Dict[str, str] = {}
+    with recording_retries(recorder, stage="retrieval"), counting_embedding_chunks(
+        chunk_counter
+    ):
+        # Retrieve memories using the helper function
+        memories = await retrieve_memories_by_keywords(
+            server=server,
+            client=client,
+            user_id=user_id,
+            agent_state=_retrieval_agent(all_agents),
+            key_words=topic,
+            limit=limit,
+            filter_tags=parsed_filter_tags,
+            use_cache=use_cache,
+            memory_types=memory_types,
+            user=user,
+            trace=trace,
+            errors=errors,
+            apply_skill_gate=True,
+        )
+
+    retrieval_id = await _write_retrieval_log(
+        server,
+        organization_id=owner_org(client),
+        user_id=user.id,
+        client_id=client.id,
+        session_id=None,
+        memory_types=memory_types,
+        query_text=topic,
+        extraction=TopicExtraction(
+            topics=None, temporal_expression=None, status=EXTRACTION_STATUS_SKIPPED
+        ),
+        trace=trace,
+        latency_ms=int((time.perf_counter() - started) * 1000),
+        recorder=recorder,
+        chunk_counter=chunk_counter,
+        started_monotonic=started_mono,
     )
 
+    failure = _all_requested_types_failed(memory_types, errors)
     return {
-        "success": True,
+        "success": failure is None,
+        **({"error": failure} if failure else {}),
+        "retrieval_id": retrieval_id,
         "topic": topic,
         "memories": memories,
+        "errors": errors,
     }
 
 
@@ -3167,6 +4131,9 @@ async def _precompute_embedding_for_search(
         - embedded_text: The raw embedding vector (for most memory types)
         - embedded_text_padded: Padded to MAX_EMBEDDING_DIM (for episodic memory)
         Both are None if search_method is not 'embedding' or query is empty.
+
+    Raises whatever the embedding call raised; ``/memory/search`` then falls
+    back to keyword search (the "no query vector" rule).
     """
     if search_method != "embedding" or not query:
         return None, None
@@ -3232,6 +4199,12 @@ async def search_memory(
                     When omitted, defaults per memory type: procedural -> "hybrid"
                     (override via MIRIX_SKILL_SEARCH_METHOD), all others -> "embedding".
                     "hybrid" requested for a non-procedural type falls back to embedding.
+                    Procedural memory (also within "all") ranks a hybrid search, and a
+                    bm25/embedding search on the default field, with the skill retrieval
+                    pipeline over the skill's retrieval text (name, triggers,
+                    description): true BM25, cosine and RRF, WITHOUT the retrieval
+                    gate — the top `limit` skills, each with
+                    `retrieval_scores` {bm25, cosine, rrf}.
         limit: Maximum number of results per memory type (default: 10)
         filter_tags: Optional JSON string of filter tags (scope added automatically)
         similarity_threshold: Optional similarity threshold for embedding search (0.0-2.0).
@@ -3240,6 +4213,7 @@ async def search_memory(
         start_date: Optional start date/time for episodic memory filtering (ISO 8601 format)
         end_date: Optional end date/time for episodic memory filtering (ISO 8601 format)
     """
+    query = _query_without_nul(query)  # Postgres rejects U+0000
     server = get_server()
 
     client = None
@@ -3282,14 +4256,13 @@ async def search_memory(
             "count": 0,
         }
 
-    agent_state = all_agents[0]
+    agent_state = _retrieval_agent(all_agents)
 
-    # Get timezone from user record (if exists)
-    try:
-        user = await server.user_manager.get_user_by_id(user_id)
-        timezone_str = user.timezone
-    except:
-        timezone_str = "UTC"
+    # The user, in the client's organization only (tenant guard): a user
+    # the organization does not have — missing, or another tenant's — finds
+    # nothing, and no manager is asked for another organization's memories.
+    user = await _retrieval_user(server, user_id, client)
+    timezone_str = (user.timezone if user is not None else None) or "UTC"
 
     # Parse filter_tags from JSON string to dict
     parsed_filter_tags = None
@@ -3313,23 +4286,17 @@ async def search_memory(
     parsed_start_date: Optional[datetime] = None
     parsed_end_date: Optional[datetime] = None
 
+    # Naive UTC for the DB comparison (it stores naive UTC): an offset is
+    # converted first, never just dropped.
     if start_date:
         try:
-            parsed_start_date = datetime.fromisoformat(
-                start_date.replace("Z", "+00:00")
-            )
-            # Strip timezone for DB comparison (DB stores naive datetimes)
-            if parsed_start_date.tzinfo:
-                parsed_start_date = parsed_start_date.replace(tzinfo=None)
+            parsed_start_date = _request_datetime(start_date)
         except ValueError as e:
             logger.warning("Invalid start_date format: %s", e)
 
     if end_date:
         try:
-            parsed_end_date = datetime.fromisoformat(end_date.replace("Z", "+00:00"))
-            # Strip timezone for DB comparison
-            if parsed_end_date.tzinfo:
-                parsed_end_date = parsed_end_date.replace(tzinfo=None)
+            parsed_end_date = _request_datetime(end_date)
         except ValueError as e:
             logger.warning("Invalid end_date format: %s", e)
 
@@ -3340,6 +4307,20 @@ async def search_memory(
     #   * every other type (incl. the cross-type "all" sweep) -> embedding.
     from mirix.constants import PROCEDURAL_DEFAULT_SEARCH_METHOD
 
+    from mirix.services.procedural_memory_manager import (
+        effective_procedural_search_method,
+    )
+
+    # Procedural memory resolves its own method, also inside the "all" sweep:
+    # the caller's explicit choice, else PROCEDURAL_DEFAULT_SEARCH_METHOD
+    # ("hybrid": the skill ranking, never gated here). Procedural
+    # `instructions` has no vector, so an embedding or hybrid search on it
+    # runs — and is reported in the response's search_method — as bm25.
+    procedural_search_method = effective_procedural_search_method(
+        search_method or PROCEDURAL_DEFAULT_SEARCH_METHOD,
+        # The "all" sweep searches every type's default field.
+        "" if search_field == "null" or memory_type == "all" else search_field,
+    )
     if not search_method:
         search_method = (
             PROCEDURAL_DEFAULT_SEARCH_METHOD
@@ -3351,6 +4332,8 @@ async def search_memory(
     # embedding so those managers receive a method they support.
     if search_method == "hybrid" and memory_type != "procedural":
         search_method = "embedding"
+    if memory_type == "procedural":
+        search_method = procedural_search_method
 
     # Validate search parameters
     if (
@@ -3382,10 +4365,39 @@ async def search_memory(
     if memory_type == "all":
         search_field = "null"
 
+    if user is None:
+        return {
+            "success": True,
+            "query": query,
+            "memory_type": memory_type,
+            "search_field": search_field,
+            "search_method": search_method,
+            "date_range": None,
+            "results": [],
+            "count": 0,
+        }
+
     # Pre-compute embedding once if using embedding search (to avoid redundant embeddings)
-    embedded_text, embedded_text_padded = await _precompute_embedding_for_search(
-        search_method, query, agent_state
-    )
+    warnings: List[str] = []
+    try:
+        embedded_text, embedded_text_padded = await _precompute_embedding_for_search(
+            search_method, query, agent_state
+        )
+    except Exception as exc:  # noqa: BLE001 — fall back to keywords
+        # No query vector (an embedding outage): every type searches by
+        # keywords instead of the whole request failing with a 500 — the
+        # procedural ranking by BM25 alone, like M7.3's own fallback.
+        logger.warning(
+            "/memory/search: the query embedding failed (%s); searching by bm25",
+            _error_text(exc),
+        )
+        embedded_text = embedded_text_padded = None
+        search_method = "bm25"
+        if procedural_search_method in ("embedding", "hybrid"):
+            procedural_search_method = "bm25"
+        warnings.append(
+            f"the query embedding failed ({_error_text(exc)}); searched by bm25"
+        )
 
     # Collect results from requested memory types
     all_results = []
@@ -3477,26 +4489,20 @@ async def search_memory(
 
         async def search_procedural():
             try:
-                memories = await server.procedural_memory_manager.list_procedures(
+                return await _search_procedural_memories(
+                    server.procedural_memory_manager,
                     agent_state=agent_state,
                     user=user,
                     query=query,
-                    embedded_text=(
-                        embedded_text
-                        if search_method == "embedding" and query
-                        else None
-                    ),
-                    search_field=search_field
-                    if search_field != "null"
-                    else "description",
-                    search_method=search_method,
+                    search_method=procedural_search_method,
+                    search_field=search_field,
                     limit=limit,
                     timezone_str=timezone_str,
                     filter_tags=parsed_filter_tags,
                     scopes=scopes,
                     similarity_threshold=similarity_threshold,
+                    embedded_text=embedded_text,
                 )
-                return [_procedural_memory_response(x) for x in memories]
             except Exception as e:
                 logger.error("Error searching procedural memories: %s", e)
                 return []
@@ -3695,29 +4701,21 @@ async def search_memory(
     # Search procedural memories
     elif memory_type == "procedural":
         try:
-            procedural_memories = (
-                await server.procedural_memory_manager.list_procedures(
+            all_results.extend(
+                await _search_procedural_memories(
+                    server.procedural_memory_manager,
                     agent_state=agent_state,
                     user=user,
                     query=query,
-                    embedded_text=(
-                        embedded_text
-                        if search_method == "embedding" and query
-                        else None
-                    ),
-                    search_field=search_field
-                    if search_field != "null"
-                    else "description",
-                    search_method=search_method,
+                    search_method=procedural_search_method,
+                    search_field=search_field,
                     limit=limit,
                     timezone_str=timezone_str,
                     filter_tags=parsed_filter_tags,
                     scopes=scopes,
                     similarity_threshold=similarity_threshold,
+                    embedded_text=embedded_text,
                 )
-            )
-            all_results.extend(
-                [_procedural_memory_response(x) for x in procedural_memories]
             )
             # Report the user's total procedural count; the page's `count` is
             # only len(results), not the global total.
@@ -3850,6 +4848,8 @@ async def search_memory(
         "results": all_results,
         "count": len(all_results),
     }
+    if warnings:
+        response["warnings"] = warnings
     # A single procedural search also reports the global per-user procedural
     # total alongside the page count.
     if procedural_total_count is not None:
@@ -3909,6 +4909,7 @@ async def search_memory_all_users(
     """
     import json
 
+    query = _query_without_nul(query)  # Postgres rejects U+0000
     server = get_server()
 
     # Determine which client to use and which org to search
@@ -3964,23 +4965,17 @@ async def search_memory_all_users(
     parsed_start_date: Optional[datetime] = None
     parsed_end_date: Optional[datetime] = None
 
+    # Naive UTC for the DB comparison (it stores naive UTC): an offset is
+    # converted first, never just dropped.
     if start_date:
         try:
-            parsed_start_date = datetime.fromisoformat(
-                start_date.replace("Z", "+00:00")
-            )
-            # Strip timezone for DB comparison (DB stores naive datetimes)
-            if parsed_start_date.tzinfo:
-                parsed_start_date = parsed_start_date.replace(tzinfo=None)
+            parsed_start_date = _request_datetime(start_date)
         except ValueError as e:
             logger.warning("Invalid start_date format: %s", e)
 
     if end_date:
         try:
-            parsed_end_date = datetime.fromisoformat(end_date.replace("Z", "+00:00"))
-            # Strip timezone for DB comparison
-            if parsed_end_date.tzinfo:
-                parsed_end_date = parsed_end_date.replace(tzinfo=None)
+            parsed_end_date = _request_datetime(end_date)
         except ValueError as e:
             logger.warning("Invalid end_date format: %s", e)
 
@@ -3995,7 +4990,7 @@ async def search_memory_all_users(
             "count": 0,
         }
 
-    agent_state = all_agents[0]
+    agent_state = _retrieval_agent(all_agents)
 
     # Resolve the search method per memory type. FastAPI passes "" when the
     # caller omits the query param, so "" is the "use the default" sentinel:
@@ -4015,6 +5010,14 @@ async def search_memory_all_users(
     # embedding so those managers receive a method they support.
     if search_method == "hybrid" and memory_type != "procedural":
         search_method = "embedding"
+    # Procedural `instructions` has no vector, so an embedding search on
+    # it runs — and is reported in the response's search_method — as bm25.
+    if memory_type == "procedural":
+        from mirix.services.procedural_memory_manager import (
+            effective_procedural_search_method,
+        )
+
+        search_method = effective_procedural_search_method(search_method, search_field)
 
     # Validate search parameters
     if (
@@ -4046,10 +5049,25 @@ async def search_memory_all_users(
     if memory_type == "all":
         search_field = "null"
 
-    # Pre-compute embedding once if using embedding search (to avoid redundant embeddings)
-    embedded_text, embedded_text_padded = await _precompute_embedding_for_search(
-        search_method, query, agent_state
-    )
+    # Pre-compute embedding once if using embedding search (to avoid redundant
+    # embeddings). An embedding outage searches by keywords instead of failing
+    # the request with a 500 (as /memory/search).
+    warnings: List[str] = []
+    try:
+        embedded_text, embedded_text_padded = await _precompute_embedding_for_search(
+            search_method, query, agent_state
+        )
+    except Exception as exc:  # noqa: BLE001 — fall back to keywords
+        logger.warning(
+            "/memory/search_all_users: the query embedding failed (%s); "
+            "searching by bm25",
+            _error_text(exc),
+        )
+        embedded_text = embedded_text_padded = None
+        search_method = "bm25"
+        warnings.append(
+            f"the query embedding failed ({_error_text(exc)}); searched by bm25"
+        )
 
     # Collect results using organization_id filter
     all_results = []
@@ -4526,6 +5544,7 @@ async def search_memory_all_users(
         "organization_id": effective_org_id,
         "read_scopes": client.read_scopes,
         "filter_tags": filter_tags_dict,
+        **({"warnings": warnings} if warnings else {}),
     }
 
 
@@ -5064,32 +6083,267 @@ async def delete_semantic_memory(
 @router.delete("/memory/procedural/{memory_id}")
 async def delete_procedural_memory(
     memory_id: str,
+    user_id: Optional[str] = None,
     authorization: Optional[str] = Header(None),
     http_request: Request = None,
 ):
     """
-    Delete a procedural memory (skill) by ID.
+    Erase a procedural memory (skill) by ID, with its whole version history.
 
     **Accepts both JWT (dashboard) and Client API Key (programmatic).**
 
     Deletion stays on the public surface like every other memory type — a user
-    must be able to remove a skill that is wrong or unwanted. Skill WRITES, by
-    contrast, have no public endpoint: skills are created/edited only through
-    the session-distillation evolution flow (auto_dream mode='procedural').
+    must be able to remove a skill that is wrong or unwanted. It is a HARD
+    delete: the skill (live or soft-deleted), every version of it, and
+    the stored contents no other version references are removed in one
+    transaction. The skill must be in the calling client's organization,
+    belong to ``user_id`` (default: the client's admin user) and be of the
+    client's ``write_scope`` — a scope the client can also read (an
+    erasure is a write, by an id the client must be able to see; the scope is
+    checked inside the purge transaction); otherwise 404 — a skill of another
+    scope, readable or not, is not found. 403 for a read-only client (no
+    ``write_scope``). Skill WRITES have no public endpoint: skills are
+    created/edited only through the session-distillation evolution flow; a
+    past version can be brought back with ``POST /memory/skills/{id}/restore``.
     """
     client, auth_type = await get_client_from_jwt_or_api_key(
         authorization, http_request
     )
+    _require_write_scope(client)
 
     server = get_server()
+    owner = _default_user_id(client, user_id)
 
+    # The write scope, when the client can read it too; else nothing ([]).
+    erasable = (
+        [client.write_scope] if client.write_scope in (client.read_scopes or []) else []
+    )
     try:
         await server.procedural_memory_manager.delete_procedure_by_id(
-            memory_id, actor=client
+            memory_id, actor=client, user_id=owner, scopes=erasable
         )
         return {"success": True, "message": f"Procedural memory {memory_id} deleted"}
-    except Exception as e:
+    except NoResultFound as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+
+# ============================================================================
+# Skill version history
+# ============================================================================
+
+
+class RestoreSkillRequest(BaseModel):
+    """Body of POST /memory/skills/{skill_id}/restore."""
+
+    version_no: int = Field(..., ge=1, description="The version to restore.")
+    user_id: Optional[str] = None  # defaults to the client's admin user
+
+
+def _skill_scope(filter_tags: Any) -> Optional[str]:
+    if isinstance(filter_tags, dict):
+        scope = filter_tags.get("scope")
+        return scope if isinstance(scope, str) else None
+    return None
+
+
+def _require_readable_skill_scope(client, *filter_tags_values: Any) -> None:
+    """404 unless every given filter_tags' scope is one the client may read.
+
+    Skill history exposes skill content, so it follows the same read-scope
+    rule as memory search (``filter_tags.scope IN client.read_scopes``). A
+    skill outside it is reported as not found — its existence is not leaked.
+    """
+    readable = set(client.read_scopes or [])
+    for filter_tags in filter_tags_values:
+        if _skill_scope(filter_tags) not in readable:
+            raise HTTPException(status_code=404, detail="Skill not found")
+
+
+def _require_writable_skill_scope(client, *filter_tags_values: Any) -> None:
+    """403 unless every given filter_tags' scope is the client's
+    ``write_scope``: a skill the client can read (checked first) but whose
+    scope it cannot write is not changed by it."""
+    for filter_tags in filter_tags_values:
+        if _skill_scope(filter_tags) != client.write_scope:
+            raise HTTPException(
+                status_code=403,
+                detail="The skill is in a scope this client can read but not write",
+            )
+
+
+def _skill_version_response(version: Any) -> Dict[str, Any]:
+    if hasattr(version, "model_dump"):
+        return version.model_dump(mode="json")
+    return dict(version)
+
+
+@router.get("/memory/skills/{skill_id}/history")
+async def get_skill_history_endpoint(
+    skill_id: str,
+    user_id: Optional[str] = None,
+    authorization: Optional[str] = Header(None),
+    http_request: Request = None,
+):
+    """
+    List every version of a skill, oldest first.
+
+    **Accepts both JWT (dashboard) and Client API Key (programmatic).**
+
+    ``has_retrieval_embedding`` says whether the skill has its retrieval vector
+    now: one without it is invisible to every gated retrieval until a
+    re-embedding pass gives it one (the eval harness refuses to freeze such a
+    memory, and its frozen snapshot notices a vector added later).
+
+    Works for soft-deleted skills too (so they can be restored). Each version
+    has ``version_no``, ``change_type`` (baseline, create, edit, delete,
+    restore), provenance (``run_id``, ``actor_kind``, ``reason``,
+    ``created_at``), the sha256 of its seven fields and ``changed_fields``
+    (versus its parent). 404 unless the skill is in the client's organization
+    and its scope is one the client can read — and, when ``user_id`` is given,
+    belongs to that user. Without ``user_id`` the skill may belong to any user
+    of the organization: a skill id names one skill, and the organization and
+    the client's read scopes are the tenant boundary (the eval harness exports
+    a skill's history by its id alone).
+    """
+    from mirix.services.conversation_message_manager import owner_org
+
+    client, _auth_type = await get_client_from_jwt_or_api_key(
+        authorization, http_request
+    )
+    server = get_server()
+    owner = user_id or None  # None: any user of the organization (see above)
+    try:
+        result = await server.procedural_memory_manager.get_skill_history(
+            skill_id, organization_id=owner_org(client), user_id=owner
+        )
+    except NoResultFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    skill = result["skill"]
+    _require_readable_skill_scope(client, skill.filter_tags)
+    deleted_at = result["deleted_at"]
+    return {
+        "skill_id": skill.id,
+        "name": skill.name,
+        "is_deleted": result["is_deleted"],
+        "deleted_at": _isoformat_or_none(deleted_at),
+        "delete_reason": result["delete_reason"],
+        "has_retrieval_embedding": getattr(skill, "retrieval_embedding", None)
+        is not None,
+        "skill": _procedural_memory_response(skill, include_user_id=True),
+        "versions": result["versions"],
+    }
+
+
+@router.get("/memory/skills/{skill_id}/versions/{version_no}")
+async def get_skill_version_endpoint(
+    skill_id: str,
+    version_no: int,
+    user_id: Optional[str] = None,
+    authorization: Optional[str] = Header(None),
+    http_request: Request = None,
+):
+    """
+    One version of a skill, rebuilt from the content store.
+
+    **Accepts both JWT (dashboard) and Client API Key (programmatic).**
+
+    Returns ``{skill_id, version, content}``: the version record and the
+    seven versioned fields (name, entry_type, description, instructions,
+    triggers, examples, filter_tags) exactly as they were stored. 404 when the
+    skill or the version does not exist for this client (and ``user_id``, when
+    given) — the same rules as the history.
+    """
+    from mirix.services.conversation_message_manager import owner_org
+
+    client, _auth_type = await get_client_from_jwt_or_api_key(
+        authorization, http_request
+    )
+    server = get_server()
+    owner = user_id or None  # None: any user of the organization (the history's rule)
+    manager = server.procedural_memory_manager
+    try:
+        history = await manager.get_skill_history(
+            skill_id, organization_id=owner_org(client), user_id=owner
+        )
+        _require_readable_skill_scope(client, history["skill"].filter_tags)
+        result = await manager.get_skill_version(
+            skill_id, version_no, organization_id=owner_org(client), user_id=owner
+        )
+    except NoResultFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    _require_readable_skill_scope(client, result["content"].get("filter_tags"))
+    return {
+        "skill_id": skill_id,
+        "version": _skill_version_response(result["version"]),
+        "content": result["content"],
+    }
+
+
+@router.post("/memory/skills/{skill_id}/restore")
+async def restore_skill_endpoint(
+    skill_id: str,
+    body: RestoreSkillRequest,
+    authorization: Optional[str] = Header(None),
+    http_request: Request = None,
+):
+    """
+    Restore a skill to one of its versions.
+
+    **Accepts both JWT (dashboard) and Client API Key (programmatic).**
+
+    Writes a ``restore`` version whose content is version ``version_no``'s. A
+    soft-deleted skill is un-deleted. 409 when another live skill of the user
+    already has the restored name (the holder is never named: it may be in a
+    scope the client cannot read); 404 when the skill or version does not
+    exist for this client and user (``user_id``, default: the client's admin
+    user — a write, unlike the history, always names its owner); 403 for a
+    read-only client (no ``write_scope``) and when the skill or the restored
+    version is of a scope the client can read but not write — a restore
+    writes, so both must be the client's ``write_scope``, checked again
+    on the locked row. Returns ``{skill, version, restored_version_no,
+    changed}`` — ``changed`` is false (and ``version`` null) when the skill
+    already had exactly that content.
+    """
+    from mirix.services.conversation_message_manager import owner_org
+    from mirix.services.procedural_memory_manager import SkillNameConflictError
+
+    client, _auth_type = await get_client_from_jwt_or_api_key(
+        authorization, http_request
+    )
+    _require_write_scope(client)
+    server = get_server()
+    owner = _default_user_id(client, body.user_id)
+    manager = server.procedural_memory_manager
+    try:
+        history = await manager.get_skill_history(
+            skill_id, organization_id=owner_org(client), user_id=owner
+        )
+        _require_readable_skill_scope(client, history["skill"].filter_tags)
+        _require_writable_skill_scope(client, history["skill"].filter_tags)
+        target = await manager.get_skill_version(
+            skill_id, body.version_no, organization_id=owner_org(client), user_id=owner
+        )
+        _require_readable_skill_scope(client, target["content"].get("filter_tags"))
+        _require_writable_skill_scope(client, target["content"].get("filter_tags"))
+        result = await manager.restore_skill(
+            skill_id,
+            body.version_no,
+            actor=client,
+            user_id=owner,
+            scopes=[client.write_scope],
+        )
+    except SkillNameConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except NoResultFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {
+        "skill": _procedural_memory_response(result.skill, include_user_id=True),
+        "version": (
+            _skill_version_response(result.version) if result.version is not None else None
+        ),
+        "restored_version_no": body.version_no,
+        "changed": result.changed,
+    }
 
 
 # ============================================================================
@@ -5496,46 +6750,33 @@ async def search_raw_memory(
     # Parse time_range from request, converting to UTC and stripping timezone for DB comparison
     time_range_dict = None
     if request.time_range:
-
-        def to_utc_stripped(dt_val: Optional[datetime]) -> Optional[datetime]:
-            """Convert datetime to UTC and strip timezone for DB comparison.
-
-            The database stores naive datetimes assumed to be in UTC.
-            """
-            if not dt_val:
-                return None
-            if dt_val.tzinfo:
-                # Convert to UTC first, then strip timezone
-                from datetime import timezone as dt_timezone
-
-                dt_val = dt_val.astimezone(dt_timezone.utc)
-                return dt_val.replace(tzinfo=None)
-            # Already naive - assume it's UTC
-            return dt_val
+        # The database stores naive datetimes in UTC: an aware bound is
+        # converted to UTC first, a naive one is taken as UTC.
+        from mirix.utils import to_naive_utc
 
         time_range_dict = {}
         if request.time_range.created_at_gte:
-            time_range_dict["created_at_gte"] = to_utc_stripped(
+            time_range_dict["created_at_gte"] = to_naive_utc(
                 request.time_range.created_at_gte
             )
         if request.time_range.created_at_lte:
-            time_range_dict["created_at_lte"] = to_utc_stripped(
+            time_range_dict["created_at_lte"] = to_naive_utc(
                 request.time_range.created_at_lte
             )
         if request.time_range.occurred_at_gte:
-            time_range_dict["occurred_at_gte"] = to_utc_stripped(
+            time_range_dict["occurred_at_gte"] = to_naive_utc(
                 request.time_range.occurred_at_gte
             )
         if request.time_range.occurred_at_lte:
-            time_range_dict["occurred_at_lte"] = to_utc_stripped(
+            time_range_dict["occurred_at_lte"] = to_naive_utc(
                 request.time_range.occurred_at_lte
             )
         if request.time_range.updated_at_gte:
-            time_range_dict["updated_at_gte"] = to_utc_stripped(
+            time_range_dict["updated_at_gte"] = to_naive_utc(
                 request.time_range.updated_at_gte
             )
         if request.time_range.updated_at_lte:
-            time_range_dict["updated_at_lte"] = to_utc_stripped(
+            time_range_dict["updated_at_lte"] = to_naive_utc(
                 request.time_range.updated_at_lte
             )
 
@@ -5705,6 +6946,54 @@ async def cleanup_raw_memories(
         raise HTTPException(status_code=500, detail=f"Cleanup job failed: {str(e)}")
 
 
+async def _resolve_meta_agent_for_client(
+    server, client, meta_agent_id: Optional[str], *, purpose: str
+):
+    """The meta memory agent a skill-learning endpoint acts on.
+
+    An explicit ``meta_agent_id`` must be one of the client's agents (404) and a
+    meta memory agent (400). Without one, the client's first meta memory agent
+    is used (backward compatible); none at all is a 400.
+    """
+    if meta_agent_id:
+        try:
+            meta_agent_state = await server.agent_manager.get_agent_by_id(
+                meta_agent_id,
+                client,
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Meta agent {meta_agent_id} not found.",
+            ) from exc
+        if meta_agent_state.agent_type != AgentType.meta_memory_agent:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Agent {meta_agent_id} is "
+                    f"{meta_agent_state.agent_type}, not a meta_memory_agent."
+                ),
+            )
+        return meta_agent_state
+    meta_agents = await server.agent_manager.list_agents(actor=client)
+    matching_meta_agents = [
+        a for a in meta_agents if a.agent_type == AgentType.meta_memory_agent
+    ]
+    if len(matching_meta_agents) > 1:
+        logger.warning(
+            "%s called without meta_agent_id; using first of %d meta agents for client %s",
+            purpose,
+            len(matching_meta_agents),
+            client.id,
+        )
+    if not matching_meta_agents:
+        raise HTTPException(
+            status_code=400,
+            detail="No meta agent found for this client. Call /agents/meta/initialize first.",
+        )
+    return matching_meta_agents[0]
+
+
 @router.post("/memory/auto_dream")
 async def auto_dream_handler(
     request_body: AutoDreamRequest,
@@ -5725,9 +7014,15 @@ async def auto_dream_handler(
             resource, procedural, knowledge, experience. experience processes
             episodic, semantic, and knowledge together in one agent pass.
         dry_run: If true, return counts without applying any changes
-        model: Override the LLM model (e.g. "gpt-4.1-mini" for testing)
+        model: Override the LLM model (e.g. "gpt-4.1-mini" for testing); for
+            mode=procedural it applies to both the distiller and the curator.
+        wait: mode=procedural only. The call claims every pending task session
+            of the meta agent's scope (like POST /memory/skills/flush, at most
+            last_n_sessions when set) into a skill learning run with trigger
+            'manual' — recorded even when nothing is pending. true (default)
+            runs it here and returns its result; false returns at once with the
+            run id in run_ids (poll GET /memory/learning_runs/{id}).
     """
-    from mirix.schemas.auto_dream import AutoDreamRequest, AutoDreamResponse
     from mirix.services.auto_dream_manager import AutoDreamManager
 
     client, auth_type = await get_client_from_jwt_or_api_key(authorization, http_request)
@@ -5741,42 +7036,9 @@ async def auto_dream_handler(
             user_id=ClientAuthManager.get_admin_user_id_for_client(client.id)
         )
 
-    if request_body.meta_agent_id:
-        try:
-            meta_agent_state = await server.agent_manager.get_agent_by_id(
-                request_body.meta_agent_id,
-                client,
-            )
-        except Exception as exc:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Meta agent {request_body.meta_agent_id} not found.",
-            ) from exc
-        if meta_agent_state.agent_type != AgentType.meta_memory_agent:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"Agent {request_body.meta_agent_id} is "
-                    f"{meta_agent_state.agent_type}, not a meta_memory_agent."
-                ),
-            )
-    else:
-        meta_agents = await server.agent_manager.list_agents(actor=client)
-        matching_meta_agents = [
-            a for a in meta_agents if a.agent_type == AgentType.meta_memory_agent
-        ]
-        meta_agent_state = matching_meta_agents[0] if matching_meta_agents else None
-        if len(matching_meta_agents) > 1:
-            logger.warning(
-                "Auto dream called without meta_agent_id; using first of %d meta agents for client %s",
-                len(matching_meta_agents),
-                client.id,
-            )
-    if meta_agent_state is None:
-        raise HTTPException(
-            status_code=400,
-            detail="No meta agent found for this client. Call /agents/meta/initialize first.",
-        )
+    meta_agent_state = await _resolve_meta_agent_for_client(
+        server, client, request_body.meta_agent_id, purpose="Auto dream"
+    )
 
     try:
         mgr = AutoDreamManager()
@@ -5789,6 +7051,377 @@ async def auto_dream_handler(
     except Exception as e:
         logger.error("Auto dream failed: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Auto dream failed: {str(e)}")
+
+
+# ============================================================================
+# Conversation sessions and skill learning runs
+# ============================================================================
+
+
+class CloseSessionRequest(BaseModel):
+    """Body of POST /memory/sessions/{session_id}/close."""
+
+    user_id: Optional[str] = None  # defaults to the client's admin user
+
+
+class FlushSkillsRequest(BaseModel):
+    """Body of POST /memory/skills/flush."""
+
+    user_id: Optional[str] = None  # defaults to the client's admin user
+    close_open_sessions: bool = False
+    meta_agent_id: Optional[str] = None  # defaults to the client's first meta agent
+
+
+_LEARNING_RUN_STATUS_FILTERS = ("queued", "running", "succeeded", "failed", "active")
+
+
+def _default_user_id(client, user_id: Optional[str]) -> str:
+    if user_id:
+        return user_id
+    from mirix.services.admin_user_manager import ClientAuthManager
+
+    return ClientAuthManager.get_admin_user_id_for_client(client.id)
+
+
+async def _agent_owned_by_client(agent_id: str, client_id: str) -> bool:
+    """True iff ``agent_id`` was created by ``client_id`` (client-level isolation)."""
+    from sqlalchemy import select
+
+    from mirix.orm.agent import Agent as AgentModel
+    from mirix.server.server import db_context
+
+    async with db_context() as session:
+        row = (
+            await session.execute(
+                select(AgentModel.id).where(
+                    AgentModel.id == agent_id,
+                    AgentModel._created_by_id == client_id,
+                )
+            )
+        ).first()
+    return row is not None
+
+
+def _learning_run_response(run) -> Dict[str, Any]:
+    return run.model_dump(mode="json")
+
+
+@router.post("/memory/sessions/{session_id}/close")
+async def close_conversation_session(
+    session_id: str,
+    body: Optional[CloseSessionRequest] = None,
+    authorization: Optional[str] = Header(None),
+    http_request: Request = None,
+):
+    """
+    Explicitly end a conversation session.
+
+    **Accepts both JWT (dashboard) and Client API Key (programmatic).**
+
+    Sets ``closed_at = now`` / ``close_reason = 'explicit'`` and then runs the
+    skill-learning trigger check for the session's scope, which starts a
+    learning run once enough task sessions have ended. The check runs whenever
+    this call is the one that records the session's end — also for a session
+    that had idled past the timeout without any check noticing, which counts
+    toward N at once. Idempotent: closing a session whose end was already
+    recorded changes nothing, reports ``already_closed: true`` and never
+    triggers again. 404 when the session does not exist for this user, or
+    belongs to another client's meta agent (a legacy session without a
+    recorded agent must be attributable to one of this client's).
+
+    Returns ``{session_id, closed_at, close_reason, already_closed,
+    learning_run_id}``.
+    """
+    from mirix.services.conversation_message_manager import owner_org
+    from mirix.services.conversation_session_manager import (
+        ConversationSessionManager,
+    )
+    from mirix.services.skill_learning_trigger import trigger_skill_learning
+
+    # Authenticate first: an anonymous caller learns nothing, not even whether
+    # its session_id is well-formed.
+    client, _auth_type = await get_client_from_jwt_or_api_key(
+        authorization, http_request
+    )
+    try:
+        _validate_session_id(session_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    user_id = _default_user_id(client, body.user_id if body else None)
+    organization_id = owner_org(client)
+    sessions = ConversationSessionManager()
+    not_found = HTTPException(
+        status_code=404,
+        detail=f"Session {session_id} not found for user {user_id}",
+    )
+    # Tenant guard: no session of another organization's user is
+    # closed (nor a learning run started for it) — the same 404.
+    try:
+        await _tenant_user_for_write(get_server(), user_id, client)
+    except HTTPException as exc:
+        raise not_found from exc
+
+    existing = await sessions.get_session(
+        organization_id=organization_id, user_id=user_id, session_id=session_id
+    )
+    if existing is None:
+        raise not_found
+    if existing.agent_id is None or not await sessions.agent_is_live(
+        existing.agent_id
+    ):
+        # A legacy session, or an orphan whose meta agent was deleted: only a
+        # client it can be attributed to may close it.
+        await sessions.adopt_unattributed_sessions(
+            organization_id=organization_id, user_id=user_id, session_id=session_id
+        )
+        existing = await sessions.get_session(
+            organization_id=organization_id, user_id=user_id, session_id=session_id
+        )
+        if existing is None or existing.agent_id is None:
+            raise not_found
+    if not await _agent_owned_by_client(existing.agent_id, client.id):
+        raise not_found
+
+    outcome = await sessions.close_session(
+        organization_id=organization_id, user_id=user_id, session_id=session_id
+    )
+    if outcome is None:  # deleted between the two calls
+        raise HTTPException(
+            status_code=404,
+            detail=f"Session {session_id} not found for user {user_id}",
+        )
+
+    learning_run_id = None
+    if outcome.newly_ended:
+        try:
+            claim = await trigger_skill_learning(
+                organization_id=organization_id,
+                user_id=user_id,
+                agent_id=outcome.session.agent_id,
+                trigger="close",
+                actor=client,
+                current_session_id=session_id,
+            )
+            learning_run_id = claim.run_id if claim.fired else None
+        except Exception:
+            # The close is durable; the sweeper repeats the check later.
+            logger.exception(
+                "Skill-learning trigger check failed after closing session %s",
+                session_id,
+            )
+
+    closed_at = outcome.session.closed_at
+    return {
+        "session_id": session_id,
+        "closed_at": closed_at.isoformat() if closed_at else None,
+        "close_reason": outcome.session.close_reason,
+        "already_closed": outcome.already_closed,
+        "learning_run_id": learning_run_id,
+    }
+
+
+@router.post("/memory/skills/flush")
+async def flush_skills_endpoint(
+    body: Optional[FlushSkillsRequest] = None,
+    authorization: Optional[str] = Header(None),
+    http_request: Request = None,
+):
+    """
+    Learn skills from every pending task session now, however few.
+
+    **Accepts both JWT (dashboard) and Client API Key (programmatic).**
+
+    Claims all pending (ended, not yet distilled, not claimed by a live run)
+    task sessions of the (user, meta agent) scope into one skill learning run
+    with trigger 'flush' and runs it in the background — no threshold. With
+    ``close_open_sessions: true`` the scope's still-open task sessions are
+    closed explicitly first. With no pending session, experiences an earlier
+    run left waiting for the curator (it crashed after distilling, or its
+    curator stopped on an infrastructure error) still start a run without
+    sessions, unless a queued or running run of the scope curates them.
+    Returns ``{learning_run_id, session_count, closed_session_ids,
+    pending_experiences}``; ``learning_run_id`` is null when there was nothing
+    to learn, ``pending_experiences`` counts the experiences that were waiting
+    for the curator.
+    """
+    from mirix.services.conversation_message_manager import owner_org
+    from mirix.services.skill_learning_trigger import flush_skills
+
+    body = body or FlushSkillsRequest()
+    client, _auth_type = await get_client_from_jwt_or_api_key(
+        authorization, http_request
+    )
+    server = get_server()
+    meta_agent_state = await _resolve_meta_agent_for_client(
+        server, client, body.meta_agent_id, purpose="Skill flush"
+    )
+    user_id = _default_user_id(client, body.user_id)
+    not_found = HTTPException(status_code=404, detail=f"User {user_id} not found")
+    # Tenant guard: another organization's user is the same 404.
+    user = await _tenant_user_for_write(server, user_id, client)
+    if user is None:
+        raise not_found
+    try:
+        result = await flush_skills(
+            organization_id=owner_org(client),
+            user_id=user_id,
+            agent_id=meta_agent_state.id,
+            close_open_sessions=body.close_open_sessions,
+            actor=client,
+            user=user,
+            meta_agent_state=meta_agent_state,
+        )
+    except LookupError as exc:
+        # The scope cannot be installed (e.g. the user or agent vanished).
+        raise not_found from exc
+    return {
+        "learning_run_id": result.learning_run_id,
+        "session_count": result.session_count,
+        "closed_session_ids": result.closed_session_ids,
+        "pending_experiences": result.pending_experiences,
+    }
+
+
+@router.get("/memory/learning_runs")
+async def list_learning_runs(
+    user_id: Optional[str] = None,
+    status: Optional[str] = None,
+    limit: int = Query(50, ge=1, le=500),
+    meta_agent_id: Optional[str] = None,
+    authorization: Optional[str] = Header(None),
+    http_request: Request = None,
+):
+    """
+    List skill learning runs, newest first.
+
+    **Accepts both JWT (dashboard) and Client API Key (programmatic).**
+
+    Only runs of the calling client's meta agents in its organization are
+    visible. Filters: ``user_id``, ``meta_agent_id``, ``status`` (queued,
+    running, succeeded, failed, or ``active`` = queued + running — what a caller
+    waiting for learning to go idle polls).
+    """
+    from sqlalchemy import select
+
+    from mirix.orm.agent import Agent as AgentModel
+    from mirix.server.server import db_context
+    from mirix.services.conversation_message_manager import owner_org
+    from mirix.services.skill_learning_run_manager import SkillLearningRunManager
+
+    if status is not None and status not in _LEARNING_RUN_STATUS_FILTERS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"status must be one of {list(_LEARNING_RUN_STATUS_FILTERS)}",
+        )
+    client, _auth_type = await get_client_from_jwt_or_api_key(
+        authorization, http_request
+    )
+    async with db_context() as session:
+        agent_ids = [
+            row[0]
+            for row in (
+                await session.execute(
+                    select(AgentModel.id).where(AgentModel._created_by_id == client.id)
+                )
+            ).all()
+        ]
+    if meta_agent_id is not None:
+        agent_ids = [a for a in agent_ids if a == meta_agent_id]
+    runs = await SkillLearningRunManager().list_runs(
+        organization_id=owner_org(client),
+        user_id=user_id,
+        agent_ids=agent_ids,
+        status=status,
+        limit=limit,
+    )
+    return {"learning_runs": [_learning_run_response(run) for run in runs]}
+
+
+@router.get("/memory/learning_runs/{run_id}")
+async def get_learning_run(
+    run_id: str,
+    authorization: Optional[str] = Header(None),
+    http_request: Request = None,
+):
+    """
+    One skill learning run: status, claimed sessions and watermarks, lease
+    heartbeat, error, distill/curator metrics.
+
+    **Accepts both JWT (dashboard) and Client API Key (programmatic).**
+
+    404 unless the run belongs to one of the calling client's meta agents.
+    """
+    from mirix.services.conversation_message_manager import owner_org
+    from mirix.services.skill_learning_run_manager import SkillLearningRunManager
+
+    client, _auth_type = await get_client_from_jwt_or_api_key(
+        authorization, http_request
+    )
+    run = await SkillLearningRunManager().get_run(
+        run_id, organization_id=owner_org(client)
+    )
+    if run is None or not await _agent_owned_by_client(run.agent_id, client.id):
+        raise HTTPException(status_code=404, detail=f"Learning run {run_id} not found")
+    return _learning_run_response(run)
+
+
+@router.get("/memory/retrieval_logs")
+async def list_retrieval_logs(
+    session_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+    limit: int = Query(50, ge=1, le=500),
+    include_trace: bool = True,
+    authorization: Optional[str] = Header(None),
+    http_request: Request = None,
+):
+    """
+    List retrieval log rows, newest first.
+
+    **Accepts both JWT (dashboard) and Client API Key (programmatic).**
+
+    One row per memory retrieval (``/memory/retrieve/conversation`` and
+    ``/memory/retrieve/topic``); its ``id`` is the ``retrieval_id`` the
+    retrieval returned. A row holds the raw query, the extracted topics and
+    ``extraction_status`` (ok / fallback / skipped), ``embedding_status``, the
+    per-memory-type trace (``per_type``; for procedural memory every
+    candidate's bm25 / cosine / rrf scores and ranks, the gate and the
+    returned ids), ``llm_usage``, ``latency_ms``, ``retry_events`` and
+    ``embedding_chunked_calls``.
+
+    Only the calling client's own retrievals in its organization are visible.
+    Filters: ``session_id`` (the retrieval request's), ``user_id``.
+    ``include_trace=false`` leaves ``per_type`` out (null) — a cheap listing.
+    The procedural trace of a row lists the returned skills and the next
+    candidates in fused order (``candidates_logged`` / ``candidates_omitted``
+    count them), not every candidate; the raw query keeps its head and tail
+    (``llm_usage.query_text_truncated_chars`` counts the cut).
+    """
+    from mirix.services.conversation_message_manager import owner_org
+    from mirix.services.retrieval_log_manager import RetrievalLogManager
+
+    client, _auth_type = await get_client_from_jwt_or_api_key(
+        authorization, http_request
+    )
+    if session_id is not None:
+        try:
+            _validate_session_id(session_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+    server = get_server()
+    manager = getattr(server, "retrieval_log_manager", None) or RetrievalLogManager()
+    logs = await manager.list_logs(
+        organization_id=owner_org(client),
+        client_id=client.id,
+        user_id=user_id,
+        session_id=session_id,
+        limit=limit,
+        include_trace=include_trace,
+    )
+    dumped = await asyncio.to_thread(
+        lambda: [log.model_dump(mode="json") for log in logs]
+    )
+    return {"retrieval_logs": dumped}
 
 
 class UpdateResourceMemoryRequest(BaseModel):

@@ -2,10 +2,12 @@
 import os
 from typing import List, Optional
 
+import openai
 from openai import AsyncAzureOpenAI, AsyncStream
 from openai.types.chat.chat_completion import ChatCompletion
 from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
 
+from mirix.llm_api.helpers import llm_transport_options, recording_sdk_class
 from mirix.llm_api.openai_client import OpenAIClient
 from mirix.log import get_logger
 from mirix.schemas.llm_config import LLMConfig
@@ -65,6 +67,8 @@ class AzureOpenAIClient(OpenAIClient):
             "api_key": api_key,
             "api_version": api_version,
             "azure_endpoint": azure_endpoint,
+            # Explicit, never the SDK's defaults.
+            **llm_transport_options(openai),
         }
 
         logger.debug(f"Azure OpenAI client initialized with endpoint: {azure_endpoint}, deployment: {azure_deployment}")
@@ -103,17 +107,22 @@ class AzureOpenAIClient(OpenAIClient):
         """
         Performs asynchronous request to Azure OpenAI API.
         """
-        client = AsyncAzureOpenAI(**await self._prepare_client_kwargs())
-        response: ChatCompletion = await client.chat.completions.create(
-            **request_data
-        )
+        # Closed with the request (see OpenAIClient.request).
+        async with recording_sdk_class(AsyncAzureOpenAI)(
+            **await self._prepare_client_kwargs()
+        ) as client:
+            response: ChatCompletion = await client.chat.completions.create(
+                **request_data
+            )
         return response.model_dump()
 
     async def stream(self, request_data: dict) -> AsyncStream[ChatCompletionChunk]:
         """
         Performs asynchronous streaming request to Azure OpenAI API.
         """
-        client = AsyncAzureOpenAI(**await self._prepare_client_kwargs())
+        client = recording_sdk_class(AsyncAzureOpenAI)(
+            **await self._prepare_client_kwargs()
+        )
         response_stream: AsyncStream[ChatCompletionChunk] = await client.chat.completions.create(
             **request_data, stream=True
         )

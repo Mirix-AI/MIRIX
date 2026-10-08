@@ -16,15 +16,19 @@ Test Coverage:
 - Sandbox configuration
 - File management
 - Client isolation
+
+Hermetic and offline: the module runs against its own freshly initialized
+database (``db_isolation.isolated_database`` — the tables and defaults server
+startup creates, never the database ``$HOME`` points at), every model endpoint
+is the local fake LLM server (``tests/fakes/fake_llm_server.py``), and any
+connection or DNS lookup to a non-loopback host fails the test.
 """
 
 import os
 import sys
 import tempfile
-import time
 import uuid
 from pathlib import Path
-from typing import List
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -34,16 +38,16 @@ import pytest_asyncio
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
+from db_isolation import block_non_loopback_network, isolated_database
+from fakes.fake_llm_server import FakeLLMServer
+
 from mirix import EmbeddingConfig, LLMConfig
 from mirix.local_client.local_client import LocalClient
 from mirix.orm.errors import NoResultFound
-from mirix.schemas.agent import AgentState, AgentType
-from mirix.schemas.block import Block, Human, Persona
+from mirix.schemas.agent import AgentType
 from mirix.schemas.enums import MessageRole
-from mirix.schemas.llm_config import LLMConfig
-from mirix.schemas.memory import Memory
 from mirix.schemas.message import MessageCreate
-from mirix.schemas.tool import Tool
+from mirix.schemas.providers import MirixProvider, OpenAIProvider
 from mirix.schemas.usage import MirixUsageStatistics
 
 # Test configuration
@@ -54,21 +58,9 @@ TEST_CLIENT_B_ID = f"test-local-client-b-{TEST_RUN_ID}"
 TEST_USER_A_ID = f"test-local-user-a-{TEST_RUN_ID}"
 TEST_USER_B_ID = f"test-local-user-b-{TEST_RUN_ID}"
 
-# LLM configuration for testing
-TEST_LLM_CONFIG = LLMConfig(
-    model="gpt-4",
-    model_endpoint_type="openai",
-    model_endpoint="https://api.openai.com/v1",
-    context_window=8192,
-)
-
-TEST_EMBEDDING_CONFIG = EmbeddingConfig(
-    embedding_model="text-embedding-ada-002",
-    embedding_endpoint_type="openai",
-    embedding_endpoint="https://api.openai.com/v1",
-    embedding_dim=1536,
-    embedding_chunk_size=300,
-)
+# The fake server lists this model; "gpt-4" has a known context window, so the
+# OpenAI-compatible provider listing keeps it (see test_list_llm_configs).
+FAKE_MODEL = "gpt-4"
 
 # Mark all async tests in this module for pytest-asyncio; use one loop per module so
 # module-scoped async fixtures (test_organization, client_a, client_b, default_client)
@@ -81,13 +73,66 @@ pytestmark = [pytest.mark.asyncio(loop_scope="module")]
 # ============================================================================
 
 
-@pytest_asyncio.fixture(scope="module")
-async def test_organization():
+@pytest.fixture(scope="module", autouse=True)
+def offline_network():
+    """No connection or DNS lookup may leave loopback while this module runs."""
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        block_non_loopback_network(monkeypatch)
+        yield
+
+
+@pytest.fixture(scope="module")
+def fake_llm(offline_network):
+    """The module's OpenAI-compatible model endpoint (chat, embeddings, models)."""
+    with FakeLLMServer(model_name=FAKE_MODEL) as server:
+        yield server
+    # Nothing in this module may reach the model without scripting it first.
+    assert server.unscripted_requests == 0
+
+
+@pytest.fixture(scope="module")
+def test_llm_config(fake_llm):
+    return LLMConfig(
+        model=FAKE_MODEL,
+        model_endpoint_type="openai",
+        model_endpoint=fake_llm.base_url,
+        context_window=8192,
+        api_key="fake-key",
+    )
+
+
+@pytest.fixture(scope="module")
+def test_embedding_config(fake_llm):
+    return EmbeddingConfig(
+        embedding_model="text-embedding-ada-002",
+        embedding_endpoint_type="openai",
+        embedding_endpoint=fake_llm.base_url,
+        embedding_dim=1536,
+        embedding_chunk_size=300,
+        api_key="fake-key",
+    )
+
+
+@pytest_asyncio.fixture(scope="module", loop_scope="module", autouse=True)
+async def mirix_database(tmp_path_factory, offline_network):
+    """A fresh database initialized like server startup, for this module only."""
+    images_dir = tmp_path_factory.mktemp("local-client-images")
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        from mirix.settings import settings
+
+        # LocalClient creates settings.images_dir; keep it out of $HOME too.
+        monkeypatch.setattr(settings, "images_dir", images_dir)
+        async with isolated_database(tmp_path_factory.mktemp("local-client-db")) as engine:
+            yield engine
+
+
+@pytest_asyncio.fixture(scope="module", loop_scope="module")
+async def test_organization(test_llm_config, test_embedding_config):
     """Create test organization before any clients."""
     default_client = await LocalClient.create(
         debug=False,
-        default_llm_config=TEST_LLM_CONFIG,
-        default_embedding_config=TEST_EMBEDDING_CONFIG,
+        default_llm_config=test_llm_config,
+        default_embedding_config=test_embedding_config,
     )
     org = await default_client.create_org(name=f"test-org-{TEST_RUN_ID}")
     global TEST_ORG_ID
@@ -95,41 +140,41 @@ async def test_organization():
     yield org
 
 
-@pytest_asyncio.fixture(scope="module")
-async def client_a(test_organization):
+@pytest_asyncio.fixture(scope="module", loop_scope="module")
+async def client_a(test_organization, test_llm_config, test_embedding_config):
     """Create LocalClient A for testing."""
     client = await LocalClient.create(
         client_id=TEST_CLIENT_A_ID,
         user_id=TEST_USER_A_ID,
         org_id=test_organization.id,
         debug=False,
-        default_llm_config=TEST_LLM_CONFIG,
-        default_embedding_config=TEST_EMBEDDING_CONFIG,
+        default_llm_config=test_llm_config,
+        default_embedding_config=test_embedding_config,
     )
     yield client
 
 
-@pytest_asyncio.fixture(scope="module")
-async def client_b(test_organization):
+@pytest_asyncio.fixture(scope="module", loop_scope="module")
+async def client_b(test_organization, test_llm_config, test_embedding_config):
     """Create LocalClient B for testing client isolation."""
     client = await LocalClient.create(
         client_id=TEST_CLIENT_B_ID,
         user_id=TEST_USER_B_ID,
         org_id=test_organization.id,
         debug=False,
-        default_llm_config=TEST_LLM_CONFIG,
-        default_embedding_config=TEST_EMBEDDING_CONFIG,
+        default_llm_config=test_llm_config,
+        default_embedding_config=test_embedding_config,
     )
     yield client
 
 
-@pytest_asyncio.fixture(scope="module")
-async def default_client():
+@pytest_asyncio.fixture(scope="module", loop_scope="module")
+async def default_client(test_llm_config, test_embedding_config):
     """Create LocalClient with default IDs."""
     client = await LocalClient.create(
         debug=False,
-        default_llm_config=TEST_LLM_CONFIG,
-        default_embedding_config=TEST_EMBEDDING_CONFIG,
+        default_llm_config=test_llm_config,
+        default_embedding_config=test_embedding_config,
     )
     yield client
 
@@ -199,10 +244,17 @@ class TestInitialization:
         assert hasattr(client_a, "interface")
         assert hasattr(client_a, "file_manager")
 
-    async def test_default_configs(self, client_a):
+    async def test_default_configs(
+        self, client_a, test_llm_config, test_embedding_config, fake_llm
+    ):
         """Test that default LLM and embedding configs are set."""
-        assert client_a._default_llm_config == TEST_LLM_CONFIG
-        assert client_a._default_embedding_config == TEST_EMBEDDING_CONFIG
+        assert client_a._default_llm_config == test_llm_config
+        assert client_a._default_embedding_config == test_embedding_config
+        # Offline: every model endpoint of this module is the local fake.
+        assert client_a._default_llm_config.model_endpoint == fake_llm.base_url
+        assert (
+            client_a._default_embedding_config.embedding_endpoint == fake_llm.base_url
+        )
 
 
 # ============================================================================
@@ -761,35 +813,51 @@ class TestUserManagement:
 class TestConfigurationManagement:
     """Test LLM and embedding configuration management."""
 
-    async def test_set_default_llm_config(self, client_a):
+    async def test_set_default_llm_config(self, client_a, fake_llm):
         """Test setting default LLM configuration."""
+        previous = client_a._default_llm_config
         new_config = LLMConfig(
             model="gpt-3.5-turbo",
             model_endpoint_type="openai",
-            model_endpoint="https://api.openai.com/v1",
+            model_endpoint=fake_llm.base_url,
             context_window=4096,
         )
 
         client_a.set_default_llm_config(new_config)
-        assert client_a._default_llm_config == new_config
+        try:
+            assert client_a._default_llm_config == new_config
+        finally:
+            client_a.set_default_llm_config(previous)
 
-    async def test_set_default_embedding_config(self, client_a):
+    async def test_set_default_embedding_config(self, client_a, fake_llm):
         """Test setting default embedding configuration."""
+        previous = client_a._default_embedding_config
         new_config = EmbeddingConfig(
             embedding_model="text-embedding-3-small",
             embedding_endpoint_type="openai",
-            embedding_endpoint="https://api.openai.com/v1",
+            embedding_endpoint=fake_llm.base_url,
             embedding_dim=1536,
             embedding_chunk_size=256,
         )
 
         client_a.set_default_embedding_config(new_config)
-        assert client_a._default_embedding_config == new_config
+        try:
+            assert client_a._default_embedding_config == new_config
+        finally:
+            client_a.set_default_embedding_config(previous)
 
-    async def test_list_llm_configs(self, client_a):
-        """Test listing available LLM configurations."""
-        configs = await client_a.list_llm_configs()
+    async def test_list_llm_configs(self, client_a, fake_llm):
+        """The OpenAI-compatible provider lists the (fake) endpoint's models."""
+        providers = [
+            MirixProvider(),
+            OpenAIProvider(api_key="fake-key", base_url=fake_llm.base_url),
+        ]
+        with patch.object(client_a.server, "_enabled_providers", providers):
+            configs = await client_a.list_llm_configs()
         assert isinstance(configs, list)
+        listed = [(c.model, c.model_endpoint) for c in configs]
+        assert (FAKE_MODEL, fake_llm.base_url) in listed
+        assert any(r.route == "models" for r in fake_llm.requests)
 
     async def test_list_embedding_configs(self, client_a):
         """Test listing available embedding configurations."""

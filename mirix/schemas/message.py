@@ -61,6 +61,11 @@ SESSION_ID_SQL_PATTERN = f"^[{SESSION_ID_ALLOWED_CHARS}]{{1,{SESSION_ID_MAX_LEN}
 _SESSION_ID_RE = re.compile(SESSION_ID_PATTERN)
 
 
+def _is_media_part(part) -> bool:
+    """An image / file content part (a user message's non-text payload)."""
+    return isinstance(part, (ImageContent, FileContent, CloudFileContent))
+
+
 def _validate_session_id(value: Optional[str]) -> Optional[str]:
     """Shared validator for the top-level session_id field.
 
@@ -744,8 +749,10 @@ class Message(BaseMessage):
         parse_content_parts = False
         if self.content and len(self.content) == 1 and isinstance(self.content[0], TextContent):
             content = self.content[0].text
-        # Otherwise, check if we have TextContent and multiple other parts
-        elif self.content and len(self.content) > 1:
+        # Otherwise, check if we have TextContent and multiple other parts. A
+        # single media part (e.g. one image) is a one-element part list too —
+        # it used to fall through to content=None and fail the user assert.
+        elif self.content and (len(self.content) > 1 or _is_media_part(self.content[0])):
             content = []
             text_content_count = 0
 
@@ -862,7 +869,7 @@ class Message(BaseMessage):
         # Check for COT
         if self.content and len(self.content) == 1 and isinstance(self.content[0], TextContent):
             content = self.content[0].text
-        elif self.content and len(self.content) > 1:
+        elif self.content and (len(self.content) > 1 or _is_media_part(self.content[0])):
             assert self.role == "user"
             content = []
 
