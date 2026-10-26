@@ -135,7 +135,38 @@ class OrganizationManager:
             await ProceduralMemoryManager(
                 session_maker=self.session_maker
             ).purge_organization_history(session, org_id)
+            await self._purge_session_records(session, org_id)
             await organization.hard_delete(session)
+
+    @staticmethod
+    async def _purge_session_records(session, org_id: str) -> None:
+        """Delete the organization's rows in tables that reference its users or
+        itself with no ORM cascade (the session store and skill learning
+        records); otherwise the users' cascaded delete hits their foreign keys."""
+        from sqlalchemy import delete, or_, select
+
+        from mirix.orm.conversation_message import ConversationMessage
+        from mirix.orm.conversation_session import ConversationSession
+        from mirix.orm.retrieval_log import RetrievalLog
+        from mirix.orm.skill_experience import SkillExperience
+        from mirix.orm.skill_learning_run import SkillLearningRun
+        from mirix.orm.skill_session_feedback import SkillSessionFeedback
+        from mirix.orm.user import User as UserModel
+
+        org_users = select(UserModel.id).where(UserModel.organization_id == org_id)
+        for model in (
+            SkillSessionFeedback,
+            RetrievalLog,
+            SkillLearningRun,
+            SkillExperience,
+            ConversationMessage,
+            ConversationSession,
+        ):
+            await session.execute(
+                delete(model)
+                .where(or_(model.organization_id == org_id, model.user_id.in_(org_users)))
+                .execution_options(synchronize_session=False)
+            )
 
     @enforce_types
     async def list_organizations(

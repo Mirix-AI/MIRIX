@@ -37,6 +37,7 @@ from mirix.services.image_store import (
     is_managed_image_path,
     prepare_images,
     release_image_files,
+    release_message_images,
     scope_dir_name,
     store_image_part,
     store_remote_image_ref,
@@ -413,6 +414,41 @@ class TestRelease:
         assert not is_managed_image_path(str(precious))
         assert not is_managed_image_path(None)
 
+    async def test_message_release_keeps_rows_it_did_not_write(self, env, tmp_path):
+        """A message may reference any files row by id (database_image_id):
+        deleting the message drops only image rows MIRIX wrote, never another
+        file's row."""
+        precious = tmp_path / "notes.png"
+        precious.write_bytes(_image_bytes())
+        async with env.sm() as db:
+            row = FileModel(
+                id=f"file-{uuid.uuid4()}",
+                organization_id=env.org,
+                file_path=str(precious),
+                file_name="notes.png",
+            )
+            db.add(row)
+            await db.commit()
+            foreign_id = row.id
+        stored = await store_image_part(
+            ImagePart(data_b64=_b64(_image_bytes(color="olive"))),
+            organization_id=env.org,
+            user_id=env.user,
+        )
+        remote = await store_remote_image_ref(
+            "https://example.com/cat.png", organization_id=env.org, user_id=env.user
+        )
+        async with env.sm() as db:
+            paths = await release_message_images(
+                db, file_ids=[foreign_id, stored["file_id"], remote["file_id"]]
+            )
+            await db.commit()
+        await unlink_image_paths(paths)
+        assert len(await _files(env.sm, id=foreign_id)) == 1
+        assert precious.exists()
+        assert await _files(env.sm, id=stored["file_id"]) == []
+        assert await _files(env.sm, id=remote["file_id"]) == []
+
     async def test_discard_undoes_a_failed_write(self, env):
         ref = await store_image_part(
             ImagePart(data_b64=_b64(_image_bytes(color="black"))),
@@ -580,6 +616,13 @@ class TestLegacyImages:
         assert is_managed_image_path(str(inside))
         assert not is_managed_image_path(str(outside))
         assert not is_managed_image_path(str(env.root / "image_nothex.png"))
+
+    async def test_scoped_layout_is_managed_only_inside_the_images_root(
+        self, env, tmp_path
+    ):
+        name = f"{'a' * 32}/{'b' * 64}.png"
+        assert is_managed_image_path(str(env.root / name))
+        assert not is_managed_image_path(str(tmp_path / "elsewhere" / name))
 
 
 class TestMessageImageIds:

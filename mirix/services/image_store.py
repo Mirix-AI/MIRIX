@@ -269,15 +269,15 @@ def is_managed_image_path(path: Optional[str]) -> bool:
     if _IMAGE_FILE_NAME_RE.match(candidate.name) and _SCOPE_DIR_RE.match(
         candidate.parent.name
     ):
-        return True
-    if _LEGACY_IMAGE_FILE_NAME_RE.match(candidate.name):
-        try:
-            return os.path.realpath(candidate.parent) == os.path.realpath(
-                images_root()
-            )
-        except (OSError, ValueError):
-            return False
-    return False
+        managed_dir = candidate.parent.parent
+    elif _LEGACY_IMAGE_FILE_NAME_RE.match(candidate.name):
+        managed_dir = candidate.parent
+    else:
+        return False
+    try:
+        return os.path.realpath(managed_dir) == os.path.realpath(images_root())
+    except (OSError, ValueError):
+        return False
 
 
 def _write_image_file(path: Path, data: bytes) -> None:
@@ -688,7 +688,10 @@ async def release_message_images(db, *, file_ids: Sequence[str]) -> List[str]:
     is kept: by a remaining ``messages`` row of the same organization (the meta
     agent forwards its input's images to the memory sub-agents by id), or by a
     conversation-store turn (a caller may reference a stored image by id). The
-    others lose their ``files`` rows here. Returns the disk paths no ``files``
+    others lose their ``files`` rows here, but only rows MIRIX wrote for an
+    image (a managed path, see :func:`is_managed_image_path`, or a remote
+    image recorded by address); other rows a message referenced by id are
+    never deleted. Returns the disk paths no ``files``
     row references any more — unlink them with :func:`unlink_image_paths`
     AFTER committing.
     """
@@ -699,14 +702,21 @@ async def release_message_images(db, *, file_ids: Sequence[str]) -> List[str]:
         return []
     org_by_id: Dict[str, Optional[str]] = {}
     for chunk in _chunks(ids):
-        for file_id, org_id in (
+        for file_id, org_id, path, source_url in (
             await db.execute(
-                select(FileModel.id, FileModel.organization_id).where(
-                    FileModel.id.in_(chunk)
-                )
+                select(
+                    FileModel.id,
+                    FileModel.organization_id,
+                    FileModel.file_path,
+                    FileModel.source_url,
+                ).where(FileModel.id.in_(chunk))
             )
         ).all():
-            org_by_id[file_id] = org_id
+            # A message may reference any files row by id (database_image_id);
+            # only rows MIRIX itself wrote for an image (a managed file, or a
+            # remote image recorded by address) are ours to drop.
+            if is_managed_image_path(path) or (path is None and source_url):
+                org_by_id[file_id] = org_id
     by_org: Dict[Optional[str], List[str]] = {}
     for file_id, org_id in org_by_id.items():
         by_org.setdefault(org_id, []).append(file_id)
