@@ -114,13 +114,6 @@ full = [
     "SpeechRecognition",
     "pydub",
 ]
-# evals/skill_bench (label-free skill-learning benchmark harness).
-skill-bench = [
-    "alfworld==0.4.2",
-    "textworld==1.7.0",  # game engine of alfworld 0.4.2 (protocol.ALFWORLD_PACKAGES)
-    "tiktoken>=0.8.0",
-    "pytest-asyncio>=0.23.0",
-]
 
 [project.urls]
 Homepage = "https://mirix.io"
@@ -218,8 +211,7 @@ module = [
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
-# pytest.ini takes precedence over this table; keep the two testpaths in step.
-testpaths = ["tests", "evals/skill_bench/tests"]
+testpaths = ["tests"]
 python_files = ["test_*.py", "*_test.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]

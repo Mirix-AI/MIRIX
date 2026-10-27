@@ -116,14 +116,18 @@ CURATOR_FINISH_TOOL = "finish_memory_update"
 EXPERIENCE_CHARS = 2_400
 
 
-def _harness_contract() -> Tuple[Tuple[Tuple[str, str], ...], Tuple[str, ...]]:
+def _harness_contract() -> Optional[Tuple[Tuple[Tuple[str, str], ...], Tuple[str, ...]]]:
     """What ``evals/skill_bench/methods/mirix.py`` requires of MIRIX's OpenAPI document
     (its ``REQUIRED_ENDPOINTS`` / ``REQUIRED_RETRIEVE_FIELDS``), imported from
-    the harness itself so the two lists can never drift apart."""
-    from evals.skill_bench.methods.mirix import (
-        REQUIRED_ENDPOINTS,
-        REQUIRED_RETRIEVE_FIELDS,
-    )
+    the harness itself so the two lists can never drift apart. None when the
+    harness is not in this checkout (it lives on its own branch)."""
+    try:
+        from evals.skill_bench.methods.mirix import (
+            REQUIRED_ENDPOINTS,
+            REQUIRED_RETRIEVE_FIELDS,
+        )
+    except ImportError:
+        return None
 
     return tuple(REQUIRED_ENDPOINTS), tuple(REQUIRED_RETRIEVE_FIELDS)
 
@@ -983,9 +987,12 @@ async def _learning_flow(api, fake, model, user_id, agent_id, ids, transcripts, 
 
 async def _check_openapi(server: MirixServer) -> None:
     """The harness refuses a MIRIX whose OpenAPI document lacks what it calls."""
+    contract = _harness_contract()
+    if contract is None:
+        return
     async with httpx.AsyncClient(base_url=server.base_url, trust_env=False) as http:
         document = (await http.get("/openapi.json")).json()
-    endpoints, retrieve_fields = _harness_contract()
+    endpoints, retrieve_fields = contract
     paths = document["paths"]
     missing = [(m, p) for m, p in endpoints if m not in paths.get(p, {})]
     assert missing == []
