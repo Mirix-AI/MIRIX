@@ -1,7 +1,8 @@
+import json
 from typing import Optional
 
 from mirix.agent import Agent, AgentState
-from mirix.utils import convert_timezone_to_utc
+from mirix.utils import parse_datetime_arg
 
 
 async def send_message(self: "Agent", agent_state: "AgentState", message: str) -> Optional[str]:
@@ -95,7 +96,7 @@ async def search_in_memory(
     Args:
         memory_type: The type of memory to search in. It should be chosen from the following: "episodic", "resource", "procedural", "knowledge_vault", "semantic", "all". Here "all" means searching in all the memories.
         query: The keywords/query used to search in the memory.
-        search_field: The field to search in the memory. It should be chosen from the attributes of the corresponding memory. For "episodic" memory, it can be 'summary', 'details'; for "resource" memory, it can be 'summary', 'content'; for "procedural" memory, it can be 'description', 'instructions', 'entry_type', 'name' (default 'description'; note: 'embedding' search supports only 'description'/'instructions'); for "knowledge_vault", it can be 'secret_value', 'caption'; for semantic memory, it can be 'name', 'summary', 'details'. For "all", it should also be "null" as the system will search all memories with default fields.
+        search_field: The field to search in the memory. It should be chosen from the attributes of the corresponding memory. For "episodic" memory, it can be 'summary', 'details'; for "resource" memory, it can be 'summary', 'content'; for "procedural" memory, it can be 'description', 'instructions', 'entry_type', 'name' (default 'description'; note: 'embedding' search uses the skill's retrieval vector for 'description'; an 'embedding' search on 'instructions' runs as keyword search); for "knowledge_vault", it can be 'secret_value', 'caption'; for semantic memory, it can be 'name', 'summary', 'details'. For "all", it should also be "null" as the system will search all memories with default fields.
         search_method: The method to search in the memory. Choose from:
             - 'bm25': BM25 ranking-based full-text search (fast and effective for keyword-based searches)
             - 'embedding': Vector similarity search using embeddings (most powerful, good for conceptual matches)
@@ -107,6 +108,12 @@ async def search_in_memory(
 
     if not self.user:
         raise ValueError("Can not search in memory. User is not set")
+
+    # A model may quote or pad a choice (memory_type '"all"'): its plain form.
+    # An empty search_field stays empty (each manager's own default), as before.
+    memory_type = _choice_arg(memory_type)
+    search_field = _choice_arg(search_field)
+    search_method = _choice_arg(search_method)
 
     # "hybrid" is procedural-only — the other memory managers have no hybrid
     # branch. Clamp to embedding for any non-procedural memory_type (including
@@ -297,45 +304,75 @@ async def list_memory_within_timerange(
     self: "Agent", memory_type: str, start_time: str, end_time: str, timezone_str: str
 ) -> Optional[str]:
     """
-    List memories around a specific timestamp
+    List the episodic events (the only time-indexed memory) that occurred within a time range.
     Args:
-        memory_type (str): The type of memory to search in. It should be chosen from the following: "episodic", "resource", "procedural", "knowledge_vault", "semantic", "all". Here "all" means searching in all the memories.
-        start_time (str): The start time of the time range. It has to be in the form of "%Y-%m-%d %H:%M:%S"
-        end_time (str): The end time of the time range. It has to be in the form of "%Y-%m-%d %H:%M:%S"
+        memory_type (str): "episodic" (or "all", which means the same here): only episodic memory has a timeline.
+        start_time (str): The start of the range, in your local time: "%Y-%m-%d %H:%M:%S", ISO 8601 (e.g. "2025-09-01T13:00:00Z" or with an offset such as "+08:00"), or a date "%Y-%m-%d" (its start).
+        end_time (str): The end of the range, in the same forms; a date alone means the end of that day.
+
+    Returns:
+        str: A JSON object {"count": n, "results": [...]} of the events (their timestamps in your timezone, with its UTC offset, ISO 8601; in UTC when your timezone is unknown), or a sentence when there is none or too many.
     """
 
-    start_time = convert_timezone_to_utc(start_time, timezone_str)
-    end_time = convert_timezone_to_utc(end_time, timezone_str)
+    memory_type = _choice_arg(memory_type)
+    if memory_type not in ("episodic", "all"):
+        raise ValueError(
+            f"memory_type {memory_type!r} cannot be listed by time: only episodic "
+            "memory is time-indexed. Use memory_type 'episodic', or search_in_memory "
+            "for the other memory types."
+        )
+    start_time = parse_datetime_arg(start_time, timezone_str)
+    end_time = parse_datetime_arg(end_time, timezone_str, end_of_day=True)
+    if start_time > end_time:
+        raise ValueError(
+            f"start_time ({start_time:%Y-%m-%d %H:%M:%S} UTC) is after end_time "
+            f"({end_time:%Y-%m-%d %H:%M:%S} UTC)."
+        )
 
     if not self.user:
         raise ValueError("Can not list memory within timerange. User is not set")
 
-    if memory_type == "episodic" or memory_type == "all":
-        episodic_memory = await self.episodic_memory_manager.list_episodic_memory_around_timestamp(
+    episodic_memory = (
+        await self.episodic_memory_manager.list_episodic_memory_around_timestamp(
             user=self.user,
             agent_state=self.agent_state,
             start_time=start_time,
             end_time=end_time,
             timezone_str=timezone_str,
         )
-        formatted_results_from_episodic = [
-            {
-                "memory_type": "episodic",
-                "id": x.id,
-                "timestamp": x.occurred_at,
-                "event_type": x.event_type,
-                "actor": x.actor,
-                "summary": x.summary,
-            }
-            for x in episodic_memory
-        ]
-        if memory_type == "episodic":
-            if len(formatted_results_from_episodic) == 0:
-                return "No results found."
-            elif len(formatted_results_from_episodic) > 50:
-                return "Too many results found. Please narrow down your search."
-            else:
-                return formatted_results_from_episodic, len(formatted_results_from_episodic)
+    )
+    formatted_results_from_episodic = [
+        {
+            "memory_type": "episodic",
+            "id": x.id,
+            "timestamp": (
+                x.occurred_at.isoformat()
+                if hasattr(x.occurred_at, "isoformat")
+                else x.occurred_at
+            ),
+            "event_type": x.event_type,
+            "actor": x.actor,
+            "summary": x.summary,
+        }
+        for x in episodic_memory
+    ]
+    if len(formatted_results_from_episodic) == 0:
+        return "No results found."
+    elif len(formatted_results_from_episodic) > 50:
+        return "Too many results found. Please narrow down your search."
+    # The model reads the tool's answer as text: JSON, not a Python tuple's
+    # repr (``datetime.datetime(...)``).
+    return json.dumps(
+        {
+            "count": len(formatted_results_from_episodic),
+            "results": formatted_results_from_episodic,
+        },
+        ensure_ascii=False,
+        default=str,
+    )
 
-    # currently only episodic memory is supported
-    return None
+
+def _choice_arg(value) -> str:
+    """A choice argument as a model may send it (quoted, padded, capitalized:
+    ' "Episodic" ') in its plain form ("episodic")."""
+    return str(value if value is not None else "").strip().strip("\"'").strip().lower()

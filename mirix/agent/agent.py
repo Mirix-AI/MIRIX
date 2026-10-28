@@ -5,6 +5,7 @@ import logging
 import traceback
 from abc import ABC, abstractmethod
 from datetime import datetime
+from fractions import Fraction
 from typing import Callable, List, Optional, Tuple, Union
 
 import numpy as np
@@ -12,6 +13,13 @@ import pytz
 import httpx
 from opentelemetry import trace
 
+from mirix.agent.tool_call_plan import (
+    TERMINAL_ALONE_REMINDERS,
+    TERMINAL_TOOLS,
+    held_terminal_text,
+    plan_tool_calls,
+)
+from mirix.agent.tool_failures import ToolFailureLog
 from mirix.agent.tool_validators import validate_tool_args
 from mirix.constants import (
     CHAINING_FOR_MEMORY_UPDATE,
@@ -28,9 +36,19 @@ from mirix.constants import (
     MIRIX_EXTRA_TOOL_MODULE_NAME,
     MIRIX_MEMORY_TOOL_MODULE_NAME,
     REQ_HEARTBEAT_MESSAGE,
+    UNFINISHED_TURN_HEARTBEAT_MESSAGE,
 )
 from mirix.embeddings import embedding_model
-from mirix.errors import ContextWindowExceededError, LLMError
+from mirix.errors import (
+    AbortAgentStep,
+    AgentContextLimitReached,
+    ContextWindowExceededError,
+    LLMError,
+    LLMInvalidResponseError,
+    LLMOutputTruncatedError,
+    ToolArgumentError,
+    ToolCallRefused,
+)
 from mirix.functions.functions import get_function_from_module
 from mirix.helpers import ToolRulesSolver
 from mirix.helpers.message_helpers import prepare_input_message_create
@@ -98,6 +116,25 @@ from mirix.utils import (
 # Initialize module-level logger
 logger = get_logger(__name__)
 otel_tracer = trace.get_tracer(__name__)
+
+
+def _bind_tool_arguments(
+    function_name: str, func: Callable, function_args: dict
+) -> None:
+    """Raise :class:`ToolArgumentError` when ``function_args`` do not fit
+    ``func``'s signature (a required argument the model left out): the call
+    would raise a ``TypeError`` indistinguishable from one of the tool's own
+    code, which is MIRIX's failure, not the model's."""
+    import inspect
+
+    try:
+        signature = inspect.signature(func)
+    except (TypeError, ValueError):  # not introspectable: call it as it is
+        return
+    try:
+        signature.bind(**function_args)
+    except TypeError as exc:
+        raise ToolArgumentError(f"{function_name}(): {exc}") from exc
 
 
 def _filter_function_args(
@@ -277,8 +314,23 @@ class Agent(BaseAgent):
         # Load last function response from message history (deferred to first step())
         self.last_function_response = None
 
+        # The tools a step of this instance may offer and run (None: every tool
+        # of the agent). Kept on the instance, never persisted: the agent state
+        # is replaced by the stored one after every LLM call (inner_step), so a
+        # per-run restriction on a copy of the state would not last.
+        self.tool_allowlist: Optional[frozenset] = None
+
         # Logger that the Agent specifically can use, will also report the agent_state ID with the logs
         # Note: Logger is already initialized earlier in constructor
+
+    def _visible_tools(self) -> List[Tool]:
+        """The agent's tools this step may offer and run: those named in
+        ``tool_allowlist``, or every tool when it is None."""
+        tools = list(self.agent_state.tools or [])
+        allowlist = getattr(self, "tool_allowlist", None)
+        if allowlist is None:
+            return tools
+        return [t for t in tools if t.name in allowlist]
 
     async def load_last_function_response(self):
         """Load the last function response from message history."""
@@ -471,6 +523,7 @@ class Agent(BaseAgent):
             nonlocal function_args  # Allow modification of outer function_args
             function_response = ""
             is_error = False
+            self.last_tool_exception = None
 
             try:
                 if function_name in [
@@ -503,6 +556,7 @@ class Agent(BaseAgent):
                         function_args["agent_state"] = (
                             agent_state_copy  # need to attach self to arg since it's dynamically linked
                         )
+                    _bind_tool_arguments(function_name, callable_func, function_args)
                     function_response = await callable_func(**function_args)
                     if function_name == "send_intermediate_message":
                         # send intermediate message to the user
@@ -523,6 +577,7 @@ class Agent(BaseAgent):
                         function_args["timezone_str"] = self.user.timezone
                     function_args["self"] = self
 
+                    _bind_tool_arguments(function_name, callable_func, function_args)
                     function_response = await callable_func(**function_args)
                     if function_name in ["core_memory_append", "core_memory_rewrite"]:
                         await self.update_memory_if_changed(memory_copy)
@@ -530,6 +585,7 @@ class Agent(BaseAgent):
                 elif target_mirix_tool.tool_type == ToolType.MIRIX_EXTRA:
                     callable_func = get_function_from_module(MIRIX_EXTRA_TOOL_MODULE_NAME, function_name)
                     function_args["self"] = self  # need to attach self to arg since it's dynamically linked
+                    _bind_tool_arguments(function_name, callable_func, function_args)
                     function_response = await callable_func(**function_args)
 
                 elif target_mirix_tool.tool_type == ToolType.USER_DEFINED:
@@ -556,9 +612,17 @@ class Agent(BaseAgent):
                 else:
                     raise ValueError(f"Tool type {target_mirix_tool.tool_type} not supported")
 
+            except (AbortAgentStep, ToolCallRefused):
+                # The tool ends the whole step (e.g. its learning run is gone):
+                # never turn it into a tool result the model could react to.
+                # A refused call is answered by the step loop (not an error).
+                raise
             except Exception as e:
                 # Need to catch error here, or else truncation wont happen
                 is_error = True
+                # The step loop records which exception the tool raised (the
+                # error text alone would not say, tool_failures).
+                self.last_tool_exception = e
                 function_response = get_friendly_error_msg(
                     function_name=function_name,
                     exception_name=type(e).__name__,
@@ -578,6 +642,7 @@ class Agent(BaseAgent):
             if parent_span_id:
                 trace_context_dict["parent_span_id"] = parent_span_id
 
+            executed = False
             try:
                 with langfuse.start_as_current_observation(
                     name=f"tool: {function_name}",
@@ -592,6 +657,7 @@ class Agent(BaseAgent):
                 ) as span:
                     mark_observation_as_child(span)
                     function_response, is_error = await _execute_tool_inner()
+                    executed = True
 
                     span.update(
                         output={
@@ -605,13 +671,33 @@ class Agent(BaseAgent):
                         },
                         level="ERROR" if is_error else "DEFAULT",
                     )
+            except (AbortAgentStep, ToolCallRefused):
+                raise
             except Exception as e:
                 self.logger.debug(f"Langfuse tool execution trace failed: {e}")
-                function_response, _ = await _execute_tool_inner()
+                # Only a tracing failure BEFORE the tool ran may run it here: a
+                # tool that already ran (a skill write, say) must never run twice.
+                if not executed:
+                    function_response, _ = await _execute_tool_inner()
         else:
             function_response, _ = await _execute_tool_inner()
 
         return function_response
+
+    async def _wait_before_llm_retry(
+        self, delay: float, attempt: int, error: BaseException
+    ) -> None:
+        """Record an agent-level retry of an LLM call (every retry
+        lands in the learning run's ``retry_events`` when the step runs inside a
+        ``recording_retries`` block), then wait ``delay`` seconds."""
+        from mirix.services.retry_policy import ErrorKind, classify_error, record_retry
+
+        try:
+            kind = classify_error(error)
+        except TypeError:  # not an Exception (never expected here)
+            kind = ErrorKind.OTHER
+        await record_retry(kind, attempt, delay, stage="agent", error=error)
+        await asyncio.sleep(delay)
 
     @trace_method
     async def _get_ai_reply(
@@ -649,7 +735,8 @@ class Agent(BaseAgent):
         allowed_tool_names = self.tool_rules_solver.get_allowed_tool_names(
             last_function_response=self.last_function_response
         )
-        agent_state_tool_jsons = [t.json_schema for t in self.agent_state.tools]
+        # Only the tools this step may use (``tool_allowlist``) are offered.
+        agent_state_tool_jsons = [t.json_schema for t in self._visible_tools()]
 
         allowed_functions = (
             agent_state_tool_jsons
@@ -702,6 +789,18 @@ class Agent(BaseAgent):
                 return f"{text[:max_len]}...[truncated]"
             return text
 
+        # A strict step (the skill curator) takes a provider error
+        # as it comes: no agent-level retry on top of the SDK's transport
+        # retries, and never the last-message-only fallback, which would send
+        # the model a heartbeat without the system prompt or its input. Only
+        # an ANSWER that stays unusable (no choices, an empty message, a bad
+        # finish reason, one the client cannot convert) becomes
+        # LLMInvalidResponseError below; a failure before anything was sent —
+        # building the request, calling the SDK wrongly — reaches this loop as
+        # LLMRequestBuildError (LLMClientBase.send_llm_request), which no
+        # handler here catches: it propagates as MIRIX's own error, never as
+        # the model's.
+        strict = bool(getattr(self, "_strict_llm_errors", False))
         for attempt in range(1, empty_response_retry_limit + 1):
             with otel_tracer.start_as_current_span("Agent._get_ai_reply.llm_attempt") as llm_span:
                 llm_span.set_attribute("llm.attempt", attempt)
@@ -759,7 +858,10 @@ class Agent(BaseAgent):
                         raise ValueError(f"API call returned an empty message: {response}")
 
                     for choice in response.choices:
-                        if choice.message.content == "" and len(choice.message.tool_calls) == 0:
+                        # ``tool_calls`` is None when the answer has none: an
+                        # empty answer is the model's (retried, then PARSE), not
+                        # a TypeError of ours.
+                        if choice.message.content == "" and not choice.message.tool_calls:
                             raise ValueError(f"API call returned an empty message: {response}")
 
                     if response.choices[0].finish_reason not in [
@@ -768,6 +870,11 @@ class Agent(BaseAgent):
                         "tool_calls",
                     ]:
                         if response.choices[0].finish_reason == "length":
+                            if strict:
+                                # A truncated answer is never used and the
+                                # same input would be cut again: the caller
+                                # decides (the curator counts an attempt).
+                                raise LLMOutputTruncatedError()
                             if attempt >= empty_response_retry_limit:
                                 raise RuntimeError(
                                     "Retries exhausted and no valid response received. Final error: maximum context length exceeded or generated content is too long"
@@ -777,7 +884,9 @@ class Agent(BaseAgent):
                                 printv(
                                     f"[Mirix.Agent.{self.agent_state.name}] WARNING: Attempt {attempt} failed: {response.choices[0].finish_reason}. Retrying in {delay} seconds..."
                                 )
-                                await asyncio.sleep(delay)
+                                await self._wait_before_llm_retry(
+                                    delay, attempt, LLMOutputTruncatedError()
+                                )
                                 continue
                         else:
                             raise ValueError(f"Bad finish reason from API: {response.choices[0].finish_reason}")
@@ -796,13 +905,17 @@ class Agent(BaseAgent):
                             "[Mirix.Agent.%s] Retry limit reached (ValueError).",
                             self.agent_state.name,
                         )
+                        if strict:
+                            raise LLMInvalidResponseError(
+                                f"Retries exhausted and no valid response received. Final error: {ve_desc}"
+                            ) from ve
                         raise Exception(f"Retries exhausted and no valid response received. Final error: {ve_desc}")
                     else:
                         delay = min(backoff_factor * (2 ** (attempt - 1)), max_delay)
                         printv(
                             f"[Mirix.Agent.{self.agent_state.name}] WARNING: Attempt {attempt} failed: {ve_desc}. Retrying in {delay} seconds..."
                         )
-                        await asyncio.sleep(delay)
+                        await self._wait_before_llm_retry(delay, attempt, ve)
                         continue
 
                 except KeyError as ke:
@@ -817,17 +930,26 @@ class Agent(BaseAgent):
                             "[Mirix.Agent.%s] Retry limit reached (KeyError).",
                             self.agent_state.name,
                         )
+                        if strict:
+                            raise LLMInvalidResponseError(
+                                f"Retries exhausted and no valid response received. Final error: {ke_desc}"
+                            ) from ke
                         raise Exception(f"Retries exhausted and no valid response received. Final error: {ke_desc}")
                     else:
                         delay = min(backoff_factor * (2 ** (attempt - 1)), max_delay)
                         printv(
                             f"[Mirix.Agent.{self.agent_state.name}] WARNING: Attempt {attempt} failed: {ke_desc}. Retrying in {delay} seconds..."
                         )
-                        await asyncio.sleep(delay)
+                        await self._wait_before_llm_retry(delay, attempt, ke)
                         continue
 
                 except LLMError as llm_error:
                     llm_span.record_exception(llm_error)
+                    if strict:
+                        # The SDK already retried this call at the transport
+                        # layer (MIRIX_LLM_MAX_RETRIES): no second layer of
+                        # retries, and never the context-less fallback below.
+                        raise
                     llm_error_desc = f"{type(llm_error).__name__}: {llm_error!r}"
                     if attempt >= empty_response_retry_limit:
                         printv(
@@ -863,7 +985,7 @@ class Agent(BaseAgent):
                         printv(
                             f"[Mirix.Agent.{self.agent_state.name}] WARNING: Attempt {attempt} failed: {llm_error_desc}. Retrying in {delay} seconds..."
                         )
-                        await asyncio.sleep(delay)
+                        await self._wait_before_llm_retry(delay, attempt, llm_error)
                         continue
 
                 except AssertionError as ae:
@@ -876,17 +998,23 @@ class Agent(BaseAgent):
                             "[Mirix.Agent.%s] Retry limit reached (AssertionError).",
                             self.agent_state.name,
                         )
+                        if strict:
+                            raise LLMInvalidResponseError(
+                                f"Retries exhausted and no valid response received. Final error: {ae_desc}"
+                            ) from ae
                         raise Exception(f"Retries exhausted and no valid response received. Final error: {ae_desc}")
                     else:
                         delay = min(backoff_factor * (2 ** (attempt - 1)), max_delay)
                         printv(
                             f"[Mirix.Agent.{self.agent_state.name}] WARNING: Attempt {attempt} failed: {ae_desc}. Retrying in {delay} seconds..."
                         )
-                        await asyncio.sleep(delay)
+                        await self._wait_before_llm_retry(delay, attempt, ae)
                         continue
 
                 except httpx.HTTPStatusError as he:
                     llm_span.record_exception(he)
+                    if strict:
+                        raise  # transport-level already retried (see LLMError)
                     he_desc = f"{type(he).__name__}: {he!r}"
                     if attempt >= empty_response_retry_limit:
                         printv(f"[Mirix.Agent.{self.agent_state.name}] ERROR: Retry limit reached. Final error: {he_desc}")
@@ -900,7 +1028,7 @@ class Agent(BaseAgent):
                         printv(
                             f"[Mirix.Agent.{self.agent_state.name}] WARNING: Attempt {attempt} failed: {he_desc}. Retrying in {delay} seconds..."
                         )
-                        await asyncio.sleep(delay)
+                        await self._wait_before_llm_retry(delay, attempt, he)
                         continue
 
                 except Exception as e:
@@ -911,7 +1039,10 @@ class Agent(BaseAgent):
                     raise e
 
             # check if we are going over the context window: this allows for articifial constraints
-            if response.usage.total_tokens > self.agent_state.llm_config.context_window:
+            if (
+                getattr(self, "_auto_summarize", True)
+                and response.usage.total_tokens > self.agent_state.llm_config.context_window
+            ):
                 # trigger summarization
                 log_telemetry(self.logger, "_get_ai_reply summarize_messages_inplace")
                 await self.summarize_messages_inplace(existing_file_uris=existing_file_uris)
@@ -960,6 +1091,10 @@ class Agent(BaseAgent):
 
         messages = []  # append these to the history when done
         function_name = None
+        must_continue = False  # a call of this turn was left out or refused
+        # The tools this reply ran successfully (step() reads it to tell a
+        # finish_memory_update apart from any other end of the chain).
+        self.last_executed_functions = []
 
         # Step 2: check if LLM wanted to call a function
         if response_message.function_call or (
@@ -981,15 +1116,42 @@ class Agent(BaseAgent):
                 for tool_call in response_message.tool_calls:
                     assert tool_call.id is not None  # should be defined
 
-            if (
-                response_message.tool_calls is not None
-                and len(response_message.tool_calls) > 1
-            ):
+            tool_calls = response_message.tool_calls
+            # Which calls run, in what order, before anything runs
+            # (tool_call_plan): a finish (finish_memory_update) runs last and
+            # once; each distinct reply (send_message) runs at the end of the
+            # turn, or waits for a later turn when another call follows it (and
+            # then every reply of the turn waits); a step with a per-turn cap
+            # runs only its first calls, and a terminal call only alone. Every
+            # call left out is answered "Not run" below. A model told
+            # TERMINAL_ALONE_REMINDERS turn(s) in a row to make its terminal
+            # call alone that pairs it again gets it run after its other calls
+            # (plan.guarded: only when they went through): it is never held
+            # until the step cap. Only a tool this step can call (after
+            # tool_allowlist) is terminal: a send_message the agent lacks is
+            # answered "not available" below, like any unknown name.
+            alone_turns = getattr(self, "_terminal_alone_turns", 0)
+            plan = plan_tool_calls(
+                [tool_call.function.name for tool_call in tool_calls],
+                max_calls=getattr(self, "_max_tool_calls_per_turn", None),
+                terminal_after_others=alone_turns >= TERMINAL_ALONE_REMINDERS,
+                arguments=[tool_call.function.arguments for tool_call in tool_calls],
+                available=[tool.name for tool in self._visible_tools()],
+            )
+            self._terminal_alone_turns = (
+                alone_turns + 1 if plan.terminal_deferred else 0
+            )
+            if len(tool_calls) > 1:
+                self.multi_call_turns = getattr(self, "multi_call_turns", 0) + 1
                 self.logger.info(
-                    "Agent %s returned %d tool call(s); executing each sequentially",
+                    "Agent %s returned %d tool call(s); running %d of them sequentially",
                     self.agent_state.agent_type,
-                    len(response_message.tool_calls),
+                    len(tool_calls),
+                    len(plan.order),
                 )
+            self.skipped_tool_calls = getattr(self, "skipped_tool_calls", 0) + len(
+                plan.skipped
+            )
 
             # role: assistant (requesting tool call, set tool call ID)
             messages.append(
@@ -1013,32 +1175,82 @@ class Agent(BaseAgent):
                 # Flag to avoid printing a duplicate if inner thoughts get popped from the function call
                 nonnull_content = True
 
-            # Step 3: Process each tool call
+            # Step 3: Process each tool call the plan runs, in its order
             continue_chaining = True
             overall_function_failed = False
+            failed_tool_calls = 0  # tool calls answered with an error result
+            tool_failures = ToolFailureLog()  # why they failed (same calls)
             executed_function_names = []  # Track which functions were executed
+            refused_tool_calls = 0  # calls a tool declined (ToolCallRefused)
+            # Calls a tool rejected with an answer (nothing done, no error):
+            # tools count them on the agent (declined_tool_calls).
+            declined_at_start = getattr(self, "declined_tool_calls", 0)
+            held_terminal = False  # a guarded terminal call was held
+            answered = []  # the call each tool message below answers, in run order
 
             printv(
-                f"[Mirix.Agent.{self.agent_state.name}] INFO: Processing {len(response_message.tool_calls)} tool call(s)"
+                f"[Mirix.Agent.{self.agent_state.name}] INFO: Processing {len(tool_calls)} tool call(s)"
             )
 
-            for tool_call_idx, tool_call in enumerate(response_message.tool_calls):
+            for tool_call_idx in plan.order:
+                tool_call = tool_calls[tool_call_idx]
+                answered.append(tool_call_idx)
                 tool_call_id = tool_call.id
                 function_call = tool_call.function
+
+                # A terminal call run after its turn's other calls on a repeat
+                # (plan.guarded) runs only when they all went through: a
+                # rejected, refused or failed call must be read first. A held
+                # call did not run (function_name keeps the last call that did).
+                if tool_call_idx in plan.guarded and (
+                    held_terminal
+                    or failed_tool_calls
+                    or refused_tool_calls
+                    or getattr(self, "declined_tool_calls", 0) != declined_at_start
+                ):
+                    held_terminal = True
+                    held_text = held_terminal_text(function_call.name)
+                    messages.append(
+                        Message.dict_to_message(
+                            agent_id=self.agent_state.id,
+                            model=self.model,
+                            openai_message_dict={
+                                "role": "tool",
+                                "name": function_call.name,
+                                "content": package_function_response(False, held_text),
+                                "tool_call_id": tool_call_id,
+                            },
+                            session_id=input_session_id,
+                        )
+                    )
+                    self.skipped_tool_calls = getattr(self, "skipped_tool_calls", 0) + 1
+                    printv(
+                        f"[Mirix.Agent.{self.agent_state.name}] INFO: Tool call {tool_call_idx + 1}/{len(tool_calls)} "
+                        f"({function_call.name}) not run: {held_text}"
+                    )
+                    continue
                 function_name = function_call.name
 
                 printv(
-                    f"[Mirix.Agent.{self.agent_state.name}] INFO: Processing tool call {tool_call_idx + 1}/{len(response_message.tool_calls)}: {function_name} with tool_call_id: {tool_call_id}"
+                    f"[Mirix.Agent.{self.agent_state.name}] INFO: Processing tool call {tool_call_idx + 1}/{len(tool_calls)}: {function_name} with tool_call_id: {tool_call_id}"
                 )
 
-                # Failure case 1: function name is wrong (not in agent_state.tools)
+                # Failure case 1: function name is wrong (not a tool this step
+                # may use: not in agent_state.tools, or outside tool_allowlist)
+                visible_tools = self._visible_tools()
                 target_mirix_tool = None
-                for t in self.agent_state.tools:
+                for t in visible_tools:
                     if t.name == function_name:
                         target_mirix_tool = t
 
                 if not target_mirix_tool:
-                    error_msg = f"No function named {function_name}"
+                    if getattr(self, "tool_allowlist", None) is not None:
+                        error_msg = (
+                            f"Tool {function_name} is not available in this step; "
+                            f"available: {', '.join(t.name for t in visible_tools)}."
+                        )
+                    else:
+                        error_msg = f"No function named {function_name}"
                     function_response = package_function_response(False, error_msg)
                     messages.append(
                         Message.dict_to_message(
@@ -1055,13 +1267,20 @@ class Agent(BaseAgent):
                     )  # extend conversation with function response
                     self.interface.function_message(f"Error: {error_msg}", msg_obj=messages[-1])
                     overall_function_failed = True
+                    failed_tool_calls += 1
+                    tool_failures.record("unknown_tool", function_name, error=error_msg)
                     continue  # Continue with next tool call
 
                 # Failure case 2: function name is OK, but function args are bad JSON
                 try:
                     raw_function_args = function_call.arguments
                     function_args = parse_json(raw_function_args)
-                except Exception:
+                    if not isinstance(function_args, dict):
+                        # A JSON repair of garbage can yield a list or a string:
+                        # still invalid arguments, answered with an error result
+                        # (never a crash of the whole step).
+                        raise ValueError("the arguments are not a JSON object")
+                except Exception as parse_error:
                     error_msg = (
                         f"Error parsing JSON for function '{function_name}' arguments: {function_call.arguments}"
                     )
@@ -1081,6 +1300,8 @@ class Agent(BaseAgent):
                     )  # extend conversation with function response
                     self.interface.function_message(f"Error: {error_msg}", msg_obj=messages[-1])
                     overall_function_failed = True
+                    failed_tool_calls += 1
+                    tool_failures.record("arguments", function_name, exc=parse_error)
                     continue  # Continue with next tool call
 
                 # Filter out unexpected arguments that LLMs sometimes hallucinate
@@ -1129,8 +1350,12 @@ class Agent(BaseAgent):
                             session_id=input_session_id,
                         )
                     )
-                    self.interface.function_message(f"Validation Error: {validation_error}", msg_obj=messages[-1])
+                    # The validator's text starts "Validation error: ...": with the
+                    # "Error: " prefix every interface renders it as an error.
+                    self.interface.function_message(f"Error: {validation_error}", msg_obj=messages[-1])
                     overall_function_failed = True
+                    failed_tool_calls += 1
+                    tool_failures.record("validation", function_name, error=validation_error)
                     continue  # Skip execution, let LLM retry
 
                 # Failure case 5: function failed during execution
@@ -1143,6 +1368,8 @@ class Agent(BaseAgent):
                         # send intermediate message to the user
                         display_intermediate_message("internal_monologue", response_message.content)
 
+                    # Set again by this call's tool run only: never an earlier call's.
+                    self.last_tool_exception = None
                     function_response = await self.execute_tool_and_persist_state(
                         function_name,
                         function_args,
@@ -1151,24 +1378,20 @@ class Agent(BaseAgent):
                         request_user_confirmation=request_user_confirmation,
                     )
 
-                    if function_name == "send_message" or function_name == "finish_memory_update":
-                        assert (
-                            tool_call_idx == len(response_message.tool_calls) - 1
-                        ), f"{function_name} must be the last tool call"
-
-                    if tool_call_idx == len(response_message.tool_calls) - 1:
-                        if function_name == "send_message":
-                            continue_chaining = False
-                        elif function_name == "finish_memory_update":
-                            continue_chaining = False
-                        else:
-                            continue_chaining = True
+                    # The plan runs a terminal call last, so the chain ends
+                    # (or goes on) as the last call that ran says.
+                    continue_chaining = function_name not in TERMINAL_TOOLS
 
                     # handle trunction
                     if function_name in [
                         "conversation_search",
                         "conversation_search_date",
                         "archival_memory_search",
+                        # skill_list pages and skill_read caps its output head +
+                        # tail with a marker; a head-only cut here
+                        # would silently drop the tail.
+                        "skill_list",
+                        "skill_read",
                     ]:
                         # with certain functions we rely on the paging mechanism to handle overflow
                         truncate = False
@@ -1189,6 +1412,39 @@ class Agent(BaseAgent):
                     function_response = package_function_response(True, function_response_string)
                     function_failed = False
 
+                except AbortAgentStep:
+                    raise
+                except ToolCallRefused as refused:
+                    # The tool declined this call (it did not run): its message
+                    # is the answer, the call is neither executed nor failed, and
+                    # the chain goes on so the model can act on it.
+                    function_args.pop("self", None)
+                    function_response = package_function_response(
+                        False, refused.message
+                    )
+                    self.last_function_response = function_response
+                    messages.append(
+                        Message.dict_to_message(
+                            agent_id=self.agent_state.id,
+                            model=self.model,
+                            openai_message_dict={
+                                "role": "tool",
+                                "name": function_name,
+                                "content": function_response,
+                                "tool_call_id": tool_call_id,
+                            },
+                            session_id=input_session_id,
+                        )
+                    )
+                    self.interface.function_message(
+                        f"Ran {function_name}()", msg_obj=messages[-1]
+                    )
+                    self.interface.function_message(
+                        f"Error: {refused.message}", msg_obj=messages[-1]
+                    )
+                    refused_tool_calls += 1
+                    continue_chaining = True
+                    continue
                 except Exception as e:
                     function_args.pop("self", None)
                     # error_msg = f"Error calling function {function_name} with args {function_args}: {str(e)}"
@@ -1199,7 +1455,9 @@ class Agent(BaseAgent):
                         exception_message=str(e),
                     )
                     error_msg_user = f"{error_msg}\n{traceback.format_exc()}"
-                    printv(f"[Mirix.Agent.{self.agent_state.name}] ERROR: {error_msg_user}")
+                    printv(
+                        f"[Mirix.Agent.{self.agent_state.name}] ERROR: {error_msg_user}"
+                    )
                     function_response = package_function_response(False, error_msg)
                     self.last_function_response = function_response
                     # TODO: truncate error message somehow
@@ -1216,9 +1474,17 @@ class Agent(BaseAgent):
                             session_id=input_session_id,
                         )
                     )  # extend conversation with function response
-                    self.interface.function_message(f"Ran {function_name}()", msg_obj=messages[-1])
-                    self.interface.function_message(f"Error: {error_msg}", msg_obj=messages[-1])
+                    self.interface.function_message(
+                        f"Ran {function_name}()", msg_obj=messages[-1]
+                    )
+                    self.interface.function_message(
+                        f"Error: {error_msg}", msg_obj=messages[-1]
+                    )
                     overall_function_failed = True
+                    failed_tool_calls += 1
+                    # Raised around the tool's run: preparing it, the ordering
+                    # guard above, or checking its result.
+                    tool_failures.record("execution", function_name, exc=e)
                     continue  # Continue with next tool call
 
                 # Step 4: check if function response is an error
@@ -1241,6 +1507,18 @@ class Agent(BaseAgent):
                     self.interface.function_message(f"Ran {function_name}()", msg_obj=messages[-1])
                     self.interface.function_message(f"Error: {function_response_string}", msg_obj=messages[-1])
                     overall_function_failed = True
+                    failed_tool_calls += 1
+                    raised = getattr(self, "last_tool_exception", None)
+                    if isinstance(raised, ToolArgumentError):
+                        # Its arguments do not fit the tool's signature: found
+                        # before it ran, the model's mistake.
+                        tool_failures.record("validation", function_name, exc=raised)
+                    elif raised is not None:
+                        # The tool raised while it ran; execute_tool_and_persist_state
+                        # answered with its text.
+                        tool_failures.record("execution", function_name, exc=raised)
+                    else:
+                        tool_failures.record("error_result", function_name, error=function_response_string)
                     continue  # Continue with next tool call
 
                 # If no failures happened along the way: ...
@@ -1265,7 +1543,51 @@ class Agent(BaseAgent):
                 # Track successfully executed function names
                 executed_function_names.append(function_name)
 
+            # Every call the plan left out is answered too, and the tool
+            # messages go out in the answer's order: each tool_call_id gets its
+            # result where the provider expects it.
+            not_run = {}
+            for index, text in plan.skipped.items():
+                skipped_call = tool_calls[index]
+                not_run[index] = Message.dict_to_message(
+                    agent_id=self.agent_state.id,
+                    model=self.model,
+                    openai_message_dict={
+                        "role": "tool",
+                        "name": skipped_call.function.name,
+                        "content": package_function_response(False, text),
+                        "tool_call_id": skipped_call.id,
+                    },
+                    session_id=input_session_id,
+                )
+                printv(
+                    f"[Mirix.Agent.{self.agent_state.name}] INFO: Tool call {index + 1}/{len(tool_calls)} "
+                    f"({skipped_call.function.name}) not run: {text}"
+                )
+            if len(messages) - 1 == len(answered):
+                by_index = dict(zip(answered, messages[1:]))
+                by_index.update(not_run)
+                messages = messages[:1] + [by_index[i] for i in sorted(by_index)]
+            else:  # never expected: every call that ran added one tool message
+                self.logger.warning(
+                    "Agent %s: %d tool message(s) for %d call(s) run; kept in run order",
+                    self.agent_state.agent_type,
+                    len(messages) - 1,
+                    len(answered),
+                )
+                messages.extend(not_run[i] for i in sorted(not_run))
+
             function_failed = overall_function_failed
+            must_continue = plan.deferred or refused_tool_calls > 0 or held_terminal
+            if held_terminal:
+                # The model still pairs its terminal call: the next pairing is
+                # a repeat again (run after the others when they go through).
+                self._terminal_alone_turns = TERMINAL_ALONE_REMINDERS
+            self.failed_tool_calls = getattr(self, "failed_tool_calls", 0) + failed_tool_calls
+            if getattr(self, "tool_failures", None) is None:
+                self.tool_failures = ToolFailureLog()
+            self.tool_failures.merge(tool_failures)
+            self.last_executed_functions = list(executed_function_names)
 
             # Handle context message clearing only if ALL functions succeeded
             if not overall_function_failed:
@@ -1521,7 +1843,44 @@ class Agent(BaseAgent):
             elif self.tool_rules_solver.is_terminal_tool(function_name):
                 continue_chaining = False
 
+        if must_continue:
+            # A call left for a later turn or declined by its tool: the model
+            # must get the turn back to make it (again).
+            continue_chaining = True
+
         return messages, continue_chaining, function_failed
+
+    async def _estimate_input_tokens(self, message_sequence: List[Message]) -> int:
+        """Estimated input tokens of an LLM call with ``message_sequence`` and
+        this agent's tool schemas (the context-budget token counter)."""
+        from mirix.services.context_budget import get_token_counter
+
+        messages = []
+        for message in message_sequence:
+            try:
+                messages.append(message.to_openai_dict())
+            except Exception:  # noqa: BLE001 — an odd message still counts
+                messages.append(message.model_dump(exclude_none=True))
+        tools = [t.json_schema for t in self._visible_tools() if t.json_schema]
+        return await get_token_counter().acount_request(
+            {"messages": messages, "tools": tools}
+        )
+
+    async def _check_context_limit(self, message_sequence: List[Message]) -> None:
+        """Raise :class:`AgentContextLimitReached` when this step has a context
+        limit (``step(context_stop_fraction=...)``) and the LLM call about to be
+        made would pass it. Also tracks the step's peak estimated input."""
+        limit = getattr(self, "_context_stop_limit", None)
+        if limit is None:
+            return
+        estimated = await self._estimate_input_tokens(message_sequence)
+        self._context_peak_tokens = max(getattr(self, "_context_peak_tokens", 0), estimated)
+        if estimated > limit:
+            printv(
+                f"[Mirix.Agent.{self.agent_state.name}] INFO: stopping before an LLM call: "
+                f"estimated input {estimated} > context limit {limit}"
+            )
+            raise AgentContextLimitReached(estimated, limit)
 
     async def step(
         self,
@@ -1531,6 +1890,11 @@ class Agent(BaseAgent):
         extra_messages: Optional[List[dict]] = None,
         actor: Optional["Client"] = None,  # Client for write operations (audit trail)
         user: Optional[User] = None,  # User for read operations (data scope)
+        context_stop_fraction: Optional[float] = None,
+        auto_summarize: bool = True,
+        hard_step_cap: bool = False,
+        strict_llm_errors: Optional[bool] = None,
+        max_tool_calls_per_turn: Optional[int] = None,
         **kwargs,
     ) -> MirixUsageStatistics:
         """Run Agent.step in a loop, handling chaining via continue_chaining requests and function failures
@@ -1538,7 +1902,102 @@ class Agent(BaseAgent):
         Args:
             actor: Client object for write operations (updating messages, agent state) - audit trail
             user: User object for read operations (loading blocks, memory filtering) - data scope
+            context_stop_fraction: when set, the step ends (stop reason
+                ``context_limit``) before any LLM call whose estimated input is
+                above ``floor(context_window * fraction) - planning output
+                reserve`` (the curator passes 0.8).
+            auto_summarize: False turns the summarizer off for this step: no
+                memory-pressure summary, and a context overflow ends the step
+                (``context_limit``) instead of summarizing the input away.
+            hard_step_cap: True makes ``max_chaining_steps`` a hard cap: after
+                that many LLM calls without finish_memory_update the step stops
+                (``step_cap``) instead of granting one more call with a warning.
+            strict_llm_errors: True makes a provider error end the step at
+                once (it propagates, e.g. an ``LLMServerError`` after the SDK's
+                own transport retries): no agent-level retry of it and never
+                the fallback that resends only the last message without the
+                system prompt. A truncated answer raises
+                ``LLMOutputTruncatedError`` and an answer still unusable after
+                the agent's retries ``LLMInvalidResponseError``. Default: on
+                for a step with ``hard_step_cap`` or without auto-summary (the
+                skill curator), off otherwise.
+            max_tool_calls_per_turn: at most this many tool calls of one model
+                turn run (the first ones); the rest, and a
+                send_message / finish_memory_update that is not the turn's
+                only call, are answered "Not run" and the chain goes on
+                (``tool_call_plan``); a terminal call paired again in the turn
+                right after such an answer runs after the turn's other calls
+                when they all fit the cap. None (the default): every call
+                runs, a terminal call last.
+
+        The returned usage carries ``stop_reason`` (``finish``, ``ended``,
+        ``chaining_off``, ``step_cap`` or ``context_limit``; with
+        ``hard_step_cap`` only ``finish``, ``step_cap`` or ``context_limit``: a
+        turn ended without ``finish_memory_update`` is answered with a reminder
+        and the step goes on), the step's peak estimated input (with
+        ``context_stop_fraction``), its failed tool calls, the calls left
+        unrun (``skipped_tool_calls``) and its turns of several calls
+        (``multi_call_turns``).
         """
+        if max_tool_calls_per_turn is not None and max_tool_calls_per_turn < 1:
+            raise ValueError("max_tool_calls_per_turn must be at least 1")
+        previous_auto_summarize = getattr(self, "_auto_summarize", True)
+        previous_stop_limit = getattr(self, "_context_stop_limit", None)
+        previous_strict = getattr(self, "_strict_llm_errors", False)
+        previous_max_calls = getattr(self, "_max_tool_calls_per_turn", None)
+        self._max_tool_calls_per_turn = max_tool_calls_per_turn
+        self._auto_summarize = auto_summarize
+        self._strict_llm_errors = (
+            (hard_step_cap or not auto_summarize)
+            if strict_llm_errors is None
+            else bool(strict_llm_errors)
+        )
+        self._context_peak_tokens = 0
+        self.failed_tool_calls = 0
+        self.tool_failures = ToolFailureLog()
+        self.skipped_tool_calls = 0
+        self.multi_call_turns = 0
+        self._terminal_alone_turns = 0
+        if context_stop_fraction is not None:
+            from mirix.services.context_budget import ModelLimits
+
+            limits = ModelLimits.from_llm_config(self.agent_state.llm_config)
+            # floor(window * fraction), exactly (Fraction("0.8") is 4/5).
+            fraction = Fraction(str(context_stop_fraction))
+            self._context_stop_limit = (
+                int(limits.context_window * fraction) - limits.planning_output_reserve
+            )
+        else:
+            self._context_stop_limit = None
+        try:
+            return await self._step_loop(
+                input_messages,
+                chaining=chaining,
+                max_chaining_steps=max_chaining_steps,
+                extra_messages=extra_messages,
+                actor=actor,
+                user=user,
+                hard_step_cap=hard_step_cap,
+                **kwargs,
+            )
+        finally:
+            self._auto_summarize = previous_auto_summarize
+            self._context_stop_limit = previous_stop_limit
+            self._strict_llm_errors = previous_strict
+            self._max_tool_calls_per_turn = previous_max_calls
+
+    async def _step_loop(
+        self,
+        input_messages: Union[Message, MessageCreate, List[Union[Message, MessageCreate]]],
+        chaining: bool = True,
+        max_chaining_steps: Optional[int] = None,
+        extra_messages: Optional[List[dict]] = None,
+        actor: Optional["Client"] = None,
+        user: Optional[User] = None,
+        hard_step_cap: bool = False,
+        **kwargs,
+    ) -> MirixUsageStatistics:
+        """The body of :meth:`step` (see there)."""
 
         # Store actor for write operations
         if actor:
@@ -1626,6 +2085,7 @@ class Agent(BaseAgent):
         counter = 0
         total_usage = UsageStatistics()
         step_count = 0
+        stop_reason: Optional[str] = None
 
         initial_message_count = len(
             await self.agent_manager.get_in_context_messages(
@@ -1688,15 +2148,19 @@ class Agent(BaseAgent):
                 )
                 next_input_message.append(meta_message)
 
-            step_response = await self.inner_step(
-                first_input_messge=first_input_message,
-                messages=next_input_message,
-                extra_messages=extra_message_objects,
-                initial_message_count=initial_message_count,
-                chaining=chaining,
-                llm_client=llm_client,
-                **kwargs,
-            )
+            try:
+                step_response = await self.inner_step(
+                    first_input_messge=first_input_message,
+                    messages=next_input_message,
+                    extra_messages=extra_message_objects,
+                    initial_message_count=initial_message_count,
+                    chaining=chaining,
+                    llm_client=llm_client,
+                    **kwargs,
+                )
+            except AgentContextLimitReached:
+                stop_reason = "context_limit"
+                break
 
             continue_chaining = step_response.continue_chaining
             function_failed = step_response.function_failed
@@ -1712,10 +2176,38 @@ class Agent(BaseAgent):
             # save updated state
             await save_agent(self)
 
+            natural_end = not continue_chaining and not function_failed
+            finished = "finish_memory_update" in (getattr(self, "last_executed_functions", None) or [])
+
             # Chain stops
             if not chaining and (not function_failed):
                 printv(f"[Mirix.Agent.{self.agent_state.name}] INFO: No chaining, stopping after one step")
+                stop_reason = "finish" if finished else "chaining_off"
                 break
+            elif hard_step_cap and natural_end and finished:
+                stop_reason = "finish"
+                break
+            elif hard_step_cap and max_chaining_steps is not None and counter >= max_chaining_steps:
+                printv(
+                    f"[Mirix.Agent.{self.agent_state.name}] INFO: Hit the step cap, stopping after {counter} steps"
+                )
+                stop_reason = "step_cap"
+                break
+            elif hard_step_cap and natural_end:
+                # The model ended its turn without finish_memory_update. With a
+                # hard step cap (the skill curator) only the finish
+                # call, the context limit or the step cap end the step: remind
+                # it and go on (the reminder's call counts toward the cap).
+                next_input_message = Message.dict_to_message(
+                    agent_id=self.agent_state.id,
+                    model=self.model,
+                    openai_message_dict={
+                        "role": "user",
+                        "content": get_contine_chaining(UNFINISHED_TURN_HEARTBEAT_MESSAGE),
+                    },
+                    session_id=step_session_id,
+                )
+                continue
             elif max_chaining_steps is not None and counter == max_chaining_steps:
                 # Add warning message based on agent type
                 if self.agent_state.is_type(AgentType.chat_agent):
@@ -1736,9 +2228,14 @@ class Agent(BaseAgent):
                 printv(
                     f"[Mirix.Agent.{self.agent_state.name}] INFO: Hit max chaining steps, stopping after {counter} steps"
                 )
+                stop_reason = "finish" if (natural_end and finished) else "step_cap"
                 break
             # Chain handlers
-            elif token_warning and summarizer_settings.send_memory_warning_message:
+            elif (
+                token_warning
+                and summarizer_settings.send_memory_warning_message
+                and getattr(self, "_auto_summarize", True)
+            ):
                 assert self.agent_state.created_by_id is not None
                 next_input_message = Message.dict_to_message(
                     agent_id=self.agent_state.id,
@@ -1776,12 +2273,24 @@ class Agent(BaseAgent):
                 continue  # always chain
             # Mirix no-op / yield
             else:
+                stop_reason = "finish" if finished else "ended"
                 break
 
         # Save the message_ids
         await save_agent(self)
 
-        return MirixUsageStatistics(**total_usage.model_dump(), step_count=step_count)
+        failures = getattr(self, "tool_failures", None)
+        return MirixUsageStatistics(
+            **total_usage.model_dump(),
+            step_count=step_count,
+            stop_reason=stop_reason,
+            context_peak_tokens=getattr(self, "_context_peak_tokens", 0),
+            failed_tool_calls=getattr(self, "failed_tool_calls", 0),
+            tool_failures=failures.as_list() if failures is not None else [],
+            tool_failures_omitted=failures.omitted if failures is not None else 0,
+            skipped_tool_calls=getattr(self, "skipped_tool_calls", 0),
+            multi_call_turns=getattr(self, "multi_call_turns", 0),
+        )
 
     async def build_system_prompt_with_memories(
         self,
@@ -2354,6 +2863,10 @@ These keywords have been used to retrieve relevant memories from the database.
                     f"[Mirix.Agent.{self.agent_state.name}] WARNING: {CLI_WARNING_PREFIX}Attempting to run ChatCompletion without user as the last message in the queue"
                 )
 
+            # Before the LLM call: a step with a context limit stops
+            # here when the call's estimated input would pass it.
+            await self._check_context_limit(input_message_sequence)
+
             # Step 2: send the conversation and available functions to the LLM
             response = await self._get_ai_reply(
                 message_sequence=input_message_sequence,
@@ -2504,9 +3017,12 @@ These keywords have been used to retrieve relevant memories from the database.
                 user_id=self.user_id,
             )
 
-            # Check memory pressure AFTER messages are persisted
-            if current_total_tokens > summarizer_settings.memory_warning_threshold * int(
-                self.agent_state.llm_config.context_window
+            # Check memory pressure AFTER messages are persisted. A step with
+            # auto-summary off (the skill curator) never summarizes:
+            # it would summarize away the input it is working on.
+            if getattr(self, "_auto_summarize", True) and current_total_tokens > (
+                summarizer_settings.memory_warning_threshold
+                * int(self.agent_state.llm_config.context_window)
             ):
                 printv(
                     f"[Mirix.Agent.{self.agent_state.name}] INFO: Memory pressure detected: last response total_tokens ({current_total_tokens}) > {summarizer_settings.memory_warning_threshold * int(self.agent_state.llm_config.context_window)}"
@@ -2538,8 +3054,17 @@ These keywords have been used to retrieve relevant memories from the database.
                 usage=response.usage,
             )
 
+        except (AbortAgentStep, AgentContextLimitReached):
+            raise
         except Exception as e:
             printv(f"[Mirix.Agent.{self.agent_state.name}] ERROR: step() failed\nmessages = {messages}\nerror = {e}")
+
+            if is_context_overflow_error(e) and not getattr(self, "_auto_summarize", True):
+                # No summarizer here: the input does not fit, stop the step.
+                raise AgentContextLimitReached(
+                    getattr(e, "estimated_input_tokens", None),
+                    getattr(self, "_context_stop_limit", None),
+                ) from e
 
             # If we got a context alert, try trimming the messages length, then try again
             if is_context_overflow_error(e):
@@ -2651,7 +3176,7 @@ These keywords have been used to retrieve relevant memories from the database.
 
         # Seed the step-level session context so any pre-persist summarization
         # triggered inside inner_step() / _get_ai_reply() stamps the correct
-        # session_id on the summary message (Codex review v3, Important).
+        # session_id on the summary message.
         prev_session_id = getattr(self, "_current_step_session_id", None)
         self._current_step_session_id = effective_session_id
         try:
@@ -2853,7 +3378,7 @@ These keywords have been used to retrieve relevant memories from the database.
         num_tokens_external_memory_summary = count_tokens(external_memory_summary)
 
         # tokens taken up by function definitions
-        agent_state_tool_jsons = [t.json_schema for t in self.agent_state.tools]
+        agent_state_tool_jsons = [t.json_schema for t in self._visible_tools()]
         if agent_state_tool_jsons:
             available_functions_definitions = [
                 ChatCompletionRequestTool(type="function", function=f) for f in agent_state_tool_jsons

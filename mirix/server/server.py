@@ -7,7 +7,7 @@ import warnings
 from abc import abstractmethod
 from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime
-from typing import Callable, Dict, List, Optional, Union
+from typing import Callable, Dict, List, Optional, Tuple, Union
 
 # from composio.client import Composio
 # from composio.client.collections import ActionModel, AppModel
@@ -454,17 +454,212 @@ else:
                 await session.close()
 
 
-# Tables that manual migration scripts ALTER on upgrades. create_all only
-# creates missing tables — it never adds columns to existing ones — so a
-# skipped migration surfaces as missing columns and would otherwise break
-# every SELECT on that entity at request time.
-_MIGRATION_HINTS: Dict[str, str] = {
-    "messages": "scripts/migrate_add_message_session_id.sql (then *_phase2.sql outside a transaction)",
-    "procedural_memory": "scripts/migrate_procedural_to_skill.sql",
-    "conversation_message": "scripts/migrate_add_conversation_message.sql (then *_phase2.sql)",
-    "skill_experience": "scripts/migrate_add_skill_experience.sql",
-    "agent_trigger_state": "scripts/migrate_add_agent_trigger_state.sql",
+# Columns that manual migration scripts ADD (or RENAME into place) on existing
+# tables, keyed by (table, column) -> the script that creates that column.
+# create_all only creates missing tables — it never adds columns to existing
+# ones — so a skipped migration surfaces as missing columns and would otherwise
+# break every SELECT on that entity at request time. Tables a script CREATEs are
+# registered in _TABLE_MIGRATION_SCRIPTS below (create_all builds them whole),
+# and a script that also BACKFILLS data has a check in _DATA_MIGRATION_CHECKS.
+# Insertion order is the order to run the scripts in when several are missing.
+_PROCEDURAL_TO_SKILL_SQL = "scripts/migrate_procedural_to_skill.sql"
+_SKILL_RETRIEVAL_FIELDS_SQL = "scripts/migrate_skill_retrieval_fields.sql"
+_CONVERSATION_MESSAGE_PARTS_SQL = "scripts/migrate_conversation_message_parts.sql"
+_CONVERSATION_SESSION_SQL = "scripts/migrate_add_conversation_session.sql"
+_SKILL_HISTORY_SQL = "scripts/migrate_add_skill_history.sql"
+_LEARNING_RUN_AND_RETRIEVAL_LOG_SQL = "scripts/migrate_add_learning_run_and_retrieval_log.sql"
+_SKILL_EXPERIENCE_POOL_SQL = "scripts/migrate_skill_experience_pool.sql"
+_P16_AGENT_CONTEXT_AND_FEEDBACK_SQL = "scripts/migrate_p16_agent_context_and_skill_feedback.sql"
+_MIGRATION_HINTS: Dict[Tuple[str, str], str] = {
+    ("messages", "session_id"): (
+        "scripts/migrate_add_message_session_id.sql (then *_phase2.sql outside a transaction)"
+    ),
+    ("agent_trigger_state", "last_fired_tied_session_ids"): "scripts/migrate_add_agent_trigger_state.sql",
+    ("procedural_memory", "name"): _PROCEDURAL_TO_SKILL_SQL,
+    ("procedural_memory", "description"): _PROCEDURAL_TO_SKILL_SQL,
+    ("procedural_memory", "instructions"): _PROCEDURAL_TO_SKILL_SQL,
+    ("procedural_memory", "triggers"): _PROCEDURAL_TO_SKILL_SQL,
+    ("procedural_memory", "examples"): _PROCEDURAL_TO_SKILL_SQL,
+    ("procedural_memory", "version"): _PROCEDURAL_TO_SKILL_SQL,
+    ("procedural_memory", "retrieval_embedding"): _SKILL_RETRIEVAL_FIELDS_SQL,
+    # Postgres-only generated column (absent from the SQLite ORM).
+    ("procedural_memory", "retrieval_tsv"): _SKILL_RETRIEVAL_FIELDS_SQL,
+    ("conversation_message", "session_tag"): "scripts/migrate_add_conversation_message_session_tag.sql",
+    ("conversation_message", "content_parts"): _CONVERSATION_MESSAGE_PARTS_SQL,
+    ("conversation_message", "original_text_length"): _CONVERSATION_MESSAGE_PARTS_SQL,
+    ("files", "user_id"): _CONVERSATION_MESSAGE_PARTS_SQL,
+    ("skill_experience", "curation_attempts"): "scripts/migrate_skill_experience_attempts.sql",
+    # Added after the table's first revision (every auto_dream run).
+    ("skill_learning_run", "mode"): _LEARNING_RUN_AND_RETRIEVAL_LOG_SQL,
+    # Added after the tables' first revision (retry bookkeeping).
+    ("skill_learning_run", "retry_events"): _LEARNING_RUN_AND_RETRIEVAL_LOG_SQL,
+    ("retrieval_log", "retry_events"): _LEARNING_RUN_AND_RETRIEVAL_LOG_SQL,
+    ("retrieval_log", "embedding_chunked_calls"): _LEARNING_RUN_AND_RETRIEVAL_LOG_SQL,
+    ("conversation_session", "distill_infra_failures"): _CONVERSATION_SESSION_SQL,
+    # The experience pool of the skill curator. No data check:
+    # the script backfills nothing (consumed rows stay out of the pool).
+    ("skill_experience", "disposition"): _SKILL_EXPERIENCE_POOL_SQL,
+    ("skill_experience", "cited_skill_ids"): _SKILL_EXPERIENCE_POOL_SQL,
+    ("skill_experience", "pool_scope"): _SKILL_EXPERIENCE_POOL_SQL,
+    ("skill_experience", "pool_embedding"): _SKILL_EXPERIENCE_POOL_SQL,
+    ("skill_experience", "pool_embedding_model"): _SKILL_EXPERIENCE_POOL_SQL,
+    ("skill_experience", "pool_embedding_failures"): _SKILL_EXPERIENCE_POOL_SQL,
+    ("skill_experience", "recurrence_count"): _SKILL_EXPERIENCE_POOL_SQL,
+    ("skill_experience", "ignored_pushes"): _SKILL_EXPERIENCE_POOL_SQL,
+    ("skill_experience", "pushed_count"): _SKILL_EXPERIENCE_POOL_SQL,
+    ("skill_experience", "last_pushed_at"): _SKILL_EXPERIENCE_POOL_SQL,
+    ("skill_experience", "pool_retired_at"): _SKILL_EXPERIENCE_POOL_SQL,
+    ("skill_experience", "pool_retire_reason"): _SKILL_EXPERIENCE_POOL_SQL,
+    # A session's agent context. No data check: nothing to backfill.
+    ("conversation_session", "agent_context"): _P16_AGENT_CONTEXT_AND_FEEDBACK_SQL,
 }
+_UNKNOWN_MIGRATION_HINT = "see scripts/migrate_*.sql"
+
+# Tables a migration script CREATEs (every script is registered). On a
+# database without them create_all builds them whole at startup, so a missing
+# table is never drift; the script exists for operators who migrate by hand, and
+# whatever DATA it backfills is checked by _DATA_MIGRATION_CHECKS.
+_TABLE_MIGRATION_SCRIPTS: Dict[str, str] = {
+    "conversation_session": _CONVERSATION_SESSION_SQL,
+    "skill_object": _SKILL_HISTORY_SQL,
+    "skill_version": _SKILL_HISTORY_SQL,
+    "skill_learning_run": _LEARNING_RUN_AND_RETRIEVAL_LOG_SQL,
+    "retrieval_log": _LEARNING_RUN_AND_RETRIEVAL_LOG_SQL,
+    "skill_session_feedback": _P16_AGENT_CONTEXT_AND_FEEDBACK_SQL,
+}
+
+
+def _conversation_sessions_need_backfill(sync_conn) -> bool:
+    """Live conversation turns of a session that has no conversation_session row.
+
+    create_all creates conversation_session EMPTY on an upgraded database; its
+    rows for the sessions written before the upgrade come only from the
+    backfill in scripts/migrate_add_conversation_session.sql. Without them the
+    skill learner never sees those sessions (pending selection, the sweeper
+    and flush all start from conversation_session). New writes always create
+    the row in the same transaction, so outside an upgrade this finds nothing.
+
+    ``organization_id`` is nullable: it is matched NULL-safely (``IS NOT
+    DISTINCT FROM``), exactly like the backfill script's NOT EXISTS. With a
+    plain ``=`` a live turn whose organization is NULL never matched the row
+    the backfill had created for it, and every startup aborted asking for a
+    script that could not help.
+    """
+    from sqlalchemy import exists, select
+
+    from mirix.orm.conversation_message import ConversationMessage as MessageModel
+    from mirix.orm.conversation_session import ConversationSession as SessionModel
+
+    has_row = exists().where(
+        SessionModel.organization_id.is_not_distinct_from(MessageModel.organization_id),
+        SessionModel.user_id == MessageModel.user_id,
+        SessionModel.session_id == MessageModel.session_id,
+    )
+    stmt = (
+        select(MessageModel.session_id)
+        # The same population the backfill script covers.
+        .where(MessageModel.is_deleted.is_not(True), ~has_row)
+        .limit(1)
+    )
+    return sync_conn.execute(stmt).first() is not None
+
+
+def _retrieval_tsv_is_outdated(sync_conn) -> bool:
+    """A generated ``procedural_memory.retrieval_tsv`` built by an earlier revision.
+
+    The column exists, so the missing-column check passes, but an expression
+    without ``regexp_replace`` (``triggers::text``, or the later
+    ``triggers::jsonb::text``) indexes JSON escapes instead of words — lexemes
+    such as ``u201ccool`` or ``nline2`` — and Postgres keyword ranking silently
+    differs from SQLite's. scripts/migrate_skill_retrieval_fields.sql rebuilds
+    exactly such a column, with the same predicate. Postgres only.
+    """
+    if sync_conn.dialect.name != "postgresql":
+        return False
+    from sqlalchemy import text
+
+    row = sync_conn.execute(
+        text(
+            "SELECT pg_get_expr(d.adbin, d.adrelid) FROM pg_attribute a "
+            "JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum "
+            "WHERE a.attrelid = to_regclass('procedural_memory') "
+            "AND a.attname = 'retrieval_tsv' AND NOT a.attisdropped"
+        )
+    ).first()
+    return row is not None and "regexp_replace" not in (row[0] or "")
+
+
+# Data a migration script backfills and create_all cannot: (description,
+# script, probe(sync_conn) -> True while the backfill is still pending).
+_DATA_MIGRATION_CHECKS = [
+    (
+        "sessions written before this version have no conversation_session row "
+        "(they would never be learned from)",
+        _CONVERSATION_SESSION_SQL,
+        _conversation_sessions_need_backfill,
+    ),
+    (
+        "procedural_memory.retrieval_tsv was generated by an earlier expression "
+        "(without regexp_replace), so skill keywords are indexed as JSON escapes",
+        _SKILL_RETRIEVAL_FIELDS_SQL,
+        _retrieval_tsv_is_outdated,
+    ),
+]
+
+
+def _find_pending_data_migrations(sync_conn) -> List[Tuple[str, str]]:
+    """(description, script) of every data backfill that has not been run."""
+    inspector = sqlalchemy_inspect(sync_conn)
+    tables = set(inspector.get_table_names())
+    if not {"conversation_message", "conversation_session"} <= tables:
+        return []
+    return [
+        (description, script)
+        for description, script, probe in _DATA_MIGRATION_CHECKS
+        if probe(sync_conn)
+    ]
+
+
+def _migration_hint(table_name: str, column_name: str) -> str:
+    """The migration script that adds ``table_name.column_name``."""
+    return _MIGRATION_HINTS.get((table_name, column_name), _UNKNOWN_MIGRATION_HINT)
+
+
+def _describe_schema_drift(
+    missing: Dict[str, List[str]],
+    dialect_name: str,
+    pending_data: Optional[List[Tuple[str, str]]] = None,
+) -> List[str]:
+    """One line per drifted table naming its missing columns and the scripts to run,
+    then one line per pending data backfill (run those scripts after the column
+    scripts).
+
+    Scripts are listed once per table, in the order they must run (their order
+    in ``_MIGRATION_HINTS``).
+    """
+    script_order = {script: index for index, script in enumerate(dict.fromkeys(_MIGRATION_HINTS.values()))}
+    lines = []
+    for table_name, columns in sorted(missing.items()):
+        scripts = sorted(
+            {_MIGRATION_HINTS[(table_name, c)] for c in columns if (table_name, c) in _MIGRATION_HINTS},
+            key=script_order.__getitem__,
+        )
+        unregistered = [c for c in columns if (table_name, c) not in _MIGRATION_HINTS]
+        advice = []
+        if scripts:
+            advice.append("run " + ", then ".join(scripts))
+        if unregistered:
+            advice.append(f"no registered script for {unregistered}: {_UNKNOWN_MIGRATION_HINT}")
+        lines.append(f"  - table '{table_name}' is missing columns {columns}; {'; '.join(advice)}")
+    for description, script in pending_data or []:
+        lines.append(f"  - data: {description}; run {script}")
+    if dialect_name == "sqlite":
+        lines.append(
+            "  Note: these scripts are PostgreSQL SQL. For a local SQLite database, back it up "
+            "and recreate it (e.g. `python scripts/reset_database.py sqlite`); create_all then "
+            "builds the current schema at startup."
+        )
+    return lines
 
 
 def _find_missing_columns(sync_conn) -> Dict[str, List[str]]:
@@ -487,18 +682,19 @@ async def ensure_tables_created():
 
     Call from FastAPI lifespan startup. Raises RuntimeError with the exact
     migration scripts to run when an existing database is missing columns the
-    ORM requires (i.e. the operator upgraded without running migrations).
+    ORM requires, or data a migration script backfills (i.e. the operator
+    upgraded without running migrations). The scripts are idempotent, so
+    running every listed one and restarting is always safe.
     """
     if USE_PGLITE:
         return
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         missing = await conn.run_sync(_find_missing_columns)
-    if missing:
-        lines = []
-        for table_name, columns in sorted(missing.items()):
-            hint = _MIGRATION_HINTS.get(table_name, "see scripts/migrate_*.sql")
-            lines.append(f"  - table '{table_name}' is missing columns {columns}; run {hint}")
+        pending_data = await conn.run_sync(_find_pending_data_migrations)
+        dialect_name = conn.dialect.name
+    if missing or pending_data:
+        lines = _describe_schema_drift(missing, dialect_name, pending_data)
         raise RuntimeError(
             "Database schema is out of date for this MIRIX version. "
             "Startup aborted so requests don't fail mid-flight with UndefinedColumn errors.\n"
@@ -588,6 +784,11 @@ class AsyncServer(Server):
 
         # CloudFileManager
         self.cloud_file_mapping_manager = CloudFileMappingManager()
+
+        # Retrieval log: one row per memory retrieval.
+        from mirix.services.retrieval_log_manager import RetrievalLogManager
+
+        self.retrieval_log_manager = RetrievalLogManager()
 
         # Managers that interface with parallelism
         self.per_agent_lock_manager = PerAgentLockManager()

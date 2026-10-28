@@ -866,11 +866,12 @@ class SqlalchemyBase(CommonSqlalchemyMetaMixins, Base):
                     await cache_provider.set_hash(cache_key, data, ttl=settings.redis_ttl_tools)
                 return
 
-            # JSON-BASED CACHING (memory tables with embeddings)
+            # JSON-BASED CACHING (memory tables with embeddings). Procedural
+            # memory is deliberately absent: skills are read and written in the
+            # database only, so no skill document may ever reach the cache.
             memory_tables = {
                 "episodic_memory": cache_provider.EPISODIC_PREFIX,
                 "semantic_memory": cache_provider.SEMANTIC_PREFIX,
-                "procedural_memory": cache_provider.PROCEDURAL_PREFIX,
                 "resource_memory": cache_provider.RESOURCE_PREFIX,
                 "knowledge_vault": cache_provider.KNOWLEDGE_PREFIX,
                 "raw_memory": cache_provider.RAW_MEMORY_PREFIX,

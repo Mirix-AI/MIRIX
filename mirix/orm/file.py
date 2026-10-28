@@ -1,6 +1,6 @@
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import Integer, String
+from sqlalchemy import ForeignKey, Index, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from mirix.orm.mixins import OrganizationMixin
@@ -17,6 +17,16 @@ class FileMetadata(SqlalchemyBase, OrganizationMixin):
     __tablename__ = "files"
     __pydantic_model__ = PydanticFileMetadata
 
+    user_id: Mapped[Optional[str]] = mapped_column(
+        String,
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+        doc="The user whose data this file belongs to (e.g. an image stored from "
+        "their conversation). NULL for files not attributable to a user. "
+        "SET NULL rather than CASCADE: a cascaded row delete would orphan the "
+        "file on disk with no record left to find it; user-data cleanup "
+        "deletes the disk file and the row explicitly.",
+    )
     source_id: Mapped[Optional[str]] = mapped_column(
         String,
         nullable=True,
@@ -47,3 +57,6 @@ class FileMetadata(SqlalchemyBase, OrganizationMixin):
 
     # relationships
     organization: Mapped["Organization"] = relationship("Organization", back_populates="files", lazy="selectin")
+
+    # "All images of this user" — orphan cleanup on user-data deletion.
+    __table_args__ = (Index("ix_files_user_id", "user_id"),)

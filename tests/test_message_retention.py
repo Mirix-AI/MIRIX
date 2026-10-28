@@ -120,8 +120,23 @@ def message_manager():
     return MessageManager()
 
 
+@pytest_asyncio.fixture(scope="module", loop_scope="module")
+async def database(tmp_path_factory):
+    """A fresh, initialized MIRIX database (``db_isolation.isolated_database``):
+    the fresh Postgres of ``scripts/run_pg_integration_tests.sh``, or a throwaway
+    SQLite file without it — never the developer's ``~/.mirix``. A fresh
+    database has no tables until server startup creates them."""
+    from db_isolation import isolated_database
+    from mirix.server import server
+
+    await server.engine.dispose(close=False)  # this module's loop
+    async with isolated_database(tmp_path_factory.mktemp("retention")) as engine:
+        yield engine
+    await server.engine.dispose()
+
+
 @pytest_asyncio.fixture(scope="module")
-async def test_actor():
+async def test_actor(database):
     from mirix.schemas.organization import Organization as PydanticOrganization
     from mirix.services.client_manager import ClientManager
     from mirix.services.organization_manager import OrganizationManager
@@ -181,6 +196,8 @@ async def user_b(test_actor):
 async def meta_agent(test_actor):
     """A meta_memory_agent-shaped agent (canonical conversation recipient)."""
     from mirix.schemas.agent import AgentType, CreateAgent
+    from mirix.schemas.embedding_config import EmbeddingConfig
+    from mirix.schemas.llm_config import LLMConfig
     from mirix.services.agent_manager import AgentManager
 
     agent_mgr = AgentManager()
@@ -190,8 +207,18 @@ async def meta_agent(test_actor):
             agent_type=AgentType.meta_memory_agent,
             description="Test meta agent for retention",
             system=None,
-            llm_config=None,
-            embedding_config=None,
+            llm_config=LLMConfig(
+                model="gpt-4o-mini",
+                model_endpoint_type="openai",
+                model_endpoint="http://127.0.0.1:9/v1",
+                context_window=128_000,
+            ),
+            embedding_config=EmbeddingConfig(
+                embedding_model="text-embedding-3-small",
+                embedding_endpoint_type="openai",
+                embedding_endpoint="http://127.0.0.1:9/v1",
+                embedding_dim=1536,
+            ),
         ),
         actor=test_actor,
     )
@@ -221,7 +248,7 @@ pytestmark_integration = pytest.mark.integration
 
 class TestDeleteDetachedRetention:
     @pytest.mark.integration
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="module")
     async def test_retains_last_n_sessions_and_scopes_per_user(
         self, message_manager, test_actor, meta_agent, user_a, user_b
     ):
@@ -330,7 +357,7 @@ class TestDeleteDetachedRetention:
             )
 
     @pytest.mark.integration
-    @pytest.mark.asyncio
+    @pytest.mark.asyncio(loop_scope="module")
     async def test_retain_zero_deletes_all_detached(
         self, message_manager, test_actor, meta_agent, user_a
     ):

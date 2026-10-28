@@ -1,20 +1,44 @@
+"""Embedding models (every one is length-guarded).
+
+:func:`embedding_model` is the one factory every call site uses. It builds
+the provider's model for an :class:`EmbeddingConfig` and wraps it in
+:class:`~mirix.embedding_guard.GuardedEmbedding`, so an input above the
+model's token limit is embedded in chunks and merged, and every vector comes
+back ``MAX_EMBEDDING_DIM`` wide.
+
+Every embedding call has ONE retry layer, the embedding retry policy (3
+backoff retries, 1 s doubling to 8 s; ``retry_call(operation="embedding")``):
+the provider SDKs' own retries are switched off (``max_retries=0`` for the
+OpenAI / Azure clients and llama_index's ``OpenAIEmbedding``, one attempt for
+llama_index's ``GoogleGenAIEmbedding``), and a call made inside an enclosing
+``retry_call(operation="embedding")`` is made once, that layer retrying it
+(one query embedding under a sustained 429 used to cost up to 440
+provider calls through the ``openai`` type).
+
+Every attempt waits at most ``MIRIX_EMBEDDING_TIMEOUT_SECONDS`` (default 60 s;
+the connect at most 5 s) for its answer, whatever the embedding type
+(:func:`embedding_http_timeout`). A deployment behind a proxy that enforces its
+own call deadline (the eval gateway) sets it above that deadline, so a
+slow call is answered by the proxy instead of being abandoned and sent again.
+"""
+
 import uuid
 from typing import Any, List, Optional
 
+import httpx
 import numpy as np
-import tiktoken
 
-from mirix.constants import (
-    EMBEDDING_TO_TOKENIZER_DEFAULT,
-    EMBEDDING_TO_TOKENIZER_MAP,
-    MAX_EMBEDDING_DIM,
-)
-from mirix.llm_api.llm_api_tools import retry_with_exponential_backoff
+from mirix.constants import MAX_EMBEDDING_DIM
+from mirix.embedding_guard import GuardedEmbedding
 from mirix.log import get_logger
-from mirix.observability.context import get_trace_context, mark_observation_as_child
+from mirix.observability.context import (
+    get_trace_context,
+    mark_observation_as_child,
+    outbound_session_headers,
+)
 from mirix.observability.langfuse_client import get_langfuse_client
 from mirix.schemas.embedding_config import EmbeddingConfig
-from mirix.utils import is_valid_url, printd
+from mirix.utils import is_valid_url
 
 logger = get_logger(__name__)
 
@@ -28,24 +52,72 @@ def is_embedding_tracing_enabled() -> bool:
     return trace_context is not None and trace_context.get("trace_id") is not None
 
 
-async def embedding_with_retry(embedding_func) -> List[float]:
-    """Execute async embedding function with retry logic (no tracing)."""
-    from mirix.settings import settings
-
-    wrapped = retry_with_exponential_backoff(
-        embedding_func,
-        initial_delay=settings.llm_retry_backoff_factor,
-        max_retries=settings.llm_retry_limit,
-        error_codes=(429, 500, 502, 503, 504),
+def raise_for_embedding_status(response: httpx.Response, provider: str) -> None:
+    """Raise ``httpx.HTTPStatusError`` unless the embedding endpoint answered
+    200: an error body must never be parsed as an embedding. 429 / 5xx
+    are then retried by :func:`embedding_with_retry`; the message carries the
+    status and the start of the body, never the request's credentials."""
+    if response.status_code == 200:
+        return
+    body = response.text[:500] if response.content else ""
+    raise httpx.HTTPStatusError(
+        f"{provider} embeddings endpoint answered HTTP {response.status_code}"
+        f" for {str(response.request.url).split('?', 1)[0]}: {body}",
+        request=response.request,
+        response=response,
     )
-    return await wrapped()
+
+
+#: Connecting to an embedding endpoint never waits longer than this: an
+#: unreachable host is a network error in seconds, not after the whole
+#: per-attempt timeout.
+EMBEDDING_CONNECT_TIMEOUT_SECONDS = 5.0
+
+
+def embedding_timeout_seconds() -> float:
+    """The per-attempt timeout of one embedding call, for every embedding type
+    (``MIRIX_EMBEDDING_TIMEOUT_SECONDS``, default 60 s), read at call time."""
+    from mirix import constants
+
+    return float(constants.EMBEDDING_TIMEOUT_SECONDS)
+
+
+def embedding_http_timeout(seconds: Optional[float] = None) -> httpx.Timeout:
+    """The HTTP timeout of one embedding call: read, write and pool waits up to
+    ``seconds`` (default :func:`embedding_timeout_seconds`), the connect at
+    most :data:`EMBEDDING_CONNECT_TIMEOUT_SECONDS`. ``httpx`` and the OpenAI
+    SDKs (``AsyncOpenAI`` / ``AsyncAzureOpenAI``) take it as is."""
+    seconds = embedding_timeout_seconds() if seconds is None else float(seconds)
+    return httpx.Timeout(
+        seconds, connect=min(EMBEDDING_CONNECT_TIMEOUT_SECONDS, seconds)
+    )
+
+
+async def embedding_with_retry(embedding_func) -> List[float]:
+    """Await one embedding call under the single embedding retry policy.
+
+    Inside ``retry_call(operation="embedding")`` (skill writes and queries,
+    the re-embedding pass, a guarded chunked call) that layer owns the
+    retries: the call is made once here. Anywhere else this IS that layer:
+    ``retry_call(operation="embedding")`` retries a transient failure (a
+    network error, 408/429/5xx — as ``httpx`` or as an OpenAI / Google SDK
+    error —, a timeout) 3 times with backoff and re-raises anything else at
+    once. Either way retries are never stacked."""
+    from mirix.services.retry_policy import embedding_retries_owned, retry_call
+
+    if embedding_retries_owned():
+        return await embedding_func()
+    # No stage of its own: a retry is recorded under the enclosing block's
+    # (a learning run's stage, a retrieval), if any.
+    return await retry_call(embedding_func, operation="embedding")
 
 
 async def traced_embedding_with_retry(
     model: str, provider: str, text: str, embedding_func, endpoint: Optional[str] = None
 ) -> List[float]:
     """
-    Execute async embedding with Langfuse tracing and retry logic.
+    Execute async embedding with Langfuse tracing and the single retry
+    layer (see :func:`embedding_with_retry`).
 
     Each retry attempt is traced individually so failed attempts are visible.
     Langfuse failures are handled gracefully - they won't break embedding functionality.
@@ -55,8 +127,6 @@ async def traced_embedding_with_retry(
     from typing import cast
 
     from langfuse.types import TraceContext
-
-    from mirix.settings import settings
 
     langfuse = get_langfuse_client()
     trace_context = get_trace_context()
@@ -123,60 +193,18 @@ async def traced_embedding_with_retry(
                     logger.error(f"Failed to update LangFuse trace with error. Continuing: {langfuse_err}")
                 raise
 
-    wrapped = retry_with_exponential_backoff(
-        traced_call,
-        initial_delay=settings.llm_retry_backoff_factor,
-        max_retries=settings.llm_retry_limit,
-        error_codes=(429, 500, 502, 503, 504),
-    )
-    return await wrapped()
+    from mirix.services.retry_policy import embedding_retries_owned, retry_call
+
+    if embedding_retries_owned():  # the caller's retry_call retries
+        return await traced_call()
+    return await retry_call(traced_call, operation="embedding")
 
 
-def parse_and_chunk_text(text: str, chunk_size: int) -> List[str]:
-    from llama_index.core import Document as LlamaIndexDocument
-    from llama_index.core.node_parser import SentenceSplitter
-
-    parser = SentenceSplitter(chunk_size=chunk_size)
-    llama_index_docs = [LlamaIndexDocument(text=text)]
-    nodes = parser.get_nodes_from_documents(llama_index_docs)
-    return [n.text for n in nodes]
-
-
-def truncate_text(text: str, max_length: int, encoding) -> str:
-    # truncate the text based on max_length and encoding
-    encoded_text = encoding.encode(text)[:max_length]
-    return encoding.decode(encoded_text)
-
-
-def check_and_split_text(text: str, embedding_model: str) -> List[str]:
-    """Split text into chunks of max_length tokens or less"""
-
-    if embedding_model in EMBEDDING_TO_TOKENIZER_MAP:
-        encoding = tiktoken.get_encoding(EMBEDDING_TO_TOKENIZER_MAP[embedding_model])
-    else:
-        logger.debug(
-            f"Warning: couldn't find tokenizer for model {embedding_model}, using default tokenizer {EMBEDDING_TO_TOKENIZER_DEFAULT}"
-        )
-        encoding = tiktoken.get_encoding(EMBEDDING_TO_TOKENIZER_DEFAULT)
-
-    num_tokens = len(encoding.encode(text))
-
-    # determine max length
-    if hasattr(encoding, "max_length"):
-        # TODO(fix) this is broken
-        max_length = encoding.max_length
-    else:
-        # TODO: figure out the real number
-        printd(f"Warning: couldn't find max_length for tokenizer {embedding_model}, using default max_length 8191")
-        max_length = 8191
-
-    # truncate text if too long
-    if num_tokens > max_length:
-        logger.debug(f"Warning: text is too long ({num_tokens} tokens), truncating to {max_length} tokens.")
-        # Truncate the text
-        text = truncate_text(text, max_length, encoding)
-
-    return [text]
+def _session_headers() -> dict:
+    """``{"extra_headers": ...}`` for an OpenAI SDK call, with the served conversation
+    session (``MIRIX_LLM_SESSION_HEADER``, off by default), or ``{}``."""
+    headers = outbound_session_headers()
+    return {"extra_headers": headers} if headers else {}
 
 
 class OpenAIEmbeddingWithCustomAuth:
@@ -233,9 +261,13 @@ class OpenAIEmbeddingWithCustomAuth:
                 api_key="DUMMY_API_KEY",
                 base_url=self.config.embedding_endpoint,
                 default_headers=auth_headers,
+                max_retries=0,  # one retry layer: embedding_with_retry's
+                timeout=embedding_http_timeout(),
             )
 
-            response = await client.embeddings.create(model=self.model, input=text)
+            response = await client.embeddings.create(
+                model=self.model, input=text, **_session_headers()
+            )
             return response.data[0].embedding
 
         if is_embedding_tracing_enabled():
@@ -264,7 +296,7 @@ class EmbeddingEndpoint:
         model: str,
         base_url: str,
         user: str,
-        timeout: float = 60.0,
+        timeout: Optional[float] = None,
         langfuse_model: Optional[str] = None,
         **kwargs: Any,
     ):
@@ -279,6 +311,7 @@ class EmbeddingEndpoint:
         self._langfuse_model = langfuse_model
         self._user = user
         self._base_url = base_url
+        # None: MIRIX_EMBEDDING_TIMEOUT_SECONDS, read at call time.
         self._timeout = timeout
 
     async def _call_api(self, text: str) -> List[float]:
@@ -286,9 +319,7 @@ class EmbeddingEndpoint:
             raise ValueError(
                 f"Embeddings endpoint does not have a valid URL (set to: '{self._base_url}'). Make sure embedding_endpoint is set correctly in your Mirix config."
             )
-        import httpx
-
-        headers = {"Content-Type": "application/json"}
+        headers = {**outbound_session_headers(), "Content-Type": "application/json"}
         json_data = {"input": text, "model": self.model_name, "user": self._user}
 
         async with httpx.AsyncClient() as client:
@@ -296,9 +327,10 @@ class EmbeddingEndpoint:
                 f"{self._base_url}/embeddings",
                 headers=headers,
                 json=json_data,
-                timeout=self._timeout,
+                timeout=embedding_http_timeout(self._timeout),
             )
 
+        raise_for_embedding_status(response, "hugging-face")
         response_json = response.json()
 
         if isinstance(response_json, list):
@@ -336,9 +368,8 @@ class OpenRouterEmbedding(EmbeddingEndpoint):
         self._api_key = api_key
 
     async def _call_api(self, text: str) -> List[float]:
-        import httpx
-
         headers = {
+            **outbound_session_headers(),
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self._api_key}",
         }
@@ -349,9 +380,11 @@ class OpenRouterEmbedding(EmbeddingEndpoint):
                 f"{self._base_url}/embeddings",
                 headers=headers,
                 json=json_data,
-                timeout=self._timeout,
+                timeout=embedding_http_timeout(self._timeout),
             )
 
+        # A non-200 answer (an error body) is an error, never parsed.
+        raise_for_embedding_status(response, "OpenRouter")
         response_json = response.json()
         if isinstance(response_json, dict):
             try:
@@ -372,14 +405,22 @@ class AzureOpenAIEmbedding:
     ):
         from openai import AsyncAzureOpenAI
 
-        self.client = AsyncAzureOpenAI(api_key=api_key, api_version=api_version, azure_endpoint=api_endpoint)
+        self.client = AsyncAzureOpenAI(
+            api_key=api_key,
+            api_version=api_version,
+            azure_endpoint=api_endpoint,
+            max_retries=0,  # one retry layer: embedding_with_retry's
+            timeout=embedding_http_timeout(),
+        )
         self.model = model
         self._langfuse_model = langfuse_model
 
     async def get_text_embedding(self, text: str):
 
         async def _do_embedding():
-            response = await self.client.embeddings.create(input=[text], model=self.model)
+            response = await self.client.embeddings.create(
+                input=[text], model=self.model, **_session_headers()
+            )
             return response.data[0].embedding
 
         if is_embedding_tracing_enabled():
@@ -415,9 +456,7 @@ class OllamaEmbeddings:
     async def get_text_embedding(self, text: str):
 
         async def _do_embedding():
-            import httpx
-
-            headers = {"Content-Type": "application/json"}
+            headers = {**outbound_session_headers(), "Content-Type": "application/json"}
             json_data = {"model": self.model, "prompt": text}
             json_data.update(self.ollama_additional_kwargs)
 
@@ -426,8 +465,10 @@ class OllamaEmbeddings:
                     f"{self.base_url}/api/embeddings",
                     headers=headers,
                     json=json_data,
+                    timeout=embedding_http_timeout(),
                 )
 
+            raise_for_embedding_status(response, "Ollama")
             response_json = response.json()
             return response_json["embedding"]
 
@@ -445,13 +486,38 @@ class OllamaEmbeddings:
 
 class AsyncLlamaIndexEmbeddingAdapter:
     """Adapter that wraps LlamaIndex embedding models to provide a consistent
-    async ``get_text_embedding`` interface via ``aget_text_embedding``."""
+    async ``get_text_embedding`` interface via ``aget_text_embedding``.
 
-    def __init__(self, llama_index_model):
+    The wrapped model must make ONE attempt per call (its own retries off,
+    see :func:`_provider_embedding_model`): the call goes through
+    :func:`embedding_with_retry`, the single retry layer."""
+
+    def __init__(
+        self,
+        llama_index_model,
+        *,
+        provider: str = "llama_index",
+        model: Optional[str] = None,
+        endpoint: Optional[str] = None,
+    ):
         self._model = llama_index_model
+        self._provider = provider
+        self._model_label = model or getattr(llama_index_model, "model_name", None) or provider
+        self._endpoint = endpoint
 
     async def get_text_embedding(self, text: str) -> List[float]:
-        return await self._model.aget_text_embedding(text)
+        async def _do_embedding() -> List[float]:
+            return await self._model.aget_text_embedding(text)
+
+        if is_embedding_tracing_enabled():
+            return await traced_embedding_with_retry(
+                model=self._model_label,
+                provider=self._provider,
+                text=text,
+                embedding_func=_do_embedding,
+                endpoint=self._endpoint,
+            )
+        return await embedding_with_retry(_do_embedding)
 
 
 async def query_embedding(embedding_model, query_text: str):
@@ -462,8 +528,24 @@ async def query_embedding(embedding_model, query_text: str):
     return query_vec
 
 
-async def embedding_model(config: EmbeddingConfig, user_id: Optional[uuid.UUID] = None):
-    """Return LlamaIndex embedding model to use for embeddings"""
+async def embedding_model(
+    config: EmbeddingConfig, user_id: Optional[uuid.UUID] = None
+) -> GuardedEmbedding:
+    """The embedding model of ``config``, behind the length guard.
+
+    ``get_text_embedding(text)`` returns a ``MAX_EMBEDDING_DIM``-wide vector;
+    a text above the model's token limit (``MIRIX_EMBEDDING_TOKEN_LIMITS``) is
+    embedded in chunks and merged (see :mod:`mirix.embedding_guard`). Every
+    call site goes through here, so none needs its own guard.
+    """
+    provider_model = await _provider_embedding_model(config, user_id)
+    return GuardedEmbedding(provider_model, model_name=config.embedding_model)
+
+
+async def _provider_embedding_model(
+    config: EmbeddingConfig, user_id: Optional[uuid.UUID] = None
+):
+    """The provider's own embedding model for ``config`` (unguarded)."""
 
     endpoint_type = config.embedding_endpoint_type
 
@@ -489,12 +571,22 @@ async def embedding_model(config: EmbeddingConfig, user_id: Optional[uuid.UUID] 
         from llama_index.embeddings.openai import OpenAIEmbedding
 
         additional_kwargs = {"user_id": user_id} if user_id else {}
+        # max_retries=0: one attempt per call — no tenacity loop (10 attempts
+        # within 60 s) and no SDK retries (its AsyncOpenAI gets the same
+        # max_retries); embedding_with_retry is the only retry layer.
         model = OpenAIEmbedding(
             api_base=config.embedding_endpoint,
             api_key=api_key,
             additional_kwargs=additional_kwargs,
+            max_retries=0,
+            timeout=embedding_timeout_seconds(),
         )
-        return AsyncLlamaIndexEmbeddingAdapter(model)
+        return AsyncLlamaIndexEmbeddingAdapter(
+            model,
+            provider="openai",
+            model=config.langfuse_model or getattr(model, "model_name", None),
+            endpoint=config.embedding_endpoint,
+        )
 
     elif endpoint_type == "google_ai":
         from llama_index.embeddings.google_genai import GoogleGenAIEmbedding
@@ -507,12 +599,29 @@ async def embedding_model(config: EmbeddingConfig, user_id: Optional[uuid.UUID] 
             override_key = await ProviderManager().get_gemini_override_key()
             api_key = override_key if override_key else model_settings.gemini_api_key
 
+        from google.genai import types as genai_types
+
+        # retries=1: one attempt per call (its tenacity loop makes 3 by
+        # default; the google-genai client itself retries only when given
+        # retry_options); embedding_with_retry is the only retry layer.
+        # llama_index never hands its own ``timeout`` to the google-genai
+        # client, which then waits without bound: the per-attempt timeout goes
+        # in the client's HTTP options (milliseconds).
+        seconds = embedding_timeout_seconds()
         model = GoogleGenAIEmbedding(
             model_name=config.embedding_model,
             api_key=api_key,
             api_base=config.embedding_endpoint,
+            retries=1,
+            timeout=max(1, int(seconds)),
+            http_options=genai_types.HttpOptions(timeout=max(1, int(seconds * 1000))),
         )
-        return AsyncLlamaIndexEmbeddingAdapter(model)
+        return AsyncLlamaIndexEmbeddingAdapter(
+            model,
+            provider="google_ai",
+            model=config.langfuse_model or config.embedding_model,
+            endpoint=config.embedding_endpoint,
+        )
 
     elif endpoint_type == "azure":
         assert all(
@@ -551,12 +660,42 @@ async def embedding_model(config: EmbeddingConfig, user_id: Optional[uuid.UUID] 
             langfuse_model=config.langfuse_model,
         )
     elif endpoint_type == "openrouter":
-        api_key = config.api_key or model_settings.openai_api_key
+        # OpenRouter's OpenAI-compatible /embeddings endpoint (Bearer auth).
+        # Key: the config's, else OPENROUTER_API_KEY. An OpenAI key is never
+        # sent to openrouter.ai by default: OPENAI_API_KEY is used only when
+        # the operator set the embedding endpoint explicitly (the historical
+        # setup of deployments that put an OpenRouter key there).
+        import os
+
+        from mirix.errors import MirixConfigurationError
+
+        api_key = (
+            config.api_key
+            or model_settings.openrouter_api_key
+            or os.environ.get("OPENROUTER_API_KEY")
+        )
+        if not api_key and config.embedding_endpoint:
+            api_key = model_settings.openai_api_key
+            if api_key:
+                logger.warning(
+                    "openrouter embeddings: no OpenRouter key; using OPENAI_API_KEY "
+                    "for the explicitly configured endpoint %s",
+                    config.embedding_endpoint,
+                )
+        if not api_key:
+            raise MirixConfigurationError(
+                "OpenRouter embeddings need an OpenRouter API key: set "
+                "OPENROUTER_API_KEY or the embedding config's api_key",
+                missing_fields=["openrouter_api_key"],
+            )
+        from mirix.llm_api.openai_client import OPENROUTER_DEFAULT_BASE_URL
+
         return OpenRouterEmbedding(
             api_key=api_key,
             model=config.embedding_model,
-            base_url=config.embedding_endpoint,
+            base_url=config.embedding_endpoint or OPENROUTER_DEFAULT_BASE_URL,
             user=str(user_id) if user_id else "",
+            langfuse_model=config.langfuse_model,
         )
 
     elif endpoint_type == "ollama":

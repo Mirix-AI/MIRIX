@@ -1,5 +1,7 @@
+import logging
 import os
 from logging import CRITICAL, DEBUG, ERROR, INFO, NOTSET, WARN, WARNING
+from typing import Optional
 
 # ============================================================================
 # Client Constants - Used by both client and server
@@ -84,21 +86,6 @@ OPENAI_CONTEXT_WINDOW_ERROR_SUBSTRING = "maximum context length"
 IN_CONTEXT_MEMORY_KEYWORD = "CORE_MEMORY"
 
 MAX_CHAINING_STEPS = int(os.getenv("MAX_CHAINING_STEPS", "10"))
-# Automatic procedural-memory evolution drives one persistent procedural agent
-# statelessly per evolution step. A curator pass can survey existing skills and
-# create/edit a few, so it needs a larger chaining (tool-use) budget than the
-# default chat path. With the skill tools correctly bound the curator converges
-# in ~2-5 steps. The cap counts LLM turns; an edit-heavy run is serial
-# (skill_list -> per edit skill_read + skill_edit -> finish_memory_update), so the
-# worst case is ~2N+2 turns for N edits. With the default edit budget capped at
-# SKILL_EDIT_BUDGET_MAX (6) that is ~14, so 15 leaves one turn of headroom while
-# still BOUNDING a pathological spin to ~15*~12s (~3 min) instead of running the
-# loop out to a 600s timeout. Overridable via env; only the procedural evolution
-# path passes this into step(max_chaining_steps=...), so normal meta-agent flow
-# remains governed by MAX_CHAINING_STEPS.
-SKILL_EVOLVE_MAX_CHAINING_STEPS = int(
-    os.getenv("SKILL_EVOLVE_MAX_CHAINING_STEPS", "15")
-)
 MAX_RETRIEVAL_LIMIT_IN_SYSTEM = 10
 
 # tokenizers
@@ -130,6 +117,14 @@ EPISODIC_MEMORY_TOOLS = [
     "check_episodic_memory",
 ]
 SKILL_TOOLS = ["skill_list", "skill_read", "skill_create", "skill_edit", "skill_delete"]
+# Tools of the procedural agent that work only inside a skill curation batch.
+# Not in SKILL_TOOLS: the auto-dream agent never curates a batch.
+SKILL_CURATION_TOOLS = ["experience_triage"]
+# The only tools a skill curation batch offers and runs (the curator agent's
+# tool_allowlist): the skill tools, triage and the finish call. The procedural
+# agent's other tools (search_in_memory, list_memory_within_timerange) search
+# memories a curation batch has no use for.
+SKILL_CURATOR_TOOLS = SKILL_TOOLS + SKILL_CURATION_TOOLS + ["finish_memory_update"]
 RESOURCE_MEMORY_TOOLS = ["resource_memory_insert", "resource_memory_update"]
 KNOWLEDGE_VAULT_TOOLS = ["knowledge_vault_insert", "knowledge_vault_update"]
 SEMANTIC_MEMORY_TOOLS = [
@@ -166,6 +161,7 @@ ALL_TOOLS = list(
         + CORE_MEMORY_TOOLS
         + EPISODIC_MEMORY_TOOLS
         + SKILL_TOOLS
+        + SKILL_CURATION_TOOLS
         + RESOURCE_MEMORY_TOOLS
         + KNOWLEDGE_VAULT_TOOLS
         + SEMANTIC_MEMORY_TOOLS
@@ -247,6 +243,13 @@ REQ_HEARTBEAT_MESSAGE = f"{NON_USER_MSG_PREFIX}Function called using continue_ch
 FUNC_FAILED_HEARTBEAT_MESSAGE = (
     f"{NON_USER_MSG_PREFIX}Function call failed, returning control"
 )
+# A step with a hard step cap (the skill curator) ends only through
+# finish_memory_update, the context limit or the step cap.
+UNFINISHED_TURN_HEARTBEAT_MESSAGE = (
+    f"{NON_USER_MSG_PREFIX}You ended your turn without calling "
+    "finish_memory_update(). The work is not finished until you call it: "
+    "continue with the remaining items, then call finish_memory_update()."
+)
 
 
 RETRIEVAL_QUERY_DEFAULT_PAGE_SIZE = 5
@@ -302,83 +305,309 @@ BUILD_EMBEDDINGS_FOR_MEMORY = os.getenv(
 SKILL_TRIGGER_MESSAGE_THRESHOLD = int(
     os.getenv("SKILL_TRIGGER_MESSAGE_THRESHOLD", "10")
 )
-# Number of *sessions* (distinct message.session_id values) that must accumulate
-# on an agent for a given user before procedural-memory extraction auto-fires.
-# Counted against a persisted cursor (agent_trigger_state), so restarts and
-# multiple workers all see the same value.
+# Number of ENDED, not-yet-distilled task sessions that must be pending in one
+# (organization, user, meta agent) scope before a skill learning run fires
+# automatically. Strict: below the threshold nothing fires, no
+# matter how long the sessions wait — use POST /memory/skills/flush to learn
+# from fewer. Sessions already claimed by a queued/running learning run do not
+# count.
 SKILL_TRIGGER_SESSION_THRESHOLD = int(os.getenv("SKILL_TRIGGER_SESSION_THRESHOLD", "5"))
+
+# ---------------------------------------------------------------------------
+# Conversation-session lifecycle and skill learning runs.
+# ---------------------------------------------------------------------------
+DEFAULT_SESSION_IDLE_TIMEOUT_SECONDS = 172800
+# How often a live learning run refreshes its heartbeat (every 30 s).
+LEARNING_RUN_HEARTBEAT_SECONDS = 30
+# A lease must outlast several heartbeats, or every sweep would reclaim runs
+# that are alive (and their sessions would be claimed twice).
+MIN_LEASE_HEARTBEATS = 3
+
+
+def _positive_int_setting(name: str, raw: Optional[str], default: int) -> int:
+    """``raw`` as a positive int; the default (with a warning) otherwise."""
+    try:
+        value = int(raw) if raw is not None and str(raw).strip() else default
+    except ValueError:
+        value = 0
+    if value <= 0:
+        logging.getLogger(__name__).warning(
+            "%s=%r is not a positive integer; using the default %d", name, raw, default
+        )
+        return default
+    return value
+
+
+def _lease_seconds_setting(raw: Optional[str], heartbeat_seconds: int) -> int:
+    """The learning-run lease, at least MIN_LEASE_HEARTBEATS heartbeats long.
+
+    A shorter lease (e.g. MIRIX_LEARNING_RUN_LEASE_SECONDS=20 to speed up
+    recovery) would let a sweep reclaim runs that are alive, so it is raised to
+    the minimum with a warning.
+    """
+    lease = _positive_int_setting("MIRIX_LEARNING_RUN_LEASE_SECONDS", raw, 300)
+    minimum = MIN_LEASE_HEARTBEATS * heartbeat_seconds
+    if lease < minimum:
+        logging.getLogger(__name__).warning(
+            "MIRIX_LEARNING_RUN_LEASE_SECONDS=%d is shorter than %d heartbeats of "
+            "%d s; using %d s so live runs are never reclaimed",
+            lease,
+            MIN_LEASE_HEARTBEATS,
+            heartbeat_seconds,
+            minimum,
+        )
+        return minimum
+    return lease
+
+
+# A session with no message for this long counts as ended ("idle"); the first
+# check that sees it writes closed_at = last_message_at + timeout. Must
+# be positive: with 0 every session would end the moment it is written.
+SESSION_IDLE_TIMEOUT_SECONDS = _positive_int_setting(
+    "MIRIX_SESSION_IDLE_TIMEOUT_SECONDS",
+    os.getenv("MIRIX_SESSION_IDLE_TIMEOUT_SECONDS"),
+    DEFAULT_SESSION_IDLE_TIMEOUT_SECONDS,
+)
+# Period of the background sweeper started in the FastAPI lifespan: it runs the
+# trigger check for every scope that has pending sessions. <= 0 disables the
+# periodic sweep (lease recovery keeps its own cadence, see below).
+SESSION_SWEEP_INTERVAL_SECONDS = int(
+    os.getenv("MIRIX_SESSION_SWEEP_INTERVAL_SECONDS", "3600")
+)
+# A queued/running learning run whose heartbeat is older than this is marked
+# failed ('lease_expired'), which releases the sessions it claimed.
+# Recovery runs at startup and then every half lease, independently of the
+# sweep interval, so a crashed run is released about one lease after it died.
+LEARNING_RUN_LEASE_SECONDS = _lease_seconds_setting(
+    os.getenv("MIRIX_LEARNING_RUN_LEASE_SECONDS"), LEARNING_RUN_HEARTBEAT_SECONDS
+)
+# Cross-run backoff after an infrastructure failure while distilling a session:
+# the session stays pending but is neither counted nor claimed
+# before conversation_session.distill_retry_after = now + min * 2**(n - 1),
+# capped at max, n = its consecutive infrastructure failures.
+DISTILL_RETRY_BACKOFF_MIN_SECONDS = _positive_int_setting(
+    "MIRIX_DISTILL_RETRY_BACKOFF_MIN_SECONDS",
+    os.getenv("MIRIX_DISTILL_RETRY_BACKOFF_MIN_SECONDS"),
+    60,
+)
+DISTILL_RETRY_BACKOFF_MAX_SECONDS = max(
+    DISTILL_RETRY_BACKOFF_MIN_SECONDS,
+    _positive_int_setting(
+        "MIRIX_DISTILL_RETRY_BACKOFF_MAX_SECONDS",
+        os.getenv("MIRIX_DISTILL_RETRY_BACKOFF_MAX_SECONDS"),
+        3600,
+    ),
+)
+
+
+# ---------------------------------------------------------------------------
+# LLM transport.
+# ---------------------------------------------------------------------------
+def _non_negative_int_setting(name: str, raw: Optional[str], default: int) -> int:
+    """``raw`` as an int >= 0; the default (with a warning) otherwise."""
+    try:
+        value = int(raw) if raw is not None and str(raw).strip() else default
+    except ValueError:
+        value = -1
+    if value < 0:
+        logging.getLogger(__name__).warning(
+            "%s=%r is not a non-negative integer; using the default %d",
+            name,
+            raw,
+            default,
+        )
+        return default
+    return value
+
+
+def _positive_float_setting(name: str, raw: Optional[str], default: float) -> float:
+    """``raw`` as a float > 0; the default (with a warning) otherwise."""
+    try:
+        value = float(raw) if raw is not None and str(raw).strip() else default
+    except ValueError:
+        value = 0.0
+    if not value > 0:
+        logging.getLogger(__name__).warning(
+            "%s=%r is not a positive number; using the default %s", name, raw, default
+        )
+        return default
+    return value
+
+
+# Applied explicitly to every model SDK client (OpenAI-compatible, Azure,
+# Anthropic) and to the Google client's HTTP calls: the per-attempt timeout and
+# how many times the TRANSPORT layer retries one call (connection errors,
+# timeouts, 408/409/429/5xx, honoring Retry-After). The eval sets retries to 0
+# and lets its gateway retry within one 10-minute deadline; the
+# application-level retry policy is separate.
+LLM_TIMEOUT_SECONDS = _positive_float_setting(
+    "MIRIX_LLM_TIMEOUT_SECONDS", os.getenv("MIRIX_LLM_TIMEOUT_SECONDS"), 600.0
+)
+LLM_MAX_RETRIES = _non_negative_int_setting(
+    "MIRIX_LLM_MAX_RETRIES", os.getenv("MIRIX_LLM_MAX_RETRIES"), 2
+)
+# The per-attempt timeout of an embedding call, for every embedding type: how
+# long MIRIX waits for one answer of the embedding endpoint (the connect at
+# most 5 s) before the embedding retry policy retries it. The eval sets it
+# above its gateway's call deadline, like MIRIX_LLM_TIMEOUT_SECONDS, so MIRIX
+# always receives the gateway's classified answer instead of abandoning the
+# call and sending it again.
+EMBEDDING_TIMEOUT_SECONDS = _positive_float_setting(
+    "MIRIX_EMBEDDING_TIMEOUT_SECONDS",
+    os.getenv("MIRIX_EMBEDDING_TIMEOUT_SECONDS"),
+    60.0,
+)
+
+# ---------------------------------------------------------------------------
+# Image intake bounds (memory-add payloads, remote image fetches).
+# ---------------------------------------------------------------------------
+# Formats every supported model provider accepts; anything else is a 422 at
+# ingest instead of a provider error later in the worker or the distiller.
+ALLOWED_IMAGE_FORMATS = ("PNG", "JPEG", "GIF", "WEBP")
+MAX_IMAGE_BYTES = _positive_int_setting(
+    "MIRIX_MAX_IMAGE_BYTES", os.getenv("MIRIX_MAX_IMAGE_BYTES"), 20 * 1024 * 1024
+)
+MAX_IMAGE_BYTES_PER_REQUEST = _positive_int_setting(
+    "MIRIX_MAX_IMAGE_BYTES_PER_REQUEST",
+    os.getenv("MIRIX_MAX_IMAGE_BYTES_PER_REQUEST"),
+    64 * 1024 * 1024,
+)
+MAX_IMAGE_PIXELS = _positive_int_setting(
+    "MIRIX_MAX_IMAGE_PIXELS", os.getenv("MIRIX_MAX_IMAGE_PIXELS"), 50_000_000
+)
+IMAGE_DETAIL_VALUES = ("auto", "low", "high")
+# Server-side fetch of a caller-supplied https image URL (only the Google client
+# needs the bytes; OpenAI and Anthropic fetch URLs themselves).
+REMOTE_IMAGE_FETCH_TIMEOUT_SECONDS = float(
+    os.getenv("MIRIX_REMOTE_IMAGE_FETCH_TIMEOUT_SECONDS", "10")
+)
+# Deadline for the WHOLE fetch (resolution + download): the per-operation
+# timeout above resets on every byte, so a server trickling bytes would
+# otherwise hold the request open indefinitely.
+REMOTE_IMAGE_FETCH_TOTAL_TIMEOUT_SECONDS = float(
+    os.getenv("MIRIX_REMOTE_IMAGE_FETCH_TOTAL_TIMEOUT_SECONDS", "30")
+)
 
 # ---------------------------------------------------------------------------
 # Adaptive per-session routing (session_tag).
 # ---------------------------------------------------------------------------
-# A session is either a "task" (agentic tool-use rollout; ALFWorld-style) or a
-# "conversation" (chat/dialogue; LOCOMO-style). The tag decides which memory
+# A session is either a "task" (an agentic rollout: the agent acts with tools or
+# in an environment) or a "conversation" (chat / dialogue). The tag decides which memory
 # machinery engages:
-#   task         -> procedural/skill distillation (auto_dream mode="procedural")
-#                   fires on the every-N-session batch trigger; the inline
-#                   episodic/semantic extraction is suppressed (task = skill-only).
-#   conversation -> inline episodic/semantic extraction runs as usual; the
-#                   procedural batch trigger does NOT fire (no skills), and
-#                   experience consolidation stays operator-invoked (auto_dream
-#                   mode="experience"), matching how LOCOMO ran it.
-# Callers declare the tag on ingest (AddMemoryRequest.session_tag). Unset falls
-# back to DEFAULT_SESSION_TAG so historical/untagged callers stay LOCOMO-safe
-# (no spurious skill distillation).
+#   task         -> skill learning only: /memory/add(_sync)
+#                   store the turns in the conversation store and never call the
+#                   meta memory agent (a session_id is required); once N task
+#                   sessions have ended, a skill learning run fires
+#                   (SKILL_TRIGGER_SESSION_THRESHOLD).
+#   conversation -> the meta memory agent extracts episodic/semantic/... memory
+#                   as usual; the procedural batch trigger does NOT fire (no
+#                   skills), and experience consolidation stays operator-invoked
+#                   (auto_dream mode="experience"), as for any dialogue memory.
+# Callers declare the tag on ingest (AddMemoryRequest.session_tag). A session's
+# first write fixes its tag. Unset falls back to DEFAULT_SESSION_TAG so
+# historical/untagged callers keep dialogue-only behaviour (no spurious skill
+# distillation).
 SESSION_TAG_TASK = "task"
 SESSION_TAG_CONVERSATION = "conversation"
 VALID_SESSION_TAGS = (SESSION_TAG_TASK, SESSION_TAG_CONVERSATION)
 DEFAULT_SESSION_TAG = os.getenv("MIRIX_DEFAULT_SESSION_TAG", SESSION_TAG_CONVERSATION)
 
 # ---------------------------------------------------------------------------
-# Bounded, count-driven, quality-aware edit budget (skill evolution).
+# Skill curator.
 #
-# The budget is the MAX number of skill mutations (create+edit) a single
-# records-based evolution run may perform. It is driven by STRUCTURE-GATED
-# COUNTS from the C2 aggregate (n_high_fail / n_high_succ), never by a sum of
-# self-reported quality scores (quality_score is ranking-only):
-#
-#     raw    = B0 + alpha_f * n_high_fail + alpha_s * n_high_succ
-#     budget = clamp(round_half_up(raw), B_min, B_max)
-#
-# With ~5 records/window: all-failure -> ~6, mixed -> ~2-4, all-noise -> 0
-# (n_high_* == 0 => budget 0 => the curator is skipped entirely).
+# A learning run curates ALL pending experiences of its scope, oldest first, in
+# batches of at most MIRIX_SKILL_CURATOR_BATCH_FRACTION (0.5) of the curator's
+# input budget. Each batch may make one create/edit per experience (its
+# edit budget); a learning run may soft-delete at most one skill across
+# all its batches. A batch ends when the curator calls
+# finish_memory_update, when the next call's estimated input would pass
+# floor(window * 0.8) - planning output reserve ("context_limit"), or after
+# MIRIX_SKILL_CURATOR_MAX_STEPS LLM calls ("step_cap"); the last two return the
+# batch to pending with curation_attempts + 1, and after
+# SKILL_CURATION_MAX_ATTEMPTS it is closed out as consumed (unaddressed).
 # ---------------------------------------------------------------------------
-SKILL_EDIT_BUDGET_B0 = int(os.getenv("SKILL_EDIT_BUDGET_B0", "1"))
-SKILL_EDIT_BUDGET_ALPHA_FAIL = float(os.getenv("SKILL_EDIT_BUDGET_ALPHA_FAIL", "1.0"))
-SKILL_EDIT_BUDGET_ALPHA_SUCC = float(os.getenv("SKILL_EDIT_BUDGET_ALPHA_SUCC", "0.5"))
-SKILL_EDIT_BUDGET_MIN = int(os.getenv("SKILL_EDIT_BUDGET_MIN", "0"))
-SKILL_EDIT_BUDGET_MAX = int(os.getenv("SKILL_EDIT_BUDGET_MAX", "6"))
+def _fraction_setting(name: str, raw: Optional[str], default: float) -> float:
+    """``raw`` as a float in (0, 1]; the default (with a warning) otherwise."""
+    try:
+        value = float(raw) if raw is not None and str(raw).strip() else default
+    except ValueError:
+        value = -1.0
+    if not 0.0 < value <= 1.0:
+        logging.getLogger(__name__).warning(
+            "%s=%r is not a fraction in (0, 1]; using the default %s", name, raw, default
+        )
+        return default
+    return value
 
-# Hybrid budget (formula ceiling + a cheap LLM may only REDUCE). Held out of the
-# validity run: formula-only is deterministic; autonomous is an ablation arm.
-SKILL_USE_AUTONOMOUS_BUDGET = os.getenv(
-    "SKILL_USE_AUTONOMOUS_BUDGET", "false"
-).lower() in (
-    "true",
-    "1",
-    "yes",
+
+SKILL_CURATOR_MAX_STEPS = _positive_int_setting(
+    "MIRIX_SKILL_CURATOR_MAX_STEPS", os.getenv("MIRIX_SKILL_CURATOR_MAX_STEPS"), 100
 )
+SKILL_CURATOR_BATCH_FRACTION = _fraction_setting(
+    "MIRIX_SKILL_CURATOR_BATCH_FRACTION",
+    os.getenv("MIRIX_SKILL_CURATOR_BATCH_FRACTION"),
+    0.5,
+)
+# The curator stops before a call whose estimated input would pass
+# floor(window * this) - planning output reserve (the usable window).
+SKILL_CURATOR_CONTEXT_STOP_FRACTION = 0.8
+# Batches that ended without the curator finishing (context_limit, step_cap,
+# a non-infrastructure curator failure) before an experience is closed out as
+# consumed (unaddressed).
+SKILL_CURATION_MAX_ATTEMPTS = 3
+# Tool calls of one model turn a curation batch runs (Agent.step
+# max_tool_calls_per_turn): the rest are answered "Not run", and
+# finish_memory_update runs only as a turn's only call. 1 is the serial
+# tool-call contract (parallel_tool_calls=false) that MIRIX's Anthropic path
+# already sends: the model reads every result before its next call, so a
+# burst of blind calls (a create echoing the tool schema, a finish before the
+# triage was read) cannot run.
+SKILL_CURATOR_TOOL_CALLS_PER_TURN = _positive_int_setting(
+    "MIRIX_SKILL_CURATOR_TOOL_CALLS_PER_TURN",
+    os.getenv("MIRIX_SKILL_CURATOR_TOOL_CALLS_PER_TURN"),
+    1,
+)
+# How often finish_memory_update refuses to end a curation batch while some of
+# its experiences are neither cited nor triaged (the refusal lists them). One
+# reminder turns a silent default into an explicit decision; the next finish
+# goes through (they count as deferred), so a model that cannot triage never
+# spins until the step cap.
+SKILL_CURATOR_FINISH_REMINDERS = 1
 
-# Per-mutation HARD size gate on skill_edit. Reject (without consuming budget)
-# when an edit changes too much at once; the curator must split it or extract a
-# new skill instead. Two independent dimensions, either one trips the gate:
-#   * absolute char delta  > SKILL_MAX_EDIT_CHAR_DELTA
-#   * change-ratio (1 - difflib.SequenceMatcher.ratio()) >= SKILL_EDIT_MAJOR_RATIO
-SKILL_MAX_EDIT_CHAR_DELTA = int(os.getenv("SKILL_MAX_EDIT_CHAR_DELTA", "800"))
-SKILL_EDIT_MAJOR_RATIO = float(os.getenv("SKILL_EDIT_MAJOR_RATIO", "0.4"))
-
-# Hard ceiling on a skill's `instructions` length. An edit whose RESULT exceeds
-# this must route to skill_create (extract a new skill) rather than grow an
-# existing one unbounded.
+# Hard ceiling on a skill's `instructions` length. It bounds the
+# size of a skill (skills are injected into the actor's prompt), not the size
+# of one change: a create or an edit whose RESULT exceeds it is rejected with
+# a request to condense, and the rejection costs no budget.
 SKILL_MAX_INSTRUCTIONS_CHARS = int(os.getenv("SKILL_MAX_INSTRUCTIONS_CHARS", "12000"))
 
-# Deletes are gated SEPARATELY from the create/edit budget (P1-4): at most
-# D_max per evolution, and only when a failure record names the skill actively
-# harmful. Soft-delete (exclude-from-retrieval) is preferred over a hard delete.
-SKILL_DELETE_BUDGET_MAX = int(os.getenv("SKILL_DELETE_BUDGET_MAX", "1"))
 
-# Records-based evolution window: evolve every N completed graded rounds.
-SKILL_EVOLVE_RECORDS_WINDOW = int(os.getenv("SKILL_EVOLVE_RECORDS_WINDOW", "5"))
+def _skill_target_instructions_chars(raw: Optional[str], cap: int) -> int:
+    """``MIRIX_SKILL_TARGET_INSTRUCTIONS_CHARS`` as a positive int, at most the
+    hard cap; half the cap by default (with a warning when invalid)."""
+    value = _positive_int_setting(
+        "MIRIX_SKILL_TARGET_INSTRUCTIONS_CHARS", raw, max(1, cap // 2)
+    )
+    if value > cap:
+        logging.getLogger(__name__).warning(
+            "MIRIX_SKILL_TARGET_INSTRUCTIONS_CHARS=%r is above the hard cap "
+            "SKILL_MAX_INSTRUCTIONS_CHARS (%d); using the cap",
+            raw,
+            cap,
+        )
+        return cap
+    return value
+
+
+# A skill's soft size target: a create or an instructions edit whose
+# result is longer goes through, and its answer (and skill_read, skill_list)
+# asks the curator to condense the skill or split out a separate kind of task
+# in a later change. A retrieved skill is injected whole, and find-and-replace
+# patches only ever add text: without a target short of the hard cap, skills
+# grow to it. Half the cap, so a skill is flagged well before it reaches the
+# hard cap and there is room to condense it first.
+SKILL_TARGET_INSTRUCTIONS_CHARS = _skill_target_instructions_chars(
+    os.getenv("MIRIX_SKILL_TARGET_INSTRUCTIONS_CHARS"), SKILL_MAX_INSTRUCTIONS_CHARS
+)
 
 # ---------------------------------------------------------------------------
 # Procedural (skill) RETRIEVAL defaults.
@@ -396,19 +625,17 @@ SKILL_EVOLVE_RECORDS_WINDOW = int(os.getenv("SKILL_EVOLVE_RECORDS_WINDOW", "5"))
 # explicit choice and are not governed by this default.
 PROCEDURAL_DEFAULT_SEARCH_METHOD = os.getenv("MIRIX_SKILL_SEARCH_METHOD", "hybrid")
 
-# Distiller transcript budgets (characters). The transcript fed to the
-# experience-distiller LLM is bounded twice: per turn, and for the whole
-# session (HEAD + TAIL kept, middle elided past the cap). Tool turns are part
-# of the transcript — work-process lessons live in tool errors/retries — so
-# the defaults are sized for tool-heavy sessions: 80K chars ≈ 20-25K tokens,
-# comfortably inside modern model windows while still bounding a pathological
-# session. Raise/lower via env per deployment model.
-DISTILLER_MAX_TRANSCRIPT_CHARS = int(
-    os.getenv("MIRIX_DISTILLER_MAX_TRANSCRIPT_CHARS", "80000")
-)
-DISTILLER_MAX_MESSAGE_CHARS = int(
-    os.getenv("MIRIX_DISTILLER_MAX_MESSAGE_CHARS", "8000")
-)
+# The distiller reads a session whole, sized by the context budget:
+# there is no character cap on its transcript any more. At most this many
+# distiller LLM calls run at once within one learning run, across its sessions
+# AND the chunks of a long session; at most this many sessions
+# are being distilled at once, too.
+DISTILLER_MAX_CONCURRENCY = max(1, int(os.getenv("MIRIX_DISTILLER_MAX_CONCURRENCY", "4")))
+# A session whose distillation failed this many times (truncated after every
+# halving, unparseable after every repair prompt, timed out after its retry,
+# ...) gets distill_failed_at and is never selected again.
+# Infrastructure failures never count (they back off instead).
+DISTILL_MAX_FAILURES = 3
 
 # Retention window (days) for VERBATIM conversation turns in the
 # conversation_message store AFTER they have been distilled. Once distilled,
@@ -417,16 +644,346 @@ DISTILLER_MAX_MESSAGE_CHARS = int(
 # each procedural distillation pass. Set to 0 (or negative) to keep forever.
 CONVERSATION_RETENTION_DAYS = int(os.getenv("MIRIX_CONVERSATION_RETENTION_DAYS", "30"))
 
-# Reciprocal Rank Fusion constant for the procedural hybrid lane. k=60 is the
-# canonical RRF constant (everalgo.rank.fusion.rrf / RankConfig.rrf_k=60); the
-# fusion is rank-based, 1-based, and unweighted — raw BM25/cosine scores are
-# discarded, only rank positions feed the sum 1/(k+rank).
+# Reciprocal Rank Fusion constant for procedural retrieval (k=60).
+# k=60 is the canonical RRF constant (everalgo.rank.fusion.rrf /
+# RankConfig.rrf_k=60); the fusion is rank-based, 1-based, and unweighted —
+# raw BM25/cosine scores are discarded, only rank positions feed the sum
+# 1/(k+rank).
 SKILL_HYBRID_RRF_K = int(os.getenv("MIRIX_SKILL_HYBRID_RRF_K", "60"))
 
-# Over-fetch multiplier for each hybrid lane before fusion (EverOS
+# Over-fetch multiplier for each lane of the ORG-WIDE hybrid search
+# (list_procedures_by_org, /memory/search_all_users; EverOS
 # DEFAULT_RECALL_MULTIPLIER=2): each lane recalls limit*multiplier candidates so
 # fusion picks from a larger, higher-recall pool, then the result is sliced to
-# the requested limit.
+# the requested limit. Per-user retrieval (retrieve_skills) ranks
+# every candidate instead and does not use it.
 SKILL_HYBRID_RECALL_MULTIPLIER = int(
     os.getenv("MIRIX_SKILL_HYBRID_RECALL_MULTIPLIER", "2")
 )
+
+# ---------------------------------------------------------------------------
+# Procedural retrieval pipeline: retrieve_skills in
+# mirix/services/skill_retrieval.py.
+# ---------------------------------------------------------------------------
+# Okapi BM25 over a skill's retrieval_tsv (name and triggers at weight A,
+# description at weight B): a position of weight A counts 1.0 towards its
+# term's frequency and the document length, a position of weight B counts 0.4.
+SKILL_BM25_K1 = 1.2
+SKILL_BM25_B = 0.75
+SKILL_BM25_WEIGHT_A = 1.0
+SKILL_BM25_WEIGHT_B = 0.4
+# Above this many candidates only the skills that contain at least one query
+# term (GIN prefilter on Postgres) are scored; N, df and the average document
+# length are still aggregated over every candidate, so IDF is not distorted.
+SKILL_BM25_MAX_DOCS = _positive_int_setting(
+    "MIRIX_SKILL_BM25_MAX_DOCS", os.getenv("MIRIX_SKILL_BM25_MAX_DOCS"), 20000
+)
+# At most this many distinct query terms are scored: the lexemes in the order
+# they first appear in the query. An extracted topic has a handful; the raw
+# conversation used when extraction fails (up to
+# RETRIEVAL_FALLBACK_QUERY_MAX_CHARS) has thousands, and scoring every one of
+# them against every candidate increases database and Python work with the
+# size of the skill bank. The ranking's diagnostics count the dropped terms.
+SKILL_BM25_MAX_QUERY_TERMS = _positive_int_setting(
+    "MIRIX_SKILL_BM25_MAX_QUERY_TERMS",
+    os.getenv("MIRIX_SKILL_BM25_MAX_QUERY_TERMS"),
+    64,
+)
+
+
+def _cosine_setting(name: str, raw: Optional[str], default: float) -> float:
+    """``raw`` as a cosine similarity in [-1, 1]; the default (with a warning)
+    otherwise."""
+    try:
+        value = float(raw) if raw is not None and str(raw).strip() else default
+    except ValueError:
+        value = float("nan")
+    if not -1.0 <= value <= 1.0:
+        logging.getLogger(__name__).warning(
+            "%s=%r is not a cosine similarity in [-1, 1]; using the default %s",
+            name,
+            raw,
+            default,
+        )
+        return default
+    return value
+
+
+# The retrieval gate, applied only where retrieved skills are injected
+# into a context (apply_gate=True): a skill is kept only when its cosine
+# similarity to the query is at least MIRIX_SKILL_RETRIEVAL_MIN_SIMILARITY AND
+# at least MIRIX_SKILL_RETRIEVAL_RELATIVE_RATIO x the best cosine among all
+# candidates.
+#
+# The reproduction defaults use gemini-embedding-001. Similarity scales can
+# differ between embedding models, so these values do not imply equivalent
+# retrieval behavior for another model. SKILL_RETRIEVAL_GATE_CALIBRATIONS
+# records model-specific settings. A model absent from that table receives
+# these defaults with an "uncalibrated" trace and one warning per model.
+# The relative gate can exclude a broadly relevant skill when a more specific
+# skill has a higher cosine; both conditions are required for a skill to pass.
+SKILL_RETRIEVAL_MIN_SIMILARITY_DEFAULT = 0.62
+SKILL_RETRIEVAL_RELATIVE_RATIO_DEFAULT = 0.90
+SKILL_RETRIEVAL_MIN_SIMILARITY = _cosine_setting(
+    "MIRIX_SKILL_RETRIEVAL_MIN_SIMILARITY",
+    os.getenv("MIRIX_SKILL_RETRIEVAL_MIN_SIMILARITY"),
+    SKILL_RETRIEVAL_MIN_SIMILARITY_DEFAULT,
+)
+SKILL_RETRIEVAL_RELATIVE_RATIO = _fraction_setting(
+    "MIRIX_SKILL_RETRIEVAL_RELATIVE_RATIO",
+    os.getenv("MIRIX_SKILL_RETRIEVAL_RELATIVE_RATIO"),
+    SKILL_RETRIEVAL_RELATIVE_RATIO_DEFAULT,
+)
+# (min_similarity, relative_ratio) of each embedding model whose gate was
+# calibrated, by model name without a provider prefix (looked up like
+# EMBEDDING_TOKEN_LIMITS: "google/gemini-embedding-001" is
+# "gemini-embedding-001").
+SKILL_RETRIEVAL_GATE_CALIBRATIONS = {
+    "gemini-embedding-001": (
+        SKILL_RETRIEVAL_MIN_SIMILARITY_DEFAULT,
+        SKILL_RETRIEVAL_RELATIVE_RATIO_DEFAULT,
+    ),
+}
+
+
+def _skill_retrieval_gate_from_env(
+    raw_min_similarity: Optional[str], raw_relative_ratio: Optional[str]
+) -> bool:
+    """Whether the environment sets the gate: a valid value in
+    MIRIX_SKILL_RETRIEVAL_MIN_SIMILARITY or MIRIX_SKILL_RETRIEVAL_RELATIVE_RATIO
+    (an invalid one is replaced by its default, above)."""
+
+    def number(raw: Optional[str]) -> Optional[float]:
+        try:
+            return float(raw) if raw is not None and str(raw).strip() else None
+        except ValueError:
+            return None
+
+    min_similarity = number(raw_min_similarity)
+    relative_ratio = number(raw_relative_ratio)
+    return (min_similarity is not None and -1.0 <= min_similarity <= 1.0) or (
+        relative_ratio is not None and 0.0 < relative_ratio <= 1.0
+    )
+
+
+# An operator's MIRIX_SKILL_RETRIEVAL_* setting wins for every embedding
+# model: the two settings above then apply as they are ("env").
+SKILL_RETRIEVAL_GATE_FROM_ENV = _skill_retrieval_gate_from_env(
+    os.getenv("MIRIX_SKILL_RETRIEVAL_MIN_SIMILARITY"),
+    os.getenv("MIRIX_SKILL_RETRIEVAL_RELATIVE_RATIO"),
+)
+# At most this many skills are returned by default.
+SKILL_RETRIEVAL_DEFAULT_LIMIT = 10
+
+# ---------------------------------------------------------------------------
+# The experience pool of the skill curator.
+#
+# A curator batch that finishes keeps its experiences that no skill used and
+# that it found deferred or not worth a skill (disposition) in the pool of
+# their (organization, user, meta agent) and write scope. When a later batch
+# is assembled, the pool's experiences whose max cosine to one of the batch's
+# new experiences is >= MIRIX_SKILL_EXPERIENCE_HISTORY_MIN_SIMILARITY are
+# ranked by that cosine x SKILL_EXPERIENCE_POOL_DECAY ** ignored_pushes and
+# the first MIRIX_SKILL_EXPERIENCE_HISTORY_TOP_K are shown as "earlier
+# lessons" (they cost context, never edit budget). A pool experience whose
+# cosine is >= MIRIX_SKILL_EXPERIENCE_RECURRENCE_SIMILARITY recurred: its
+# recurrence_count grows and its ignored_pushes resets. A shown one the batch
+# neither cites nor covers is ignored (+1, +2 when listed not worth, +1 when
+# listed deferred); at SKILL_EXPERIENCE_POOL_RETIRE_IGNORED it leaves the pool.
+# A new experience that recurred a lesson still in the pool is merged into it
+# instead of entering the pool twice, and a pool experience whose embedding
+# failed in SKILL_EXPERIENCE_POOL_EMBED_MAX_FAILURES finished batches (while
+# their own experiences embedded) leaves it as unembeddable.
+#
+# These thresholds compare lessons with lessons, separately from the
+# query-to-skill retrieval gate. Every batch records its candidates' maximum
+# cosines in curator_metrics[].history for inspecting pool selection.
+# ---------------------------------------------------------------------------
+SKILL_EXPERIENCE_POOL_ENABLED = os.getenv(
+    "MIRIX_SKILL_EXPERIENCE_POOL_ENABLED", "true"
+).strip().lower() in ("true", "1", "yes")
+SKILL_EXPERIENCE_HISTORY_MIN_SIMILARITY = _cosine_setting(
+    "MIRIX_SKILL_EXPERIENCE_HISTORY_MIN_SIMILARITY",
+    os.getenv("MIRIX_SKILL_EXPERIENCE_HISTORY_MIN_SIMILARITY"),
+    0.60,
+)
+SKILL_EXPERIENCE_RECURRENCE_SIMILARITY = _cosine_setting(
+    "MIRIX_SKILL_EXPERIENCE_RECURRENCE_SIMILARITY",
+    os.getenv("MIRIX_SKILL_EXPERIENCE_RECURRENCE_SIMILARITY"),
+    0.80,
+)
+if SKILL_EXPERIENCE_RECURRENCE_SIMILARITY < SKILL_EXPERIENCE_HISTORY_MIN_SIMILARITY:
+    # Allowed, but a lesson that recurred may then not be shown.
+    logging.getLogger(__name__).warning(
+        "MIRIX_SKILL_EXPERIENCE_RECURRENCE_SIMILARITY (%s) is below "
+        "MIRIX_SKILL_EXPERIENCE_HISTORY_MIN_SIMILARITY (%s): a lesson that "
+        "recurred may fall below the threshold for being shown",
+        SKILL_EXPERIENCE_RECURRENCE_SIMILARITY,
+        SKILL_EXPERIENCE_HISTORY_MIN_SIMILARITY,
+    )
+SKILL_EXPERIENCE_HISTORY_TOP_K = _positive_int_setting(
+    "MIRIX_SKILL_EXPERIENCE_HISTORY_TOP_K",
+    os.getenv("MIRIX_SKILL_EXPERIENCE_HISTORY_TOP_K"),
+    10,
+)
+# Active pool experiences read per batch, newest first (a bound on the vectors
+# loaded; the cut is counted as pool_scan_truncated).
+SKILL_EXPERIENCE_POOL_SCAN_LIMIT = _positive_int_setting(
+    "MIRIX_SKILL_EXPERIENCE_POOL_SCAN_LIMIT",
+    os.getenv("MIRIX_SKILL_EXPERIENCE_POOL_SCAN_LIMIT"),
+    2000,
+)
+SKILL_EXPERIENCE_POOL_DECAY = 0.5
+SKILL_EXPERIENCE_POOL_RETIRE_IGNORED = 3
+# A pool experience listed as not worth a skill counts as this many ignored
+# pushes; a new one enters the pool already decayed once.
+SKILL_EXPERIENCE_NOT_WORTH_PENALTY = 2
+SKILL_EXPERIENCE_NOT_WORTH_START = 1
+# Finished batches in which a pool experience's own embedding failed (while
+# the batch's new experiences embedded, so the model was up) before it leaves
+# the pool as unembeddable: a text the embedding model keeps refusing would
+# otherwise be retried, and left out of the ranking, in every later batch.
+SKILL_EXPERIENCE_POOL_EMBED_MAX_FAILURES = 3
+# Candidates whose max cosine a batch's history metrics keep (the rest are
+# summarized in quantiles); also the most ids any list of them names.
+SKILL_EXPERIENCE_HISTORY_LOG_LIMIT = 50
+
+# ---------------------------------------------------------------------------
+# Embedding length guard.
+# ---------------------------------------------------------------------------
+# Input token limit per embedding model. A model missing from the table is
+# treated as DEFAULT_EMBEDDING_TOKEN_LIMIT (with a warning). The model's own
+# limit, never EmbeddingConfig.embedding_chunk_size (300 by default: far too
+# small). MIRIX_EMBEDDING_TOKEN_LIMITS (a JSON object, e.g.
+# '{"gemini-embedding-001": 2048, "text-embedding-3-small": 8191}') replaces
+# the table. A provider prefix is ignored when looking a model up
+# ("google/gemini-embedding-001" is "gemini-embedding-001").
+DEFAULT_EMBEDDING_TOKEN_LIMITS = {"gemini-embedding-001": 2048}
+DEFAULT_EMBEDDING_TOKEN_LIMIT = 2048
+# A chunk holds at most this fraction of the model's limit, rounded down to a
+# whole hundred tokens (gemini-embedding-001: 2,048 -> 1,800): counts are
+# o200k_base approximations of the provider's own tokenizer.
+EMBEDDING_CHUNK_FRACTION = 0.88
+
+
+def _embedding_token_limits_setting(raw: Optional[str]) -> dict:
+    """``MIRIX_EMBEDDING_TOKEN_LIMITS`` as {model: positive int}; the default
+    table when it is unset. Invalid JSON keeps the default; an invalid entry
+    is dropped; each with a warning."""
+    import json
+
+    log = logging.getLogger(__name__)
+    if raw is None or not str(raw).strip():
+        return dict(DEFAULT_EMBEDDING_TOKEN_LIMITS)
+    try:
+        value = json.loads(raw)
+    except ValueError:
+        value = None
+    if not isinstance(value, dict):
+        log.warning(
+            "MIRIX_EMBEDDING_TOKEN_LIMITS=%r is not a JSON object of "
+            "{model: token limit}; using the default %s",
+            raw,
+            DEFAULT_EMBEDDING_TOKEN_LIMITS,
+        )
+        return dict(DEFAULT_EMBEDDING_TOKEN_LIMITS)
+    limits = {}
+    for model, limit in value.items():
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
+            log.warning(
+                "MIRIX_EMBEDDING_TOKEN_LIMITS: %r needs a positive integer token "
+                "limit, not %r; entry ignored",
+                model,
+                limit,
+            )
+            continue
+        limits[str(model)] = limit
+    return limits
+
+
+EMBEDDING_TOKEN_LIMITS = _embedding_token_limits_setting(
+    os.getenv("MIRIX_EMBEDDING_TOKEN_LIMITS")
+)
+# At most this many chunks are embedded for one text (one provider call each):
+# a longer text is represented by its first and last chunks (half each), with
+# a warning, so one request can never cost thousands of sequential paid
+# embedding calls (a 10 MB input would be ~1,400 chunks).
+EMBEDDING_MAX_CHUNKS = _positive_int_setting(
+    "MIRIX_EMBEDDING_MAX_CHUNKS", os.getenv("MIRIX_EMBEDDING_MAX_CHUNKS"), 16
+)
+# Skills re-embedded at once by the startup pass and
+# scripts/reembed_skill_retrieval.py (bounded concurrency).
+SKILL_REEMBED_CONCURRENCY = _positive_int_setting(
+    "MIRIX_SKILL_REEMBED_CONCURRENCY", os.getenv("MIRIX_SKILL_REEMBED_CONCURRENCY"), 4
+)
+# The re-embedding pass at the end of a learning run stops after this many
+# skills in a row failed to embed (each already retried 3 times): during
+# a sustained embedding outage it would otherwise spend 4 calls and ~7 s of
+# backoff on every skill of the user still missing a vector, holding the run
+# (and its lease) for minutes. The skills it did not try are counted as
+# "skipped" on the run's reembed entry and left for the next pass. The
+# startup pass and scripts/reembed_skill_retrieval.py try
+# every skill.
+SKILL_REEMBED_MAX_CONSECUTIVE_FAILURES = _positive_int_setting(
+    "MIRIX_SKILL_REEMBED_MAX_CONSECUTIVE_FAILURES",
+    os.getenv("MIRIX_SKILL_REEMBED_MAX_CONSECUTIVE_FAILURES"),
+    3,
+)
+
+# ---------------------------------------------------------------------------
+# Conversation retrieval and its log.
+# ---------------------------------------------------------------------------
+# One retrieval_log row per /memory/retrieve/* call (its id is returned as
+# retrieval_id), unless MIRIX_RETRIEVAL_LOG_ENABLED is false. Rows older than
+# MIRIX_RETRIEVAL_LOG_RETENTION_DAYS are purged by a background task at startup
+# and every RETRIEVAL_LOG_PURGE_INTERVAL_SECONDS; <= 0 days keeps them forever.
+# Erasing a user's (or a client's) memories deletes their rows at once.
+RETRIEVAL_LOG_ENABLED = os.getenv("MIRIX_RETRIEVAL_LOG_ENABLED", "true").strip().lower() in (
+    "true",
+    "1",
+    "yes",
+)
+
+
+def _int_setting(name: str, raw: Optional[str], default: int) -> int:
+    """``raw`` as an int (any sign); the default (with a warning) otherwise."""
+    try:
+        return int(raw) if raw is not None and str(raw).strip() else default
+    except ValueError:
+        logging.getLogger(__name__).warning(
+            "%s=%r is not an integer; using the default %d", name, raw, default
+        )
+        return default
+
+
+RETRIEVAL_LOG_RETENTION_DAYS = _int_setting(
+    "MIRIX_RETRIEVAL_LOG_RETENTION_DAYS",
+    os.getenv("MIRIX_RETRIEVAL_LOG_RETENTION_DAYS"),
+    30,
+)
+RETRIEVAL_LOG_PURGE_INTERVAL_SECONDS = 3600
+# Rows deleted per statement by the retention purge.
+RETRIEVAL_LOG_PURGE_BATCH = 5000
+# When topic extraction fails, the conversation's own text is the query
+# (extraction_status "fallback"). A text longer than this keeps its head
+# and tail: the query feeds full-text search and one embedding call, and a
+# Postgres tsvector cannot exceed 1 MB.
+RETRIEVAL_FALLBACK_QUERY_MAX_CHARS = 50_000
+# The other memory types (episodic, semantic, resource, knowledge vault) search
+# the fallback text by keywords only: a few hundred characters (head and tail)
+# are a query; tens of thousands build a huge AND / prefix-OR tsquery.
+RETRIEVAL_FALLBACK_KEYWORD_QUERY_MAX_CHARS = 500
+# The text a local (Ollama) extraction model receives, head and tail kept:
+# its context window is unknown to MIRIX.
+RETRIEVAL_LOCAL_EXTRACTION_MAX_CHARS = _positive_int_setting(
+    "MIRIX_RETRIEVAL_LOCAL_EXTRACTION_MAX_CHARS",
+    os.getenv("MIRIX_RETRIEVAL_LOCAL_EXTRACTION_MAX_CHARS"),
+    12_000,
+)
+# A retrieval log row keeps the raw query (head and tail, with a marker) up to
+# this many characters, and the procedural trace keeps every returned skill
+# plus the next RETRIEVAL_LOG_TRACE_CANDIDATES candidates in fused order —
+# not every candidate — with the counts of what was left out: one row stays a
+# few kilobytes however many skills a user has.
+RETRIEVAL_LOG_QUERY_MAX_CHARS = 50_000
+RETRIEVAL_LOG_TRACE_CANDIDATES = 50

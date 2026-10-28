@@ -240,7 +240,8 @@ class CLIInterface(AgentInterface):
                 else:
                     printd_function_message("", str(msg), color=Fore.RED)
             except Exception:
-                print(f"{CLI_WARNING_PREFIX}did not recognize function message {type(msg)} {msg}")
+                # Never a bare print: a server's stdout is no place for it.
+                printd(f"{CLI_WARNING_PREFIX}did not recognize function message {type(msg)} {msg}")
                 printd_function_message("", msg)
 
     @staticmethod

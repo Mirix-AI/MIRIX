@@ -29,7 +29,8 @@ class RedisMemoryClient:
 
     Architecture:
     - Hash: blocks, messages (no embeddings, flat structure)
-    - JSON + Vector: episodic, semantic, procedural, resource, knowledge (has embeddings)
+    - JSON + Vector: episodic, semantic, resource, knowledge (has embeddings)
+    - procedural memory is NOT cached: Postgres only
     """
 
     # Index names
@@ -37,6 +38,7 @@ class RedisMemoryClient:
     MESSAGE_INDEX = "idx:messages"
     EPISODIC_INDEX = "idx:episodic_memory"
     SEMANTIC_INDEX = "idx:semantic_memory"
+    # Legacy: only dropped at startup (procedural memory does not use Redis).
     PROCEDURAL_INDEX = "idx:procedural_memory"
     RESOURCE_INDEX = "idx:resource_memory"
     KNOWLEDGE_INDEX = "idx:knowledge_vault"
@@ -262,7 +264,9 @@ class RedisMemoryClient:
             # JSON-based indexes with vector fields (has embeddings)
             await self._create_episodic_index()
             await self._create_semantic_index()
-            await self._create_procedural_index()
+            # Procedural memory does not use Redis at all: drop the index
+            # and the skill documents an older version left behind.
+            await self._drop_legacy_procedural_index()
             await self._create_resource_index()
             await self._create_knowledge_index()
 
@@ -724,75 +728,27 @@ class RedisMemoryClient:
         attributes = info.get("attributes") or info.get(b"attributes") or []
         return any(text == attribute for text in _texts(attributes))
 
-    async def _create_procedural_index(self) -> None:
-        """Create JSON-based index for procedural memory with 2 VECTOR fields.
+    async def _drop_legacy_procedural_index(self) -> None:
+        """Remove what older versions cached for procedural memory.
 
-        Upgrade-aware: an index created before the skill schema (summary /
-        summary_embedding / steps_embedding fields) persists across deploys and
-        would make every skill-field query miss Redis forever. When the existing
-        index lacks the skill fields, drop the INDEX ONLY (documents are kept)
-        and rebuild; RediSearch then re-indexes the prefix in the background.
+        Skills are read and written in Postgres only now: a Redis copy could go
+        stale (a cached skill served after an edit or a delete) and a Redis
+        search bypassed the ranking and the retrieval gate. An index left by an
+        older version is dropped together with its ``procedural:*`` documents
+        (FT.DROPINDEX ... DD); nothing is done when there is none.
         """
         try:
-            from redis.commands.search.field import NumericField, TagField, TextField, VectorField
-            from redis.commands.search.index_definition import IndexDefinition, IndexType
-
-            from mirix.constants import MAX_EMBEDDING_DIM
-
-            try:
-                info = await self.client.ft(self.PROCEDURAL_INDEX).info()
-            except Exception:
-                info = None
-
-            if info is not None:
-                if self._index_has_attribute(info, "description_embedding"):
-                    logger.debug("Index %s already exists", self.PROCEDURAL_INDEX)
-                    return
-                try:
-                    await self.client.ft(self.PROCEDURAL_INDEX).dropindex(delete_documents=False)
-                    logger.info(
-                        "Dropped stale pre-skill procedural index %s; rebuilding with skill schema",
-                        self.PROCEDURAL_INDEX,
-                    )
-                except Exception as e:
-                    logger.warning(
-                        "Failed to drop stale procedural index %s: %s", self.PROCEDURAL_INDEX, e
-                    )
-                    return
-
-            schema = (
-                TextField("$.organization_id", as_name="organization_id"),
-                TextField("$.agent_id", as_name="agent_id"),
-                TextField("$.entry_type", as_name="entry_type"),
-                TextField("$.name", as_name="name"),
-                TextField("$.description", as_name="description"),
-                TextField("$.instructions", as_name="instructions"),
-                TagField("$.user_id", as_name="user_id"),
-                NumericField("$.created_at_ts", as_name="created_at_ts"),
-                TagField("$.filter_tags.scope", as_name="filter_tags_scope"),  # Explicit scope field
-                TextField("$.filter_tags.*", as_name="filter_tags"),  # Filter tags for flexible filtering
-                # Two vector fields (32KB total)
-                VectorField(
-                    "$.description_embedding",
-                    "FLAT",
-                    {"TYPE": "FLOAT32", "DIM": MAX_EMBEDDING_DIM, "DISTANCE_METRIC": "COSINE"},
-                    as_name="description_embedding",
-                ),
-                VectorField(
-                    "$.instructions_embedding",
-                    "FLAT",
-                    {"TYPE": "FLOAT32", "DIM": MAX_EMBEDDING_DIM, "DISTANCE_METRIC": "COSINE"},
-                    as_name="instructions_embedding",
-                ),
+            await self.client.ft(self.PROCEDURAL_INDEX).info()
+        except Exception:
+            return  # no legacy index
+        try:
+            await self.client.ft(self.PROCEDURAL_INDEX).dropindex(delete_documents=True)
+            logger.info(
+                "Dropped legacy procedural index %s and its documents (procedural memory no longer uses Redis)",
+                self.PROCEDURAL_INDEX,
             )
-
-            await self.client.ft(self.PROCEDURAL_INDEX).create_index(
-                schema, definition=IndexDefinition(prefix=[self.PROCEDURAL_PREFIX], index_type=IndexType.JSON)
-            )
-            logger.info("Created JSON+VECTOR index: %s (2 vectors)", self.PROCEDURAL_INDEX)
-
         except Exception as e:
-            logger.warning("Failed to create procedural index: %s", e)
+            logger.warning("Failed to drop legacy procedural index %s: %s", self.PROCEDURAL_INDEX, e)
 
     async def _create_resource_index(self) -> None:
         """Create JSON-based index for resource memory with 1 VECTOR field."""

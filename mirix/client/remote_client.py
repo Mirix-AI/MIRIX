@@ -13,7 +13,7 @@ from typing import Any, Callable, Dict, List, Optional, Set, Union
 import httpx
 
 from mirix.client.client import AbstractClient
-from mirix.constants import FUNCTION_RETURN_CHAR_LIMIT
+from mirix.constants import FUNCTION_RETURN_CHAR_LIMIT, SESSION_TAG_TASK, VALID_SESSION_TAGS
 from mirix.log import get_logger
 from mirix.schemas.agent import AgentState, AgentType, CreateAgent, CreateMetaAgent
 from mirix.schemas.block import Block, BlockUpdate, CreateBlock, Human, Persona
@@ -1260,6 +1260,8 @@ class MirixClient(AbstractClient):
         session_id: Optional[str] = None,
         async_add: bool = True,
         headers: Optional[Dict[str, str]] = None,
+        session_tag: Optional[str] = None,
+        agent_context: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Add conversation turns to memory (asynchronous processing).
@@ -1295,21 +1297,41 @@ class MirixClient(AbstractClient):
                         Format: "2025-11-18T10:30:00" or "2025-11-18T10:30:00+00:00"
                         Example: "2025-11-18T15:30:00"
             session_id: Optional external conversation session id. Required for
-                        procedural session distillation and sent as a top-level
-                        request field.
+                        procedural session distillation (and for session_tag="task")
+                        and sent as a top-level request field.
             headers: Optional headers dict to include in the request. Useful for passing
                     per-request authentication tokens. Example: {"Authorization": "Bearer token123"}
+            session_tag: Optional "task" or "conversation" (server default when
+                        omitted: "conversation"). A "task" session is stored in the
+                        session conversation store for skill learning only — the
+                        meta memory agent never sees it, and session_id is
+                        required. A session keeps the tag of its first write; a
+                        later different tag is reported in ``warnings``.
+            agent_context: Optional description of how the agent's prompt was
+                        built (e.g. its prompt template), attached to the
+                        session (session_id required). It is not a turn: the
+                        server stores it with the session (the latest one
+                        given wins) and the skill distiller reads it beside
+                        the session's transcript. Omitted: nothing changes.
 
         Returns:
             Dict containing:
                 - success (bool): True if message was queued successfully
                 - message (str): Status message
-                - status (str): "queued" - indicates async processing
+                - status (str): "queued" (async processing), "processed"
+                  (async_add=False), or "stored" (a task session)
                 - agent_id (str): Meta agent ID processing the messages
-                - message_count (int): Number of messages queued
+                - message_count (int): Number of messages queued (stored turns
+                  for a task session)
+                - warnings (list): e.g. a session_tag mismatch
+                - learning_run_id (str | None): the skill learning run this
+                  write started, if any
+                - session_id (str): echoed for a task session
 
         Raises:
-            ValueError: If occurred_at format is invalid
+            ValueError: If occurred_at format is invalid, session_tag is not
+                "task"/"conversation", session_tag="task" has no session_id,
+                or agent_context is given without a session_id
 
         Note:
             Processing happens asynchronously. The response indicates the message
@@ -1353,6 +1375,15 @@ class MirixClient(AbstractClient):
                     f"got {session_id!r} vs {filter_tags.get('session_id')!r}"
                 )
 
+        if session_tag is not None:
+            if session_tag not in VALID_SESSION_TAGS:
+                raise ValueError(f"session_tag must be one of {VALID_SESSION_TAGS}; got {session_tag!r}")
+            if session_tag == SESSION_TAG_TASK and session_id is None:
+                raise ValueError("session_tag='task' requires a session_id")
+
+        if agent_context is not None and agent_context.strip() and session_id is None:
+            raise ValueError("agent_context requires a session_id")
+
         await self._ensure_user_exists(user_id, headers=headers)
 
         # Prepare request data - org is determined from API key on server side
@@ -1366,6 +1397,12 @@ class MirixClient(AbstractClient):
 
         if session_id is not None:
             request_data["session_id"] = session_id
+
+        if session_tag is not None:
+            request_data["session_tag"] = session_tag
+
+        if agent_context is not None and agent_context.strip():
+            request_data["agent_context"] = agent_context
 
         if filter_tags is not None:
             request_data["filter_tags"] = filter_tags
@@ -1396,6 +1433,8 @@ class MirixClient(AbstractClient):
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
         headers: Optional[Dict[str, str]] = None,
+        memory_types: Optional[List[str]] = None,
+        session_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Retrieve relevant memories based on conversation context with optional temporal filtering.
@@ -1422,14 +1461,32 @@ class MirixClient(AbstractClient):
             end_date: Optional end date/time for filtering episodic memories (ISO 8601 format).
                      Only episodic memories with occurred_at <= end_date will be returned.
                      Examples: "2025-11-19T23:59:59" or "2025-11-19T23:59:59+00:00"
+            memory_types: Only these memory types ("core", "episodic",
+                     "semantic", "procedural", "resource", "knowledge_vault");
+                     None retrieves all. With ["procedural"] only skills are
+                     searched — ranked by BM25 + cosine + RRF and kept only
+                     above the similarity gate, so possibly none.
+            session_id: The caller's session ([A-Za-z0-9_-], up to 64
+                     characters), recorded on the retrieval log row.
+
+        Messages' ``content`` may be a string, a list of parts (text and
+        images; images are shown to the topic-extraction model too) or None.
 
         Returns:
             Dict containing:
             - success: Boolean indicating success
-            - topics: Extracted topics from the conversation
+            - retrieval_id: The id of this retrieval's log row (see
+              list_retrieval_logs); None when the server's log is disabled
+            - topics: Extracted topics from the conversation (None when
+              extraction failed and the conversation's text was the query)
+            - extraction_status: "ok", "fallback" or "skipped"
             - temporal_expression: Extracted temporal phrase (if any)
             - date_range: Applied date range filter (if any)
-            - memories: Retrieved memories organized by type
+            - memories: Retrieved memories organized by type; every item has
+              retrieval_scores ({bm25, cosine, rrf} for a skill, None otherwise)
+            - errors: {memory_type: error} for any type whose retrieval failed
+
+            ``render_memories(response)`` turns it into prompt text.
 
         Examples:
             >>> # Automatic temporal parsing from query
@@ -1487,7 +1544,37 @@ class MirixClient(AbstractClient):
         if end_date is not None:
             request_data["end_date"] = end_date
 
+        # Optional retrieval filters
+        if memory_types is not None:
+            request_data["memory_types"] = list(memory_types)
+        if session_id is not None:
+            _validate_session_id(session_id)
+            request_data["session_id"] = session_id
+
         return await self._request("POST", "/memory/retrieve/conversation", json=request_data, headers=headers)
+
+    @staticmethod
+    def render_memories(
+        response: Dict[str, Any], memory_types: Optional[List[str]] = None
+    ) -> str:
+        """
+        Render a retrieval response as prompt text.
+
+        The same as ``mirix.client.render.render_retrieved_memories``: skills as
+        "## Relevant skills from memory" / "### {name}" / description /
+        "When to use: ..." / "Instructions:" / instructions / "Examples: ..."
+        (omitted when there are none), and a section per other memory type.
+
+        Args:
+            response: The answer of retrieve_with_conversation / retrieve_with_topic.
+            memory_types: Render only these types, in this order (default: all).
+
+        Returns:
+            The text; "" when nothing was retrieved.
+        """
+        from mirix.client.render import render_retrieved_memories
+
+        return render_retrieved_memories(response, memory_types)
 
     async def retrieve_with_topic(
         self,
@@ -1902,6 +1989,8 @@ class MirixClient(AbstractClient):
         meta_agent_id: Optional[str] = None,
         last_n_sessions: Optional[int] = None,
         headers: Optional[Dict[str, str]] = None,
+        *,
+        wait: bool = True,
     ) -> Dict[str, Any]:
         """
         Run the auto-dream self-reflection pipeline for a user.
@@ -1917,11 +2006,16 @@ class MirixClient(AbstractClient):
             dry_run: If true, fetch and count memories without invoking the agent.
             model: Optional model override for this auto-dream run.
             meta_agent_id: Optional meta memory agent id to run against.
-            last_n_sessions: For procedural mode, how many recent retained
-                sessions to distill.
+            last_n_sessions: For procedural mode, claim at most this many
+                pending sessions (oldest first, as before); default: all of them.
+            headers: Optional per-request headers (same position as before).
+            wait: Keyword-only. True (default) runs the recorded learning run
+                synchronously (any mode); False returns at once with its id in
+                ``run_ids`` (poll :meth:`get_learning_run`).
 
         Returns:
             AutoDreamResponse dict with stats on removed/merged/resolved items
+            (and ``run_ids`` for procedural mode)
         """
         await self._ensure_user_exists(user_id, headers=headers)
 
@@ -1932,12 +2026,294 @@ class MirixClient(AbstractClient):
             body["meta_agent_id"] = meta_agent_id
         if last_n_sessions is not None:
             body["last_n_sessions"] = last_n_sessions
+        if not wait:
+            body["wait"] = False
 
         return await self._request(
             "POST",
             "/memory/auto_dream",
             params={"user_id": user_id},
             json=body,
+            headers=headers,
+        )
+
+    # ========================================================================
+    # Conversation sessions and skill learning runs
+    # ========================================================================
+
+    async def close_session(
+        self,
+        session_id: str,
+        user_id: Optional[str] = None,
+        headers: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Explicitly end a conversation session.
+
+        A session also ends by itself after MIRIX_SESSION_IDLE_TIMEOUT_SECONDS
+        (default 2 days) without messages; closing it lets its task
+        conversation count toward skill learning right away. Idempotent.
+
+        Args:
+            session_id: The session id the messages were added with.
+            user_id: The session's user (default: the client's admin user).
+
+        Returns:
+            ``{session_id, closed_at, close_reason, already_closed,
+            learning_run_id}`` — ``learning_run_id`` is set when this close
+            started a skill learning run.
+
+        Raises:
+            ValueError: if ``session_id`` is malformed. The server answers 404
+            for an unknown session.
+        """
+        _validate_session_id(session_id)
+        body: Dict[str, Any] = {}
+        if user_id is not None:
+            body["user_id"] = user_id
+        return await self._request(
+            "POST",
+            f"/memory/sessions/{session_id}/close",
+            json=body,
+            headers=headers,
+        )
+
+    async def flush_skills(
+        self,
+        user_id: Optional[str] = None,
+        close_open_sessions: bool = False,
+        meta_agent_id: Optional[str] = None,
+        headers: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Learn skills from every pending task session now, however few.
+
+        Automatic learning waits for SKILL_TRIGGER_SESSION_THRESHOLD ended task
+        sessions; flush starts a learning run for whatever has ended so far.
+
+        Args:
+            user_id: Whose sessions (default: the client's admin user).
+            close_open_sessions: First close the user's still-open task
+                sessions, so they are learned from too.
+            meta_agent_id: Meta agent scope (default: this client's
+                initialized meta agent, else the server's choice).
+
+        Returns:
+            ``{learning_run_id, session_count, closed_session_ids,
+            pending_experiences}`` — ``learning_run_id`` is None when there
+            was nothing to learn (no pending session, and no experience
+            waiting for the curator that a queued or running run would not
+            curate anyway). Poll :meth:`get_learning_run` for the outcome.
+        """
+        body: Dict[str, Any] = {"close_open_sessions": close_open_sessions}
+        if user_id is not None:
+            body["user_id"] = user_id
+        agent_id = meta_agent_id or getattr(self._meta_agent, "id", None)
+        if agent_id is not None:
+            body["meta_agent_id"] = agent_id
+        return await self._request(
+            "POST", "/memory/skills/flush", json=body, headers=headers
+        )
+
+    async def list_learning_runs(
+        self,
+        user_id: Optional[str] = None,
+        status: Optional[str] = None,
+        limit: int = 50,
+        meta_agent_id: Optional[str] = None,
+        headers: Optional[Dict[str, str]] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        List skill learning runs of this client's meta agents, newest first.
+
+        Args:
+            user_id: Only runs for this user.
+            status: queued, running, succeeded, failed, or "active" (queued +
+                running) — e.g. poll ``status="active"`` until it is empty to
+                wait for learning to go idle.
+            limit: At most this many runs (1-500).
+            meta_agent_id: Only runs of this meta agent.
+
+        Returns:
+            A list of learning-run dicts (id, trigger, status, session_ids,
+            session_watermarks, heartbeat_at, started_at, finished_at, error,
+            distill_metrics, curator_metrics, ...).
+        """
+        params: Dict[str, Any] = {"limit": limit}
+        if user_id is not None:
+            params["user_id"] = user_id
+        if status is not None:
+            params["status"] = status
+        if meta_agent_id is not None:
+            params["meta_agent_id"] = meta_agent_id
+        response = await self._request(
+            "GET", "/memory/learning_runs", params=params, headers=headers
+        )
+        if isinstance(response, dict):
+            return list(response.get("learning_runs") or [])
+        return list(response or [])
+
+    async def get_learning_run(
+        self, run_id: str, headers: Optional[Dict[str, str]] = None
+    ) -> Dict[str, Any]:
+        """
+        Fetch one skill learning run by id (404 if it is not this client's).
+        """
+        return await self._request(
+            "GET", f"/memory/learning_runs/{run_id}", headers=headers
+        )
+
+    # ========================================================================
+    # Retrieval log
+    # ========================================================================
+
+    async def list_retrieval_logs(
+        self,
+        session_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        limit: int = 50,
+        headers: Optional[Dict[str, str]] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        List this client's retrieval log rows, newest first.
+
+        One row per retrieval; its ``id`` is the ``retrieval_id`` the retrieval
+        returned. A row has the raw query (``query_text``), ``extracted_topics``,
+        ``extraction_status`` (ok / fallback / skipped), ``embedding_status``,
+        ``per_type`` (for procedural memory every candidate's bm25 / cosine /
+        rrf scores and ranks, the gate parameters, the returned ids and the
+        skills without a vector), ``llm_usage``, ``latency_ms``,
+        ``retry_events`` and ``embedding_chunked_calls``. Rows are kept for the
+        server's retention window (30 days by default).
+
+        Args:
+            session_id: Only the retrievals made with this session_id.
+            user_id: Only the retrievals for this user.
+            limit: At most this many rows (1-500).
+
+        Returns:
+            A list of retrieval-log dicts.
+        """
+        params: Dict[str, Any] = {"limit": limit}
+        if session_id is not None:
+            _validate_session_id(session_id)
+            params["session_id"] = session_id
+        if user_id is not None:
+            params["user_id"] = user_id
+        response = await self._request(
+            "GET", "/memory/retrieval_logs", params=params, headers=headers
+        )
+        if isinstance(response, dict):
+            return list(response.get("retrieval_logs") or [])
+        return list(response or [])
+
+    # ========================================================================
+    # Skill version history
+    # ========================================================================
+
+    async def get_skill_history(
+        self,
+        skill_id: str,
+        user_id: Optional[str] = None,
+        headers: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
+        """
+        List every version of a skill, oldest first (also for a deleted skill).
+
+        Args:
+            skill_id: The skill (procedural memory) id.
+            user_id: Restrict to this owner. Without it the skill may belong
+                to any user of the client's organization (the id names it);
+                the client's read scopes apply either way.
+
+        Returns:
+            ``{skill_id, name, is_deleted, deleted_at, delete_reason, skill,
+            versions}`` — each version has ``version_no``, ``change_type``
+            (baseline, create, edit, delete, restore), ``run_id``,
+            ``actor_kind``, ``reason``, ``created_at`` and ``changed_fields``.
+        """
+        params: Dict[str, Any] = {}
+        if user_id is not None:
+            params["user_id"] = user_id
+        return await self._request(
+            "GET",
+            f"/memory/skills/{skill_id}/history",
+            params=params or None,
+            headers=headers,
+        )
+
+    async def get_skill_version(
+        self,
+        skill_id: str,
+        version_no: int,
+        user_id: Optional[str] = None,
+        headers: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
+        """
+        One version of a skill, rebuilt exactly as it was stored.
+        ``user_id`` restricts to that owner, as in :meth:`get_skill_history`.
+
+        Returns:
+            ``{skill_id, version, content}`` — ``content`` holds the seven
+            versioned fields (name, entry_type, description, instructions,
+            triggers, examples, filter_tags).
+        """
+        params: Dict[str, Any] = {}
+        if user_id is not None:
+            params["user_id"] = user_id
+        return await self._request(
+            "GET",
+            f"/memory/skills/{skill_id}/versions/{int(version_no)}",
+            params=params or None,
+            headers=headers,
+        )
+
+    async def restore_skill(
+        self,
+        skill_id: str,
+        version_no: int,
+        user_id: Optional[str] = None,
+        headers: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Restore a skill to one of its versions; un-deletes a deleted skill.
+
+        The server answers 409 when another live skill of the user already has
+        the restored name, and 404 for an unknown skill or version.
+
+        Returns:
+            ``{skill, version, restored_version_no, changed}``.
+        """
+        body: Dict[str, Any] = {"version_no": int(version_no)}
+        if user_id is not None:
+            body["user_id"] = user_id
+        return await self._request(
+            "POST",
+            f"/memory/skills/{skill_id}/restore",
+            json=body,
+            headers=headers,
+        )
+
+    async def delete_skill(
+        self,
+        skill_id: str,
+        user_id: Optional[str] = None,
+        headers: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Erase a skill with its whole version history (irreversible).
+
+        Args:
+            skill_id: The skill (procedural memory) id.
+            user_id: The skill's owner (default: the client's admin user).
+        """
+        params: Dict[str, Any] = {}
+        if user_id is not None:
+            params["user_id"] = user_id
+        return await self._request(
+            "DELETE",
+            f"/memory/procedural/{skill_id}",
+            params=params or None,
             headers=headers,
         )
 

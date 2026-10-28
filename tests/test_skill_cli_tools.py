@@ -44,6 +44,17 @@ def test_skill_tools_constant():
     assert SKILL_TOOLS == ["skill_list", "skill_read", "skill_create", "skill_edit", "skill_delete"]
 
 
+def test_skill_curation_tools_constant():
+    """experience_triage is a procedural-agent tool of its own:
+    not in SKILL_TOOLS (the auto-dream agent never curates a batch), but a
+    registered tool."""
+    from mirix.constants import ALL_TOOLS, AUTO_DREAM_TOOLS, SKILL_CURATION_TOOLS
+
+    assert SKILL_CURATION_TOOLS == ["experience_triage"]
+    assert "experience_triage" in ALL_TOOLS
+    assert "experience_triage" not in AUTO_DREAM_TOOLS
+
+
 def test_trigger_threshold_constant():
     """SKILL_TRIGGER_MESSAGE_THRESHOLD exists and defaults to 10."""
     from mirix.constants import SKILL_TRIGGER_MESSAGE_THRESHOLD
@@ -82,10 +93,20 @@ def test_skill_validators_registered():
     result = mod.validate_tool_args("skill_edit", {"skill_id": "proc-1", "field": ""})
     assert result is not None
 
-    # skill_edit: text field without old_text
+    # skill_edit: text field with neither a patch nor a whole-field value
     result = mod.validate_tool_args("skill_edit", {"skill_id": "proc-1", "field": "instructions"})
     assert result is not None
-    assert "old_text" in result
+    assert "old_text" in result and "value" in result
+
+    # skill_edit: a whole-field rewrite of a text field is valid (no size gate)
+    result = mod.validate_tool_args(
+        "skill_edit", {"skill_id": "proc-1", "field": "instructions", "value": "x" * 5000}
+    )
+    assert result is None
+
+    # skill_edit: malformed arguments are a validation error, not a crash
+    result = mod.validate_tool_args("skill_edit", {"skill_id": None, "field": "name"})
+    assert result is not None and "invalid arguments" in result
 
     # skill_edit: value field valid
     result = mod.validate_tool_args("skill_edit", {"skill_id": "proc-1", "field": "triggers", "value": ["a"]})
@@ -96,9 +117,17 @@ def test_skill_validators_registered():
     assert result is not None
     assert "must be one of" in result
 
-    # skill_delete: valid
-    result = mod.validate_tool_args("skill_delete", {"skill_id": "proc-1"})
+    # skill_delete: valid (a deletion always names its reason)
+    result = mod.validate_tool_args(
+        "skill_delete", {"skill_id": "proc-1", "reason": "wrong advice"}
+    )
     assert result is None
+
+    # skill_delete: no reason
+    result = mod.validate_tool_args("skill_delete", {"skill_id": "proc-1"})
+    assert result is not None and "reason" in result
+    result = mod.validate_tool_args("skill_delete", {"skill_id": "proc-1", "reason": "  "})
+    assert result is not None and "reason" in result
 
     # skill_delete: empty
     result = mod.validate_tool_args("skill_delete", {"skill_id": ""})

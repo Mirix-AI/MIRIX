@@ -55,7 +55,10 @@ dependencies = [
     "humps",
     "composio",
     "colorama",
-    "anthropic",
+    # The Anthropic client speaks the httpx-based SDK (0.x): anthropic 1.x moved to
+    # httpx2 and dropped arguments MIRIX sends (e.g. temperature). Kept in step
+    # with uv.lock.
+    "anthropic>=0.94.0,<1.0.0",
     "httpx_sse",
     "rapidfuzz",
     "rank-bm25",

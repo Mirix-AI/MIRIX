@@ -59,8 +59,23 @@ def _test_id(prefix: str) -> str:
 QUEUE_TEST_ORG_ID = "org-bft-update-mode"
 
 
+@pytest_asyncio.fixture(scope="module", loop_scope="module")
+async def database(tmp_path_factory):
+    """A fresh, initialized MIRIX database (``db_isolation.isolated_database``):
+    the fresh Postgres of ``scripts/run_pg_integration_tests.sh``, or a throwaway
+    SQLite file without it — never the developer's ``~/.mirix``. A fresh
+    database has no tables until server startup creates them."""
+    from db_isolation import isolated_database
+    from mirix.server import server
+
+    await server.engine.dispose(close=False)  # this module's loop
+    async with isolated_database(tmp_path_factory.mktemp("bft-update-mode")) as engine:
+        yield engine
+    await server.engine.dispose()
+
+
 @pytest_asyncio.fixture(scope="module")
-async def ensure_queue_org():
+async def ensure_queue_org(database):
     from mirix.schemas.organization import Organization as PydanticOrganization
     from mirix.services.organization_manager import OrganizationManager
 
@@ -555,7 +570,7 @@ class TestBlockManagerUpdateFilterTags:
     """Integration tests for BlockManager.update_block_filter_tags."""
 
     @pytest_asyncio.fixture(scope="module")
-    async def setup(self):
+    async def setup(self, database):
         from mirix.schemas.block import Block as PydanticBlock
         from mirix.schemas.client import Client as PydanticClient
         from mirix.schemas.organization import Organization as PydanticOrganization

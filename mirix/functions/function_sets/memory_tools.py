@@ -1,9 +1,11 @@
 import asyncio
+import functools
 import os
 import re
 import traceback
 from copy import deepcopy
-from typing import TYPE_CHECKING, List, Optional
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Dict, List, Literal, Optional, Sequence, Tuple
 
 from mirix.agent import Agent, AgentState
 
@@ -20,6 +22,7 @@ from mirix.observability.langfuse_client import get_langfuse_client
 from mirix.schemas.episodic_memory import EpisodicEventForLLM
 from mirix.schemas.knowledge_vault import KnowledgeVaultItemBase
 from mirix.schemas.mirix_message_content import TextContent
+from mirix.schemas.procedural_memory import SkillCitationForLLM, SkillExampleForLLM
 
 from mirix.schemas.resource_memory import ResourceMemoryItemBase
 from mirix.schemas.semantic_memory import SemanticMemoryItemBase
@@ -491,248 +494,682 @@ def _bump_patch_version(version: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Edit-budget formula + per-mutation size/delete gates.
+# Skill tools.
 #
-# These are pure, side-effect-free helpers so they are unit-testable without a
-# DB, a server, or an LLM. The skill tools below consult them; the experience-
-# curator evolve path (mirix.services.skill_experience_curator) sets the
-# per-instance budget counters BEFORE running the procedural agent.
+# Inside a skill learning run the curator attaches a CuratorBatchState to the
+# agent instance (``self.curator_batch``, see
+# mirix.services.skill_curator_state): the edit budget of the batch (one
+# create/edit per experience), the run's delete limit (one soft delete per
+# learning run), the write guard (the run must still be active) and the output
+# cap. Every validation — duplicate names included — runs BEFORE a write,
+# and only a write that went through costs budget: a rejected call is free.
+# Outside a run (the in-flow procedural agent) there is no budget and no delete
+# limit. Every tool works inside the agent's scope (``filter_tags["scope"]``):
+# a skill of another scope is "not found" by id and by name.
 # ---------------------------------------------------------------------------
 
-# Sentinel returned by skill_create/skill_edit when the per-run mutation budget
-# is exhausted. The curator's system prompt tells the agent that seeing this is
-# its cue to stop and call finish_memory_update.
-_BUDGET_EXHAUSTED_MSG = (
-    "edit budget exhausted — call finish_memory_update to end this evolution. "
-    "No further skill_create / skill_edit will take effect this run."
-)
+_SKILL_TEXT_FIELDS = ("name", "description", "instructions")
+_SKILL_JSON_FIELDS = ("triggers", "examples")
+_SKILL_EDITABLE_FIELDS = _SKILL_TEXT_FIELDS + _SKILL_JSON_FIELDS + ("entry_type",)
 
 
-def _round_half_up(value: float) -> int:
-    """Deterministic round-half-up (Python's built-in round() is banker's).
+def _skill_provenance(self: "Agent") -> dict:
+    """Who is changing a skill, for its version record.
 
-    The design formula is clamp(round(raw)); we use round-half-up so e.g. a
-    successes-only window (raw=2.5) lands at 3 instead of 2, matching the
-    documented "mixed => 2-4" budget distribution.
+    Inside a skill learning run the curator sets ``skill_run_id`` on the agent
+    instance (the curator batch id); the change is then a ``curator`` change of
+    that run. Outside a run (the in-flow procedural agent) it is an ``agent``
+    change with no run.
     """
-    import math
+    from mirix.services.procedural_memory_manager import ACTOR_AGENT, ACTOR_CURATOR
 
-    return int(math.floor(value + 0.5))
-
-
-def compute_edit_budget(aggregate: dict, *, autonomous: Optional[int] = None) -> int:
-    """Count-driven edit budget from the C2 `aggregate` (P0-3).
-
-    ``raw = B0 + alpha_f*n_high_fail + alpha_s*n_high_succ`` clamped to
-    ``[B_min, B_max]``. Only structure-gated counts drive it; ``quality_score``
-    (``mean_q``) is RANKING-ONLY and never read here.
-
-    Hybrid (USER-LOCKED): when ``autonomous`` is given (a cheap LLM's suggestion)
-    it may only REDUCE the ceiling — ``final = min(formula, clamp(autonomous))``.
-    For the validity run the caller passes ``autonomous=None`` (formula-only).
-    """
-    from mirix.constants import (
-        SKILL_EDIT_BUDGET_ALPHA_FAIL,
-        SKILL_EDIT_BUDGET_ALPHA_SUCC,
-        SKILL_EDIT_BUDGET_B0,
-        SKILL_EDIT_BUDGET_MAX,
-        SKILL_EDIT_BUDGET_MIN,
-    )
-
-    n_high_fail = int(aggregate.get("n_high_fail", 0) or 0)
-    n_high_succ = int(aggregate.get("n_high_succ", 0) or 0)
-
-    raw = (
-        SKILL_EDIT_BUDGET_B0
-        + SKILL_EDIT_BUDGET_ALPHA_FAIL * n_high_fail
-        + SKILL_EDIT_BUDGET_ALPHA_SUCC * n_high_succ
-    )
-    formula = _round_half_up(raw)
-    formula = max(SKILL_EDIT_BUDGET_MIN, min(SKILL_EDIT_BUDGET_MAX, formula))
-
-    # B_min=0 skip: a window with no structure-gated records yields 0 (the
-    # curator keys its skip decision off this value via the aggregate).
-    if n_high_fail + n_high_succ == 0:
-        return SKILL_EDIT_BUDGET_MIN
-
-    if autonomous is None:
-        return formula
-
-    auto = max(SKILL_EDIT_BUDGET_MIN, min(SKILL_EDIT_BUDGET_MAX, int(autonomous)))
-    return min(formula, auto)
+    run_id = getattr(self, "skill_run_id", None)
+    return {
+        "run_id": run_id,
+        "actor_kind": ACTOR_CURATOR if run_id else ACTOR_AGENT,
+    }
 
 
-def _edit_exceeds_size_gate(old_text: str, new_text: str) -> Optional[str]:
-    """Per-mutation HARD size gate (P1-3) for a TEXT-field edit.
-
-    Returns a rejection message if the edit is too large on EITHER dimension:
-      * absolute char delta  > SKILL_MAX_EDIT_CHAR_DELTA (default 800), or
-      * change-ratio (1 - SequenceMatcher.ratio()) >= SKILL_EDIT_MAJOR_RATIO (0.4)
-    Otherwise returns None (the edit is small enough to apply).
-    """
-    import difflib
-
-    from mirix.constants import SKILL_EDIT_MAJOR_RATIO, SKILL_MAX_EDIT_CHAR_DELTA
-
-    old_text = old_text or ""
-    new_text = new_text or ""
-
-    char_delta = abs(len(new_text) - len(old_text))
-    if char_delta > SKILL_MAX_EDIT_CHAR_DELTA:
-        return (
-            f"edit too large; split or extract a new skill "
-            f"(char delta {char_delta} > {SKILL_MAX_EDIT_CHAR_DELTA})."
-        )
-
-    ratio_change = 1.0 - difflib.SequenceMatcher(None, old_text, new_text).ratio()
-    if ratio_change >= SKILL_EDIT_MAJOR_RATIO:
-        return (
-            f"edit too large; split or extract a new skill "
-            f"(change ratio {ratio_change:.2f} >= {SKILL_EDIT_MAJOR_RATIO})."
-        )
-    return None
+def _curator_batch(self: "Agent"):
+    """The curator batch this agent is working on, or None outside a run."""
+    return getattr(self, "curator_batch", None)
 
 
-def _instructions_over_ceiling(text: str) -> bool:
-    """True when an `instructions` value exceeds the hard ceiling.
-
-    Over-ceiling edits must route to skill_create (extract a new skill) instead
-    of growing an existing skill unbounded.
-    """
-    from mirix.constants import SKILL_MAX_INSTRUCTIONS_CHARS
-
-    return len(text or "") > SKILL_MAX_INSTRUCTIONS_CHARS
-
-
-# Phrases in a failure record's detail/root_cause that signal a skill is
-# ACTIVELY HARMFUL (not merely redundant/outdated). Only these authorize a
-# delete. "redundant" / "duplicate" deliberately do NOT — those are edit/merge
-# territory, never a destructive delete.
-_HARMFUL_MARKERS = (
-    "actively harmful",
-    "is harmful",
-    "harmful",
-    "caused the failure",
-    "led to the failure",
-    "should be removed",
-    "should be deleted",
-    "misleading",
-    "wrong namespace",
-)
+def _skill_scopes(self: "Agent") -> Optional[List[str]]:
+    """The scope the skill tools work in: the agent's
+    ``filter_tags["scope"]`` (the client's write scope, stamped by the REST
+    layer and by the curator), or None — no scope restriction — for an agent
+    without one."""
+    filter_tags = getattr(self, "filter_tags", None)
+    scope = filter_tags.get("scope") if isinstance(filter_tags, dict) else None
+    return [str(scope)] if scope else None
 
 
-def _record_authorizes_delete(record, *, skill_name: str, skill_id: str) -> bool:
-    """Whether a single failure record authorizes deleting a specific skill.
+def _skill_owner_id(self: "Agent") -> str:
+    user = getattr(self, "user", None)
+    if user is not None and getattr(user, "id", None):
+        return user.id
+    user_id = getattr(self, "user_id", None)
+    if user_id:
+        return user_id
+    from mirix.services.user_manager import UserManager
 
-    Requires ALL of:
-      * the record is a FAILURE (a success never authorizes a delete),
-      * its detail/root_cause NAMES the skill (by name or id), and
-      * its detail flags the skill as actively HARMFUL (not merely redundant).
+    return UserManager.ADMIN_USER_ID
 
-    Accepts an ORM row, a pydantic record, or a plain dict (duck-typed).
-    """
 
-    def _get(obj, key):
-        if isinstance(obj, dict):
-            return obj.get(key)
-        return getattr(obj, key, None)
+def _skill_write_options(self: "Agent", *, cited: Sequence[str] = ()) -> dict:
+    """Keyword arguments of every skill write: provenance, the scope, and —
+    in a learning run — the run's write guard, the batch lineage and the
+    experiences the write cites."""
+    options = dict(_skill_provenance(self))
+    options["scopes"] = _skill_scopes(self)
+    batch = _curator_batch(self)
+    if batch is not None:
+        options["write_guard"] = batch.write_guard
+        options["lineage_experience_ids"] = list(batch.experience_ids)
+        if cited:
+            options["cited_experience_ids"] = list(cited)
+    return options
 
-    if (_get(record, "record_type") or "") != "failure":
-        return False
 
-    detail = _get(record, "detail") or ""
+# What a rejected call of each skill tool left unchanged.
+_NOTHING_DONE = {
+    "skill_create": "Nothing was created",
+    "skill_edit": "Nothing was changed",
+    "skill_delete": "Nothing was deleted",
+    "experience_triage": "Nothing was recorded",
+}
 
-    # Require the skill MENTION and a HARMFUL marker to co-occur in the SAME
-    # clause/sentence, not merely somewhere in the detail. Otherwise a record
-    # like "skill A is redundant; skill B was harmful" would wrongly authorize
-    # deleting A. Split on sentence/clause boundaries and require one segment to
-    # contain both the skill reference and a harmful marker.
-    import re as _re
+# At most this many ids are named in one tool answer.
+_IDS_SHOWN = 50
 
-    name_l = (skill_name or "").lower()
-    id_l = (skill_id or "").lower()
-    if not name_l and not id_l:
-        return False
 
-    def _mentions(seg: str, token: str) -> bool:
-        # Whole-token match so 'proc-9' does NOT match inside 'proc-90' (skill
-        # ids/names contain hyphens, so \b is unreliable). Require the token to
-        # be bounded by a non [A-Za-z0-9-] char (or string edge) on both sides.
-        if not token:
-            return False
-        for m in _re.finditer(_re.escape(token), seg):
-            before = seg[m.start() - 1] if m.start() > 0 else ""
-            after = seg[m.end()] if m.end() < len(seg) else ""
-            if not _re.match(r"[A-Za-z0-9-]", before) and not _re.match(
-                r"[A-Za-z0-9-]", after
-            ):
-                return True
-        return False
+def _experience_ids_arg(value) -> Tuple[List[str], Optional[str]]:
+    """``(ids, problem)`` of an ``experience_ids``-style argument: None or ""
+    is no id; a JSON list given as a string is decoded; a bare id string is
+    one id; a list of strings is stripped, its empty entries (a strict-mode
+    filler such as ``[""]``) dropped and repeats removed, in order. Anything
+    else is a problem."""
+    import json as _json
 
-    for seg in _re.split(r"[.;\n!?]+", detail.lower()):
-        names_skill = _mentions(seg, name_l) or _mentions(seg, id_l)
-        if not names_skill:
+    problem = "must be a list of experience ids."
+    if value is None:
+        return [], None
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return [], None
+        if text.startswith("["):
+            try:
+                value = _json.loads(text)
+            except (TypeError, ValueError):
+                return [], problem
+        else:
+            return [text], None
+    if not isinstance(value, (list, tuple)):
+        return [], problem
+    ids: List[str] = []
+    for item in value:
+        if item is None:
             continue
-        if any(marker in seg for marker in _HARMFUL_MARKERS):
-            return True
-    return False
+        if not isinstance(item, str):
+            return [], problem
+        item = item.strip()
+        if item and item not in ids:
+            ids.append(item)
+    return ids, None
 
 
-def _consume_edit_budget(self: "Agent") -> Optional[str]:
-    """Decrement the per-instance create/edit budget at the TOP of a mutation.
+def _named(ids: Sequence[str]) -> str:
+    shown = ", ".join(ids[:_IDS_SHOWN])
+    if len(ids) > _IDS_SHOWN:
+        shown += f" … and {len(ids) - _IDS_SHOWN} more"
+    return shown
 
-    Counter is the plain instance attr ``self._edit_budget_remaining`` (P1-2):
-    NOT module-level, NOT agent_id-keyed, NOT manager-keyed — so two agents (two
-    users / two runs) never share it, and a single async task is race-free.
 
-    Returns ``None`` when the mutation may proceed (and decrements), or the
-    exhausted-message when the budget is 0 (no decrement, caller must NOT
-    mutate). An UNSET attribute means "no limit" (logged once per call).
-    """
-    remaining = getattr(self, "_edit_budget_remaining", None)
-    if remaining is None:
-        logger.debug("[skill budget] no _edit_budget_remaining set -> no limit")
-        return None
-    if remaining <= 0:
-        return _BUDGET_EXHAUSTED_MSG
-    self._edit_budget_remaining = remaining - 1
+def _citations_arg(value) -> Tuple[List[str], Dict[str, List[str]], Optional[str]]:
+    """``(ids, quotes, problem)`` of a skill write's ``experience_ids``:
+    a list of ``{"id", "quote"}`` objects — or, as before, of bare ids (a
+    citation without a quote) — in order, repeats merged (their quotes kept);
+    a JSON list given as a string is decoded and a bare id string is one id.
+    An entry whose id is empty (a strict-mode filler) is dropped. ``quotes``
+    maps an id to the quotes given for it. Anything else is a problem."""
+    import json as _json
+
+    problem = 'must be a list of objects with an "id" and a "quote".'
+    if value is None:
+        return [], {}, None
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return [], {}, None
+        if not text.startswith("["):
+            return [text], {}, None
+        try:
+            value = _json.loads(text)
+        except (TypeError, ValueError):
+            return [], {}, problem
+    if not isinstance(value, (list, tuple)):
+        return [], {}, problem
+    ids: List[str] = []
+    quotes: Dict[str, List[str]] = {}
+    for item in value:
+        if item is None:
+            continue
+        if hasattr(item, "model_dump"):
+            item = item.model_dump()
+        if isinstance(item, str):
+            experience_id, quote = item.strip(), None
+        elif isinstance(item, dict):
+            raw_id = item.get("id", item.get("experience_id"))
+            raw_quote = item.get("quote")
+            if raw_id is None:
+                raw_id = ""
+            if not isinstance(raw_id, str) or not (
+                raw_quote is None or isinstance(raw_quote, str)
+            ):
+                return [], {}, problem
+            experience_id, quote = raw_id.strip(), raw_quote
+        else:
+            return [], {}, problem
+        if not experience_id:
+            continue
+        if experience_id not in ids:
+            ids.append(experience_id)
+        if quote is not None and quote.strip():
+            quotes.setdefault(experience_id, []).append(quote)
+    return ids, quotes, None
+
+
+def _citation_problem(
+    self: "Agent", tool: str, experience_ids
+) -> Tuple[List[str], Dict[str, List[str]], Optional[str]]:
+    """The ids a skill write cites and the quotes given for them, or the
+    rejection message (recorded; it costs nothing) when the
+    argument is malformed or names an id this batch did not show. Outside a
+    curation batch the argument is ignored: ``(ids, quotes, None)``, and the
+    caller notes it when ids were given."""
+    from mirix.services.skill_curator_state import REJECT_INVALID
+
+    ids, quotes, problem = _citations_arg(experience_ids)
+    batch = _curator_batch(self)
+    if batch is None:
+        return ids, quotes, None
+    nothing = _NOTHING_DONE.get(tool, "Nothing was changed")
+    if problem:
+        return [], {}, _skill_reject(
+            self,
+            tool,
+            REJECT_INVALID,
+            f"Rejected: 'experience_ids' {problem} {nothing} and this call cost no budget.",
+        )
+    unknown = batch.unknown_ids(ids)
+    if unknown:
+        return [], {}, _skill_reject(
+            self,
+            tool,
+            REJECT_INVALID,
+            f"Rejected: experience_ids names {', '.join(unknown[:10])}"
+            f"{' …' if len(unknown) > 10 else ''}, which this batch did not show. "
+            "Cite only the ids of this batch's experiences and earlier lessons. "
+            f"{nothing} and this call cost no budget.",
+        )
+    return ids, quotes, None
+
+
+def _verified_citations(
+    cited: Sequence[str],
+    quotes: Dict[str, List[str]],
+    new_text: str,
+    old_text: str = "",
+) -> Tuple[List[str], Dict[str, str]]:
+    """``(verified, unverified)`` of a write's citations: a citation
+    counts when one of its quotes occurs in the text the write added or
+    changed (``new_text``) and is not text the skill already had
+    (``old_text``) — :func:`skill_text_checks.citation_quote_problem`;
+    ``unverified`` maps every other cited id to why not."""
+    from mirix.services.skill_text_checks import QUOTE_MISSING, citation_quote_problem
+
+    verified: List[str] = []
+    unverified: Dict[str, str] = {}
+    for experience_id in cited:
+        reason = QUOTE_MISSING
+        for quote in quotes.get(experience_id, ()):
+            reason = citation_quote_problem(quote, new_text, old_text)
+            if reason is None:
+                break
+        if reason is None:
+            verified.append(experience_id)
+        else:
+            unverified[experience_id] = reason
+    return verified, unverified
+
+
+def _unverified_note(self: "Agent", unverified: Dict[str, str], skill_id: str) -> str:
+    """The answer's note on citations whose quote does not show where the
+    write applies them: they were not recorded and stay pending — an
+    experience of the batch is not consumed by it unless a change cites it
+    with a quote or the triage lists it, and an earlier lesson stays in the
+    pool as it was."""
+    from mirix.services.skill_text_checks import CITATION_QUOTE_MIN_CHARS
+
+    if not unverified:
+        return ""
+    batch = _curator_batch(self)
+    if batch is not None:
+        batch.record_unverified_citations(unverified, skill_id)
+    listed = "; ".join(
+        f"{experience_id} ({reason})"
+        for experience_id, reason in list(unverified.items())[:_IDS_SHOWN]
+    )
+    more = len(unverified) - _IDS_SHOWN
+    if more > 0:
+        listed += f" … and {more} more"
+    return (
+        f" NOT counted as applied, because no quote of the text this change "
+        f"adds shows where it applies them: {listed}. They stay pending: cite "
+        "them on a change with a quote copied from the words it adds that apply "
+        f"their lesson (at least {CITATION_QUOTE_MIN_CHARS} letters), or list "
+        "them with experience_triage."
+    )
+
+
+def _citation_note(
+    self: "Agent",
+    cited: Sequence[str],
+    skill_id: str,
+    *,
+    delete: bool = False,
+    unverified: Optional[Dict[str, str]] = None,
+) -> str:
+    """Record a write's (``delete``: a soft delete's) citations in its batch
+    and say what it cited; ``unverified`` are citations it gave without a
+    quote of its new text that applies them: not recorded."""
+    batch = _curator_batch(self)
+    if batch is None:
+        if cited or unverified:
+            return " (experience_ids are ignored outside a skill curation batch.)"
+        return ""
+    if cited or not unverified:
+        # A write whose citations all lacked a verifiable quote is counted
+        # there (citations_unverified), not also as an uncited write.
+        batch.record_citations(list(cited), skill_id, delete=delete)
+    note = _unverified_note(self, unverified or {}, skill_id)
+    if cited:
+        return f" Cited: {', '.join(cited)}." + note
+    if unverified:
+        return note
+    return (
+        " It cites no experience: name the ones it addresses in experience_ids "
+        "next time, or list them in experience_triage."
+    )
+
+
+def _skill_output_cap(self: "Agent") -> int:
+    from mirix.services.skill_curator_state import skill_output_char_cap
+
+    batch = _curator_batch(self)
+    if batch is not None:
+        return batch.output_char_cap
+    return skill_output_char_cap(self.agent_state.llm_config)
+
+
+def _skill_reject(self: "Agent", tool: str, kind: str, message: str) -> str:
+    """A rejected skill tool call: nothing changed and nothing is charged. The
+    agent counts it (``declined_tool_calls``): a terminal call the step runs
+    after this one in the same turn waits until the model read the answer."""
+    try:
+        self.declined_tool_calls = getattr(self, "declined_tool_calls", 0) + 1
+    except AttributeError:  # an agent object that takes no attributes
+        pass
+    batch = _curator_batch(self)
+    if batch is not None:
+        return batch.reject(tool, kind, message)
+    return message
+
+
+def _budget_note(self: "Agent") -> str:
+    batch = _curator_batch(self)
+    if batch is None:
+        return ""
+    return f" Edit budget left in this batch: {batch.remaining} of {batch.budget}."
+
+
+def _instructions_too_long(self: "Agent", tool: str, length: int) -> str:
+    from mirix.constants import SKILL_MAX_INSTRUCTIONS_CHARS
+    from mirix.services.skill_curator_state import REJECT_TOO_LONG
+
+    return _skill_reject(
+        self,
+        tool,
+        REJECT_TOO_LONG,
+        f"Rejected: the instructions would be {length} characters, over the "
+        f"{SKILL_MAX_INSTRUCTIONS_CHARS}-character limit of a skill. Please "
+        "condense them (remove repetition, keep the essential steps and caveats) "
+        "or move a separate topic into its own skill. Nothing was changed and "
+        "this call cost no budget.",
+    )
+
+
+@functools.lru_cache(maxsize=1)
+def _skill_param_docs() -> dict:
+    """skill_create's parameter descriptions by name (parsed once): the tool's
+    own vocabulary, which a schema echo repeats (skill_text_checks)."""
+    from docstring_parser import parse
+
+    return {
+        param.arg_name: param.description or ""
+        for param in parse(skill_create.__doc__ or "").params
+    }
+
+
+def _content_problem(
+    field: str, value, *, min_words: int = 0, doc: str = ""
+) -> Optional[str]:
+    """Why ``value`` is a placeholder or an echo of the tool's schema rather
+    than content for ``field`` (skill_text_checks), or None."""
+    from mirix.services.skill_text_checks import placeholder_problem
+
+    return placeholder_problem(
+        field, value, _skill_param_docs().get(doc or field, ""), min_words=min_words
+    )
+
+
+def _validate_skill_fields(
+    *,
+    name: Optional[str] = None,
+    description: Optional[str] = None,
+    instructions: Optional[str] = None,
+    entry_type: Optional[str] = None,
+    triggers=None,
+    examples=None,
+    check: tuple = (),
+) -> Optional[str]:
+    """The first problem with the given skill fields, or None.
+
+    Beyond types and the schema's limits, every text must be content: not a
+    placeholder ("...", "string"), not the words of the tool's own parameter
+    description ("kebab-case name", "detailed plain text"), not a stub that
+    says it is one, and a description / instructions of at least a few words
+    (skill_text_checks). This holds for every caller of the skill tools (a
+    curation batch, the in-flow procedural agent, the auto-dream agent)."""
+    from mirix.schemas.procedural_memory import (
+        SKILL_ENTRY_TYPES,
+        SKILL_MAX_DESCRIPTION_LEN,
+        SKILL_MAX_EXAMPLES_COUNT,
+        SKILL_MAX_NAME_LEN,
+        SKILL_MAX_TRIGGER_LEN,
+        skill_nul_problem,
+    )
+    from mirix.services.skill_text_checks import (
+        SKILL_MIN_DESCRIPTION_WORDS,
+        SKILL_MIN_INSTRUCTIONS_WORDS,
+    )
+
+    # A NUL character (U+0000) cannot be stored: a
+    # rejection the model can act on, before any embedding or write.
+    given = {
+        "name": name,
+        "description": description,
+        "instructions": instructions,
+        "triggers": triggers,
+        "examples": examples,
+    }
+    problem = skill_nul_problem({f: v for f, v in given.items() if f in check})
+    if problem:
+        return problem
+    if "name" in check:
+        if not isinstance(name, str) or not name.strip():
+            return "'name' must be a non-empty string."
+        if len(name) > SKILL_MAX_NAME_LEN:
+            return f"'name' exceeds {SKILL_MAX_NAME_LEN} characters."
+        problem = _content_problem("name", name)
+        if problem:
+            return problem
+    if "description" in check:
+        if not isinstance(description, str) or not description.strip():
+            return "'description' must be a non-empty string."
+        if len(description) > SKILL_MAX_DESCRIPTION_LEN:
+            return f"'description' exceeds {SKILL_MAX_DESCRIPTION_LEN} characters."
+        problem = _content_problem(
+            "description", description, min_words=SKILL_MIN_DESCRIPTION_WORDS
+        )
+        if problem:
+            return problem
+    if "instructions" in check:
+        if not isinstance(instructions, str) or not instructions.strip():
+            return "'instructions' must be a non-empty string."
+        problem = _content_problem(
+            "instructions", instructions, min_words=SKILL_MIN_INSTRUCTIONS_WORDS
+        )
+        if problem:
+            return problem
+    if "entry_type" in check and entry_type not in SKILL_ENTRY_TYPES:
+        return f"'entry_type' must be one of: {', '.join(sorted(SKILL_ENTRY_TYPES))}."
+    # The schema's limits (mirix/schemas/procedural_memory.py) are checked here,
+    # before the write: past them, the write's own validation would fail only
+    # after the retrieval vector was computed, as a tool error instead of a
+    # rejection the model can act on.
+    if "triggers" in check and triggers is not None:
+        if not isinstance(triggers, list) or not all(isinstance(t, str) for t in triggers):
+            return "'triggers' must be a list of strings."
+        for i, trigger in enumerate(triggers):
+            if len(trigger) > SKILL_MAX_TRIGGER_LEN:
+                return (
+                    f"'triggers[{i}]' exceeds {SKILL_MAX_TRIGGER_LEN} characters: a "
+                    "trigger is one short condition."
+                )
+            if not _TWO_LETTERS.search(trigger):
+                return (
+                    f"'triggers[{i}]' ({trigger.strip()[:40]!r}) has no word: a "
+                    "trigger is a short condition in words."
+                )
+            problem = _content_problem(f"triggers[{i}]", trigger, doc="triggers")
+            if problem:
+                return problem
+    if "examples" in check and examples is not None:
+        if not isinstance(examples, list) or not all(isinstance(e, dict) for e in examples):
+            return "'examples' must be a list of objects."
+        if len(examples) > SKILL_MAX_EXAMPLES_COUNT:
+            return (
+                f"'examples' has {len(examples)} entries; at most "
+                f"{SKILL_MAX_EXAMPLES_COUNT} are allowed."
+            )
+        for i, example in enumerate(examples):
+            if set(example) != {"input", "output"} or not all(
+                isinstance(example[k], str) for k in example
+            ):
+                return (
+                    f"'examples[{i}]' must be an object with exactly two strings, "
+                    '"input" and "output"; got keys '
+                    f"{', '.join(sorted(map(str, example))) or 'none'}."
+                )
+            for key in ("input", "output"):
+                problem = _content_problem(
+                    f"examples[{i}].{key}", example[key], doc="examples"
+                )
+                if problem:
+                    return problem
     return None
 
 
-async def skill_list(self: "Agent", query: str = "", limit: int = 50) -> str:
+# A trigger needs a word: two letters in a row (any script).
+_TWO_LETTERS = re.compile(r"[^\W\d_]{2}")
+
+
+def _without_list_fillers(triggers, examples):
+    """skill_create's ``triggers`` and ``examples`` without their blank
+    entries. A strict tool schema makes a model send both lists even when it
+    has none, and a blank entry (``[""]``, an example whose texts are all
+    empty) is that filler, as for ``experience_ids``: it carries nothing, so
+    it is dropped rather than stored or rejected. Any other entry is left to
+    the validation (half an example is checked, not dropped)."""
+
+    def blank(value) -> bool:
+        return isinstance(value, str) and not value.strip()
+
+    if isinstance(triggers, list):
+        triggers = [t for t in triggers if not blank(t)]
+    if isinstance(examples, list):
+        examples = [
+            e
+            for e in examples
+            if not (isinstance(e, dict) and all(blank(v) for v in e.values()))
+        ]
+    return triggers, examples
+
+
+def _format_skill_line(skill) -> str:
+    from mirix import constants
+
+    line = (
+        f"[ID: {skill.id}] {skill.name} (v{skill.version}) - "
+        f"{skill.entry_type}: {skill.description}"
+    )
+    length = len(getattr(skill, "instructions", None) or "")
+    if length > constants.SKILL_TARGET_INSTRUCTIONS_CHARS:
+        line += f" [instructions {length} chars: over target]"
+    return line
+
+
+async def _skill_usage_records(self: "Agent", skill_ids: Sequence[str]) -> dict:
+    """The usage records of ``skill_ids`` for the skills' owner:
+    ``{skill_id: SkillUsageRecord}``. Rows are keyed like the distiller writes
+    them: under the client's organization, else the default one
+    (``owner_org``) — never the user's, which the distiller never uses."""
+    from mirix.constants import DEFAULT_ORG_ID
+    from mirix.services.skill_session_feedback import SkillSessionFeedbackManager
+
+    actor = getattr(self, "actor", None)
+    organization_id = getattr(actor, "organization_id", None) or DEFAULT_ORG_ID
+    manager = SkillSessionFeedbackManager(
+        session_maker=getattr(self.procedural_memory_manager, "session_maker", None)
+    )
+    return await manager.usage_records(
+        organization_id=organization_id,
+        user_id=_skill_owner_id(self),
+        skill_ids=list(skill_ids),
+    )
+
+
+def _size_note(length: int) -> str:
+    """Advice when a skill's instructions are over their soft target,
+    or "": a retrieved skill is injected whole, so it should stay compact."""
+    from mirix import constants
+
+    target = constants.SKILL_TARGET_INSTRUCTIONS_CHARS
+    if length <= target:
+        return ""
+    return (
+        f" Its instructions are now {length} characters, over the {target}-character "
+        "target of a skill (a retrieved skill is placed whole in the agent's "
+        "context): in a later change condense them (merge overlapping rules, drop "
+        "details that belong to one case) or move a separate kind of task into its "
+        "own skill."
+    )
+
+
+def _retrieval_text_note(self: "Agent", skill_id: str) -> str:
+    """After an instructions edit: retrieval never reads the
+    instructions, so a change of what the skill covers needs its retrieval
+    text changed too; in a batch that follow-up costs no budget."""
+    note = (
+        " Retrieval finds a skill only by its name, description and triggers, and "
+        "this change left them as they were: if it changed which tasks the skill "
+        "covers or when it applies, update the description or triggers to match."
+    )
+    batch = _curator_batch(self)
+    if batch is not None:
+        from mirix.services.skill_curator_state import RETRIEVAL_TEXT_FIELDS
+
+        free = [f for f in RETRIEVAL_TEXT_FIELDS if batch.is_free_followup(skill_id, f)]
+        if free:
+            note += (
+                f" In this batch one follow-up change of its {_or_list(free)} "
+                "costs no edit budget (once per field)."
+            )
+    return note
+
+
+def _or_list(items: Sequence[str]) -> str:
+    items = list(items)
+    if len(items) <= 1:
+        return "".join(items)
+    return ", ".join(items[:-1]) + " or " + items[-1]
+
+
+async def skill_list(self: "Agent", query: str = "", offset: int = 0) -> str:
     """
-    List skills with optional search query.
+    List your skills, sorted by name, one page at a time.
 
     Args:
-        query (str): Optional search term to filter skills. Empty string returns all skills.
-        limit (int): Maximum number of skills to return. Default 50.
+        query (str): Optional search terms. Empty lists every skill; otherwise only skills whose name, description or triggers contain every term.
+        offset (int): Where the page starts (0 for the first page). The answer names the offset of the next page when there is one.
 
     Returns:
-        str: Formatted list of skills with id, name, description, entry_type, and version.
+        str: One line per skill (id, name, version, entry type, description; marked when its instructions are over their target size) followed by an indented line of its usage record (sessions it was served in, how often it was followed, its effects, those sessions' outcomes, how many sessions it was built from), the total number of skills, and the offset of the next page.
     """
-    filter_tags = getattr(self, "filter_tags", None)
-    use_cache = getattr(self, "use_cache", True)
+    from mirix.services.skill_session_feedback import render_usage_line
 
-    skills = await self.procedural_memory_manager.list_procedures(
-        agent_state=self.agent_state,
-        user=self.user,
-        query=query,
-        search_field="description" if query else "",
-        search_method="bm25" if query else "",
-        limit=limit,
-        filter_tags=filter_tags if filter_tags else None,
-        use_cache=use_cache,
+    from mirix.services.skill_curator_state import (
+        REJECT_INVALID,
+        SKILL_LIST_PAGE_SIZE,
     )
 
-    if not skills:
-        return "No skills found."
-
-    lines = []
-    for skill in skills:
-        lines.append(
-            f"[ID: {skill.id}] {skill.name} (v{skill.version}) - {skill.entry_type}: {skill.description}"
+    try:
+        offset = int(offset or 0)
+    except (TypeError, ValueError):
+        offset = -1
+    if offset < 0:
+        return _skill_reject(
+            self, "skill_list", REJECT_INVALID, "'offset' must be a whole number >= 0."
         )
-    return "\n".join(lines)
+    query = query if isinstance(query, str) else ""
+    skills, total = await self.procedural_memory_manager.list_skills_page(
+        user=self.user,
+        scopes=_skill_scopes(self),
+        query=query,
+        offset=offset,
+        limit=SKILL_LIST_PAGE_SIZE,
+    )
+    matching = f' matching "{query.strip()}"' if query.strip() else ""
+    if total == 0:
+        return f"No skills found{matching}."
+    if not skills:
+        return (
+            f"No skills at offset {offset}: there are {total} skill(s){matching}. "
+            "Call skill_list with a smaller offset."
+        )
+
+    records = await _skill_usage_records(self, [skill.id for skill in skills])
+    cap = _skill_output_cap(self)
+    # The page is also cut to the output cap: keep whole entries only.
+    reserve = 300  # header + footer
+    lines: List[str] = []
+    shown = 0
+    used = 0
+    for skill in skills:
+        entry = (
+            _format_skill_line(skill)
+            + "\n    "
+            + render_usage_line(records.get(skill.id))
+        )
+        if shown and used + len(entry) + 1 > cap - reserve:
+            break
+        lines.append(entry)
+        shown += 1
+        used += len(entry) + 1
+    shown_end = offset + shown
+    header = f"Skills {offset + 1}-{shown_end} of {total}{matching} (sorted by name):"
+    if shown_end < total:
+        quoted = query.replace('"', '\\"')
+        footer = (
+            f'Next page: skill_list(query="{quoted}", offset={shown_end}) '
+            f"({total - shown_end} more)."
+        )
+    else:
+        footer = "End of list."
+    return "\n".join([header, *lines, footer])
 
 
 async def skill_read(self: "Agent", name_or_id: str) -> str:
@@ -740,51 +1177,74 @@ async def skill_read(self: "Agent", name_or_id: str) -> str:
     Read the complete content of a skill by name or ID.
 
     Args:
-        name_or_id (str): The skill name (e.g. "deploy-production") or ID (e.g. "proc-xxx").
+        name_or_id (str): The skill's exact name or its ID, as skill_list shows them.
 
     Returns:
-        str: Full skill content including all fields.
+        str: Full skill content including all fields, then the skill's usage record (sessions it was served in, how often it was followed, its effects, those sessions' outcomes, per version served, and how many sessions it was built from).
     """
-    filter_tags = getattr(self, "filter_tags", None)
-    use_cache = getattr(self, "use_cache", True)
-    skill = None
+    import json as _json
 
-    if name_or_id.startswith("proc"):
+    from mirix.services.skill_session_feedback import render_usage_record
+
+    from mirix.orm.errors import NoResultFound
+    from mirix.services.skill_curator_state import REJECT_NOT_FOUND, head_tail_chars
+
+    key = (name_or_id or "").strip() if isinstance(name_or_id, str) else ""
+    scopes = _skill_scopes(self)
+    skill = None
+    if key.startswith("proc"):
         try:
             skill = await self.procedural_memory_manager.get_item_by_id(
-                item_id=name_or_id, user=self.user, timezone_str="UTC", actor=self.actor
+                item_id=key,
+                user=self.user,
+                timezone_str="UTC",
+                actor=self.actor,
+                scopes=scopes,
             )
-        except Exception:
-            pass
-
-    if skill is None:
-        results = await self.procedural_memory_manager.list_procedures(
-            agent_state=self.agent_state,
-            user=self.user,
-            query=name_or_id,
-            search_field="name",
-            search_method="string_match",
-            limit=1,
-            filter_tags=filter_tags if filter_tags else None,
-            use_cache=use_cache,
+        except NoResultFound:
+            skill = None
+    if skill is None and key:
+        skill = await self.procedural_memory_manager.get_live_skill_by_name(
+            user=self.user, name=key, scopes=scopes
         )
-        if results:
-            skill = results[0]
-
     if skill is None:
-        return f"Skill '{name_or_id}' not found."
+        return _skill_reject(
+            self,
+            "skill_read",
+            REJECT_NOT_FOUND,
+            f"Skill '{name_or_id}' not found. Use skill_list() to see your skills.",
+        )
 
-    parts = [
-        f"ID: {skill.id}",
-        f"Name: {skill.name}",
-        f"Version: {skill.version}",
-        f"Entry Type: {skill.entry_type}",
-        f"Description: {skill.description}",
-        f"Instructions:\n{skill.instructions}",
-        f"Triggers: {skill.triggers}",
-        f"Examples: {skill.examples}",
-    ]
-    return "\n".join(parts)
+    from mirix import constants
+
+    instructions = skill.instructions or ""
+    size = _size_note(len(instructions)).strip()
+    text = "\n".join(
+        [
+            f"ID: {skill.id}",
+            f"Name: {skill.name}",
+            f"Version: {skill.version}",
+            f"Entry Type: {skill.entry_type}",
+            f"Description: {skill.description}",
+            # The fields a retrieval matches (never the instructions).
+            "Retrieval matches only: name, description, triggers.",
+            *([size] if size else []),
+            f"Instructions ({len(instructions)} characters; target "
+            f"{constants.SKILL_TARGET_INSTRUCTIONS_CHARS}):\n{instructions}",
+            f"Triggers: {_json.dumps(skill.triggers or [], ensure_ascii=False)}",
+            f"Examples: {_json.dumps(skill.examples or [], ensure_ascii=False)}",
+            # What the distilled sessions say about it (evidence only).
+            render_usage_record(
+                (await _skill_usage_records(self, [skill.id])).get(skill.id)
+            ),
+        ]
+    )
+    capped, omitted = head_tail_chars(text, _skill_output_cap(self))
+    if omitted:
+        batch = _curator_batch(self)
+        if batch is not None:
+            batch.record_capped_output(omitted)
+    return capped
 
 
 async def skill_create(
@@ -792,86 +1252,145 @@ async def skill_create(
     name: str,
     description: str,
     instructions: str,
-    entry_type: str,
+    entry_type: Literal["workflow", "guide", "script"],
     triggers: List[str] = None,
-    examples: List[dict] = None,
+    examples: List[SkillExampleForLLM] = None,
+    experience_ids: List[SkillCitationForLLM] = None,
 ) -> str:
     """
     Create a new skill. Fails if a skill with the same name already exists.
 
     Args:
-        name (str): Concise kebab-case identifier (e.g. "deploy-production").
-        description (str): What this skill does and when it's useful.
-        instructions (str): Detailed instructions as plain text.
+        name (str): Lowercase words joined by hyphens that name the task and its approach; unique among your skills.
+        description (str): One or two sentences: what this skill does and when it is useful.
+        instructions (str): Detailed instructions as plain text: the steps, conditions and caveats a reader needs to follow them without other context.
         entry_type (str): Category — "workflow", "guide", or "script".
-        triggers (array): Optional list of conditions that indicate this skill is relevant.
-        examples (array): Optional list of input/output examples.
+        triggers (array): Short conditions, in plain words, that signal this skill is relevant; an empty list for none.
+        examples (array): Input/output examples, each an object with an "input" text (the situation or request) and an "output" text (what was done or answered); an empty list for none.
+        experience_ids (array): The experiences and earlier lessons of this skill curation batch that this skill applies (every one it addresses), each an object with its "id" and a "quote": a phrase of at least 12 letters (e.g. "check the label first") copied exactly from this skill's description, instructions, triggers or examples that applies that experience's lesson. Only ids shown in the batch are accepted; a citation whose quote is not in that text (or is shorter) does not count and its experience stays pending. Outside a curation batch pass an empty list.
 
     Returns:
         str: Confirmation with the created skill's ID.
     """
-    # Edit-budget gate (counts create+edit). At the TOP, before any mutation.
-    exhausted = _consume_edit_budget(self)
-    if exhausted is not None:
-        return exhausted
-
-    agent_id = (
-        self.agent_state.parent_id
-        if self.agent_state.parent_id is not None
-        else self.agent_state.id
+    from mirix.constants import SKILL_MAX_INSTRUCTIONS_CHARS
+    from mirix.services import skill_history as history
+    from mirix.services.procedural_memory_manager import SkillNameConflictError
+    from mirix.services.skill_curator_state import (
+        REJECT_BUDGET,
+        REJECT_DUPLICATE,
+        REJECT_INVALID,
     )
+
+    tool = "skill_create"
+    triggers, examples = _without_list_fillers(triggers, examples)
+    # 1) Every validation first: a rejected call costs nothing.
+    problem = _validate_skill_fields(
+        name=name,
+        description=description,
+        instructions=instructions,
+        entry_type=entry_type,
+        triggers=triggers,
+        examples=examples,
+        check=("name", "description", "instructions", "entry_type", "triggers", "examples"),
+    )
+    if problem:
+        return _skill_reject(self, tool, REJECT_INVALID, f"Rejected: {problem} Nothing was created.")
+    if len(instructions) > SKILL_MAX_INSTRUCTIONS_CHARS:
+        return _instructions_too_long(self, tool, len(instructions))
+    # The citations are checked before anything is looked up or embedded.
+    cited, quotes, rejection = _citation_problem(self, tool, experience_ids)
+    if rejection:
+        return rejection
+
+    scopes = _skill_scopes(self)
+    # Names are unique per user across scopes (the live-name index).
+    existing = await self.procedural_memory_manager.get_live_skill_by_name(
+        user=self.user, name=name
+    )
+    if existing is not None:
+        tags = existing.filter_tags if isinstance(existing.filter_tags, dict) else {}
+        if scopes is None or tags.get("scope") in scopes:
+            message = (
+                f"Skill '{name}' already exists (ID: {existing.id}). Use skill_edit to "
+                "change it, or choose another name. Nothing was created."
+            )
+        else:
+            message = (
+                f"The name '{name}' is already taken by a skill you cannot access. "
+                "Choose another name. Nothing was created."
+            )
+        return _skill_reject(self, tool, REJECT_DUPLICATE, message)
+
+    batch = _curator_batch(self)
+    if batch is not None and batch.remaining <= 0:
+        return _skill_reject(self, tool, REJECT_BUDGET, batch.budget_message())
+
+    # A citation counts only when its quote is text of the new skill.
+    recorded, unverified = list(cited), {}
+    if batch is not None:
+        recorded, unverified = _verified_citations(
+            cited,
+            quotes,
+            _create_text(description, instructions, triggers, examples),
+        )
+
+    # 2) The write (versioned, locked, guarded by the learning run).
+    agent_state = self.agent_state
+    agent_id = agent_state.parent_id if agent_state.parent_id is not None else agent_state.id
     filter_tags = getattr(self, "filter_tags", None)
-    use_cache = getattr(self, "use_cache", True)
-    user_id = getattr(self, "user_id", None)
-
-    # Name dedup check
-    existing = await self.procedural_memory_manager.list_procedures(
-        agent_state=self.agent_state,
-        user=self.user,
-        query=name,
-        search_field="name",
-        search_method="string_match",
-        limit=100,
-        filter_tags=filter_tags if filter_tags else None,
-        use_cache=use_cache,
-    )
-    for skill in existing:
-        if skill.name == name:
-            return f"Skill '{name}' already exists (ID: {skill.id}). Use skill_edit to modify it, or skill_delete to remove it first."
-
     try:
-        from mirix.orm.errors import UniqueConstraintViolationError
-
-        created = await self.procedural_memory_manager.insert_procedure(
-            agent_state=self.agent_state,
-            agent_id=agent_id,
-            name=name,
-            description=description,
-            instructions=instructions,
-            entry_type=entry_type,
-            triggers=triggers or [],
-            examples=examples or [],
-            version="0.1.0",
+        result = await self.procedural_memory_manager.apply_skill_change(
+            history.CHANGE_CREATE,
             actor=self.actor,
-            organization_id=self.user.organization_id,
-            filter_tags=filter_tags if filter_tags else None,
-            use_cache=use_cache,
-            user_id=user_id,
+            user_id=_skill_owner_id(self),
+            fields={
+                "name": name,
+                "entry_type": entry_type,
+                "description": description,
+                "instructions": instructions,
+                "triggers": triggers or [],
+                "examples": examples or [],
+                "version": "0.1.0",
+                "agent_id": agent_id,
+                "client_id": getattr(self.actor, "id", None),
+                "organization_id": self.user.organization_id,
+                "filter_tags": filter_tags if filter_tags else None,
+            },
+            agent_state=agent_state,
+            **_skill_write_options(self, cited=recorded),
         )
-        return (
-            f"Skill '{name}' created successfully (ID: {created.id}, version: 0.1.0)."
+    except SkillNameConflictError:
+        # Race: a concurrent create took the name after the check above.
+        return _skill_reject(
+            self,
+            tool,
+            REJECT_DUPLICATE,
+            f"Skill '{name}' already exists. Use skill_read / skill_edit on the "
+            "existing skill, or choose another name. Nothing was created.",
         )
-    except UniqueConstraintViolationError:
-        # Race: pre-check missed a concurrent create. Surface a clean message
-        # to the agent so it knows to read/edit the existing skill instead.
-        return (
-            f"Skill '{name}' already exists. Use skill_read to inspect it, "
-            f"skill_edit to modify it, or skill_delete to remove it first."
+
+    # 3) It went through: charge it.
+    if batch is not None:
+        batch.charge("create", result.skill.id)
+        batch.record_write(
+            _write_entry(
+                "skill_create",
+                result.skill.id,
+                "*",
+                _added_words_of_create(description, instructions, triggers, examples),
+                0,
+                cited,
+                recorded=bool(recorded) or not cited,
+                unverified=unverified,
+            )
         )
-    except Exception as e:
-        logger.error("[skill_create] FAILED for '%s': %s", name, e)
-        traceback.print_exc()
-        raise
+    return (
+        f"Skill '{name}' created successfully (ID: {result.skill.id}, version: 0.1.0)."
+        + _citation_note(self, recorded, result.skill.id, unverified=unverified)
+        + _numbering_note(instructions)
+        + _size_note(len(instructions))
+        + _budget_note(self)
+    )
 
 
 async def skill_edit(
@@ -881,210 +1400,751 @@ async def skill_edit(
     old_text: str = None,
     new_text: str = None,
     value: str = None,
+    experience_ids: List[SkillCitationForLLM] = None,
 ) -> str:
     """
-    Edit an existing skill. For text fields (name, description, instructions), use old_text/new_text
-    to do a find-and-replace patch. For other fields (triggers, examples, entry_type), use value
-    to replace the entire field. For list/dict fields (triggers, examples), value must be a JSON string.
+    Edit an existing skill. For a text field (name, description, instructions) either patch it with old_text/new_text (find-and-replace), or replace the whole field with value (a full rewrite). For the other fields (triggers, examples, entry_type) replace the entire field with value; for triggers and examples value must be a JSON string. Pass an empty string for the parameters you do not use: value when you patch, old_text and new_text when you replace a whole field.
 
     Args:
         skill_id (str): The ID of the skill to edit.
         field (str): The field to modify — "name", "description", "instructions", "entry_type", "triggers", or "examples".
-        old_text (str): For text fields: the text to find and replace.
-        new_text (str): For text fields: the replacement text.
-        value (str): For non-text fields: the new value for the entire field.
-            - entry_type: a plain string such as "workflow" / "guide" / "script".
-            - triggers:   a JSON-encoded list of strings, e.g. '["on error", "nightly"]'.
-            - examples:   a JSON-encoded list of objects, e.g. '[{"input": "...", "output": "..."}]'.
+        old_text (str): For a text-field patch: the text to find and replace. An empty string when you replace a whole field.
+        new_text (str): For a text-field patch: the replacement text (an empty string deletes the found text). An empty string when you replace a whole field.
+        value (str): The new value for the entire field; an empty string when you patch.
+            - name / description / instructions: the complete new text (a rewrite of the whole field).
+            - entry_type: one of "workflow", "guide", "script".
+            - triggers:   a JSON-encoded list of strings, each a short condition in plain words.
+            - examples:   a JSON-encoded list of objects, each with exactly an "input" and an "output" string.
+        experience_ids (array): The experiences and earlier lessons of this skill curation batch that this change applies (every one it addresses), each an object with its "id" and a "quote": a phrase of at least 12 letters (e.g. "check the label first") copied exactly from the text this change adds (the new_text of a patch, or the new parts of a whole new value; not text the field already had) that applies that experience's lesson. Only ids shown in the batch are accepted; a citation whose quote is not in the added text (or is shorter) does not count and its experience stays pending. Outside a curation batch pass an empty list.
 
     Returns:
         str: Confirmation of the edit with the new version number.
     """
+    from mirix.orm.errors import NoResultFound
+    from mirix.services import skill_history as history
+    from mirix.services.procedural_memory_manager import (
+        SkillChangedMeanwhile,
+        SkillNameConflictError,
+    )
+    from mirix.services.skill_curator_state import (
+        REJECT_BUDGET,
+        REJECT_DUPLICATE,
+        REJECT_INVALID,
+        REJECT_NO_CHANGE,
+        REJECT_NOT_FOUND,
+    )
+    from mirix.services.skill_text_checks import SKILL_CITATION_MIN_ADDED_WORDS
+
+    tool = "skill_edit"
+    if field not in _SKILL_EDITABLE_FIELDS:
+        return _skill_reject(
+            self,
+            tool,
+            REJECT_INVALID,
+            f"Invalid field '{field}'. Must be one of: "
+            f"{', '.join(sorted(_SKILL_EDITABLE_FIELDS))}.",
+        )
+
+    # A strict tool schema makes every parameter required, so a model fills
+    # the ones it does not use with "": an empty old_text or value
+    # counts as not given. new_text="" still deletes the text a patch finds;
+    # without an old_text it is only a filler too.
+    old_text = _given(old_text)
+    value = _given(value)
+    if old_text is None and new_text == "":
+        new_text = None
+    cited, quotes, rejection = _citation_problem(self, tool, experience_ids)
+    if rejection:
+        return rejection
+
+    is_patch = old_text is not None
+    scopes = _skill_scopes(self)
+    # A read-modify-write: the new value is computed from the skill as read
+    # here, and the write is refused (SkillChangedMeanwhile) when that field
+    # changed meanwhile. A patch is then applied again to the fresh value; a
+    # whole-field rewrite is not (it was written against what the model saw).
+    for _attempt in range(_SKILL_EDIT_ATTEMPTS):
+        try:
+            skill = await self.procedural_memory_manager.get_item_by_id(
+                item_id=skill_id,
+                user=self.user,
+                timezone_str="UTC",
+                actor=self.actor,
+                scopes=scopes,
+            )
+        except NoResultFound:
+            skill = None
+        if skill is None:
+            return _skill_reject(
+                self, tool, REJECT_NOT_FOUND, f"Skill '{skill_id}' not found. Nothing was changed."
+            )
+
+        current = getattr(skill, field)
+        planned = await _plan_skill_edit(
+            self, tool, skill, field, current, old_text, new_text, value
+        )
+        if isinstance(planned, _SkillEditRejected):
+            return planned.message
+        new_value = planned
+
+        if new_value == current:
+            return _skill_reject(
+                self,
+                tool,
+                REJECT_NO_CHANGE,
+                f"The new value of '{field}' is the same as the current one: nothing to "
+                "change, and no budget was used.",
+            )
+
+        batch = _curator_batch(self)
+        # Keeping the retrieval text in step with an instructions edit of
+        # this batch never competes with a lesson for the budget.
+        free = batch is not None and batch.is_free_followup(skill.id, field)
+        if batch is not None and not free and batch.remaining <= 0:
+            return _skill_reject(self, tool, REJECT_BUDGET, batch.budget_message())
+
+        # A citation says the change carries the cited lesson: only a change
+        # that adds text can (a deletion, a renumbering or a reflow adds none,
+        # and a rename or an entry_type change carries no lesson). Such an
+        # edit goes through, but in a batch its citations are not recorded.
+        # Outside a batch nothing reads the counts, so they are not computed.
+        added, removed = (
+            _edit_word_counts(field, current, new_value)
+            if batch is not None
+            else (0, 0)
+        )
+        no_lesson = (
+            batch is not None and bool(cited) and added < SKILL_CITATION_MIN_ADDED_WORDS
+        )
+        # A free follow-up keeps the retrieval text in step with the
+        # instructions edit that carried the lesson: it carries none of its
+        # own, so its citations are not recorded (a lesson it cited would be
+        # used at no budget cost), and citing nothing is right.
+        recorded = [] if (no_lesson or free) else list(cited)
+        unverified: Dict[str, str] = {}
+        if batch is not None and recorded:
+            # A citation counts only when its quote is text this edit adds.
+            added_text, replaced_text = _edit_texts(
+                field, current, new_value, old_text, new_text
+            )
+            recorded, unverified = _verified_citations(
+                recorded, quotes, added_text, replaced_text
+            )
+
+        try:
+            result = await self.procedural_memory_manager.apply_skill_change(
+                history.CHANGE_EDIT,
+                actor=self.actor,
+                user_id=_skill_owner_id(self),
+                skill_id=skill.id,
+                fields={field: new_value},
+                expected_fields={field: current},
+                bump_version=True,
+                agent_state=self.agent_state,
+                **_skill_write_options(self, cited=recorded),
+            )
+        except NoResultFound:
+            # Deleted (or moved out of this scope) since it was read above.
+            return _skill_reject(
+                self, tool, REJECT_NOT_FOUND, f"Skill '{skill_id}' not found. Nothing was changed."
+            )
+        except SkillNameConflictError:
+            return _skill_reject(
+                self,
+                tool,
+                REJECT_DUPLICATE,
+                f"Another skill is already named '{new_value}'. Choose another name. "
+                "Nothing was changed.",
+            )
+        except SkillChangedMeanwhile:
+            if is_patch:
+                continue  # read the new value and apply the patch to it
+            return _changed_meanwhile(self, tool, skill_id, field)
+
+        if batch is not None:
+            if free:
+                batch.record_free_followup(result.skill.id, field)
+            else:
+                batch.charge("edit", result.skill.id)
+            batch.record_write(
+                _write_entry(
+                    tool,
+                    result.skill.id,
+                    field,
+                    added,
+                    removed,
+                    cited,
+                    recorded=bool(recorded) or not cited,
+                    unverified=unverified,
+                )
+            )
+        if free:
+            # Neither a citation nor an uncited write: see above.
+            already = set(batch.citations) | set(batch.precited_ids)
+            new_ids = [i for i in cited if i not in already]
+            note = ""
+            if new_ids:
+                batch.citations_dropped += 1
+                note = (
+                    f" Its citations ({_named(new_ids)}) were NOT recorded: a "
+                    "follow-up of the retrieval text costs no budget, so it carries "
+                    "no lesson of its own. Cite them on a change that carries their "
+                    "lesson, or list them with experience_triage."
+                )
+        elif no_lesson:
+            batch.citations_dropped += 1
+            why = _NO_LESSON_FIELDS.get(
+                field,
+                "this change adds no new words (a deletion, a renumbering or a "
+                "reflow adds none)",
+            )
+            note = (
+                f" Its citations ({_named(cited)}) were NOT recorded: {why}, so it "
+                "cannot carry their lesson. Cite them on the change that adds their "
+                "lesson, or list them with experience_triage (as covered when the "
+                "removal itself was the lesson)."
+            )
+        else:
+            note = _citation_note(
+                self, recorded, result.skill.id, unverified=unverified
+            )
+        if field in ("instructions", "description") and (
+            value is not None or _patch_rewrites(current, old_text)
+        ):
+            # A patch whose old_text is (most of) the whole field is a
+            # rewrite too, whatever the value parameter held.
+            note += _rewrite_note(current or "", new_value)
+        if field == "instructions":
+            note += _numbering_note(new_value)
+            note += _size_note(len(new_value or ""))
+            note += _retrieval_text_note(self, result.skill.id)
+        if free:
+            note += (
+                " This change of its retrieval text follows this batch's change of "
+                "its instructions, so it cost no edit budget and needs no citation."
+            )
+        return (
+            f"Skill '{result.skill.name}' updated (field: {field}, new version: "
+            f"{result.skill.version})." + note + _budget_note(self)
+        )
+    return _changed_meanwhile(self, tool, skill_id, field)
+
+
+def _write_entry(
+    tool: str,
+    skill_id: str,
+    field: str,
+    added: int,
+    removed: int,
+    cited: Sequence[str],
+    *,
+    recorded: bool,
+    unverified: Optional[Dict[str, str]] = None,
+) -> dict:
+    """A write's ``CuratorBatchState.write_log`` entry (``unverified``: the
+    cited ids whose quote did not show the write applying them, and
+    why)."""
+    return {
+        "tool": tool,
+        "skill_id": skill_id,
+        "field": field,
+        "added_words": added,
+        "removed_words": removed,
+        "cited": list(cited),
+        "citations_recorded": bool(recorded),
+        "citations_unverified": dict(unverified or {}),
+    }
+
+
+def _create_text(description, instructions, triggers, examples) -> str:
+    """The texts of a new skill that can apply a lesson, as one text (a
+    citation's quote must be part of it). Its name is left out: a quote of
+    the name would show any lesson applied."""
+    from mirix.services.skill_text_checks import list_text
+
+    return "\n".join(
+        str(part or "")
+        for part in (
+            description,
+            instructions,
+            list_text(triggers or []),
+            list_text(examples or []),
+        )
+    )
+
+
+def _edit_texts(field: str, current, new_value, old_text, new_text) -> Tuple[str, str]:
+    """``(added, had)`` text of a skill_edit: a patch adds its
+    ``new_text``; a whole new value its value (a list field as its words).
+    ``had`` is the field's whole current value: a quote of text the field
+    already had anywhere — moved or repeated by the patch — shows nothing
+    new."""
+    from mirix.services.skill_text_checks import list_text
+
+    if field in _SKILL_JSON_FIELDS:
+        return list_text(new_value or []), list_text(current or [])
+    if old_text is not None:
+        return str(new_text or ""), str(current or "")
+    return str(new_value or ""), str(current or "")
+
+
+#: A text-field patch whose old_text is at least this share of the field
+#: (whitespace collapsed) replaces most of it: its answer reports what it
+#: dropped like a rewrite's.
+PATCH_REWRITE_SHARE = 0.5
+
+
+def _patch_rewrites(current, old_text) -> bool:
+    """Whether a patch with ``old_text`` replaces (most of) the whole field
+    ``current``."""
+    if old_text is None:
+        return False
+    whole = " ".join(str(current or "").split())
+    found = " ".join(str(old_text).split())
+    return bool(whole) and len(found) >= PATCH_REWRITE_SHARE * len(whole)
+
+
+def _added_words_of_create(description, instructions, triggers, examples) -> int:
+    from mirix.services.skill_text_checks import content_words, list_text
+
+    return sum(
+        len(content_words(text))
+        for text in (
+            description,
+            instructions,
+            list_text(triggers or []),
+            list_text(examples or []),
+        )
+    )
+
+
+# Fields whose edit never carries a lesson (it counts 0 added words), and why.
+_NO_LESSON_FIELDS = {
+    "name": "a rename carries no lesson",
+    "entry_type": "an entry_type change carries no lesson",
+}
+
+
+def _edit_word_counts(field: str, current, new_value) -> Tuple[int, int]:
+    """``(added, removed)`` content words of an edit of ``field``
+    (skill_text_checks.added_words); a rename or an entry_type change counts
+    0 added: it carries no lesson."""
+    from mirix.services.skill_text_checks import added_words, list_text
+
+    if field in ("description", "instructions"):
+        return added_words(current or "", new_value or "")
+    if field in _SKILL_JSON_FIELDS:
+        return added_words(list_text(current or []), list_text(new_value or []))
+    return 0, 0
+
+
+# Sentences a rewrite dropped that its answer names at most, and their length.
+_REWRITE_DROPPED_SHOWN = 5
+_REWRITE_SENTENCE_CHARS = 160
+
+
+def _rewrite_note(old: str, new: str) -> str:
+    """What a whole-field rewrite dropped from the old text (advice only:
+    the rewrite went through)."""
+    from mirix.services.skill_text_checks import dropped_sentences
+
+    dropped, total = dropped_sentences(old, new)
+    if not dropped:
+        return ""
+    shown = []
+    for i, sentence in enumerate(dropped[:_REWRITE_DROPPED_SHOWN], 1):
+        text = " ".join(sentence.split())
+        if len(text) > _REWRITE_SENTENCE_CHARS:
+            text = text[: _REWRITE_SENTENCE_CHARS - 1] + "…"
+        shown.append(f"{i}) {text}")
+    more = len(dropped) - len(shown)
+    return (
+        f" This rewrite dropped {len(dropped)} of {total} sentences of the old text "
+        f"(not found, even reworded): {' '.join(shown)}"
+        + (f" … and {more} more." if more > 0 else "")
+        + " Restore with a patch any of these lessons that is still right and that"
+        " the new text no longer says (one it keeps in other words is kept)."
+    )
+
+
+def _numbering_note(instructions: str) -> str:
+    """A warning about the numbered steps of ``instructions`` (a repeated or
+    skipped number), or ""."""
+    from mirix.services.skill_text_checks import numbering_problems
+
+    problems = numbering_problems(instructions or "")
+    if not problems:
+        return ""
+    return (
+        f" Warning: the numbered steps are out of order ({'; '.join(problems)}). "
+        "Renumber them in order with a patch."
+    )
+
+
+def _given(value):
+    """A skill_edit argument, or None when it was not given: missing, or the
+    empty string a strict tool schema makes the model send for a parameter it
+    does not use."""
+    if value is None or (isinstance(value, str) and value == ""):
+        return None
+    return value
+
+
+# Reads of a skill_edit patch whose field keeps changing under it.
+_SKILL_EDIT_ATTEMPTS = 3
+
+
+@dataclass
+class _SkillEditRejected:
+    """A skill_edit call refused while its new value was worked out (the
+    rejection is already recorded)."""
+
+    message: str
+
+
+def _changed_meanwhile(self: "Agent", tool: str, skill_id: str, field: str) -> str:
+    from mirix.services.skill_curator_state import REJECT_CHANGED
+
+    return _skill_reject(
+        self,
+        tool,
+        REJECT_CHANGED,
+        f"Skill '{skill_id}' changed while this edit was being made (its "
+        f"'{field}' is no longer the value the edit was computed from). Nothing "
+        "was changed and no budget was used: read the skill again "
+        "(skill_read) and redo the edit on its current content.",
+    )
+
+
+async def _plan_skill_edit(
+    self: "Agent",
+    tool: str,
+    skill,
+    field: str,
+    current,
+    old_text,
+    new_text,
+    value,
+):
+    """The new value of ``field`` for a skill_edit call on ``skill`` as read,
+    or a :class:`_SkillEditRejected` — every check that needs no write."""
     import json as _json
 
-    from mirix.schemas.procedural_memory import ProceduralMemoryItemUpdate
+    from mirix.constants import SKILL_MAX_INSTRUCTIONS_CHARS
+    from mirix.services.skill_curator_state import (
+        REJECT_DUPLICATE,
+        REJECT_INVALID,
+        head_tail_chars,
+    )
 
-    text_fields = {"name", "description", "instructions"}
-    json_list_fields = {"triggers", "examples"}
-    plain_value_fields = {"entry_type"}
-    valid_fields = text_fields | json_list_fields | plain_value_fields
+    def reject(kind: str, message: str) -> _SkillEditRejected:
+        return _SkillEditRejected(_skill_reject(self, tool, kind, message))
 
-    if field not in valid_fields:
-        return f"Invalid field '{field}'. Must be one of: {', '.join(sorted(valid_fields))}."
-
-    try:
-        skill = await self.procedural_memory_manager.get_item_by_id(
-            item_id=skill_id, user=self.user, timezone_str="UTC", actor=self.actor
-        )
-    except Exception:
-        return f"Skill '{skill_id}' not found."
-
-    update_data = {"id": skill_id}
-
-    if field in text_fields:
-        if old_text is None or new_text is None:
-            return f"For text field '{field}', both old_text and new_text are required."
-
-        current_value = getattr(skill, field, "")
-
-        # Normalize whitespace for matching
-        normalized_current = " ".join(current_value.split())
-        normalized_old = " ".join(old_text.split())
-
-        if normalized_old not in normalized_current:
-            return (
-                f"old_text not found in field '{field}'. "
-                f"Current value:\n{current_value}"
+    if field in _SKILL_TEXT_FIELDS:
+        # old_text / value are None when not given (an empty string included,
+        # see skill_edit): a patch has old_text, a rewrite has value.
+        current_text = current or ""
+        if old_text is not None and value is not None:
+            return reject(
+                REJECT_INVALID,
+                "Give either a patch (old_text and new_text, with value empty) or "
+                "a whole new field (value, with old_text and new_text empty), not "
+                "both. Nothing was changed.",
             )
-
-        import re
-
-        pattern = re.escape(old_text)
-        pattern = re.sub(r"\\\s+", r"\\s+", pattern)
-        new_value = re.sub(pattern, new_text, current_value, count=1)
-
-        # Per-mutation HARD size gate. Runs BEFORE the budget is
-        # consumed so a rejected (too-large) edit is FREE — the agent is told to
-        # split it or extract a new skill instead. Only text fields are gated.
-        size_reason = _edit_exceeds_size_gate(current_value, new_value)
-        if size_reason is not None:
-            return size_reason
-
-        # Hard `instructions` ceiling: an edit whose RESULT exceeds the ceiling
-        # must route to skill_create (extract a new skill), not grow this one.
-        if field == "instructions" and _instructions_over_ceiling(new_value):
-            from mirix.constants import SKILL_MAX_INSTRUCTIONS_CHARS
-
-            return (
-                f"resulting instructions ({len(new_value)} chars) exceed the "
-                f"{SKILL_MAX_INSTRUCTIONS_CHARS}-char ceiling; use skill_create to "
-                f"extract a new skill instead of growing this one."
+        if old_text is not None:
+            if new_text is None or not str(old_text).strip():
+                # An old_text of whitespace only anchors nothing: the empty
+                # pattern would match at the very start of the field.
+                return reject(
+                    REJECT_INVALID,
+                    f"For a patch of '{field}' both old_text (the text to find, not "
+                    "only whitespace) and new_text are required, with value empty "
+                    "(or give value, with old_text and new_text empty, to replace "
+                    "the whole field). Nothing was changed.",
+                )
+            # Whitespace-insensitive match of old_text.
+            normalized_current = " ".join(current_text.split())
+            normalized_old = " ".join(str(old_text).split())
+            if normalized_old not in normalized_current:
+                shown, _ = head_tail_chars(current_text, max(2000, _skill_output_cap(self) // 4))
+                return reject(
+                    REJECT_INVALID,
+                    f"old_text not found in field '{field}'. Nothing was changed. "
+                    f"Current value:\n{shown}",
+                )
+            # Any run of whitespace in old_text matches any run in the field
+            # (the same rule as the check above; a pattern built from the
+            # escaped text would need one whitespace character per original one).
+            pattern = r"\s+".join(re.escape(token) for token in str(old_text).split())
+            new_value = re.sub(pattern, lambda _m: str(new_text), current_text, count=1)
+        elif value is not None:
+            new_value = str(value)
+        else:
+            return reject(
+                REJECT_INVALID,
+                f"For a patch of text field '{field}' give old_text (the text to "
+                "find) and new_text, with value empty; to replace the whole field "
+                "give value, with old_text and new_text empty. Nothing was changed.",
             )
-
-        update_data[field] = new_value
-    elif field in json_list_fields:
+        problem = _validate_skill_fields(check=(field,), **{field: new_value})
+        if problem:
+            return reject(REJECT_INVALID, f"Rejected: {problem} Nothing was changed.")
+        if field == "instructions" and len(new_value) > SKILL_MAX_INSTRUCTIONS_CHARS:
+            return _SkillEditRejected(_instructions_too_long(self, tool, len(new_value)))
+        if field == "name" and new_value != current_text:
+            holder = await self.procedural_memory_manager.get_live_skill_by_name(
+                user=self.user, name=new_value
+            )
+            if holder is not None and holder.id != skill.id:
+                return reject(
+                    REJECT_DUPLICATE,
+                    f"Another skill is already named '{new_value}'. Choose another "
+                    "name. Nothing was changed.",
+                )
+        return new_value
+    if field in _SKILL_JSON_FIELDS:
         if value is None:
-            return (
-                f"For field '{field}', the value parameter is required (JSON string)."
+            return reject(
+                REJECT_INVALID,
+                f"For field '{field}', the value parameter is required (JSON string).",
             )
-        # triggers/examples are typed List[str] / List[dict] in the schema.
-        # The agent delivers them as JSON strings, so decode + validate here
-        # rather than letting the raw string hit Pydantic and blow up.
-        try:
-            decoded = _json.loads(value)
-        except (TypeError, _json.JSONDecodeError) as exc:
-            return (
-                f"Invalid JSON for field '{field}': {exc}. "
-                f'Pass a JSON-encoded list, e.g. \'["trigger-a", "trigger-b"]\'.'
-            )
+        # triggers/examples are typed List[str] / List[dict] in the schema. The
+        # agent delivers them as JSON strings (or, from some models, already
+        # decoded), so decode + validate here.
+        if isinstance(value, str):
+            try:
+                decoded = _json.loads(value)
+            except (TypeError, _json.JSONDecodeError) as exc:
+                return reject(
+                    REJECT_INVALID,
+                    f"Invalid JSON for field '{field}': {exc}. "
+                    f'Pass a JSON-encoded list, e.g. \'["trigger-a", "trigger-b"]\'.',
+                )
+        else:
+            decoded = value
         if not isinstance(decoded, list):
-            return (
-                f"Field '{field}' must be a JSON array, got {type(decoded).__name__}."
+            return reject(
+                REJECT_INVALID,
+                f"Field '{field}' must be a JSON array, got {type(decoded).__name__}.",
             )
-        if field == "triggers":
-            if not all(isinstance(x, str) for x in decoded):
-                return "Field 'triggers' must be a JSON array of strings."
-        else:  # examples
-            if not all(isinstance(x, dict) for x in decoded):
-                return "Field 'examples' must be a JSON array of objects."
-        update_data[field] = decoded
-    else:
-        # plain_value_fields: entry_type
-        if value is None:
-            return f"For field '{field}', the value parameter is required."
-        update_data[field] = value
-
-    new_version = _bump_patch_version(getattr(skill, "version", "0.1.0"))
-    update_data["version"] = new_version
-
-    # Edit-budget gate (counts create+edit). Consumed only AFTER every validation
-    # and size gate has passed, so a rejected edit never costs a budget unit.
-    exhausted = _consume_edit_budget(self)
-    if exhausted is not None:
-        return exhausted
-
-    try:
-        updated = await self.procedural_memory_manager.update_item(
-            item_update=ProceduralMemoryItemUpdate.model_validate(update_data),
-            user=self.user,
-            actor=self.actor,
-            agent_state=self.agent_state,
+        problem = _validate_skill_fields(check=(field,), **{field: decoded})
+        if problem:
+            return reject(REJECT_INVALID, f"Field {problem}")
+        return decoded
+    # entry_type
+    if value is None:
+        return reject(
+            REJECT_INVALID,
+            f"For field '{field}', the value parameter is required.",
         )
-        return f"Skill '{updated.name}' updated (field: {field}, new version: {new_version})."
-    except Exception as e:
-        logger.error("[skill_edit] FAILED for '%s': %s", skill_id, e)
-        traceback.print_exc()
-        raise
+    problem = _validate_skill_fields(check=("entry_type",), entry_type=value)
+    if problem:
+        return reject(REJECT_INVALID, f"Rejected: {problem}")
+    return value
 
 
-async def skill_delete(self: "Agent", skill_id: str) -> str:
+async def skill_delete(
+    self: "Agent",
+    skill_id: str,
+    reason: str,
+    experience_ids: List[SkillCitationForLLM] = None,
+) -> str:
     """
-    Delete a skill by ID.
+    Delete a skill (a soft delete: it leaves retrieval and can be restored from its version history).
 
-    Under an experience-curator run deletes are gated SEPARATELY from
-    the create/edit budget: at most ``D_max`` per evolution, and only when a
-    failure record named this skill actively harmful. Soft-delete (exclude from
-    retrieval, reversible) is preferred over a hard delete. The gate engages only
-    when the curator has set the delete-gate instance attributes; the in-flow
-    chat path (which sets none of them) keeps the original ungated behavior.
+    In a skill learning run at most one skill may be deleted per run; deleting does not use the create/edit budget.
 
     Args:
         skill_id (str): The ID of the skill to delete.
+        reason (str): Why the skill must go (e.g. it is wrong, harmful, or fully merged into another skill). Required; recorded in the skill's history.
+        experience_ids (array): The experiences and earlier lessons of this skill curation batch that this deletion comes from (every one it addresses), each an object with its "id" and a "quote" (empty: a deletion adds no text). Only ids shown in the batch are accepted. Outside a curation batch pass an empty list.
 
     Returns:
         str: Confirmation message.
     """
-    # Gating is active iff the curator set up either the authorization set or the
-    # delete budget on this instance. Otherwise behave exactly as before.
-    has_auth_attr = hasattr(self, "_delete_authorized_skill_ids")
-    has_budget_attr = hasattr(self, "_delete_budget_remaining")
-    gated = has_auth_attr or has_budget_attr
+    from mirix.orm.errors import NoResultFound
+    from mirix.services import skill_history as history
+    from mirix.services.skill_curator_state import (
+        REJECT_DELETE_LIMIT,
+        REJECT_INVALID,
+        REJECT_NOT_FOUND,
+    )
 
-    if gated:
-        # 1) D_max: if a delete budget is set, it must be > 0. (Unset => no cap.)
-        if has_budget_attr:
-            remaining = getattr(self, "_delete_budget_remaining", None)
-            if remaining is not None and remaining <= 0:
-                return (
-                    "delete budget exhausted (D_max reached) — deletes are capped "
-                    "per evolution; call finish_memory_update."
-                )
+    tool = "skill_delete"
+    if not isinstance(reason, str) or not reason.strip():
+        return _skill_reject(
+            self,
+            tool,
+            REJECT_INVALID,
+            "A deletion needs a reason: say why the skill must go. Nothing was deleted.",
+        )
+    # A deletion adds no text for a quote to point at: its citations count
+    # as given (the quote check reads the text a create or an edit adds).
+    cited, _quotes, rejection = _citation_problem(self, tool, experience_ids)
+    if rejection:
+        return rejection
+    try:
+        skill = await self.procedural_memory_manager.get_item_by_id(
+            item_id=skill_id,
+            user=self.user,
+            timezone_str="UTC",
+            actor=self.actor,
+            scopes=_skill_scopes(self),
+        )
+    except NoResultFound:
+        skill = None
+    if skill is None:
+        return _skill_reject(
+            self, tool, REJECT_NOT_FOUND, f"Skill '{skill_id}' not found. Nothing was deleted."
+        )
 
-        # 2) Authorization: a failure record must have named THIS skill harmful.
-        authorized = getattr(self, "_delete_authorized_skill_ids", None) or set()
-        if skill_id not in authorized:
-            return (
-                f"delete not authorized: no failure record names skill "
-                f"'{skill_id}' as actively harmful. Prefer skill_edit to fix it, "
-                f"or leave it in place."
-            )
-
-    prefer_soft = getattr(self, "_prefer_soft_delete", False)
+    batch = _curator_batch(self)
+    if batch is not None and batch.run_limits.deletes_left <= 0:
+        return _skill_reject(
+            self,
+            tool,
+            REJECT_DELETE_LIMIT,
+            f"Rejected: at most {batch.run_limits.max_deletes} skill deletion(s) are "
+            "allowed per learning run, and this run already used it. Improve the "
+            "skill with skill_edit instead, or leave it. Nothing was deleted.",
+        )
 
     try:
-        if prefer_soft and hasattr(
-            self.procedural_memory_manager, "soft_delete_procedure_by_id"
-        ):
-            await self.procedural_memory_manager.soft_delete_procedure_by_id(
-                procedure_id=skill_id, actor=self.actor, user=self.user
-            )
-            outcome = f"Skill '{skill_id}' soft-deleted (excluded from retrieval)."
-        else:
-            await self.procedural_memory_manager.delete_procedure_by_id(
-                procedure_id=skill_id, actor=self.actor, user=self.user
-            )
-            outcome = f"Skill '{skill_id}' deleted successfully."
-    except Exception as e:
-        logger.error("[skill_delete] FAILED for '%s': %s", skill_id, e)
-        return f"Failed to delete skill '{skill_id}': {e}"
+        # Always a soft delete through the skill write path:
+        # never the hard delete, which erases the history.
+        await self.procedural_memory_manager.apply_skill_change(
+            history.CHANGE_DELETE,
+            actor=self.actor,
+            user_id=_skill_owner_id(self),
+            skill_id=skill.id,
+            reason=reason.strip(),
+            **_skill_write_options(self, cited=cited),
+        )
+    except NoResultFound:
+        return _skill_reject(
+            self, tool, REJECT_NOT_FOUND, f"Skill '{skill_id}' not found. Nothing was deleted."
+        )
 
-    # Charge the delete budget only on a SUCCESSFUL gated delete.
-    if gated and has_budget_attr:
-        remaining = getattr(self, "_delete_budget_remaining", None)
-        if remaining is not None:
-            self._delete_budget_remaining = remaining - 1
+    if batch is not None:
+        batch.record_delete(skill.id)
+    return (
+        f"Skill '{skill.id}' soft-deleted (excluded from retrieval; restorable from its "
+        "history). Reason recorded." + _citation_note(self, cited, skill.id, delete=True)
+    )
 
-    return outcome
+
+async def experience_triage(
+    self: "Agent",
+    covered_ids: List[str],
+    not_worth_ids: List[str],
+    deferred_ids: List[str],
+) -> str:
+    """
+    In a skill curation batch: say what becomes of the experiences and earlier lessons that no change of yours cites. Call it in a turn of its own and read its answer; then call finish_memory_update() alone. A later call overrides an id's earlier list. When an experience of the batch is neither cited nor triaged, finish_memory_update() refuses and lists it.
+
+    Args:
+        covered_ids (array): Ids an existing skill already covers: there is nothing to add.
+        not_worth_ids (array): Ids not worth a skill: too narrow, wrong, or contradicted.
+        deferred_ids (array): Ids that may matter but lack the evidence for a skill yet. A new experience listed here stays for later batches; an earlier lesson listed here counts as ignored, like one not triaged at all, and one ignored in three batches without coming up again leaves the pool.
+
+    Returns:
+        str: What was recorded, and the ids still untriaged.
+    """
+    from mirix.services.skill_curator_state import REJECT_INVALID, REJECT_NO_CHANGE
+
+    tool = "experience_triage"
+    batch = _curator_batch(self)
+    if batch is None:
+        return _skill_reject(
+            self,
+            tool,
+            REJECT_INVALID,
+            "experience_triage works only inside a skill curation batch. Nothing was recorded.",
+        )
+    lists = {}
+    for name, value in (
+        ("covered_ids", covered_ids),
+        ("not_worth_ids", not_worth_ids),
+        ("deferred_ids", deferred_ids),
+    ):
+        ids, problem = _experience_ids_arg(value)
+        if problem:
+            return _skill_reject(
+                self,
+                tool,
+                REJECT_INVALID,
+                f"Rejected: '{name}' {problem} Nothing was recorded.",
+            )
+        lists[name] = ids
+    seen = {}
+    twice = []
+    for name, ids in lists.items():
+        for experience_id in ids:
+            if experience_id in seen and experience_id not in twice:
+                twice.append(experience_id)
+            seen.setdefault(experience_id, name)
+    if twice:
+        return _skill_reject(
+            self,
+            tool,
+            REJECT_INVALID,
+            f"Rejected: {_named(twice)} appear(s) in more than one list; give each id "
+            "one list. Nothing was recorded.",
+        )
+    unknown = batch.unknown_ids(list(seen))
+    if unknown:
+        return _skill_reject(
+            self,
+            tool,
+            REJECT_INVALID,
+            f"Rejected: {', '.join(unknown[:10])}{' …' if len(unknown) > 10 else ''} "
+            "was not shown in this batch. Triage only the ids of this batch's "
+            "experiences and earlier lessons. Nothing was recorded.",
+        )
+    if not seen:
+        # Three empty lists decide nothing: not a triage.
+        unaddressed = batch.unaddressed_experiences()
+        if unaddressed:
+            return _skill_reject(
+                self,
+                tool,
+                REJECT_NO_CHANGE,
+                "Rejected: all three lists are empty, so nothing was recorded. "
+                f"Still neither cited nor triaged: {_named(unaddressed)}. Put each "
+                "of them in covered_ids, not_worth_ids or deferred_ids.",
+            )
+        return (
+            "Nothing recorded: all three lists are empty, and every experience of "
+            "this batch is already cited or triaged."
+        )
+    batch.record_triage(
+        lists["covered_ids"], lists["not_worth_ids"], lists["deferred_ids"]
+    )
+    batch.triage_calls += 1
+    parts = []
+    for label, name in (
+        ("covered", "covered_ids"),
+        ("not worth a skill", "not_worth_ids"),
+        ("deferred", "deferred_ids"),
+    ):
+        ids = lists[name]
+        parts.append(f"{label} {len(ids)}" + (f" ({_named(ids)})" if ids else ""))
+    answer = "Triage recorded: " + "; ".join(parts) + "."
+    cited = [i for i in seen if batch.is_cited(i)]
+    if cited:
+        answer += (
+            f" {_named(cited)} are cited by a change of this batch, so they count as "
+            "used whatever list they are in."
+        )
+    untriaged = batch.untriaged()
+    if untriaged:
+        answer += (
+            f" Neither cited nor triaged yet (they count as deferred): "
+            f"{_named(untriaged)}."
+        )
+    else:
+        answer += " Every experience and earlier lesson of this batch is cited or triaged."
+    return answer
 
 
 async def check_semantic_memory(
@@ -1429,112 +2489,6 @@ async def knowledge_vault_update(
             raise
 
 
-async def _resolve_meta_agent_state(self: "Agent"):
-    """Resolve the meta_memory_agent AgentState that owns the retained messages.
-
-    Goal-1 retention keeps the last-N sessions' raw messages on the
-    ``meta_memory_agent``. This tool runs inside a memory sub-agent, whose
-    ``parent_id`` is that meta agent. If this is already the meta agent, return
-    it; otherwise fetch the parent. Returns ``None`` when it cannot be resolved.
-    """
-    from mirix.schemas.agent import AgentType
-
-    state = getattr(self, "agent_state", None)
-    if state is None:
-        return None
-    try:
-        if state.is_type(AgentType.meta_memory_agent):
-            return state
-    except Exception:  # noqa: BLE001 — is_type guard, never fatal
-        pass
-    parent_id = getattr(state, "parent_id", None)
-    if not parent_id:
-        return None
-    try:
-        parent = await self.agent_manager.get_agent_by_id(
-            agent_id=parent_id, actor=self.actor
-        )
-    except Exception:  # noqa: BLE001
-        return None
-    try:
-        if parent is not None and parent.is_type(AgentType.meta_memory_agent):
-            return parent
-    except Exception:  # noqa: BLE001
-        pass
-    return parent
-
-
-async def _schedule_experience_auto_dream(self: "Agent", *, threshold: int) -> bool:
-    """Fire-and-forget the GENERAL session-experience auto-dream
-    (session distillation + skill evolution).
-
-    Resolves the meta agent (owner of the retained transcripts) and schedules
-    ``AutoDreamManager().run(mode='procedural', last_n_sessions=threshold)`` as a
-    background task. Guarded end-to-end: any failure (resolution, scheduling, or
-    the dream itself) is logged and swallowed so the chat turn is never broken.
-
-    Returns ``True`` iff the background dream task was actually scheduled. The
-    caller uses this to decide whether to ALSO enqueue the legacy "procedural"
-    memory update: when the dream is scheduled it owns the procedural agent
-    (skill evolution runs under the per-agent lock), so the legacy update must
-    NOT run concurrently on the same agent. When scheduling did not take (no
-    user/actor, unresolved meta agent, or an error), the caller falls back to
-    the legacy update so a fire is never silently dropped.
-    """
-    if getattr(self, "user", None) is None or getattr(self, "actor", None) is None:
-        logger.debug("Skipping experience auto-dream: no user/actor in scope.")
-        return False
-    try:
-        meta_agent_state = await _resolve_meta_agent_state(self)
-        if meta_agent_state is None:
-            logger.debug("Skipping experience auto-dream: could not resolve meta agent.")
-            return False
-
-        user = self.user
-        actor = self.actor
-
-        async def _run_dream():
-            try:
-                from mirix.schemas.auto_dream import AutoDreamRequest
-                from mirix.services.auto_dream_manager import AutoDreamManager
-
-                await AutoDreamManager().run(
-                    request=AutoDreamRequest(
-                        mode="procedural", last_n_sessions=threshold
-                    ),
-                    user=user,
-                    actor=actor,
-                    meta_agent_state=meta_agent_state,
-                )
-            except Exception as e:  # noqa: BLE001 — background task, never fatal
-                # The trigger window was already CLAIMED (check_and_claim_fire), so a
-                # failure here means this window's sessions won't be auto-distilled.
-                # Not data loss: the raw messages are retained (Goal 1), so a manual
-                # POST /memory/auto_dream (mode=procedural) re-distills the last-N
-                # retained sessions, and the next window still fires normally. Logged
-                # LOUD (ERROR + traceback) so a lost window is observable/greppable.
-                logger.error(
-                    "Experience auto-dream run FAILED for meta_agent=%s (window already "
-                    "claimed; recover via POST /memory/auto_dream mode=procedural): %s",
-                    meta_agent_state.id,
-                    e,
-                    exc_info=True,
-                )
-
-        import asyncio
-
-        asyncio.create_task(_run_dream())
-        logger.info(
-            "Scheduled experience auto-dream (mode=procedural, last_n=%d, meta_agent=%s)",
-            threshold,
-            meta_agent_state.id,
-        )
-        return True
-    except Exception as e:  # noqa: BLE001 — scheduling must never break the turn
-        logger.warning("Failed to schedule experience auto-dream: %s", e)
-        return False
-
-
 async def trigger_memory_update_with_instruction(
     self: "Agent", user_message: object, instruction: str, memory_type: str
 ) -> Optional[str]:
@@ -1638,131 +2592,27 @@ async def trigger_memory_update(
             f"user_message must be a dictionary, got {type(user_message).__name__}: {user_message}"
         )
 
-    # Fixed-interval procedural trigger: auto-include "procedural" once
-    # SKILL_TRIGGER_SESSION_THRESHOLD distinct message sessions have accrued
-    # on this (agent, user) pair since the last fire. The cursor lives in the
-    # agent_trigger_state table; the running count is derived from messages
-    # at query time so there is only one source of truth and restarts/multi-
-    # worker deployments all agree.
+    # Procedural memory has EXACTLY ONE producer: skill learning runs over the
+    # Conversation Message Store, triggered deterministically outside this tool
+    # (after task-session writes, explicit session closes and the background
+    # sweeper — see mirix/services/skill_learning_trigger.py). The meta agent
+    # must never dispatch the procedural_memory_agent during normal extraction,
+    # so "procedural" is filtered out of memory_types here. It stays an accepted
+    # input value (a harmless no-op) so existing callers / LLM emissions don't
+    # error; it simply no longer dispatches.
     #
-    # `check_and_claim_fire` is the single atomic entry point: it serializes
-    # the threshold-check + cursor-advance under SELECT FOR UPDATE so two
-    # concurrent workers can never double-fire for the same window, and it
-    # advances the cursor to the observed MAX(messages.created_at) so the
-    # next window cannot skip messages inserted mid-check.
-    from mirix.constants import (
-        DEFAULT_ORG_ID,
-        DEFAULT_SESSION_TAG,
-        SESSION_TAG_TASK,
-        SKILL_TRIGGER_SESSION_THRESHOLD,
-    )
-    from mirix.schemas.agent_trigger_state import TRIGGER_TYPE_PROCEDURAL_SKILL
-    from mirix.services.agent_trigger_state_manager import AgentTriggerStateManager
-
-    # Adaptive routing: the session_tag rides on filter_tags (stamped at ingest),
-    # which is set on this agent instance (self.filter_tags). "task" sessions
-    # feed procedural skill distillation; "conversation" sessions never do.
-    session_tag = (getattr(self, "filter_tags", None) or {}).get(
-        "session_tag"
-    ) or DEFAULT_SESSION_TAG
-
-    # Messages are stored against the top-level (chat) agent, not the meta
-    # agent, so count sessions on the parent when this tool runs inside a
-    # child memory agent — matches the convention used elsewhere in this module.
-    trigger_agent_id = (
-        self.agent_state.parent_id
-        if self.agent_state.parent_id is not None
-        else self.agent_state.id
-    )
-    trigger_user_id = self.user.id if self.user else None
-    trigger_org_id = (
-        (self.actor.organization_id or DEFAULT_ORG_ID)
-        if getattr(self, "actor", None)
-        else None
-    )
-    current_session_id = getattr(self, "_current_step_session_id", None)
-
-    if session_tag != SESSION_TAG_TASK:
-        # Adaptive routing: only "task" sessions produce procedural skills.
-        # A "conversation" session (LOCOMO-style dialogue) must NEVER fire the
-        # every-N-session procedural batch trigger; its consolidation is the
-        # operator-invoked experience auto-dream (mode="experience"), never skills.
+    # Task sessions never reach this tool: /memory/add(_sync) stores them in the
+    # conversation store only and the queue worker drops any that is queued,
+    # so there is no per-tag branch here.
+    filtered_memory_types = [mt for mt in memory_types if mt != "procedural"]
+    if len(filtered_memory_types) != len(memory_types):
         logger.debug(
-            "Skipping procedural session trigger: session_tag=%s (not 'task').",
-            session_tag,
+            "Filtered 'procedural' out of trigger_memory_update dispatch "
+            "(procedural memory is produced solely by skill learning runs): "
+            "%s -> %s",
+            list(memory_types),
+            filtered_memory_types,
         )
-    elif trigger_user_id is None:
-        # No user scope — we cannot bookkeep a per-user cursor. Skip the
-        # auto-trigger rather than silently lumping all users together.
-        logger.debug("Skipping session-based procedural trigger: no user on agent.")
-    else:
-        trigger_mgr = AgentTriggerStateManager()
-        claim = await trigger_mgr.check_and_claim_fire(
-            agent_id=trigger_agent_id,
-            user_id=trigger_user_id,
-            trigger_type=TRIGGER_TYPE_PROCEDURAL_SKILL,
-            threshold=SKILL_TRIGGER_SESSION_THRESHOLD,
-            organization_id=trigger_org_id,
-            current_session_id=current_session_id,
-        )
-        if claim.fired:
-            # On the every-N-sessions fire, schedule the GENERAL
-            # session-experience auto-dream (distill the last-N sealed
-            # sessions → pending experiences → skill self-evolution via the
-            # procedural agent). Fire-and-forget so a failure here can never
-            # break the chat turn; the cadence reuses the claim we just won.
-            #
-            # Procedural memory now has EXACTLY ONE producer: this distillation
-            # path. The legacy "procedural" memory update is no longer injected
-            # into the meta dispatch (it is filtered out below regardless), so we
-            # do not (and must not) fall back to enqueuing it here — that would
-            # both reintroduce the second producer and let its ProceduralMemoryAgent
-            # .step race the curator's reset of the same agent's in-context history.
-            scheduled = await _schedule_experience_auto_dream(
-                self,
-                threshold=SKILL_TRIGGER_SESSION_THRESHOLD,
-            )
-            logger.info(
-                "Auto-triggering procedural skill evolution "
-                "(sessions_since=%d, threshold=%d, agent=%s, user=%s, "
-                "experience_dream_scheduled=%s)",
-                claim.sessions_since,
-                SKILL_TRIGGER_SESSION_THRESHOLD,
-                trigger_agent_id,
-                trigger_user_id,
-                scheduled,
-            )
-
-    # Procedural memory has EXACTLY ONE producer: the Conversation Message Store
-    # distillation path (scheduled above as the experience auto-dream). The meta
-    # agent must never dispatch the procedural_memory_agent during normal
-    # extraction, so "procedural" is filtered out of memory_types here. It stays
-    # an accepted input value (a harmless no-op) so existing callers / LLM emissions
-    # don't error; it simply no longer dispatches. The procedural_memory_agent
-    # registration and infrastructure are retained for the distillation path.
-    if session_tag == SESSION_TAG_TASK:
-        # Adaptive routing: a "task" session is skill-only. Its conversation turns
-        # feed the procedural distiller (auto_dream mode="procedural"); the inline
-        # episodic/semantic/core/... extraction is intentionally suppressed so a
-        # tool-use rollout does not spend LLM calls building conversational memory
-        # nobody reads.
-        if memory_types:
-            logger.debug(
-                "Suppressing inline memory extraction for task session "
-                "(skill-only): %s -> []",
-                list(memory_types),
-            )
-        filtered_memory_types = []
-    else:
-        filtered_memory_types = [mt for mt in memory_types if mt != "procedural"]
-        if len(filtered_memory_types) != len(memory_types):
-            logger.debug(
-                "Filtered 'procedural' out of trigger_memory_update dispatch "
-                "(procedural memory is produced solely by the distillation path): "
-                "%s -> %s",
-                list(memory_types),
-                filtered_memory_types,
-            )
     memory_types = filtered_memory_types
 
     # De-duplicate memory types while preserving order.
@@ -2018,7 +2868,41 @@ async def finish_memory_update(self: "Agent") -> str:
 
     Note: This function takes no parameters. Call it without any arguments.
 
+    In a skill curation batch, when an experience of the batch is neither
+    cited by a change nor triaged, it refuses to end the batch and lists
+    those experiences.
+
     Returns:
         str: Empty string (no response content).
     """
+    batch = _curator_batch(self)
+    if batch is None:
+        return ""
+    from mirix.constants import SKILL_CURATOR_FINISH_REMINDERS
+    from mirix.errors import ToolCallRefused
+    from mirix.services.skill_curator_state import REJECT_UNADDRESSED
+
+    unaddressed = batch.unaddressed_experiences()
+    if unaddressed and batch.finish_refusals < SKILL_CURATOR_FINISH_REMINDERS:
+        batch.finish_refusals += 1
+        # The refusal says what to do, never how to get past it.
+        unquoted = [i for i in unaddressed if i in batch.unverified_citations]
+        note = (
+            f" Cited without a quote of the text the change added that applies "
+            f"them, so not counted: {_named(unquoted)}."
+            if unquoted
+            else ""
+        )
+        raise ToolCallRefused(
+            batch.reject(
+                "finish_memory_update",
+                REJECT_UNADDRESSED,
+                f"Not finished: {len(unaddressed)} experience(s) of this batch are "
+                f"neither cited by a change nor triaged: {_named(unaddressed)}."
+                f"{note} Cite each one in the experience_ids of the change that "
+                "carries its lesson, with a quote of the words that apply it, or "
+                "list it with experience_triage(covered_ids, not_worth_ids, "
+                "deferred_ids); then call finish_memory_update() alone.",
+            )
+        )
     return ""

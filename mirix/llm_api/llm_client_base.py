@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, List, Optional, cast
 
 from langfuse import Langfuse
 
-from mirix.errors import LLMError
+from mirix.errors import LLMError, LLMRequestBuildError, MirixError
 from mirix.observability.context import get_trace_context, mark_observation_as_child
 from mirix.observability.langfuse_client import get_langfuse_client
 from mirix.schemas.llm_config import LLMConfig
@@ -16,6 +16,17 @@ from mirix.services.file_manager import FileManager
 
 if TYPE_CHECKING:
     from langfuse.types import TraceContext
+
+#: Raised by a model call itself, these are MIRIX's bugs (how it called the
+#: SDK), not provider failures: see ``LLMClientBase._mapped_llm_error``.
+_PROGRAMMING_ERRORS = (
+    TypeError,
+    AttributeError,
+    NameError,
+    NotImplementedError,
+    ImportError,
+    AssertionError,
+)
 
 
 class LLMClientBase:
@@ -46,14 +57,27 @@ class LLMClientBase:
     ) -> ChatCompletionResponse:
         """
         Issues a request to the downstream model endpoint and parses response.
+
+        A failure while BUILDING the request is MIRIX's own (nothing was sent
+        yet): anything but a :class:`~mirix.errors.MirixError` (whose kind —
+        budget, configuration, provider — is already specific) is raised as
+        :class:`~mirix.errors.LLMRequestBuildError`, so no caller mistakes a
+        bug for an unusable answer of the model.
         """
-        request_data = await self.build_request_data(
-            messages,
-            self.llm_config,
-            tools,
-            force_tool_call,
-            existing_file_uris=existing_file_uris,
-        )
+        try:
+            request_data = await self.build_request_data(
+                messages,
+                self.llm_config,
+                tools,
+                force_tool_call,
+                existing_file_uris=existing_file_uris,
+            )
+        except MirixError:
+            raise
+        except Exception as exc:
+            raise LLMRequestBuildError.wrapping(
+                f"building the {type(self).__name__} request", exc, stage="build"
+            ) from exc
 
         if get_input_data_for_debugging:
             return request_data
@@ -76,13 +100,41 @@ class LLMClientBase:
         """Execute LLM request without LangFuse tracing."""
         try:
             t1 = time.time()
-            response_data = await self.request(request_data)
+            response_data = await self._request_within_deadline(request_data)
             t2 = time.time()
             self.logger.debug("LLM request time: %.2f seconds", t2 - t1)
         except Exception as e:
-            raise self.handle_llm_error(e)
+            raise self._mapped_llm_error(e)
 
         return self.convert_response_to_chat_completion(response_data, messages)
+
+    async def _request_within_deadline(self, request_data: dict) -> dict:
+        """:meth:`request` — the SDK's transport retries included — bounded by
+        the wall-clock deadline ``MIRIX_LLM_TIMEOUT_SECONDS``:
+        past it the call is cancelled and ``LLMTimeoutError`` raised."""
+        from mirix.llm_api.helpers import with_llm_deadline
+
+        return await with_llm_deadline(self.request(request_data))
+
+    def _mapped_llm_error(self, e: Exception) -> Exception:
+        """A provider error as a common :class:`LLMError`; an error that
+        already is one (e.g. the deadline's ``LLMTimeoutError``) is kept.
+
+        A programming error raised by the call itself — the SDK refusing how
+        MIRIX called it (``TypeError: unexpected keyword argument``), a missing
+        attribute — is MIRIX's, not the provider's: it becomes
+        :class:`LLMRequestBuildError` (``stage="sdk_call"``), never an
+        ``LLMError`` a caller would count against the model. The
+        SDKs wrap every network and HTTP failure in their own error types, so
+        those still map to ``LLMError`` below.
+        """
+        if isinstance(e, LLMError):
+            return e
+        if isinstance(e, _PROGRAMMING_ERRORS):
+            return LLMRequestBuildError.wrapping(
+                f"calling the {type(self).__name__} SDK", e, stage="sdk_call"
+            )
+        return self.handle_llm_error(e)
 
     async def _execute_with_langfuse(
         self,
@@ -163,7 +215,7 @@ class LLMClientBase:
             # Execute the LLM request
             try:
                 t1 = time.time()
-                response_data = await self.request(request_data)
+                response_data = await self._request_within_deadline(request_data)
                 t2 = time.time()
                 self.logger.debug("LLM request time: %.2f seconds", t2 - t1)
             except Exception as e:
@@ -177,7 +229,7 @@ class LLMClientBase:
                 except Exception as langfuse_err:
                     # log then swallow if we were unable to update langfuse
                     self.logger.error(f"Failed to update LangFuse trace with error. Continuing: {langfuse_err}")
-                raise self.handle_llm_error(e)
+                raise self._mapped_llm_error(e)
 
             chat_completion_data = self.convert_response_to_chat_completion(response_data, messages)
 

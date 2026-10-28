@@ -3,7 +3,7 @@ import json
 import logging
 import warnings
 from collections import OrderedDict
-from typing import Any, List, Union
+from typing import Any, Awaitable, Callable, List, Optional, Union
 
 import httpx
 
@@ -15,6 +15,291 @@ from mirix.settings import summarizer_settings
 from mirix.utils import count_tokens, json_dumps, printd
 
 logger = logging.getLogger(__name__)
+
+
+#: Connecting to a model provider never waits longer than this (the SDKs' own
+#: default): an unreachable host is an infrastructure error in seconds, not
+#: after the whole call budget.
+LLM_CONNECT_TIMEOUT_SECONDS = 5.0
+
+
+def llm_timeout(sdk: Any = None) -> Any:
+    """The per-attempt HTTP timeout of a model call: read, write
+    and pool waits up to ``MIRIX_LLM_TIMEOUT_SECONDS`` (default 600), the
+    connect at most :data:`LLM_CONNECT_TIMEOUT_SECONDS`. The whole call —
+    every transport retry included — is bounded separately by the same
+    ``MIRIX_LLM_TIMEOUT_SECONDS`` as a wall-clock deadline (:func:`with_llm_deadline`).
+
+    ``sdk`` is the SDK module whose client takes the timeout (``openai``,
+    ``anthropic``): the timeout is built with that SDK's OWN ``Timeout`` type,
+    so it is valid whichever HTTP stack the installed SDK version runs on (the
+    ``httpx``-based SDKs export ``httpx.Timeout``; ``anthropic`` 1.x rejects an
+    ``httpx.Timeout`` because it runs on ``httpx2``). Without ``sdk`` — for
+    MIRIX's own ``httpx`` calls — it is an :class:`httpx.Timeout`. An SDK whose
+    ``Timeout`` type cannot be built this way gets the plain float seconds
+    (every SDK accepts one; only the shorter connect timeout is lost).
+    """
+    from mirix import constants
+
+    seconds = float(constants.LLM_TIMEOUT_SECONDS)
+    connect = min(LLM_CONNECT_TIMEOUT_SECONDS, seconds)
+    if sdk is None:
+        return httpx.Timeout(seconds, connect=connect)
+    timeout_type = getattr(sdk, "Timeout", None)
+    if isinstance(timeout_type, type):
+        try:
+            return timeout_type(seconds, connect=connect)
+        except Exception:  # noqa: BLE001 — an SDK with another Timeout signature
+            logger.warning(
+                "%s.Timeout(seconds, connect=...) failed; passing the timeout as "
+                "%.0f s (no separate connect timeout)",
+                getattr(sdk, "__name__", sdk),
+                seconds,
+            )
+    return seconds
+
+
+def llm_transport_options(sdk: Any = None) -> dict:
+    """``timeout`` and ``max_retries`` for a model SDK client.
+
+    Read at call time from ``mirix.constants`` (``MIRIX_LLM_TIMEOUT_SECONDS``,
+    default 600; ``MIRIX_LLM_MAX_RETRIES``, default 2) and always passed
+    explicitly, so MIRIX never depends on an SDK's own defaults. ``timeout``
+    is built with ``sdk``'s own ``Timeout`` type (see :func:`llm_timeout`);
+    pass the module of the SDK whose client takes these options.
+    """
+    from mirix import constants
+
+    return {
+        "timeout": llm_timeout(sdk),
+        "max_retries": int(constants.LLM_MAX_RETRIES),
+    }
+
+
+async def with_llm_deadline(call: Awaitable[Any]) -> Any:
+    """Await one model call — its transport retries included — within the
+    wall-clock deadline ``MIRIX_LLM_TIMEOUT_SECONDS`` (the call timeout,
+    10 min by default).
+
+    The HTTP timeouts bound each read or write, not the whole exchange: a
+    provider (or proxy) that keeps trickling bytes would hold a call forever,
+    and SDK retries would stack attempt after attempt. Past the deadline the
+    call is cancelled and :class:`~mirix.errors.LLMTimeoutError` raised.
+    """
+    import asyncio
+
+    from mirix import constants
+    from mirix.errors import ErrorCode, LLMTimeoutError
+
+    deadline = float(constants.LLM_TIMEOUT_SECONDS)
+    try:
+        return await asyncio.wait_for(call, timeout=deadline)
+    except asyncio.TimeoutError as exc:
+        raise LLMTimeoutError(
+            message=(
+                f"the model call did not complete within its {deadline:g} s "
+                "deadline (MIRIX_LLM_TIMEOUT_SECONDS)"
+            ),
+            code=ErrorCode.DEPENDENCY_TIMEOUT,
+        ) from exc
+
+
+def _transport_retry_kind(response: Optional[httpx.Response]) -> str:
+    """The retry-policy kind of the failure an SDK transport retry follows."""
+    from mirix.services.retry_policy import ErrorKind
+
+    status = getattr(response, "status_code", None)
+    if isinstance(status, int) and status in (401, 403, 404):
+        return ErrorKind.CONFIG.value
+    return ErrorKind.INFRA.value  # 408/409/429/5xx, or no answer at all
+
+
+_RECORDING_SDK_CLASSES: dict = {}
+
+
+def recording_sdk_class(sdk_class: type) -> type:
+    """``sdk_class`` (``AsyncOpenAI``, ``AsyncAzureOpenAI``,
+    ``AsyncAnthropic`` …) with its transport retries recorded (every
+    retry lands in the learning run's or retrieval log's
+    ``retry_events``).
+
+    The OpenAI and Anthropic SDKs retry inside one call (connection errors,
+    timeouts, 408/409/429/5xx) and announce each retry through their async
+    ``_sleep_for_retry`` hook; the subclass records the retry with the
+    recorder of the enclosing
+    :func:`~mirix.services.retry_policy.recording_retries` block (a no-op
+    outside one), then waits as the SDK would. An SDK without that hook is
+    returned unchanged — its retries still happen, unrecorded.
+    """
+    import inspect
+
+    cached = _RECORDING_SDK_CLASSES.get(sdk_class)
+    if cached is not None:
+        return cached
+    hook = getattr(sdk_class, "_sleep_for_retry", None)
+    if hook is None or not inspect.iscoroutinefunction(hook):
+        _RECORDING_SDK_CLASSES[sdk_class] = sdk_class
+        return sdk_class
+
+    async def _sleep_for_retry(self, **kwargs):  # type: ignore[no-untyped-def]
+        from mirix.services.retry_policy import record_retry
+
+        response = kwargs.get("response")
+        retries_taken = int(kwargs.get("retries_taken") or 0)
+        waited = 0.0
+        try:
+            remaining = int(kwargs.get("max_retries") or 0) - retries_taken
+            waited = float(
+                self._calculate_retry_timeout(
+                    remaining,
+                    kwargs.get("options"),
+                    response.headers if response is not None else None,
+                )
+            )
+        except Exception:  # noqa: BLE001 — the wait is informative only
+            waited = 0.0
+        await record_retry(
+            _transport_retry_kind(response),
+            retries_taken + 1,
+            waited,
+            stage="transport",
+        )
+        return await hook(self, **kwargs)
+
+    recording = type(
+        f"Recording{sdk_class.__name__}",
+        (sdk_class,),
+        {"_sleep_for_retry": _sleep_for_retry, "__module__": __name__},
+    )
+    _RECORDING_SDK_CLASSES[sdk_class] = recording
+    return recording
+
+
+# Transport-level retry of one HTTP model call (mirrors the OpenAI SDK).
+_RETRYABLE_STATUS_CODES = frozenset({408, 409, 429})
+_INITIAL_RETRY_DELAY = 0.5
+_MAX_RETRY_DELAY = 8.0
+_MAX_RETRY_AFTER = 60.0
+
+
+def _retry_after_seconds(value: Optional[str]) -> Optional[float]:
+    """Seconds from a Retry-After header (delta-seconds or HTTP date)."""
+    if not value:
+        return None
+    try:
+        seconds = float(value)
+    except ValueError:
+        from email.utils import parsedate_to_datetime
+
+        try:
+            when = parsedate_to_datetime(value)
+        except (TypeError, ValueError):
+            return None
+        if when is None:
+            return None
+        import datetime as _dt
+
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=_dt.timezone.utc)
+        seconds = (when - _dt.datetime.now(_dt.timezone.utc)).total_seconds()
+    return seconds if 0 <= seconds <= _MAX_RETRY_AFTER else None
+
+
+def transport_retry_delay(attempt: int, retry_after: Optional[str] = None) -> float:
+    """Wait before transport retry ``attempt`` (0-based): the server's
+    Retry-After when sane (<= 60 s), else 0.5 s doubling to 8 s, with jitter."""
+    import random
+
+    hinted = _retry_after_seconds(retry_after)
+    if hinted is not None:
+        return hinted
+    delay = min(_INITIAL_RETRY_DELAY * (2**attempt), _MAX_RETRY_DELAY)
+    return delay * (1 - 0.25 * random.random())
+
+
+async def post_json_with_retries(
+    url: str,
+    headers: dict,
+    data: dict,
+    *,
+    timeout: Union[float, httpx.Timeout],
+    max_retries: int,
+    transport: Optional[httpx.AsyncBaseTransport] = None,
+    sleep: Optional[Callable[[float], Awaitable[Any]]] = None,
+) -> dict:
+    """POST ``data`` as JSON and return the JSON body, with transport retries.
+
+    For HTTP model APIs without an SDK (the Google client). ``timeout`` bounds
+    each attempt; up to ``max_retries`` retries follow connection errors,
+    timeouts and HTTP 408/409/429/5xx (Retry-After honored), waiting with
+    ``asyncio.sleep`` — never blocking the event loop. Every retry is recorded
+    with the enclosing ``recording_retries`` block's recorder. Other
+    HTTP errors raise ``httpx.HTTPStatusError`` at once (message includes the
+    response body).
+    """
+    import asyncio
+
+    from mirix.services.retry_policy import ErrorKind, record_retry
+
+    sleep = sleep or asyncio.sleep
+    attempt = 0
+    async with httpx.AsyncClient(timeout=timeout, transport=transport) as client:
+        while True:
+            retry_after = None
+            failure: Optional[BaseException] = None
+            try:
+                response = await client.post(url, headers=headers, json=data)
+            except httpx.TransportError as exc:
+                if attempt >= max_retries:
+                    raise
+                reason = type(exc).__name__
+                failure = exc
+            else:
+                status = response.status_code
+                if status < 400:
+                    content_type = response.headers.get("content-type", "")
+                    if "application/json" not in content_type.lower():
+                        raise ValueError(
+                            f"Unexpected content type returned: {content_type or 'none'}"
+                        )
+                    return response.json()
+                retryable = status in _RETRYABLE_STATUS_CODES or status >= 500
+                if not retryable or attempt >= max_retries:
+                    message = (
+                        f"HTTP error occurred: {status} for {url.split('?', 1)[0]}"
+                        f" | Status code: {status}, Message: {response.text[:2000]}"
+                    )
+                    raise httpx.HTTPStatusError(
+                        message, request=response.request, response=response
+                    )
+                retry_after = response.headers.get("retry-after")
+                reason = f"HTTP {status}"
+            delay = transport_retry_delay(attempt, retry_after)
+            attempt += 1
+            logger.info(
+                "Model call failed (%s); transport retry %d/%d in %.2fs",
+                reason,
+                attempt,
+                max_retries,
+                delay,
+            )
+            await record_retry(
+                ErrorKind.INFRA,
+                attempt,
+                delay,
+                stage="transport",
+                error=failure or RuntimeError(reason),
+            )
+            await sleep(delay)
+
+
+def read_file_base64(path: str) -> str:
+    """A file's bytes, base64-encoded. Blocking — call via ``asyncio.to_thread``
+    (image payloads are read on the request path; never on the event loop)."""
+    import base64
+
+    with open(path, "rb") as handle:
+        return base64.b64encode(handle.read()).decode("utf-8")
 
 
 def _convert_to_structured_output_helper(property: dict) -> dict:
@@ -258,8 +543,18 @@ def get_token_counts_for_messages(in_context_messages: List[Message]) -> List[in
 def is_context_overflow_error(
     exception: Union[httpx.HTTPError, Exception],
 ) -> bool:
-    """Checks if an exception is due to context overflow (based on common OpenAI response messages)."""
+    """Checks if an exception is due to context overflow (based on common OpenAI response messages).
+
+    A request refused BEFORE sending by the context budget
+    (``ContextBudgetExceeded``) is the same situation — the input is
+    too large for the window — so callers that shrink their context on
+    overflow (the agent summarizer) handle it too.
+    """
+    from mirix.errors import ContextBudgetExceeded
     from mirix.utils import printd
+
+    if isinstance(exception, ContextBudgetExceeded):
+        return True
 
     match_string = OPENAI_CONTEXT_WINDOW_ERROR_SUBSTRING
 

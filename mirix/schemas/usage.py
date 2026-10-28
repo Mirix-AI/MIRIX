@@ -1,6 +1,39 @@
-from typing import Literal
+from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field
+
+
+class ToolFailure(BaseModel):
+    """Failed tool calls of one step that share a tool, a stage and an exception class
+    (``mirix/agent/tool_failures.py``)."""
+
+    tool: str = Field(..., description="The tool the model named.")
+    stage: Literal[
+        "unknown_tool", "arguments", "validation", "execution", "error_result"
+    ] = Field(
+        ...,
+        description=(
+            "Where the call failed: an unknown tool, arguments that are not a JSON "
+            "object, the tool's validator, an exception while (or right after) the "
+            "tool ran, or an error text the tool returned."
+        ),
+    )
+    exception: Optional[str] = Field(
+        None, description="The exception class, for a failure that raised one."
+    )
+    error: Optional[str] = Field(
+        None, description="The first failure's error text (at most 300 characters)."
+    )
+    count: int = Field(1, description="How many calls failed this way.")
+    argument_error: Optional[bool] = Field(
+        None,
+        description=(
+            "Whether the failure is the model's mistake in its call (every stage but "
+            "execution; an execution failure whose exception a tool raises for what "
+            "the model passed: a ValueError or a record it named that does not "
+            "exist). None from a MIRIX that did not record it."
+        ),
+    )
 
 
 class MirixUsageStatistics(BaseModel):
@@ -21,3 +54,51 @@ class MirixUsageStatistics(BaseModel):
     last_completion_tokens: int = Field(0, description="The number of tokens in the last completion.")
     total_tokens: int = Field(0, description="The total number of tokens processed by the agent.")
     step_count: int = Field(0, description="The number of steps taken by the agent.")
+    stop_reason: Optional[str] = Field(
+        None,
+        description=(
+            "Why the step loop ended: 'finish' (finish_memory_update was called), "
+            "'ended' (another terminal reply), 'chaining_off', 'step_cap' or "
+            "'context_limit' (the next call would not fit)."
+        ),
+    )
+    context_peak_tokens: int = Field(
+        0,
+        description=(
+            "The largest estimated input of any LLM call of the step (0 when the "
+            "step did not estimate its inputs, i.e. without context_stop_fraction)."
+        ),
+    )
+    failed_tool_calls: int = Field(
+        0,
+        description=(
+            "Tool calls answered with an error result (unknown tool, bad JSON, "
+            "invalid arguments, an exception in the tool)."
+        ),
+    )
+    tool_failures: List[ToolFailure] = Field(
+        default_factory=list,
+        description=(
+            "Why those tool calls failed: one entry per tool, stage and exception "
+            "class, with a count and the first error text (at most 50 entries)."
+        ),
+    )
+    tool_failures_omitted: int = Field(
+        0,
+        description=(
+            "Failed tool calls left out of tool_failures because it was full: the "
+            "entries' counts plus this equal failed_tool_calls."
+        ),
+    )
+    skipped_tool_calls: int = Field(
+        0,
+        description=(
+            "Tool calls of the step's model turns that were not run and were "
+            'answered "Not run" (mirix/agent/tool_call_plan.py): a repeated '
+            "terminal call, or — in a step with a per-turn cap — a call past the "
+            "cap or a terminal call that was not its turn's only call."
+        ),
+    )
+    multi_call_turns: int = Field(
+        0, description="Model turns of the step that made more than one tool call."
+    )

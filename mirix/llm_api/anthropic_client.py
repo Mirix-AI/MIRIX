@@ -1,3 +1,4 @@
+import asyncio
 import json
 import re
 from typing import Dict, List, Optional, Union
@@ -11,6 +12,7 @@ from anthropic.types.beta.messages import BetaMessageBatch
 from anthropic.types.beta.messages.batch_create_params import Request
 
 from mirix.errors import (
+    ContextBudgetExceeded,
     ContextWindowExceededError,
     ErrorCode,
     LLMAuthenticationError,
@@ -20,9 +22,15 @@ from mirix.errors import (
     LLMPermissionDeniedError,
     LLMRateLimitError,
     LLMServerError,
+    LLMTimeoutError,
     LLMUnprocessableEntityError,
 )
 from mirix.helpers.datetime_helpers import get_utc_time
+from mirix.llm_api.helpers import (
+    llm_transport_options,
+    read_file_base64,
+    recording_sdk_class,
+)
 from mirix.llm_api.llm_client_base import LLMClientBase
 from mirix.log import get_logger
 from mirix.schemas.llm_config import LLMConfig
@@ -38,7 +46,9 @@ from mirix.schemas.openai.chat_completion_response import (
     ToolCall,
     UsageStatistics,
 )
+from mirix.services.context_budget import MIN_OUTPUT_TOKENS, output_cap_for_request
 from mirix.services.provider_manager import ProviderManager
+from mirix.services.retry_policy import is_connect_timeout
 from mirix.tracing import trace_method
 
 DUMMY_FIRST_USER_MESSAGE = "User initializing bootup sequence."
@@ -46,12 +56,50 @@ DUMMY_FIRST_USER_MESSAGE = "User initializing bootup sequence."
 logger = get_logger(__name__)
 
 
+# Anthropic's smallest extended-thinking budget.
+MIN_THINKING_BUDGET_TOKENS = 1024
+
+
+def fit_thinking_budget(data: dict) -> None:
+    """Keep extended thinking inside the budgeted ``max_tokens``.
+
+    Anthropic requires ``thinking.budget_tokens < max_tokens`` (thinking is
+    part of the output). When the cap computed for this request's input
+    leaves the answer fewer than :data:`MIN_OUTPUT_TOKENS` next to the
+    configured thinking budget, the thinking budget shrinks to make room; a
+    cap too small for both the smallest thinking budget and a normal answer
+    raises :class:`ContextBudgetExceeded` before anything is sent (the
+    caller shrinks the input), instead of a 400 from the provider.
+    """
+    thinking = data.get("thinking")
+    if not isinstance(thinking, dict) or thinking.get("type") != "enabled":
+        return
+    cap = int(data["max_tokens"])
+    budget = int(thinking.get("budget_tokens") or 0)
+    if cap - budget >= MIN_OUTPUT_TOKENS:
+        return
+    fitted = cap - MIN_OUTPUT_TOKENS
+    if fitted < MIN_THINKING_BUDGET_TOKENS:
+        raise ContextBudgetExceeded(
+            f"the output cap for this request ({cap} tokens) cannot hold the "
+            f"smallest thinking budget ({MIN_THINKING_BUDGET_TOKENS}) plus a "
+            f"normal answer ({MIN_OUTPUT_TOKENS}); shrink the input",
+            output_cap=cap,
+            minimum_output_tokens=MIN_OUTPUT_TOKENS + MIN_THINKING_BUDGET_TOKENS,
+        )
+    logger.info(
+        "Thinking budget %d shrunk to %d to fit the output cap %d", budget, fitted, cap
+    )
+    data["thinking"] = {**thinking, "budget_tokens": fitted}
+
+
 class AnthropicClient(LLMClientBase):
     async def request(self, request_data: dict) -> dict:
-        client = await self._get_anthropic_client(async_client=True)
-        response = await client.beta.messages.create(
-            **request_data, betas=["tools-2024-04-04"]
-        )
+        # Closed with the request (see OpenAIClient.request).
+        async with await self._get_anthropic_client(async_client=True) as client:
+            response = await client.beta.messages.create(
+                **request_data, betas=["tools-2024-04-04"]
+            )
         return response.model_dump()
 
     @trace_method
@@ -114,9 +162,13 @@ class AnthropicClient(LLMClientBase):
     @trace_method
     async def _get_anthropic_client(self, async_client: bool = False) -> Union[anthropic.AsyncAnthropic, anthropic.Anthropic]:
         override_key = await ProviderManager().get_anthropic_override_key()
+        # Explicit timeout / transport retries, never the SDK's defaults.
+        kwargs = llm_transport_options(anthropic)
+        if override_key:
+            kwargs["api_key"] = override_key
         if async_client:
-            return anthropic.AsyncAnthropic(api_key=override_key) if override_key else anthropic.AsyncAnthropic()
-        return anthropic.Anthropic(api_key=override_key) if override_key else anthropic.Anthropic()
+            return recording_sdk_class(anthropic.AsyncAnthropic)(**kwargs)
+        return anthropic.Anthropic(**kwargs)
 
     @trace_method
     async def build_request_data(
@@ -133,7 +185,7 @@ class AnthropicClient(LLMClientBase):
         if not self.use_tool_naming:
             raise NotImplementedError("Only tool calling supported on Anthropic API requests")
 
-        if not llm_config.max_tokens:
+        if not llm_config.max_tokens and not llm_config.max_output_tokens:
             raise ValueError("Max  tokens must be set for anthropic")
 
         data = {
@@ -225,6 +277,12 @@ class AnthropicClient(LLMClientBase):
                 {"role": "assistant", "content": f"<{inner_thoughts_xml_tag}>"},
             )
 
+        if llm_config.max_output_tokens:
+            # max_tokens follows THIS request's estimated input;
+            # ContextBudgetExceeded (raised before sending) below 1,024.
+            data["max_tokens"] = await output_cap_for_request(data, llm_config)
+            fit_thinking_budget(data)
+
         return data
 
     async def fill_image_content_in_messages(self, messages: List[dict]) -> List[dict]:
@@ -276,25 +334,24 @@ class AnthropicClient(LLMClientBase):
                                 }
                             )
                         elif file.file_path is not None:
-                            import base64
                             import mimetypes
 
                             mime_type, _ = mimetypes.guess_type(file.file_path)
                             if mime_type is None or not mime_type.startswith("image/"):
                                 mime_type = "image/jpeg"  # Default fallback
 
-                            with open(file.file_path, "rb") as img_file:
-                                base64_data = base64.b64encode(img_file.read()).decode("utf-8")
-                                message_content.append(
-                                    {
-                                        "type": "image",
-                                        "source": {
-                                            "type": "base64",
-                                            "media_type": mime_type,
-                                            "data": base64_data,
-                                        },
-                                    }
-                                )
+                            # Off the event loop: images are read on the request path.
+                            base64_data = await asyncio.to_thread(read_file_base64, file.file_path)
+                            message_content.append(
+                                {
+                                    "type": "image",
+                                    "source": {
+                                        "type": "base64",
+                                        "media_type": mime_type,
+                                        "data": base64_data,
+                                    },
+                                }
+                            )
                         else:
                             raise ValueError(f"File {file.file_path} has no source_url or file_path")
                         # global_image_idx += 1
@@ -303,7 +360,6 @@ class AnthropicClient(LLMClientBase):
                     file = await self.file_manager.get_file_metadata_by_id(m["cloud_file_uri"])
                     local_path = await self.cloud_file_mapping_manager.get_local_file(file.google_cloud_url)
 
-                    import base64
                     import mimetypes
 
                     # Get the MIME type of the image
@@ -311,18 +367,17 @@ class AnthropicClient(LLMClientBase):
                     if mime_type is None or not mime_type.startswith("image/"):
                         mime_type = "image/jpeg"  # Default fallback
 
-                    with open(local_path, "rb") as img_file:
-                        base64_data = base64.b64encode(img_file.read()).decode("utf-8")
-                        message_content.append(
-                            {
-                                "type": "image",
-                                "source": {
-                                    "type": "base64",
-                                    "media_type": mime_type,
-                                    "data": base64_data,
-                                },
-                            }
-                        )
+                    base64_data = await asyncio.to_thread(read_file_base64, local_path)
+                    message_content.append(
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": mime_type,
+                                "data": base64_data,
+                            },
+                        }
+                    )
                 else:
                     message_content.append(m)
             message["content"] = message_content
@@ -338,6 +393,18 @@ class AnthropicClient(LLMClientBase):
         return new_message_list
 
     def handle_llm_error(self, e: Exception) -> Exception:
+        if isinstance(e, anthropic.APITimeoutError) and not is_connect_timeout(
+            e.__cause__
+        ):
+            # The call itself timed out (retried once, then counted); a
+            # connect timeout stays a connection (infrastructure) error below.
+            logger.warning("[Anthropic] Request timed out: %s", e)
+            return LLMTimeoutError(
+                message=f"Anthropic request timed out: {str(e)}",
+                code=ErrorCode.DEPENDENCY_TIMEOUT,
+                details={"cause": str(e.__cause__) if e.__cause__ else None},
+            )
+
         if isinstance(e, anthropic.APIConnectionError):
             logger.warning("[Anthropic] API connection error: %s", e.__cause__)
             return LLMConnectionError(

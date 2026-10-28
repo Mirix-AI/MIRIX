@@ -10,12 +10,13 @@ Flow:
   6. Return stats
 """
 
+import asyncio
 import contextlib
 import datetime as dt
 import json
 import logging
 import os
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from mirix.helpers.keyed_locks import KeyedLocks
 from mirix.services.conversation_message_manager import owner_org as _owner_org
@@ -25,18 +26,22 @@ from mirix.schemas.client import Client as PydanticClient
 from mirix.schemas.message import MessageCreate
 from mirix.schemas.enums import MessageRole
 from mirix.schemas.user import User as PydanticUser
+from mirix.errors import LearningRunInternalError
+from mirix.services.retry_policy import RetryEventRecorder
+from mirix.services.session_experience_distiller import internal_failure_sessions
 
 logger = logging.getLogger(__name__)
 
 # event_type used to tag auto_dream checkpoint records in episodic memory
 _CHECKPOINT_EVENT_TYPE = "auto_dream_checkpoint"
+# The newest episodic events an episodic dream reads (checkpoints excluded).
+_EPISODIC_DREAM_WINDOW = 500
 
-# Per-(user, org) serialization for the procedural auto-dream. Two fires can be
-# scheduled (fire-and-forget) before the first has marked its sessions distilled;
-# if both ran concurrently they would each enumerate the SAME oldest sealed
-# sessions and distill duplicate experiences. Serializing per owner makes the
-# second run wait until the first has marked its batch distilled, so the second
-# then enumerates the NEXT (disjoint) batch.
+# Per-(user, org) serialization of skill learning runs. Runs claim DISJOINT
+# sessions (a live run's sessions are excluded from every other claim), but
+# their curator stages edit the same skill bank and curate the same `pending`
+# experiences of the scope; running two at once would curate the same
+# experiences twice. So a run executes only while holding this guard.
 #
 # Two layers:
 #   * a process-local asyncio.Lock (serializes coroutines within ONE event loop), AND
@@ -51,6 +56,22 @@ _PROCEDURAL_DREAM_LOCKS = KeyedLocks()
 # Stable namespace salt so this feature's advisory-lock keys never collide with
 # another feature's pg_advisory_lock keyspace.
 _PROCEDURAL_ADVISORY_NAMESPACE = "mirix.procedural_dream"
+
+
+def _distill_usage(entries: List[dict]) -> dict:
+    """The run's ``llm_usage`` delta from its distill metric entries:
+    totals, and the same under ``by_stage.distill``."""
+    totals = {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+    for entry in entries:
+        totals["calls"] += int(entry.get("llm_calls") or 0)
+        usage = entry.get("llm_usage") or {}
+        for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+            value = usage.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                totals[key] += int(value)
+    if not totals["calls"]:
+        return {}
+    return {**totals, "by_stage": {"distill": dict(totals)}}
 
 
 def _dream_lock_key(user_id: str, organization_id: Optional[str]) -> str:
@@ -75,6 +96,28 @@ def _advisory_lock_key(user_id: str, organization_id: Optional[str]) -> int:
     return val - (1 << 64) if val >= (1 << 63) else val
 
 
+async def _invalidate_guard_connection(session) -> None:
+    """Close the guard's DBAPI connection instead of returning it to the pool.
+
+    Closing a Postgres connection releases every session-level advisory lock it
+    holds, so a lock whose acquisition or release was interrupted can never
+    stay held by a pooled connection (where it would block this owner's runs
+    in every process until the pool recycles it).
+    """
+    try:
+        connection = await session.connection()
+        await connection.invalidate()
+    except BaseException:  # noqa: BLE001 — best effort; the caller re-raises
+        logger.debug("Could not invalidate the guard connection", exc_info=True)
+
+
+async def _exit_guard_session(session_cm) -> None:
+    try:
+        await session_cm.__aexit__(None, None, None)
+    except BaseException:  # noqa: BLE001 — best effort
+        logger.debug("Could not close the guard session", exc_info=True)
+
+
 @contextlib.asynccontextmanager
 async def _procedural_dream_guard(user_id: str, organization_id: Optional[str]):
     """Serialize the procedural auto-dream for one (user, org) across coroutines
@@ -86,6 +129,11 @@ async def _procedural_dream_guard(user_id: str, organization_id: Optional[str]):
     backends (SQLite/PGlite — single-process setups the asyncio.Lock already
     covers) the advisory step is skipped. Lock-plumbing failures degrade to the
     asyncio.Lock rather than crashing the run.
+
+    Cancellation-safe: a run cancelled while it waits for (or right after it was
+    granted) the advisory lock — shutdown, a lost lease, an erasure — closes the
+    dedicated connection rather than pooling it, and so does a release that
+    fails or is interrupted; the lock can never outlive its holder.
     """
     from sqlalchemy import text
 
@@ -113,17 +161,24 @@ async def _procedural_dream_guard(user_id: str, organization_id: Optional[str]):
                 await session_cm.__aexit__(None, None, None)
                 session_cm = None
                 session = None
+        except asyncio.CancelledError:
+            # The lock may have been granted to this connection just before the
+            # cancellation landed: drop the connection, never pool it.
+            if session is not None:
+                await _invalidate_guard_connection(session)
+            if session_cm is not None:
+                await _exit_guard_session(session_cm)
+            raise
         except Exception:  # noqa: BLE001 — lock plumbing must never crash the run
             logger.warning(
                 "Procedural dream advisory lock unavailable; relying on the "
                 "process-local lock only.",
                 exc_info=True,
             )
+            if session is not None:
+                await _invalidate_guard_connection(session)
             if session_cm is not None:
-                try:
-                    await session_cm.__aexit__(None, None, None)
-                except Exception:  # noqa: BLE001
-                    pass
+                await _exit_guard_session(session_cm)
             session_cm = None
             session = None
 
@@ -131,24 +186,25 @@ async def _procedural_dream_guard(user_id: str, organization_id: Optional[str]):
             yield
         finally:
             if session is not None:
+                released = False
                 try:
                     await session.execute(
                         text("SELECT pg_advisory_unlock(:k)"), {"k": key}
                     )
-                except Exception:  # noqa: BLE001 — close releases it anyway
+                    released = True
+                except Exception:  # noqa: BLE001 — the connection is dropped below
                     logger.debug(
-                        "pg_advisory_unlock failed; session close will release it."
+                        "pg_advisory_unlock failed; dropping the connection releases it."
                     )
                 finally:
-                    try:
-                        await session_cm.__aexit__(None, None, None)
-                    except Exception:  # noqa: BLE001
-                        pass
+                    if not released:
+                        await _invalidate_guard_connection(session)
+                    await _exit_guard_session(session_cm)
 
 # Generic "fetch current memories of these components -> one consolidation agent"
 # modes. mode='procedural' is intentionally NOT here: it is handled by the
-# dedicated session-experience path (_run_procedural_experience), which returns
-# before this mapping is ever consulted.
+# skill-learning path (_run_procedural), which returns before this mapping is
+# ever consulted.
 _MODE_COMPONENTS = {
     "core": ["core"],
     "episodic": ["episodic"],
@@ -225,7 +281,16 @@ class AutoDreamManager:
             user_id=user.id,
             organization_id=actor.organization_id,
         )
-        await mgr.create_episodic_memory(episodic_memory=checkpoint, actor=actor)
+        # The owner is passed explicitly: create_episodic_memory stamps its own
+        # user_id / client_id arguments over the event's, and without them the
+        # checkpoint would land in the ADMIN user's memory — where
+        # get_last_dream_time(user) never finds it.
+        await mgr.create_episodic_memory(
+            episodic_memory=checkpoint,
+            actor=actor,
+            client_id=actor.id,
+            user_id=user.id,
+        )
 
     # ------------------------------------------------------------------ #
     # Memory fetching                                                      #
@@ -240,21 +305,15 @@ class AutoDreamManager:
     ) -> list:
         from mirix.services.episodic_memory_manager import EpisodicMemoryManager
 
-        mgr = EpisodicMemoryManager()
-        events = await mgr.list_episodic_memory(
-            user=user,
-            agent_state=agent_state,
-            # Auto-dream fetches ALL current memories regardless of date;
-            # the passed window is only recorded in the response for reference.
-            start_date=None,
-            end_date=None,
-            search_method="string_match",
-            query="",
-            limit=500,
-            use_cache=False,
+        # Auto-dream fetches the newest events regardless of date (the passed
+        # window is only recorded in the response for reference). The dream
+        # checkpoints (one per learning run) are left out in the query itself,
+        # before the window's limit: they never crowd out the real events.
+        return await EpisodicMemoryManager().list_recent_events(
+            user,
+            limit=_EPISODIC_DREAM_WINDOW,
+            exclude_event_types=(_CHECKPOINT_EVENT_TYPE,),
         )
-        # exclude system checkpoints
-        return [e for e in events if e.event_type != _CHECKPOINT_EVENT_TYPE]
 
     async def _fetch_core(
         self,
@@ -383,10 +442,10 @@ class AutoDreamManager:
         return await server.agent_manager.create_agent(agent_create=agent_create, actor=actor)
 
     # ------------------------------------------------------------------ #
-    # Session distillation + skill evolution — procedural path            #
+    # Skill learning — procedural path                                    #
     # ------------------------------------------------------------------ #
 
-    async def _run_procedural_experience(
+    async def _run_procedural(
         self,
         *,
         request: AutoDreamRequest,
@@ -394,108 +453,39 @@ class AutoDreamManager:
         actor: PydanticClient,
         meta_agent_state: AgentState,
         now: dt.datetime,
+        run_id: Optional[str],
     ) -> AutoDreamResponse:
-        """Serialize per (user, org), then run the procedural distillation.
+        """mode='procedural': session distillation + skill evolution.
 
-        The guard makes the enumerate → distill → mark sequence atomic against
-        another procedural run for the SAME owner — within the process (asyncio
-        lock) AND across worker processes (Postgres advisory lock). A second fire
-        scheduled before this one marks its batch distilled waits here, then
-        enumerates the NEXT (disjoint) sealed batch — preventing duplicate
-        distillation of the oldest sessions. See ``_procedural_dream_guard``.
+        * ``run_id`` given — execute that claimed learning run. This is what the
+          trigger's background task calls (``skill_learning_trigger``).
+        * ``dry_run`` — report how many pending sessions a run would claim; no
+          side effects at all.
+        * otherwise (a manual ``POST /memory/auto_dream``) — flush semantics:
+          claim every pending session of this (organization, user, meta agent)
+          scope, at most ``request.last_n_sessions`` when set, into a new run
+          with trigger 'manual'. The run is recorded even when nothing is
+          pending (it still drains experiences a previous run left pending).
+          ``request.wait`` (default) executes it here and returns its result;
+          ``wait=False`` schedules it in the background and returns the run id
+          at once.
         """
-        async with _procedural_dream_guard(user.id, _owner_org(actor)):
-            return await self._run_procedural_experience_locked(
-                request=request,
-                user=user,
-                actor=actor,
-                meta_agent_state=meta_agent_state,
-                now=now,
+        from mirix.services.agent_trigger_state_manager import (
+            AgentTriggerStateManager,
+        )
+        from mirix.services.conversation_session_manager import (
+            ConversationSessionManager,
+        )
+
+        organization_id = _owner_org(actor)
+        if run_id is None and request.dry_run:
+            pending = await ConversationSessionManager().list_pending_distill_sessions(
+                organization_id=organization_id,
+                user_id=user.id,
+                agent_id=meta_agent_state.id,
             )
-
-    async def _run_procedural_experience_locked(
-        self,
-        *,
-        request: AutoDreamRequest,
-        user: PydanticUser,
-        actor: PydanticClient,
-        meta_agent_state: AgentState,
-        now: dt.datetime,
-    ) -> AutoDreamResponse:
-        """Session distillation (+ skill evolution unless dry_run).
-
-        This is the explicit "program call" entry point for general
-        session-experience distillation: calling
-        ``AutoDreamManager().run(AutoDreamRequest(mode='procedural', ...))``
-        runs it directly. It is ALSO fired every N sessions by the
-        ``trigger_memory_update`` claim path (see
-        ``functions/function_sets/memory_tools.py``).
-
-        Steps:
-          1. Resolve N (``request.last_n_sessions`` or
-             ``MESSAGE_RETAIN_LAST_N_SESSIONS``) — the max number of sealed
-             sessions to process this round.
-          2. Enumerate up to N SEALED, not-yet-distilled sessions from the
-             Conversation Message Store (oldest-first; the open head of the
-             window is never included).
-          3. Distill each session IN PARALLEL into pending SkillExperience rows.
-          4. Mark the SUCCESSFULLY-processed sessions distilled so the rolling
-             barrier advances and they are never re-distilled (failed sessions
-             are left for retry).
-          5. dry_run → return counts; else run skill evolution over the
-             freshly-pending experiences, then write the dream checkpoint.
-
-        Always invoked under the per-owner lock acquired by
-        ``_run_procedural_experience``.
-        """
-        from mirix.constants import MESSAGE_RETAIN_LAST_N_SESSIONS
-        from mirix.services.conversation_message_manager import (
-            ConversationMessageManager,
-        )
-        from mirix.services.session_experience_distiller import (
-            SessionExperienceDistiller,
-        )
-
-        n = request.last_n_sessions or MESSAGE_RETAIN_LAST_N_SESSIONS
-
-        # The dream agent inherits the meta agent's llm_config; allow a model
-        # override for testing (same convention as the generic path).
-        llm_config = meta_agent_state.llm_config
-        if request.model:
-            from copy import deepcopy
-
-            llm_config = deepcopy(llm_config)
-            llm_config.model = request.model
-
-        conversation_manager = ConversationMessageManager()
-        distiller = SessionExperienceDistiller(
-            llm_config=llm_config,
-            conversation_manager=conversation_manager,
-        )
-        # Source of truth is the Conversation Message Store, scoped per
-        # (user, organization). Pull at most N sealed, not-yet-distilled
-        # sessions (oldest-first); the in-progress head is left for the next
-        # window.
-        session_ids = await distiller.enumerate_sealed_sessions(
-            user_id=user.id,
-            organization_id=_owner_org(actor),
-            actor=actor,
-            limit=n,
-        )
-        logger.info(
-            "Auto dream (procedural): meta_agent=%s, user=%s, last_n=%d, sealed_sessions=%s",
-            meta_agent_state.id,
-            user.id,
-            n,
-            session_ids,
-        )
-
-        if request.dry_run:
-            # A dry run has NO side effects: it does NOT distill (no LLM call, no
-            # SkillExperience writes), does NOT mark sessions distilled, does NOT
-            # evolve skills, and does NOT checkpoint. It reports how many sealed
-            # sessions WOULD be processed, leaving the rolling barrier untouched
-            # so a subsequent real run processes the same window.
+            if request.last_n_sessions and request.last_n_sessions > 0:
+                pending = pending[: request.last_n_sessions]
             return AutoDreamResponse(
                 start_date=None,
                 end_date=None,
@@ -503,50 +493,302 @@ class AutoDreamManager:
                 last_dream_at=now,
                 dry_run=True,
                 message=(
-                    f"Dry run — {len(session_ids)} sealed session(s) would be "
-                    f"distilled; no experiences persisted, barrier not advanced."
+                    f"Dry run — {len(pending)} pending session(s) would be claimed "
+                    "and distilled; nothing was changed."
                 ),
             )
 
-        existing_skills = await self._existing_skill_summaries(user, meta_agent_state)
-        # distill_sessions returns (experiences, processed_session_ids): only the
-        # SUCCESSFULLY-processed sessions (including legitimately-empty ones) are
-        # in processed_session_ids; a session that hit an operational failure is
-        # omitted so we never advance the barrier past a failed conversation.
+        if run_id is None:
+            claim = await AgentTriggerStateManager().check_and_claim_fire(
+                agent_id=meta_agent_state.id,
+                user_id=user.id,
+                organization_id=organization_id,
+                trigger="manual",
+                force=True,
+                allow_empty=True,
+                limit=request.last_n_sessions,
+                actor_id=getattr(actor, "id", None),
+            )
+            run_id = claim.run_id
+            logger.info(
+                "Auto dream (procedural): manual run %s claimed %d session(s) "
+                "(meta_agent=%s, user=%s, wait=%s)",
+                run_id,
+                len(claim.session_ids),
+                meta_agent_state.id,
+                user.id,
+                request.wait,
+            )
+            if not request.wait:
+                from mirix.services.skill_learning_trigger import schedule_learning_run
+
+                # The request travels with the run: its model override must
+                # apply in the background exactly as with wait=true.
+                schedule_learning_run(
+                    run_id,
+                    actor=actor,
+                    user=user,
+                    meta_agent_state=meta_agent_state,
+                    request=request,
+                )
+                return AutoDreamResponse(
+                    start_date=None,
+                    end_date=None,
+                    processed={"procedural": MemoryTypeStats(total=0)},
+                    last_dream_at=now,
+                    dry_run=False,
+                    run_ids=[run_id],
+                    message=(
+                        f"Skill learning run {run_id} queued with "
+                        f"{len(claim.session_ids)} session(s); poll "
+                        f"GET /memory/learning_runs/{run_id} for its outcome."
+                    ),
+                )
+
+        return await self._execute_learning_run(
+            run_id=run_id,
+            request=request,
+            user=user,
+            actor=actor,
+            meta_agent_state=meta_agent_state,
+            now=now,
+        )
+
+    async def _execute_learning_run(
+        self,
+        *,
+        run_id: str,
+        request: AutoDreamRequest,
+        user: PydanticUser,
+        actor: PydanticClient,
+        meta_agent_state: AgentState,
+        now: dt.datetime,
+    ) -> AutoDreamResponse:
+        """Execute one claimed run under its lease (heartbeat, outcome recording).
+
+        Runs of the same (user, organization) are serialized by
+        ``_procedural_dream_guard``: their sessions are disjoint, but their
+        curator passes edit the same skill bank and drain the same leftover
+        experiences. A run waiting for the guard stays ``queued`` (its heartbeat
+        keeps the lease) and becomes ``running`` once it holds the guard.
+        """
+        from mirix.services.skill_learning_run_manager import (
+            LearningRunNotActive,
+            SkillLearningRunManager,
+        )
+
+        run_mgr = SkillLearningRunManager()
+        organization_id = _owner_org(actor)
+        run = await run_mgr.get_run(run_id)
+        if run is None:
+            raise LearningRunNotActive(run_id, None)
+        if (
+            run.agent_id != meta_agent_state.id
+            or run.user_id != user.id
+            or run.organization_id != organization_id
+        ):
+            raise ValueError(
+                f"learning run {run_id} belongs to (org={run.organization_id}, "
+                f"user={run.user_id}, agent={run.agent_id}), not to this request's scope"
+            )
+
+        async def work() -> AutoDreamResponse:
+            async with _procedural_dream_guard(user.id, organization_id):
+                if not await run_mgr.mark_running(run_id):
+                    current = await run_mgr.get_run(run_id)
+                    raise LearningRunNotActive(run_id, getattr(current, "status", None))
+                return await self._process_learning_run(
+                    run=run,
+                    request=request,
+                    user=user,
+                    actor=actor,
+                    meta_agent_state=meta_agent_state,
+                    now=now,
+                )
+
+        return await run_mgr.execute(run_id, work)
+
+    def _llm_config_for(self, meta_agent_state: AgentState, request: AutoDreamRequest):
+        """The meta agent's llm_config, with ``request.model`` applied (testing)."""
+        llm_config = meta_agent_state.llm_config
+        if request.model:
+            from copy import deepcopy
+
+            llm_config = deepcopy(llm_config)
+            llm_config.model = request.model
+        return llm_config
+
+    def _make_distiller(self, *, llm_config, conversation_manager):
+        from mirix.services.distill_session_context import SessionContextLoader
+        from mirix.services.session_experience_distiller import (
+            SessionExperienceDistiller,
+        )
+
+        return SessionExperienceDistiller(
+            llm_config=llm_config,
+            conversation_manager=conversation_manager,
+            # The skills served in each session and its agent context.
+            session_context_loader=SessionContextLoader(),
+        )
+
+    async def _process_learning_run(
+        self,
+        *,
+        run,
+        request: AutoDreamRequest,
+        user: PydanticUser,
+        actor: PydanticClient,
+        meta_agent_state: AgentState,
+        now: dt.datetime,
+    ) -> AutoDreamResponse:
+        """Distill exactly the run's claimed sessions, then evolve skills.
+
+        Steps:
+          1. For each claimed session, read only its rows with
+             ``created_at <= watermark`` and ``distilled_at IS NULL`` and
+             distill them (sessions in parallel) into pending experiences.
+          2. Each successfully distilled session (an empty/low-signal one
+             included) is committed ATOMICALLY and only while this run is still
+             queued/running (``commit_distilled_session``): its experiences are
+             inserted and exactly its rows up to the watermark are marked
+             distilled in one transaction. Rows written after the claim — a
+             reopened session — stay pending; a session that failed, or was not
+             committed because the run was cancelled / reclaimed / erased,
+             keeps its rows pending with no experiences written, and is
+             claimable again once this run ends. So stopping a run never
+             duplicates a session's experiences.
+          3. A session that could not be distilled is settled: an
+             infrastructure error backs it off (``distill_retry_after``, not
+             counted); any other failure left after the in-run retries
+             (halvings, repair prompts, a timeout retry) counts, and the 3rd
+             count sets ``distill_failed_at``. Every retry is appended to the
+             run's ``retry_events``.
+          4. Record the per-session distill metrics and the LLM usage
+             on the run; prune distilled turns past the retention window.
+          5. Skill curation: every pending experience of the scope —
+             this run's and any an earlier run left pending — oldest first, in
+             batches of at most half the curator's input budget; each batch is
+             settled and its curator metrics recorded atomically with a check
+             that the run is still active. Then the dream checkpoint (again
+             only while active).
+        """
+        from mirix.services.conversation_message_manager import (
+            ConversationMessageManager,
+            parse_watermark,
+        )
+        from mirix.services.skill_learning_run_manager import SkillLearningRunManager
+
+        run_mgr = SkillLearningRunManager()
+        organization_id = _owner_org(actor)
+        llm_config = self._llm_config_for(meta_agent_state, request)
+        conversation_manager = ConversationMessageManager()
+        distiller = self._make_distiller(
+            llm_config=llm_config, conversation_manager=conversation_manager
+        )
+
+        watermarks: dict = {}
+        session_ids: List[str] = []
+        for sid in run.session_ids:
+            raw = (run.session_watermarks or {}).get(sid)
+            if raw is None:
+                # Every claim records a watermark; without one we cannot bound
+                # the read, so the session is left pending for a later run.
+                logger.error(
+                    "Learning run %s has no watermark for session %s; skipped",
+                    run.id,
+                    sid,
+                )
+                continue
+            watermarks[sid] = parse_watermark(raw)
+            session_ids.append(sid)
+
+        logger.info(
+            "Learning run %s (%s): distilling %d session(s) for meta_agent=%s, user=%s",
+            run.id,
+            run.trigger,
+            len(session_ids),
+            meta_agent_state.id,
+            user.id,
+        )
+        session_metrics: dict = {}
+        marks: Dict[str, int] = {}
+        recorder = RetryEventRecorder.for_learning_run(run.id, run_manager=run_mgr)
+
+        async def commit_session(
+            session_id: str,
+            payloads: List[dict],
+            skill_feedback: Optional[List[dict]] = None,
+        ):
+            committed, rows_marked = await run_mgr.commit_distilled_session(
+                run.id,
+                organization_id=organization_id,
+                user_id=user.id,
+                session_id=session_id,
+                watermark=watermarks[session_id],
+                experiences=payloads,
+                created_by_id=getattr(actor, "id", None),
+                skill_feedback=skill_feedback,
+            )
+            marks[session_id] = rows_marked
+            return committed, rows_marked
+
+        async def record_failure(session_id: str, failure) -> Optional[dict]:
+            # An infrastructure error backs the session off (never
+            # counted); any other failure left after the in-run retries counts,
+            # and the 3rd sets distill_failed_at. Both only while the run is
+            # still active.
+            if failure.deferred:
+                retry_after = await run_mgr.defer_distilled_session(
+                    run.id,
+                    organization_id=organization_id,
+                    user_id=user.id,
+                    session_id=session_id,
+                )
+                return {
+                    "distill_retry_after": retry_after.isoformat()
+                    if retry_after
+                    else None
+                }
+            if failure.counted:
+                failures, failed_at = await run_mgr.record_distill_failure(
+                    run.id,
+                    organization_id=organization_id,
+                    user_id=user.id,
+                    session_id=session_id,
+                )
+                return {
+                    "distill_failures": failures,
+                    "failed_permanently": failed_at is not None,
+                }
+            return None
+
         experiences, processed_session_ids = await distiller.distill_sessions(
             meta_agent_state=meta_agent_state,
             user=user,
             actor=actor,
             session_ids=session_ids,
-            existing_skills=existing_skills,
+            session_watermarks=watermarks,
+            metrics=session_metrics,
+            commit_session=commit_session,
+            record_failure=record_failure,
+            recorder=recorder,
         )
 
-        stats = {
-            "procedural": MemoryTypeStats(total=len(experiences)),
-        }
-
-        # Advance the rolling barrier: mark every SUCCESSFULLY-processed session
-        # distilled (idempotent; scoped to this (user, org)) so a later round —
-        # automatic or explicit — never re-distills them. Sessions that yielded
-        # zero experiences but were processed cleanly are still marked (an
-        # empty/low-signal conversation is "consumed" and must not block the
-        # window). Sessions that FAILED are intentionally left undistilled so a
-        # later round retries them rather than losing their learning.
-        if processed_session_ids:
-            marked = await conversation_manager.mark_sessions_distilled(
-                session_ids=processed_session_ids,
-                user_id=user.id,
-                organization_id=_owner_org(actor),
-                actor=actor,
-            )
-            logger.info(
-                "Auto dream (procedural): marked %d turn(s) across %d/%d session(s) "
-                "distilled (%d failed, left for retry)",
-                marked,
-                len(processed_session_ids),
-                len(session_ids),
-                len(session_ids) - len(processed_session_ids),
-            )
+        marked = sum(marks.values())
+        logger.info(
+            "Learning run %s: marked %d row(s) across %d/%d session(s) distilled "
+            "(%d not distilled, left pending)",
+            run.id,
+            marked,
+            len(processed_session_ids),
+            len(session_ids),
+            len(session_ids) - len(processed_session_ids),
+        )
+        distill_entries = [
+            session_metrics.get(sid, {"session_id": sid}) for sid in session_ids
+        ]
+        await run_mgr.append_distill_metrics(run.id, distill_entries)
+        await run_mgr.add_llm_usage(run.id, _distill_usage(distill_entries))
 
         # Retention: distilled turns past the window have already yielded their
         # learning into skill_experience rows; drop the verbatim transcripts so
@@ -556,193 +798,231 @@ class AutoDreamManager:
         try:
             await conversation_manager.prune_distilled_turns(
                 user_id=user.id,
-                organization_id=_owner_org(actor),
+                organization_id=organization_id,
                 actor=actor,
                 retention_days=CONVERSATION_RETENTION_DAYS,
             )
         except Exception:
-            # Best-effort: a failed prune must not fail the dream run; the next
-            # pass retries. Logged so a persistent failure is visible.
-            logger.exception("Auto dream (procedural): retention prune failed")
+            # Best-effort: a failed prune must not fail the run; the next run
+            # retries. Logged so a persistent failure is visible.
+            logger.exception("Learning run %s: retention prune failed", run.id)
 
-        # -- Skill evolution: evolve skills from the pending experiences. --
-        #
-        # Two independent steps, so a prior round's stranded experiences are
-        # drained even under active traffic (closing the "evolution failure
-        # strands distilled experiences" gap):
-        #   (1) FRESH round: evolve THIS round's freshly-distilled batch, scoped to
-        #       its own ids (the deliberate optimization — earlier rounds'
-        #       low-signal experiences would dilute the curator prompt).
-        #   (2) RECOVERY: drain any LEFTOVER pending experiences from PRIOR rounds
-        #       whose evolution failed (leftover pending minus this round's fresh
-        #       ids), in its own scoped run. Always attempted, regardless of
-        #       whether this round produced fresh experiences.
-        # The sessions stay distilled either way — re-distilling would duplicate;
-        # the experiences are the unit retried, not the sessions.
-        skills_changed = 0
-        evolution_changes: dict = {}
-        fresh_ids = [e.id for e in experiences]
-        leftover_ids = await self._leftover_pending_experience_ids(
-            meta_agent_state=meta_agent_state, user=user
+        # -- Skill curation --
+        # Every pending experience of the scope — this run's fresh ones and
+        # any an earlier run left pending — oldest first, in batches; each
+        # batch settles (consumed / returned / kept pending) atomically with a
+        # check that this run is still active, and every skill write re-checks
+        # it too, so a run that was reclaimed or erased stops changing skills.
+        # The sessions stay distilled either way: the experiences are the unit
+        # retried, not the sessions.
+        await run_mgr.ensure_active(run.id)
+        curate_started = dt.datetime.now(dt.timezone.utc).isoformat()
+        curation = await self._curate(
+            run_id=run.id,
+            user=user,
+            actor=actor,
+            meta_agent_state=meta_agent_state,
+            model=request.model,
         )
-        # Exclude this round's fresh ids from the recovery scope: they are handled
-        # by step (1), so the recovery step only sees PRIOR rounds' leftovers.
-        fresh_set = set(fresh_ids)
-        recovery_ids = [eid for eid in leftover_ids if eid not in fresh_set]
+        await self._record_curation_skip(run.id, curation, curate_started, run_mgr)
+        skills_changed = curation.skills_changed
+        evolution_changes = {k: list(v) for k, v in curation.changes.items()}
 
-        if fresh_ids:
-            sc, ch = await self._evolve_experiences(
-                user=user,
-                actor=actor,
-                meta_agent_state=meta_agent_state,
-                experience_ids=fresh_ids,
-                label="fresh",
-            )
-            skills_changed += sc
-            evolution_changes.update(ch)
-        if recovery_ids:
-            sc, ch = await self._evolve_experiences(
-                user=user,
-                actor=actor,
-                meta_agent_state=meta_agent_state,
-                experience_ids=recovery_ids,
-                label="recovery",
-            )
-            skills_changed += sc
-            # Don't clobber fresh changes with recovery ones — merge keys.
-            for k, v in ch.items():
-                evolution_changes.setdefault(k, v)
+        # A skill the curator (or anything else) stored without
+        # a retrieval vector — its embedding still failing after the backoff
+        # retries — is invisible to every gated retrieval until it gets one.
+        # Re-embed the user's such skills now, in this process, instead of
+        # only at the next server start.
+        await run_mgr.ensure_active(run.id)
+        await self._reembed_missing_vectors(
+            run_id=run.id,
+            user=user,
+            organization_id=organization_id,
+            run_mgr=run_mgr,
+        )
 
+        # A session MIRIX itself could not distill (a request it could
+        # not build) was neither counted nor backed off; the run is recorded
+        # failed with it — after the other sessions and the curation — so the
+        # failure is loud instead of a silent "succeeded".
+        internal = internal_failure_sessions(session_metrics)
+        if internal:
+            errors = "; ".join(
+                f"{sid}: {session_metrics[sid].get('error', '')}"[:300]
+                for sid in internal
+            )
+            raise LearningRunInternalError(
+                f"{len(internal)} session(s) not distilled because of MIRIX's own "
+                f"failure (left pending, uncounted): {errors}",
+                session_ids=internal,
+            )
+
+        await run_mgr.ensure_active(run.id)
         await self.write_checkpoint(user, actor, meta_agent_state, now)
 
         return AutoDreamResponse(
             start_date=None,
             end_date=None,
-            processed=stats,
+            processed={"procedural": MemoryTypeStats(total=len(experiences))},
             last_dream_at=now,
             dry_run=False,
             skills_changed=skills_changed,
             changes=evolution_changes,
+            run_ids=[run.id],
             message=(
-                f"Auto dream (procedural) completed: {len(experiences)} experience(s) "
-                f"from {len(session_ids)} session(s); {skills_changed} skill(s) changed."
+                f"Auto dream (procedural) completed: run {run.id}, "
+                f"{len(experiences)} experience(s) from {len(session_ids)} session(s); "
+                f"{skills_changed} skill(s) changed."
             ),
         )
 
-    async def _evolve_experiences(
+    async def _reembed_missing_vectors(
         self,
         *,
+        run_id: str,
+        user: PydanticUser,
+        organization_id: Optional[str],
+        run_mgr,
+    ) -> None:
+        """Give every live skill of ``user`` that has no retrieval vector one,
+        with each skill's own embedding config; record the pass on
+        the run when it found any. A skill still without one afterwards (the
+        embedding calls failed after their retries, or the row has no
+        embedding config) is reported as a ``curator_metrics`` entry with
+        ``stage: reembed`` — with ``error_kind: embedding`` when embedding
+        calls failed: the run's user then has a skill no gated retrieval can
+        return, an outage cost learning, visible to whoever reads the run.
+        During a sustained outage the pass stops after
+        ``MIRIX_SKILL_REEMBED_MAX_CONSECUTIVE_FAILURES`` skills in a row failed
+        (``stopped_early``; the others are ``skipped``), so the run is not
+        held for minutes of doomed calls. Never raises except cancellation:
+        the vectors are retried by the next run and at startup."""
+        from mirix import constants
+        from mirix.services.retry_policy import recording_retries
+        from mirix.services.skill_retrieval_reembed import (
+            reembed_missing_retrieval_embeddings,
+        )
+
+        started_at = dt.datetime.now(dt.timezone.utc).isoformat()
+        recorder = RetryEventRecorder.for_learning_run(run_id, run_manager=run_mgr)
+        report = None
+        error: Optional[BaseException] = None
+        try:
+            with recording_retries(recorder, stage="reembed"):
+                report = await reembed_missing_retrieval_embeddings(
+                    organization_id=organization_id,
+                    user_id=user.id,
+                    max_consecutive_failures=(
+                        constants.SKILL_REEMBED_MAX_CONSECUTIVE_FAILURES
+                    ),
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — logged and recorded below
+            logger.exception("Learning run %s: re-embedding pass failed", run_id)
+            error = exc
+        if error is None and (report is None or not report.scanned):
+            return  # every skill of the user has its vector
+        entry: dict = {
+            "batch_id": f"{run_id}:reembed",
+            "stage": "reembed",
+            "status": "settled",
+            "started_at": started_at,
+            "finished_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        }
+        if report is not None:
+            entry.update(
+                scanned=report.scanned,
+                outcomes=dict(report.outcomes),
+                filled=report.filled,
+                still_missing=report.still_missing,
+                stopped_early=report.stopped_early,
+            )
+            if report.failed:
+                entry["error_kind"] = "embedding"
+                entry["error"] = (
+                    f"{report.failed + report.skipped} skill(s) of the user still "
+                    "have no retrieval vector (the embedding calls failed after "
+                    "their retries): no gated retrieval returns them until they "
+                    "are re-embedded"
+                )
+                if report.stopped_early:
+                    entry["error"] += (
+                        "; the pass stopped after "
+                        f"{constants.SKILL_REEMBED_MAX_CONSECUTIVE_FAILURES} "
+                        f"failures in a row and did not try {report.skipped} "
+                        "skill(s) (nor any it had not listed yet)"
+                    )
+                logger.warning("Learning run %s: %s", run_id, entry["error"])
+            if report.no_config:
+                logger.warning(
+                    "Learning run %s: %d skill(s) of the user have no embedding "
+                    "config and can never get a retrieval vector",
+                    run_id,
+                    report.no_config,
+                )
+            if not report.still_missing:
+                logger.info(
+                    "Learning run %s: re-embedded %d skill(s) left without a "
+                    "retrieval vector",
+                    run_id,
+                    report.filled,
+                )
+        if error is not None:
+            entry["error_kind"] = "embedding"
+            entry["error"] = f"{type(error).__name__}: {error}"[:500]
+        try:
+            await run_mgr.append_curator_metrics(run_id, [entry])
+        except Exception:  # noqa: BLE001 — bookkeeping must not fail the run
+            logger.exception("Learning run %s: could not record the re-embed pass", run_id)
+
+    async def _record_curation_skip(
+        self, run_id: str, curation, started_at: str, run_mgr
+    ) -> None:
+        """Record a curator stage a configuration stopped before any batch
+        (the procedural agent lacks a curator tool, the owner has no write
+        scope, ...) as a ``curator_metrics`` entry with ``error_kind:
+        config``: the pending experiences wait, uncounted, so without it the
+        run would read as a normal run that changed nothing."""
+        from mirix.services.skill_experience_curator import curation_skip_entry
+
+        entry = curation_skip_entry(run_id, curation, started_at=started_at)
+        if entry is None:
+            return
+        logger.warning("Learning run %s: %s", run_id, entry["error"])
+        try:
+            await run_mgr.append_curator_metrics(run_id, [entry])
+        except Exception:  # noqa: BLE001 — bookkeeping must not fail the run
+            logger.exception(
+                "Learning run %s: could not record the curation skip", run_id
+            )
+
+    async def _curate(
+        self,
+        *,
+        run_id: str,
         user: PydanticUser,
         actor: PydanticClient,
         meta_agent_state: AgentState,
-        experience_ids: List[str],
-        label: str,
-    ) -> tuple:
-        """Run skill evolution over an explicit, scoped experience batch.
+        model: Optional[str] = None,
+    ):
+        """The curator stage of learning run ``run_id``: every pending
+        experience of the scope, in batches (see
+        :func:`mirix.services.skill_experience_curator.curate_pending_experiences`).
+        ``model`` overrides the curator's model like it overrides the
+        distiller's. Returns a ``CuratorOutcome``; its ``changes`` merge
+        every batch's."""
+        from mirix.services.skill_experience_curator import (
+            curate_pending_experiences,
+        )
 
-        Returns ``(skills_changed, changes)``; on any failure returns ``(0, {})``
-        and logs — the experiences are durably `pending`, so a failed evolution
-        loses no learning and is retried by the RECOVERY step on a later run.
-        ``label`` ("fresh" / "recovery") only colours the log.
-        """
-        if not experience_ids:
-            return 0, {}
-        try:
-            from mirix.services.skill_experience_curator import (
-                run_experience_evolution,
-            )
-
-            evolution = await run_experience_evolution(
-                user=user,
-                actor=actor,
-                meta_agent_state=meta_agent_state,
-                experience_ids=experience_ids,
-            )
-            skills_changed = (evolution or {}).get("skills_changed", 0)
-            changes = (evolution or {}).get("changes", {}) or {}
-            if label == "recovery":
-                logger.info(
-                    "Auto dream (procedural): recovered %d stranded pending "
-                    "experience(s); %d skill(s) changed.",
-                    len(experience_ids),
-                    skills_changed,
-                )
-            return skills_changed, changes
-        except ImportError:
-            # Experience curator not yet present in this build — distillation alone is
-            # still valuable, so do not fail the run.
-            logger.info(
-                "Experience curator unavailable; experiences persisted as pending."
-            )
-            return 0, {}
-        except Exception as e:  # noqa: BLE001 — evolution failure mustn't lose experiences
-            # Experiences are durably `pending`, so NO learning is lost — only the
-            # evolution STEP failed. The sessions stay distilled (re-distilling
-            # would duplicate); these pending experiences are drained by the
-            # RECOVERY step on a later procedural run. Logged LOUD for observability.
-            logger.error(
-                "Skill-evolution run (%s) FAILED for meta_agent=%s "
-                "(%d experience(s) left pending; auto-recovered on a later procedural "
-                "run, or via POST /memory/auto_dream mode=procedural): %s",
-                label,
-                meta_agent_state.id,
-                len(experience_ids),
-                e,
-                exc_info=True,
-            )
-            return 0, {}
-
-    async def _leftover_pending_experience_ids(
-        self,
-        *,
-        meta_agent_state: AgentState,
-        user: PydanticUser,
-    ) -> List[str]:
-        """Return ids of this (agent, user)'s still-`pending` experiences.
-
-        Used by the RECOVERY path: when a procedural run distilled nothing fresh,
-        these are the experiences a PRIOR round's failed evolution left behind
-        (``list_experiences(status='pending')`` already excludes consumed /
-        superseded, so this is exactly the un-evolved leftover pool). Best-effort:
-        any failure yields ``[]`` so recovery is simply skipped this round.
-        """
-        try:
-            from mirix.services.skill_experience_manager import SkillExperienceManager
-
-            pending = await SkillExperienceManager().list_experiences(
-                agent_id=meta_agent_state.id,
-                user_id=user.id,
-                status="pending",
-            )
-        except Exception as e:  # noqa: BLE001 — recovery is best-effort
-            logger.debug("Could not list leftover pending experiences: %s", e)
-            return []
-        return [e.id for e in pending]
-
-    async def _existing_skill_summaries(
-        self,
-        user: PydanticUser,
-        meta_agent_state: AgentState,
-    ) -> list:
-        """Return [{name, description}] of existing procedural skills (dedup context).
-
-        Best-effort: a failure here just yields an empty list (the distiller
-        prompt treats it as "(none)").
-        """
-        try:
-            procedures = await self._fetch_procedural(user, meta_agent_state, None, None)
-        except Exception as e:  # noqa: BLE001
-            logger.debug("Could not fetch existing skills for dedup context: %s", e)
-            return []
-        summaries = []
-        for p in procedures:
-            summaries.append(
-                {
-                    "name": getattr(p, "name", "") or "",
-                    "description": getattr(p, "description", "") or "",
-                }
-            )
-        return summaries
+        return await curate_pending_experiences(
+            run_id=run_id,
+            user=user,
+            actor=actor,
+            meta_agent_state=meta_agent_state,
+            model_override=model,
+        )
 
     # ------------------------------------------------------------------ #
     # Main entry point                                                     #
@@ -754,29 +1034,154 @@ class AutoDreamManager:
         user: PydanticUser,
         actor: PydanticClient,
         meta_agent_state: AgentState,
+        run_id: Optional[str] = None,
     ) -> AutoDreamResponse:
-        from mirix.server.server import get_server
-
-        server = get_server()
         now = dt.datetime.now(dt.timezone.utc)
 
         # ----------------------------------------------------------------- #
-        # mode='procedural' is general per-session experience distillation  #
-        # distillation (NOT the legacy procedure-consolidation pass). It    #
-        # reads the meta agent's last-N RETAINED sessions, distills each    #
-        # session's transcript IN PARALLEL into pending SkillExperience     #
-        # rows, then (unless dry_run) drives skill self-evolution           #
-        # from those experiences. Other modes fall through to the generic   #
-        # fetch → format → single-step path below, unchanged.               #
+        # mode='procedural' is skill learning: distill a learning run's     #
+        # claimed task sessions (only their rows up to the claim-time       #
+        # watermark) into pending SkillExperience rows, then drive skill    #
+        # evolution from them. `run_id` executes an already-claimed run     #
+        # (the trigger's background task); without it, this call claims    #
+        # every pending session of the scope itself (flush semantics).      #
+        # Other modes run the generic fetch → format → single-step path,    #
+        # recorded as a learning run of their mode unless dry_run.          #
         # ----------------------------------------------------------------- #
         if request.mode == "procedural":
-            return await self._run_procedural_experience(
+            return await self._run_procedural(
+                request=request,
+                user=user,
+                actor=actor,
+                meta_agent_state=meta_agent_state,
+                now=now,
+                run_id=run_id,
+            )
+        if request.dry_run:
+            # A dry run changes nothing and is not recorded.
+            return await self._run_generic(
                 request=request,
                 user=user,
                 actor=actor,
                 meta_agent_state=meta_agent_state,
                 now=now,
             )
+        return await self._run_recorded_generic(
+            request=request,
+            user=user,
+            actor=actor,
+            meta_agent_state=meta_agent_state,
+            now=now,
+            run_id=run_id,
+        )
+
+    async def _run_recorded_generic(
+        self,
+        *,
+        request: AutoDreamRequest,
+        user: PydanticUser,
+        actor: PydanticClient,
+        meta_agent_state: AgentState,
+        now: dt.datetime,
+        run_id: Optional[str],
+    ) -> AutoDreamResponse:
+        """A non-procedural auto_dream, recorded as a ``skill_learning_run``.
+
+        Without ``run_id`` a ``queued`` run (``mode=request.mode``, trigger
+        'manual', no sessions) is recorded first; ``request.wait`` (default)
+        executes it here under its lease and returns its result with
+        ``run_ids``, ``wait=False`` schedules it in the background and returns
+        its id at once. With ``run_id`` (the background task) that recorded run
+        is executed.
+        """
+        from mirix.services.skill_learning_run_manager import (
+            LearningRunNotActive,
+            SkillLearningRunManager,
+        )
+
+        run_mgr = SkillLearningRunManager()
+        organization_id = _owner_org(actor)
+        if run_id is None:
+            run = await run_mgr.create_standalone_run(
+                organization_id=organization_id,
+                user_id=user.id,
+                agent_id=meta_agent_state.id,
+                mode=request.mode,
+                trigger="manual",
+                actor_id=getattr(actor, "id", None),
+            )
+            run_id = run.id
+            if not request.wait:
+                from mirix.services.skill_learning_trigger import schedule_learning_run
+
+                schedule_learning_run(
+                    run_id,
+                    actor=actor,
+                    user=user,
+                    meta_agent_state=meta_agent_state,
+                    request=request,
+                )
+                return AutoDreamResponse(
+                    start_date=None,
+                    end_date=None,
+                    processed={},
+                    last_dream_at=now,
+                    dry_run=False,
+                    run_ids=[run_id],
+                    message=(
+                        f"Auto dream ({request.mode}) run {run_id} queued; poll "
+                        f"GET /memory/learning_runs/{run_id} for its outcome."
+                    ),
+                )
+        else:
+            run = await run_mgr.get_run(run_id)
+            if run is None:
+                raise LearningRunNotActive(run_id, None)
+            if (
+                run.mode != request.mode
+                or run.agent_id != meta_agent_state.id
+                or run.user_id != user.id
+                or run.organization_id != organization_id
+            ):
+                raise ValueError(
+                    f"learning run {run_id} is a {run.mode!r} run of (org="
+                    f"{run.organization_id}, user={run.user_id}, agent={run.agent_id}), "
+                    f"not this request's {request.mode!r} run"
+                )
+
+        recorded_run_id = run_id
+
+        async def work() -> AutoDreamResponse:
+            if not await run_mgr.mark_running(recorded_run_id):
+                current = await run_mgr.get_run(recorded_run_id)
+                raise LearningRunNotActive(
+                    recorded_run_id, getattr(current, "status", None)
+                )
+            return await self._run_generic(
+                request=request,
+                user=user,
+                actor=actor,
+                meta_agent_state=meta_agent_state,
+                now=now,
+            )
+
+        response = await run_mgr.execute(recorded_run_id, work)
+        response.run_ids = [recorded_run_id]
+        return response
+
+    async def _run_generic(
+        self,
+        *,
+        request: AutoDreamRequest,
+        user: PydanticUser,
+        actor: PydanticClient,
+        meta_agent_state: AgentState,
+        now: dt.datetime,
+    ) -> AutoDreamResponse:
+        """Fetch the mode's memories -> one consolidation agent step -> checkpoint."""
+        from mirix.server.server import get_server
+
+        server = get_server()
 
         # -- resolve time window --
         end_date = request.end_date or now
