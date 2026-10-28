@@ -24,7 +24,7 @@ each topic word on an axis of its own, so a skill's cosine to a query is 1.0 whe
 share their topic and 0.0 otherwise. Nothing reaches a model provider.
 
 ``test_task_sessions_become_retrievable_skills`` — six task sessions (one with images,
-one long enough to be distilled in chunks under a 20k-token window), closed one by one:
+one long enough to be distilled in chunks under a 21k-token window), closed one by one:
 the fifth close fires a learning run, the flush takes the sixth; the
 distiller gets the images in place and the chunks; the curator works in batches and
 writes skills with version history; ``/memory/retrieve/conversation`` with
@@ -84,8 +84,10 @@ TESTS = REPO / "tests"
 START_SERVER = REPO / "scripts" / "start_server.py"
 
 #: The small window that makes the long session chunk and the curator batch;
-#: the output cap keeps the planning reserve at 1,600 tokens.
-CONTEXT_WINDOW = 20_000
+#: the output cap keeps the planning reserve at 1,600 tokens. The curator step
+#: that edits the long topic's skill (its long triggers in the call) must still
+#: fit under floor(window x 0.8) - 1,600.
+CONTEXT_WINDOW = 21_000
 MAX_OUTPUT_TOKENS = 2_000
 EMBEDDING_MODEL = "google/gemini-embedding-001"  # the harness's
 EMBEDDING_DIM = 3_072
