@@ -1,0 +1,1354 @@
+[
+ {
+  "sample_id": "conv-26",
+  "question": "When is Melanie planning on going camping?",
+  "gold": "June 2023",
+  "answer": "Melanie is not currently planning a future camping trip; she recently went camping with her family a few weeks ago in mid to late August 2023 and also went camping on 20 October 2023.",
+  "category": "temporal",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-26",
+  "question": "What is Caroline's relationship status?",
+  "gold": "Single",
+  "answer": "Caroline experienced a tough breakup but currently has a strong support system of friends, family, and mentors; no specific current relationship status is mentioned.",
+  "category": "multi-hop",
+  "bucket": "INGEST — never written"
+ },
+ {
+  "sample_id": "conv-26",
+  "question": "Would Caroline be considered religious?",
+  "gold": "Somewhat, but not extremely religious",
+  "answer": "Caroline would not be considered religious. She has experienced challenges with religious conservatives but finds strength in support from friends and community. Her values focus on living authentically, promoting LGBTQ rights, and surrounding herself with supportive people rather than religious beliefs.",
+  "category": "open-domain",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-26",
+  "question": "What does Melanie do with her family on hikes?",
+  "gold": "Roast marshmallows, tell stories",
+  "answer": "Melanie and her family enjoy hiking in the mountains and exploring forests together. They use these hikes to connect with nature and each other, creating happy memories and bonding as a family. The kids especially enjoy the experience, and the hikes help the family relax, refresh, and recharge.",
+  "category": "multi-hop",
+  "bucket": "ANSWERING — evidence was there"
+ },
+ {
+  "sample_id": "conv-26",
+  "question": "What book did Melanie read from Caroline's suggestion?",
+  "gold": "\"Becoming Nicole\"",
+  "answer": "Melanie read the inspirational book \"NOTHING IS IMPOSSIBLE\" by Tom Oliver from Caroline's suggestion.",
+  "category": "multi-hop",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-26",
+  "question": "Would Melanie go on another roadtrip soon?",
+  "gold": "Likely no; since this one went badly",
+  "answer": "There is no information indicating that Melanie plans to go on another road trip soon.",
+  "category": "open-domain",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-26",
+  "question": "What are Caroline's plans for the summer?",
+  "gold": "researching adoption agencies",
+  "answer": "Caroline's summer plans include a special summer outing with Melanie in August 2023 to catch up and explore nature, either as a family outing or just the two of them. She also plans to attend a transgender conference in July 2023, is organizing an LGBTQ art show in August 2023, and is volunteering at an LGBTQ+ youth center where she is planning a talent show for kids in September 2023.",
+  "category": "single-hop",
+  "bucket": "RETRIEVAL — in store, not retrieved"
+ },
+ {
+  "sample_id": "conv-26",
+  "question": "What setback did Melanie face in October 2023?",
+  "gold": "She got hurt and had to take a break from pottery.",
+  "answer": "Melanie faced a setback in October 2023 when her son was involved in a car accident during a family road trip on the weekend of October 14-15, 2023. Fortunately, he was okay, but the event was scary for the family.",
+  "category": "single-hop",
+  "bucket": "INGEST — never written"
+ },
+ {
+  "sample_id": "conv-26",
+  "question": "What painting did Melanie show to Caroline on October 13, 2023?",
+  "gold": "A painting inspired by sunsets with a pink sky.",
+  "answer": "Melanie did not show a painting to Caroline on October 13, 2023.",
+  "category": "single-hop",
+  "bucket": "INGEST — never written"
+ },
+ {
+  "sample_id": "conv-26",
+  "question": "What kind of painting did Caroline share with Melanie on October 13, 2023?",
+  "gold": "An abstract painting with blue streaks on a wall.",
+  "answer": "Caroline shared a self-portrait painting with Melanie, which she made between 16 August and 22 August 2023. The painting expresses feelings of liberation and empowerment.",
+  "category": "single-hop",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-30",
+  "question": "What do Jon and Gina both have in common?",
+  "gold": "They lost their jobs and decided to start their own businesses.",
+  "answer": "Jon and Gina both have a strong passion for dance, which they share as a form of self-expression and happiness. They also mutually support and encourage each other in their entrepreneurial ventures and personal challenges, emphasizing the importance of chasing dreams and helping each other move forward.",
+  "category": "multi-hop",
+  "bucket": "RETRIEVAL — in store, not retrieved"
+ },
+ {
+  "sample_id": "conv-30",
+  "question": "Which city have both Jean and John visited?",
+  "gold": "Rome",
+  "answer": "Paris",
+  "category": "multi-hop",
+  "bucket": "INGEST — never written"
+ },
+ {
+  "sample_id": "conv-30",
+  "question": "When did Jon start reading \"The Lean Startup\"?",
+  "gold": "May, 2023",
+  "answer": "There is no information about when Jon started reading \"The Lean Startup.\"",
+  "category": "temporal",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-30",
+  "question": "Did Jon and Gina both participate in dance competitions?",
+  "gold": "Yes",
+  "answer": "Gina participated in dance competitions and won first place at a regional competition at age 15. Jon rehearses for dance competitions and performances but there is no evidence he personally competed in dance competitions.",
+  "category": "multi-hop",
+  "bucket": "RETRIEVAL — in store, not retrieved"
+ },
+ {
+  "sample_id": "conv-30",
+  "question": "What do the dancers in the photo represent?",
+  "gold": "They are performing at the festival",
+  "answer": "The dancers in the photo represent a creative space for self-expression and freedom through dance, welcoming dancers of all ages and backgrounds.",
+  "category": "single-hop",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-30",
+  "question": "What does Gina say about the dancers in the photo?",
+  "gold": "They look graceful",
+  "answer": "Gina said the photo shows a group of young women from her dancing days. She reflected on the tough but rewarding experience of dancing and encouraged Jon to keep pursuing his dreams.",
+  "category": "single-hop",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-30",
+  "question": "What did Gina design for her store?",
+  "gold": "the space, furniture, and decor",
+  "answer": "Gina designed unique clothing pieces for her store, including a limited edition hoodie line with a camouflage print symbolizing grit and standing out to face challenges. She also collaborated with a local artist to create cool, unique fashion designs inspired by a fashion magazine.",
+  "category": "single-hop",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-30",
+  "question": "What did Jon say about Gina's progress with her store?",
+  "gold": "hard work's paying off",
+  "answer": "Jon expressed gratitude for Gina's support and encouragement with his dance studio business expansion and challenges, appreciating their mutual support and motivation in their entrepreneurial and creative endeavors.",
+  "category": "single-hop",
+  "bucket": "INGEST — never written"
+ },
+ {
+  "sample_id": "conv-30",
+  "question": "What kind of professional experience did Gina get accepted for on May 23, 2023?",
+  "gold": "fashion internship",
+  "answer": "Gina got accepted for a part-time fashion internship at the fashion department of an international company on May 27, 2023.",
+  "category": "single-hop",
+  "bucket": "ANSWERING — evidence was there"
+ },
+ {
+  "sample_id": "conv-30",
+  "question": "What book is Jon currently reading?",
+  "gold": "The Lean Startup",
+  "answer": "There is no information about a book Jon is currently reading.",
+  "category": "single-hop",
+  "bucket": "INGEST — never written"
+ },
+ {
+  "sample_id": "conv-41",
+  "question": "What might John's financial status be?",
+  "gold": "Middle-class or wealthy",
+  "answer": "John's financial status appears to be somewhat strained recently. He experienced car trouble that has been financially challenging, and he lost his job at a mechanical engineering company due to the company failing. However, he is optimistic and exploring new job opportunities in the tech industry, with a potential new job lined up. This suggests he is currently facing financial difficulties but is actively working to improve his situation.",
+  "category": "open-domain",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-41",
+  "question": "Who did John go to yoga with?",
+  "gold": "Rob",
+  "answer": "John went to yoga with a colleague.",
+  "category": "multi-hop",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-41",
+  "question": "What shelters does Maria volunteer at?",
+  "gold": "The homeless shelter, the dog shelter",
+  "answer": "Maria volunteers at a homeless shelter and a shelter for kids. She also volunteers once a month at a local dog shelter.",
+  "category": "multi-hop",
+  "bucket": "ANSWERING — evidence was there"
+ },
+ {
+  "sample_id": "conv-41",
+  "question": "When did John have his first firefighter call-out?",
+  "gold": "The sunday before 3` July 2023",
+  "answer": "John had his first firefighter call-out on 30 July 2023.",
+  "category": "temporal",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-41",
+  "question": "What did Maria donate to a homeless shelter in December 2023?",
+  "gold": "old car",
+  "answer": "Maria donated her old car to a homeless shelter in December 2022.",
+  "category": "single-hop",
+  "bucket": "INGEST — never written"
+ },
+ {
+  "sample_id": "conv-41",
+  "question": "What new activity did Maria start recently, as mentioned on 3 June, 2023?",
+  "gold": "volunteering at a local dog shelter once a month",
+  "answer": "There is no specific mention of a new activity started by Maria on June 3, 2023. However, around that time, she had recently joined a gym (early June 2023) and was pursuing fitness goals including kundalini yoga.",
+  "category": "single-hop",
+  "bucket": "RETRIEVAL — in store, not retrieved"
+ },
+ {
+  "sample_id": "conv-41",
+  "question": "What kind of event did John and his family attend in June 2023?",
+  "gold": "live music event",
+  "answer": "John and his family attended a community arts and crafts event with games for families in June 2023.",
+  "category": "single-hop",
+  "bucket": "ANSWERING — evidence was there"
+ },
+ {
+  "sample_id": "conv-41",
+  "question": "What motivated Maria and John to discuss potential solutions for their community on 7 July, 2023?",
+  "gold": "Flood in John's old area",
+  "answer": "On 7 July 2023, John and Maria were motivated to discuss potential solutions for their community by their shared commitment to spreading positivity, kindness, and making a difference. They emphasized how little acts of kindness can brighten someone's day and the value of supporting each other like family in their community efforts.",
+  "category": "single-hop",
+  "bucket": "RETRIEVAL — in store, not retrieved"
+ },
+ {
+  "sample_id": "conv-41",
+  "question": "What did John do to help his community last year in his hometown?",
+  "gold": "Helped renovate a rundown community center.",
+  "answer": "Last year in his hometown, John helped his community by starting a community food drive to assist unemployed neighbors, volunteering at a local homeless shelter, and organizing a toy drive for children in need. He also joined a service-focused online group that supports community service and empowerment projects. Additionally, John was networking for his community education campaign focused on improving education.",
+  "category": "single-hop",
+  "bucket": "RETRIEVAL — in store, not retrieved"
+ },
+ {
+  "sample_id": "conv-41",
+  "question": "What did the donations help John's community acquire on 16 August, 2023?",
+  "gold": "a brand new fire truck",
+  "answer": "The donations on 16 August 2023 helped John's community acquire canned food, toiletries, and clothes to support the local fire station.",
+  "category": "single-hop",
+  "bucket": "RETRIEVAL — in store, not retrieved"
+ },
+ {
+  "sample_id": "conv-42",
+  "question": "What kind of interests do Joanna and Nate share?",
+  "gold": "Watching movies, making desserts",
+  "answer": "Joanna and Nate share interests in reading fantasy and science fiction book series, and they both enjoy movies, with Joanna favoring dramas and romantic comedies and Nate appreciating sci-fi and action. They also share enthusiasm for storytelling and creative pursuits.",
+  "category": "multi-hop",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-42",
+  "question": "What underlying condition might Joanna have based on her allergies?",
+  "gold": "asthma",
+  "answer": "Joanna might have an underlying condition of allergic hypersensitivity or atopy, as she is allergic to most reptiles, animals with fur, and cockroaches, causing facial puffiness and itchiness.",
+  "category": "open-domain",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-42",
+  "question": "What nickname does Nate use for Joanna?",
+  "gold": "Jo",
+  "answer": "There is no information about a nickname that Nate uses for Joanna.",
+  "category": "open-domain",
+  "bucket": "INGEST — never written"
+ },
+ {
+  "sample_id": "conv-42",
+  "question": "When did Joanna start writing her third screenplay?",
+  "gold": "May 2022",
+  "answer": "Joanna started writing her third screenplay on or before February 25, 2022.",
+  "category": "temporal",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-42",
+  "question": "When is Nate hosting a gaming party?",
+  "gold": "The weekend after 3June, 2022.",
+  "answer": "Nate hosted a gaming party around the weekend of 18-19 June 2022.",
+  "category": "temporal",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-42",
+  "question": "How long did it take for Joanna to finish writing her book?",
+  "gold": "four months",
+  "answer": "Joanna started writing her book in early July 2022 and finished it around the end of September 2022, so it took her about three months to finish writing her book.",
+  "category": "temporal",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-42",
+  "question": "How many of Joanna's writing have made it to the big screen?",
+  "gold": "two",
+  "answer": "Joanna has had 3 of her writings made it to the big screen.",
+  "category": "multi-hop",
+  "bucket": "ANSWERING — evidence was there"
+ },
+ {
+  "sample_id": "conv-42",
+  "question": "How many times has Nate taken his turtles on a walk?",
+  "gold": "Twice.",
+  "answer": "Nate has taken his turtles on a walk 1 time, specifically on 2022-10-25.",
+  "category": "multi-hop",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-42",
+  "question": "What things has Nate reccomended to Joanna?",
+  "gold": "A pet,\"The Lord of the Rings\" movies,a dragon book series,coconut flavoring,\"Project Hail Mary\" book,Xenoblade Chronicles, dairy-free margarine, coconut oil",
+  "answer": "Nate has recommended to Joanna the book series \"Project Hail Mary\" by Andy Weir, a science fiction book with awesome battles and interesting characters. He also made a motivational whiteboard drawing to encourage Joanna. Additionally, Nate gifted Joanna a stuffed animal as a symbol of joy.",
+  "category": "multi-hop",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-42",
+  "question": "What mediums does Nate use to play games?",
+  "gold": "Gamecube, PC,Playstation.",
+  "answer": "Nate uses a dedicated gaming setup at home that includes multiple monitors, a computer, keyboard, headphones, and controllers to play games.",
+  "category": "multi-hop",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-42",
+  "question": "How many letters has Joanna recieved?",
+  "gold": "Two",
+  "answer": "Joanna has received 3 letters:\n\n1. A comforting handwritten letter from a reader named Becky around 7-13 August 2022.\n2. A rejection letter for her screenplay from a major company on 3 June 2022.\n3. A handwritten letter included in her movie script introduction, written by her brother from childhood (mentioned twice but same letter).",
+  "category": "multi-hop",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-42",
+  "question": "What alternative career might Nate consider after gaming?",
+  "gold": "an animalkeeper at a localzoo and workingwith turtles; as heknows a great dealabout turtles andhow to care for them,and he enjoys it.",
+  "answer": "Nate might consider creating gaming content for YouTube as an alternative career after gaming.",
+  "category": "open-domain",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-42",
+  "question": "How many hikes has Joanna been on?",
+  "gold": "Four",
+  "answer": "Joanna has been on 6 distinct hikes:\n\n1. Hiking and discovering new trails on 12 May 2022.\n2. Seeing a gorgeous sunset while hiking around 15 April 2022.\n3. Finding an awesome hiking trail in her hometown on 16 April 2022.\n4. Planning a hiking trip for the weekend of 7-8 June 2022.\n5. Seeing a gorgeous sunset while hiking on 14 April 2022.\n6. Taking a sunset photo on a hike near Fort Wayne last summer (around August 2021).",
+  "category": "open-domain",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-42",
+  "question": "What do both Joanna and Nate appreciate the beauty of?",
+  "gold": "Nature",
+  "answer": "Both Joanna and Nate appreciate the beauty of movies.",
+  "category": "multi-hop",
+  "bucket": "INGEST — never written"
+ },
+ {
+  "sample_id": "conv-42",
+  "question": "How many video game tournaments has Nate participated in?",
+  "gold": "nine",
+  "answer": "Nate has participated in at least 7 distinct video game tournaments. \n\n1. First video game tournament won around mid-January 2022 (14-20 January).\n2. Second gaming tournament won around late April to early May 2022.\n3. Regional video game tournament won between 27 May and 2 June 2022.\n4. Fourth video game tournament won on 8 July 2022.\n5. Intense video game tournament participation in March 2022.\n6. Video game tournament participation on 4 September 2022 (setback).\n7. Major video game tournament won between 29 September",
+  "category": "multi-hop",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-42",
+  "question": "What is Nate's favorite book series about?",
+  "gold": "dragons",
+  "answer": "Nate's favorite book series is a fantasy series about adventures, magic, and great characters.",
+  "category": "single-hop",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-42",
+  "question": "What kind of lighting does Nate's gaming room have?",
+  "gold": "red and purple lighting",
+  "answer": "There is no information available about the kind of lighting in Nate's gaming room.",
+  "category": "single-hop",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-42",
+  "question": "What type of movies does Nate enjoy watching the most?",
+  "gold": "action and sci-fi",
+  "answer": "Nate enjoys watching fantasy and sci-fi movies the most.",
+  "category": "single-hop",
+  "bucket": "ANSWERING — evidence was there"
+ },
+ {
+  "sample_id": "conv-42",
+  "question": "What did Joanna just finish last Friday on 23 January, 2022?",
+  "gold": "screenplay",
+  "answer": "Joanna finished and printed her first full screenplay last Friday on 21 January 2022.",
+  "category": "single-hop",
+  "bucket": "ANSWERING — evidence was there"
+ },
+ {
+  "sample_id": "conv-42",
+  "question": "What does Nate feel he could do when out in cool places like Whispering Falls?",
+  "gold": "write a whole movie",
+  "answer": "Nate feels he could socialize and hang out with chill people when out in cool places like Whispering Falls.",
+  "category": "single-hop",
+  "bucket": "GOLD — contradicts"
+ },
+ {
+  "sample_id": "conv-42",
+  "question": "What creative activity does Nate joke about pursuing after being inspired by their hikes with Jo?",
+  "gold": "Start thinking about a drama and publish a screenplay",
+  "answer": "Nate jokes about pursuing writing down some of his favorite memories with Joanna.",
+  "category": "single-hop",
+  "bucket": "INGEST — never written"
+ },
+ {
+  "sample_id": "conv-42",
+  "question": "Who invited Nate to join her on the trails sometime?",
+  "gold": "Joanna",
+  "answer": "There is no information about who invited Nate to join her on the trails.",
+  "category": "single-hop",
+  "bucket": "INGEST — never written"
+ },
+ {
+  "sample_id": "conv-42",
+  "question": "What did Nate do while Joanna was on her road trip?",
+  "gold": "Won a video game tournament",
+  "answer": "While Joanna was on her road trip, Nate focused on taking breaks and recharging for mental health and creativity, agreeing with Joanna on the importance of balance and self-care. He also engaged in activities like reading a fantasy book series recommended by Joanna and caring for his pet turtles.",
+  "category": "single-hop",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-42",
+  "question": "How did Nate celebrate winning the international tournament?",
+  "gold": "Taking time off to chill with pets",
+  "answer": "Nate expressed excitement about winning the international tournament, describing it as a wild experience and a turning point that allowed him to make a living from gaming, which he is passionate about.",
+  "category": "single-hop",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-42",
+  "question": "What did Nate share a photo of when mentioning unwinding at home?",
+  "gold": "a bookcase filled with dvds and movies",
+  "answer": "Nate shared a photo of a turtle and a strawberry in a bowl when mentioning unwinding at home.",
+  "category": "single-hop",
+  "bucket": "INGEST — never written"
+ },
+ {
+  "sample_id": "conv-42",
+  "question": "What helps Joanna stay focused and brings her joy?",
+  "gold": "stuffed animal dog named Tilly",
+  "answer": "Writing helps Joanna stay focused and brings her joy. She uses writing as a way to express herself, create stories, and find happiness. Additionally, spending time with friends for social connection also brings her joy.",
+  "category": "single-hop",
+  "bucket": "RETRIEVAL — in store, not retrieved"
+ },
+ {
+  "sample_id": "conv-42",
+  "question": "What does Joanna do while she writes?",
+  "gold": "have a stuffed animal dog named Tilly with her",
+  "answer": "While she writes, Joanna writes down some of her favorite memories in a notebook.",
+  "category": "single-hop",
+  "bucket": "RETRIEVAL — in store, not retrieved"
+ },
+ {
+  "sample_id": "conv-42",
+  "question": "What advice does Joanna give to Nate about making YouTube videos?",
+  "gold": "Watch other people's videos to understand what the audience likes",
+  "answer": "Joanna advises Nate to read a lot, try different genres, build a solid understanding of literature, and not be afraid to write and share work even with friends. She emphasizes the importance of practicing, gathering feedback, having faith in oneself, and persevering through the tough process as worth it.",
+  "category": "single-hop",
+  "bucket": "INGEST — never written"
+ },
+ {
+  "sample_id": "conv-43",
+  "question": "What items does John collect?",
+  "gold": "sneakers, fantasy movie DVDs, jerseys",
+  "answer": "John collects books, including \"The Alchemist,\" and he also has a collection of basketball jerseys.",
+  "category": "multi-hop",
+  "bucket": "INGEST — never written"
+ },
+ {
+  "sample_id": "conv-43",
+  "question": "Based on Tim's collections, what is a shop that he would enjoy visiting in New York city?",
+  "gold": "House of MinaLima",
+  "answer": "Tim would enjoy visiting The Strand Bookstore in New York City, known for its extensive collection of fantasy novels and related genres, matching his passion for fantasy literature and his detailed book collection.",
+  "category": "open-domain",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-43",
+  "question": "In which month's game did John achieve a career-high score in points?",
+  "gold": "June 2023",
+  "answer": "John achieved his career-high score in points in a basketball game during the week of July 9 to July 15, 2023.",
+  "category": "temporal",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-43",
+  "question": "Which outdoor gear company likely signed up John for an endorsement deal?",
+  "gold": "Under Armour",
+  "answer": "The specific outdoor gear company that signed John for an endorsement deal is not named; it is described only as a \"renowned outdoor gear company.\"",
+  "category": "open-domain",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-43",
+  "question": "What sports does John like besides basketball?",
+  "gold": "surfing",
+  "answer": "Besides basketball, John likes soccer.",
+  "category": "multi-hop",
+  "bucket": "RETRIEVAL — in store, not retrieved"
+ },
+ {
+  "sample_id": "conv-43",
+  "question": "After how many weeks did Tim reconnect with the fellow Harry Potter fan from California?",
+  "gold": "three weeks",
+  "answer": "Tim reconnected with the Harry Potter fan from California about 4 weeks after their initial chat. The initial chat was during the week of July 9 to July 15, 2023, and the reconnection happened on August 9, 2023.",
+  "category": "temporal",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-43",
+  "question": "How many games has John mentioned winning?",
+  "gold": "6",
+  "answer": "John has mentioned winning 5 basketball games:\n\n1. A thrilling game where he hit a buzzer-beater shot to win when the team was down by 10 points in the 4th quarter.\n2. A close basketball game won last week, described as a real battle until the final buzzer.\n3. An intense basketball game last week that his team won by a tight score, where he scored the last basket.\n4. A tough win in a basketball game where John scored 40 points, his highest ever.\n5. His basketball and soccer teams had an intense season with a trophy win.",
+  "category": "multi-hop",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-43",
+  "question": "What authors has Tim read books from?",
+  "gold": "J.K. Rowling, R.R. Martin, Patrick Rothfuss, Paulo Coelho, and J. R. R. Tolkien.",
+  "answer": "Tim has read books from the following authors: J.K. Rowling, Frank Herbert, Stephen King, Patrick Rothfuss, H.G. Wells, George R.R. Martin, Brandon Sanderson, Robert Jordan.",
+  "category": "multi-hop",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-43",
+  "question": "What is a prominent charity organization that John might want to work with and why?",
+  "gold": "Good Sports, because they work with Nike, Gatorade, and Under Armour and they aim toprovide youth sports opportunities for kids ages 3-18 in high-need communities.",
+  "answer": "A prominent charity organization that John might want to work with is a local organization that supports disadvantaged kids with sports and education. He plans to team up with such an organization to make a positive impact in the community and inspire others through his platform.",
+  "category": "open-domain",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-43",
+  "question": "Which city was John in before traveling to Chicago?",
+  "gold": "Seattle",
+  "answer": "Before traveling to Chicago, John was in New York City.",
+  "category": "temporal",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-43",
+  "question": "What kind of yoga for building core strength might John benefit from?",
+  "gold": "Hatha Yoga",
+  "answer": "John might benefit from yoga poses that build strength and stability, specifically including the Warrior II pose and balance/stability poses. These poses help him feel strong, challenge his body and mind, and improve core strength along with flexibility, focus, and balance.",
+  "category": "open-domain",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-43",
+  "question": "What other exercises can help John with his basketball performance?",
+  "gold": "Sprinting, long-distance running, and boxing.",
+  "answer": "Besides basketball practice itself, John benefits from strength training exercises that build muscle, increase power, prevent injuries, and boost overall athleticism. This combination improves his shooting accuracy, agility, speed, and confidence on the court.",
+  "category": "open-domain",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-43",
+  "question": "When did John start playing professionally?",
+  "gold": "May, 2023",
+  "answer": "John started playing professional basketball just under a year before December 6, 2023, which means he began around late 2022 or early 2023.",
+  "category": "temporal",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-43",
+  "question": "When did Tim start playing the violin?",
+  "gold": "August 2023",
+  "answer": "Tim started playing the violin on December 6, 2023.",
+  "category": "temporal",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-43",
+  "question": "When did John achieve a career-high assist performance?",
+  "gold": "December 11, 2023",
+  "answer": "John achieved a career-high in assists in a basketball game on Friday, December 8, 2023.",
+  "category": "temporal",
+  "bucket": "GOLD — contradicts"
+ },
+ {
+  "sample_id": "conv-43",
+  "question": "What is a Star Wars book that Tim might enjoy?",
+  "gold": "Star Wars: Jedi Apprentice by Judy Blundell and David Farland. It is a highly rated and immersive series about his favorite movies.",
+  "answer": "There is no specific Star Wars book mentioned in Tim's collection or recommendations, but given his strong interest in fantasy and science fiction, he might enjoy any Star Wars novel that expands the universe, such as those featuring rich storytelling and immersive worlds similar to his favorite fantasy series.",
+  "category": "open-domain",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-43",
+  "question": "Which Star Wars-related locations would Tim enjoy during his visit to Ireland?",
+  "gold": "Skellig Michael, Malin Head, Loop Head, Ceann Sibéal, and Brow Head because they are Star Wars filming locations.",
+  "answer": "There is no information about Star Wars-related locations in Ireland that Tim would enjoy.",
+  "category": "open-domain",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-43",
+  "question": "What book recommendation did Tim give to John for the trip?",
+  "gold": "A fantasy novel by Patrick Rothfuss",
+  "answer": "Tim recommended the book \"The Luckiest Day of Your Life\" by Edward Packard from the \"Choose Your Own Adventure\" series to John for the trip.",
+  "category": "single-hop",
+  "bucket": "RETRIEVAL — in store, not retrieved"
+ },
+ {
+  "sample_id": "conv-43",
+  "question": "What motivates John's team to get better, according to John?",
+  "gold": "facing tough opponents",
+  "answer": "John's team is motivated to get better through strong communication and bonding, which helps them understand each other's strengths and weaknesses and enhances their performance. They also draw motivation from the camaraderie built on and off the court, the challenges faced during intense seasons, and the sense of a second family among teammates. Winning tough games and sharing team dinners, outings, and basketball games beyond practice foster their unity and drive to improve.",
+  "category": "single-hop",
+  "bucket": "ANSWERING — evidence was there"
+ },
+ {
+  "sample_id": "conv-43",
+  "question": "What did Tim say about his injury on 16 November, 2023?",
+  "gold": "The doctor said it's not too serious",
+  "answer": "Tim did not mention any injury on 16 November 2023. On that day, he was busy preparing for exams, working diligently with a study routine of 25 minutes on and 5 minutes off, feeling optimistic and motivated.",
+  "category": "single-hop",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-43",
+  "question": "What is the topic of discussion between John and Tim on 11 December, 2023?",
+  "gold": "Academic achievements and sports successes",
+  "answer": "On 11 November 2023, John and Tim discussed their mutual enjoyment of reading and watching fantasy books and shows, including topics like an advance reading copy of 'A Storm of Swords' and favorite fantasy series and shows. They agreed that fantasy stories offer a refreshing mental break and a way to escape reality. They also talked about the importance of taking mental breaks and finding balance in life for mental and physical well-being.",
+  "category": "single-hop",
+  "bucket": "INGEST — never written"
+ },
+ {
+  "sample_id": "conv-43",
+  "question": "What language does Tim know besides German?",
+  "gold": "Spanish",
+  "answer": "Besides German, Tim previously studied French in high school.",
+  "category": "single-hop",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-43",
+  "question": "What book did Tim get in Italy that inspired him to cook?",
+  "gold": "a cooking book",
+  "answer": "Tim did not get a cooking inspiration book in Italy; it was John who traveled to Italy in December 2023 and got a cooking inspiration book there.",
+  "category": "single-hop",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-43",
+  "question": "What achievement did John share with Tim in January 2024?",
+  "gold": "endorsement with a popular beverage company",
+  "answer": "John organized and held a successful benefit basketball game in early January 2024 that raised money for charity.",
+  "category": "single-hop",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-44",
+  "question": "When did Audrey make muffins for herself?",
+  "gold": "The week of April 3rd to 9th",
+  "answer": "Audrey made muffins for herself around the week of 9-15 April 2023.",
+  "category": "temporal",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-44",
+  "question": "Did Andrew have a pet dog during March 2023?",
+  "gold": "No",
+  "answer": "Yes, Andrew had a pet dog named Toby during March 2023.",
+  "category": "temporal",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-44",
+  "question": "When is Andrew going to go hiking with Audrey?",
+  "gold": "August",
+  "answer": "Andrew and Audrey are planning to go hiking with their dogs on Saturday, 4 November 2023.",
+  "category": "temporal",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-44",
+  "question": "How many times did Audrey and Andew plan to hike together?",
+  "gold": "three times",
+  "answer": "Audrey and Andrew planned to hike together 5 distinct times:\n\n1. Plan to hike with their dogs next month (August 2023) mentioned on 1 August 2023.\n2. Plan a hike with their dogs in October 2023 mentioned on 1 October 2023.\n3. Plan a hike with their dogs in November 2023 mentioned on 19 October 2023.\n4. Plan a hiking trip with their dogs next month (August 2023) mentioned on 11 July 2023.\n5. Plan a dog-friendly hiking trip on Saturday, 4 November 2023 mentioned on",
+  "category": "multi-hop",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-44",
+  "question": "What is an indoor activity that Andrew would enjoy doing while make his dog happy?",
+  "gold": "cook dog treats",
+  "answer": "Andrew would enjoy visiting a doggy daycare with a large indoor play area where dogs can play and socialize, which would make his dog happy.",
+  "category": "open-domain",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-44",
+  "question": "What can Andrew potentially do to improve his stress and accomodate his living situation with his dogs?",
+  "gold": "Change to a hybrid or remote job so he can move away from the city to the suburbs to have a larger living space and be closer to nature.",
+  "answer": "Andrew can improve his stress by exploring new hobbies like cooking and trying new recipes, which he finds enjoyable, relaxing, and a way to be creative and de-stress. To accommodate his living situation with his dogs, he should consider the size of his living space and the exercise needs of the dog breed; for apartment living, a smaller dog is best unless the dog is very active and loves to play and run. He is also actively searching for a pet-friendly place near parks or woods to provide open space for his dogs. Additionally, he can use doggy daycare with a large indoor play area for socialization and exercise of his dogs",
+  "category": "open-domain",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-44",
+  "question": "What are the breeds of Audrey's dogs?",
+  "gold": "Mongrel mixed with Lab for Pepper and Panda. Mongrel mixed with Chihuahua for Precious and Pixie.",
+  "answer": "Audrey's dogs are mixed breeds consisting of two Jack Russell mixes and two Chihuahua mixes.",
+  "category": "multi-hop",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-44",
+  "question": "Which US state do Audrey and Andrew potentially live in?",
+  "gold": "Minnesota",
+  "answer": "There is no specific US state mentioned in the memories about where Audrey and Andrew potentially live.",
+  "category": "open-domain",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-44",
+  "question": "Which national park could Audrey and Andrew be referring to in their conversations?",
+  "gold": "Voyageurs National Park",
+  "answer": "Audrey and Andrew refer to a national park where Audrey took her dogs on hiking trips, including one between 26 May and 1 June 2023, and another road trip on 5 May 2023. The specific national park name is not mentioned.",
+  "category": "open-domain",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-44",
+  "question": "How many pets will Andrew have, as of December 2023?",
+  "gold": "three",
+  "answer": "Andrew will have two pets as of December 2023: his dog Toby and the dog Buddy he adopted in October 2023.",
+  "category": "temporal",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-44",
+  "question": "How many pets did Andrew have, as of September 2023?",
+  "gold": "one",
+  "answer": "As of September 2023, Andrew had two dogs: Toby and Buddy.",
+  "category": "temporal",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-44",
+  "question": "How many months passed between Andrew adopting Buddy and Scout",
+  "gold": "one month",
+  "answer": "Two months passed between Andrew adopting Buddy in October 2023 and Scout in November 2023.",
+  "category": "temporal",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-44",
+  "question": "When did Andrew make his dogs a fun indoor area?",
+  "gold": "few days before November 22, 2023",
+  "answer": "Andrew did not make his dogs a fun indoor area himself; rather, on 26 June 2023, he shared about a doggy daycare near his place that has a large indoor play area for dogs to play and socialize.",
+  "category": "temporal",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-44",
+  "question": "When did Andrew adopt Scout?",
+  "gold": "few days before November 2023",
+  "answer": "Andrew adopted Scout on 22 November 2023.",
+  "category": "temporal",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-44",
+  "question": "What did Audrey eat for dinner on October 24, 2023?",
+  "gold": "sushi",
+  "answer": "There is no information about what Audrey ate for dinner on October 24, 2023.",
+  "category": "temporal",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-44",
+  "question": "What did Audrey share to show ways to keep dogs active in the city?",
+  "gold": "photography of a basket full of stuffed animals",
+  "answer": "Audrey shared ways to keep dogs active in the city including daily exercise, socialization, using toys and games indoors, and mental stimulation through puzzles, training, and hide-and-seek. She also illustrated these strategies with photos of toys and dogs playing fetch and frisbee.",
+  "category": "single-hop",
+  "bucket": "INGEST — never written"
+ },
+ {
+  "sample_id": "conv-47",
+  "question": "What are John's suspected health problems?",
+  "gold": "Obesity",
+  "answer": "There are no specific suspected health problems mentioned for John in the available memories.",
+  "category": "open-domain",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-47",
+  "question": "Do both James and John have pets?",
+  "gold": "No",
+  "answer": "James has three dogs. John currently does not have pets but hopes to get one someday.",
+  "category": "multi-hop",
+  "bucket": "ANSWERING — evidence was there"
+ },
+ {
+  "sample_id": "conv-47",
+  "question": "What are John and James' favorite games?",
+  "gold": "John's favorite game is CS:GO, and James's is Apex Legends.",
+  "answer": "John's favorite games include strategy board games, a card game with multi-colored cards involving matching colors or numbers, and a game involving impostors played with friends. James's favorite games include computer games, especially RPGs and strategy games like Civilization VI and The Witcher 3. He is also excited about Cyberpunk 2077.",
+  "category": "multi-hop",
+  "bucket": "RETRIEVAL — in store, not retrieved"
+ },
+ {
+  "sample_id": "conv-47",
+  "question": "How was John feeling on April 10, 2022?",
+  "gold": "seeking solitude",
+  "answer": "On April 10, 2022, there is no direct record of John's feelings, but shortly after, on April 18, 2022, John visited a canyon and found the view calming, which sparked his creativity and motivation.",
+  "category": "temporal",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-47",
+  "question": "What is the board game where you have to find the imposter that John mentions to James?",
+  "gold": "Mafia",
+  "answer": "The board game John mentions to James where you have to find the impostor is described as a social deduction game, but its specific name is not provided.",
+  "category": "open-domain",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-47",
+  "question": "Was James feeling lonely before meeting Samantha?",
+  "gold": "Most likely yes, because he mentioned that the only creatures that gave him joy are dogs and he was actively trying to date.",
+  "answer": "Before meeting Samantha, James was not explicitly described as feeling lonely. He was actively engaged in activities such as taking his three dogs to beach outings, going hiking with his dogs, and maintaining a strong bond with his sister and dogs, which brought him happiness. He also found inspiration from a stranger he saw during a dog walk and was involved in creative pursuits and social outings. There is no direct mention of loneliness in the memories before he met Samantha on 9 August 2022.",
+  "category": "open-domain",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-47",
+  "question": "What kind of games has James tried to develop?",
+  "gold": "football simulator, virtual world inspired by Witcher 3",
+  "answer": "James has tried to develop a strategy game similar to Civilization. He is interested in creating games in different genres, including RPGs and MOBAs, and is working on a computer game project inspired by his childhood sketches and comics.",
+  "category": "multi-hop",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-47",
+  "question": "How many days did James plan to spend on his trip in Canada?",
+  "gold": "19 days",
+  "answer": "James planned to spend 10 days on his trip in Canada, from 11 July 2022 to 20 July 2022.",
+  "category": "temporal",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-47",
+  "question": "Did John and James study together?",
+  "gold": "Yes",
+  "answer": "John and James did not study together, but they were childhood friends who skateboarded together and have a supportive friendship.",
+  "category": "open-domain",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-47",
+  "question": "Who is Jill?",
+  "gold": "Most likely John's partner.",
+  "answer": "Jill is John's pet.",
+  "category": "open-domain",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-47",
+  "question": "Why didn't John want to go to Starbucks?",
+  "gold": "Possibly because he likes to drink beer on his days off.",
+  "answer": "There is no information about why John didn't want to go to Starbucks.",
+  "category": "open-domain",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-47",
+  "question": "Which new games did John start play during the course of the conversation with James?",
+  "gold": "AC Valhalla, Witcher 3, FIFA 23, Dungeons of the Dragons, futuristic dystopian game",
+  "answer": "John started playing the board game \"Dungeons of the Dragon\" and the RPG game \"The Witcher 3\" during the course of the conversation with James.",
+  "category": "multi-hop",
+  "bucket": "RETRIEVAL — in store, not retrieved"
+ },
+ {
+  "sample_id": "conv-47",
+  "question": "When did John and his gaming friends organize the charity tournament?",
+  "gold": "On the night of October 30 to 31, 2022",
+  "answer": "John and his gaming friends organized the charity gaming tournament on 7 May 2022.",
+  "category": "temporal",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-47",
+  "question": "What was James' big moment with Samantha in October 2023?",
+  "gold": "They decided to live together and rented an apartment not far from McGee's bar.",
+  "answer": "James' big moment with Samantha in October 2022 was their mutual and informed decision to move in together and rent an apartment near McGee's bar.",
+  "category": "temporal",
+  "bucket": "INGEST — never written"
+ },
+ {
+  "sample_id": "conv-47",
+  "question": "What did James offer to do for John regarding pets?",
+  "gold": "help find the perfect pet",
+  "answer": "James offered to be there for John to talk or vent and emphasized the importance of having someone to rely on during tough moments.",
+  "category": "single-hop",
+  "bucket": "INGEST — never written"
+ },
+ {
+  "sample_id": "conv-47",
+  "question": "What game was James playing in the online gaming tournament in April 2022?",
+  "gold": "Apex Legends",
+  "answer": "The game James was playing in the online gaming tournament in April 2022 is not specified in the available memories.",
+  "category": "single-hop",
+  "bucket": "RETRIEVAL — in store, not retrieved"
+ },
+ {
+  "sample_id": "conv-47",
+  "question": "What did James enjoy doing on cold winter days?",
+  "gold": "Reading while snuggled under the covers",
+  "answer": "On cold winter days, James enjoyed playing video games, including his childhood favorites like Super Mario and The Legend of Zelda.",
+  "category": "single-hop",
+  "bucket": "INGEST — never written"
+ },
+ {
+  "sample_id": "conv-47",
+  "question": "What were some difficulties James faced during the development of his game?",
+  "gold": "balancing mechanics and ensuring fairness",
+  "answer": "James faced difficulties such as losing game progress due to a power outage in his apartment on 18 October 2022 because he forgot to save. This was frustrating but taught him to save more often.",
+  "category": "single-hop",
+  "bucket": "RETRIEVAL — in store, not retrieved"
+ },
+ {
+  "sample_id": "conv-47",
+  "question": "What inspired James to create his game?",
+  "gold": "Witcher 3",
+  "answer": "James was inspired to create his game by several things: \n\n1. He has wanted to create this game since he was a child, inspired by sketches and comics he made of the main character. \n2. He was inspired by a stranger he saw during a dog walk on 6 April 2022, whose eyes and appearance amazed him and whom he embodied in a game character. \n3. He had a vivid dream involving a medieval castle with puzzles and traps that inspired creative game ideas. \n4. He enjoys combining his passions for gaming and storytelling in his game project.",
+  "category": "single-hop",
+  "bucket": "ANSWERING — evidence was there"
+ },
+ {
+  "sample_id": "conv-47",
+  "question": "What games were played at the gaming tournament organized by John on 31 October, 2022?",
+  "gold": "Fortnite, Overwatch, Apex Legends",
+  "answer": "The games played at the gaming tournament organized by John on 30 October 2022 were Fortnite, Overwatch, and Apex Legends.",
+  "category": "single-hop",
+  "bucket": "ANSWERING — evidence was there"
+ },
+ {
+  "sample_id": "conv-47",
+  "question": "What did John suggest James practice before playing FIFA 23 together?",
+  "gold": "Control with a gamepad and timing",
+  "answer": "John suggested James practice playing FIFA 23 before joining him to play together.",
+  "category": "single-hop",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-48",
+  "question": "How many times has Jolene been to France?",
+  "gold": "two times",
+  "answer": "Jolene has been to France once, as indicated by her having a heart-shaped pendant given by her mother in Paris in 2010.",
+  "category": "multi-hop",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-48",
+  "question": "When did Deborah meet Anna?",
+  "gold": "31 January, 2023",
+  "answer": "Deborah met Anna on 30 January 2023 during a yoga session in the park.",
+  "category": "temporal",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-48",
+  "question": "When did Jolene finish her robotics project?",
+  "gold": "May 2023",
+  "answer": "Jolene was working on her robotics project as of early February 2023, but there is no specific information about when she finished the robotics project.",
+  "category": "temporal",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-48",
+  "question": "Which US state did Jolene visit during her internship?",
+  "gold": "Alaska",
+  "answer": "The memories do not specify which US state Jolene visited during her internship.",
+  "category": "open-domain",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-48",
+  "question": "When did Jolene buy a new aquarium for Seraphim?",
+  "gold": "24 June, 2023",
+  "answer": "Jolene bought a new aquarium for Seraphim on 25 June 2023.",
+  "category": "temporal",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-48",
+  "question": "When did Deborah go to a community meetup?",
+  "gold": "last week of August 2023",
+  "answer": "Deborah went to a community meetup on 1 September 2023.",
+  "category": "temporal",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-48",
+  "question": "What do Deborah and Jolene plan to try when they meet in a new cafe?",
+  "gold": "coffee and fresh pastries",
+  "answer": "Deborah and Jolene plan to try surfing together when they meet. They aim to choose a suitable day next month for this activity.",
+  "category": "single-hop",
+  "bucket": "INGEST — never written"
+ },
+ {
+  "sample_id": "conv-48",
+  "question": "Which countries has Deborah traveled to?",
+  "gold": "Thailand, Brazil",
+  "answer": "Deborah has traveled to Bali, Indonesia, and Rio de Janeiro, Brazil.",
+  "category": "multi-hop",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-48",
+  "question": "What do Deborah and Jolene plan to try when they meet in a new cafe?",
+  "gold": "coffee and fresh pastries",
+  "answer": "They plan to try surfing together.",
+  "category": "single-hop",
+  "bucket": "INGEST — never written"
+ },
+ {
+  "sample_id": "conv-48",
+  "question": "What activity did Jolene and her partner plan to do together instead of resuming yoga?",
+  "gold": "play the console",
+  "answer": "Jolene and her partner planned to attend a meditation retreat together instead of resuming yoga.",
+  "category": "single-hop",
+  "bucket": "RETRIEVAL — in store, not retrieved"
+ },
+ {
+  "sample_id": "conv-48",
+  "question": "What cool stuff did Jolene accomplish at the retreat on 9 February, 2023?",
+  "gold": "Came up with neat solutions for her engineering project",
+  "answer": "At the retreat on 8 February 2023, Jolene did a mini retreat to assess where she is at in life. She described the experience as a dope experience that gave her a new outlook and a real confidence boost. She felt she achieved more than she imagined during this retreat.",
+  "category": "single-hop",
+  "bucket": "INGEST — never written"
+ },
+ {
+  "sample_id": "conv-48",
+  "question": "What activity does Deborah incorporate into her daily routine after going for a morning jog in the park?",
+  "gold": "spending time with loved ones",
+  "answer": "After going for a morning jog in the park, Deborah incorporates meditation, yoga, and teaching yoga classes into her daily routine.",
+  "category": "single-hop",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-48",
+  "question": "What did Jolene and Anna discuss while watching the sunset by the sea?",
+  "gold": "They realized they inspire each other",
+  "answer": "Jolene and Anna did not discuss together while watching the sunset by the sea. Instead, Deborah and Anna spent time sitting by the sea watching the sunset, discussing their mutual inspiration. Deborah shared a photo symbolizing serenity and reflection.",
+  "category": "single-hop",
+  "bucket": "INGEST — never written"
+ },
+ {
+  "sample_id": "conv-48",
+  "question": "What is Jolene currently doing in June 2023?",
+  "gold": "interning at a well-known engineering firm",
+  "answer": "In June 2023, Jolene practiced yoga on top of Mount Talkeetna on June 5. She also completed a tough engineering project in May 2023, which she considered a big milestone. Additionally, on June 25, 2023, her pet snake Seraphim got a new aquarium.",
+  "category": "single-hop",
+  "bucket": "RETRIEVAL — in store, not retrieved"
+ },
+ {
+  "sample_id": "conv-48",
+  "question": "Which new yoga pose did Deborah share a photo of?",
+  "gold": "tree pose",
+  "answer": "Deborah shared a photo of herself doing the Dancer Pose (Natarajasana) yoga pose.",
+  "category": "single-hop",
+  "bucket": "RETRIEVAL — in store, not retrieved"
+ },
+ {
+  "sample_id": "conv-48",
+  "question": "What did Jolene's mom stress the value of, which she wants to keep in mind for her engineering projects?",
+  "gold": "Helping others",
+  "answer": "Jolene's mom stressed the value of never giving up, instilling perseverance, which Jolene wants to keep in mind for her engineering projects.",
+  "category": "single-hop",
+  "bucket": "RETRIEVAL — in store, not retrieved"
+ },
+ {
+  "sample_id": "conv-48",
+  "question": "Why did Jolene have to reschedule their meeting with Deborah on September 8, 2023?",
+  "gold": "Jolene already had plans",
+  "answer": "Jolene and Deborah had to reschedule their coffee date initially planned for Wednesday, 13 September 2023 at 4 pm because Deborah had a scheduling conflict. They considered Friday, 15 September 2023 at 5 pm instead.",
+  "category": "single-hop",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-48",
+  "question": "What did Jolene recently play that she described to Deb?",
+  "gold": "a card game about cats",
+  "answer": "Jolene recently described to Deborah playing several video games: Zelda BOTW for Switch, Animal Crossing: New Horizons, and Overcooked 2, a co-op chaotic cooking game she often plays with her partner.",
+  "category": "single-hop",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-49",
+  "question": "When did Sam's friends mock him for being overweight?",
+  "gold": "Friday before 27 July 2023",
+  "answer": "Sam's friends mocked him for being overweight on 21 July 2023.",
+  "category": "temporal",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-49",
+  "question": "In light of the health and dietary changes discussed, what would be an appropriate gift for both Evan and Sam to encourage their healthy lifestyles?",
+  "gold": "a cookbook with healthy recipes or a subscription to a healthy meal delivery service.",
+  "answer": "A suitable gift for Evan would be watercolor painting supplies or fitness-related gear like a fitness watch, reflecting his interests in painting and exercise. For Sam, cooking class vouchers for healthy meals, painting supplies to support his new hobby, or hiking gear would encourage his healthy lifestyle and stress relief efforts.",
+  "category": "open-domain",
+  "bucket": "ANSWERING — evidence was there"
+ },
+ {
+  "sample_id": "conv-49",
+  "question": "What significant event happened in Sam's life towards the end of summer 2023?",
+  "gold": "He fell in love with a Canadian woman",
+  "answer": "Towards the end of summer 2023, specifically in the week leading up to 15 August 2023, Sam had a tough week with health concerns and a doctor's appointment that served as a wake-up call to take better care of his health. He also started a cooking class focused on healthy meals and learned recipes like grilled salmon with roasted vegetables, showing motivation to make positive health changes.",
+  "category": "temporal",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-49",
+  "question": "How many months lapsed between Sam's first and second doctor's appointment?",
+  "gold": "three months",
+  "answer": "Sam's first doctor's appointment was a few days before May 24, 2023 (around May 21, 2023). The second doctor's appointment was on October 2, 2023. The months lapsed between these two appointments is about 4 and a half months.",
+  "category": "temporal",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-49",
+  "question": "Which activity do Evan and Sam plan on doing together during September 2023?",
+  "gold": "painting",
+  "answer": "Evan and Sam plan to go hiking together during September 2023.",
+  "category": "temporal",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-49",
+  "question": "Which activity did Sam resume in December 2023 after a long time?",
+  "gold": "hiking",
+  "answer": "Sam resumed morning running in December 2023 after a long time.",
+  "category": "multi-hop",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-49",
+  "question": "When did Evan's son fall off his bike?",
+  "gold": "Thursday before December 17, 2023.",
+  "answer": "Evan's son fell off his bike on 12 December 2023.",
+  "category": "temporal",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-49",
+  "question": "When did Evan have a drunken night with his friends?",
+  "gold": "January 9, 2023",
+  "answer": "Evan had a drunken night with his friends on January 9, 2024.",
+  "category": "temporal",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-49",
+  "question": "What advice did Evan give Sam about finding a passion?",
+  "gold": "keep trying new things until something sparks excitement",
+  "answer": "Evan advised Sam to find a trainer, start with good form and technique, stay consistent in his workout routine, be patient, stay motivated, believe in himself, and take progress one step at a time. He emphasized the importance of health and expressed belief in Sam's success.",
+  "category": "single-hop",
+  "bucket": "RETRIEVAL — in store, not retrieved"
+ },
+ {
+  "sample_id": "conv-49",
+  "question": "What did Evan mention he had been searching for fruitlessly for half an hour?",
+  "gold": "his keys",
+  "answer": "There is no specific memory indicating that Evan mentioned searching fruitlessly for half an hour for anything.",
+  "category": "single-hop",
+  "bucket": "RETRIEVAL — in store, not retrieved"
+ },
+ {
+  "sample_id": "conv-49",
+  "question": "What dish did Sam make on 18 August, 2023 that turned out flavorful?",
+  "gold": "grilled dish with salmon and vegetables",
+  "answer": "On 18 August 2023, Sam made a flavorful and healthy grilled chicken and vegetable stir-fry.",
+  "category": "single-hop",
+  "bucket": "INGEST — never written"
+ },
+ {
+  "sample_id": "conv-49",
+  "question": "What fun activity did Evan mention doing in July 2023?",
+  "gold": "skiing",
+  "answer": "Evan mentioned doing a road trip to the Rocky Mountains in July 2023, where he enjoyed the stunning scenery and the peacefulness of nature.",
+  "category": "single-hop",
+  "bucket": "RETRIEVAL — in store, not retrieved"
+ },
+ {
+  "sample_id": "conv-49",
+  "question": "What suggestion did Sam give to Evan to help with his knee issue?",
+  "gold": "Consider low-impact exercises or physical therapy",
+  "answer": "There is no information that Sam gave a suggestion to Evan to help with his knee issue.",
+  "category": "single-hop",
+  "bucket": "INGEST — never written"
+ },
+ {
+  "sample_id": "conv-49",
+  "question": "What painting did Evan share with Sam in October?",
+  "gold": "a cactus in the desert",
+  "answer": "Evan shared with Sam a painting of a peaceful sunset on 14 October 2023.",
+  "category": "single-hop",
+  "bucket": "RETRIEVAL — in store, not retrieved"
+ },
+ {
+  "sample_id": "conv-49",
+  "question": "What adventurous theme is emerging in Evan's life as mentioned by Sam?",
+  "gold": "helping lost tourists",
+  "answer": "The adventurous theme emerging in Evan's life, as mentioned by Sam, is Evan's thirst for adventure through interesting hikes.",
+  "category": "single-hop",
+  "bucket": "RETRIEVAL — in store, not retrieved"
+ },
+ {
+  "sample_id": "conv-49",
+  "question": "How did Sam suggest Evan view the setback with his broken Prius?",
+  "gold": "As a chance to explore other ways of staying active and traveling",
+  "answer": "Sam suggested Evan view the setback with his broken Prius as a source of frustration but implied a practical approach by suggesting putting a GPS sensor on the keys to avoid losing them, showing a supportive and solution-oriented attitude toward setbacks.",
+  "category": "single-hop",
+  "bucket": "INGEST — never written"
+ },
+ {
+  "sample_id": "conv-49",
+  "question": "How did Evan describe the process of creating the painting with the bird flying over it?",
+  "gold": "embracing the creative process without restraint",
+  "answer": "There is no specific memory describing Evan's process of creating a painting with a bird flying over it. However, Evan generally describes his painting process as using watercolor techniques to express peacefulness and nature's vibe, painting what is seen, and expressing emotions through spontaneous strokes and bold colors.",
+  "category": "single-hop",
+  "bucket": "INGEST — never written"
+ },
+ {
+  "sample_id": "conv-49",
+  "question": "What did Evan share with Sam after their hiking trip?",
+  "gold": "a photo of a man standing on a rock looking out over a valley",
+  "answer": "After their hiking trip, Evan shared some new healthy snacks he has been trying, including nutrient-packed cookies and energy balls made with oats and coconut. He mentioned the snacks are easy to make and energizing, and he offered to send Sam the recipes. Sam appreciated the tips and expressed interest in trying them. This sharing happened on 31 December 2023.",
+  "category": "single-hop",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-50",
+  "question": "When did Calvin first travel to Tokyo?",
+  "gold": "between 26 March and 20 April 2023",
+  "answer": "Calvin first traveled to Tokyo in May 2023 for an upcoming music performance and toured there with Frank Ocean in late May 2023.",
+  "category": "temporal",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-50",
+  "question": "Does Dave's shop employ a lot of people?",
+  "gold": "Yes",
+  "answer": "Dave's shop does not appear to employ a lot of people; the information shows Dave working on cars himself and collaborating with a local garage, but no mention of a large staff or many employees.",
+  "category": "open-domain",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-50",
+  "question": "When did Dave start his car maintenance shop?",
+  "gold": "May 1, 2023",
+  "answer": "Dave started his car maintenance shop in the week of May 9 to May 15, 2023.",
+  "category": "temporal",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-50",
+  "question": "Which city was Calvin visiting in August 2023?",
+  "gold": "Miami",
+  "answer": "Calvin was visiting Tokyo, Japan in August 2023.",
+  "category": "temporal",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-50",
+  "question": "When did Dave have a great jam session with his band?",
+  "gold": "September 14, 2023",
+  "answer": "Dave had a great jam session with his band on the night of 13 September 2023.",
+  "category": "temporal",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-50",
+  "question": "What was the artists Calvin used to listen to when he was a kid?",
+  "gold": "Tupac and Dr. Dre",
+  "answer": "There is no information about which artists Calvin used to listen to when he was a kid.",
+  "category": "multi-hop",
+  "bucket": "RETRIEVAL — in store, not retrieved"
+ },
+ {
+  "sample_id": "conv-50",
+  "question": "Based on the conversation, did Calvin and Dave have a meeting in Boston between August and November 2023? Answer in yes or no.",
+  "gold": "No",
+  "answer": "Yes.",
+  "category": "open-domain",
+  "bucket": "RETRIEVAL — in store, not retrieved"
+ },
+ {
+  "sample_id": "conv-50",
+  "question": "How many car shows has Dave attended?",
+  "gold": "two",
+  "answer": "Dave has attended 3 car shows: one classic car event before 23 March 2023, a classic car show on the weekend of 15-16 April 2023, and a car show on 6 October 2023.",
+  "category": "multi-hop",
+  "bucket": "RETRIEVAL — in store, not retrieved"
+ },
+ {
+  "sample_id": "conv-50",
+  "question": "Which hobby did Dave pick up in October 2023?",
+  "gold": "photography",
+  "answer": "Dave did not pick up a new hobby specifically in October 2023. He attended a car show on 6 October 2023, but he took up photography as a new hobby starting in November 2023.",
+  "category": "temporal",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-50",
+  "question": "How long was the car modification workshop in San Francisco?",
+  "gold": "two weeks",
+  "answer": "The car modification workshop in San Francisco lasted from at least August 11, 2023, when Dave got picked and started working on it, until September 1, 2023, when he returned from San Francisco with insights on car modification. So, it was about three weeks long.",
+  "category": "temporal",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-50",
+  "question": "What plans do Calvin and Dave have for when Calvin visits Boston?",
+  "gold": "Check out Dave's garage and maybe get some ideas for future projects",
+  "answer": "Calvin and Dave plan for Calvin to perform at an upcoming musical show in Boston. Dave plans to show Calvin around Boston's music venues like Paradise Rock, House of Blues, and Fenway Park, as well as favorite food spots and attractions. They also plan to have a music jam session together. Additionally, Calvin visited Boston with a high school friend to see sights and enjoy the architecture and history.",
+  "category": "single-hop",
+  "bucket": "INGEST — never written"
+ },
+ {
+  "sample_id": "conv-50",
+  "question": "What does Calvin believe makes an artist create something extraordinary?",
+  "gold": "Paying attention to small details",
+  "answer": "Calvin believes an artist creates something extraordinary by drawing inspiration from world events and people's struggles, which allows the artist to create impactful work that serves as therapy and emotional expression. He also values staying true to oneself and sounding unique, and finds motivation in meaningful advice and gifts. Additionally, the connection and energy between the artist and the audience during performances contribute to creating something special.",
+  "category": "single-hop",
+  "bucket": "INGEST — never written"
+ },
+ {
+  "sample_id": "conv-50",
+  "question": "What tools does Calvin use to boost his motivation for music?",
+  "gold": "Writing lyrics and notes",
+  "answer": "Calvin uses a gold necklace with a diamond pendant gifted by another artist as a meaningful reminder to keep hustling in his music career. He also draws motivation from advice by music professionals to stay true to himself and sound unique. Additionally, Calvin finds inspiration and motivation from his Ferrari car, which he sees as a symbol of his hard work and dedication. He works in his home music studio equipped with a keyboard, synthesizer, and other musical equipment, and watches music videos, concerts, and documentaries about artists for inspiration. Supportive friendships and collaborations with other artists also boost his motivation. Lastly, he takes long drives in his car to",
+  "category": "single-hop",
+  "bucket": "GOLD — inference"
+ },
+ {
+  "sample_id": "conv-50",
+  "question": "What hobby did Calvin take up recently?",
+  "gold": "Photography",
+  "answer": "Calvin recently took up working on car restoration projects as a hobby to relax and unwind.",
+  "category": "single-hop",
+  "bucket": "GOLD — inference"
+ }
+]

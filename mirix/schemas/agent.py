@@ -283,6 +283,15 @@ class CreateMetaAgent(BaseModel):
         None,
         description="Embedding configuration for memory agents. Required if no default is set.",
     )
+    enable_conflict_resolution: bool = Field(
+        False,
+        description=(
+            "Opt in to the deterministic conflict-resolution + source-provenance path. "
+            "When True, the semantic_memory_agent's system prompt is augmented to "
+            "prefer the new `semantic_memory_upsert_fact` tool for triple-shaped "
+            "facts. See docs/mab_conflict_resolution_and_provenance.md."
+        ),
+    )
 
 
 class UpdateMetaAgent(BaseModel):
@@ -308,7 +317,6 @@ class UpdateMetaAgent(BaseModel):
         None,
         description="Embedding configuration for meta agent and its sub-agents.",
     )
-
     class Config:
         extra = "ignore"  # Ignores extra fields
 

@@ -467,6 +467,7 @@ _SKILL_RETRIEVAL_FIELDS_SQL = "scripts/migrate_skill_retrieval_fields.sql"
 _CONVERSATION_MESSAGE_PARTS_SQL = "scripts/migrate_conversation_message_parts.sql"
 _CONVERSATION_SESSION_SQL = "scripts/migrate_add_conversation_session.sql"
 _SKILL_HISTORY_SQL = "scripts/migrate_add_skill_history.sql"
+_GRAPH_PROVENANCE_SQL = "scripts/migrate_add_graph_provenance_columns.sql"
 _LEARNING_RUN_AND_RETRIEVAL_LOG_SQL = "scripts/migrate_add_learning_run_and_retrieval_log.sql"
 _SKILL_EXPERIENCE_POOL_SQL = "scripts/migrate_skill_experience_pool.sql"
 _P16_AGENT_CONTEXT_AND_FEEDBACK_SQL = "scripts/migrate_p16_agent_context_and_skill_feedback.sql"
@@ -512,6 +513,13 @@ _MIGRATION_HINTS: Dict[Tuple[str, str], str] = {
     ("skill_experience", "pool_retire_reason"): _SKILL_EXPERIENCE_POOL_SQL,
     # A session's agent context. No data check: nothing to backfill.
     ("conversation_session", "agent_context"): _P16_AGENT_CONTEXT_AND_FEEDBACK_SQL,
+    # The graph-memory pipeline's provenance columns. No data check: they
+    # default to empty / 0.
+    ("episodic_memory", "source_refs"): _GRAPH_PROVENANCE_SQL,
+    ("semantic_memory", "source_refs"): _GRAPH_PROVENANCE_SQL,
+    ("semantic_memory", "prior_values"): _GRAPH_PROVENANCE_SQL,
+    ("users", "turn_counter"): _GRAPH_PROVENANCE_SQL,
+    ("users", "chunk_counter"): _GRAPH_PROVENANCE_SQL,
 }
 _UNKNOWN_MIGRATION_HINT = "see scripts/migrate_*.sql"
 
@@ -680,7 +688,9 @@ def _find_missing_columns(sync_conn) -> Dict[str, List[str]]:
 async def ensure_tables_created():
     """Create all tables on the async engine and fail fast on schema drift.
 
-    Call from FastAPI lifespan startup. Raises RuntimeError with the exact
+    Call from FastAPI lifespan startup. Order matters: startup migrations (e.g.
+    dropping retired tables) must run *before* ``create_all`` so the new ORM
+    state is what gets materialized. Raises RuntimeError with the exact
     migration scripts to run when an existing database is missing columns the
     ORM requires, or data a migration script backfills (i.e. the operator
     upgraded without running migrations). The scripts are idempotent, so
@@ -688,6 +698,12 @@ async def ensure_tables_created():
     """
     if USE_PGLITE:
         return
+    # The graph pipeline's startup migrations drop the retired v2 graph tables;
+    # outside the pipeline (settings.graph_pipeline) startup is unchanged.
+    if settings.graph_pipeline:
+        from mirix.database.startup_migrations import run_startup_migrations
+
+        await run_startup_migrations(engine)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         missing = await conn.run_sync(_find_missing_columns)

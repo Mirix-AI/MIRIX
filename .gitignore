@@ -47,6 +47,10 @@ htmlcov/
 *.sqlite
 *.sqlite-journal
 test-results/
+
+# eval memory snapshots: PG dump + full Neo4j JSON export (~hundreds of MB
+# each, regenerable from a fresh ingest). Same rationale as results/.
+evals/snapshots/
 test_*.db
 *.log
 .persist

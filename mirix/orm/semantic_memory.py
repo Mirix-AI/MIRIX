@@ -75,6 +75,28 @@ class SemanticMemoryItem(SqlalchemyBase, OrganizationMixin, UserMixin):
         JSON, nullable=True, default=None, doc="Custom filter tags for filtering and categorization"
     )
 
+    # Provenance pointers for this item. Each ref is a small dict like
+    # ``{"turn_id": int, "chunk_id": int, "serial": int, "occurred_at": iso8601}``.
+    # Only populated when the new conflict-resolution / provenance path is
+    # used; legacy free-form inserts leave it empty.
+    source_refs: Mapped[list] = mapped_column(
+        JSON,
+        nullable=False,
+        default=list,
+        doc="Provenance pointers (turn_id / chunk_id / serial / occurred_at) for this item.",
+    )
+
+    # Prior values that have been superseded by the current ``summary`` /
+    # ``details``. Used by the conflict-resolution path; legacy items keep
+    # this empty. Each entry: ``{"value": str, "source_refs": [...],
+    # "status": "superseded"|"corrected"|"coexists", "moved_at": iso8601}``.
+    prior_values: Mapped[list] = mapped_column(
+        JSON,
+        nullable=False,
+        default=list,
+        doc="History of replaced values from the conflict-resolution path.",
+    )
+
     # When was this item last modified and what operation?
     last_modify: Mapped[dict] = mapped_column(
         JSON,

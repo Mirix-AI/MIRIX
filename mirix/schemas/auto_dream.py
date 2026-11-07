@@ -1,5 +1,5 @@
 import datetime as dt
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -18,6 +18,21 @@ class AutoDreamRequest(BaseModel):
         ),
     )
     dry_run: bool = Field(False, description="If true, return plan without applying changes")
+    graph_only: Optional[bool] = Field(
+        None,
+        description=(
+            "Refine the graph only: structural maintenance plus node merging (value "
+            "union + edge rewiring) and conflict flagging. The flat PG memories — "
+            "their ids, content and embeddings — are left untouched, so flat "
+            "retrieval is unchanged. Unset, it is true in the graph pipeline "
+            "(MIRIX_ENABLE_GRAPH_MEMORY=true or a MIRIX_GRAPH_VERSION other than "
+            "v5): consolidation belongs on the graph, and rewriting the flat store "
+            "measured -7.7 QA points on LongMemEval-S before the coverage gate, "
+            "break-even after it. Outside it, it is false: the LLM memory-merge "
+            "pass (`mode` then selects which memory components it rewrites). "
+            "mode='procedural' does not read it."
+        ),
+    )
     model: Optional[str] = Field(None, description="Override LLM model (e.g. gpt-4.1-mini for testing)")
     meta_agent_id: Optional[str] = Field(
         None,
@@ -42,6 +57,28 @@ class AutoDreamRequest(BaseModel):
             "mode). true (default) runs it synchronously and returns its "
             "result; false queues it in the background and returns its id in "
             "run_ids at once (poll GET /memory/learning_runs/{id})."
+        ),
+    )
+    source_chunk_ids: Optional[List[int]] = Field(
+        None,
+        description=(
+            "Exact source_meta.chunk_id values covered by this dream batch. Incremental "
+            "graph revisions use them to resolve the semantic-memory delta; older "
+            "graph versions ignore this field."
+        ),
+    )
+    semantic_memory_ids: Optional[List[str]] = Field(
+        None,
+        description=(
+            "Optional explicit semantic-memory delta. This takes precedence over "
+            "source_chunk_ids and is primarily useful for non-conversation ingesters."
+        ),
+    )
+    final_full_graph: bool = Field(
+        False,
+        description=(
+            "True only for the Dream immediately after the final ingest chunk. "
+            "Hybrid graph revisions use it to run their deferred full semantic sweep."
         ),
     )
 
@@ -76,3 +113,4 @@ class AutoDreamResponse(BaseModel):
     # The recorded runs (skill_learning_run ids) this call created or ran —
     # every mode; empty only for dry runs.
     run_ids: List[str] = Field(default_factory=list)
+    graph_stats: Dict[str, Any] = Field(default_factory=dict)
