@@ -21,6 +21,7 @@ from typing import Optional
 from mirix.embeddings import embedding_model
 from mirix.log import get_logger
 from mirix.schemas.agent import AgentState
+from mirix.settings import settings
 
 logger = get_logger(__name__)
 
@@ -70,13 +71,20 @@ async def embed_batch(
         return [None] * len(texts)
 
     sem = asyncio.Semaphore(max_concurrency)
+    # embedding_model() returns MAX_EMBEDDING_DIM-wide vectors, zero-padded at the
+    # end for pgvector; the Neo4j vector indexes (settings.neo4j_vector_dim) hold
+    # the provider's own dimension, so the padding is cut off here.
+    dim = agent_state.embedding_config.embedding_dim or settings.neo4j_vector_dim
 
     async def one(t: str) -> Optional[list[float]]:
         async with sem:
             try:
-                return await model.get_text_embedding(t)
+                vector = await model.get_text_embedding(t)
             except Exception as e:
                 logger.debug("Embed failed for '%s...': %s", (t or "")[:40], e)
                 return None
+            if vector is not None and dim and len(vector) > dim:
+                vector = list(vector[:dim])
+            return vector
 
     return await asyncio.gather(*(one(t) for t in texts))
