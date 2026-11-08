@@ -45,14 +45,14 @@ client = MirixClient(
 client.initialize_meta_agent(
     config={
         "llm_config": {
-            "model": "gemini-2.0-flash",
+            "model": "gemini-3.6-flash",
             "model_endpoint_type": "google_ai",
             "api_key": "your-api-key-here",
             "model_endpoint": "https://generativelanguage.googleapis.com",
             "context_window": 1_000_000,
         },
         "embedding_config": {
-            "embedding_model": "text-embedding-004",
+            "embedding_model": "gemini-embedding-001",
             "embedding_endpoint_type": "google_ai",
             "api_key": "your-api-key-here",
             "embedding_endpoint": "https://generativelanguage.googleapis.com",

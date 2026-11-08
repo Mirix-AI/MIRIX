@@ -19,6 +19,8 @@ class ToolCall(BaseModel):
     type: Literal["function"] = "function"
     # function: ToolCallFunction
     function: FunctionCall
+    # Opaque Gemini metadata, returned unchanged with this function-call part.
+    thought_signature: Optional[str] = None
 
 
 class LogProbToken(BaseModel):

@@ -1,8 +1,8 @@
 # Mirix Configuration - Google Gemini Setup
-# Configuration using Google's Gemini 2.0 Flash with large context window
+# Configuration using Google's Gemini 3.6 Flash with large context window
 
 llm_config:
-  model: "gemini-2.0-flash"
+  model: "gemini-3.6-flash"
   model_endpoint_type: "google_ai"
   model_endpoint: "https://generativelanguage.googleapis.com"
   context_window: 1000000

@@ -681,6 +681,7 @@ class Message(BaseMessage):
                         id=tool_call["id"],
                         type=tool_call["type"],
                         function=tool_call["function"],
+                        thought_signature=tool_call.get("thought_signature"),
                     )
                     for tool_call in openai_message_dict["tool_calls"]
                 ]
@@ -827,7 +828,9 @@ class Message(BaseMessage):
             }
 
             if self.tool_calls is not None:
-                openai_message["tool_calls"] = [tool_call.model_dump() for tool_call in self.tool_calls]
+                openai_message["tool_calls"] = [
+                    tool_call.model_dump(exclude={"thought_signature"}) for tool_call in self.tool_calls
+                ]
                 if max_tool_id_length:
                     for tool_call_dict in openai_message["tool_calls"]:
                         tool_call_dict["id"] = tool_call_dict["id"][:max_tool_id_length]
@@ -1082,6 +1085,8 @@ class Message(BaseMessage):
                             }
                         }
                     )
+                    if tool_call.thought_signature is not None:
+                        parts[-1]["thoughtSignature"] = tool_call.thought_signature
             else:
                 assert text_content is not None
                 parts.append({"text": text_content})
