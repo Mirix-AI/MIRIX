@@ -1,5 +1,7 @@
 # Evaluation of MIRIX on public benchmarks
 
+For graph memory and the M0/M1/M2 configurations, see [GRAPH_MEMORY.md](GRAPH_MEMORY.md).
+
 
 1. Step 1:
 Install uv with `brew install uv`, then run:

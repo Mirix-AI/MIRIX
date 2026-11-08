@@ -1,6 +1,5 @@
-# Mirix Configuration - v6 graph (lean entity index)
-# Same model setup as 0201c. Switch graph_version=v6 via env var:
-#   MIRIX_ENABLE_GRAPH_MEMORY=true MIRIX_GRAPH_VERSION=v6
+# Mirix configuration for the LoCoMo runs: same model setup as 0201c.
+# Graph memory is switched by server environment variables, see evals/GRAPH_MEMORY.md.
 
 llm_config:
   model: "gpt-4.1-mini"

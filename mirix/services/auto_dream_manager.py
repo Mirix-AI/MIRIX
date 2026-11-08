@@ -1242,22 +1242,6 @@ class AutoDreamManager:
             logger.info("Auto dream %s bounded frontier: %s", settings.graph_version, result)
             return {"bounded_frontier": result}
 
-        if settings.graph_version == "v7.18":
-            from mirix.database.neo4j_client import get_neo4j_driver
-            from mirix.services.graph_reconsolidator_v718 import (
-                reconsolidate_iterative_semantic,
-            )
-
-            result = await reconsolidate_iterative_semantic(
-                get_neo4j_driver(),
-                user_id=user.id,
-                agent_state=dream_agent_state,
-                semantic_memory_ids=semantic_memory_ids or set(),
-                final_full_graph=final_full_graph,
-            )
-            logger.info("Auto dream v7.18 iterative semantic: %s", result)
-            return {"iterative_semantic": result}
-
         if settings.graph_version == "v7.17":
             from mirix.database.neo4j_client import get_neo4j_driver
             from mirix.services.graph_reconsolidator_v717 import (
@@ -1274,24 +1258,18 @@ class AutoDreamManager:
             logger.info("Auto dream v7.17 hybrid semantic: %s", result)
             return {"hybrid_semantic": result}
 
-        # v7.14/v7.15 are deliberately incremental and semantic-only. Their candidate source
+        # v7.14 is deliberately incremental and semantic-only. Its candidate source
         # is the current batch, while its comparison target is the existing semantic
         # graph. It owns its own scoped Fact cleanup, so running the legacy full-graph
         # maintenance afterwards would violate episodic isolation and erase the cost
         # benefit this version exists to measure.
-        if settings.graph_version in ("v7.14", "v7.15"):
+        if settings.graph_version == "v7.14":
             if not semantic_memory_ids:
                 return {"incremental_semantic": {"skipped": "empty_semantic_delta"}}
             from mirix.database.neo4j_client import get_neo4j_driver
-
-            if settings.graph_version == "v7.15":
-                from mirix.services.graph_reconsolidator_v715 import (
-                    reconsolidate_semantic_delta,
-                )
-            else:
-                from mirix.services.graph_reconsolidator_v714 import (
-                    reconsolidate_semantic_delta,
-                )
+            from mirix.services.graph_reconsolidator_v714 import (
+                reconsolidate_semantic_delta,
+            )
 
             result = await reconsolidate_semantic_delta(
                 get_neo4j_driver(),
@@ -1563,7 +1541,7 @@ class AutoDreamManager:
             # issues ZERO writes to the flat memory store, only graph mutations.
             semantic_memory_ids: Optional[set[str]] = None
             if settings.graph_version in (
-                "v7.14", "v7.15", "v7.16", "v7.17", "v7.18", "v7.19", "v7.20", "v7.21", "v7.22", "v7.23", "v7.24"
+                "v7.14", "v7.16", "v7.17", "v7.19", "v7.20", "v7.21", "v7.22", "v7.23", "v7.24"
             ):
                 if request.semantic_memory_ids is not None:
                     semantic_memory_ids = set(request.semantic_memory_ids)

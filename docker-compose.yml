@@ -75,7 +75,7 @@ services:
   # Neo4j (graph memory backend, only used when MIRIX_ENABLE_GRAPH_MEMORY=true)
   # ==========================================================================
   neo4j:
-    image: neo4j:5.20-community
+    image: neo4j:5.26-community   # graph queries use CALL (a, row) {...}, which needs 5.23+
     container_name: mirix_neo4j
     restart: unless-stopped
     # Only starts when explicitly requested via:
