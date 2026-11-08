@@ -15,6 +15,7 @@ Your personal AI that builds memory through screen observation and natural conve
 - **Screen Activity Tracking:** Continuous visual data capture and intelligent consolidation into structured memories
 - **Privacy-First Design:** All long-term data stored locally with user-controlled privacy settings
 - **Advanced Search:** PostgreSQL-native BM25 full-text search with vector similarity support
+- **Graph Memory (optional):** A provenance hypergraph over episodic and semantic memories in Neo4j, with n-ary facts that link entities through named roles and cite the memory rows they came from
 - **Multi-Modal Input:** Text, images, voice, and screen captures processed seamlessly
 
 ### Quick Start
@@ -156,6 +157,18 @@ result = client.auto_dream(
 print(result)
 ```
 
+### Graph Memory
+
+MIRIX can index episodic and semantic memories into a provenance hypergraph stored in Neo4j. Entities become anchors, each extracted fact becomes an n-ary frame whose edges name the role each anchor plays, and every frame cites the memory rows it came from. With graph memory on, episodic and semantic retrieval enters through the graph, and Auto-Dream merges duplicate anchors on the graph instead of rewriting stored memories.
+
+Graph memory is off by default. To turn it on:
+
+1. Start Neo4j 5.23 or later. `docker compose --profile graph up -d` starts Neo4j 5.26 with APOC.
+2. Install the Neo4j driver. It is in `requirements.txt`; after `pip install -e .`, run `pip install "neo4j>=5.20,<6"`.
+3. Set `MIRIX_ENABLE_GRAPH_MEMORY=true` and the connection settings `MIRIX_NEO4J_URI`, `MIRIX_NEO4J_USER` and `MIRIX_NEO4J_PASSWORD` (defaults: `bolt://localhost:7687`, `neo4j`, `mirix_neo4j_dev`).
+
+With graph memory on, `POST /memory/auto_dream` refines the graph only unless the request sets `graph_only` to `false`. Evaluation settings and commands are in [evals/GRAPH_MEMORY.md](evals/GRAPH_MEMORY.md).
+
 ### Upgrading an Existing Database
 
 Fresh databases get their full schema automatically at startup. **Existing databases require manual migrations** when upgrading to a version that alters tables — startup creates missing tables but never adds columns to existing ones. If migrations are pending, the server refuses to start and names the exact scripts to run.
@@ -171,6 +184,12 @@ psql "$MIRIX_PG_URI" -f scripts/migrate_add_conversation_message_phase2.sql # ou
 psql "$MIRIX_PG_URI" -f scripts/migrate_add_skill_experience.sql
 psql "$MIRIX_PG_URI" -f scripts/migrate_add_agent_trigger_state.sql
 psql "$MIRIX_PG_URI" -f scripts/migrate_backfill_procedural_scope.sql   # backfill filter_tags['scope'] from each skill's owning client
+```
+
+For the graph-memory release, which adds five provenance columns, also run:
+
+```bash
+psql "$MIRIX_PG_URI" -f scripts/migrate_add_graph_provenance_columns.sql
 ```
 
 Each script is idempotent where possible and documents its own preconditions in its header. Run them once, then restart the server.

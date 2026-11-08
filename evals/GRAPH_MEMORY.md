@@ -58,7 +58,7 @@ unset MIRIX_COLDFACT MIRIX_HYBRID_SEARCH MIRIX_SEARCH_LIMIT   # experiment flags
 export MIRIX_EVAL_USER_PREFIX=m2__                            # namespaces this run's users
 export MIRIX_DREAM_EVERY_N_CHUNKS=5                           # M2; use 0 for M0 and M1
 python main_eval.py --data data/locomo10.json --run-llm \
-    --mirix_config_path ./configs/0201c_v6.yaml --output_path m2
+    --mirix_config_path ./configs/0201c.yaml --output_path m2
 python organize_results.py --judge default results/locomo/m2
 ```
 
@@ -86,9 +86,14 @@ for f in src.glob("conv-*.json"):
 python assert_store_sane.py --db <postgres-db> --prefix m2__ --graph   # PSQL=/path/to/psql if not on PATH
 ```
 
-## LongMemEval-S and MemoryAgentBench
+## MemoryAgentBench
 
-`longmem_eval.py` runs LongMemEval-S with the same scaffolding as `main_eval.py`. The scripts
-in `mab/` run the MemoryAgentBench tracks with `configs/mab.yaml`; each lists its
-prerequisites and options at the top. `mab/run_mab_longmem_eval.sh` also snapshots the store
-afterwards with `memory_snapshot.py`.
+The four tracks run through the scripts in `mab/` with `configs/mab.yaml`; each script
+lists its prerequisites and options at the top.
+
+| track | command |
+|---|---|
+| LongMemEval-S | `LIMIT=5 ./mab/run_mab_longmem_eval.sh` (300 questions; it also snapshots the store with `memory_snapshot.py`) |
+| SHDocQA | `python mab/longmem_eval.py --limit 1 --max-chunks 0 --run-llm --source ruler_qa1_197K --output_path shdoc --mirix_config_path ./configs/mab.yaml` |
+| MHDocQA | `python mab/longmem_eval.py --limit 1 --max-chunks 0 --run-llm --source ruler_qa2_421K --output_path mhdoc --mirix_config_path ./configs/mab.yaml` |
+| DetectiveQA | `python mab/lru_eval.py --limit 10 --max-chunks 0 --run-llm --source detective_qa --output_path detective --mirix_config_path ./configs/mab.yaml` |
