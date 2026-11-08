@@ -46,43 +46,6 @@ def _row(rid, text):
     )
 
 
-def test_v722_inherits_v720_ingest_and_open_roles(monkeypatch):
-    assert is_v720("v7.22")
-    raw = '{"frames":[{"predicate":"buy","args":[' \
-          '{"role":"buyer","name":"Melanie","type":"person"},' \
-          '{"role":"item","name":"figurines","type":"object"}]}]}'
-    monkeypatch.setattr(settings, "graph_version", "v7.22")
-    parsed = _parse(raw)
-    assert [arg[0] for arg in parsed.frames[0].args] == ["buyer", "item"]
-
-
-@pytest.mark.asyncio
-async def test_v722_reuses_v719_bounded_frontier(monkeypatch):
-    monkeypatch.setattr(settings, "graph_version", "v7.22")
-    dream = AsyncMock(return_value={"round_count": 1})
-    monkeypatch.setattr(
-        "mirix.services.graph_reconsolidator_v719.reconsolidate_bounded_frontier",
-        dream,
-    )
-    monkeypatch.setattr(
-        "mirix.database.neo4j_client.get_neo4j_driver", lambda: object(),
-    )
-    result = await AutoDreamManager()._refine_graph(
-        SimpleNamespace(id="user-1"),
-        SimpleNamespace(),
-        semantic_memory_ids={"sem-new"},
-        final_full_graph=False,
-    )
-    dream.assert_awaited_once_with(
-        ANY,
-        user_id="user-1",
-        agent_state=ANY,
-        semantic_memory_ids={"sem-new"},
-        final_full_graph=False,
-    )
-    assert result == {"bounded_frontier": {"round_count": 1}}
-
-
 def test_v722_query_plan_is_general_and_normalizes_inflection():
     located = plan_query("Which country was Jolene located in during August 2023?")
     assert located.relations == ("locate",)

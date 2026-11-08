@@ -33,61 +33,6 @@ def test_v714_batch_digest_is_order_independent():
     assert _batch_digest({"sem_a", "sem_b"}) == _batch_digest({"sem_b", "sem_a"})
 
 
-def test_v714_keeps_v712_ingest_roles(monkeypatch):
-    raw = '{"frames":[{"predicate":"attend","args":[' \
-          '{"role":"attendee","name":"Caroline","type":"person"},' \
-          '{"role":"event","name":"Support group","type":"event"}]}]}'
-
-    monkeypatch.setattr(settings, "graph_version", "v7.14")
-    v714 = _parse(raw)
-    monkeypatch.setattr(settings, "graph_version", "v7.12")
-    v712 = _parse(raw)
-    monkeypatch.setattr(settings, "graph_version", "v7.13")
-    v713 = _parse(raw)
-
-    assert v714.frames[0].args == v712.frames[0].args
-    assert v714.frames[0].args == [("attendee", "Caroline"), ("event", "Support group")]
-    assert v713.frames[0].args == [("agent", "Caroline"), ("theme", "Support group")]
-
-
-@pytest.mark.asyncio
-async def test_v714_manager_routes_only_explicit_semantic_delta(monkeypatch):
-    monkeypatch.setattr(settings, "graph_version", "v7.14")
-    dream = AsyncMock(return_value={"candidate_pairs": 2, "episodic_only_candidates": 0})
-    driver = object()
-
-    monkeypatch.setattr(
-        "mirix.services.graph_reconsolidator_v714.reconsolidate_semantic_delta",
-        dream,
-    )
-    monkeypatch.setattr(
-        "mirix.database.neo4j_client.get_neo4j_driver", lambda: driver
-    )
-
-    result = await AutoDreamManager()._refine_graph(
-        SimpleNamespace(id="user-1"),
-        SimpleNamespace(),
-        semantic_memory_ids={"sem_new"},
-    )
-
-    dream.assert_awaited_once_with(
-        driver,
-        user_id="user-1",
-        agent_state=ANY,
-        semantic_memory_ids={"sem_new"},
-    )
-    assert result["incremental_semantic"]["episodic_only_candidates"] == 0
-
-
-@pytest.mark.asyncio
-async def test_v714_empty_delta_never_falls_back_to_full_graph(monkeypatch):
-    monkeypatch.setattr(settings, "graph_version", "v7.14")
-    result = await AutoDreamManager()._refine_graph(
-        SimpleNamespace(id="user-1"), SimpleNamespace(), semantic_memory_ids=set()
-    )
-    assert result == {"incremental_semantic": {"skipped": "empty_semantic_delta"}}
-
-
 class _Rows:
     def __init__(self, rows):
         self.rows = rows

@@ -3015,24 +3015,6 @@ async def add_memory(
     }
 
 
-class CompactGraphRequest(BaseModel):
-    """Request model for the v8 graph-compaction finalize step."""
-
-    user_id: str
-
-
-@router.post("/memory/graph/compact")
-async def compact_graph_memory(request: CompactGraphRequest):
-    """v8 finalize: prune singleton (degree-1) anchors from a user's graph.
-
-    No-op unless MIRIX_GRAPH_VERSION == 'v8'. Call once after all of a user's
-    memories have been ingested (an anchor's final degree is only known then).
-    """
-    from mirix.services.graph_memory_manager_v7 import V7GraphManager
-
-    return await V7GraphManager().prune_singletons(request.user_id)
-
-
 @router.post("/memory/add_sync")
 @with_langfuse_tracing
 async def add_memory_sync(
@@ -4120,23 +4102,16 @@ async def retrieve_memory_with_conversation(
             "Retrieval query (%s): %s", extraction.status, key_words[:200]
         )
 
-        # v7.21+ relation lanes need the question's predicate and argument
+        # The graph's relation lanes need the question's predicate and argument
         # structure. Topic extraction is useful for semantic recall but can turn
         # "What instruments does X play?" into "X instruments", deleting the
         # relation that makes the bounded fact lookup selective. Preserve the raw
-        # question only when the policy recognizes an explicit relation; all other
-        # versions and non-relation questions keep the existing topic query. The
-        # raw question becomes the query of the graph and of the keyword-searched
-        # types; skills keep their task-level query.
-        if settings.graph_version in ("v7.21", "v7.22", "v7.23", "v7.24"):
-            if settings.graph_version == "v7.24":
-                from mirix.services.retrieval_policy_v724 import predicate_hints
-            elif settings.graph_version == "v7.23":
-                from mirix.services.retrieval_policy_v723 import predicate_hints
-            elif settings.graph_version == "v7.22":
-                from mirix.services.retrieval_policy_v722 import predicate_hints
-            else:
-                from mirix.services.retrieval_policy_v721 import predicate_hints
+        # question only when the policy recognizes an explicit relation;
+        # non-relation questions keep the existing topic query. The raw question
+        # becomes the query of the graph and of the keyword-searched types; skills
+        # keep their task-level query.
+        if settings.enable_graph_memory:
+            from mirix.services.retrieval_policy_v724 import predicate_hints
 
             raw_parts: list[str] = []
             for message in request.messages:
@@ -7433,9 +7408,9 @@ async def auto_dream_handler(
         dry_run: If true, return counts without applying any changes
         graph_only: Refine the graph only (structural maintenance, node merging by
             value union + edge rewiring, conflict flagging); flat PG memories are
-            left untouched, so flat retrieval is unchanged. Defaults to true in
-            the graph pipeline (MIRIX_ENABLE_GRAPH_MEMORY=true or a
-            MIRIX_GRAPH_VERSION other than v5) and to false otherwise. Pass
+            left untouched, so flat retrieval is unchanged. Defaults to true when
+            graph memory is on (MIRIX_ENABLE_GRAPH_MEMORY=true) and to false
+            otherwise. Pass
             false to run the legacy LLM memory-merge pass, in
             which case `mode` selects which memory components it rewrites.
             mode=procedural does not read it.

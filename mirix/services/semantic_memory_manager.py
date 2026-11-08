@@ -1157,48 +1157,34 @@ class SemanticMemoryManager:
 
             # Note: Item is already added to clustering tree in create_item()
 
-            # Graph memory write path. Routed by settings.graph_version:
-            #   v5 → full LightRAG dual-graph (Concept + SemanticEntity + SEM_RELATES
-            #        + CONCEPT_RELATES via LLM judgement)
-            #   v6 → lean entity index (V6Entity + V6_COOCCUR), shared with episodic
-            #   v7 → minimal semantic+episodic linkage graph; details stay in PG
-            # Sync hook — failures logged but do not affect the PG insert that
-            # already completed.
+            # Graph memory write path: index the new row into the hypergraph.
+            # Sync hook; failures are logged and do not affect the PG insert
+            # that already completed.
             if settings.enable_graph_memory:
                 try:
-                    # Prefix match, not a version list — see the note in
-                    # episodic_memory_manager: the explicit tuple drifted six versions out
-                    # of date and silently routed v7.4+ servers to the legacy builder.
-                    # The v5/v6 builders are archived under archive/legacy_graph/;
-                    # unrecognised versions now skip graph writes.
-                    if settings.graph_version.startswith("v7") or settings.graph_version == "v8":
-                        from mirix.services.graph_memory_manager_v7 import V7GraphManager
+                    from mirix.services.graph_memory_manager_v7 import V7GraphManager
 
-                        source_meta = (
-                            dict(filter_tags["source_meta"])
-                            if filter_tags and isinstance(filter_tags.get("source_meta"), dict)
-                            else None
-                        )
-                        await V7GraphManager().process_memory(
-                            source_kind="semantic",
-                            source_id=semantic_item.id,
-                            text=(name or "") + "\n" + (summary or "") + "\n" + (details or ""),
-                            title=name,
-                            summary=summary,
-                            source_meta=source_meta,
-                            agent_state=agent_state,
-                            organization_id=organization_id,
-                            user_id=user_id or "unknown",
-                            # Semantic knowledge is distilled from the whole dialogue,
-                            # so its role provenance is "shared" (same convention as
-                            # the rebuild script). The live hook previously passed
-                            # nothing, losing role attribution on organic builds.
-                            role="shared",
-                        )
-                    else:
-                        logger.warning(
-                            "Semantic graph write skipped: graph_version=%r has no live "
-                            "builder (v5/v6 are archived)", settings.graph_version)
+                    source_meta = (
+                        dict(filter_tags["source_meta"])
+                        if filter_tags and isinstance(filter_tags.get("source_meta"), dict)
+                        else None
+                    )
+                    await V7GraphManager().process_memory(
+                        source_kind="semantic",
+                        source_id=semantic_item.id,
+                        text=(name or "") + "\n" + (summary or "") + "\n" + (details or ""),
+                        title=name,
+                        summary=summary,
+                        source_meta=source_meta,
+                        agent_state=agent_state,
+                        organization_id=organization_id,
+                        user_id=user_id or "unknown",
+                        # Semantic knowledge is distilled from the whole dialogue,
+                        # so its role provenance is "shared" (same convention as
+                        # the rebuild script). The live hook previously passed
+                        # nothing, losing role attribution on organic builds.
+                        role="shared",
+                    )
                 except Exception as graph_err:
                     logger.warning("Semantic graph write failed (non-fatal): %s", graph_err)
 

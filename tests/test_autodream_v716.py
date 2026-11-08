@@ -49,23 +49,6 @@ class _Driver:
         return self.session_obj
 
 
-def test_v716_keeps_v712_ingest_roles(monkeypatch):
-    raw = '{"frames":[{"predicate":"attend","args":[' \
-          '{"role":"attendee","name":"Caroline","type":"person"},' \
-          '{"role":"event","name":"Support group","type":"event"}]}]}'
-
-    monkeypatch.setattr(settings, "graph_version", "v7.16")
-    v716 = _parse(raw)
-    monkeypatch.setattr(settings, "graph_version", "v7.12")
-    v712 = _parse(raw)
-
-    assert v716.frames[0].args == v712.frames[0].args
-    assert v716.frames[0].args == [
-        ("attendee", "Caroline"),
-        ("event", "Support group"),
-    ]
-
-
 @pytest.mark.asyncio
 async def test_v716_resolves_only_current_batch_semantic_anchors():
     driver = _Driver([{"id": "anchor-b"}, {"id": "anchor-a"}])
@@ -144,46 +127,4 @@ async def test_v716_wraps_unchanged_v712_reconsolidator(monkeypatch):
         "anchors_merged": 1,
         "batch_semantic_memories": 1,
         "source_semantic_anchors": 1,
-    }
-
-
-@pytest.mark.asyncio
-async def test_v716_manager_routes_delta_but_keeps_legacy_maintenance(monkeypatch):
-    monkeypatch.setattr(settings, "graph_version", "v7.16")
-    dream = AsyncMock(return_value={"candidate_pairs": 2})
-    maintain = AsyncMock(return_value={"dead_anchors_pruned": 1})
-    driver = object()
-
-    monkeypatch.setattr(
-        "mirix.services.graph_reconsolidator_v716.reconsolidate_semantic_frontier",
-        dream,
-    )
-    monkeypatch.setattr(
-        "mirix.database.neo4j_client.get_neo4j_driver", lambda: driver
-    )
-    monkeypatch.setattr(
-        "mirix.services.graph_memory_manager_v7.V7GraphManager.maintain_graph",
-        maintain,
-    )
-    monkeypatch.setattr(
-        AutoDreamManager, "_graph_memory_ids", AsyncMock(return_value={"sem-new"})
-    )
-
-    result = await AutoDreamManager()._refine_graph(
-        SimpleNamespace(id="user-1"),
-        SimpleNamespace(),
-        semantic_memory_ids={"sem-new"},
-    )
-
-    dream.assert_awaited_once_with(
-        driver,
-        user_id="user-1",
-        agent_state=ANY,
-        semantic_memory_ids={"sem-new"},
-        every_n_memories=10,
-    )
-    maintain.assert_awaited_once()
-    assert result == {
-        "reconsolidation": {"candidate_pairs": 2},
-        "maintenance": {"dead_anchors_pruned": 1},
     }

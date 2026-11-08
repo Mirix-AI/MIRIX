@@ -17,16 +17,16 @@ addition to them.
 
 ## Server settings
 
+Graph memory has a single switch. With `MIRIX_ENABLE_GRAPH_MEMORY=true` the server
+indexes episodic and semantic records into the hypergraph and retrieves them through it;
+with `false` (the default) it behaves as the original flat MIRIX.
+
 | variable | effect |
 |---|---|
-| `MIRIX_ENABLE_GRAPH_MEMORY` | `true` indexes records into the hypergraph and retrieves through it; `false` retrieves from flat Postgres |
-| `MIRIX_GRAPH_VERSION` | selects the graph writer and reader policies; the default `v5` keeps the original MIRIX behaviour |
-| `MIRIX_GRAPH_RERANK` | `1` reranks graph candidates; `0` turns reranking off for ablations |
+| `MIRIX_ENABLE_GRAPH_MEMORY` | `true` turns the hypergraph on; `false` keeps flat Postgres memory |
+| `MIRIX_GRAPH_RERANK` | `1` (default) reranks graph candidates; `0` turns reranking off for ablations |
 | `MIRIX_NEO4J_URI`, `MIRIX_NEO4J_USER`, `MIRIX_NEO4J_PASSWORD` | Neo4j connection (default `bolt://localhost:7687`) |
 | `MIRIX_NEO4J_VECTOR_DIM` | dimension of the anchor-name index, 1536 by default; it must match the embedding model |
-
-The method described in the paper corresponds to `MIRIX_GRAPH_VERSION=v7.24`. The LoCoMo
-stores behind the reported results were written at `v7.23`.
 
 Start the server from the repository root with these variables set:
 
@@ -38,17 +38,16 @@ The evaluation clients connect to `http://127.0.0.1:8531`.
 
 ## The three configurations
 
-| configuration | `MIRIX_ENABLE_GRAPH_MEMORY` (server) | `MIRIX_GRAPH_VERSION` (server) | `MIRIX_DREAM_EVERY_N_CHUNKS` (eval) |
-|---|---|---|---|
-| M0, flat memory without AutoDream | `false` | `v7.24` | `0` |
-| M1, graph without AutoDream | `true` | `v7.24` | `0` |
-| M2, graph with AutoDream | `true` | `v7.24` | `5` |
+| configuration | `MIRIX_ENABLE_GRAPH_MEMORY` (server) | `MIRIX_DREAM_EVERY_N_CHUNKS` (eval) |
+|---|---|---|
+| M0, flat memory without AutoDream | `false` | `0` |
+| M1, graph without AutoDream | `true` | `0` |
+| M2, graph with AutoDream | `true` | `5` |
 
-M0 keeps `MIRIX_GRAPH_VERSION` set, so the Postgres side of the write path (source
-metadata, provenance columns, merge rules) matches M1, while nothing is written to or read
-from Neo4j. `MIRIX_DREAM_EVERY_N_CHUNKS` is read by the evaluation script, which triggers one
-AutoDream cycle every N ingested chunks and after the last one (`MIRIX_DREAM_MODE` defaults
-to `experience`).
+`MIRIX_DREAM_EVERY_N_CHUNKS` is read by the evaluation script, which triggers one AutoDream
+cycle every N ingested chunks and after the last one (`MIRIX_DREAM_MODE` defaults to
+`experience`). The evaluation scripts use the same question-answering protocol in all three
+configurations.
 
 ## LoCoMo
 

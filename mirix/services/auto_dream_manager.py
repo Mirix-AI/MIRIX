@@ -1187,149 +1187,31 @@ class AutoDreamManager:
         semantic_memory_ids: Optional[set[str]] = None,
         final_full_graph: bool = False,
     ) -> dict:
-        """Refine the hypergraph only — never touches the flat PG memories.
+        """Refine the hypergraph only; the flat PG memories are never touched.
 
-        Merge first, then sweep. The order is load-bearing, and the obvious
-        alternative (sweep first, so the merge step is not asked about anchors that
-        are about to be pruned) is wrong: the dead-weight rule deletes any anchor
-        with no facts and at most one memory link, and it cannot see that such an
-        anchor is often just another wording of a live one. Measured on a fresh
-        unmaintained graph, 139 of 663 anchors matched the dead-weight rule and
-        **63 of those (45%) had a live twin at cosine >= 0.93** — "Train companies
-        in Japan" beside "trains in Japan", "Phone GPS" beside "Phone GPS use".
-        Sweeping first destroys those 63 memory links permanently; merging first
-        transfers them onto the survivor. The asymmetry decides it: irreversible
-        information loss on one side, a bounded amount of LLM budget on the other —
-        and that budget is not even at risk, since an anchor with no near neighbour
-        never enters candidate generation in the first place.
-
-        1. ``reconsolidate_graph`` — merge anchors that mean the same thing in
-           different words (LLM-verified, because cosine alone would merge "5-10% of
-           budget" with "10-20% of budget"). The merge itself is a value union plus
-           edge rewiring, no text generation. Also flags — never resolves — apparent
-           contradictions. Self-gated to every N new memories since it costs LLM calls.
-        2. ``maintain_graph`` — structural cleanup, now running against the merged
-           graph so it collects the merge's own debris in the same cycle: a fact whose
-           subject and object anchors both folded into the survivor is a tautology, and
-           two facts that differed only in which merged anchor they named are duplicate
-           triples. Under the old ordering that debris waited a full cycle to be
-           collected (~31 pieces across a 23-cycle run), and the final cycle's was
-           never collected at all. The pass also sweeps orphaned refs, zombie facts,
-           genuinely dead anchors, role-noise anchors, and rebuilds the temporal chain.
-
-        Because merging only redirects edges onto surviving anchors, every
-        anchor→memory_id link is preserved, so the graph→memory_id→PG retrieval path
-        keeps reaching the same memories. Every step is fail-soft: a graph error must
-        never fail the dream cycle. Returns the merged stats dict.
+        Runs the bounded semantic-frontier merge. Candidate anchor pairs come from
+        the newly written semantic rows (and, in the final cycle, from anchors that
+        have never been a merge source); the language model verifies each pair, and
+        a confirmed merge rewires edges onto the surviving anchor, so every
+        anchor-to-memory link is preserved. Returns the merge statistics.
         """
-        stats: dict = {}
+        if not settings.enable_graph_memory:
+            return {}
 
-        if settings.graph_version in (
-            "v7.19", "v7.20", "v7.21", "v7.22", "v7.23", "v7.24"
-        ):
-            from mirix.database.neo4j_client import get_neo4j_driver
-            from mirix.services.graph_reconsolidator_v719 import (
-                reconsolidate_bounded_frontier,
-            )
+        from mirix.database.neo4j_client import get_neo4j_driver
+        from mirix.services.graph_reconsolidator_v719 import (
+            reconsolidate_bounded_frontier,
+        )
 
-            result = await reconsolidate_bounded_frontier(
-                get_neo4j_driver(),
-                user_id=user.id,
-                agent_state=dream_agent_state,
-                semantic_memory_ids=semantic_memory_ids or set(),
-                final_full_graph=final_full_graph,
-            )
-            logger.info("Auto dream %s bounded frontier: %s", settings.graph_version, result)
-            return {"bounded_frontier": result}
-
-        if settings.graph_version == "v7.17":
-            from mirix.database.neo4j_client import get_neo4j_driver
-            from mirix.services.graph_reconsolidator_v717 import (
-                reconsolidate_hybrid_semantic,
-            )
-
-            result = await reconsolidate_hybrid_semantic(
-                get_neo4j_driver(),
-                user_id=user.id,
-                agent_state=dream_agent_state,
-                semantic_memory_ids=semantic_memory_ids or set(),
-                final_full_graph=final_full_graph,
-            )
-            logger.info("Auto dream v7.17 hybrid semantic: %s", result)
-            return {"hybrid_semantic": result}
-
-        # v7.14 is deliberately incremental and semantic-only. Its candidate source
-        # is the current batch, while its comparison target is the existing semantic
-        # graph. It owns its own scoped Fact cleanup, so running the legacy full-graph
-        # maintenance afterwards would violate episodic isolation and erase the cost
-        # benefit this version exists to measure.
-        if settings.graph_version == "v7.14":
-            if not semantic_memory_ids:
-                return {"incremental_semantic": {"skipped": "empty_semantic_delta"}}
-            from mirix.database.neo4j_client import get_neo4j_driver
-            from mirix.services.graph_reconsolidator_v714 import (
-                reconsolidate_semantic_delta,
-            )
-
-            result = await reconsolidate_semantic_delta(
-                get_neo4j_driver(),
-                user_id=user.id,
-                agent_state=dream_agent_state,
-                semantic_memory_ids=semantic_memory_ids,
-            )
-            logger.info(
-                "Auto dream %s incremental semantic: %s",
-                settings.graph_version,
-                result,
-            )
-            return {"incremental_semantic": result}
-
-        try:
-            from mirix.database.neo4j_client import get_neo4j_driver
-
-            driver = get_neo4j_driver()
-            every_n_memories = int(
-                os.environ.get("MIRIX_GRAPH_RECONSOLIDATE_EVERY", "10")
-            )
-            if settings.graph_version == "v7.16":
-                from mirix.services.graph_reconsolidator_v716 import (
-                    reconsolidate_semantic_frontier,
-                )
-
-                recon_stats = await reconsolidate_semantic_frontier(
-                    driver,
-                    user_id=user.id,
-                    agent_state=dream_agent_state,
-                    semantic_memory_ids=semantic_memory_ids or set(),
-                    every_n_memories=every_n_memories,
-                )
-            else:
-                from mirix.services.graph_reconsolidator import reconsolidate_graph
-
-                recon_stats = await reconsolidate_graph(
-                    driver,
-                    user_id=user.id,
-                    agent_state=dream_agent_state,
-                    every_n_memories=every_n_memories,
-                )
-            stats["reconsolidation"] = recon_stats
-            logger.info("Auto dream: graph reconsolidation %s",
-                        {k: v for k, v in recon_stats.items() if k != "conflict_samples"})
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Auto dream: graph reconsolidation skipped (%s)", exc)
-
-        try:
-            from mirix.services.graph_memory_manager_v7 import V7GraphManager
-
-            graph_stats = await V7GraphManager().maintain_graph(
-                user.id, valid_memory_ids=await self._graph_memory_ids(user)
-            )
-            stats["maintenance"] = graph_stats
-            logger.info("Auto dream: graph maintenance %s", graph_stats)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Auto dream: graph maintenance skipped (%s)", exc)
-
-        return stats
+        result = await reconsolidate_bounded_frontier(
+            get_neo4j_driver(),
+            user_id=user.id,
+            agent_state=dream_agent_state,
+            semantic_memory_ids=semantic_memory_ids or set(),
+            final_full_graph=final_full_graph,
+        )
+        logger.info("Auto dream bounded frontier: %s", result)
+        return {"bounded_frontier": result}
 
     # ------------------------------------------------------------------ #
     # Main entry point                                                     #
@@ -1540,9 +1422,7 @@ class AutoDreamManager:
             # write for its own row). Skipping it makes the invariant exact: graph_only
             # issues ZERO writes to the flat memory store, only graph mutations.
             semantic_memory_ids: Optional[set[str]] = None
-            if settings.graph_version in (
-                "v7.14", "v7.16", "v7.17", "v7.19", "v7.20", "v7.21", "v7.22", "v7.23", "v7.24"
-            ):
+            if settings.enable_graph_memory:
                 if request.semantic_memory_ids is not None:
                     semantic_memory_ids = set(request.semantic_memory_ids)
                 elif request.source_chunk_ids is not None:
@@ -1552,8 +1432,7 @@ class AutoDreamManager:
                 else:
                     semantic_memory_ids = set()
                 logger.info(
-                    "Auto dream %s batch chunks=%s semantic_ids=%d",
-                    settings.graph_version,
+                    "Auto dream batch chunks=%s semantic_ids=%d",
                     request.source_chunk_ids,
                     len(semantic_memory_ids),
                 )
