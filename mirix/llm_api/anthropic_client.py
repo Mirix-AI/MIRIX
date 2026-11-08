@@ -60,6 +60,19 @@ logger = get_logger(__name__)
 MIN_THINKING_BUDGET_TOKENS = 1024
 
 
+def claude_model_version(model: str) -> tuple[str, tuple[int, int]]:
+    """Read modern Claude IDs, without treating a date suffix as a minor version.
+
+    Unknown and legacy IDs retain their existing request behavior.
+    """
+    match = re.match(
+        r"^claude-(opus|sonnet|haiku|fable|mythos)-(\d+)(?:-(\d{1,2})(?=-|$))?(?:-|$)", model
+    )
+    if not match:
+        return "", (0, 0)
+    return match[1], (int(match[2]), int(match[3] or 0))
+
+
 def fit_thinking_budget(data: dict) -> None:
     """Keep extended thinking inside the budgeted ``max_tokens``.
 
@@ -181,7 +194,15 @@ class AnthropicClient(LLMClientBase):
     ) -> dict:
         # TODO: This needs to get cleaned up. The logic here is pretty confusing.
         # TODO: I really want to get rid of prefixing, it's a recipe for disaster code maintenance wise
-        prefix_fill = True
+        family, version = claude_model_version(llm_config.model)
+        mythos_preview = llm_config.model == "claude-mythos-preview"
+        prefix_fill = version < (4, 6) and not mythos_preview
+        adaptive_thinking = version >= (4, 7)
+        omit_sampling = adaptive_thinking or mythos_preview
+        auto_tools_only = (
+            (family in {"opus", "sonnet"} and version >= (5, 5))
+            or (family in {"fable", "mythos"} and version >= (5, 1))
+        )
         if not self.use_tool_naming:
             raise NotImplementedError("Only tool calling supported on Anthropic API requests")
 
@@ -191,17 +212,22 @@ class AnthropicClient(LLMClientBase):
         data = {
             "model": llm_config.model,
             "max_tokens": llm_config.max_tokens,
-            "temperature": llm_config.temperature,
         }
+        if not omit_sampling:
+            data["temperature"] = llm_config.temperature
 
         # Extended Thinking
         if llm_config.enable_reasoner:
-            data["thinking"] = {
-                "type": "enabled",
-                "budget_tokens": llm_config.max_reasoning_tokens,
-            }
+            if adaptive_thinking:
+                data["thinking"] = {"type": "adaptive"}
+            else:
+                data["thinking"] = {
+                    "type": "enabled",
+                    "budget_tokens": llm_config.max_reasoning_tokens,
+                }
             # `temperature` may only be set to 1 when thinking is enabled. Please consult our documentation at https://docs.anthropic.com/en/docs/build-with-claude/extended-thinking#important-considerations-when-using-extended-thinking'
-            data["temperature"] = 1.0
+            if not omit_sampling:
+                data["temperature"] = 1.0
 
             # Silently disable prefix_fill for now
             prefix_fill = False
@@ -218,17 +244,23 @@ class AnthropicClient(LLMClientBase):
             tool_choice = {"type": "auto", "disable_parallel_tool_use": True}
             tools_for_request = [Tool(function=f) for f in tools]
         elif force_tool_call is not None:
-            tool_choice = {"type": "tool", "name": force_tool_call}
+            if auto_tools_only:
+                logger.warning(
+                    "%s does not support forced tool use; using auto with only %s", llm_config.model, force_tool_call
+                )
+                tool_choice = {"type": "auto", "disable_parallel_tool_use": True}
+            else:
+                tool_choice = {"type": "tool", "name": force_tool_call}
             tools_for_request = [Tool(function=f) for f in tools if f["name"] == force_tool_call]
 
             # need to have this setting to be able to put inner thoughts in kwargs
-            if not llm_config.put_inner_thoughts_in_kwargs:
+            if prefix_fill and not llm_config.put_inner_thoughts_in_kwargs:
                 logger.warning(
                     f"Force setting put_inner_thoughts_in_kwargs to True for Claude because there is a forced tool call: {force_tool_call}"
                 )
                 llm_config.put_inner_thoughts_in_kwargs = True
         else:
-            if llm_config.put_inner_thoughts_in_kwargs:
+            if llm_config.put_inner_thoughts_in_kwargs and not auto_tools_only:
                 # tool_choice_type other than "auto" only plays nice if thinking goes inside the tool calls
                 tool_choice = {"type": "any", "disable_parallel_tool_use": True}
             else:

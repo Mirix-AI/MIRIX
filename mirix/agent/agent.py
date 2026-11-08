@@ -3180,7 +3180,7 @@ These keywords have been used to retrieve relevant memories from the database.
         prev_session_id = getattr(self, "_current_step_session_id", None)
         self._current_step_session_id = effective_session_id
         try:
-            return await self.inner_step(messages=[user_message], **kwargs)
+            return await self.inner_step(first_input_messge=user_message, messages=[user_message], **kwargs)
         finally:
             self._current_step_session_id = prev_session_id
 

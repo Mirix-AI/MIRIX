@@ -411,6 +411,7 @@ class GoogleAIClient(LLMClientBase):
                                 ToolCall(
                                     id=get_tool_call_id(),
                                     type="function",
+                                    thought_signature=response_message.get("thoughtSignature"),
                                     function=FunctionCall(
                                         name=function_name,
                                         arguments=clean_json_string_extra_backslash(json_dumps(function_args)),

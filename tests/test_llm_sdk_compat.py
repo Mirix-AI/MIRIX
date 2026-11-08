@@ -144,6 +144,76 @@ def _messages() -> List[Message]:
     ]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "model,sampling,prefill,adaptive,auto_only",
+    [
+        ("claude-stub", True, True, False, False),
+        ("claude-3-5-sonnet-20241022", True, True, False, False),
+        ("claude-sonnet-4-20250514", True, True, False, False),
+        ("claude-sonnet-4-5-20250929", True, True, False, False),
+        ("claude-sonnet-4-6", True, False, False, False),
+        ("claude-opus-4-6", True, False, False, False),
+        ("claude-opus-4-7", False, False, True, False),
+        ("claude-sonnet-5", False, False, True, False),
+        ("claude-sonnet-5-5", False, False, True, True),
+        ("claude-opus-5-5", False, False, True, True),
+        ("claude-haiku-5-5", False, False, True, False),
+        ("claude-fable-5-1", False, False, True, True),
+        ("claude-mythos-preview", False, False, False, False),
+    ],
+)
+@pytest.mark.parametrize("mode", ["default", "kwargs", "forced", "reasoner", "no_tools"])
+async def test_claude_model_request_compatibility(
+    model, sampling, prefill, adaptive, auto_only, mode, anthropic_stub, monkeypatch
+):
+    from mirix.llm_api.anthropic_client import AnthropicClient
+    from mirix.services.provider_manager import ProviderManager
+
+    async def key(self):
+        return "sk-ant-local-stub"
+
+    monkeypatch.setattr(ProviderManager, "get_anthropic_override_key", key)
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", anthropic_stub.base_url)
+    config = LLMConfig(
+        model=model,
+        model_endpoint_type="anthropic",
+        context_window=200_000,
+        max_output_tokens=8_000,
+        enable_reasoner=mode == "reasoner",
+        put_inner_thoughts_in_kwargs=mode == "kwargs",
+    )
+    client = AnthropicClient(config)
+    data = await client.build_request_data(
+        _messages(), config,
+        tools=None if mode == "no_tools" else TOOLS,
+        force_tool_call="open_drawer" if mode == "forced" else None,
+    )
+    # Send through the installed SDK as well as checking the provider contract.
+    await client.request(data)
+    body = anthropic_stub.requests[0]["json"]
+    assert ("temperature" in body) == sampling
+    assert (body["messages"][-1]["role"] == "assistant") == (
+        prefill and mode in {"default", "no_tools"}
+    )
+    if mode == "reasoner":
+        assert body["thinking"]["type"] == ("adaptive" if adaptive else "enabled")
+        if adaptive:
+            assert "budget_tokens" not in body["thinking"]
+        elif sampling:
+            assert body["temperature"] == 1
+    if mode == "no_tools":
+        assert "tools" not in body and "tool_choice" not in body
+    else:
+        expected = "auto"
+        if not auto_only and mode == "kwargs":
+            expected = "any"
+        elif not auto_only and mode == "forced":
+            expected = "tool"
+        assert body["tool_choice"]["type"] == expected
+        assert body["tools"][0]["name"] == "open_drawer"
+
+
 # --------------------------------------------------------------------------- #
 # The installed Anthropic SDK is the one MIRIX's client speaks                 #
 # --------------------------------------------------------------------------- #
