@@ -156,6 +156,12 @@ def test_hints_cover_every_column_added_to_an_existing_table():
         ("skill_experience", "last_pushed_at"),
         ("skill_experience", "pool_retired_at"),
         ("skill_experience", "pool_retire_reason"),
+        # The graph-memory pipeline's provenance columns.
+        ("episodic_memory", "source_refs"),
+        ("semantic_memory", "source_refs"),
+        ("semantic_memory", "prior_values"),
+        ("users", "turn_counter"),
+        ("users", "chunk_counter"),
     ]:
         assert key in _MIGRATION_HINTS, key
 

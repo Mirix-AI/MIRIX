@@ -536,6 +536,18 @@ async def openai_chat_completions_request(
 
     response_json = await make_post_request(url, headers, data)
 
+    # Record token usage for instrumented eval runs (no-op outside)
+    try:
+        from mirix.database.token_tracker import record as _record_tokens
+        usage = (response_json.get("usage") or {})
+        _record_tokens(
+            prompt_tokens=usage.get("prompt_tokens", 0),
+            completion_tokens=usage.get("completion_tokens", 0),
+            total_tokens=usage.get("total_tokens"),
+        )
+    except Exception:
+        pass
+
     return ChatCompletionResponse(**response_json)
 
 

@@ -90,7 +90,19 @@ def derive_system_message(agent_type: AgentType, system: Optional[str] = None):
         elif agent_type == AgentType.background_agent:
             system = gpt_system.get_system_text("base/background_agent")
         elif agent_type == AgentType.auto_dream_agent:
-            system = gpt_system.get_system_text("base/auto_dream_agent/experience")
+            from mirix.settings import settings
+
+            if settings.graph_pipeline:
+                # The graph pipeline's dream prompt: experience.txt plus its
+                # rule that a merge may drop wording but never facts.
+                system = gpt_system.get_system_text_joined(
+                    [
+                        "base/auto_dream_agent/experience",
+                        "base/auto_dream_agent/graph_pipeline_merge_rule",
+                    ]
+                )
+            else:
+                system = gpt_system.get_system_text("base/auto_dream_agent/experience")
         else:
             raise ValueError(f"Invalid agent type: {agent_type}")
 

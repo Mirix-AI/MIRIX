@@ -1,3 +1,4 @@
+import hashlib
 import argparse
 import json
 from collections import defaultdict
@@ -132,3 +133,20 @@ def evaluate_llm_judge(question, gold_answer, generated_answer):
 
 # if __name__ == "__main__":
 #     main()
+
+# One canonical prompt, asserted. Four files in this repo carried their own copy of the
+# LoCoMo accuracy prompt and one of them used U+2019 apostrophes where the others used
+# ASCII; the difference was measured at 3 questions, all on the error side. A grader that
+# silently differs between two comparisons makes those comparisons incomparable, so any
+# edit to the text below must update this digest deliberately.
+PROMPT_SHA = "e994418538d665fa1321f1a38dfeeac3e56a0c7616ec2ba93347be00eb76d2c8"
+
+
+def assert_canonical_prompt() -> None:
+    """Callers importing ACCURACY_PROMPT should not have to trust that it is unmodified."""
+    got = hashlib.sha256(ACCURACY_PROMPT.encode("utf-8")).hexdigest()
+    if got != PROMPT_SHA:
+        raise AssertionError(
+            f"llm_judge.ACCURACY_PROMPT changed: {got[:16]} != {PROMPT_SHA[:16]}. "
+            "Scores graded before and after this edit are not comparable."
+        )
