@@ -1,8 +1,8 @@
 # Mirix Configuration - Anthropic Claude Setup
-# Configuration using Anthropic's Claude 3.5 Sonnet
+# Configuration using Anthropic's Claude Sonnet 5.5
 
 llm_config:
-  model: "claude-3-5-sonnet-20241022"
+  model: "claude-sonnet-5-5"
   model_endpoint_type: "anthropic"
   model_endpoint: "https://api.anthropic.com/v1"
   context_window: 200000
@@ -10,7 +10,7 @@ llm_config:
 
 # Note: Anthropic doesn't provide embeddings, so we use OpenAI or Google
 embedding_config:
-  embedding_model: "text-embedding-004"
+  embedding_model: "gemini-embedding-001"
   embedding_endpoint_type: "google_ai"
   embedding_dim: 768
 
