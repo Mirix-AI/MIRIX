@@ -26,53 +26,6 @@ from v720_policy import (  # noqa: E402
 )
 
 
-def test_v720_keeps_v719_open_roles(monkeypatch):
-    raw = '{"frames":[{"predicate":"attend","args":[' \
-          '{"role":"attendee","name":"Caroline","type":"person"},' \
-          '{"role":"event","name":"Support group","type":"event"}]}]}'
-
-    monkeypatch.setattr(settings, "graph_version", "v7.20")
-    v720 = _parse(raw)
-    monkeypatch.setattr(settings, "graph_version", "v7.19")
-    v719 = _parse(raw)
-
-    assert v720.frames[0].args == v719.frames[0].args
-
-
-@pytest.mark.asyncio
-async def test_v720_reuses_v719_bounded_frontier_without_maintenance(monkeypatch):
-    monkeypatch.setattr(settings, "graph_version", "v7.20")
-    dream = AsyncMock(return_value={"round_count": 2})
-    maintain = AsyncMock(side_effect=AssertionError("v7.20 must retain v7.19 Dream"))
-    driver = object()
-    monkeypatch.setattr(
-        "mirix.services.graph_reconsolidator_v719.reconsolidate_bounded_frontier",
-        dream,
-    )
-    monkeypatch.setattr("mirix.database.neo4j_client.get_neo4j_driver", lambda: driver)
-    monkeypatch.setattr(
-        "mirix.services.graph_memory_manager_v7.V7GraphManager.maintain_graph",
-        maintain,
-    )
-
-    result = await AutoDreamManager()._refine_graph(
-        SimpleNamespace(id="user-1"),
-        SimpleNamespace(),
-        semantic_memory_ids={"sem-new"},
-        final_full_graph=True,
-    )
-
-    dream.assert_awaited_once_with(
-        driver,
-        user_id="user-1",
-        agent_state=ANY,
-        semantic_memory_ids={"sem-new"},
-        final_full_graph=True,
-    )
-    maintain.assert_not_awaited()
-    assert result == {"bounded_frontier": {"round_count": 2}}
-
-
 def test_v720_specific_anchor_can_beat_high_degree_person_hub():
     query = "What kind of art does Caroline make?"
     hub = anchor_policy_score(

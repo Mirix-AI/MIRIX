@@ -28,19 +28,6 @@ def _round_result(*, merged: int, submitted: int = 4) -> dict:
     }
 
 
-def test_v719_keeps_v712_ingest_roles(monkeypatch):
-    raw = '{"frames":[{"predicate":"attend","args":[' \
-          '{"role":"attendee","name":"Caroline","type":"person"},' \
-          '{"role":"event","name":"Support group","type":"event"}]}]}'
-
-    monkeypatch.setattr(settings, "graph_version", "v7.19")
-    v719 = _parse(raw)
-    monkeypatch.setattr(settings, "graph_version", "v7.12")
-    v712 = _parse(raw)
-
-    assert v719.frames[0].args == v712.frames[0].args
-
-
 def test_v719_pair_cache_key_is_unordered_type_and_policy_scoped():
     assert _pair_key(" Alpha ", "BETA", "Person") == _pair_key(
         "beta", "alpha", "person"
@@ -255,7 +242,7 @@ async def test_v719_final_zero_first_merge_does_not_run_repair(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_v719_manager_routes_without_legacy_maintenance(monkeypatch):
-    monkeypatch.setattr(settings, "graph_version", "v7.19")
+    monkeypatch.setattr(settings, "enable_graph_memory", True)
     dream = AsyncMock(return_value={"round_count": 2})
     maintain = AsyncMock(side_effect=AssertionError("v7.19 has no online cleanup"))
     driver = object()

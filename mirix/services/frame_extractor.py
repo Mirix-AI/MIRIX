@@ -38,7 +38,6 @@ from typing import List, Optional, Tuple
 from mirix.log import get_logger
 from mirix.services.lightrag_extractor import ExtractedEntity, call_openai_chat
 from mirix.services.triple_extractor import ENTITY_TYPES, _NOISE, _norm_type
-from mirix.settings import settings
 
 logger = get_logger(__name__)
 
@@ -48,11 +47,6 @@ _MAX_ARG_WORDS = 7
 
 # Above this width the pairwise projection degrades to a star — see as_relations.
 _CLIQUE_MAX_ARITY = 4
-
-# Versions that opt IN to role canonicalisation. Empty of the shipped line on purpose:
-# v7.13 was the experiment, it was never measured end to end, and no later version has
-# adopted it. Add a version here only together with the arm that measures it.
-_ROLE_CANON_VERSIONS = frozenset({"v7.13"})
 
 # Role canonicalisation. An open role vocabulary keeps extraction cheap, but it lets the
 # model label the SAME relation differently in different memories, and frame_identity
@@ -224,16 +218,7 @@ def _parse(raw: str, *, canon_roles: Optional[bool] = None) -> FrameResult:
     canonicalisation experiment.
     """
     if canon_roles is None:
-        # OPT-IN, not opt-out. This was an exclusion list that every new version had
-        # to remember to extend; it did not list v7.25, so the next version would have
-        # silently switched canonicalisation ON and folded an unmeasured variable into
-        # whatever else that version changed. Inverting it means a new version
-        # inherits v7.24's behaviour by default and enabling canon is a deliberate act.
-        #
-        # Status: canonicalisation has NEVER run in a shipped version. The live
-        # v7.23 store carries 342 distinct role strings, with patient(1,959),
-        # topic(1,462) and content(496) sitting unmerged beside theme(5,244).
-        canon_roles = settings.graph_version in _ROLE_CANON_VERSIONS
+        canon_roles = False   # role canonicalisation is opt-in and off in the shipped graph
     try:
         data = json.loads(raw)
     except Exception:  # noqa: BLE001
@@ -476,7 +461,7 @@ async def extract_frames(text: str, *, model: str, api_key: Optional[str] = None
         return FrameResult()
     try:
         prompt = FRAME_PROMPT + (
-            FRAME_V724_EVENT_SUFFIX if settings.graph_version == "v7.24" else ""
+            FRAME_V724_EVENT_SUFFIX
         )
         raw = await call_openai_chat(prompt, text, model,
                                      api_key=api_key, api_base=api_base)
@@ -484,23 +469,22 @@ async def extract_frames(text: str, *, model: str, api_key: Optional[str] = None
         logger.warning("frame extraction failed: %s", exc)
         return FrameResult()
     res = _parse(raw)
-    if settings.graph_version in ("v7.23", "v7.24"):
-        gaps = _coverage_gaps(text, res)
-        if gaps:
-            try:
-                repair_raw = await call_openai_chat(
-                    FRAME_REPAIR_PROMPT,
-                    "Missing specifics: " + json.dumps(gaps, ensure_ascii=False)
-                    + "\n\nSource:\n" + text,
-                    model,
-                    api_key=api_key,
-                    api_base=api_base,
-                    temperature=0.0,
-                )
-                res = _merge_frame_results(res, _parse(repair_raw))
-                logger.info("v7.23 frame coverage repair requested for: %s", gaps)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("v7.23 frame coverage repair failed: %s", exc)
+    gaps = _coverage_gaps(text, res)
+    if gaps:
+        try:
+            repair_raw = await call_openai_chat(
+                FRAME_REPAIR_PROMPT,
+                "Missing specifics: " + json.dumps(gaps, ensure_ascii=False)
+                + "\n\nSource:\n" + text,
+                model,
+                api_key=api_key,
+                api_base=api_base,
+                temperature=0.0,
+            )
+            res = _merge_frame_results(res, _parse(repair_raw))
+            logger.info("v7.23 frame coverage repair requested for: %s", gaps)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("v7.23 frame coverage repair failed: %s", exc)
     if res.frames:
         widths = [f.arity for f in res.frames]
         logger.info("frame extraction: %d entities, %d frames (arity max %d, mean %.1f) "

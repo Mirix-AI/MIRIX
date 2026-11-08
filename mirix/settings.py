@@ -12,6 +12,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 load_dotenv()
 
 
+# The one graph-memory implementation; see Settings.graph_version.
+GRAPH_POLICY_VERSION = "v7.24"
+
+
 class ToolSettings(BaseSettings):
     composio_api_key: Optional[str] = None
 
@@ -265,12 +269,6 @@ class Settings(BaseSettings):
     # When enabled, episodic/semantic candidate generation starts in Neo4j;
     # PostgreSQL only fetches or reranks IDs selected by graph traversal.
     enable_graph_memory: bool = Field(False, env="MIRIX_ENABLE_GRAPH_MEMORY")
-    # Graph schema variant. "v5" = full LightRAG dual-graph (Episode/Concept +
-    # EpisodicEntity/SemanticEntity with relation edges). "v6" = lean entity
-    # index with PG backrefs. "v7" = minimal semantic+episodic linkage graph:
-    # specific anchors + memory refs + support/temporal edges; details stay in
-    # flat PG memory. Only meaningful when enable_graph_memory is True.
-    graph_version: str = Field("v5", env="MIRIX_GRAPH_VERSION")
     neo4j_uri: str = Field("bolt://localhost:7687", env="MIRIX_NEO4J_URI")
     neo4j_user: str = Field("neo4j", env="MIRIX_NEO4J_USER")
     neo4j_password: str = Field("mirix_neo4j_dev", env="MIRIX_NEO4J_PASSWORD")
@@ -328,18 +326,24 @@ class Settings(BaseSettings):
         return value
 
     @property
-    def graph_pipeline(self) -> bool:
-        """Whether the graph-memory pipeline's behavior is in effect.
+    def graph_version(self) -> str:
+        """The graph policy in effect, derived from the single on/off switch.
 
-        True when graph memory is on, or when a graph version other than the
-        default "v5" is selected: the graph evaluations run their no-graph arm
-        with MIRIX_ENABLE_GRAPH_MEMORY=false and MIRIX_GRAPH_VERSION=v7.x, and that
-        arm keeps the pipeline's Postgres-side behavior (source provenance, the
-        merge coverage gate, the dream defaults). With neither set this is False
-        and every one of those paths behaves as it did before graph memory was
-        merged.
+        Graph memory has one implementation, the v7.24 hypergraph, so
+        MIRIX_ENABLE_GRAPH_MEMORY is the only setting. "v5" stands for "no graph"
+        and keeps the original flat MIRIX behaviour.
         """
-        return self.enable_graph_memory or self.graph_version != "v5"
+        return GRAPH_POLICY_VERSION if self.enable_graph_memory else "v5"
+
+    @property
+    def graph_pipeline(self) -> bool:
+        """Whether the graph-memory pipeline's behaviour is in effect.
+
+        True exactly when graph memory is on. With it off, every graph-related
+        path (source provenance, the merge coverage gate, the dream defaults)
+        behaves as it did before graph memory was merged.
+        """
+        return self.enable_graph_memory
 
     @property
     def mirix_pg_uri(self) -> str:

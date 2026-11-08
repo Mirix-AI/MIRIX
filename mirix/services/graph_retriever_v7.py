@@ -12,7 +12,6 @@ Retrieval path:
 from __future__ import annotations
 
 import asyncio
-import importlib
 import os
 import re
 from dataclasses import dataclass, field
@@ -21,7 +20,7 @@ from typing import Optional
 from mirix.log import get_logger
 from mirix.schemas.agent import AgentState
 from mirix.services._graph_common import embed_batch
-from mirix.services.graph_memory_manager_v7 import is_frame_version
+from mirix.services import retrieval_policy_v724 as _policy
 from mirix.settings import settings
 
 logger = get_logger(__name__)
@@ -35,13 +34,7 @@ DEFAULT_MAX_ITEMS_PER_KIND = 36
 FRAME_FACT_CAP = 240
 FRAME_MEMORY_CAP = 60
 
-# v7.12 PG expansion bounds (replacing V7_SUPPORTED_BY / V7_NEXT_MEMORY).
-# v7.26 candidate admission. The PG fetch that follows anchor search used to take
-# max(max_items_per_kind*3, 45) rows; the sweep showed the whole effect lands by 120 and a
-# larger window only helps the longest rows, because evidence_lexical_score has no
-# document-length penalty.
-CANDIDATE_WINDOW = 120
-
+# PG expansion bounds (same-chunk and temporal neighbours).
 PG_EXPAND_SEEDS = 24
 PG_EXPAND_LIMIT = 60
 # Degeneracy guard only. If the seeds' chunk ids match essentially the WHOLE store,
@@ -116,50 +109,6 @@ def _source_provenance(source_refs) -> dict:
     return {"source_refs": refs, "mentioned_at": mentioned_at}
 
 
-
-def _policy_minor(version: str | None = None) -> int | None:
-    """Minor number of a v7.N graph version, or None if it is not one."""
-    m = re.match(r"^v7\.(\d+)$", str(version if version is not None
-                                     else settings.graph_version or ""))
-    return int(m.group(1)) if m else None
-
-
-def is_policy_version(version: str | None = None) -> bool:
-    """v7.20 and up: the versions that run a retrieval policy at all."""
-    n = _policy_minor(version)
-    return n is not None and n >= 20
-
-
-def is_merge_policy_version(version: str | None = None) -> bool:
-    """v7.22 and up: the versions whose policy exposes merge_memory_rows.
-
-    v7.20 and v7.21 expose rank_memory_rows instead, a different call shape, so they
-    stay on their own branches.
-    """
-    n = _policy_minor(version)
-    return n is not None and n >= 22
-
-
-def merge_policy_module():
-    """The highest retrieval_policy_v7NN at or below the configured version.
-
-    Replaces a chain of exact equality checks that had to be extended by hand for every
-    release. There were 25 of those in this file; a new version matched none of them and
-    silently fell back to pre-policy behaviour, so its arm would have measured nothing
-    while looking like a regression. Resolving downwards means a new version inherits
-    its predecessor's policy until it ships one of its own.
-    """
-    want = _policy_minor()
-    if want is None or want < 22:
-        return None
-    for n in range(want, 21, -1):
-        try:
-            return importlib.import_module(f"mirix.services.retrieval_policy_v7{n}")
-        except ModuleNotFoundError:
-            continue
-    return None
-
-
 class V7Retriever:
     async def retrieve_rows(
         self,
@@ -178,9 +127,7 @@ class V7Retriever:
         search RESULTS did move QA. Callers that want the graph to actually influence an
         answer should use these rows as the graph-owned tool output.
         """
-        if not settings.enable_graph_memory or not (
-            settings.graph_version.startswith("v7") or settings.graph_version == "v8"
-        ):
+        if not settings.enable_graph_memory:
             return [], [], []
 
         from mirix.database.neo4j_client import get_neo4j_driver
@@ -201,45 +148,24 @@ class V7Retriever:
         relation_rows: list[V7MemoryRow] = []
         relation_memory_ids: list[str] = []
         query_plan = None
-        if is_merge_policy_version():
-            _pol = merge_policy_module()
-            plan_query = getattr(_pol, "plan_query")
-            rank_anchor_hits = getattr(_pol, "rank_anchor_hits")
+        _pol = _policy
+        plan_query = getattr(_pol, "plan_query")
+        rank_anchor_hits = getattr(_pol, "rank_anchor_hits")
 
-            query_plan = plan_query(query)
-            if query_plan.is_relation_query:
-                exact_anchors = await self._search_exact_anchors(driver, user_id, query)
-                by_id = {hit.id: hit for hit in vector_anchors}
-                for hit in exact_anchors:
-                    by_id[hit.id] = hit
-                anchors = rank_anchor_hits(query, list(by_id.values()), top_k)
-                relation_rows, relation_memory_ids = await self._collect_relation_facts(
-                    driver,
-                    user_id=user_id,
-                    query=query,
-                    exact_anchors=exact_anchors,
-                    limit=query_plan.relation_quota,
-                )
-            else:
-                anchors = vector_anchors
-        elif settings.graph_version == "v7.21":
-            from mirix.services.retrieval_policy_v721 import predicate_hints, rank_anchor_hits
-
-            if predicate_hints(query):
-                exact_anchors = await self._search_exact_anchors(driver, user_id, query)
-                by_id = {hit.id: hit for hit in vector_anchors}
-                for hit in exact_anchors:
-                    by_id[hit.id] = hit
-                anchors = rank_anchor_hits(query, list(by_id.values()), top_k)
-                relation_rows, relation_memory_ids = await self._collect_relation_facts(
-                    driver,
-                    user_id=user_id,
-                    query=query,
-                    exact_anchors=exact_anchors,
-                    limit=min(8, max(4, max_items_per_kind)),
-                )
-            else:
-                anchors = vector_anchors
+        query_plan = plan_query(query)
+        if query_plan.is_relation_query:
+            exact_anchors = await self._search_exact_anchors(driver, user_id, query)
+            by_id = {hit.id: hit for hit in vector_anchors}
+            for hit in exact_anchors:
+                by_id[hit.id] = hit
+            anchors = rank_anchor_hits(query, list(by_id.values()), top_k)
+            relation_rows, relation_memory_ids = await self._collect_relation_facts(
+                driver,
+                user_id=user_id,
+                query=query,
+                exact_anchors=exact_anchors,
+                limit=query_plan.relation_quota,
+            )
         else:
             anchors = vector_anchors
         if not anchors:
@@ -250,32 +176,26 @@ class V7Retriever:
         # flat) and v7.2 per-anchor coverage round-robin (neutral) — are archived; see
         # docs/graph_memory_v7/development_history.md.
         anchor_ids = [a.id for a in anchors]
-        if is_frame_version():
-            episodic_ids, semantic_ids = await self._collect_ids_from_anchors(
-                driver, user_id=user_id, anchor_ids=anchor_ids)
-        else:
-            episodic_ids, semantic_ids = await self._collect_memory_refs(
-                driver, user_id=user_id, anchor_ids=anchor_ids,
-            )
-        if is_frame_version():
-            # v7.12 adds the read side of the fact layer: memories that assert a frame
-            # this anchor participates in, then memories about its co-participants.
-            # Appended, never substituted — the direct anchor->memory paths above are
-            # what every earlier version retrieved on, and the frame hop is additive
-            # recall on top of them.
-            f_ep, f_sem = await self._collect_frame_refs(
-                driver, user_id=user_id, anchor_ids=anchor_ids)
-            seen_ep, seen_sem = set(episodic_ids), set(semantic_ids)
-            episodic_ids += [i for i in f_ep if i not in seen_ep]
-            semantic_ids += [i for i in f_sem if i not in seen_sem]
-            logger.info("v7.12 frame hop: +%d ep, +%d sem candidates",
-                        len([i for i in f_ep if i not in seen_ep]),
-                        len([i for i in f_sem if i not in seen_sem]))
-            # same-chunk + temporal neighbours, recomputed from PG in place of the
-            # V7_SUPPORTED_BY / V7_NEXT_MEMORY edges the ref layer used to carry.
-            x_ep, x_sem = await self._expand_via_pg(user_id, episodic_ids)
-            _add_unique(episodic_ids, x_ep)
-            _add_unique(semantic_ids, x_sem)
+        episodic_ids, semantic_ids = await self._collect_ids_from_anchors(
+            driver, user_id=user_id, anchor_ids=anchor_ids)
+        # v7.12 adds the read side of the fact layer: memories that assert a frame
+        # this anchor participates in, then memories about its co-participants.
+        # Appended, never substituted — the direct anchor->memory paths above are
+        # what every earlier version retrieved on, and the frame hop is additive
+        # recall on top of them.
+        f_ep, f_sem = await self._collect_frame_refs(
+            driver, user_id=user_id, anchor_ids=anchor_ids)
+        seen_ep, seen_sem = set(episodic_ids), set(semantic_ids)
+        episodic_ids += [i for i in f_ep if i not in seen_ep]
+        semantic_ids += [i for i in f_sem if i not in seen_sem]
+        logger.info("v7.12 frame hop: +%d ep, +%d sem candidates",
+                    len([i for i in f_ep if i not in seen_ep]),
+                    len([i for i in f_sem if i not in seen_sem]))
+        # same-chunk + temporal neighbours, recomputed from PG in place of the
+        # V7_SUPPORTED_BY / V7_NEXT_MEMORY edges the ref layer used to carry.
+        x_ep, x_sem = await self._expand_via_pg(user_id, episodic_ids)
+        _add_unique(episodic_ids, x_ep)
+        _add_unique(semantic_ids, x_sem)
         # Preserve the ordinary graph traversal candidate set before relation
         # citations are appended. v7.22 fetches and ranks the two lanes separately,
         # which prevents high-confidence relation evidence from crowding every
@@ -290,69 +210,33 @@ class V7Retriever:
             _add_unique(semantic_ids, relation_memory_ids)
         if not episodic_ids and not semantic_ids:
             return anchors, [], []
-        # v7.1+: rerank the anchor-collected candidates by query full-text
-        # similarity (anchor match = recall, text-cosine = precision) so a
-        # salient-but-wrong same-name entity from another document sinks below
-        # the true answer. Only plain v7 keeps the original anchor-traversal/date
-        # order (the unranked baseline). This used to be `== "v7.1"`, which
-        # silently switched the rerank OFF for every later version (v7.3+, v7.10,
-        # v8): they fell through to a plain traversal-order truncation — the same
-        # stale-exact-match guard bug as the ingest routing one fixed earlier.
-        # MIRIX_GRAPH_RERANK=0 restores the unranked traversal-order truncation —
-        # an A/B toggle so "graph without reranker" can be measured explicitly.
-        rerank = None if (
-            settings.graph_version == "v7"
-            or os.environ.get("MIRIX_GRAPH_RERANK") == "0"
-        ) else q_emb
-        ep_arg = episodic_ids if rerank else episodic_ids[:max_items_per_kind]
-        sem_arg = semantic_ids if rerank else semantic_ids[:max_items_per_kind]
-        wide = settings.graph_version == "v7.26"
-        fetch_limit = (
-            (min(len(ep_arg), CANDIDATE_WINDOW) if wide else max(max_items_per_kind * 3, 45))
-            if is_policy_version()
-            else max_items_per_kind
+        # Rerank the anchor-collected candidates by query similarity (anchor match is
+        # recall, text cosine is precision). MIRIX_GRAPH_RERANK=0 keeps the unranked
+        # traversal order, for measuring the graph without the reranker.
+        rerank = None if os.environ.get("MIRIX_GRAPH_RERANK") == "0" else q_emb
+        fetch_limit = max(max_items_per_kind * 3, 45)
+        base_ep_arg = base_episodic_ids if rerank else base_episodic_ids[:max_items_per_kind]
+        base_sem_arg = base_semantic_ids if rerank else base_semantic_ids[:max_items_per_kind]
+        relation_fetch_limit = max(max_items_per_kind * 2, 24)
+        tasks = (
+            asyncio.create_task(self._fetch_episodic(
+                user_id, base_ep_arg, q_emb=rerank, limit=fetch_limit,
+            )),
+            asyncio.create_task(self._fetch_semantic(
+                user_id, base_sem_arg, q_emb=rerank, limit=fetch_limit,
+            )),
+            asyncio.create_task(self._fetch_episodic(
+                user_id, relation_memory_ids, q_emb=rerank,
+                limit=relation_fetch_limit,
+            )),
+            asyncio.create_task(self._fetch_semantic(
+                user_id, relation_memory_ids, q_emb=rerank,
+                limit=relation_fetch_limit,
+            )),
         )
-        if is_merge_policy_version():
-            base_ep_arg = base_episodic_ids if rerank else base_episodic_ids[:max_items_per_kind]
-            base_sem_arg = base_semantic_ids if rerank else base_semantic_ids[:max_items_per_kind]
-            relation_fetch_limit = (
-                min(len(relation_memory_ids), CANDIDATE_WINDOW) if wide
-                else max(max_items_per_kind * 2, 24)
-            )
-            tasks = (
-                asyncio.create_task(self._fetch_episodic(
-                    user_id, base_ep_arg, q_emb=rerank, limit=fetch_limit,
-                )),
-                asyncio.create_task(self._fetch_semantic(
-                    user_id, base_sem_arg, q_emb=rerank, limit=fetch_limit,
-                )),
-                asyncio.create_task(self._fetch_episodic(
-                    user_id, relation_memory_ids, q_emb=rerank,
-                    limit=relation_fetch_limit,
-                )),
-                asyncio.create_task(self._fetch_semantic(
-                    user_id, relation_memory_ids, q_emb=rerank,
-                    limit=relation_fetch_limit,
-                )),
-            )
-            ep_rows, sem_rows, relation_ep_rows, relation_sem_rows = await asyncio.gather(
-                *tasks, return_exceptions=True
-            )
-        else:
-            ep_task = asyncio.create_task(
-                self._fetch_episodic(
-                    user_id, ep_arg, q_emb=rerank, limit=fetch_limit,
-                    priority_ids=relation_memory_ids,
-                ))
-            sem_task = asyncio.create_task(
-                self._fetch_semantic(
-                    user_id, sem_arg, q_emb=rerank, limit=fetch_limit,
-                    priority_ids=relation_memory_ids,
-                ))
-            ep_rows, sem_rows = await asyncio.gather(
-                ep_task, sem_task, return_exceptions=True
-            )
-            relation_ep_rows, relation_sem_rows = [], []
+        ep_rows, sem_rows, relation_ep_rows, relation_sem_rows = await asyncio.gather(
+            *tasks, return_exceptions=True
+        )
         if isinstance(ep_rows, Exception):
             logger.warning("v7 episodic PG fetch failed: %s", ep_rows)
             ep_rows = []
@@ -366,47 +250,17 @@ class V7Retriever:
             logger.warning("v7.22 relation semantic PG fetch failed: %s", relation_sem_rows)
             relation_sem_rows = []
 
-        if is_merge_policy_version():
-            _pol = merge_policy_module()
-            merge_memory_rows = getattr(_pol, "merge_memory_rows")
+        _pol = _policy
+        merge_memory_rows = getattr(_pol, "merge_memory_rows")
 
-            # v7.25 scores both lanes on ONE key instead of stitching them by quota.
-            # fact_scores carries the structural evidence per PG row; when it is empty
-            # merge_memory_rows falls back to the v7.24 quota merge, so a query with no
-            # relation span behaves exactly as before rather than approximately.
-            merge_kwargs = {}
-            if hasattr(_pol, "fact_scores_from_rows"):
-                merge_kwargs["fact_scores"] = _pol.fact_scores_from_rows(relation_rows)
-            ep_rows = merge_memory_rows(
-                query, ep_rows, relation_ep_rows, max_items_per_kind, **merge_kwargs
-            )
-            sem_rows = merge_memory_rows(
-                query, sem_rows, relation_sem_rows, max_items_per_kind, **merge_kwargs
-            )
-            sem_rows = relation_rows + sem_rows
-        elif settings.graph_version == "v7.21":
-            from mirix.services.retrieval_policy_v721 import rank_memory_rows
+        ep_rows = merge_memory_rows(
+            query, ep_rows, relation_ep_rows, max_items_per_kind
+        )
+        sem_rows = merge_memory_rows(
+            query, sem_rows, relation_sem_rows, max_items_per_kind
+        )
+        sem_rows = relation_rows + sem_rows
 
-            ep_rows = rank_memory_rows(
-                query, ep_rows, max_items_per_kind, priority_ids=relation_memory_ids
-            )
-            sem_rows = rank_memory_rows(
-                query, sem_rows, max_items_per_kind, priority_ids=relation_memory_ids
-            )
-            sem_rows = relation_rows + sem_rows
-        elif settings.graph_version == "v7.20":
-            from mirix.services.retrieval_policy_v720 import rank_memory_rows
-
-            ep_rows = rank_memory_rows(query, ep_rows, max_items_per_kind)
-            sem_rows = rank_memory_rows(query, sem_rows, max_items_per_kind)
-
-        # Verification column. A null arm means nothing unless the arm demonstrably ran:
-        # MIRIX_SEARCH_LIMIT was once "measured" as having no effect when the code path
-        # never fired at all. These three numbers say whether v7.26 actually widened
-        # anything on this call.
-        logger.info("v7.26 admission: candidates=%d ep_in=%d fetch_limit=%d wide=%s",
-                    len(anchors), len(ep_arg), fetch_limit,
-                    settings.graph_version == "v7.26")
         logger.info("v7 retrieve_rows: %d anchors, %d ep, %d sem",
                     len(anchors), len(ep_rows), len(sem_rows))
         return anchors, ep_rows, sem_rows
@@ -424,10 +278,7 @@ class V7Retriever:
         # Initial retrieval is deliberately compact in v7.20.  The answerer's
         # explicit search tool still asks retrieve_rows for its requested limit;
         # only the automatically injected context is capped here.
-        initial_limit = (
-            10 if is_policy_version()
-            else max_items_per_kind
-        )
+        initial_limit = 10
         anchors, ep_rows, sem_rows = await self.retrieve_rows(
             query=query, user_id=user_id, agent_state=agent_state,
             top_k=top_k, max_items_per_kind=initial_limit)
@@ -508,41 +359,16 @@ class V7Retriever:
         Fix is to over-fetch and escalate until enough of the user's own anchors
         survive the filter, bounded so a single-user store pays nothing.
         """
-        # The tuple was EMPTY, so candidate_k has always collapsed to top_k and this whole
-        # branch was dead code. v7.26 turns it on: 64 anchors admitted instead of 15.
-        #
-        # Admission, not ranking, is what the error triage points at. Of 169 wrong answers,
-        # 38 have the answer sitting in the store and never retrieved, and reading them
-        # shows a topically adjacent row winning — the right row exists and loses. Widening
-        # what is considered before ranking is the one change measured to help BOTH sides
-        # offline (gold-supporting row present in the final evidence: 18->24 on wrong
-        # questions, 53->60 on right ones). Every answering-side fix tried so far gained on
-        # the wrong questions by breaking more of the right ones; this one does not trade.
-        precision_policy = settings.graph_version in ("v7.23", "v7.26")
-        candidate_k = max(top_k * 4, 64) if precision_policy else top_k
-        if precision_policy:
-            cypher = """
-            CALL db.index.vector.queryNodes('v7_anchor_name_emb', $fetch_k, $emb)
-            YIELD node AS a, score AS sim
-            WHERE a.user_id = $user_id
-            OPTIONAL MATCH (a)<-[:V7_FACT_ARG]-(f:V7Fact)
-            WITH a, sim, count(DISTINCT f) AS degree,
-                 collect(DISTINCT f.predicate)[..16] AS predicates
-            RETURN a.id AS id, a.name AS name, a.anchor_type AS anchor_type,
-                   sim AS sim, degree AS degree, predicates AS predicates
-            ORDER BY sim DESC
-            LIMIT $candidate_k
-            """
-        else:
-            cypher = """
-            CALL db.index.vector.queryNodes('v7_anchor_name_emb', $fetch_k, $emb)
-            YIELD node AS a, score AS sim
-            WHERE a.user_id = $user_id
-            RETURN a.id AS id, a.name AS name, a.anchor_type AS anchor_type,
-                   sim AS sim, 0 AS degree, [] AS predicates
-            ORDER BY sim DESC
-            LIMIT $candidate_k
-            """
+        candidate_k = top_k
+        cypher = """
+        CALL db.index.vector.queryNodes('v7_anchor_name_emb', $fetch_k, $emb)
+        YIELD node AS a, score AS sim
+        WHERE a.user_id = $user_id
+        RETURN a.id AS id, a.name AS name, a.anchor_type AS anchor_type,
+               sim AS sim, 0 AS degree, [] AS predicates
+        ORDER BY sim DESC
+        LIMIT $candidate_k
+        """
         hits: list[V7AnchorHit] = []
         async with driver.session(database=settings.neo4j_database) as session:
             for factor in ANCHOR_OVERFETCH_STEPS:
@@ -564,21 +390,10 @@ class V7Retriever:
                 # Enough survivors, or the index is exhausted so escalating cannot help.
                 if len(hits) >= candidate_k or fetch_k >= ANCHOR_OVERFETCH_CAP:
                     break
-        if is_merge_policy_version():
-            _pol = merge_policy_module()
-            rank_anchor_hits = getattr(_pol, "rank_anchor_hits")
+        _pol = _policy
+        rank_anchor_hits = getattr(_pol, "rank_anchor_hits")
 
-            hits = rank_anchor_hits(query, hits, top_k)
-        elif settings.graph_version == "v7.21":
-            from mirix.services.retrieval_policy_v721 import rank_anchor_hits
-
-            hits = rank_anchor_hits(query, hits, top_k)
-        elif settings.graph_version == "v7.20":
-            from mirix.services.retrieval_policy_v720 import rank_anchor_hits
-
-            hits = rank_anchor_hits(query, hits, top_k)
-        else:
-            hits = hits[:top_k]
+        hits = rank_anchor_hits(query, hits, top_k)
         if len(hits) < top_k:
             logger.info("v7 anchor search: %d/%d after user filter (store may be "
                         "smaller than top_k)", len(hits), top_k)
@@ -589,11 +404,8 @@ class V7Retriever:
     ) -> list[V7AnchorHit]:
         """Indexed exact query-name lookups used by v7.21+ relation lanes."""
 
-        if is_merge_policy_version():
-            _pol = merge_policy_module()
-            exact_anchor_terms = getattr(_pol, "exact_anchor_terms")
-        else:
-            from mirix.services.retrieval_policy_v721 import exact_anchor_terms
+        _pol = _policy
+        exact_anchor_terms = getattr(_pol, "exact_anchor_terms")
 
         names = exact_anchor_terms(query)
         if not names:
@@ -641,17 +453,10 @@ class V7Retriever:
         explicitly named person hub does not trigger a full-graph traversal.
         """
 
-        if is_merge_policy_version():
-            _pol = merge_policy_module()
-            predicate_hints = getattr(_pol, "predicate_hints")
-            query_mentions_anchor = getattr(_pol, "query_mentions_anchor")
-            rank_relation_facts = getattr(_pol, "rank_relation_facts")
-        else:
-            from mirix.services.retrieval_policy_v721 import (
-                predicate_hints,
-                query_mentions_anchor,
-                rank_relation_facts,
-            )
+        _pol = _policy
+        predicate_hints = getattr(_pol, "predicate_hints")
+        query_mentions_anchor = getattr(_pol, "query_mentions_anchor")
+        rank_relation_facts = getattr(_pol, "rank_relation_facts")
 
         hints = predicate_hints(query)
         if not exact_anchors or not hints:
@@ -763,11 +568,7 @@ class V7Retriever:
                     "source": "graph_fact",
                     "citation_memory_ids": list(fact.memory_ids),
                     "v721_fact_score": fact.policy_score,
-                    "v722_fact_score": (
-                        fact.policy_score
-                        if is_merge_policy_version()
-                        else None
-                    ),
+                    "v722_fact_score": fact.policy_score,
                     "v724_role_score": getattr(fact, "v724_role_score", None),
                     "v724_temporal_state_score": getattr(
                         fact, "v724_temporal_state_score", None
@@ -777,9 +578,8 @@ class V7Retriever:
             ))
             _add_unique(memory_ids, fact.memory_ids)
         logger.info(
-            "%s relation lane: %d exact anchors, %d adjacent candidates, "
+            "graph relation lane: %d exact anchors, %d adjacent candidates, "
             "%d ranked facts, %d citations",
-            settings.graph_version,
             len(exact_anchors), len(candidates), len(rows), len(memory_ids),
         )
         return rows, memory_ids
@@ -922,49 +722,6 @@ class V7Retriever:
                 "v721_chain": True,
             },
         )]
-
-    async def _collect_memory_refs(
-        self, driver, *, user_id: str, anchor_ids: list[str]
-    ) -> tuple[list[str], list[str]]:
-        if not anchor_ids:
-            return [], []
-        cypher = """
-        UNWIND $anchor_ids AS aid
-        MATCH (a:V7Anchor {id: aid, user_id: $user_id})
-        OPTIONAL MATCH (a)-[:V7_APPEARS_IN]->(ep:V7EpisodeRef)
-        OPTIONAL MATCH (a)-[:V7_DESCRIBED_BY]->(sem:V7ConceptRef)
-        OPTIONAL MATCH (sem)-[:V7_SUPPORTED_BY]->(support_ep:V7EpisodeRef)
-        OPTIONAL MATCH (ep)<-[:V7_SUPPORTED_BY]-(support_sem:V7ConceptRef)
-        OPTIONAL MATCH (ep)-[:V7_NEXT_MEMORY]-(near_ep:V7EpisodeRef)
-        RETURN
-            collect(DISTINCT ep.memory_id) AS direct_ep,
-            collect(DISTINCT support_ep.memory_id) AS support_ep,
-            collect(DISTINCT near_ep.memory_id) AS near_ep,
-            collect(DISTINCT sem.memory_id) AS direct_sem,
-            collect(DISTINCT support_sem.memory_id) AS support_sem
-        """
-        ep_ids: list[str] = []
-        sem_ids: list[str] = []
-
-        def add_unique(target: list[str], values: list[object]) -> None:
-            seen = set(target)
-            for raw in values or []:
-                if raw is None:
-                    continue
-                value = str(raw)
-                if value and value not in seen:
-                    target.append(value)
-                    seen.add(value)
-
-        async with driver.session(database=settings.neo4j_database) as session:
-            result = await session.run(cypher, anchor_ids=anchor_ids, user_id=user_id)
-            async for rec in result:
-                add_unique(ep_ids, rec["direct_ep"])
-                add_unique(ep_ids, rec["support_ep"])
-                add_unique(ep_ids, rec["near_ep"])
-                add_unique(sem_ids, rec["direct_sem"])
-                add_unique(sem_ids, rec["support_sem"])
-        return ep_ids, sem_ids
 
     async def _collect_ids_from_anchors(
         self, driver, *, user_id: str, anchor_ids: list[str]

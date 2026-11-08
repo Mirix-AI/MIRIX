@@ -7,9 +7,8 @@
 -- episodic_memory.source_refs and semantic_memory.source_refs list the ingests a
 -- row came from (turn_id, chunk_id, occurred_at); semantic_memory.prior_values
 -- keeps the values conflict resolution superseded; users.turn_counter and
--- users.chunk_counter number a user's ingests. They are written only in the graph
--- pipeline (settings.graph_pipeline: MIRIX_ENABLE_GRAPH_MEMORY=true or a
--- MIRIX_GRAPH_VERSION other than v5); everywhere else they keep their defaults.
+-- users.chunk_counter number a user's ingests. They are written only when graph
+-- memory is on (MIRIX_ENABLE_GRAPH_MEMORY=true); otherwise they keep their defaults.
 --
 -- Idempotent: ADD COLUMN IF NOT EXISTS. On PostgreSQL 11+ a constant DEFAULT is
 -- metadata-only, so this does not rewrite the tables.

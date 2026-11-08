@@ -63,23 +63,6 @@ def test_v717_request_marks_only_explicit_final_dream():
     assert final.final_full_graph is True
 
 
-def test_v717_keeps_v712_ingest_roles(monkeypatch):
-    raw = '{"frames":[{"predicate":"attend","args":[' \
-          '{"role":"attendee","name":"Caroline","type":"person"},' \
-          '{"role":"event","name":"Support group","type":"event"}]}]}'
-
-    monkeypatch.setattr(settings, "graph_version", "v7.17")
-    v717 = _parse(raw)
-    monkeypatch.setattr(settings, "graph_version", "v7.12")
-    v712 = _parse(raw)
-
-    assert v717.frames[0].args == v712.frames[0].args
-    assert v717.frames[0].args == [
-        ("attendee", "Caroline"),
-        ("event", "Support group"),
-    ]
-
-
 @pytest.mark.asyncio
 async def test_v717_candidates_are_v712_top4_but_semantic_on_both_sides():
     driver = _Driver(
@@ -230,40 +213,3 @@ async def test_v717_final_cycle_scans_all_semantic_then_cleans_semantic_only(
     assert result["semantic_facts_in_scope"] == 2
     assert result["duplicate_semantic_frames_merged"] == 2
     assert result["episodic_only_candidates"] == 0
-
-
-@pytest.mark.asyncio
-async def test_v717_manager_routes_final_flag_without_legacy_maintenance(monkeypatch):
-    monkeypatch.setattr(settings, "graph_version", "v7.17")
-    dream = AsyncMock(return_value={"candidate_pairs": 2})
-    maintain = AsyncMock(side_effect=AssertionError("v7.17 owns its cleanup"))
-    driver = object()
-
-    monkeypatch.setattr(
-        "mirix.services.graph_reconsolidator_v717.reconsolidate_hybrid_semantic",
-        dream,
-    )
-    monkeypatch.setattr(
-        "mirix.database.neo4j_client.get_neo4j_driver", lambda: driver
-    )
-    monkeypatch.setattr(
-        "mirix.services.graph_memory_manager_v7.V7GraphManager.maintain_graph",
-        maintain,
-    )
-
-    result = await AutoDreamManager()._refine_graph(
-        SimpleNamespace(id="user-1"),
-        SimpleNamespace(),
-        semantic_memory_ids={"sem-new"},
-        final_full_graph=True,
-    )
-
-    dream.assert_awaited_once_with(
-        driver,
-        user_id="user-1",
-        agent_state=ANY,
-        semantic_memory_ids={"sem-new"},
-        final_full_graph=True,
-    )
-    maintain.assert_not_awaited()
-    assert result == {"hybrid_semantic": {"candidate_pairs": 2}}

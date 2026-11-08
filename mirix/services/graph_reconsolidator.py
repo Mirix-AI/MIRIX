@@ -281,24 +281,14 @@ async def _due(driver, user_id: str, every_n: int) -> tuple[bool, int]:
     # holder", cos 0.975). Worse, maintain_graph's dead-anchor sweep sits in a separate
     # ungated try block, so a dream-enabled v7.12 run would PRUNE without MERGING —
     # exactly the ordering hazard commit 882edbc was written to remove.
-    from mirix.services.graph_memory_manager_v7 import is_frame_version
-
-    if is_frame_version():
-        cypher = """
-            MATCH (a:V7Anchor {user_id: $u})
-            WITH sum(size(coalesce(a.episodic_ids, [])) +
-                     size(coalesce(a.semantic_ids, []))) AS now
-            OPTIONAL MATCH (k:V7Meta {user_id: $u})
-            RETURN coalesce(now, 0) AS now,
-                   coalesce(k.last_reconsolidated_at_count, 0) AS mark
-            """
-    else:
-        cypher = """
-            MATCH (m:V7MemoryRef {user_id: $u})
-            WITH count(m) AS now
-            OPTIONAL MATCH (k:V7Meta {user_id: $u})
-            RETURN now, coalesce(k.last_reconsolidated_at_count, 0) AS mark
-            """
+    cypher = """
+        MATCH (a:V7Anchor {user_id: $u})
+        WITH sum(size(coalesce(a.episodic_ids, [])) +
+                 size(coalesce(a.semantic_ids, []))) AS now
+        OPTIONAL MATCH (k:V7Meta {user_id: $u})
+        RETURN coalesce(now, 0) AS now,
+               coalesce(k.last_reconsolidated_at_count, 0) AS mark
+        """
     async with driver.session(database=settings.neo4j_database) as session:
         rec = await (await session.run(cypher, u=user_id)).single()
     now = int(rec["now"]) if rec else 0

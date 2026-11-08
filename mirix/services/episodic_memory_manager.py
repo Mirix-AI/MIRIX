@@ -686,51 +686,35 @@ class EpisodicMemoryManager:
                 use_cache=use_cache,
             )
 
-            # Graph memory write path. Routed by settings.graph_version:
-            #   v5 → full LightRAG dual-graph (Episode + EpisodicEntity + EP_RELATES)
-            #   v6 → lean entity index (V6Entity + V6_COOCCUR), no item nodes
-            #   v7 → minimal semantic+episodic linkage graph; details stay in PG
-            # Sync hook — failures logged but do not affect the PG insert that
-            # already completed.
+            # Graph memory write path: index the new row into the hypergraph.
+            # Sync hook; failures are logged and do not affect the PG insert
+            # that already completed.
             if settings.enable_graph_memory:
                 try:
-                    # Prefix match, not a version list: the old explicit tuple
-                    # ("v7","v7.1","v7.2","v7.3","v8") silently drifted six versions out of
-                    # date, so a server configured for v7.4+ fell through to the legacy
-                    # branch and built the OLD schema. Measured on the eval store: an
-                    # auto_dream cycle under v7.10 created 1,101 EpisodicEntity + 611
-                    # SemanticEntity legacy nodes and left 185 memories with no V7 ref.
-                    # The v5/v6 builders that branch dispatched to are archived under
-                    # archive/legacy_graph/; unrecognised versions now skip graph writes.
-                    if settings.graph_version.startswith("v7") or settings.graph_version == "v8":
-                        from mirix.services.graph_memory_manager_v7 import V7GraphManager
+                    from mirix.services.graph_memory_manager_v7 import V7GraphManager
 
-                        source_meta = (
-                            dict(filter_tags["source_meta"])
-                            if filter_tags and isinstance(filter_tags.get("source_meta"), dict)
-                            else None
-                        )
-                        await V7GraphManager().process_memory(
-                            source_kind="episodic",
-                            source_id=event.id,
-                            text=(summary or "") + ("\n" + details if details else ""),
-                            title=summary,
-                            summary=summary,
-                            occurred_at=timestamp,
-                            source_meta=source_meta,
-                            agent_state=agent_state,
-                            organization_id=organization_id,
-                            user_id=user_id or "unknown",
-                            # Role provenance for the hypergraph (fact.role +
-                            # per-citation cite.role). Without this the organically
-                            # built graph loses all user/assistant attribution — the
-                            # offline rebuild script passed it, the live hook didn't.
-                            role=event.actor,
-                        )
-                    else:
-                        logger.warning(
-                            "Episodic graph write skipped: graph_version=%r has no live "
-                            "builder (v5/v6 are archived)", settings.graph_version)
+                    source_meta = (
+                        dict(filter_tags["source_meta"])
+                        if filter_tags and isinstance(filter_tags.get("source_meta"), dict)
+                        else None
+                    )
+                    await V7GraphManager().process_memory(
+                        source_kind="episodic",
+                        source_id=event.id,
+                        text=(summary or "") + ("\n" + details if details else ""),
+                        title=summary,
+                        summary=summary,
+                        occurred_at=timestamp,
+                        source_meta=source_meta,
+                        agent_state=agent_state,
+                        organization_id=organization_id,
+                        user_id=user_id or "unknown",
+                        # Role provenance for the hypergraph (fact.role +
+                        # per-citation cite.role). Without this the organically
+                        # built graph loses all user/assistant attribution — the
+                        # offline rebuild script passed it, the live hook didn't.
+                        role=event.actor,
+                    )
                 except Exception as graph_err:
                     logger.warning("Episodic graph write failed (non-fatal): %s", graph_err)
 

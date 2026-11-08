@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
 from mirix_memory_system import MirixMemorySystem
-from task_agent import TaskAgent
+from task_agent import QA_POLICY_VERSION, TaskAgent
 from v720_policy import (
     format_visual_evidence,
     is_v720,
@@ -306,13 +306,11 @@ def main() -> None:
     # user ownership is isolated so a fresh run cannot contaminate an existing
     # benchmark graph with the same LoCoMo conversation ids.
     eval_user_prefix = os.environ.get("MIRIX_EVAL_USER_PREFIX", "")
-    v720_enabled = is_v720(os.environ.get("MIRIX_GRAPH_VERSION"))
-    if v720_enabled:
-        graph_version = os.environ.get("MIRIX_GRAPH_VERSION", "v7.20")
-        print(
-            f"[main_eval] {graph_version} policy enabled: multimodal evidence + temporal provenance + compact QA retrieval",
-            flush=True,
-        )
+    v720_enabled = is_v720(QA_POLICY_VERSION)
+    print(
+        "[main_eval] QA policy: multimodal evidence + temporal provenance + compact QA retrieval",
+        flush=True,
+    )
     qa_only_existing_store = os.environ.get("MIRIX_QA_ONLY_EXISTING_STORE") == "1"
     if qa_only_existing_store:
         print(

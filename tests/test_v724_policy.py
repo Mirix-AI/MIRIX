@@ -212,33 +212,33 @@ def test_v724_episodic_frame_identity_preserves_occurrences():
     args = ["agent:kim", "theme:race"]
     first = frame_identity_for_source(
         "user", "attend", args, literals={}, source_kind="episodic",
-        memory_id="episode-1", version="v7.24",
+        memory_id="episode-1",
     )
     second = frame_identity_for_source(
         "user", "attend", args, literals={}, source_kind="episodic",
-        memory_id="episode-2", version="v7.24",
+        memory_id="episode-2",
     )
     assert first != second
 
     # Multiple semantic citations still converge on one durable claim.
     semantic_first = frame_identity_for_source(
         "user", "likes", args, literals={}, source_kind="semantic",
-        memory_id="semantic-1", version="v7.24",
+        memory_id="semantic-1",
     )
     semantic_second = frame_identity_for_source(
         "user", "likes", args, literals={}, source_kind="semantic",
-        memory_id="semantic-2", version="v7.24",
+        memory_id="semantic-2",
     )
     assert semantic_first == semantic_second
 
     # Repeat mentions of the exact same dated occurrence may share citations.
     dated_first = frame_identity_for_source(
         "user", "attend", args, literals={"event_date": "2023-07-21"},
-        source_kind="episodic", memory_id="episode-3", version="v7.24",
+        source_kind="episodic", memory_id="episode-3",
     )
     dated_second = frame_identity_for_source(
         "user", "attend", args, literals={"event_date": "2023-07-21"},
-        source_kind="episodic", memory_id="episode-4", version="v7.24",
+        source_kind="episodic", memory_id="episode-4",
     )
     assert dated_first == dated_second
 
@@ -307,7 +307,7 @@ def test_v724_verifier_reviews_direction_state_and_unsupported_literals():
 
 @pytest.mark.asyncio
 async def test_v724_reuses_v719_bounded_semantic_frontier(monkeypatch):
-    monkeypatch.setattr(settings, "graph_version", "v7.24")
+    monkeypatch.setattr(settings, "enable_graph_memory", True)
     dream = AsyncMock(return_value={"round_count": 1, "episodic_only_candidates": 0})
     monkeypatch.setattr(
         "mirix.services.graph_reconsolidator_v719.reconsolidate_bounded_frontier",

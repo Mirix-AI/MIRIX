@@ -22,7 +22,7 @@ import sys
 
 
 def psql(db, sql):
-    r = subprocess.run(["/home/lj/MIRIX_eval/pgenv/bin/psql", "-w", "-h", "localhost",
+    r = subprocess.run([os.environ.get("PSQL", "psql"), "-w", "-h", "localhost",
                         "-U", "mirix", "-d", db, "-At", "-c", sql],
                        capture_output=True, text=True,
                        env={**os.environ, "PGPASSWORD": "mirix"})

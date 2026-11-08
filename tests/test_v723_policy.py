@@ -170,30 +170,3 @@ def test_v723_coverage_includes_date_when_quantity_already_triggers_repair():
     assert _coverage_gaps(
         "Jon visited on 17 July 2023 with 5 friends.", FrameResult()
     ) == ["17 July 2023", "5"]
-
-
-@pytest.mark.asyncio
-async def test_v723_reuses_v719_bounded_semantic_frontier(monkeypatch):
-    monkeypatch.setattr(settings, "graph_version", "v7.23")
-    dream = AsyncMock(return_value={"round_count": 1, "episodic_only_candidates": 0})
-    monkeypatch.setattr(
-        "mirix.services.graph_reconsolidator_v719.reconsolidate_bounded_frontier",
-        dream,
-    )
-    monkeypatch.setattr(
-        "mirix.database.neo4j_client.get_neo4j_driver", lambda: object(),
-    )
-    result = await AutoDreamManager()._refine_graph(
-        SimpleNamespace(id="user-1"),
-        SimpleNamespace(),
-        semantic_memory_ids={"sem-new"},
-        final_full_graph=False,
-    )
-    dream.assert_awaited_once_with(
-        ANY,
-        user_id="user-1",
-        agent_state=ANY,
-        semantic_memory_ids={"sem-new"},
-        final_full_graph=False,
-    )
-    assert result["bounded_frontier"]["episodic_only_candidates"] == 0

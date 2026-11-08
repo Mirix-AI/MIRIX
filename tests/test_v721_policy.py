@@ -27,45 +27,6 @@ from v721_policy import normalize_count_answer, question_operator  # noqa: E402
 from task_agent import TaskAgent  # noqa: E402
 
 
-def test_v721_inherits_v720_ingest_and_keeps_open_roles(monkeypatch):
-    assert is_v720("v7.21")
-    raw = '{"frames":[{"predicate":"buy","args":[' \
-          '{"role":"buyer","name":"Melanie","type":"person"},' \
-          '{"role":"item","name":"figurines","type":"object"}]}]}'
-    monkeypatch.setattr(settings, "graph_version", "v7.21")
-    v721 = _parse(raw)
-    monkeypatch.setattr(settings, "graph_version", "v7.20")
-    v720 = _parse(raw)
-    assert v721.frames[0].args == v720.frames[0].args
-
-
-@pytest.mark.asyncio
-async def test_v721_reuses_v719_bounded_frontier(monkeypatch):
-    monkeypatch.setattr(settings, "graph_version", "v7.21")
-    dream = AsyncMock(return_value={"round_count": 1})
-    monkeypatch.setattr(
-        "mirix.services.graph_reconsolidator_v719.reconsolidate_bounded_frontier",
-        dream,
-    )
-    monkeypatch.setattr(
-        "mirix.database.neo4j_client.get_neo4j_driver", lambda: object(),
-    )
-    result = await AutoDreamManager()._refine_graph(
-        SimpleNamespace(id="user-1"),
-        SimpleNamespace(),
-        semantic_memory_ids={"sem-new"},
-        final_full_graph=False,
-    )
-    dream.assert_awaited_once_with(
-        ANY,
-        user_id="user-1",
-        agent_state=ANY,
-        semantic_memory_ids={"sem-new"},
-        final_full_graph=False,
-    )
-    assert result == {"bounded_frontier": {"round_count": 1}}
-
-
 def test_v721_exact_anchor_terms_and_general_relation_families():
     terms = exact_anchor_terms("What items has Melanie bought?")
     assert "melanie" in terms

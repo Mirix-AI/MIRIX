@@ -395,14 +395,6 @@ def main() -> None:
             # final consolidation so the tail chunks are dreamed before QA
             _fire_dream(len(chunks))
 
-        # v8 finalize: prune singleton anchors now that ingestion is complete
-        # (no-op for v5/v6/v7). An anchor's final degree is only known here.
-        try:
-            compact = memory_system.compact_graph()
-            print(f"[longmem_eval] {sample_id}: graph compact -> {compact}")
-        except Exception as exc:
-            print(f"[longmem_eval] {sample_id}: graph compact skipped ({exc})")
-
         build_stats = _snapshot_tokens()
         sample_result["token_stats"] = {"build_raw": build_stats, "build_sum": _sum_tokens(build_stats)}
         save_sample_result(sample_path, sample_result)

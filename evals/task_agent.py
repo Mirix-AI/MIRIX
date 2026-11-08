@@ -11,6 +11,9 @@ from pathlib import Path
 import yaml
 from mirix import MirixClient
 from mirix_memory_system import _resolve_api_keys
+
+# QA protocol of the graph evaluation, used by every configuration (graph on or off).
+QA_POLICY_VERSION = "v7.24"
 from v720_policy import (
     aggregation_instruction,
     deduplicate_results,
@@ -186,11 +189,11 @@ class TaskAgent:
         # intervention landed rather than assume it (see MIRIX_SEARCH_CAP below).
         self._last_row_count = 0
         self._row_counts: List[int] = []
-        self._v720_enabled = is_v720(os.environ.get("MIRIX_GRAPH_VERSION"))
-        self._v721_enabled = is_v721(os.environ.get("MIRIX_GRAPH_VERSION"))
-        self._v722_enabled = is_v722(os.environ.get("MIRIX_GRAPH_VERSION"))
-        self._v723_enabled = is_v723(os.environ.get("MIRIX_GRAPH_VERSION"))
-        self._v724_enabled = is_v724(os.environ.get("MIRIX_GRAPH_VERSION"))
+        self._v720_enabled = is_v720(QA_POLICY_VERSION)
+        self._v721_enabled = is_v721(QA_POLICY_VERSION)
+        self._v722_enabled = is_v722(QA_POLICY_VERSION)
+        self._v723_enabled = is_v723(QA_POLICY_VERSION)
+        self._v724_enabled = is_v724(QA_POLICY_VERSION)
         self._v722_force_raw_query = False
         self._v721_relation_query = False
         self._v721_question = ""
