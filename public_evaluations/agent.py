@@ -184,7 +184,7 @@ class AgentWrapper():
             }
 
             url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-04-17:generateContent"
-            params = {"key": "AIzaSyAPdbLNkHSDcD8gd6wgB0KqjXp3yG5YRGs" }  # API key as query param
+            params = {"key": os.environ["GEMINI_API_KEY"]}  # API key as query param
             headers = {"Content-Type": "application/json"}
             response = requests.post(url, params=params, headers=headers, json=payload)
             # Check the response
