@@ -199,6 +199,9 @@ async def api(sm, monkeypatch, tmp_path):
         async def get_client_by_id(self, cid):
             return {client_id: client, other_client_id: other_client}.get(cid)
 
+        async def get_client_by_api_key(self, key):
+            return {f"test-key-{client_id}": client, f"test-key-{other_client_id}": other_client}.get(key)
+
     class FakeAgentManager:
         async def get_agent_by_id(self, aid, actor):
             owned = {
@@ -245,7 +248,7 @@ async def api(sm, monkeypatch, tmp_path):
             return await http.post(
                 endpoint,
                 json=body,
-                headers={"x-client-id": client_id, "x-org-id": org_id},
+                headers={"X-API-Key": f"test-key-{client_id}"},
             )
 
         async def post_as_other(endpoint, **body):
@@ -254,7 +257,7 @@ async def api(sm, monkeypatch, tmp_path):
             return await http.post(
                 endpoint,
                 json=body,
-                headers={"x-client-id": other_client_id, "x-org-id": org_id},
+                headers={"X-API-Key": f"test-key-{other_client_id}"},
             )
 
         state.post = post
@@ -1884,7 +1887,7 @@ class TestOrphanedSessionAdoption:
         resp = await api.http.post(
             f"/memory/sessions/{sid}/close",
             json={"user_id": api.user},
-            headers={"x-client-id": api.client.id, "x-org-id": api.org},
+            headers={"X-API-Key": f"test-key-{api.client.id}"},
         )
 
         assert resp.status_code == 200, resp.text

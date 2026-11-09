@@ -27,7 +27,7 @@ from mirix.orm.errors import NoResultFound
 from mirix.schemas.agent import AgentState, AgentType, CreateAgent
 from mirix.schemas.auto_dream import AutoDreamRequest
 from mirix.schemas.block import Block, BlockUpdate, CreateBlock, Human, Persona
-from mirix.schemas.client import Client, ClientCreate, ClientUpdate
+from mirix.schemas.client import Client, ClientCreate, ClientResponse, ClientUpdate
 from mirix.schemas.embedding_config import EmbeddingConfig
 from mirix.schemas.enums import MessageRole
 from mirix.schemas.environment_variables import (
@@ -560,33 +560,91 @@ def with_langfuse_tracing(func):
     return wrapper
 
 
-# Middleware to resolve X-API-Key into X-Client-Id/X-Org-Id for all routes
+_PUBLIC_ROUTES = {
+    ("GET", "/health"),
+    ("GET", "/docs"),
+    ("GET", "/docs/oauth2-redirect"),
+    ("GET", "/redoc"),
+    ("GET", "/openapi.json"),
+    ("GET", "/admin/auth/check-setup"),
+    ("POST", "/admin/auth/login"),
+    ("POST", "/admin/auth/register"),
+}
+
+
+async def _authenticate_client(
+    authorization: Optional[str] = None, x_api_key: Optional[str] = None,
+) -> tuple[Client, str]:
+    """Verify credentials; routing headers never establish an identity."""
+    if authorization is None and not x_api_key:
+        raise HTTPException(
+            status_code=401,
+            detail="A valid Bearer token or X-API-Key is required",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    server = get_server()
+    try:
+        if authorization is not None:
+            payload = get_current_admin(authorization)
+            client = await server.client_manager.get_client_by_id(payload["sub"])
+            auth_type = "jwt"
+        elif x_api_key:
+            client = await server.client_manager.get_client_by_api_key(x_api_key)
+            auth_type = "api_key"
+        else:
+            client = None
+            auth_type = ""
+    except NoResultFound:
+        client = None
+    if client is None:
+        raise HTTPException(
+            status_code=401,
+            detail="A valid Bearer token or X-API-Key is required",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    if client.is_deleted or client.status != "active":
+        raise HTTPException(status_code=403, detail="Client is inactive or deleted")
+    return client, auth_type
+
+
 @app.middleware("http")
 async def inject_client_org_headers(request: Request, call_next):
-    """
-    If a request includes X-API-Key, resolve it to client/org and inject
-    X-Client-Id and X-Org-Id headers so downstream endpoints don't need to
-    handle X-API-Key directly.
-    """
-    x_api_key = request.headers.get("x-api-key")
-    if x_api_key:
-        try:
-            client_id, org_id = await get_client_and_org(x_api_key=x_api_key)
-
-            # Replace or add headers so FastAPI dependencies can read them
-            headers = [
-                (name, value)
-                for name, value in request.scope.get("headers", [])
-                if name.lower() not in {b"x-client-id", b"x-org-id"}
-            ]
-            headers.append((b"x-client-id", client_id.encode()))
-            headers.append((b"x-org-id", org_id.encode()))
-            request.scope["headers"] = headers
-        except HTTPException as exc:
-            return JSONResponse(
-                status_code=exc.status_code, content={"detail": exc.detail}
-            )
-
+    """Authenticate private routes and retain the verified principal in state."""
+    if (request.method, request.url.path) in _PUBLIC_ROUTES or (
+        request.method == "OPTIONS"
+        and "origin" in request.headers
+        and "access-control-request-method" in request.headers
+    ):
+        return await call_next(request)
+    try:
+        client, auth_type = await get_client_from_jwt_or_api_key(
+            request.headers.get("authorization"), request
+        )
+        request.state.authenticated_client = client
+        request.state.auth_type = auth_type
+        # Read-only clients may query but cannot mutate memories or configuration.
+        read_post_routes = {"/memory/search_raw", "/memory/retrieve/conversation"}
+        if (
+            not client.write_scope
+            and request.method not in {"GET", "HEAD", "OPTIONS"}
+            and request.url.path not in read_post_routes
+        ):
+            raise HTTPException(status_code=403, detail="Client has read-only access")
+        org_id = client.organization_id or get_server().organization_manager.DEFAULT_ORG_ID
+        headers = [
+            (name, value)
+            for name, value in request.scope.get("headers", [])
+            if name.lower() not in {b"x-client-id", b"x-org-id"}
+        ]
+        headers.extend([(b"x-client-id", client.id.encode()), (b"x-org-id", org_id.encode())])
+        request.scope["headers"] = headers
+        if hasattr(request, "_headers"):
+            del request._headers
+    except HTTPException as exc:
+        return JSONResponse(
+            status_code=exc.status_code, content={"detail": exc.detail},
+            headers=exc.headers,
+        )
     return await call_next(request)
 
 
@@ -600,32 +658,12 @@ async def get_client_and_org(
     x_org_id: Optional[str] = None,
     x_api_key: Optional[str] = None,
 ) -> tuple[str, str]:
-    """
-    Get client_id and org_id from headers or use defaults.
-
-    Returns:
-        tuple[str, str]: (client_id, org_id)
-    """
-    server = get_server()
-
+    """Return the authenticated identity, ignoring caller-selected routing IDs."""
     if x_api_key:
-        client = await server.client_manager.get_client_by_api_key(x_api_key)
-        if not client:
-            raise HTTPException(status_code=401, detail="Invalid API key")
-        if client.is_deleted or client.status != "active":
-            raise HTTPException(status_code=403, detail="Client is inactive or deleted")
-        client_id = client.id
-        org_id = client.organization_id or server.organization_manager.DEFAULT_ORG_ID
-    elif x_client_id:
-        client_id = x_client_id
-        org_id = x_org_id or server.organization_manager.DEFAULT_ORG_ID
+        client, _ = await _authenticate_client(x_api_key=x_api_key)
     else:
-        raise HTTPException(
-            status_code=401,
-            detail="X-API-Key header is required for this endpoint",
-        )
-
-    return client_id, org_id
+        client, _ = await get_client_from_jwt_or_api_key()
+    return client.id, client.organization_id or get_server().organization_manager.DEFAULT_ORG_ID
 
 
 async def extract_topics_and_temporal_info(
@@ -1495,11 +1533,11 @@ async def list_organizations(
     x_client_id: Optional[str] = Header(None),
     x_org_id: Optional[str] = Header(None),
 ):
-    """List organizations."""
+    """List the caller's organization."""
     server = get_server()
-    return await server.organization_manager.list_organizations(
-        cursor=cursor, limit=limit
-    )
+    _, org_id = await get_client_and_org()
+    org = await server.organization_manager.get_organization_by_id(org_id)
+    return [org] if org and limit > 0 and cursor != org_id else []
 
 
 @router.post("/organizations", response_model=Organization)
@@ -1508,8 +1546,11 @@ async def create_organization(
     x_client_id: Optional[str] = Header(None),
     x_org_id: Optional[str] = Header(None),
 ):
-    """Create an organization."""
+    """Create an organization using a dashboard administrator."""
     server = get_server()
+    client, auth_type = await get_client_from_jwt_or_api_key()
+    if auth_type != "jwt" or client.write_scope != "admin":
+        raise HTTPException(status_code=403, detail="Dashboard administrator required")
     return await server.organization_manager.create_organization(
         pydantic_org=Organization(name=name)
     )
@@ -1523,10 +1564,13 @@ async def get_organization(
 ):
     """Get an organization by ID."""
     server = get_server()
+    _, caller_org = await get_client_and_org()
+    if org_id != caller_org:
+        raise HTTPException(status_code=404, detail="Organization not found")
     try:
         return await server.organization_manager.get_organization_by_id(org_id)
-    except Exception:
-        return await server.get_organization_or_default(org_id)
+    except NoResultFound:
+        raise HTTPException(status_code=404, detail="Organization not found")
 
 
 class CreateOrGetOrganizationRequest(BaseModel):
@@ -1540,40 +1584,12 @@ class CreateOrGetOrganizationRequest(BaseModel):
 async def create_or_get_organization(
     request: CreateOrGetOrganizationRequest,
 ):
-    """
-    Create organization if it doesn't exist, or get existing one.
-    This endpoint doesn't require authentication as it's used during client initialization.
-
-    If org_id is not provided, a random ID will be generated.
-    If org_id is provided, it will be used as-is (no prefix constraint).
-    """
+    """Resolve the authenticated client's organization during initialization."""
     server = get_server()
-    from mirix.schemas.organization import OrganizationCreate
-
-    # Use provided org_id or generate a new one
-    if request.org_id:
-        org_id = request.org_id
-    else:
-        # Generate a random org ID
-        import uuid
-
-        org_id = f"org-{uuid.uuid4().hex[:8]}"
-
-    try:
-        # Try to get existing organization
-        org = await server.organization_manager.get_organization_by_id(org_id)
-        if org:
-            return org
-    except Exception:
-        pass
-
-    # Create new organization if it doesn't exist
-    org_create = OrganizationCreate(id=org_id, name=request.name or org_id)
-    org = await server.organization_manager.create_organization(
-        pydantic_org=Organization(**org_create.model_dump())
-    )
-    logger.debug("Created new organization: %s", org_id)
-    return org
+    _, org_id = await get_client_and_org()
+    if request.org_id is not None and request.org_id != org_id:
+        raise HTTPException(status_code=404, detail="Organization not found")
+    return await server.organization_manager.get_organization_by_id(org_id)
 
 
 # ============================================================================
@@ -1589,10 +1605,14 @@ async def get_user(
 ):
     """Get a user by ID."""
     server = get_server()
+    _, org_id = await get_client_and_org()
     try:
-        return await server.user_manager.get_user_by_id(user_id)
+        user = await server.user_manager.get_user_by_id(user_id)
     except NoResultFound:
         raise HTTPException(status_code=404, detail=f"User {user_id} not found")
+    if user.organization_id != org_id:
+        raise HTTPException(status_code=404, detail=f"User {user_id} not found")
+    return user
 
 
 class CreateOrGetUserRequest(BaseModel):
@@ -1641,10 +1661,12 @@ async def create_or_get_user(
     try:
         # Try to get existing user
         user = await server.user_manager.get_user_by_id(user_id)
-        if user:
-            return user
-    except Exception:
-        pass
+    except NoResultFound:
+        user = None
+    if user:
+        if (user.organization_id or server.organization_manager.DEFAULT_ORG_ID) != org_id:
+            raise HTTPException(status_code=404, detail="User not found")
+        return user
 
     from mirix.schemas.user import User as PydanticUser
 
@@ -1680,6 +1702,8 @@ async def delete_user(user_id: str):
     - Blocks for this user
     """
     server = get_server()
+    # Validate ownership before invoking any deletion manager.
+    await get_user(user_id)
 
     try:
         await server.user_manager.delete_user_by_id(user_id)
@@ -1777,8 +1801,9 @@ async def list_users(
     if not client:
         raise HTTPException(status_code=404, detail="Client not found")
 
-    # Use provided organization_id or default to client's organization
-    org_id = organization_id or client.organization_id
+    org_id = client.organization_id or server.organization_manager.DEFAULT_ORG_ID
+    if organization_id is not None and organization_id != org_id:
+        raise HTTPException(status_code=404, detail="Organization not found")
 
     users = await server.user_manager.list_users(
         cursor=cursor,
@@ -1804,158 +1829,95 @@ class CreateOrGetClientRequest(BaseModel):
     status: Optional[str] = "active"
 
 
-@router.post("/clients/create_or_get", response_model=Client)
+@router.post("/clients/create_or_get", response_model=ClientResponse)
 async def create_or_get_client(
     request: CreateOrGetClientRequest,
     fail_if_exists: bool = False,
+    authorization: Optional[str] = Header(None),
+    http_request: Request = None,
 ):
+    """Resolve the caller's existing client during SDK initialization.
+
+    Provision dashboard clients through authenticated registration. An API key
+    cannot create identities or select another client's organization/scopes.
     """
-    Create client if it doesn't exist, or get existing one.
-
-    If client_id is not provided, a random ID will be generated.
-    If fail_if_exists is True, return 409 if client already exists.
-    """
-    server = get_server()
-
-    # Use provided client_id or generate a new one
-    if request.client_id:
-        client_id = request.client_id
-    else:
-        import uuid
-
-        client_id = f"client-{uuid.uuid4().hex[:8]}"
-
-    org_id = request.org_id or server.organization_manager.DEFAULT_ORG_ID
-
-    try:
-        # Try to get existing client
-        client = await server.client_manager.get_client_by_id(client_id)
-
-        if client:
-            if fail_if_exists:
-                raise HTTPException(
-                    status_code=409,
-                    detail=f"Client with id '{client_id}' already exists",
-                )
-            else:
-                logger.debug("Client already exists: %s", client_id)
-                return JSONResponse(
-                    status_code=200, content=client.model_dump(mode="json")
-                )
-    except Exception as e:
-        if fail_if_exists and "already exists" in str(e):
-            raise
-        pass  # Client doesn't exist, proceed to create
-
-    # Create a Client object with all required fields
-    client = await server.client_manager.create_client(
-        pydantic_client=Client(
-            id=client_id,
-            name=request.name or client_id,
-            organization_id=org_id,
-            status=request.status or "active",
-            write_scope=request.write_scope,
-            read_scopes=request.read_scopes,
-        )
-    )
-    logger.info("Created new client: %s", client_id)
-    return JSONResponse(status_code=201, content=client.model_dump(mode="json"))
+    client, _ = await get_client_from_jwt_or_api_key(authorization, http_request)
+    if request.client_id is not None and request.client_id != client.id:
+        raise HTTPException(status_code=404, detail="Client not found")
+    if request.org_id is not None and request.org_id != client.organization_id:
+        raise HTTPException(status_code=404, detail="Organization not found")
+    if fail_if_exists:
+        raise HTTPException(status_code=409, detail=f"Client with id '{client.id}' already exists")
+    return client
 
 
-@router.get("/clients", response_model=List[Client])
+@router.get("/clients", response_model=List[ClientResponse])
 async def list_clients(
     cursor: Optional[str] = None,
     limit: int = 50,
     x_org_id: Optional[str] = Header(None),
     authorization: Optional[str] = Header(None),
 ):
-    """
-    List all clients with optional pagination.
-
-    **Requires JWT authentication (dashboard only).**
-    """
-    # Require admin JWT authentication for listing clients
-    get_current_admin(authorization)
-
+    """Return the dashboard caller's own client."""
+    payload = get_current_admin(authorization)
     server = get_server()
-    org_id = x_org_id or server.organization_manager.DEFAULT_ORG_ID
-
-    clients = await server.client_manager.list_clients(cursor=cursor, limit=limit)
-    return clients
+    client = await server.client_manager.get_client_by_id(payload["sub"])
+    return [client] if client and limit > 0 and cursor != client.id else []
 
 
-@router.get("/clients/{client_id}", response_model=Client)
+@router.get("/clients/{client_id}", response_model=ClientResponse)
 async def get_client(
     client_id: str,
     authorization: Optional[str] = Header(None),
 ):
-    """
-    Get a specific client by ID.
-
-    **Requires JWT authentication (dashboard only).**
-    """
-    # Require admin JWT authentication
-    get_current_admin(authorization)
-
+    """Get the authenticated dashboard client's configuration."""
+    _require_own_client(authorization, client_id)
     server = get_server()
     client = await server.client_manager.get_client_by_id(client_id)
-
     if not client:
         raise HTTPException(status_code=404, detail=f"Client {client_id} not found")
-
     return client
 
 
-@router.patch("/clients/{client_id}", response_model=Client)
+@router.patch("/clients/{client_id}", response_model=ClientResponse)
 async def update_client(
     client_id: str,
     update: ClientUpdate,
+    authorization: Optional[str] = Header(None),
 ):
-    """
-    Update a client's properties.
-    """
+    """Update the authenticated dashboard client's configuration."""
+    _require_own_client(authorization, client_id)
     server = get_server()
-
-    # Ensure the client_id in the path matches the update object
+    client = await server.client_manager.get_client_by_id(client_id)
+    if update.organization_id is not None and update.organization_id != client.organization_id:
+        raise HTTPException(status_code=403, detail="A client cannot change its organization")
+    if client.write_scope != "admin" and any(
+        field in update.model_fields_set and getattr(update, field) != getattr(client, field)
+        for field in ("write_scope", "read_scopes")
+    ):
+        raise HTTPException(status_code=403, detail="Only an administrator can change access scopes")
     update.id = client_id
-
     try:
-        updated_client = await server.client_manager.update_client(update)
-        return updated_client
+        return await server.client_manager.update_client(update)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.delete("/clients/{client_id}")
-async def delete_client(client_id: str):
-    """
-    Soft delete a client by ID.
-
-    This marks the client and all associated records (agents, tools, blocks) as deleted
-    by setting is_deleted=True. The records remain in the database but are filtered
-    out from queries.
-
-    Associated records that are soft deleted:
-    - Agents created by this client
-    - Tools created by this client
-    - Blocks created by this client
-
-    Memory records (episodic, semantic, etc.) remain but are filtered by client.is_deleted.
-    """
+async def delete_client(
+    client_id: str,
+    authorization: Optional[str] = Header(None),
+):
+    """Soft delete the authenticated dashboard client and its associated records."""
+    _require_own_client(authorization, client_id)
     server = get_server()
-
     try:
         await server.client_manager.delete_client_by_id(client_id)
         return {"message": f"Client {client_id} soft deleted successfully"}
-    except Exception as e:
-        error_msg = str(e)
-        # Provide a better error message if client not found or already deleted
-        if "not found" in error_msg.lower() or "no result" in error_msg.lower():
-            raise HTTPException(
-                status_code=404,
-                detail=f"Client {client_id} not found or already deleted",
-            )
-        raise HTTPException(status_code=500, detail=error_msg)
+    except NoResultFound:
+        raise HTTPException(
+            status_code=404, detail=f"Client {client_id} not found or already deleted"
+        )
 
 
 @router.delete("/clients/{client_id}/memories")
@@ -4432,26 +4394,7 @@ async def search_memory(
     query = _query_without_nul(query)  # Postgres rejects U+0000
     server = get_server()
 
-    client = None
-
-    # Support both dashboard JWTs and programmatic API key access
-    if authorization:
-        try:
-            client, _ = await get_client_from_jwt_or_api_key(authorization)
-        except HTTPException:
-            # If JWT/API key auth fails, fall through to use x_client_id
-            pass
-
-    # Fallback to use the client_id and org_id passed in the method parameters.
-    if not client and x_client_id:
-        client_id = x_client_id
-        client = await server.client_manager.get_client_by_id(client_id)
-    else:
-        if not client:
-            raise HTTPException(
-                status_code=401,
-                detail="Authentication required. Provide either Authorization (Bearer JWT) or X-API-Key header, or x-client-id and x-org-id headers.",
-            )
+    client, _ = await get_client_from_jwt_or_api_key(authorization)
 
     # If user_id is not provided, use the admin user for this client
     if not user_id:
@@ -5278,9 +5221,8 @@ async def search_memory_all_users(
     Search for memories across ALL users in the organization with optional temporal filtering.
     Automatically filters by client scope using filter_tags.
 
-    Organization resolution priority:
-    1. If client_id provided: use that client's organization_id
-    2. Else: use org_id from query param or x_org_id header
+    The authenticated client's organization and read scopes define the search.
+    Optional client_id/org_id parameters must match that authenticated identity.
 
     Args:
         query: The search query string
@@ -5289,8 +5231,8 @@ async def search_memory_all_users(
         search_field: Field to search in. Options vary by memory type
         search_method: Search method. Options: "bm25" (default), "embedding"
         limit: Maximum number of results (total across all users)
-        client_id: Optional client ID (uses its org_id and scope)
-        org_id: Optional organization ID (used if client_id not provided)
+        client_id: Optional assertion of the authenticated client ID
+        org_id: Optional assertion of the authenticated organization ID
         filter_tags: Optional JSON string of additional filter tags
         include_core_memory: When True, include core (block) memory in the response.
         block_filter_tags: Optional JSON string; when including core memory, only blocks
@@ -5304,30 +5246,12 @@ async def search_memory_all_users(
     query = _query_without_nul(query)  # Postgres rejects U+0000
     server = get_server()
 
-    # Determine which client to use and which org to search
-    if client_id:
-        # Use the provided client_id - fetch its org_id
-        effective_client_id = client_id
-        client = await server.client_manager.get_client_by_id(effective_client_id)
-        effective_org_id = client.organization_id  # Use CLIENT's org_id
-        logger.info(
-            "Using provided client_id=%s with its organization_id=%s",
-            effective_client_id,
-            effective_org_id,
-        )
-    else:
-        # Fall back to headers
-        effective_client_id, header_org_id = await get_client_and_org(
-            x_client_id, x_org_id
-        )
-        client = await server.client_manager.get_client_by_id(effective_client_id)
-        # Use org_id from query param if provided, otherwise use header org_id
-        effective_org_id = org_id or header_org_id
-        logger.info(
-            "Using client_id=%s from header with org_id=%s",
-            effective_client_id,
-            effective_org_id,
-        )
+    effective_client_id, effective_org_id = await get_client_and_org(x_client_id, x_org_id)
+    if client_id is not None and client_id != effective_client_id:
+        raise HTTPException(status_code=404, detail="Client not found")
+    if org_id is not None and org_id != effective_org_id:
+        raise HTTPException(status_code=404, detail="Organization not found")
+    client = await server.client_manager.get_client_by_id(effective_client_id)
 
     # Parse filter_tags if provided, otherwise create new dict
     if filter_tags:
@@ -6247,7 +6171,7 @@ async def get_client_from_jwt_or_api_key(
 
     Args:
         authorization: Bearer JWT token from Authorization header
-        request: FastAPI request to inspect injected headers (from X-API-Key middleware)
+        request: FastAPI request carrying verified authentication state, or credentials to verify
 
     Returns:
         tuple: (client, auth_type) where auth_type is "jwt" or "api_key"
@@ -6256,39 +6180,16 @@ async def get_client_from_jwt_or_api_key(
     Raises:
         HTTPException: If neither auth method is provided or valid
     """
-    server = get_server()
-
-    # Try JWT first (dashboard)
-    if authorization:
-        try:
-            admin_payload = get_current_admin(authorization)
-            # Get client from JWT payload (sub contains client_id)
-            client_id = admin_payload["sub"]
-            client = await server.client_manager.get_client_by_id(client_id)
-            if not client:
-                raise HTTPException(
-                    status_code=404, detail=f"Client {client_id} not found"
-                )
-            return client, "jwt"
-        except HTTPException:
-            pass  # Try API key next
-
-    # Try injected client headers (programmatic access via middleware)
-    if request:
-        client_id = request.headers.get("x-client-id")
-        org_id = request.headers.get("x-org-id")
-        if client_id:
-            client_id, org_id = await get_client_and_org(client_id, org_id)
-            client = await server.client_manager.get_client_by_id(client_id)
-            if not client:
-                raise HTTPException(
-                    status_code=404, detail=f"Client {client_id} not found"
-                )
-            return client, "api_key"
-
-    raise HTTPException(
-        status_code=401,
-        detail="Authentication required. Provide either Authorization (Bearer JWT) or X-API-Key header.",
+    request = request or get_current_request()
+    if request is not None:
+        client = getattr(request.state, "authenticated_client", None)
+        if client is not None:
+            return client, request.state.auth_type
+        if authorization is None:
+            authorization = request.headers.get("authorization")
+    return await _authenticate_client(
+        authorization=authorization,
+        x_api_key=request.headers.get("x-api-key") if request is not None else None,
     )
 
 
@@ -8056,12 +7957,16 @@ def require_scope(required_scopes: List[str]):
 
 
 @router.post("/admin/auth/register", response_model=TokenResponse)
-async def dashboard_register(request: DashboardRegisterRequest):
+async def dashboard_register(
+    request: DashboardRegisterRequest,
+    authorization: Optional[str] = Header(None),
+    http_request: Request = None,
+):
     """
     Register a new client with dashboard access.
 
     - First registration: Creates an admin client (no auth required)
-    - Subsequent registrations: May require authentication (future feature)
+    - Subsequent registrations: Require an administrator's dashboard JWT
 
     For the first client, no authentication is needed (bootstrap).
     """
@@ -8071,6 +7976,12 @@ async def dashboard_register(request: DashboardRegisterRequest):
 
     # Check if this is the first dashboard user (bootstrap mode)
     is_first = await auth_manager.is_first_dashboard_user()
+    org_id = None
+    if not is_first:
+        caller, auth_type = await get_client_from_jwt_or_api_key(authorization, http_request)
+        if auth_type != "jwt" or caller.write_scope != "admin":
+            raise HTTPException(status_code=403, detail="Dashboard administrator required")
+        org_id = caller.organization_id
 
     if is_first:
         logger.info("Creating first dashboard client (bootstrap mode)")
@@ -8082,6 +7993,8 @@ async def dashboard_register(request: DashboardRegisterRequest):
             email=request.email,
             password=request.password,
             write_scope="admin",  # First/dashboard users get admin scope
+            organization_id=org_id,
+            bootstrap_only=is_first,
         )
 
         # Generate token
@@ -8184,10 +8097,9 @@ async def list_dashboard_clients(
     """
     List all clients with dashboard access. Requires admin scope.
     """
-    client_payload = get_current_admin(authorization)
-
-    # Check scope - only admin can list dashboard clients
-    if client_payload.get("scope") != "admin":
+    get_current_admin(authorization)
+    caller, auth_type = await get_client_from_jwt_or_api_key(authorization)
+    if auth_type != "jwt" or caller.write_scope != "admin":
         raise HTTPException(
             status_code=403, detail="Only admin clients can list dashboard clients"
         )
@@ -8195,7 +8107,10 @@ async def list_dashboard_clients(
     from mirix.services.admin_user_manager import ClientAuthManager
 
     auth_manager = ClientAuthManager()
-    clients = await auth_manager.list_dashboard_clients(cursor=cursor, limit=limit)
+    clients = await auth_manager.list_dashboard_clients(
+        cursor=cursor, limit=limit,
+        organization_id=caller.organization_id or get_server().organization_manager.DEFAULT_ORG_ID,
+    )
 
     from mirix.services.admin_user_manager import ClientAuthManager
 
@@ -8292,4 +8207,4 @@ __all__ = ["app", "router", "initialize", "cleanup"]
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
+    uvicorn.run(app, host="127.0.0.1", port=8000, log_level="info")

@@ -20,6 +20,7 @@ from __future__ import annotations
 import re
 import asyncio
 import hashlib
+import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Literal, Optional
@@ -34,6 +35,7 @@ from mirix.services._graph_common import (
     normalize_name,
 )
 from mirix.services.lightrag_extractor import ExtractedEntity
+from mirix.services.memory_identity import NUMBER_TOKEN
 from mirix.settings import settings
 
 logger = get_logger(__name__)
@@ -100,9 +102,16 @@ def _singularize(token: str) -> str:
 
 def anchor_canonical_key(name: str) -> str:
     """Canonical merge key for a V7 anchor name (see note above)."""
-    cleaned = re.sub(r"[^a-z0-9 ]", " ", (name or "").lower())
+    lowered = (name or "").lower()
+    numbers = NUMBER_TOKEN.findall(lowered)
+    cleaned = re.sub(r"[^a-z0-9 ]", " ", NUMBER_TOKEN.sub(" ", lowered))
     tokens = {_singularize(t) for t in cleaned.split() if t and t not in _ANCHOR_STOPWORDS}
-    return " ".join(sorted(tokens))
+    tokens.update(numbers)
+    key = " ".join(sorted(tokens))
+    if len(numbers) > 1:
+        # Word order is not numeric order: 10 by 20 and 20 by 10 are distinct.
+        key += " |numbers:" + "|".join(numbers)
+    return key
 
 
 # Canonical keys of dialogue-role names that must never become anchors — checked in
@@ -143,8 +152,8 @@ def frame_identity_for_source(
 ) -> str:
     """Return a merge-safe frame id for semantic claims and episodic events.
 
-    Semantic rows may cite the same durable claim, so their identity remains the
-    predicate plus role-typed anchors.  An episodic frame additionally carries
+    Semantic rows may cite the same durable claim: identity includes the
+    predicate, role-typed anchors and literals. An episodic frame also carries
     an occurrence key.  An explicit event time joins repeat mentions of
     the same event; when no event time was extracted, the immutable memory id
     keeps separate occurrences from collapsing merely because they were ingested
@@ -152,6 +161,10 @@ def frame_identity_for_source(
     """
 
     identity_parts = list(role_keys)
+    if literals:
+        identity_parts.append(
+            "literals:" + json.dumps(literals, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+        )
     if source_kind == "episodic":
         literal_map = literals or {}
         event_key = next(
@@ -516,7 +529,7 @@ class V7GraphManager:
             seen.add(fid)
             rows.append({
                 "fid": fid, "pred": pred, "arms": arms, "arity": len(arms),
-                "lit_keys": list(lits.keys()), "lit_vals": [lits[k] for k in lits],
+                "lit_keys": sorted(lits), "lit_vals": [lits[k] for k in sorted(lits)],
             })
         if not rows:
             return
@@ -543,6 +556,7 @@ class V7GraphManager:
                 WHERE size(ids) >= 2
                 MERGE (f:V7Fact {id: row.fid})
                   ON CREATE SET f.user_id = $user_id, f.predicate = row.pred,
+                                f.source_kind = $source_kind,
                                 f.arity = size(ids), f.role = $role, f.timestamp = $ts,
                                 f.mentioned_at = $mentioned_at,
                                 f.created_at = $now, f.lit_keys = row.lit_keys,
@@ -563,7 +577,8 @@ class V7GraphManager:
                 async with driver.session(database=settings.neo4j_database) as session:
                     await session.run(
                         cypher, mid=memory_id, user_id=user_id, rows=rows,
-                        role=role_norm, ts=timestamp, mentioned_at=mentioned_at, now=now)
+                        role=role_norm, ts=timestamp, mentioned_at=mentioned_at, now=now,
+                        source_kind=source_kind)
                 return
             except Exception as exc:  # noqa: BLE001
                 transient = "Deadlock" in type(exc).__name__ or "Deadlock" in str(exc) \

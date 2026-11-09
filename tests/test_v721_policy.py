@@ -139,6 +139,7 @@ def test_v721_tool_search_preserves_raw_relation_question():
     agent._v721_question = "What instruments does Melanie play?"
     agent._v720_seen_evidence = set()
     agent._v720_ledger = []
+    agent._row_counts = []
     agent._retrieve_coldfacts = lambda *args, **kwargs: []
 
     result = agent._search_memory(

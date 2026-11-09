@@ -139,7 +139,10 @@ class ClientManager:
             if client.is_deleted or client.status != "active":
                 return None
 
-            return client.to_pydantic()
+            result = client.to_pydantic()
+            if api_key_record.permission == "read_only":
+                result.write_scope = None
+            return result
 
     @enforce_types
     async def list_client_api_keys(self, client_id: str) -> List[PydanticClientApiKey]:

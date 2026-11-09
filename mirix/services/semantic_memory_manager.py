@@ -21,6 +21,7 @@ from mirix.schemas.semantic_memory import (
     SemanticMemoryItemUpdate,
 )
 from mirix.schemas.user import User as PydanticUser
+from mirix.services.memory_identity import NUMBER_PATTERN
 from mirix.services.utils import build_query, update_timezone
 from mirix.settings import settings
 from mirix.utils import enforce_types, generate_unique_short_id_async
@@ -36,7 +37,7 @@ _DEDUP_STOP = frozenset(
 # rule that collapsed "two dogs" with "three dogs" and "first tournament" with "second
 # tournament", so quantity and date are treated as identity, not as detail.
 _DEDUP_HARD = re.compile(
-    r"\b\d+\b|\b(one|two|three|four|five|six|seven|eight|nine|ten|first|second|third)\b|"
+    NUMBER_PATTERN + r"|\b(zero|one|two|three|four|five|six|seven|eight|nine|ten|first|second|third)\b|"
     r"\b(january|february|march|april|may|june|july|august|september|october|november|"
     r"december)\b",
     re.I,
@@ -50,7 +51,8 @@ def _dedup_tokens(text: str) -> set:
 
 def _dedup_safe(a: str, b: str) -> bool:
     """Only merge when the two texts agree on every quantity and date they mention."""
-    return set(m.group(0).lower() for m in _DEDUP_HARD.finditer(a or "")) == set(
+    # Preserve order and multiplicity as well as the spelling of each value.
+    return tuple(m.group(0).lower() for m in _DEDUP_HARD.finditer(a or "")) == tuple(
         m.group(0).lower() for m in _DEDUP_HARD.finditer(b or "")
     )
 
@@ -304,6 +306,7 @@ class SemanticMemoryManager:
 
         # Build WHERE clauses dynamically
         where_clauses = [
+            "is_deleted = false",
             f"{tsvector_sql} @@ to_tsquery('english', :tsquery)",
             "user_id = :user_id",
         ]
@@ -851,7 +854,7 @@ class SemanticMemoryManager:
 
                 query_stmt = (
                     select(SemanticMemoryItem)
-                    .where(SemanticMemoryItem.user_id == user.id)
+                .where(SemanticMemoryItem.user_id == user.id, SemanticMemoryItem.is_deleted.is_(False))
                     .where(SemanticMemoryItem.organization_id == organization_id)
                     .order_by(
                         cast(
@@ -861,9 +864,9 @@ class SemanticMemoryManager:
                     )
                 )
 
-                from mirix.database.filter_tags_query import apply_filter_tags_sqlalchemy
+                from mirix.database.filter_tags_query import apply_memory_filters
 
-                query_stmt = apply_filter_tags_sqlalchemy(
+                query_stmt = apply_memory_filters(
                     query_stmt, SemanticMemoryItem, filter_tags, scopes=scopes
                 )
 
@@ -905,9 +908,9 @@ class SemanticMemoryManager:
                     .where(SemanticMemoryItem.organization_id == organization_id)
                 )
 
-                from mirix.database.filter_tags_query import apply_filter_tags_sqlalchemy
+                from mirix.database.filter_tags_query import apply_memory_filters
 
-                base_query = apply_filter_tags_sqlalchemy(
+                base_query = apply_memory_filters(
                     base_query, SemanticMemoryItem, filter_tags, scopes=scopes
                 )
 
@@ -955,7 +958,7 @@ class SemanticMemoryManager:
                             .where(SemanticMemoryItem.user_id == user.id)
                             .where(SemanticMemoryItem.organization_id == organization_id)
                         )
-                        candidate_query = apply_filter_tags_sqlalchemy(
+                        candidate_query = apply_memory_filters(
                             candidate_query, SemanticMemoryItem, filter_tags, scopes=scopes
                         )
                         result = await session.execute(candidate_query)
@@ -1021,7 +1024,7 @@ class SemanticMemoryManager:
                         .where(SemanticMemoryItem.user_id == user.id)
                         .where(SemanticMemoryItem.organization_id == organization_id)
                     )
-                    candidate_query = apply_filter_tags_sqlalchemy(
+                    candidate_query = apply_memory_filters(
                         candidate_query, SemanticMemoryItem, filter_tags, scopes=scopes
                     )
                     result = await session.execute(candidate_query)
@@ -1692,9 +1695,9 @@ class SemanticMemoryManager:
             # Return full SemanticMemoryItem objects, not individual columns
             base_query = select(SemanticMemoryItem).where(SemanticMemoryItem.organization_id == organization_id)
 
-            from mirix.database.filter_tags_query import apply_filter_tags_sqlalchemy
+            from mirix.database.filter_tags_query import apply_memory_filters
 
-            base_query = apply_filter_tags_sqlalchemy(
+            base_query = apply_memory_filters(
                 base_query, SemanticMemoryItem, filter_tags, scopes=scopes
             )
 

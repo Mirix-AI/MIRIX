@@ -230,6 +230,7 @@ class ResourceMemoryManager:
 
         # Build WHERE clauses dynamically
         where_clauses = [
+            "is_deleted = false",
             f"{tsvector_sql} @@ to_tsquery('english', :tsquery)",
             "user_id = :user_id",
         ]
@@ -662,9 +663,9 @@ class ResourceMemoryManager:
                     )
                 )
 
-                from mirix.database.filter_tags_query import apply_filter_tags_sqlalchemy
+                from mirix.database.filter_tags_query import apply_memory_filters
 
-                query_stmt = apply_filter_tags_sqlalchemy(
+                query_stmt = apply_memory_filters(
                     query_stmt, ResourceMemoryItem, filter_tags, scopes=scopes
                 )
 
@@ -693,9 +694,9 @@ class ResourceMemoryManager:
                 .where(ResourceMemoryItem.organization_id == organization_id)
             )
 
-            from mirix.database.filter_tags_query import apply_filter_tags_sqlalchemy
+            from mirix.database.filter_tags_query import apply_memory_filters
 
-            base_query = apply_filter_tags_sqlalchemy(
+            base_query = apply_memory_filters(
                 base_query, ResourceMemoryItem, filter_tags, scopes=scopes
             )
 
@@ -744,7 +745,7 @@ class ResourceMemoryManager:
                         .where(ResourceMemoryItem.user_id == user.id)
                         .where(ResourceMemoryItem.organization_id == organization_id)
                     )
-                    candidate_query = apply_filter_tags_sqlalchemy(
+                    candidate_query = apply_memory_filters(
                         candidate_query, ResourceMemoryItem, filter_tags, scopes=scopes
                     )
                     result = await session.execute(candidate_query)
@@ -1185,9 +1186,9 @@ class ResourceMemoryManager:
             # Return full ResourceMemoryItem objects, not individual columns
             base_query = select(ResourceMemoryItem).where(ResourceMemoryItem.organization_id == organization_id)
 
-            from mirix.database.filter_tags_query import apply_filter_tags_sqlalchemy
+            from mirix.database.filter_tags_query import apply_memory_filters
 
-            base_query = apply_filter_tags_sqlalchemy(
+            base_query = apply_memory_filters(
                 base_query, ResourceMemoryItem, filter_tags, scopes=scopes
             )
 

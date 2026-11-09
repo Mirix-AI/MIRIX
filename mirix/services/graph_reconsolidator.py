@@ -103,23 +103,29 @@ async def _anchor_pairs(
 async def _verify(pairs, agent_state) -> list[tuple[str, str, str]]:
     """LLM-confirmed merges: [(drop, keep, canonical)]. Cosine cannot decide these."""
     from mirix.services.lightrag_extractor import call_openai_chat
+    from mirix.services.semantic_memory_manager import _dedup_safe
 
     model = llm_model_from_agent(agent_state, default="gpt-4.1-mini")
     confirmed: list[tuple[str, str, str]] = []
     for i in range(0, len(pairs), _BATCH):
         chunk = pairs[i:i + _BATCH]
+        offered = {frozenset((a, b)) for a, b, _ in chunk}
         payload = json.dumps([{"a": a, "b": b} for a, b, _ in chunk], ensure_ascii=False)
         try:
             raw = await call_openai_chat(MERGE_PROMPT, payload, model, temperature=0.0)
             blob = raw if raw.strip().startswith("{") else raw[raw.find("{"): raw.rfind("}") + 1]
             for item in (json.loads(blob) or {}).get("results", []):
-                if not item.get("same"):
+                if item.get("same") is not True:
                     continue
                 a, b = item.get("a"), item.get("b")
                 canon = item.get("canonical") or b
                 # only accept a canonical that is one of the two names actually shown,
                 # so the LLM cannot invent a third name and orphan both anchors
-                if a and b and canon in (a, b):
+                if (
+                    isinstance(a, str) and isinstance(b, str)
+                    and frozenset((a, b)) in offered
+                    and canon in (a, b) and _dedup_safe(a, b)
+                ):
                     confirmed.append((a if canon == b else b, canon, canon))
         except Exception as exc:  # noqa: BLE001
             logger.warning("reconsolidate: verify batch failed (%s)", exc)
@@ -180,7 +186,7 @@ async def _arity_candidates(driver, user_id: str) -> list[dict]:
         return out
 
 
-async def _merge_anchor(session, user_id: str, drop: str, keep: str) -> None:
+async def _merge_anchor(session, user_id: str, drop: str, keep: str) -> bool:
     """Fold `drop` into `keep`: union the node's own values, redirect every edge,
     then remove `drop`.
 
@@ -203,8 +209,9 @@ async def _merge_anchor(session, user_id: str, drop: str, keep: str) -> None:
     or reordered merges converge on the same node (Swoosh's ICAR properties);
     last-writer-wins would not.
     """
-    if drop == keep:
-        return
+    from mirix.services.semantic_memory_manager import _dedup_safe
+    if drop == keep or not _dedup_safe(drop, keep):
+        return False
     stmts = [
         """MATCH (d:V7Anchor {user_id:$u, name:$drop})
            MATCH (k:V7Anchor {user_id:$u, name:$keep})
@@ -259,6 +266,7 @@ async def _merge_anchor(session, user_id: str, drop: str, keep: str) -> None:
     ]
     for q in stmts:
         await session.run(q, u=user_id, drop=drop, keep=keep)
+    return True
 
 
 async def _due(driver, user_id: str, every_n: int) -> tuple[bool, int]:
@@ -332,7 +340,8 @@ async def reconsolidate_graph(
             for drop, keep, _ in confirmed:
                 if drop in done or keep in done:
                     continue  # avoid chaining onto an anchor already removed
-                await _merge_anchor(session, user_id, drop, keep)
+                if await _merge_anchor(session, user_id, drop, keep) is False:
+                    continue
                 done.add(drop)
                 merged += 1
             # merging can make two facts identical — collapse, keeping every citation
@@ -360,11 +369,14 @@ async def reconsolidate_graph(
             res_n = await session.run(
                 """
                 MATCH (f:V7Fact {user_id:$u})-[r:V7_FACT_ARG]->(a:V7Anchor)
+                WHERE f.source_kind = 'semantic'
                 WITH f, r.role + ':' + toLower(a.name) AS arm
                 ORDER BY arm
                 WITH f, collect(arm) AS arms
                 WITH coalesce(f.predicate,'') + '#'
-                     + reduce(acc = '', x IN arms | acc + '|' + x) AS k, collect(f) AS fs
+                     + reduce(acc = '', x IN arms | acc + '|' + x) AS k,
+                     f.lit_keys AS literal_keys, f.lit_vals AS literal_values,
+                     collect(f) AS fs
                 WHERE size(fs) > 1
                 WITH head(fs) AS keep, tail(fs) AS dupes
                 UNWIND dupes AS dupe

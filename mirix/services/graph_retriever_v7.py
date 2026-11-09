@@ -282,7 +282,7 @@ class V7Retriever:
         anchors, ep_rows, sem_rows = await self.retrieve_rows(
             query=query, user_id=user_id, agent_state=agent_state,
             top_k=top_k, max_items_per_kind=initial_limit)
-        if not anchors:
+        if not anchors or not (ep_rows or sem_rows):
             return ""
         ctx = self._format_context(anchors, ep_rows, sem_rows)
 
@@ -314,12 +314,12 @@ class V7Retriever:
             async with db_context() as session:
                 ep = (await session.execute(sa_text(
                     "SELECT summary, details FROM episodic_memory "
-                    "WHERE user_id = :u AND summary_embedding IS NOT NULL "
+                    "WHERE user_id = :u AND NOT is_deleted AND summary_embedding IS NOT NULL "
                     "ORDER BY summary_embedding <=> CAST(:q AS vector) LIMIT :k"
                 ), {"u": user_id, "q": qp, "k": limit})).fetchall()
                 sem = (await session.execute(sa_text(
                     "SELECT name, summary, details FROM semantic_memory "
-                    "WHERE user_id = :u AND summary_embedding IS NOT NULL "
+                    "WHERE user_id = :u AND NOT is_deleted AND summary_embedding IS NOT NULL "
                     "ORDER BY summary_embedding <=> CAST(:q AS vector) LIMIT :k"
                 ), {"u": user_id, "q": qp, "k": limit})).fetchall()
         except Exception as e:
@@ -511,6 +511,15 @@ class V7Retriever:
                     lit_vals=[str(value) for value in (rec["lit_vals"] or [])],
                 ))
 
+        # Graph references can outlive their PG memories. A relation or composed
+        # chain is evidence only while at least one of its citations is live.
+        live_ids = await self._live_memory_ids(
+            user_id, [mid for fact in candidates for mid in fact.memory_ids]
+        )
+        for fact in candidates:
+            fact.memory_ids = [mid for mid in fact.memory_ids if mid in live_ids]
+        candidates = [fact for fact in candidates if fact.memory_ids]
+
         # If the question explicitly names a concrete non-person anchor, keep
         # this lane on that object instead of filling synonym-reserve slots from
         # the named person's entire hub. Generic answer categories stay open so
@@ -583,6 +592,26 @@ class V7Retriever:
             len(exact_anchors), len(candidates), len(rows), len(memory_ids),
         )
         return rows, memory_ids
+
+    @staticmethod
+    async def _live_memory_ids(user_id: str, memory_ids: list[str]) -> set[str]:
+        from sqlalchemy import select, union
+        from mirix.orm.episodic_memory import EpisodicEvent
+        from mirix.orm.semantic_memory import SemanticMemoryItem
+        from mirix.server.server import db_context
+
+        if not memory_ids:
+            return set()
+        query = union(*[
+            select(model.id).where(
+                model.user_id == user_id,
+                model.id.in_(set(memory_ids)),
+                model.is_deleted.is_(False),
+            )
+            for model in (EpisodicEvent, SemanticMemoryItem)
+        ])
+        async with db_context() as session:
+            return set((await session.execute(query)).scalars().all())
 
     @staticmethod
     def _relation_chain_rows(
@@ -774,7 +803,7 @@ class V7Retriever:
             async with db_context() as session:
                 chunks = (await session.execute(sa_text(
                     "SELECT DISTINCT jsonb_array_elements(source_refs::jsonb)->>'chunk_id' AS c "
-                    "FROM episodic_memory WHERE user_id = :u AND id = ANY(:ids)"
+                    "FROM episodic_memory WHERE user_id = :u AND NOT is_deleted AND id = ANY(:ids)"
                 ), {"u": user_id, "ids": seeds})).fetchall()
                 chunk_ids = [r[0] for r in chunks if r[0] is not None]
                 # Degeneracy guard. If a store ever writes one chunk id on every
@@ -821,7 +850,7 @@ class V7Retriever:
                 # neighbour also drags in that entire session.
                 neigh = (await session.execute(sa_text(
                     "WITH seeds AS (SELECT occurred_at FROM episodic_memory "
-                    "               WHERE user_id = :u AND id = ANY(:ids) "
+                    "               WHERE user_id = :u AND NOT is_deleted AND id = ANY(:ids) "
                     "                 AND occurred_at IS NOT NULL) "
                     "SELECT DISTINCT n.id FROM seeds s CROSS JOIN LATERAL ( "
                     "  (SELECT m.id, m.occurred_at FROM episodic_memory m "
@@ -924,7 +953,7 @@ class V7Retriever:
             sql = (
                 "SELECT id, summary, details, occurred_at, actor, source_refs "
                 "FROM episodic_memory "
-                "WHERE user_id = :u AND id = ANY(:ids) AND summary_embedding IS NOT NULL "
+                "WHERE user_id = :u AND NOT is_deleted AND id = ANY(:ids) AND summary_embedding IS NOT NULL "
                 "ORDER BY CASE WHEN id = ANY(:priority) THEN 0 ELSE 1 END, "
                 "summary_embedding <=> CAST(:q AS vector) LIMIT :k"
             )
@@ -937,7 +966,7 @@ class V7Retriever:
             sql = (
                 "SELECT id, summary, details, occurred_at, actor, source_refs "
                 "FROM episodic_memory "
-                "WHERE user_id = :u AND id = ANY(:ids) ORDER BY occurred_at DESC NULLS LAST"
+                "WHERE user_id = :u AND NOT is_deleted AND id = ANY(:ids) ORDER BY occurred_at DESC NULLS LAST"
             )
             params = {"u": user_id, "ids": ids}
 
@@ -971,7 +1000,7 @@ class V7Retriever:
             sql = (
                 "SELECT id, name, summary, details, source, created_at, source_refs "
                 "FROM semantic_memory "
-                "WHERE user_id = :u AND id = ANY(:ids) AND summary_embedding IS NOT NULL "
+                "WHERE user_id = :u AND NOT is_deleted AND id = ANY(:ids) AND summary_embedding IS NOT NULL "
                 "ORDER BY CASE WHEN id = ANY(:priority) THEN 0 ELSE 1 END, "
                 "summary_embedding <=> CAST(:q AS vector) LIMIT :k"
             )
@@ -984,7 +1013,7 @@ class V7Retriever:
             sql = (
                 "SELECT id, name, summary, details, source, created_at, source_refs "
                 "FROM semantic_memory "
-                "WHERE user_id = :u AND id = ANY(:ids) ORDER BY created_at DESC NULLS LAST"
+                "WHERE user_id = :u AND NOT is_deleted AND id = ANY(:ids) ORDER BY created_at DESC NULLS LAST"
             )
             params = {"u": user_id, "ids": ids}
 
@@ -1012,10 +1041,11 @@ class V7Retriever:
         ep_rows: list[V7MemoryRow],
         sem_rows: list[V7MemoryRow],
     ) -> str:
+        if not (ep_rows or sem_rows):
+            return ""
+        # Index anchors can survive deletion of their source rows. Render only
+        # evidence validated against live PG rows, never uncited anchor names.
         lines: list[str] = ["## Memory Linkage Graph (v7)"]
-        if anchors:
-            names = [f"{a.name} ({a.anchor_type})" for a in anchors[:18]]
-            lines.append(f"**Matched anchors:** {', '.join(names)}")
 
         fact_rows = [row for row in sem_rows if row.kind == "graph_fact"]
         semantic_rows = [row for row in sem_rows if row.kind != "graph_fact"]

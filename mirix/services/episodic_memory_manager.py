@@ -221,7 +221,7 @@ class EpisodicMemoryManager:
 
             query = (
                 select(EpisodicEvent)
-                .where(EpisodicEvent.user_id == user.id)
+                .where(EpisodicEvent.user_id == user.id, EpisodicEvent.is_deleted.is_(False))
                 .order_by(cast(text("episodic_memory.last_modify ->> 'timestamp'"), DateTime).desc())
             )
 
@@ -990,9 +990,9 @@ class EpisodicMemoryManager:
                     .order_by(EpisodicEvent.occurred_at.desc())
                 )
 
-                from mirix.database.filter_tags_query import apply_filter_tags_sqlalchemy
+                from mirix.database.filter_tags_query import apply_memory_filters
 
-                query_stmt = apply_filter_tags_sqlalchemy(query_stmt, EpisodicEvent, filter_tags, scopes=scopes)
+                query_stmt = apply_memory_filters(query_stmt, EpisodicEvent, filter_tags, scopes=scopes)
 
                 # Apply temporal filtering if provided
                 if start_date is not None:
@@ -1033,9 +1033,9 @@ class EpisodicMemoryManager:
                     .where(EpisodicEvent.organization_id == organization_id)
                 )
 
-                from mirix.database.filter_tags_query import apply_filter_tags_sqlalchemy
+                from mirix.database.filter_tags_query import apply_memory_filters
 
-                base_query = apply_filter_tags_sqlalchemy(base_query, EpisodicEvent, filter_tags, scopes=scopes)
+                base_query = apply_memory_filters(base_query, EpisodicEvent, filter_tags, scopes=scopes)
 
                 # Apply temporal filtering if provided
                 if start_date is not None:
@@ -1089,7 +1089,7 @@ class EpisodicMemoryManager:
                             .where(EpisodicEvent.user_id == user.id)
                             .where(EpisodicEvent.organization_id == organization_id)
                         )
-                        candidate_query = apply_filter_tags_sqlalchemy(
+                        candidate_query = apply_memory_filters(
                             candidate_query, EpisodicEvent, filter_tags, scopes=scopes
                         )
                         result = await session.execute(candidate_query)
@@ -1161,7 +1161,7 @@ class EpisodicMemoryManager:
                         .where(EpisodicEvent.user_id == user.id)
                         .where(EpisodicEvent.organization_id == organization_id)
                     )
-                    candidate_query = apply_filter_tags_sqlalchemy(
+                    candidate_query = apply_memory_filters(
                         candidate_query, EpisodicEvent, filter_tags, scopes=scopes
                     )
                     result = await session.execute(candidate_query)
@@ -1313,6 +1313,7 @@ class EpisodicMemoryManager:
         # Note: Must explicitly include all filters here since we're building raw SQL
         # The base_query parameter is not used, but kept for API compatibility
         where_clauses = [
+            "is_deleted = false",
             f"{tsvector_sql} @@ to_tsquery('english', :tsquery)",
             "user_id = :user_id",
         ]
@@ -1736,9 +1737,9 @@ class EpisodicMemoryManager:
             # Return full EpisodicEvent objects, not individual columns
             base_query = select(EpisodicEvent).where(EpisodicEvent.organization_id == organization_id)
 
-            from mirix.database.filter_tags_query import apply_filter_tags_sqlalchemy
+            from mirix.database.filter_tags_query import apply_memory_filters
 
-            base_query = apply_filter_tags_sqlalchemy(base_query, EpisodicEvent, filter_tags, scopes=scopes)
+            base_query = apply_memory_filters(base_query, EpisodicEvent, filter_tags, scopes=scopes)
 
             # Apply temporal filtering if provided
             if start_date is not None:

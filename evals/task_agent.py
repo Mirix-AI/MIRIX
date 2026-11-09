@@ -175,6 +175,7 @@ class TaskAgent:
         model: str = "gpt-4.1-mini",
         user_id: Optional[str] = None,
         max_tool_rounds: int = 5,
+        read_only: bool = False,
     ):
 
         api_key = api_key or os.getenv("OPENAI_API_KEY")
@@ -206,8 +207,24 @@ class TaskAgent:
         # MirixMemorySystem) where a single /memory/add_sync on a 4096-
         # token chunk takes 3-6 min server-side. Graph hooks can add
         # extraction + Neo4j writes, so keep 30 min headroom.
-        self.mirix_client = MirixClient(client_id=client_id, org_id=org_id, base_url="http://127.0.0.1:8531", write_scope="read_write", timeout=1800)
+        self.read_only = read_only
+        self.mirix_client = MirixClient(
+            client_id=client_id, org_id=org_id,
+            base_url=os.environ.get("MIRIX_API_URL", "http://127.0.0.1:8531"),
+            write_scope="read_write", timeout=1800,
+        )
         self.user_id = user_id if user_id is not None else str(uuid.uuid4())
+        if read_only:
+            # Attach stored agents without updating prompts, blocks or memory.
+            from mirix.schemas.agent import AgentType
+            agents = asyncio.run(self.mirix_client.list_agents())
+            self.mirix_client._meta_agent = next(
+                (agent for agent in agents if agent.agent_type == AgentType.meta_memory_agent), None
+            )
+            if self.mirix_client._meta_agent is None:
+                raise ValueError("QA-only requires an existing meta agent; restore a snapshot saved with --agents")
+            self.mirix_client._client.event_hooks["request"].append(self._guard_read_only_request)
+            return
         config_path = Path(mirix_config_path)
         with config_path.open("r", encoding="utf-8") as handle:
             config = yaml.safe_load(handle) or {}
@@ -215,6 +232,13 @@ class TaskAgent:
         asyncio.run(self.mirix_client.initialize_meta_agent(
             config=config
         ))
+
+    @staticmethod
+    async def _guard_read_only_request(request):
+        if request.method not in {"GET", "HEAD"} and not (
+            request.method == "POST" and request.url.path == "/memory/retrieve/conversation"
+        ):
+            raise RuntimeError(f"QA-only cannot mutate MIRIX: {request.method} {request.url.path}")
 
     def _build_tools(self) -> list:
         if not self.mirix_client:

@@ -267,6 +267,7 @@ class KnowledgeVaultManager:
 
         # Build WHERE clauses dynamically
         where_clauses = [
+            "is_deleted = false",
             f"{tsvector_sql} @@ to_tsquery('english', :tsquery)",
             "user_id = :user_id",
         ]
@@ -768,9 +769,9 @@ class KnowledgeVaultManager:
                 if sensitivity is not None:
                     query_stmt = query_stmt.where(KnowledgeVaultItem.sensitivity.in_(sensitivity))
 
-                from mirix.database.filter_tags_query import apply_filter_tags_sqlalchemy
+                from mirix.database.filter_tags_query import apply_memory_filters
 
-                query_stmt = apply_filter_tags_sqlalchemy(query_stmt, KnowledgeVaultItem, filter_tags, scopes=scopes)
+                query_stmt = apply_memory_filters(query_stmt, KnowledgeVaultItem, filter_tags, scopes=scopes)
 
                 if limit:
                     query_stmt = query_stmt.limit(limit)
@@ -801,9 +802,9 @@ class KnowledgeVaultManager:
                 if sensitivity is not None:
                     base_query = base_query.where(KnowledgeVaultItem.sensitivity.in_(sensitivity))
 
-                from mirix.database.filter_tags_query import apply_filter_tags_sqlalchemy
+                from mirix.database.filter_tags_query import apply_memory_filters
 
-                base_query = apply_filter_tags_sqlalchemy(base_query, KnowledgeVaultItem, filter_tags, scopes=scopes)
+                base_query = apply_memory_filters(base_query, KnowledgeVaultItem, filter_tags, scopes=scopes)
 
                 if search_method == "embedding":
                     embed_query = True
@@ -855,7 +856,7 @@ class KnowledgeVaultManager:
                         if sensitivity is not None:
                             fuzzy_query = fuzzy_query.where(KnowledgeVaultItem.sensitivity.in_(sensitivity))
 
-                        fuzzy_query = apply_filter_tags_sqlalchemy(
+                        fuzzy_query = apply_memory_filters(
                             fuzzy_query, KnowledgeVaultItem, filter_tags, scopes=scopes
                         )
 
@@ -928,7 +929,7 @@ class KnowledgeVaultManager:
                     if sensitivity is not None:
                         fuzzy_query = fuzzy_query.where(KnowledgeVaultItem.sensitivity.in_(sensitivity))
 
-                    fuzzy_query = apply_filter_tags_sqlalchemy(
+                    fuzzy_query = apply_memory_filters(
                         fuzzy_query, KnowledgeVaultItem, filter_tags, scopes=scopes
                     )
 
@@ -1249,9 +1250,9 @@ class KnowledgeVaultManager:
             if sensitivity is not None:
                 base_query = base_query.where(KnowledgeVaultItem.sensitivity.in_(sensitivity))
 
-            from mirix.database.filter_tags_query import apply_filter_tags_sqlalchemy
+            from mirix.database.filter_tags_query import apply_memory_filters
 
-            base_query = apply_filter_tags_sqlalchemy(base_query, KnowledgeVaultItem, filter_tags, scopes=scopes)
+            base_query = apply_memory_filters(base_query, KnowledgeVaultItem, filter_tags, scopes=scopes)
 
             # Handle empty query - fall back to recent sort
             if not query or query == "":

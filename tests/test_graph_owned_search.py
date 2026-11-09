@@ -67,6 +67,9 @@ async def test_graph_enabled_all_search_never_calls_flat_ep_or_sem(monkeypatch):
     ]
 
     monkeypatch.setattr(rest_api, "get_server", lambda: server)
+    monkeypatch.setattr(
+        rest_api, "get_client_from_jwt_or_api_key", AsyncMock(return_value=(client, "api_key"))
+    )
     monkeypatch.setattr(rest_api.settings, "enable_graph_memory", True)
     monkeypatch.setattr(
         rest_api,
