@@ -23,6 +23,9 @@ jobs:
       with:
         python-version: ${{ matrix.python-version }}
 
+    - name: Reject previously exposed provider credentials
+      run: python scripts/check_known_provider_keys.py
+
     - name: Cache pip packages
       uses: actions/cache@v4
       with:
