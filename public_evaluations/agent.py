@@ -138,6 +138,10 @@ class AgentWrapper():
             return response.choices[0].message.content
 
         elif model_name in ['gemini-2.0-flash']:
+            load_dotenv()
+            api_key = os.getenv("GEMINI_API_KEY")
+            if not api_key:
+                raise ValueError("GEMINI_API_KEY environment variable is required for Gemini requests")
             
             parts = [
                 {"text": message},
@@ -189,9 +193,8 @@ class AgentWrapper():
             }
 
             url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-04-17:generateContent"
-            params = {"key": "AIzaSyAPdbLNkHSDcD8gd6wgB0KqjXp3yG5YRGs" }  # API key as query param
-            headers = {"Content-Type": "application/json"}
-            response = requests.post(url, params=params, headers=headers, json=payload)
+            headers = {"Content-Type": "application/json", "x-goog-api-key": api_key}
+            response = requests.post(url, headers=headers, json=payload)
             # Check the response
             if response.status_code == 200:
                 result = response.json()
