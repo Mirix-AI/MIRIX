@@ -114,9 +114,9 @@ def _vector_indexes(dim: int) -> list[str]:
 async def init_neo4j_client() -> Optional[AsyncDriver]:
     """Initialize the Neo4j async driver and bootstrap v4 schema.
 
-    Returns the driver, or ``None`` if graph memory is disabled or connection
-    fails. Failures are logged but do not raise — the rest of MIRIX must
-    continue working without graph memory.
+    Returns the driver, or ``None`` if graph memory is disabled, no password
+    is set, or connection fails. Failures are logged but do not raise — the
+    rest of MIRIX must continue working without graph memory.
     """
     global _neo4j_driver
     if not settings.enable_graph_memory:
@@ -125,6 +125,10 @@ async def init_neo4j_client() -> Optional[AsyncDriver]:
 
     if _neo4j_driver is not None:
         return _neo4j_driver
+
+    if not settings.neo4j_password:
+        logger.error("MIRIX_NEO4J_PASSWORD is not set — graph memory will be unavailable")
+        return None
 
     try:
         driver = AsyncGraphDatabase.driver(

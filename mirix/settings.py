@@ -271,7 +271,8 @@ class Settings(BaseSettings):
     enable_graph_memory: bool = Field(False, env="MIRIX_ENABLE_GRAPH_MEMORY")
     neo4j_uri: str = Field("bolt://localhost:7687", env="MIRIX_NEO4J_URI")
     neo4j_user: str = Field("neo4j", env="MIRIX_NEO4J_USER")
-    neo4j_password: str = Field("mirix_neo4j_dev", env="MIRIX_NEO4J_PASSWORD")
+    # No default password: set MIRIX_NEO4J_PASSWORD whenever graph memory is on.
+    neo4j_password: str = Field("", env="MIRIX_NEO4J_PASSWORD")
     neo4j_database: str = Field("neo4j", env="MIRIX_NEO4J_DATABASE")
     # Dimension of embeddings used for entity/relation vector indexes in Neo4j.
     # Must match the embedding model in use (1536 for text-embedding-3-small,
