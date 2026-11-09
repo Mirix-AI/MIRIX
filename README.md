@@ -163,9 +163,9 @@ MIRIX can index episodic and semantic memories into a provenance hypergraph stor
 
 Graph memory is off by default. To turn it on:
 
-1. Start Neo4j 5.23 or later. `docker compose --profile graph up -d` starts Neo4j 5.26 with APOC.
+1. Start Neo4j 5.23 or later. `docker compose --profile graph up -d` starts Neo4j 5.26 with APOC; first set `MIRIX_NEO4J_PASSWORD` (at least 8 characters) in `.env`, because there is no default password.
 2. Install the Neo4j driver. It is in `requirements.txt`; after `pip install -e .`, run `pip install "neo4j>=5.20,<6"`.
-3. Set `MIRIX_ENABLE_GRAPH_MEMORY=true` and the connection settings `MIRIX_NEO4J_URI`, `MIRIX_NEO4J_USER` and `MIRIX_NEO4J_PASSWORD` (defaults: `bolt://localhost:7687`, `neo4j`, `mirix_neo4j_dev`).
+3. Set `MIRIX_ENABLE_GRAPH_MEMORY=true` and `MIRIX_NEO4J_PASSWORD` to the password your Neo4j uses. `MIRIX_NEO4J_URI` and `MIRIX_NEO4J_USER` default to `bolt://localhost:7687` and `neo4j`.
 
 With graph memory on, `POST /memory/auto_dream` refines the graph only unless the request sets `graph_only` to `false`. Evaluation settings and commands are in [evals/GRAPH_MEMORY.md](evals/GRAPH_MEMORY.md).
 

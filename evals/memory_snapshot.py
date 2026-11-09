@@ -72,7 +72,7 @@ PG_BIN = os.environ.get("MIRIX_PG_BIN", "/usr/local/opt/postgresql@17/bin")
 NEO4J = {
     "uri": os.environ.get("MIRIX_NEO4J_URI", "bolt://localhost:7687"),
     "user": os.environ.get("MIRIX_NEO4J_USER", "neo4j"),
-    "password": os.environ.get("MIRIX_NEO4J_PASSWORD", "mirix_neo4j_dev"),
+    "password": os.environ.get("MIRIX_NEO4J_PASSWORD", ""),
     "database": os.environ.get("MIRIX_NEO4J_DATABASE", "neo4j"),
 }
 
