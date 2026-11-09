@@ -46,13 +46,16 @@ def _resolve_api_keys(config: dict) -> dict:
 
 class MirixMemorySystem:
 
-    def __init__(self, user_id: Optional[str] = None, mirix_config_path: Optional[str] = None, client_id: Optional[str] = None, org_id: Optional[str] = None, client: Optional[MirixClient] = None):
+    def __init__(self, user_id: Optional[str] = None, mirix_config_path: Optional[str] = None, client_id: Optional[str] = None, org_id: Optional[str] = None, client: Optional[MirixClient] = None, read_only: bool = False):
+        self.read_only = read_only
+        if read_only and client is None:
+            raise ValueError("QA-only requires a client attached to existing agents")
         if client is None:
             # timeout: per-request budget. With sentence-token chunking
             # at 4096 gpt-4o-mini tokens (~16k chars), one /memory/add_sync
             # takes 3-6 min server-side. Graph hooks can add per-chunk LLM
             # extraction + Neo4j writes, so keep 30 min headroom.
-            self.client = MirixClient(client_id=client_id, org_id=org_id, base_url="http://127.0.0.1:8531", write_scope="read_write", timeout=1800)
+            self.client = MirixClient(client_id=client_id, org_id=org_id, base_url=os.environ.get("MIRIX_API_URL", "http://127.0.0.1:8531"), write_scope="read_write", timeout=1800)
             config_path = Path(mirix_config_path) if mirix_config_path else Path(__file__).with_name("mirix_openai.yaml")
             with config_path.open("r", encoding="utf-8") as handle:
                 config = yaml.safe_load(handle) or {}
@@ -75,6 +78,8 @@ class MirixMemorySystem:
         of letting the LLM guess a year (LongMemEval conversations carry their
         own per-session "Chat Time" — see longmem_eval.py).
         """
+        if self.read_only:
+            raise RuntimeError("QA-only cannot add memory")
         filter_tags = {"scope": "read_write", "kind": "conversation_session"}
         if source_meta:
             filter_tags["source_meta"] = dict(source_meta)

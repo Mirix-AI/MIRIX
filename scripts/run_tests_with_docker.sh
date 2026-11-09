@@ -21,6 +21,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 COMPOSE_FILE="$PROJECT_ROOT/docker-compose.test.yml"
 
+# Each ephemeral run gets independent native service credentials.
+export MIRIX_TEST_PG_PASSWORD="${MIRIX_TEST_PG_PASSWORD:-$(openssl rand -hex 32)}"
+export MIRIX_TEST_REDIS_PASSWORD="${MIRIX_TEST_REDIS_PASSWORD:-$(openssl rand -hex 32)}"
+export MIRIX_TEST_JWT_SECRET_KEY="${MIRIX_TEST_JWT_SECRET_KEY:-$(openssl rand -hex 32)}"
+
 # Colors
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -145,10 +150,16 @@ if [ $elapsed -eq $timeout ]; then
 fi
 
 # Set test environment variables
-export MIRIX_PG_URI="postgresql+pg8000://test:test@localhost:5433/mirix_test"
+export MIRIX_PG_HOST="127.0.0.1"
+export MIRIX_PG_PORT="5433"
+export MIRIX_PG_USER="test"
+export MIRIX_PG_PASSWORD="$MIRIX_TEST_PG_PASSWORD"
+export MIRIX_PG_DB="mirix_test"
+unset MIRIX_PG_URI
 export MIRIX_REDIS_ENABLED="true"
 export MIRIX_REDIS_HOST="localhost"
 export MIRIX_REDIS_PORT="6380"
+export MIRIX_REDIS_PASSWORD="$MIRIX_TEST_REDIS_PASSWORD"
 export MIRIX_LANGFUSE_ENABLED="false"
 
 # Start server if requested

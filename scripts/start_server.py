@@ -6,7 +6,7 @@ Usage:
     python scripts/start_server.py [OPTIONS]
 
 Options:
-    --host HOST         Host to bind to (default: 0.0.0.0)
+    --host HOST         Host to bind to (default: 127.0.0.1)
     --port PORT         Port to bind to (default: 8531)
     --reload            Enable auto-reload for development
     --workers N         Number of worker processes (default: 1)
@@ -31,8 +31,8 @@ def main():
 
     parser.add_argument(
         "--host",
-        default="0.0.0.0",
-        help="Host to bind to (default: 0.0.0.0)",
+        default="127.0.0.1",
+        help="Host to bind to (default: 127.0.0.1)",
     )
 
     parser.add_argument(

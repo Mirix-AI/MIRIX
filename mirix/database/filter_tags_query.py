@@ -60,6 +60,13 @@ def _is_operator_dict(value: Any) -> bool:
 _IGNORED_FILTER_KEYS = frozenset({"read_scopes", "scope"})
 
 
+def apply_memory_filters(query, model_class, filter_tags, scopes=None):
+    """Memory searches must exclude tombstones as well as enforce scopes/tags."""
+    return apply_filter_tags_sqlalchemy(
+        query.where(model_class.is_deleted.is_(False)), model_class, filter_tags, scopes=scopes
+    )
+
+
 def apply_filter_tags_sqlalchemy(
     query,
     model_class,

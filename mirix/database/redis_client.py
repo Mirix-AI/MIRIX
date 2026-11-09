@@ -910,6 +910,43 @@ class RedisMemoryClient:
 
         return build_filter_tags_redis(filter_tags, scopes=scopes)
 
+    async def _live_memory_documents(
+        self, index_name, documents, *, organization_id=None, user_id=None, filter_tags=None, scopes=None
+    ):
+        """Validate cache hits against authoritative memory visibility.
+
+        Cache invalidation can fail or race with a deletion. An old Redis
+        document's is_deleted=False is therefore not sufficient authorization.
+        """
+        from sqlalchemy import select
+        from mirix.database.filter_tags_query import apply_memory_filters
+        from mirix.orm.episodic_memory import EpisodicEvent
+        from mirix.orm.semantic_memory import SemanticMemoryItem
+        from mirix.orm.resource_memory import ResourceMemoryItem
+        from mirix.orm.knowledge_vault import KnowledgeVaultItem
+        from mirix.server.server import db_context
+
+        model = {
+            self.EPISODIC_INDEX: EpisodicEvent,
+            self.SEMANTIC_INDEX: SemanticMemoryItem,
+            self.RESOURCE_INDEX: ResourceMemoryItem,
+            self.KNOWLEDGE_INDEX: KnowledgeVaultItem,
+        }.get(index_name)
+        if model is None or not documents:
+            return documents
+        ids = [doc["id"] for doc in documents if isinstance(doc, dict) and doc.get("id")]
+        if not ids:
+            return []
+        query = select(model.id).where(model.id.in_(ids))
+        if organization_id is not None:
+            query = query.where(model.organization_id == organization_id)
+        if user_id is not None:
+            query = query.where(model.user_id == user_id)
+        query = apply_memory_filters(query, model, filter_tags, scopes=scopes)
+        async with db_context() as session:
+            live = set((await session.execute(query)).scalars().all())
+        return [doc for doc in documents if doc.get("id") in live]
+
     async def search_text(
         self,
         index_name: str,
@@ -1042,7 +1079,10 @@ class RedisMemoryClient:
                     documents.append(doc_dict)
 
             logger.debug("Redis text search: found %d results in %s", len(documents), index_name)
-            return documents
+            return await self._live_memory_documents(
+                index_name, documents, organization_id=organization_id, user_id=user_id,
+                filter_tags=filter_tags, scopes=scopes,
+            )
 
         except Exception as e:
             if self._check_modules_missing(e):
@@ -1179,7 +1219,10 @@ class RedisMemoryClient:
                 documents.append(doc_dict)
 
             logger.debug("Redis vector search: found %d results in %s", len(documents), index_name)
-            return documents
+            return await self._live_memory_documents(
+                index_name, documents, organization_id=organization_id, user_id=user_id,
+                filter_tags=filter_tags, scopes=scopes,
+            )
 
         except Exception as e:
             if self._check_modules_missing(e):
@@ -1301,7 +1344,10 @@ class RedisMemoryClient:
                     documents.append(doc_dict)
 
             logger.debug("Redis recent search: found %d results in %s", len(documents), index_name)
-            return documents
+            return await self._live_memory_documents(
+                index_name, documents, organization_id=organization_id, user_id=user_id,
+                filter_tags=filter_tags, scopes=scopes,
+            )
 
         except Exception as e:
             if self._check_modules_missing(e):
@@ -1395,7 +1441,10 @@ class RedisMemoryClient:
             results = await self.client.ft(index_name).search(query_obj)
 
             # Convert results to dictionaries
-            return [self._doc_to_dict(doc) for doc in results.docs]
+            return await self._live_memory_documents(
+                index_name, [self._doc_to_dict(doc) for doc in results.docs],
+                organization_id=organization_id, filter_tags=filter_tags, scopes=scopes,
+            )
 
         except Exception as e:
             if self._check_modules_missing(e):
@@ -1493,7 +1542,10 @@ class RedisMemoryClient:
             # Execute vector search
             results = await self.client.ft(index_name).search(query_obj, query_params={"embedding": embedding_bytes})
 
-            return [self._doc_to_dict(doc) for doc in results.docs]
+            return await self._live_memory_documents(
+                index_name, [self._doc_to_dict(doc) for doc in results.docs],
+                organization_id=organization_id, filter_tags=filter_tags, scopes=scopes,
+            )
 
         except Exception as e:
             if self._check_modules_missing(e):
@@ -1585,7 +1637,10 @@ class RedisMemoryClient:
             # Execute search
             results = await self.client.ft(index_name).search(query_obj)
 
-            return [self._doc_to_dict(doc) for doc in results.docs]
+            return await self._live_memory_documents(
+                index_name, [self._doc_to_dict(doc) for doc in results.docs],
+                organization_id=organization_id, filter_tags=filter_tags, scopes=scopes,
+            )
 
         except Exception as e:
             if self._check_modules_missing(e):

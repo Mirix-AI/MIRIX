@@ -579,9 +579,9 @@ class RawMemoryManager:
             if user_id:
                 base_query = base_query.where(RawMemory.user_id == user_id)
 
-            from mirix.database.filter_tags_query import apply_filter_tags_sqlalchemy
+            from mirix.database.filter_tags_query import apply_memory_filters
 
-            base_query = apply_filter_tags_sqlalchemy(base_query, RawMemory, filter_tags, scopes=scopes)
+            base_query = apply_memory_filters(base_query, RawMemory, filter_tags, scopes=scopes)
 
             # Apply time range filtering
             if time_range:

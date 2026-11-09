@@ -27,6 +27,7 @@ if not hasattr(jwt, "encode") or not hasattr(jwt, "decode"):  # pragma: no cover
 from sqlalchemy import select
 
 from mirix.log import get_logger
+from mirix.helpers.keyed_locks import KeyedLocks
 from mirix.orm.client import Client as ClientModel
 from mirix.orm.errors import NoResultFound
 from mirix.schemas.client import Client as PydanticClient
@@ -34,6 +35,7 @@ from mirix.settings import settings
 from mirix.utils import enforce_types
 
 logger = get_logger(__name__)
+_REGISTRATION_LOCKS = KeyedLocks()
 
 
 def _get_or_create_jwt_secret() -> str:
@@ -52,6 +54,11 @@ def _get_or_create_jwt_secret() -> str:
 
     # 1. Check environment variable first
     if settings.jwt_secret_key:
+        if (
+            len(settings.jwt_secret_key) < 32
+            or settings.jwt_secret_key == "change-this-to-a-secure-secret-key"
+        ):
+            raise ValueError("MIRIX_JWT_SECRET_KEY must be a unique secret of at least 32 characters")
         logger.debug("Using JWT secret from MIRIX_JWT_SECRET_KEY environment variable")
         return settings.jwt_secret_key
 
@@ -62,7 +69,7 @@ def _get_or_create_jwt_secret() -> str:
     if secret_file.exists():
         try:
             secret = secret_file.read_text().strip()
-            if secret and len(secret) >= 32:
+            if secret and len(secret) >= 32 and secret != "change-this-to-a-secure-secret-key":
                 logger.debug("Using persisted JWT secret from %s", secret_file)
                 return secret
         except Exception as e:
@@ -165,7 +172,10 @@ class ClientAuthManager:
     def decode_access_token(token: str) -> Optional[dict]:
         """Decode and validate a JWT access token."""
         try:
-            payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
+            payload = jwt.decode(
+                token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM],
+                options={"require": ["sub", "exp", "iat"]},
+            )
             return payload
         except jwt.ExpiredSignatureError:
             logger.warning("JWT token expired")
@@ -187,6 +197,7 @@ class ClientAuthManager:
         organization_id: Optional[str] = None,
         write_scope: str = "admin",
         read_scopes: Optional[List[str]] = None,
+        bootstrap_only: bool = False,
     ) -> PydanticClient:
         """
         Register a new client with dashboard login credentials.
@@ -214,7 +225,23 @@ class ClientAuthManager:
 
         org_id = organization_id or OrganizationManager.DEFAULT_ORG_ID
 
-        async with self.session_maker() as session:
+        # Acquire before opening the session: a second SQLite connection's
+        # synchronous setup must not block the loop while the first writer
+        # holds BEGIN IMMEDIATE. The DB lock below also protects other workers.
+        async with _REGISTRATION_LOCKS.acquire("dashboard-registration"), self.session_maker() as session:
+            if bootstrap_only:
+                # Serialize the initial registration across server workers.
+                # Never reopen bootstrap merely because an old account was deleted.
+                from sqlalchemy import text
+                if session.bind.dialect.name == "postgresql":
+                    await session.execute(text("LOCK TABLE clients IN EXCLUSIVE MODE"))
+                elif session.bind.dialect.name == "sqlite":
+                    await session.execute(text("BEGIN IMMEDIATE"))
+                existing = await session.execute(
+                    select(ClientModel.id).where(ClientModel.email.isnot(None)).limit(1)
+                )
+                if existing.first() is not None:
+                    raise ValueError("Dashboard is already configured; authenticated registration is required")
             stmt = (
                 select(ClientModel)
                 .where(
@@ -376,7 +403,7 @@ class ClientAuthManager:
 
     @enforce_types
     async def list_dashboard_clients(
-        self, cursor: Optional[str] = None, limit: int = 50
+        self, cursor: Optional[str] = None, limit: int = 50, organization_id: Optional[str] = None,
     ) -> List[PydanticClient]:
         """List all clients that have dashboard access (email set)."""
         async with self.session_maker() as session:
@@ -390,6 +417,8 @@ class ClientAuthManager:
             )
             if cursor:
                 stmt = stmt.where(ClientModel.id < cursor)
+            if organization_id is not None:
+                stmt = stmt.where(ClientModel.organization_id == organization_id)
             if limit:
                 stmt = stmt.limit(limit)
             result = await session.execute(stmt)
@@ -499,7 +528,11 @@ class ClientAuthManager:
     @enforce_types
     async def is_first_dashboard_user(self) -> bool:
         """Check if there are no dashboard users yet (for bootstrap)."""
-        return (await self.count_dashboard_clients()) == 0
+        async with self.session_maker() as session:
+            result = await session.execute(
+                select(ClientModel.id).where(ClientModel.email.isnot(None)).limit(1)
+            )
+            return result.first() is None
 
     # =========================================================================
     # Scope-based Authorization

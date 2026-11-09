@@ -230,17 +230,18 @@ def main() -> None:
     print(f"[lru_eval] writing per-sample results to {output_path}")
 
     import httpx
-    server_base = "http://127.0.0.1:8531"
+    server_base = os.environ.get("MIRIX_API_URL", "http://127.0.0.1:8531")
+    server_headers = {"X-API-Key": os.environ.get("MIRIX_API_KEY", "")}
 
     def _reset_tokens():
         try:
-            httpx.post(f"{server_base}/debug/token_stats/reset", timeout=10)
+            httpx.post(f"{server_base}/debug/token_stats/reset", headers=server_headers, timeout=10)
         except Exception:
             pass
 
     def _snapshot_tokens():
         try:
-            r = httpx.get(f"{server_base}/debug/token_stats", timeout=10)
+            r = httpx.get(f"{server_base}/debug/token_stats", headers=server_headers, timeout=10)
             return r.json().get("stats", {})
         except Exception:
             return {}

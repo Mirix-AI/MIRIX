@@ -87,7 +87,8 @@ async def _merge_confirmed(
         for drop, keep, _ in confirmed:
             if drop in done or keep in done:
                 continue
-            await _merge_anchor(session, user_id, drop, keep)
+            if await _merge_anchor(session, user_id, drop, keep) is False:
+                continue
             done.add(drop)
             merged += 1
     return merged

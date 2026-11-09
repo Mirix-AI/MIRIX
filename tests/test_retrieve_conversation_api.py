@@ -212,6 +212,9 @@ async def api(sm, monkeypatch, tmp_path, fake_llm_server):
         async def get_client_by_id(self, cid):
             return {client.id: client, other_client.id: other_client}.get(cid)
 
+        async def get_client_by_api_key(self, key):
+            return {f"test-key-{client.id}": client, f"test-key-{other_client.id}": other_client}.get(key)
+
     class Agents:
         agents = [agent_state]
 
@@ -270,7 +273,7 @@ async def api(sm, monkeypatch, tmp_path, fake_llm_server):
 
         def headers(as_client=None):
             c = as_client or client
-            return {"x-client-id": c.id, "x-org-id": org_id}
+            return {"X-API-Key": f"test-key-{c.id}"}
 
         async def retrieve(as_client=None, **body):
             body.setdefault("user_id", user_id)
@@ -1141,13 +1144,13 @@ class TestValidation:
         assert api.fake.chat_requests() == [] and await _log_count(api) == before
         assert all(not spy.calls for spy in api.spies.values())
 
-    async def test_an_unknown_client_is_404(self, api):
+    async def test_an_unverified_client_is_401(self, api):
         response = await api.http.post(
             "/memory/retrieve/conversation",
             json={"user_id": api.user, "messages": [{"role": "user", "content": "q"}]},
             headers={"x-client-id": "client-nobody", "x-org-id": api.org},
         )
-        assert response.status_code == 404
+        assert response.status_code == 401
 
     async def test_an_unknown_user_finds_nothing(self, api):
         """A first retrieval before the first add (which creates the user)

@@ -338,15 +338,16 @@ def main() -> None:
     # We just need to (a) reset before each sample's ingest, (b) snapshot after
     # ingest to get "build" tokens, (c) snapshot after QA to get "query" tokens.
     import httpx
-    server_base = "http://127.0.0.1:8531"
+    server_base = os.environ.get("MIRIX_API_URL", "http://127.0.0.1:8531")
+    server_headers = {"X-API-Key": os.environ.get("MIRIX_API_KEY", "")}
     def _reset_tokens():
         try:
-            httpx.post(f"{server_base}/debug/token_stats/reset", timeout=10)
+            httpx.post(f"{server_base}/debug/token_stats/reset", headers=server_headers, timeout=10)
         except Exception:
             pass
     def _snapshot_tokens():
         try:
-            r = httpx.get(f"{server_base}/debug/token_stats", timeout=10)
+            r = httpx.get(f"{server_base}/debug/token_stats", headers=server_headers, timeout=10)
             return r.json().get("stats", {})
         except Exception:
             return {}
@@ -369,6 +370,7 @@ def main() -> None:
             org_id=mirix_org_id,
             user_id=storage_user_id,
             model=os.environ.get("MIRIX_QA_MODEL", "gpt-4.1-mini"),
+            read_only=qa_only_existing_store,
         ) if args.run_llm else None
 
         sample_result = load_sample_result(sample_path)
@@ -387,7 +389,8 @@ def main() -> None:
 
         memory_system = MirixMemorySystem(user_id=storage_user_id,
                     mirix_config_path=str(args.mirix_config_path),
-                    client=task_agent.mirix_client)
+                    client=task_agent.mirix_client if task_agent else None,
+                    read_only=qa_only_existing_store)
 
         # Reset server-side token counter so build_tokens reflects only this sample's ingest
         _reset_tokens()
@@ -400,6 +403,8 @@ def main() -> None:
         dream_every = int(os.environ.get("MIRIX_DREAM_EVERY_N_CHUNKS", "0") or 0)
 
         def _fire_dream(after_idx: int) -> None:
+            if qa_only_existing_store:
+                return
             dream_key = f"dream_{after_idx}"
             if dream_key in sample_result["responses"]:
                 return
@@ -413,7 +418,7 @@ def main() -> None:
                 r = httpx.post(
                     f"{server_base}/memory/auto_dream",
                     params={"user_id": storage_user_id},
-                    headers={"x-client-id": mirix_client_id, "x-org-id": mirix_org_id},
+                    headers=server_headers,
                     json={
                         "mode": os.environ.get("MIRIX_DREAM_MODE", "experience"),
                         # Eval AutoDream arms measure graph consolidation only. Keep
@@ -462,10 +467,8 @@ def main() -> None:
             idx_key = str(idx)
             if idx_key in sample_result["responses"]:
                 continue
-            date_time_key = f"session_{idx}_date_time"
-            date_time = conversation.get(date_time_key)
-            if date_time is None:
-                date_time = conversation.get(f"session_{idx + 1}_date_time")
+            # Windows and non-contiguous session numbers keep their own date.
+            date_time = session.get("date_time")
             session_visual: Dict[str, str] = {}
             if v720_enabled:
                 cached_visual = sample_result.setdefault("visual_evidence", {})
@@ -522,7 +525,7 @@ def main() -> None:
             if dream_every and idx % dream_every == 0:
                 _fire_dream(idx)
 
-        if dream_every and total_chunks % dream_every != 0:
+        if not qa_only_existing_store and dream_every and total_chunks % dream_every != 0:
             # final consolidation so the tail chunks are dreamed before QA
             _fire_dream(total_chunks)
 

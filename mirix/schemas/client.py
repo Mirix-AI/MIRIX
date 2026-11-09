@@ -18,7 +18,7 @@ def _generate_client_id() -> str:
     return f"client-{uuid.uuid4().hex[:8]}"
 
 
-class Client(ClientBase):
+class ClientResponse(ClientBase):
     """
     Representation of a client application.
 
@@ -29,7 +29,6 @@ class Client(ClientBase):
         write_scope (Optional[str]): Scope for writing memories (null = read-only).
         read_scopes (List[str]): Scopes for reading memories.
         email (str): Optional email for dashboard login.
-        password_hash (str): Optional password hash for dashboard login.
         created_at (datetime): The creation date of the client.
     """
 
@@ -48,12 +47,19 @@ class Client(ClientBase):
 
     # Dashboard authentication fields
     email: Optional[str] = Field(default=None, description="Email address for dashboard login.")
-    password_hash: Optional[str] = Field(default=None, description="Hashed password for dashboard login.")
     last_login: Optional[datetime] = Field(default=None, description="Last dashboard login time.")
 
     created_at: Optional[datetime] = Field(default_factory=get_utc_time, description="The creation date of the client.")
     updated_at: Optional[datetime] = Field(default_factory=get_utc_time, description="The update date of the client.")
     is_deleted: bool = Field(default=False, description="Whether this client is deleted or not.")
+
+
+class Client(ClientResponse):
+    """Internal client record. Credentials never belong in an API response."""
+
+    password_hash: Optional[str] = Field(
+        default=None, repr=False, description="Hashed password for dashboard login."
+    )
 
 
 class ClientCreate(ClientBase):

@@ -370,6 +370,55 @@ async def _seed_rows(session_maker, rows):
 
 
 @pytest.mark.asyncio(loop_scope="module")
+@pytest.mark.parametrize("manager_id,make_rows,make_call,supports_fuzzy", _SPECS)
+@pytest.mark.parametrize("method", ["bm25", "fuzzy_match"])
+async def test_deleted_memories_never_return_from_search(
+    session_maker, seed, user, agent_state,
+    manager_id, make_rows, make_call, supports_fuzzy, method,
+):
+    if method == "fuzzy_match" and not supports_fuzzy:
+        pytest.skip("manager has no fuzzy search")
+    deleted_id, live_id = f"dead-{uuid.uuid4().hex}", f"live-{uuid.uuid4().hex}"
+    rows = make_rows(seed, deleted_id, live_id)
+    rows[0].is_deleted = True
+    rows[1].filter_tags = {"scope": SCOPE}
+    await _seed_rows(session_maker, rows)
+    results = await make_call(session_maker)(agent_state, user, method, [SCOPE])
+    ids = {row.id for row in results}
+    assert deleted_id not in ids
+    assert live_id in ids
+
+
+@pytest.mark.asyncio(loop_scope="module")
+@pytest.mark.parametrize("manager_id,make_rows,make_call,supports_fuzzy", _SPECS[1:])
+async def test_stale_redis_hits_are_checked_against_live_database(
+    session_maker, seed, monkeypatch, manager_id, make_rows, make_call, supports_fuzzy,
+):
+    from mirix.database.redis_client import RedisMemoryClient
+    from mirix.server import server
+
+    monkeypatch.setattr(server, "db_context", session_maker)
+    deleted_id, live_id = f"dead-cache-{uuid.uuid4().hex}", f"live-cache-{uuid.uuid4().hex}"
+    rows = make_rows(seed, deleted_id, live_id)
+    rows[0].is_deleted = True
+    rows[1].filter_tags = {"scope": SCOPE}
+    await _seed_rows(session_maker, rows)
+    index = {
+        "episodic": RedisMemoryClient.EPISODIC_INDEX,
+        "semantic": RedisMemoryClient.SEMANTIC_INDEX,
+        "resource": RedisMemoryClient.RESOURCE_INDEX,
+        "knowledge_vault": RedisMemoryClient.KNOWLEDGE_INDEX,
+    }[manager_id]
+    redis = RedisMemoryClient.__new__(RedisMemoryClient)
+    # Redis still claims BOTH rows are live, as when invalidation failed.
+    result = await redis._live_memory_documents(
+        index, [{"id": deleted_id, "is_deleted": False}, {"id": live_id, "is_deleted": False}],
+        organization_id=seed["org_id"], user_id=seed["user_id"], scopes=[SCOPE],
+    )
+    assert [doc["id"] for doc in result] == [live_id]
+
+
+@pytest.mark.asyncio(loop_scope="module")
 @pytest.mark.parametrize(
     "manager_id,make_rows,make_call,supports_fuzzy",
     _SPECS,
