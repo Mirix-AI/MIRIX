@@ -18,6 +18,15 @@ Your personal AI that builds memory through screen observation and natural conve
 - **Graph Memory (optional):** A provenance hypergraph over episodic and semantic memories in Neo4j, with n-ary facts that link entities through named roles and cite the memory rows they came from
 - **Multi-Modal Input:** Text, images, voice, and screen captures processed seamlessly
 
+### Results
+
+![MIRIX-2.0 compared with other memory systems on user-centric and agent-centric tasks](assets/mirix2_radar.png)
+
+MIRIX-2.0 compared with other memory systems. Each axis label gives the MIRIX-2.0 score; the value in parentheses is its lead over the strongest baseline on that axis, shown where MIRIX-2.0 leads.
+
+- **(a) User-centric tasks** (accuracy, %): conversational recall on LoCoMo and LongMemEval-S, and the document QA tracks of MemoryAgentBench (SHDocQA, MHDocQA, DetectiveQA). Baselines are A-Mem, Graphiti, MemoryBank, mem0 and HyperMem. LoCoMo uses graph memory with AutoDream; LongMemEval-S and document QA use graph memory alone.
+- **(b) Agent-centric tasks** (success rate, %): the six ALFWorld task types (Pick, Look, Clean, Heat, Cool, Pick Two) and five WebShop product categories (Fashion, Beauty, Electronics, Garden, Grocery), with GPT-6 Luna as the agent model. Baselines are no memory, AWM and ReasoningBank.
+
 ### Quick Start
 **Step 1: Backend & Dashboard (Docker):**
 ```
