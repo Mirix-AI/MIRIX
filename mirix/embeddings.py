@@ -574,7 +574,12 @@ async def _provider_embedding_model(
         # max_retries=0: one attempt per call — no tenacity loop (10 attempts
         # within 60 s) and no SDK retries (its AsyncOpenAI gets the same
         # max_retries); embedding_with_retry is the only retry layer.
+        # model_name, not model: without it llama_index sends its default
+        # (text-embedding-ada-002) whatever the config says, and model= only
+        # accepts OpenAI's own model names (it rejects e.g. an OpenRouter or
+        # other OpenAI-compatible endpoint's "vendor/model" id).
         model = OpenAIEmbedding(
+            model_name=config.embedding_model,
             api_base=config.embedding_endpoint,
             api_key=api_key,
             additional_kwargs=additional_kwargs,
