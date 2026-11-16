@@ -642,6 +642,30 @@ class TestFactory:
         )
         assert not any(vector[3072:])
 
+    @pytest.mark.parametrize(
+        "model_name", ["text-embedding-3-small", "openai/text-embedding-3-small"]
+    )
+    async def test_the_openai_endpoint_sends_the_configured_model(
+        self, fake_llm_server, model_name
+    ):
+        # The request carries the configured model, not llama_index's default
+        # (text-embedding-ada-002); an OpenAI-compatible endpoint's
+        # "vendor/model" id goes through as well.
+        from mirix.embeddings import embedding_model
+
+        model = await embedding_model(
+            EmbeddingConfig(
+                embedding_endpoint_type="openai",
+                embedding_endpoint=fake_llm_server.base_url,
+                embedding_model=model_name,
+                embedding_dim=1536,
+                api_key="fake",
+            )
+        )
+        await model.get_text_embedding("put a mug in the sink")
+        sent = [r.json["model"] for r in fake_llm_server.embedding_requests()]
+        assert sent == [model_name]
+
     def test_the_three_dead_helpers_are_gone(self):
         import mirix.embeddings as embeddings
 
